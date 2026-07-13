@@ -1,0 +1,267 @@
+# 安装、升级与回滚
+
+## 目标
+
+让个人开发者在新 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径仍是“单机 + Tailscale + 用户自己的 Codex CLI”。
+
+## 方案
+
+- macOS 使用 Homebrew service，首次安装只需 `agentd up`。
+- Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
+- 配置和两个 Token 都留在系统用户配置目录，升级二进制不会删除它们。
+- 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
+
+## 实现
+
+### macOS 首次安装
+
+前置条件：已安装并登录 Codex CLI，Mac 与移动设备已登录同一个 Tailscale 网络。
+
+```bash
+brew update
+brew install gaixianggeng/tap/mimi-remote
+
+codex --version
+codex app-server --help
+agentd up
+agentd status
+```
+
+`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、版本和真实 app-server WebSocket 握手均已通过。安装与升级只能以后者为成功条件。
+
+`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json` 和独立的 app-server Token 文件，以 `0600` 保存，然后启动 Homebrew 后台服务。重复运行会复用现有配置，不会覆盖已经配对的移动端 Token。
+
+### macOS 升级
+
+先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。
+
+```bash
+set -euo pipefail
+
+config_dir="$HOME/Library/Application Support/mimi-remote"
+backup_dir="$HOME/Library/Application Support/mimi-remote-backups/$(date +%Y%m%d-%H%M%S)"
+umask 077
+mkdir -p "$backup_dir"
+
+for name in config.json app-server-ws-token; do
+  if [[ -f "$config_dir/$name" && ! -L "$config_dir/$name" ]]; then
+    cp -p "$config_dir/$name" "$backup_dir/$name"
+  fi
+done
+
+brew update
+brew upgrade mimi-remote
+agentd restart
+agentd status
+```
+
+如果就绪检查失败：
+
+```bash
+agentd doctor --fix
+agentd logs
+```
+
+`doctor --fix` 只执行可证明安全的局部修复；不会为了“修好”而重建项目列表或轮换外侧配对 Token。
+
+从历史产品目录升级时，如果新版默认配置不存在，`agentd` 会把 `codex-ipad-agent/config.json` 原样复制到 `mimi-remote/config.json`，保留旧文件和其中引用的绝对路径。两边都存在时永远使用新版目录；显式自定义配置时不自动迁移。
+
+### 停止与异常恢复
+
+后台服务由系统服务管理器负责，不额外维护容易失真的 PID 文件：
+
+```bash
+agentd stop
+```
+
+`agentd stop` 不读取 Token、不等待 ready，只把停止动作交给当前平台服务管理器。若 `agentd` 命令本身不可用，再使用底层命令排障：
+
+```bash
+# macOS
+brew services stop mimi-remote
+
+# Linux
+systemctl --user stop mimi-remote.service
+```
+
+收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再停止会话和托管 Codex app-server；排空超时会强制关闭连接。托管 Codex app-server 意外退出时，`agentd` 会同步关闭 HTTP 并以非零状态退出，Homebrew `keep_alive` 或 systemd `Restart=on-failure` 会接管恢复。这样不会保留“`/healthz` 端口还在，但 Codex upstream 已经死亡”的半健康服务。
+
+### macOS 应急回滚
+
+先查看 Homebrew Cellar 是否还保留旧版本：
+
+```bash
+cellar="$(brew --cellar mimi-remote)"
+find "$cellar" -maxdepth 2 -type f -path '*/bin/agentd' -print
+```
+
+如果旧 keg 仍在，先停止新服务并以前台方式恢复访问：
+
+```bash
+old_version="<上一版本，例如 0.1.0>"
+config="$HOME/Library/Application Support/mimi-remote/config.json"
+
+brew services stop mimi-remote
+"$(brew --cellar mimi-remote)/$old_version/bin/agentd" version
+"$(brew --cellar mimi-remote)/$old_version/bin/agentd" serve --config "$config"
+```
+
+该命令占用当前终端，但恢复路径最短，也不会改写配置。确认旧版本可用后，如果需要恢复后台服务，再从 tap 的历史 commit 安装上一版 Formula：
+
+```bash
+formula_commit="<homebrew-tap 中上一版 Formula 的 commit SHA>"
+formula_dir="$(mktemp -d -t mimi-remote-formula)"
+formula_file="$formula_dir/mimi-remote.rb"
+
+curl -fsSL \
+  "https://raw.githubusercontent.com/gaixianggeng/homebrew-tap/$formula_commit/Formula/mimi-remote.rb" \
+  -o "$formula_file"
+
+brew services stop mimi-remote || true
+brew uninstall mimi-remote
+brew install --formula "$formula_file"
+agentd start
+agentd status
+rm -f "$formula_file"
+rmdir "$formula_dir"
+```
+
+只有确认新版本改写了不兼容配置时，才从备份恢复 `config.json` 和 `app-server-ws-token`。恢复前必须先停止服务，恢复后保持文件权限为 `0600`：
+
+```bash
+brew services stop mimi-remote
+install -m 600 "<备份目录>/config.json" "$HOME/Library/Application Support/mimi-remote/config.json"
+install -m 600 "<备份目录>/app-server-ws-token" "$HOME/Library/Application Support/mimi-remote/app-server-ws-token"
+agentd start
+```
+
+### Linux user-systemd
+
+Linux Release 包同时包含二进制、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
+
+```bash
+set -euo pipefail
+
+version="v0.1.0"
+release_version="${version#v}"
+case "$(uname -m)" in
+  x86_64|amd64) arch="amd64" ;;
+  aarch64|arm64) arch="arm64" ;;
+  *) echo "不支持的架构：$(uname -m)" >&2; exit 1 ;;
+esac
+
+archive="mimi-remote_${release_version}_linux_${arch}.tar.gz"
+work_dir="$(mktemp -d)"
+cd "$work_dir"
+
+curl --fail --location --remote-name \
+  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/${archive}"
+curl --fail --location --remote-name \
+  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/checksums.txt"
+
+awk -v archive="$archive" '$2 == archive { print }' checksums.txt | sha256sum -c -
+tar -xzf "$archive"
+bash ./scripts/install-linux.sh install
+```
+
+脚本只接受正式版本号，拒绝 `devel`、错误架构、root、非默认 `AGENTD_CONFIG` 和不一致的 `XDG_CONFIG_HOME`。它会：
+
+- 原子安装 `~/.local/bin/agentd` 和 user-systemd unit；
+- 首次安装时静默创建默认配置，已有配置和 Token 不会被覆盖；服务真正就绪且安装事务提交后，才输出不含长期 Token/connect link 的短期配对二维码；
+- 升级前保存 `agentd.previous` 和上一版 unit；
+- 显式重启已经运行的旧进程，并等待服务健康；
+- 任一步骤、服务健康或 Doctor 必要检查在 10 秒内失败时，先输出最多 40 行去敏状态摘要和 80 行去敏 journal，再自动恢复安装前二进制、unit 和服务状态；首次 setup 已安全生成的配置与 Token 会保留，不会因服务失败再次轮换；
+- 若安装后的二维码生成失败，只提示使用绝对路径重试 `pair --qr-only`，不会回滚已经就绪的服务。
+
+安装器不会修改 `.bashrc`、`.zshrc` 等 shell 配置。若成功输出提示当前 `PATH` 没有 `~/.local/bin`，可在当前 shell 执行：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+安装后的日常配对、状态、日志和重启统一使用 agentd CLI。下面刻意使用绝对路径，当前 shell 尚未刷新 PATH 时也能直接执行：
+
+```bash
+"$HOME/.local/bin/agentd" pair --qr-only
+"$HOME/.local/bin/agentd" status
+"$HOME/.local/bin/agentd" logs -n 200
+"$HOME/.local/bin/agentd" logs -n 200 -f
+"$HOME/.local/bin/agentd" restart
+"$HOME/.local/bin/agentd" stop
+```
+
+`pair --qr-only` 只输出 Endpoint、短期 Pair 链接、过期时间和二维码，适合安装器或可能留存日志的终端；普通 `pair` 继续保留长期 Token/connect link，作为扫码不可用时的手动 fallback。其余命令在 Linux 只做一层薄映射，实际仍由 `systemctl --user` 和 `journalctl --user` 管理；不会额外创建 PID 文件或自建守护进程。`logs -n` 的正数范围固定为 1 到 5000，`0` 或负数使用默认 120 行，超限直接报错；`-f` 仍可与合法行数组合。unit 缺失时 CLI 会明确提示先从正式 Release 解压目录运行 `bash ./scripts/install-linux.sh install`。需要绕过 CLI 排查 systemd 本身时，仍可直接运行 `systemctl --user status mimi-remote.service`。
+
+若希望退出 SSH 登录后服务仍运行，需要由当前机器管理员明确开启 user lingering：
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Linux 升级时，按首次安装示例下载并校验目标版本，解压后在新目录执行：
+
+```bash
+bash ./scripts/install-linux.sh upgrade
+```
+
+脚本会自动保留上一版二进制和 unit；若新版本无法就绪会当场自动恢复。需要稍后主动回滚时，使用安装成功后保存到本机的脚本：
+
+```bash
+bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
+"$HOME/.local/bin/agentd" logs -n 200
+```
+
+如果 Codex CLI 不在模板的 `PATH` 中，先用 `command -v codex` 找到安装目录，再编辑 `~/.config/systemd/user/mimi-remote.service` 的 `Environment=PATH=...`，随后执行 `systemctl --user daemon-reload` 和重启。
+
+### Linux 卸载
+
+安装成功后的 helper 会安全停止并禁用 user-systemd service，再删除当前/上一版二进制、unit 和 helper 自身：
+
+```bash
+bash "$HOME/.local/share/mimi-remote/install-linux.sh" uninstall
+```
+
+`uninstall` 不接受 `sudo`，也不提供隐式 purge。如果已安装的 unit 无法停止或禁用，脚本会在删除任何安装文件前中止。成功后 helper 会随安装文件一起删除；需要再次确认状态时，可从原 Release 解压目录运行 `bash ./scripts/install-linux.sh uninstall`，无剩余安装文件时会幂等成功。
+
+为了让后续重装无需重新配对，脚本会完整保留 `~/.config/mimi-remote` 及其中的 Token。只有在确认不再使用且接受原配对凭据永久失效时，才手动删除：
+
+```bash
+rm -rf -- "$HOME/.config/mimi-remote"
+```
+
+## 风险与优化
+
+### 维护者发布前本地验收
+
+正式 tag 依赖两个 GitHub 外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且 `TAP_GITHUB_TOKEN` 对 Tap 具有 `contents:write`。“Token 能访问 private Tap”不等于可公开安装；仓库不公开时，未登录 GitHub 的 Homebrew 用户仍会失败。
+
+Release workflow 会在 GoReleaser 前读取 GitHub API JSON，同时检查两个仓库的 `visibility=public` / `private=false` 和 Tap push 权限，不在日志中回显 Token 或 API JSON 原文。如果只需在本地验证 JSON 分支而不连接 GitHub，执行：
+
+```bash
+bash ./scripts/check-release-prerequisites.sh --self-test
+```
+
+维护者在打 tag 前从仓库根目录执行：
+
+```bash
+bash ./scripts/verify-release.sh
+```
+
+该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
+
+### GitHub Release 成功、tap 更新失败
+
+GoReleaser 发布 GitHub 附件和推送 Homebrew tap 不是跨仓库事务。若 workflow 已创建 Release，但在 tap 阶段因 Token、仓库权限或临时网络错误失败：
+
+1. 不要移动或重建同名 tag，也不要先手工删除已经公开的 Release；
+2. 修复 `TAP_GITHUB_TOKEN` 或 tap 仓库状态；
+3. 在原 workflow 上执行 **Re-run failed jobs**；
+4. `.goreleaser.yml` 的 `mode: keep-existing` 会保留原发布说明，`replace_existing_artifacts: true` 允许同一 tag 重建并替换同名附件，然后继续推送 Formula；
+5. 重跑成功后确认 Release 包含四个平台归档和 `checksums.txt`，tap 的 Formula URL、版本和 SHA-256 与该 Release 一致。
+
+该恢复能力只服务于“同一个 tag、同一个提交”的部分失败。若 tag 指向发生变化，必须停止重跑并先调查；不能用附件替换掩盖 retag。
+
+- Homebrew Formula 回滚依赖 tap 历史 commit 和旧 Release 附件仍可访问；每次正式发布必须保留 tag、附件和 Formula 历史。
+- 配置备份包含长期凭据，默认仅保存在本机 `0700` 目录内；不用 Git 管理，不通过聊天发送。
+- Linux user service 会以当前用户权限访问项目目录和 Codex 配置；不要改成 root system service。
+- 当前没有自动数据库迁移或跨版本降级框架。配置变更继续保持向后兼容；真的出现不兼容格式时，再引入带版本号的迁移，不提前建设复杂升级系统。

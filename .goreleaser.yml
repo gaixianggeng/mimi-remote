@@ -1,0 +1,100 @@
+version: 2
+
+project_name: mimi-remote
+
+builds:
+  - id: agentd
+    main: ./cmd/agentd
+    binary: agentd
+    env:
+      - CGO_ENABLED=0
+      # 发布必须使用 go.mod 声明的工具链，禁止 Go 自动下载并切换到更高版本。
+      - GOTOOLCHAIN=local
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: agentd
+    ids:
+      - agentd
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE.md
+      - THIRD_PARTY_NOTICES.md
+      - SECURITY.md
+      - config.example.json
+      - packaging/systemd/mimi-remote.service
+      - scripts/install-linux.sh
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+# 显式固定公开 Release 仓库，避免维护者尚未更新本地 Git remote 时，
+# snapshot Formula 仍生成旧 codex-ipad-agent 仓库的下载地址。
+release:
+  github:
+    owner: gaixianggeng
+    name: mimi-remote
+  # GitHub Release 已创建但 tap 推送失败时，允许同一 tag 的 workflow 重跑。
+  # keep-existing 保留既有发布说明，只替换由该 tag 重新构建的同名附件。
+  mode: keep-existing
+  replace_existing_artifacts: true
+
+brews:
+  - name: mimi-remote
+    ids:
+      - agentd
+    repository:
+      owner: gaixianggeng
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/gaixianggeng/mimi-remote
+    description: iPad companion agent for user-owned Mac developer environments
+    install: |
+      bin.install "agentd"
+    test: |
+      system "#{bin}/agentd", "version"
+    custom_block: |
+      service do
+        run [opt_bin/"agentd", "serve"]
+        environment_variables PATH: std_service_path_env
+        keep_alive true
+        log_path var/"log/mimi-remote.log"
+        error_log_path var/"log/mimi-remote.log"
+      end
+    caveats: |
+      首次使用：
+        codex --version
+        codex app-server --help
+        agentd up
+
+      Mimi Remote App 优先扫描 agentd up 输出的二维码；二维码过期后运行 agentd pair 刷新。
+      排障：
+        agentd status
+        agentd doctor --fix
+        agentd logs

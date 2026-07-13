@@ -1,0 +1,90 @@
+name: Go CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".goreleaser.yml"
+      - "packaging/**"
+      - "scripts/check-packaging.sh"
+      - "scripts/check-release-artifacts.sh"
+      - "scripts/install-linux.sh"
+      - "scripts/test-install-linux.sh"
+      - "scripts/verify-release.sh"
+      - "README.md"
+      - "docs/install-upgrade-rollback.md"
+      - "docs/codex-protocol-support.md"
+      - ".github/workflows/go-ci.yml"
+      - ".github/workflows/release.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".goreleaser.yml"
+      - "packaging/**"
+      - "scripts/check-packaging.sh"
+      - "scripts/check-release-artifacts.sh"
+      - "scripts/install-linux.sh"
+      - "scripts/test-install-linux.sh"
+      - "scripts/verify-release.sh"
+      - "README.md"
+      - "docs/install-upgrade-rollback.md"
+      - "docs/codex-protocol-support.md"
+      - ".github/workflows/go-ci.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check packaging sources
+        run: bash ./scripts/check-packaging.sh
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+
+      - name: Check module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Build release binary
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$RUNNER_TEMP/agentd" ./cmd/agentd
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: "v2.15.3"
+          args: check

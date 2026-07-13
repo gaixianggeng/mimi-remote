@@ -1,0 +1,16 @@
+{"name":"initialize.request","direction":"client","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0"}}}}
+{"name":"initialize.response","direction":"server","message":{"id":1,"result":{"userAgent":"codex/fake","platformFamily":"macos","platformOs":"darwin"}}}
+{"name":"initialized.notification","direction":"client","message":{"method":"initialized","params":{}}}
+{"name":"thread_list.request","direction":"client","message":{"id":2,"method":"thread/list","params":{"limit":20}}}
+{"name":"thread_list.response","direction":"server","message":{"id":2,"result":{"threads":[]}}}
+{"name":"thread_start.request","direction":"client","message":{"id":3,"method":"thread/start","params":{"cwd":"/Users/me/project","model":"gpt-5.1-codex"}}}
+{"name":"thread_start.response","direction":"server","message":{"id":3,"result":{"thread":{"id":"thr_demo","cwd":"/Users/me/project","status":"running"}}}}
+{"name":"thread_resume.request","direction":"client","message":{"id":4,"method":"thread/resume","params":{"threadId":"thr_demo"}}}
+{"name":"thread_resume.response","direction":"server","message":{"id":4,"result":{"thread":{"id":"thr_demo","status":"idle"}}}}
+{"name":"thread_read.request","direction":"client","message":{"id":5,"method":"thread/read","params":{"threadId":"thr_demo","includeTurns":true}}}
+{"name":"thread_read.response","direction":"server","message":{"id":5,"result":{"thread":{"id":"thr_demo","turns":[]}}}}
+{"name":"turn_start.request","direction":"client","message":{"id":6,"method":"turn/start","params":{"threadId":"thr_demo","clientUserMessageId":"client_1","input":[{"type":"text","text":"只回复 ok"}]}}}
+{"name":"turn_started.notification","direction":"server","message":{"method":"turn/started","params":{"threadId":"thr_demo","turn":{"id":"turn_demo"}}}}
+{"name":"assistant_delta.notification","direction":"server","message":{"method":"item/agentMessage/delta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"item_assistant","delta":"ok"}}}
+{"name":"turn_interrupt.request","direction":"client","message":{"id":7,"method":"turn/interrupt","params":{"threadId":"thr_demo","turnId":"turn_demo"}}}
+{"name":"turn_interrupt.response","direction":"server","message":{"id":7,"result":{}}}

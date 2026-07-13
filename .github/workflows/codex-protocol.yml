@@ -1,0 +1,29 @@
+name: Codex Protocol Drift
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Codex CLI
+        run: npm install --global "@openai/codex@$(cat internal/httpapi/testdata/codex-protocol/codex-version.txt)"
+
+      - name: Check Codex app-server protocol snapshot
+        run: bash ./scripts/check-codex-protocol.sh

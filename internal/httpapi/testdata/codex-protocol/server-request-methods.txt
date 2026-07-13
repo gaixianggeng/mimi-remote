@@ -1,0 +1,11 @@
+account/chatgptAuthTokens/refresh
+applyPatchApproval
+attestation/generate
+currentTime/read
+execCommandApproval
+item/commandExecution/requestApproval
+item/fileChange/requestApproval
+item/permissions/requestApproval
+item/tool/call
+item/tool/requestUserInput
+mcpServer/elicitation/request

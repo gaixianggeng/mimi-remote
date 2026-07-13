@@ -1,0 +1,69 @@
+{
+  "listen": "127.0.0.1:8787",
+  "auth": {
+    "token": "change-me-run-agentd-setup",
+    "allow_query_token": false
+  },
+  "runtime": {
+    "type": "codex_app_server"
+  },
+  "app_server": {
+    "transport": "ws",
+    "managed": true,
+    "listen": "ws://127.0.0.1:4222",
+    "ws_token_file": "/Users/you/Library/Application Support/mimi-remote/app-server-ws-token"
+  },
+  "voice": {
+    "transcription_provider": "openai",
+    "transcription_model": "gpt-4o-mini-transcribe",
+    "transcription_base_url": "https://api.openai.com/v1",
+    "codex_transcription_base_url": "https://chatgpt.com/backend-api"
+  },
+  "codex": {
+    "bin": "codex",
+    "default_args": ["--no-alt-screen"],
+    "env": {
+      "TERM": "xterm-256color"
+    }
+  },
+  "claude": {
+    "enabled": false,
+    "bridge_bin": "/opt/homebrew/bin/alleycat-claude-bridge",
+    "args": [],
+    "max_concurrent_bridges": 3,
+    "env": {
+      "TERM": "xterm-256color",
+      "CLAUDE_BRIDGE_BYPASS_PERMISSIONS": "false"
+    }
+  },
+  "session": {
+    "output_buffer_bytes": 131072
+  },
+  "scan_roots": [
+    "/Users/you/code"
+  ],
+  "actions": [
+    {
+      "id": "go-test",
+      "name": "Go Test",
+      "command": "go",
+      "args": ["test", "./..."],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "git-status",
+      "name": "Git Status",
+      "command": "git",
+      "args": ["status", "--short"],
+      "timeout_seconds": 10
+    },
+    {
+      "id": "clean-go-cache",
+      "name": "Clean Go Cache",
+      "command": "go",
+      "args": ["clean", "-cache"],
+      "timeout_seconds": 30,
+      "requires_confirmation": true
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+.DS_Store
+
+# 本地 Agent 与工具状态
+.claude/
+.codex/
+
+# 本地配置和凭据
+.env
+.env.*
+config.json
+
+# Go 构建产物
+bin/
+/dist/
+
+# 日志与临时文件
+/logs/
+*.log
+*.tmp

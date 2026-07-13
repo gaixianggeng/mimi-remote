@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mimi-remote-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install repository safety tools
+        run: command -v rg >/dev/null 2>&1 || brew install ripgrep
+
+      - name: Check packaging sources
+        run: bash ./scripts/check-packaging.sh
+
+      - name: Verify public release prerequisites
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: bash ./scripts/check-release-prerequisites.sh
+
+      - name: Check public repository safety
+        run: bash ./scripts/check-public-repo-safety.sh
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: "v2.15.3"
+          args: release --snapshot --clean --skip=publish
+        env:
+          GOTOOLCHAIN: local
+
+      - name: Check release artifacts
+        run: bash ./scripts/check-release-artifacts.sh
+
+  release:
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: "v2.15.3"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GOTOOLCHAIN: local
+
+      - name: Check published release artifacts
+        run: bash ./scripts/check-release-artifacts.sh
