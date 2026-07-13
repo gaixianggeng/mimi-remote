@@ -233,9 +233,9 @@ rm -rf -- "$HOME/.config/mimi-remote"
 
 ### 维护者发布前本地验收
 
-正式 tag 依赖两个 GitHub 外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且 `TAP_GITHUB_TOKEN` 对 Tap 具有 `contents:write`。“Token 能访问 private Tap”不等于可公开安装；仓库不公开时，未登录 GitHub 的 Homebrew 用户仍会失败。
+正式 tag 依赖两个 GitHub 外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
 
-Release workflow 会在 GoReleaser 前读取 GitHub API JSON，同时检查两个仓库的 `visibility=public` / `private=false` 和 Tap push 权限，不在日志中回显 Token 或 API JSON 原文。如果只需在本地验证 JSON 分支而不连接 GitHub，执行：
+Release workflow 会在 GoReleaser 前读取 GitHub API JSON，检查两个仓库的 `visibility=public` / `private=false`，再使用 Deploy Key 对 Tap `main` 执行 dry-run push 验证写权限，不在日志中回显私钥或 API JSON 原文。如果只需在本地验证 JSON 分支而不连接 GitHub，执行：
 
 ```bash
 bash ./scripts/check-release-prerequisites.sh --self-test
@@ -251,10 +251,10 @@ bash ./scripts/verify-release.sh
 
 ### GitHub Release 成功、tap 更新失败
 
-GoReleaser 发布 GitHub 附件和推送 Homebrew tap 不是跨仓库事务。若 workflow 已创建 Release，但在 tap 阶段因 Token、仓库权限或临时网络错误失败：
+GoReleaser 发布 GitHub 附件和推送 Homebrew tap 不是跨仓库事务。若 workflow 已创建 Release，但在 tap 阶段因 Deploy Key、仓库权限或临时网络错误失败：
 
 1. 不要移动或重建同名 tag，也不要先手工删除已经公开的 Release；
-2. 修复 `TAP_GITHUB_TOKEN` 或 tap 仓库状态；
+2. 修复 `TAP_DEPLOY_KEY`、Tap 的 Deploy Key 写权限或仓库状态；
 3. 在原 workflow 上执行 **Re-run failed jobs**；
 4. `.goreleaser.yml` 的 `mode: keep-existing` 会保留原发布说明，`replace_existing_artifacts: true` 允许同一 tag 重建并替换同名附件，然后继续推送 Formula；
 5. 重跑成功后确认 Release 包含四个平台归档和 `checksums.txt`，tap 的 Formula URL、版本和 SHA-256 与该 Release 一致。

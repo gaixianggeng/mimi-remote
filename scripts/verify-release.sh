@@ -194,6 +194,8 @@ main() {
   fi
 
   export GOTOOLCHAIN=local
+  # snapshot 不会连接 Tap，但 GoReleaser 在生成 Formula 前仍会渲染 repository 模板。
+  export TAP_DEPLOY_KEY="${TAP_DEPLOY_KEY:-snapshot-only-not-used}"
   "$goreleaser_bin" check
   if [[ "$mode" == "verify" ]]; then
     "$goreleaser_bin" release --snapshot --clean --skip=publish

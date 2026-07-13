@@ -71,7 +71,9 @@ brews:
     repository:
       owner: gaixianggeng
       name: homebrew-tap
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+      git:
+        url: git@github.com:gaixianggeng/homebrew-tap.git
+        private_key: "{{ .Env.TAP_DEPLOY_KEY }}"
     directory: Formula
     homepage: https://github.com/gaixianggeng/mimi-remote
     description: iPad companion agent for user-owned Mac developer environments

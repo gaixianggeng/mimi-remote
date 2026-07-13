@@ -37,7 +37,7 @@ jobs:
       - name: Verify public release prerequisites
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: bash ./scripts/check-release-prerequisites.sh
 
       - name: Check public repository safety
@@ -61,6 +61,7 @@ jobs:
           args: release --snapshot --clean --skip=publish
         env:
           GOTOOLCHAIN: local
+          TAP_DEPLOY_KEY: snapshot-only-not-used
 
       - name: Check release artifacts
         run: bash ./scripts/check-release-artifacts.sh
@@ -91,7 +92,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           GOTOOLCHAIN: local
 
       - name: Check published release artifacts
