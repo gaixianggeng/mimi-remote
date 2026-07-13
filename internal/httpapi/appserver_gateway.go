@@ -735,8 +735,10 @@ func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *w
 			}
 			continue
 		}
+		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
 		writeStart := time.Now()
 		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {
+			monitor.cancelRPCRequest(requestID)
 			return gatewayCloseReason("upstream_write", err)
 		}
 		monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)

@@ -268,9 +268,20 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 			}
 			continue
 		}
-		writeStart := time.Now()
-		compacted, err := writeStdioBridgeFrame(stdin, stdinWriteMu, forwardPayload)
+		compacted, err := compactJSONLine(forwardPayload)
 		if err != nil {
+			return gatewayCloseReason("bridge_stdin_encode", err)
+		}
+		requestID := ""
+		if monitor != nil {
+			requestID = monitor.beginRPCRequest(compacted, len(compacted))
+		}
+		writeStart := time.Now()
+		err = writeStdioBridgeCompactedFrame(stdin, stdinWriteMu, compacted)
+		if err != nil {
+			if monitor != nil {
+				monitor.cancelRPCRequest(requestID)
+			}
 			return gatewayCloseReason("bridge_stdin_write", err)
 		}
 		if monitor != nil {
@@ -334,17 +345,24 @@ func writeStdioBridgeFrame(stdin io.Writer, mu *sync.Mutex, payload []byte) ([]b
 	if err != nil {
 		return nil, err
 	}
+	if err := writeStdioBridgeCompactedFrame(stdin, mu, compacted); err != nil {
+		return nil, err
+	}
+	return compacted, nil
+}
+
+func writeStdioBridgeCompactedFrame(stdin io.Writer, mu *sync.Mutex, compacted []byte) error {
 	if mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
 	}
 	if _, err := stdin.Write(compacted); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := stdin.Write([]byte("\n")); err != nil {
-		return nil, err
+		return err
 	}
-	return compacted, nil
+	return nil
 }
 
 func compactJSONLine(payload []byte) ([]byte, error) {

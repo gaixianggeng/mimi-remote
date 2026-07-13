@@ -447,6 +447,60 @@ func (c *relayGatewayConnMonitor) recordForward(direction string, payloadBytes i
 	c.parent.recordGatewayForward(c.id, direction, payloadBytes, forwardedBytes, policyDuration, writeDuration, payload)
 }
 
+// beginRPCRequest 必须在把请求写给上游前调用。上游可能在 Write 返回后立刻响应，
+// 若等到 recordForward 才登记请求，响应协程可能先到并丢失 RPC 关联关系。
+func (c *relayGatewayConnMonitor) beginRPCRequest(payload []byte, requestBytes int) string {
+	if c == nil || c.parent == nil {
+		return ""
+	}
+	meta := relayFrameMetaFromPayload(payload)
+	if meta.ID == "" || meta.Method == "" {
+		return ""
+	}
+	c.parent.beginGatewayRPC(c.id, meta.ID, meta.Method, requestBytes)
+	return meta.ID
+}
+
+func (c *relayGatewayConnMonitor) cancelRPCRequest(id string) {
+	if c == nil || c.parent == nil || id == "" {
+		return
+	}
+	c.parent.cancelGatewayRPC(c.id, id)
+}
+
+func (m *relayMonitor) beginGatewayRPC(connectionID string, requestID string, method string, requestBytes int) {
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats, ok := m.active[connectionID]
+	if !ok {
+		return
+	}
+	stats.pendingRPC[requestID] = relayPendingRPC{
+		Method:       method,
+		SentAt:       now,
+		RequestBytes: requestBytes,
+	}
+	stats.RPC.OutstandingRequests = int64(len(stats.pendingRPC))
+	m.gateway.RPC.OutstandingRequests = totalOutstandingRPC(m.active)
+	m.gateway.RPC.OutstandingMillisMax = maxOutstandingMillisAcross(m.active, now)
+}
+
+func (m *relayMonitor) cancelGatewayRPC(connectionID string, requestID string) {
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats, ok := m.active[connectionID]
+	if !ok {
+		return
+	}
+	delete(stats.pendingRPC, requestID)
+	stats.RPC.OutstandingRequests = int64(len(stats.pendingRPC))
+	stats.RPC.OutstandingMillisMax = maxOutstandingMillis(stats.pendingRPC, now)
+	m.gateway.RPC.OutstandingRequests = totalOutstandingRPC(m.active)
+	m.gateway.RPC.OutstandingMillisMax = maxOutstandingMillisAcross(m.active, now)
+}
+
 func (m *relayMonitor) recordGatewayForward(id string, direction string, payloadBytes int, forwardedBytes int, policyDuration time.Duration, writeDuration time.Duration, payload []byte) {
 	meta := relayFrameMetaFromPayload(payload)
 	now := time.Now().UTC()
@@ -466,16 +520,6 @@ func (m *relayMonitor) recordGatewayForward(id string, direction string, payload
 	if direction == "client_to_upstream" {
 		stats.LastClientMethod = meta.Method
 		stats.LastClientFrameBytes = int64(payloadBytes)
-		if meta.ID != "" && meta.Method != "" {
-			stats.pendingRPC[meta.ID] = relayPendingRPC{
-				Method:       meta.Method,
-				SentAt:       now,
-				RequestBytes: forwardedBytes,
-			}
-			stats.RPC.OutstandingRequests = int64(len(stats.pendingRPC))
-			m.gateway.RPC.OutstandingRequests = totalOutstandingRPC(m.active)
-			m.gateway.RPC.OutstandingMillisMax = maxOutstandingMillisAcross(m.active, now)
-		}
 		return
 	}
 	stats.LastUpstreamMethod = meta.Method
