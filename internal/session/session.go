@@ -66,6 +66,7 @@ type Session struct {
 	trace             []TraceEvent
 	exit              ExitResult
 	done              chan struct{}
+	readDone          chan struct{}
 }
 
 // SessionSnapshot 是对外返回的会话数据视图，不包含 mutex、PTY、buffer 等运行态字段。
@@ -319,6 +320,7 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		termRows:    req.Rows,
 		subscribers: make(map[chan OutputChunk]struct{}),
 		done:        make(chan struct{}),
+		readDone:    make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -877,6 +879,7 @@ func (s *Session) ExitResult() ExitResult {
 }
 
 func (s *Session) readLoop() {
+	defer close(s.readDone)
 	buf := make([]byte, 4096)
 	for {
 		n, err := s.ptmx.Read(buf)
@@ -899,6 +902,14 @@ func (s *Session) waitLoop() {
 	if err != nil {
 		exit.Code = exitCode(err)
 		exit.Reason = err.Error()
+	}
+	// 核心逻辑：Done 必须表示“进程退出且 PTY 尾部输出已经进入 buffer”。
+	// 子进程退出后优先让 readLoop 自然读到 EOF/EIO；异常平台上超时再关闭 master 解除阻塞。
+	select {
+	case <-s.readDone:
+	case <-time.After(500 * time.Millisecond):
+		_ = s.ptmx.Close()
+		<-s.readDone
 	}
 	_ = s.ptmx.Close()
 
