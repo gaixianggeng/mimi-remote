@@ -29,11 +29,11 @@ require_notice_entry() {
   local version="$2"
   local expected="| \`$name\` | \`$version\` |"
   if ! rg -Fq -- "$expected" "$NOTICES"; then
-    echo "第三方许可门禁失败：缺少 $name $version 的清单和许可证正文，请更新 $NOTICES。" >&2
+    echo "第三方许可门禁失败：缺少 $name $version 的清单和许可证正文，请更新 ${NOTICES}。" >&2
     exit 1
   fi
   if ! rg -Fq -- "### $name $version" "$NOTICES"; then
-    echo "第三方许可门禁失败：缺少 $name $version 的许可证正文，请更新 $NOTICES。" >&2
+    echo "第三方许可门禁失败：缺少 $name $version 的许可证正文，请更新 ${NOTICES}。" >&2
     exit 1
   fi
 

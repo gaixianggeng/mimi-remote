@@ -759,13 +759,19 @@ func TestAppServerGatewayLimitsConcurrentCodexConnections(t *testing.T) {
 		t.Fatalf("超过并发上限应返回 429，resp=%v err=%v", resp, err)
 	}
 	_ = resp.Body.Close()
+	// 外侧 WebSocket 握手完成后，handler 才异步拨 upstream；429 返回时前 8 次拨号
+	// 可能尚未全部进入 fake server，先等待已获准的连接完成再核对上限。
+	deadline := time.Now().Add(2 * time.Second)
+	for connections.Load() < appServerGatewayMaxConnections && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := connections.Load(); got != appServerGatewayMaxConnections {
 		t.Fatalf("被限流的外侧连接不能拨 upstream，connections=%d", got)
 	}
 
 	// 关闭一条连接后名额应及时归还，避免弱网重连最终把服务永久锁死。
 	_ = conns[0].Close()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		replacement, retryResp, retryErr := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{
 			"Authorization": []string{"Bearer " + testToken},
