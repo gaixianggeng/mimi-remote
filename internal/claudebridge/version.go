@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	MinimumVersion = "0.2.0"
+	MinimumVersion = "0.2.1"
 	// 固定到已审阅并发布的 commit，避免远端 main 变化后安装到未经验证的 bridge。
-	BridgeRevision = "c50256dc9cc71f5130a176e32bb6fd33b1e06f74"
+	BridgeRevision = "1bb754687990a308dcc330f369820ff42d7c3289"
 	InstallHint    = "cargo install --git https://github.com/gaixianggeng/alleycat.git --rev " + BridgeRevision + " --locked --force alleycat-claude-bridge"
 )
 

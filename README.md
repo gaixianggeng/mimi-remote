@@ -85,11 +85,11 @@ agentd stop
 
 ### Claude Code 可选通道
 
-Claude 通道需要 `alleycat-claude-bridge >= 0.2.0`。为确保包含移动端审批兼容修复，请安装已审阅的不可变 revision：
+Claude 通道需要 `alleycat-claude-bridge >= 0.2.1`。为确保包含移动端审批和历史记录过滤修复，请安装已审阅的不可变 revision：
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/alleycat.git \
-  --rev c50256dc9cc71f5130a176e32bb6fd33b1e06f74 \
+  --rev 1bb754687990a308dcc330f369820ff42d7c3289 \
   --locked --force alleycat-claude-bridge
 
 command -v alleycat-claude-bridge

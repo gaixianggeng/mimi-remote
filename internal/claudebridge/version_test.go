@@ -29,10 +29,13 @@ func TestIsSupported(t *testing.T) {
 	if IsSupported("0.1.9") {
 		t.Fatal("0.1.9 不应通过最低版本门禁")
 	}
-	if !IsSupported("0.2.0") || !IsSupported("1.0.0") {
-		t.Fatal("0.2.0 及更高版本应通过最低版本门禁")
+	if IsSupported("0.2.0") {
+		t.Fatal("0.2.0 不应通过最低版本门禁")
 	}
-	if IsSupported("0.2.0-beta.1") {
+	if !IsSupported("0.2.1") || !IsSupported("1.0.0") {
+		t.Fatal("0.2.1 及更高版本应通过最低版本门禁")
+	}
+	if IsSupported("0.2.1-beta.1") {
 		t.Fatal("最低正式版门禁不能被预发布版本绕过")
 	}
 }

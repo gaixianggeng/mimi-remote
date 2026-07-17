@@ -220,8 +220,8 @@ func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
 		wantOK     bool
 		want       string
 	}{
-		{name: "compatible", versionOut: "alleycat-claude-bridge 0.2.0", wantOK: true, want: "0.2.0 可用"},
-		{name: "too old", versionOut: "alleycat-claude-bridge 0.1.9", wantOK: false, want: "低于最低兼容版本"},
+		{name: "compatible", versionOut: "alleycat-claude-bridge 0.2.1", wantOK: true, want: "0.2.1 可用"},
+		{name: "too old", versionOut: "alleycat-claude-bridge 0.2.0", wantOK: false, want: "低于最低兼容版本"},
 		{name: "missing standard version", versionOut: "bridge starting", wantOK: false, want: "版本无法解析"},
 	}
 	for _, test := range tests {
