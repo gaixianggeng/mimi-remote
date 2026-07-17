@@ -76,7 +76,7 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	}
 	for _, method := range []string{
 		"thread/turns/list", "thread/name/set", "thread/compact/start", "thread/unsubscribe",
-		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start", "turn/steer",
+		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start", "turn/steer", "skills/list", "plugin/installed",
 	} {
 		if !containsAnyString(allowedMethods, method) {
 			t.Fatalf("allowed_methods 应包含 %s：%v", method, allowedMethods)
@@ -94,9 +94,10 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 
 func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	bridgePath := writeTestBridge(t, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n")
 	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
-		cfg.Claude.BridgeBin = "/bin/cat"
+		cfg.Claude.BridgeBin = bridgePath
 		cfg.Claude.MaxConcurrentBridges = 3
 	})
 
@@ -122,8 +123,12 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 		t.Fatalf("Claude bridge metadata 异常：%v", bridge)
 	}
 	capabilities := claude["capabilities"].(map[string]any)
-	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false {
+	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false || capabilities["rate_limits"] != true {
 		t.Fatalf("Claude channel 不应声明 Codex 专属能力：%v", capabilities)
+	}
+	methods := claude["methods"].([]any)
+	if !containsAnyString(methods, "account/rateLimits/read") {
+		t.Fatalf("兼容 bridge 应开放 Claude 额度读取：%v", methods)
 	}
 }
 
@@ -149,6 +154,60 @@ func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testin
 	bridge := claude["bridge"].(map[string]any)
 	if bridge["status"] != "missing_command" || bridge["healthy"] != false {
 		t.Fatalf("missing bridge metadata 异常：%v", bridge)
+	}
+}
+
+func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
+	bridgePath := filepath.Join(t.TempDir(), "old-claude-bridge")
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.1.9\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	body := decodeJSON(t, rec)
+	claude := body["channels"].([]any)[1].(map[string]any)
+	bridge := claude["bridge"].(map[string]any)
+	capabilities := claude["capabilities"].(map[string]any)
+	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.1.9" {
+		t.Fatalf("旧 Claude bridge 必须 fail closed：%v", claude)
+	}
+	if bridge["minimum_version"] != "0.2.0" || !strings.Contains(bridge["fix"].(string), "cargo install") {
+		t.Fatalf("旧 bridge 应返回最低版本和可执行修复提示：%v", bridge)
+	}
+	if capabilities["rate_limits"] != false {
+		t.Fatalf("旧 bridge 不应声明 Claude 额度能力：%v", capabilities)
+	}
+	if containsAnyString(claude["methods"].([]any), "account/rateLimits/read") {
+		t.Fatalf("旧 bridge 不应声明 Claude 额度方法：%v", claude["methods"])
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
+	raw := readGatewayRaw(t, conn)
+	if !bytes.Contains(raw, []byte(`"code":"CLAUDE_BRIDGE_VERSION_UNSUPPORTED"`)) ||
+		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.1.9"`)) ||
+		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.0"`)) ||
+		!bytes.Contains(raw, []byte(`"fix":"cargo install`)) {
+		t.Fatalf("旧 bridge WS 错误应包含结构化版本诊断：%s", raw)
+	}
+}
+
+func TestClaudeBridgeProbeRejectsMissingStandardVersion(t *testing.T) {
+	bridgePath := filepath.Join(t.TempDir(), "unversioned-claude-bridge")
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'bridge starting\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
+	probe := router.refreshClaudeBridgeProbe(true)
+	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.0") {
+		t.Fatalf("无标准 --version 的 bridge 必须 fail closed：%+v", probe)
 	}
 }
 
@@ -229,6 +288,68 @@ while IFS= read -r line; do :; done
 	}
 	if !bytes.Contains(received, []byte(`"params":{}`)) {
 		t.Fatalf("model/list 应按 gateway policy 清空 params 后写入 bridge，got=%s", received)
+	}
+}
+
+func TestClaudeGatewayPassesThroughRateLimitAvailabilityWithoutFabrication(t *testing.T) {
+	receivedPath := filepath.Join(t.TempDir(), "received.jsonl")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+IFS= read -r line
+printf '%%s\n' "$line" > %q
+printf '{"jsonrpc":"2.0","id":100,"result":{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"unavailable","unavailableReason":"headless_statusline_unavailable"}}}\n'
+while IFS= read -r line; do :; done
+`, receivedPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":100,"method":"account/rateLimits/read","params":{"secret":"drop"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw := readGatewayRaw(t, conn)
+	if !bytes.Contains(raw, []byte(`"limitId":"claude"`)) ||
+		!bytes.Contains(raw, []byte(`"availability":"unavailable"`)) ||
+		!bytes.Contains(raw, []byte(`"unavailableReason":"headless_statusline_unavailable"`)) ||
+		bytes.Contains(raw, []byte(`"usedPercent"`)) {
+		t.Fatalf("Claude headless 无百分比时必须透明返回不可用状态，不能伪造 0%%：%s", raw)
+	}
+	received := readTestFileEventually(t, receivedPath)
+	if !bytes.Contains(received, []byte(`"params":{}`)) || bytes.Contains(received, []byte("secret")) {
+		t.Fatalf("Claude 额度读取 params 必须被清空：%s", received)
+	}
+}
+
+func TestClaudeGatewayPassesThroughObservedRateLimitResetWithoutPercent(t *testing.T) {
+	policy := &appServerGatewayPolicy{runtimeID: "claude"}
+	payload := []byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","unavailableReason":"usage_percentage_unavailable","rateLimitReachedType":"rejected","primary":{"resetsAt":1770000000,"windowDurationMins":300}}}}`)
+	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if policyErr != nil || !forward || !bytes.Equal(forwarded, payload) || bytes.Contains(forwarded, []byte("usedPercent")) {
+		t.Fatalf("Claude rate_limit_event 只能透传真正观测到的窗口和重置时间：forward=%t err=%+v payload=%s", forward, policyErr, forwarded)
+	}
+}
+
+func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
+	env := buildClaudeBridgeEnv(map[string]string{
+		"CLAUDE_BRIDGE_BYPASS_PERMISSIONS": "true",
+		"SAFE_VALUE":                       "ok",
+	})
+	foundSafeValue := false
+	for _, value := range env {
+		if value == "CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false" {
+			foundSafeValue = true
+		}
+		if value == "CLAUDE_BRIDGE_BYPASS_PERMISSIONS=true" {
+			t.Fatalf("危险 bypass 配置不应进入 bridge：%v", env)
+		}
+	}
+	if !foundSafeValue {
+		t.Fatalf("Claude bridge 环境必须强制关闭 bypass permissions：%v", env)
 	}
 }
 
@@ -440,7 +561,7 @@ func TestClaudeBridgeProbeRefreshesCheapResultWhenStale(t *testing.T) {
 	if first.Healthy || first.Status != "missing_command" {
 		t.Fatalf("缺失 bridge 应标记为不可用：%+v", first)
 	}
-	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.2.0\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	router.refreshClaudeBridgeProbeIfStale()
@@ -2735,6 +2856,23 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		assertGatewayParamsOnly(t, params)
 	}
 
+	pluginList := []byte(fmt.Sprintf(`{"id":621,"method":"plugin/installed","params":{"cwds":[%q],"unknown":"drop"}}`, projectDir))
+	if err := conn.WriteMessage(websocket.TextMessage, pluginList); err != nil {
+		t.Fatal(err)
+	}
+	pluginListParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, pluginListParams, "cwds")
+	if cwds, ok := pluginListParams["cwds"].([]any); !ok || len(cwds) != 1 || cwds[0] != projectDir {
+		t.Fatalf("plugin/installed 应只保留当前授权工作区：%v", pluginListParams)
+	}
+	invalidPluginList := []byte(fmt.Sprintf(`{"id":622,"method":"plugin/installed","params":{"cwds":[%q],"installSuggestionPluginNames":["not-installed"]}}`, projectDir))
+	if err := conn.WriteMessage(websocket.TextMessage, invalidPluginList); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "installSuggestionPluginNames") {
+		t.Fatalf("plugin/installed 不应开放安装建议：%+v", errFrame)
+	}
+
 	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"unknownFlag":true},` + dangerousTail + `}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
@@ -3309,6 +3447,37 @@ func TestAppServerGatewayServerRequestPendingUsesLongerTTLThanThreadResponses(t 
 	}
 }
 
+func TestClaudeGatewayPassesThroughServerRequestResolvedAfterDecision(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		runtimeID:             "claude",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"claude-approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","path":"README.md"}}`)
+	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
+	if policyErr != nil || !forward || !bytes.Equal(forwarded, request) {
+		t.Fatalf("Claude reverse approval request 应透明转发：forward=%t err=%+v payload=%s", forward, policyErr, forwarded)
+	}
+	decision := []byte(`{"id":"claude-approval-1","result":{"decision":"accept"}}`)
+	forwardedDecision, err := policy.validateClientFrame(websocket.TextMessage, decision)
+	if err != nil || !bytes.Equal(forwardedDecision, decision) {
+		t.Fatalf("Claude 审批决定应透明回传 bridge：err=%+v payload=%s", err, forwardedDecision)
+	}
+	resolved := []byte(`{"method":"serverRequest/resolved","params":{"requestId":"claude-approval-1","threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}}`)
+	forwardedResolved, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, resolved)
+	if policyErr != nil || !forward || !bytes.Equal(forwardedResolved, resolved) {
+		t.Fatalf("Claude resolved notification 应透明回流 iOS：forward=%t err=%+v payload=%s", forward, policyErr, forwardedResolved)
+	}
+}
+
+func TestClaudeGatewayRejectsUnknownReverseRequest(t *testing.T) {
+	policy := &appServerGatewayPolicy{runtimeID: "claude"}
+	request := []byte(`{"id":"unknown-1","method":"claude/private/request","params":{}}`)
+	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
+	if forward || policyErr == nil || policyErr.data["reason"] != "unsupported_server_request" {
+		t.Fatalf("Claude 未知反向请求应 fail closed：forward=%t err=%+v", forward, policyErr)
+	}
+}
+
 func TestAppServerGatewayRejectsOverflowServerRequestBeforeForwardingToClient(t *testing.T) {
 	oldMax := appServerGatewayPendingServerRequestMax
 	appServerGatewayPendingServerRequestMax = 1
@@ -3811,6 +3980,15 @@ func dialAuthedGatewayRuntime(t *testing.T, serverURL string, runtimeID string) 
 func writeTestBridge(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-claude-bridge")
+	const shebang = "#!/bin/sh\n"
+	if strings.HasPrefix(body, shebang) {
+		body = strings.TrimPrefix(body, shebang)
+	}
+	body = shebang + `if [ "${1:-}" = "--version" ]; then
+  printf 'alleycat-claude-bridge 0.2.0\n'
+  exit 0
+fi
+` + body
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

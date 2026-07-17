@@ -45,7 +45,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     else
       grep_status=$?
       if [[ "$grep_status" -ne 1 ]]; then
-        echo "公开仓库门禁失败：无法扫描 Git tree $tree_id。" >&2
+        echo "公开仓库门禁失败：无法扫描 Git tree ${tree_id}。" >&2
         exit 1
       fi
     fi

@@ -36,7 +36,8 @@ gaixg94@gmail.com
 
 ## 默认防护原则
 
-- `agentd` API 和 WebSocket gateway 都要求 Bearer Token。
+- 除短期二维码兑换和 Catalyst 同机自动配对外，`agentd` API 和 WebSocket gateway 都要求 Bearer Token。
+- 同机自动配对只接受 TCP 来源与 Host 均为 loopback、带原生客户端专用请求头且没有浏览器 `Origin` 的请求；它按单用户开发机建模，不隔离同一登录用户下的恶意本地进程。
 - iPad 只保存访问 `agentd` 的外侧 Token，不保存 app-server upstream token。
 - app-server upstream token file 只留在 Mac 本机。
 - 项目路径必须在 allowlist 内。

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -51,6 +52,61 @@ func TestPairingClaimConsumesOnlyValidatedTicketAndRejectsReplay(t *testing.T) {
 	}
 	if strings.Contains(replayResponse.Body.String(), testToken) {
 		t.Fatal("重复兑换响应不能泄漏长期 Token")
+	}
+}
+
+func TestLocalPairingClaimOnlyReturnsTokenToNativeLoopbackRequest(t *testing.T) {
+	server := newTestServer(t)
+
+	validRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/pair/local", nil)
+	validRequest.RemoteAddr = "127.0.0.1:54321"
+	validRequest.Header.Set(localPairingHeader, "1")
+	validResponse := httptest.NewRecorder()
+	server.handler.ServeHTTP(validResponse, validRequest)
+
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("原生 loopback 请求应可自动配对，got=%d body=%s", validResponse.Code, validResponse.Body.String())
+	}
+	var response pairingClaimResponse
+	if err := json.NewDecoder(validResponse.Body).Decode(&response); err != nil {
+		t.Fatalf("本机配对响应无法解码：%v", err)
+	}
+	if response.Endpoint != localPairingEndpoint || response.Token != testToken {
+		t.Fatalf("本机配对响应异常：%+v", response)
+	}
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		host       string
+		header     string
+		origin     string
+	}{
+		{name: "remote source", remoteAddr: "100.64.0.2:54321", host: "127.0.0.1:8787", header: "1"},
+		{name: "non-loopback host", remoteAddr: "127.0.0.1:54321", host: "100.64.0.1:8787", header: "1"},
+		{name: "missing native header", remoteAddr: "127.0.0.1:54321", host: "127.0.0.1:8787"},
+		{name: "browser origin", remoteAddr: "127.0.0.1:54321", host: "127.0.0.1:8787", header: "1", origin: "https://example.com"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://"+testCase.host+"/api/pair/local", nil)
+			req.RemoteAddr = testCase.remoteAddr
+			if testCase.header != "" {
+				req.Header.Set(localPairingHeader, testCase.header)
+			}
+			if testCase.origin != "" {
+				req.Header.Set("Origin", testCase.origin)
+			}
+			rec := httptest.NewRecorder()
+			server.handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("非可信本机请求必须被拒绝，got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), testToken) {
+				t.Fatal("拒绝响应不能泄漏长期 Token")
+			}
+		})
 	}
 }
 

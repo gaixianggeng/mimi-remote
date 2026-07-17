@@ -271,8 +271,8 @@ main() {
   if [[ "$mode" == "rollback" ]]; then
     source_binary="$previous_binary"
     source_service="$previous_service"
-    [[ -x "$source_binary" ]] || fail "缺少 $previous_binary，无法回滚。"
-    [[ -f "$source_service" ]] || fail "缺少 $previous_service，无法回滚 service 模板。"
+    [[ -x "$source_binary" ]] || fail "缺少 ${previous_binary}，无法回滚。"
+    [[ -f "$source_service" ]] || fail "缺少 ${previous_service}，无法回滚 service 模板。"
   else
     [[ -x "$source_binary" ]] \
       || fail "当前目录不是完整 Release 包：缺少可执行的 agentd。"
@@ -284,7 +284,7 @@ main() {
   source_version="$("$source_binary" version)" \
     || fail "agentd 无法在当前机器执行，可能下载了错误架构的归档。"
   validate_release_version "$source_version" \
-    || fail "拒绝安装非正式版本：$source_version。"
+    || fail "拒绝安装非正式版本：${source_version}。"
 
   local work_dir
   work_dir="$(mktemp -d)"

@@ -53,7 +53,7 @@ goreleaser_asset_for() {
         "3b24b3a1629be21a9527d2f46f08b9bbf012c52fe33395714fe2c70acee57e0f"
       ;;
     *)
-      echo "本地发布校验不支持当前平台：$os_name/$arch_name。" >&2
+      echo "本地发布校验不支持当前平台：$os_name/${arch_name}。" >&2
       return 1
       ;;
   esac
@@ -155,8 +155,8 @@ main() {
   expected_go_version="go$(awk '$1 == "go" { print $2; exit }' go.mod)"
   actual_go_version="$(GOTOOLCHAIN=local go env GOVERSION)"
   if [[ "$actual_go_version" != "$expected_go_version" ]]; then
-    echo "本地发布校验失败：当前 Go 为 $actual_go_version，go.mod 要求 $expected_go_version。" >&2
-    echo "请先切换到 $expected_go_version；本脚本不会自动下载或切换构建工具链。" >&2
+    echo "本地发布校验失败：当前 Go 为 ${actual_go_version}，go.mod 要求 ${expected_go_version}。" >&2
+    echo "请先切换到 ${expected_go_version}；本脚本不会自动下载或切换构建工具链。" >&2
     exit 1
   fi
 

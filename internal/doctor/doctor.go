@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
@@ -243,10 +244,18 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(runCtx, bin, "--version").Run(); err != nil {
-		return Check{Name: "claude-bridge", OK: true, Message: "Claude bridge 可执行；版本探测未返回标准 --version，跳过版本校验"}
+	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	if err != nil {
+		return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未返回标准 --version", Fix: claudebridge.UpgradeMessage("")}
 	}
-	return Check{Name: "claude-bridge", OK: true, Message: "Claude bridge 可执行"}
+	version, ok := claudebridge.ParseVersion(string(output))
+	if !ok {
+		return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 版本无法解析", Fix: claudebridge.UpgradeMessage("")}
+	}
+	if !claudebridge.IsSupported(version) {
+		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude bridge %s 低于最低兼容版本 %s", version, claudebridge.MinimumVersion), Fix: claudebridge.UpgradeMessage(version)}
+	}
+	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
 }
 
 func isLoopbackListen(raw string) bool {

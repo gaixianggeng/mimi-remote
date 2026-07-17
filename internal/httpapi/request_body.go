@@ -33,7 +33,7 @@ func limitAPIRequestBodies(next http.Handler) http.Handler {
 
 func requestBodyLimitForPath(path string) int64 {
 	switch path {
-	case "/api/pair/claim":
+	case "/api/pair/claim", "/api/pair/local":
 		return pairingRequestBodyMaxBytes
 	case "/api/voice/transcribe":
 		return voiceRequestBodyMaxBytes

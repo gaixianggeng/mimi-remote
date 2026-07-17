@@ -27,6 +27,30 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 	}
 }
 
+func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		want       []string
+	}{
+		{name: "Tailscale IPv4", configured: "100.127.16.9:8787", want: []string{"100.127.16.9:8787", "127.0.0.1:8787"}},
+		{name: "LAN IPv4", configured: "192.168.31.10:9000", want: []string{"192.168.31.10:9000", "127.0.0.1:9000"}},
+		{name: "loopback", configured: "127.0.0.1:8787", want: []string{"127.0.0.1:8787"}},
+		{name: "localhost", configured: "localhost:8787", want: []string{"localhost:8787"}},
+		{name: "IPv4 wildcard", configured: "0.0.0.0:8787", want: []string{"0.0.0.0:8787"}},
+		{name: "IPv6 wildcard", configured: "[::]:8787", want: []string{"[::]:8787"}},
+		{name: "invalid keeps original", configured: "bad-address", want: []string{"bad-address"}},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := agentDListenAddresses(testCase.configured); !reflect.DeepEqual(got, testCase.want) {
+				t.Fatalf("监听地址不符合预期：got=%v want=%v", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	const longLivedToken = "0123456789abcdef0123456789abcdef"
@@ -968,6 +992,51 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	}
 	if cfg.Auth.Token == "" || cfg.AppServer.WSTokenFile == "" {
 		t.Fatalf("完整 setup 应同时生成外侧 token 与 upstream token：%+v", cfg)
+	}
+}
+
+func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T) {
+	clearAgentdEnvForMainTest(t)
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	codexPath := filepath.Join(binDir, "codex")
+	writeMainTestCodex(t, codexPath)
+	t.Setenv("PATH", binDir)
+	configPath := filepath.Join(dir, "config.json")
+	const authToken = "0123456789abcdef0123456789abcdef"
+	document := map[string]any{
+		"auth": map[string]any{"token": authToken},
+		"codex": map[string]any{
+			"bin":           "/opt/homebrew/bin/codex",
+			"future_option": "keep-codex-option",
+		},
+		"future_root": "keep-root-option",
+	}
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureCodexCLIAvailable(configPath); err != nil {
+		t.Fatalf("启动前应自动恢复 Codex 路径：%v", err)
+	}
+	updated, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after map[string]any
+	if err := json.Unmarshal(updated, &after); err != nil {
+		t.Fatal(err)
+	}
+	afterCodex := after["codex"].(map[string]any)
+	if afterCodex["bin"] != codexPath || afterCodex["future_option"] != "keep-codex-option" {
+		t.Fatalf("只应修复路径并保留 Codex 扩展配置：%+v", afterCodex)
+	}
+	if after["future_root"] != "keep-root-option" || after["auth"].(map[string]any)["token"] != authToken {
+		t.Fatalf("启动前修复不能改写 Token 或未知字段：%+v", after)
 	}
 }
 

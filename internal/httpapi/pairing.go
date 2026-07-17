@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -9,7 +10,11 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 )
 
-const maxConsumedPairingTickets = 256
+const (
+	maxConsumedPairingTickets = 256
+	localPairingHeader        = "X-Mimi-Local-Pairing"
+	localPairingEndpoint      = "http://127.0.0.1:8787"
+)
 
 var (
 	errPairingTicketConsumed = errors.New("配对票据已使用，请在 Mac 上重新生成二维码")
@@ -26,6 +31,50 @@ type pairingClaimRequest struct {
 type pairingClaimResponse struct {
 	Endpoint string `json:"endpoint"`
 	Token    string `json:"token"`
+}
+
+func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	// Catalyst 和 agentd 处在同一登录用户的本机信任域：TCP 来源与 Host 都必须是
+	// loopback，自定义请求头 + 禁止 Origin 用于拦截网页跨站探测。远程/LAN 请求绝不返回 Token。
+	// 这不隔离同一 Mac 上的恶意本地进程；单用户开发机是当前 MVP 的明确安全前提。
+	if !isLoopbackPairingRequest(req) ||
+		req.Header.Get(localPairingHeader) != "1" ||
+		strings.TrimSpace(req.Header.Get("Origin")) != "" {
+		writeError(w, http.StatusForbidden, "本机自动配对仅允许 Mimi Mac 客户端通过 loopback 发起")
+		return
+	}
+	token := strings.TrimSpace(r.cfg.Auth.Token)
+	if token == "" {
+		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
+		return
+	}
+	writeJSON(w, http.StatusOK, pairingClaimResponse{
+		Endpoint: localPairingEndpoint,
+		Token:    token,
+	})
+}
+
+func isLoopbackPairingRequest(req *http.Request) bool {
+	remoteIP := net.ParseIP(strings.TrimSpace(requestRemoteHost(req)))
+	if remoteIP == nil || !remoteIP.IsLoopback() {
+		return false
+	}
+
+	host := strings.TrimSpace(req.Host)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	hostIP := net.ParseIP(host)
+	return hostIP != nil && hostIP.IsLoopback()
 }
 
 func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {

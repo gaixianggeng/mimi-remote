@@ -3,6 +3,7 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -209,6 +210,36 @@ func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
 	}
 	if !hasCheck(results, "app-server") {
 		t.Fatalf("启用 ws gateway 时应检查 app-server：%+v", results.Checks)
+	}
+}
+
+func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		versionOut string
+		wantOK     bool
+		want       string
+	}{
+		{name: "compatible", versionOut: "alleycat-claude-bridge 0.2.0", wantOK: true, want: "0.2.0 可用"},
+		{name: "too old", versionOut: "alleycat-claude-bridge 0.1.9", wantOK: false, want: "低于最低兼容版本"},
+		{name: "missing standard version", versionOut: "bridge starting", wantOK: false, want: "版本无法解析"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := filepath.Join(t.TempDir(), "alleycat-claude-bridge")
+			body := "#!/bin/sh\nprintf '%s\\n' " + fmt.Sprintf("%q", test.versionOut) + "\n"
+			if err := os.WriteFile(bridge, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			checker := newTestChecker(t, config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridge}})
+			check := checker.claudeBridgeCheck(context.Background())
+			if check.OK != test.wantOK || !strings.Contains(check.Message, test.want) {
+				t.Fatalf("Claude bridge 版本检查异常：%+v", check)
+			}
+			if !test.wantOK && !strings.Contains(check.Fix, "cargo install") {
+				t.Fatalf("不兼容版本应返回可执行修复命令：%+v", check)
+			}
+		})
 	}
 }
 

@@ -17,6 +17,9 @@ func TestAPIRequestBodyLimitsAreTieredForPairingAndVoice(t *testing.T) {
 	if got := requestBodyLimitForPath("/api/pair/claim"); got != pairingRequestBodyMaxBytes || got >= defaultAPIRequestBodyMaxBytes {
 		t.Fatalf("未鉴权 pairing 应使用更小上限：%d", got)
 	}
+	if got := requestBodyLimitForPath("/api/pair/local"); got != pairingRequestBodyMaxBytes {
+		t.Fatalf("本机 pairing 也应使用最小请求体上限：%d", got)
+	}
 	if got := requestBodyLimitForPath("/api/workspaces/resolve"); got != defaultAPIRequestBodyMaxBytes {
 		t.Fatalf("普通 JSON API 应使用统一默认上限：%d", got)
 	}

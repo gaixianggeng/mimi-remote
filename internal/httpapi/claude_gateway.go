@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
 const claudeBridgePolicyErrorCode = -32081
@@ -32,7 +34,7 @@ type appServerBridgeProbe struct {
 	CheckedAt time.Time
 }
 
-func (r *Router) refreshClaudeBridgeProbe(full bool) appServerBridgeProbe {
+func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 	probe := appServerBridgeProbe{
 		Status:    "disabled",
 		CheckedAt: time.Now().UTC(),
@@ -56,12 +58,23 @@ func (r *Router) refreshClaudeBridgeProbe(full bool) appServerBridgeProbe {
 		r.setClaudeBridgeProbe(probe)
 		return probe
 	}
-	probe.Status = "ready"
 	probe.Path = path
-	probe.Healthy = true
-	if full {
-		probe.Version = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+	// 版本门禁是协议安全边界，不能因为 cheap probe 跳过；--version 对兼容 bridge 是无副作用快速调用。
+	probe.Version = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+	if probe.Version == "" {
+		probe.Status = "missing_version"
+		probe.Error = claudebridge.UpgradeMessage("")
+		r.setClaudeBridgeProbe(probe)
+		return probe
 	}
+	if !claudebridge.IsSupported(probe.Version) {
+		probe.Status = "unsupported_version"
+		probe.Error = claudebridge.UpgradeMessage(probe.Version)
+		r.setClaudeBridgeProbe(probe)
+		return probe
+	}
+	probe.Status = "ready"
+	probe.Healthy = true
 	r.setClaudeBridgeProbe(probe)
 	return probe
 }
@@ -121,7 +134,11 @@ func probeClaudeBridgeVersion(path string, args []string, env map[string]string)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(bytes.TrimSpace(output)))
+	version, ok := claudebridge.ParseVersion(string(bytes.TrimSpace(output)))
+	if !ok {
+		return ""
+	}
+	return version
 }
 
 func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Request) {
@@ -140,7 +157,19 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	r.refreshClaudeBridgeProbeIfStale()
 	probe := r.claudeBridgeProbe()
 	if !probe.Healthy {
-		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", firstNonEmpty(probe.Error, "Claude bridge 不可用"))
+		code := "CLAUDE_BRIDGE_UNAVAILABLE"
+		switch probe.Status {
+		case "missing_version":
+			code = "CLAUDE_BRIDGE_VERSION_UNKNOWN"
+		case "unsupported_version":
+			code = "CLAUDE_BRIDGE_VERSION_UNSUPPORTED"
+		}
+		writeGatewayRuntimeErrorWithData(client, code, firstNonEmpty(probe.Error, "Claude bridge 不可用"), map[string]any{
+			"bridgeStatus":   probe.Status,
+			"bridgeVersion":  probe.Version,
+			"minimumVersion": claudebridge.MinimumVersion,
+			"fix":            claudebridge.InstallHint,
+		})
 		return
 	}
 	if !r.acquireClaudeBridgeSlot() {
@@ -507,6 +536,19 @@ func buildClaudeBridgeEnv(extra map[string]string) []string {
 		}
 		out = append(out, key+"="+value)
 	}
+	// 远程 Claude 通道永不允许绕过权限；即使本机配置误设为 true，也在进程边界强制覆盖。
+	const bypassKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
+	foundBypass := false
+	for index, item := range out {
+		if strings.HasPrefix(item, bypassKey+"=") {
+			out[index] = bypassKey + "=false"
+			foundBypass = true
+			break
+		}
+	}
+	if !foundBypass {
+		out = append(out, bypassKey+"=false")
+	}
 	return out
 }
 
@@ -539,15 +581,24 @@ func sanitizeGatewayDiagnostic(value string) string {
 }
 
 func writeGatewayRuntimeError(conn *websocket.Conn, code string, message string) {
+	writeGatewayRuntimeErrorWithData(conn, code, message, nil)
+}
+
+func writeGatewayRuntimeErrorWithData(conn *websocket.Conn, code string, message string, details map[string]any) {
+	data := map[string]any{"code": code}
+	for key, value := range details {
+		if value == nil || value == "" {
+			continue
+		}
+		data[key] = value
+	}
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      nil,
 		"error": map[string]any{
 			"code":    claudeBridgePolicyErrorCode,
 			"message": code + ": " + message,
-			"data": map[string]any{
-				"code": code,
-			},
+			"data":    data,
 		},
 	}
 	raw, err := json.Marshal(payload)

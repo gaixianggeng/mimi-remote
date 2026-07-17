@@ -26,7 +26,7 @@ REQUIRED_FILES=(
 
 for command_name in awk basename cmp find go grep mktemp tar tr wc; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "发布产物门禁失败：缺少命令 $command_name。" >&2
+    echo "发布产物门禁失败：缺少命令 ${command_name}。" >&2
     exit 127
   fi
 done
@@ -79,7 +79,7 @@ if command -v ruby >/dev/null 2>&1 && ! ruby -c "$formula" >/dev/null; then
 fi
 formula_url_count="$(grep -Ec '^[[:space:]]+url "' "$formula" || true)"
 if [[ "$formula_url_count" != "${#EXPECTED_ARCHIVES[@]}" ]]; then
-  echo "发布产物门禁失败：Homebrew Formula 下载 URL 数量为 $formula_url_count，期望 ${#EXPECTED_ARCHIVES[@]}。" >&2
+  echo "发布产物门禁失败：Homebrew Formula 下载 URL 数量为 ${formula_url_count}，期望 ${#EXPECTED_ARCHIVES[@]}。" >&2
   exit 1
 fi
 
@@ -97,7 +97,7 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
   archive_listing="$(tar -tzf "$archive")"
   for required_file in "${REQUIRED_FILES[@]}"; do
     if ! grep -Fxq -- "$required_file" <<<"$archive_listing"; then
-      echo "发布产物门禁失败：$(basename "$archive") 缺少 $required_file。" >&2
+      echo "发布产物门禁失败：$(basename "$archive") 缺少 ${required_file}。" >&2
       exit 1
     fi
   done
@@ -177,7 +177,7 @@ done
 
 archive_count="$(find "$DIST_DIR" -maxdepth 1 -type f -name 'mimi-remote_*.tar.gz' | wc -l | tr -d ' ')"
 if [[ "$archive_count" != "${#EXPECTED_ARCHIVES[@]}" ]]; then
-  echo "发布产物门禁失败：归档数量为 $archive_count，期望 ${#EXPECTED_ARCHIVES[@]}。" >&2
+  echo "发布产物门禁失败：归档数量为 ${archive_count}，期望 ${#EXPECTED_ARCHIVES[@]}。" >&2
   exit 1
 fi
 

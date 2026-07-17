@@ -234,6 +234,9 @@ func runStart(args []string) error {
 	if err != nil {
 		return fmt.Errorf("读取连接信息失败，请先执行 agentd setup：%w", err)
 	}
+	if err := ensureCodexCLIAvailable(*configPath); err != nil {
+		return err
+	}
 
 	if managedServicePlatform == "darwin" {
 		fmt.Fprintln(os.Stdout, "正在启动 Homebrew 后台服务...")
@@ -273,6 +276,9 @@ func runRestart(args []string) error {
 	result, err := agentsetup.Pair(context.Background(), *configPath)
 	if err != nil {
 		return fmt.Errorf("读取连接信息失败，请先执行 agentd up：%w", err)
+	}
+	if err := ensureCodexCLIAvailable(*configPath); err != nil {
+		return err
 	}
 	fmt.Fprintln(os.Stdout, "正在重启 Mimi Mac 助手...")
 	if err := runManagedServiceForPlatform(managedServicePlatform, "restart", os.Stdout, os.Stderr); err != nil {
@@ -560,6 +566,12 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
 		return config.Config{}, nil, nil, err
 	}
+	if !forDoctor && fileExists(*configPath) {
+		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
+		if err := ensureCodexCLIAvailable(*configPath); err != nil {
+			return config.Config{}, nil, nil, err
+		}
+	}
 	var (
 		cfg config.Config
 		err error
@@ -640,6 +652,13 @@ func runDoctorFix(ctx context.Context, configPath string, checkPort bool, curren
 			if fixed {
 				fixes = append(fixes, "已将 app-server token file 权限收紧为 0600")
 			}
+		}
+	}
+	if hasFailedCheck(current, "codex") && !needsSetup {
+		// 旧的绝对路径失效时只修复 codex.bin；无法发现替代项则保留原 Doctor 结果继续给出安装指引。
+		codexPath, repaired, repairErr := agentsetup.RepairCodexBin(configPath)
+		if repairErr == nil && repaired {
+			fixes = append(fixes, "已恢复 Codex CLI 路径："+codexPath)
 		}
 	}
 	if needsSetup {
@@ -734,20 +753,31 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listener, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		_ = shutdownServeResources(manager, appServerWSProcess)
-		return err
+	listenAddresses := agentDListenAddresses(cfg.Listen)
+	listeners := make([]net.Listener, 0, len(listenAddresses))
+	for _, address := range listenAddresses {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			_ = shutdownServeResources(manager, appServerWSProcess)
+			return fmt.Errorf("监听 %s 失败：%w", address, err)
+		}
+		listeners = append(listeners, listener)
 	}
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
-	// HTTP 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖二者，确保 shutdown
-	// 同时触发两个 goroutine 退出时不会因为主 goroutine 已选中另一事件而遗留阻塞发送。
-	errCh := make(chan error, 2)
-	go func() {
-		log.Printf("agentd listening on http://%s", cfg.Listen)
-		errCh <- server.Serve(listener)
-	}()
+	// 每个 HTTP listener 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖全部来源，
+	// 确保 shutdown 同时触发多个 goroutine 退出时不会因主 goroutine 已选中另一事件而阻塞。
+	errCh := make(chan error, len(listeners)+1)
+	for _, listener := range listeners {
+		listener := listener
+		go func() {
+			log.Printf("agentd listening on http://%s", listener.Addr())
+			errCh <- server.Serve(listener)
+		}()
+	}
 	if appServerWSProcess != nil {
 		go func() {
 			<-appServerWSProcess.Done()
@@ -763,6 +793,24 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			return shutdownServeResources(manager, appServerWSProcess)
 		})
 	})
+}
+
+func agentDListenAddresses(configured string) []string {
+	address := strings.TrimSpace(configured)
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return []string{address}
+	}
+
+	normalizedHost := strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(normalizedHost)
+	// loopback 和通配地址本身已经覆盖 127.0.0.1；只在绑定具体的 Tailscale/局域网地址时
+	// 增加同端口 loopback，避免为了 Catalyst 本机直连而把服务扩大暴露到所有网卡。
+	if normalizedHost == "" || strings.EqualFold(normalizedHost, "localhost") ||
+		(ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+		return []string{address}
+	}
+	return []string{address, net.JoinHostPort("127.0.0.1", port)}
 }
 
 func waitForServeExit(stopCh <-chan os.Signal, errCh <-chan error, shutdown func() error) error {
@@ -1195,6 +1243,11 @@ func printJSONTo(w io.Writer, value any) error {
 }
 
 func ensureCodexCLIAvailable(configPath string) error {
+	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
+	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
+	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {
+		return fmt.Errorf("未找到 Codex CLI，Mimi Mac 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
+	}
 	cfg, err := config.LoadForDoctor(configPath)
 	if err != nil {
 		return fmt.Errorf("读取 Codex 配置失败：%w", err)

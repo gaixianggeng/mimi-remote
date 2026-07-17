@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
@@ -88,6 +89,8 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"skills/list":             {},
+	"plugin/installed":        {},
 	"account/rateLimits/read": {},
 }
 
@@ -105,17 +108,18 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 }
 
 var appServerClaudeAllowedMethods = map[string]struct{}{
-	"initialize":        {},
-	"initialized":       {},
-	"thread/list":       {},
-	"thread/start":      {},
-	"thread/resume":     {},
-	"thread/read":       {},
-	"thread/turns/list": {},
-	"turn/start":        {},
-	"turn/steer":        {},
-	"turn/interrupt":    {},
-	"model/list":        {},
+	"initialize":              {},
+	"initialized":             {},
+	"thread/list":             {},
+	"thread/start":            {},
+	"thread/resume":           {},
+	"thread/read":             {},
+	"thread/turns/list":       {},
+	"turn/start":              {},
+	"turn/steer":              {},
+	"turn/interrupt":          {},
+	"model/list":              {},
+	"account/rateLimits/read": {},
 }
 
 type appServerConfigResponse struct {
@@ -158,10 +162,12 @@ type appServerChannel struct {
 type appServerBridgeMetadata struct {
 	Name           string `json:"name"`
 	Version        string `json:"version,omitempty"`
+	MinimumVersion string `json:"minimum_version,omitempty"`
 	Path           string `json:"path,omitempty"`
 	Status         string `json:"status"`
 	Healthy        bool   `json:"healthy"`
 	LastProbeError string `json:"last_probe_error,omitempty"`
+	Fix            string `json:"fix,omitempty"`
 }
 
 type appServerChannelCapability struct {
@@ -426,6 +432,11 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 	}}
 	if r.cfg.Claude.Enabled {
 		probe := r.claudeBridgeProbe()
+		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
+		claudeMethods := appServerAllowedMethodListForRuntime("claude")
+		if !claudeRateLimitsAvailable {
+			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
+		}
 		channels = append(channels, appServerChannel{
 			ID:               "claude",
 			RuntimeID:        "claude",
@@ -441,17 +452,20 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Bridge: &appServerBridgeMetadata{
 				Name:           "alleycat-claude-bridge",
 				Version:        probe.Version,
+				MinimumVersion: claudebridge.MinimumVersion,
 				Path:           probe.Path,
 				Status:         probe.Status,
 				Healthy:        probe.Healthy,
 				LastProbeError: probe.Error,
+				Fix:            claudebridge.InstallHint,
 			},
-			Methods: appServerAllowedMethodListForRuntime("claude"),
+			Methods: claudeMethods,
 			Capabilities: appServerChannelCapability{
 				Streaming:        true,
 				History:          true,
 				ApprovalRequests: true,
 				FileDiffs:        true,
+				RateLimits:       claudeRateLimitsAvailable,
 			},
 			Policy: appServerChannelPolicy{
 				ApprovalPolicies: []string{"on-request", "on-failure"},
@@ -462,6 +476,16 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		})
 	}
 	return channels
+}
+
+func removeAppServerMethod(methods []string, removed string) []string {
+	filtered := make([]string, 0, len(methods))
+	for _, method := range methods {
+		if method != removed {
+			filtered = append(filtered, method)
+		}
+	}
+	return filtered
 }
 
 func normalizeAppServerRuntimeID(raw string) string {
@@ -1091,6 +1115,10 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayInitializeParams(params)
 	case "initialized", "model/list", "account/rateLimits/read":
 		sanitized = map[string]any{}
+	case "skills/list":
+		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
+	case "plugin/installed":
+		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
 		sanitized = sanitizedGatewayThreadListParams(params)
 	case "thread/search":
@@ -1137,6 +1165,20 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		return nil, fmt.Errorf("重写 app-server 安全参数失败：%w", err)
 	}
 	return rewritten, nil
+}
+
+func sanitizedGatewaySkillsListParams(params map[string]any, cwd string) map[string]any {
+	// 移动端只能扫描一个已经授权的工作区，不能借 skills/list 枚举任意目录。
+	safe := map[string]any{"cwds": []any{cwd}}
+	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
+		safe["forceReload"] = forceReload
+	}
+	return safe
+}
+
+func sanitizedGatewayPluginInstalledParams(cwd string) map[string]any {
+	// @ 候选只需要当前授权工作区内已安装的插件；不开放安装建议，避免把只读入口变成安装入口。
+	return map[string]any{"cwds": []any{cwd}}
 }
 
 func sanitizedGatewayGoalSetParams(params map[string]any) map[string]any {
@@ -2641,10 +2683,9 @@ func copyGatewaySearchCursor(dst map[string]any, src map[string]json.RawMessage,
 }
 
 func appServerServerRequestAllowed(runtimeID string, method string) bool {
-	// Claude bridge 目前沿用既有反向请求协议；Codex 的协议面更宽且会持续新增，因此必须显式收口。
-	if normalizeAppServerRuntimeID(runtimeID) != "codex" {
-		return true
-	}
+	// Codex 与 Claude 都只开放 iOS 已实现的反向请求。bridge 是外部进程，未知方法同样必须
+	// fail closed，避免移动端无法响应时让 Claude turn 永久等待。
+	_ = runtimeID
 	_, ok := appServerAllowedServerRequestMethods[strings.TrimSpace(method)]
 	return ok
 }
@@ -3022,6 +3063,42 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			return validated, err
 		}
 	}
+	if method == "skills/list" {
+		cwd, err := gatewaySingleListCWD(params, method)
+		if err != nil {
+			return validated, err
+		}
+		scope, ok := r.gatewayScopeForPath(cwd)
+		if !ok {
+			return validated, fmt.Errorf("skills/list.cwds 必须来自 projects allowlist 或 browse_roots")
+		}
+		if _, exists := params["forceReload"]; exists {
+			if _, ok := gatewayBoolParam(params, "forceReload"); !ok {
+				return validated, fmt.Errorf("skills/list.forceReload 必须是布尔值")
+			}
+		}
+		validated.cwd = cwd
+		validated.hasCWD = true
+		validated.cwdScope = scope
+		validated.cwdScopeOK = true
+	}
+	if method == "plugin/installed" {
+		cwd, err := gatewaySingleListCWD(params, method)
+		if err != nil {
+			return validated, err
+		}
+		scope, ok := r.gatewayScopeForPath(cwd)
+		if !ok {
+			return validated, fmt.Errorf("plugin/installed.cwds 必须来自 projects allowlist 或 browse_roots")
+		}
+		if value, exists := params["installSuggestionPluginNames"]; exists && value != nil {
+			return validated, fmt.Errorf("plugin/installed.installSuggestionPluginNames 尚未对移动端开放")
+		}
+		validated.cwd = cwd
+		validated.hasCWD = true
+		validated.cwdScope = scope
+		validated.cwdScopeOK = true
+	}
 	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
 		scope, pendingManagedPath, scopeOK := r.gatewayScopeForPathWithPendingUse(cwd, gatewayMethodNeedsManagedPendingUse(method))
 		if !scopeOK {
@@ -3076,6 +3153,23 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	}
 	committedPendingUse = true
 	return validated, nil
+}
+
+func gatewaySingleListCWD(params map[string]any, method string) (string, error) {
+	raw, ok := params["cwds"]
+	if !ok {
+		return "", fmt.Errorf("%s.cwds 必须包含一个授权工作区", method)
+	}
+	values, ok := raw.([]any)
+	if !ok || len(values) != 1 {
+		return "", fmt.Errorf("%s.cwds 只能包含一个授权工作区", method)
+	}
+	cwd, ok := values[0].(string)
+	cwd = strings.TrimSpace(cwd)
+	if !ok || cwd == "" {
+		return "", fmt.Errorf("%s.cwds 必须包含一个授权工作区", method)
+	}
+	return cwd, nil
 }
 
 func gatewayMethodNeedsManagedPendingUse(method string) bool {

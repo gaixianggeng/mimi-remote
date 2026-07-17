@@ -61,7 +61,7 @@ bash ./scripts/install-linux.sh install
 
 ### 从源码构建
 
-要求 Go `1.23.2`：
+要求 Go `1.25.0`：
 
 ```bash
 go test ./...
@@ -81,6 +81,25 @@ agentd doctor --fix
 agentd logs -n 200
 agentd restart
 agentd stop
+```
+
+### Claude Code 可选通道
+
+Claude 通道需要 `alleycat-claude-bridge >= 0.2.0`。为确保包含移动端审批兼容修复，请安装已审阅的不可变 revision：
+
+```bash
+cargo install --git https://github.com/gaixianggeng/alleycat.git \
+  --rev c50256dc9cc71f5130a176e32bb6fd33b1e06f74 \
+  --locked --force alleycat-claude-bridge
+
+command -v alleycat-claude-bridge
+```
+
+把最后一条命令返回的绝对路径写入配置的 `claude.bridge_bin`，设置 `claude.enabled=true`，然后执行：
+
+```bash
+agentd restart
+agentd doctor
 ```
 
 核心入口：

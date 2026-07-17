@@ -636,6 +636,163 @@ func TestGitPushRejectsUnsafeRemote(t *testing.T) {
 	}
 }
 
+func TestGitQuickPublishStagesCommitsAndPushesAfterConfirmation(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitTestCommand(t, t.TempDir(), "init", "--bare", remote)
+	runGitTestCommand(t, repo, "remote", "add", "origin", remote)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("quick publish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "NEW.md"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+
+	rejected := httptest.NewRecorder()
+	server.handler.ServeHTTP(rejected, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:    repo,
+		Message: "feat: quick publish",
+	}))
+	if rejected.Code != http.StatusForbidden {
+		t.Fatalf("未确认的快捷发布应拒绝，got=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:      repo,
+		Message:   "feat: quick publish",
+		Confirmed: true,
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("快捷发布应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response gitQuickPublishResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 gitQuickPublishResponse：%v", err)
+	}
+	if !response.Committed || response.Message != "feat: quick publish" || len(response.Status.Files) != 0 {
+		t.Fatalf("快捷发布响应异常：%+v", response)
+	}
+	if subject := gitTestOutput(t, repo, "log", "-1", "--format=%s"); subject != "feat: quick publish" {
+		t.Fatalf("commit message 不正确：%q", subject)
+	}
+	branch := gitTestOutput(t, repo, "branch", "--show-current")
+	if local, remoteHead := gitTestOutput(t, repo, "rev-parse", "HEAD"), gitTestOutput(t, remote, "rev-parse", branch); local != remoteHead {
+		t.Fatalf("快捷发布后远端应指向本地 HEAD，local=%s remote=%s", local, remoteHead)
+	}
+}
+
+func TestGitTestFlightRequiresHostPreflightAndRunsAsBackgroundJob(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	iosDir := filepath.Join(repo, "ios", "Example")
+	if err := os.MkdirAll(iosDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(iosDir, "project.yml"), []byte("name: Example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "ios/Example/project.yml")
+	runGitTestCommand(t, repo, "commit", "-m", "add ios project")
+
+	fakeBin := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "testflight.args")
+	readyFile := filepath.Join(t.TempDir(), "testflight.ready")
+	fakeCommand := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--check" ]; then
+	if [ ! -f %q ]; then
+		echo "missing local TestFlight config" >&2
+		exit 1
+	fi
+  echo "preflight ok"
+  exit 0
+fi
+printf '%%s\n' "$@" > %q
+echo "upload started"
+sleep 0.05
+echo "upload completed"
+`, readyFile, argsFile)
+	if err := os.WriteFile(filepath.Join(fakeBin, "git-testflight-push"), []byte(fakeCommand), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+
+	unavailableRecorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(unavailableRecorder, authedRequest(t, http.MethodPost, "/api/git/testflight/status", gitTestFlightStatusRequest{Path: repo}))
+	if unavailableRecorder.Code != http.StatusOK {
+		t.Fatalf("TestFlight 状态应成功，got=%d body=%s", unavailableRecorder.Code, unavailableRecorder.Body.String())
+	}
+	var unavailable gitTestFlightStatusResponse
+	if err := json.NewDecoder(unavailableRecorder.Body).Decode(&unavailable); err != nil {
+		t.Fatal(err)
+	}
+	if !unavailable.Capability.IsIOSProject || unavailable.Capability.Available || !strings.Contains(unavailable.Capability.Reason, "missing local TestFlight config") {
+		t.Fatalf("主机预检失败时必须禁用 TestFlight：%+v", unavailable)
+	}
+
+	rejectedRecorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(rejectedRecorder, authedRequest(t, http.MethodPost, "/api/git/testflight/run", gitTestFlightRunRequest{
+		Path:      repo,
+		Confirmed: true,
+	}))
+	if rejectedRecorder.Code != http.StatusPreconditionFailed {
+		t.Fatalf("主机预检失败时必须拒绝发布，got=%d body=%s", rejectedRecorder.Code, rejectedRecorder.Body.String())
+	}
+
+	if err := os.WriteFile(readyFile, []byte("ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statusRecorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(statusRecorder, authedRequest(t, http.MethodPost, "/api/git/testflight/status", gitTestFlightStatusRequest{Path: repo}))
+	var initial gitTestFlightStatusResponse
+	if err := json.NewDecoder(statusRecorder.Body).Decode(&initial); err != nil {
+		t.Fatal(err)
+	}
+	if !initial.Capability.IsIOSProject || !initial.Capability.Available || initial.Job != nil {
+		t.Fatalf("本机预检通过后应开放 TestFlight：%+v", initial)
+	}
+
+	runRecorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(runRecorder, authedRequest(t, http.MethodPost, "/api/git/testflight/run", gitTestFlightRunRequest{
+		Path:       repo,
+		WhatToTest: "验证快捷发布",
+		Confirmed:  true,
+	}))
+	if runRecorder.Code != http.StatusAccepted {
+		t.Fatalf("TestFlight 后台任务应被接受，got=%d body=%s", runRecorder.Code, runRecorder.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var completed gitTestFlightStatusResponse
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/testflight/status", gitTestFlightStatusRequest{Path: repo}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("轮询 TestFlight 状态失败，got=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&completed); err != nil {
+			t.Fatal(err)
+		}
+		if completed.Job != nil && completed.Job.State != "running" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if completed.Job == nil || completed.Job.State != "succeeded" || !strings.Contains(completed.Job.Output, "upload completed") {
+		t.Fatalf("TestFlight 后台任务未成功完成：%+v", completed.Job)
+	}
+	if args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n"); strings.Join(args, " ") != "--what-to-test 验证快捷发布" {
+		t.Fatalf("TestFlight 参数异常：%q", args)
+	}
+}
+
 func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)

@@ -306,7 +306,7 @@ func defaultAgentDListen(ctx context.Context) string {
 }
 
 func defaultCodexBin() string {
-	if path, err := exec.LookPath("codex"); err == nil && strings.TrimSpace(path) != "" {
+	if path, err := ResolveCodexBin("codex"); err == nil {
 		return path
 	}
 	return "codex"

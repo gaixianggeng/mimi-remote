@@ -11,7 +11,7 @@ fail() {
 
 for command_name in awk bash grep ruby; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "Packaging 门禁失败：缺少命令 $command_name。" >&2
+    echo "Packaging 门禁失败：缺少命令 ${command_name}。" >&2
     exit 127
   fi
 done
@@ -28,7 +28,7 @@ for required_file in \
   scripts/check-release-artifacts.sh \
   scripts/verify-release.sh \
   docs/install-upgrade-rollback.md; do
-  [[ -f "$required_file" ]] || fail "缺少 $required_file。"
+  [[ -f "$required_file" ]] || fail "缺少 ${required_file}。"
 done
 
 bash -n \
