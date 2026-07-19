@@ -25,8 +25,8 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	if len(cfg.Projects) != 1 || cfg.Projects[0].ID != "demo" {
 		t.Fatalf("项目解析异常：%+v", cfg.Projects)
 	}
-	if cfg.Voice.TranscriptionProvider != "openai" {
-		t.Fatalf("默认语音转写必须使用公开 OpenAI API，实际 %q", cfg.Voice.TranscriptionProvider)
+	if cfg.Voice.CodexTranscriptionBaseURL != "https://chatgpt.com/backend-api" {
+		t.Fatalf("默认语音转写必须使用 Codex 登录态后端，实际 %q", cfg.Voice.CodexTranscriptionBaseURL)
 	}
 }
 

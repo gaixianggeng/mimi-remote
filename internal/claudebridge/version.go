@@ -9,9 +9,9 @@ import (
 
 const (
 	MinimumVersion = "0.2.1"
-	// 固定到已审阅并发布的 commit，避免远端 main 变化后安装到未经验证的 bridge。
-	BridgeRevision = "1bb754687990a308dcc330f369820ff42d7c3289"
-	InstallHint    = "cargo install --git https://github.com/gaixianggeng/alleycat.git --rev " + BridgeRevision + " --locked --force alleycat-claude-bridge"
+	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
+	BridgeRepository = "https://github.com/gaixianggeng/codex-ipad-agent.git"
+	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"
 )
 
 var semanticVersionPattern = regexp.MustCompile(`(?:^|[^0-9])v?([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?:$|[^0-9])`)

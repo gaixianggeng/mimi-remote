@@ -40,11 +40,11 @@ func TestIsSupported(t *testing.T) {
 	}
 }
 
-func TestInstallHintPinsReviewedRevision(t *testing.T) {
-	if !strings.Contains(InstallHint, "https://github.com/gaixianggeng/alleycat.git") {
-		t.Fatalf("安装提示未指向公开 bridge 仓库：%s", InstallHint)
+func TestInstallHintUsesMonorepo(t *testing.T) {
+	if !strings.Contains(InstallHint, BridgeRepository) {
+		t.Fatalf("安装提示未指向 Mimi Remote monorepo：%s", InstallHint)
 	}
-	if !strings.Contains(InstallHint, "--rev "+BridgeRevision) {
-		t.Fatalf("安装提示未固定已审阅 revision：%s", InstallHint)
+	if strings.Contains(InstallHint, "gaixianggeng/alleycat") {
+		t.Fatalf("安装提示不应继续依赖独立 Alleycat fork：%s", InstallHint)
 	}
 }

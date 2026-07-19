@@ -26,7 +26,6 @@ type voiceTranscriptionRequest struct {
 	ContentType string `json:"content_type"`
 	AudioBase64 string `json:"audio_base64"`
 	Language    string `json:"language,omitempty"`
-	Prompt      string `json:"prompt,omitempty"`
 }
 
 type voiceTranscriptionResponse struct {
@@ -70,7 +69,7 @@ func (r *Router) voiceTranscribeHandler(w http.ResponseWriter, req *http.Request
 	}
 	writeJSON(w, http.StatusOK, voiceTranscriptionResponse{
 		Text:  strings.TrimSpace(result.Text),
-		Model: firstNonEmpty(result.Model, r.voiceTranscriptionModel()),
+		Model: firstNonEmpty(result.Model, codexVoiceTranscriptionModel),
 	})
 }
 
@@ -93,68 +92,6 @@ func decodeVoiceAudio(raw string) ([]byte, error) {
 }
 
 func (r *Router) createVoiceTranscription(ctx context.Context, payload voiceTranscriptionRequest, audio []byte) (voiceTranscriptionResult, error) {
-	provider := r.voiceTranscriptionProvider()
-	// auto 只保留为旧配置兼容别名，并始终走公开 API。只有显式选择 codex，
-	// 才允许读取本机登录态并调用未公开的 ChatGPT 转写接口。
-	if provider == "openai" || provider == "auto" {
-		return r.createOpenAIVoiceTranscription(ctx, payload, audio)
-	}
-	if provider == "codex" {
-		return r.createCodexVoiceTranscription(ctx, payload, audio)
-	}
-	return voiceTranscriptionResult{}, fmt.Errorf("未知语音转写 provider：%s", provider)
-}
-
-func (r *Router) createOpenAIVoiceTranscription(ctx context.Context, payload voiceTranscriptionRequest, audio []byte) (voiceTranscriptionResult, error) {
-	if strings.TrimSpace(r.cfg.Voice.TranscriptionAPIKey) == "" {
-		return voiceTranscriptionResult{}, fmt.Errorf("未配置语音转写 API Key，请在 agentd 设置 OPENAI_API_KEY 或 AGENTD_TRANSCRIPTION_API_KEY")
-	}
-	fields := map[string]string{
-		"model":           r.voiceTranscriptionModel(),
-		"response_format": "json",
-	}
-	// gpt-4o-transcribe 系列只稳定支持 JSON 响应；agentd 解析后再返回给 iPad。
-	if language := normalizedVoiceLanguage(payload.Language); language != "" {
-		fields["language"] = language
-	}
-	if prompt := strings.TrimSpace(payload.Prompt); prompt != "" {
-		fields["prompt"] = prompt
-	}
-	body, contentType, err := buildVoiceMultipart(payload, audio, fields)
-	if err != nil {
-		return voiceTranscriptionResult{}, err
-	}
-
-	url := strings.TrimRight(firstNonEmpty(r.cfg.Voice.TranscriptionBaseURL, "https://api.openai.com/v1"), "/") + "/audio/transcriptions"
-	outbound, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return voiceTranscriptionResult{}, err
-	}
-	outbound.Header.Set("Authorization", "Bearer "+strings.TrimSpace(r.cfg.Voice.TranscriptionAPIKey))
-	outbound.Header.Set("Content-Type", contentType)
-	response, err := http.DefaultClient.Do(outbound)
-	if err != nil {
-		return voiceTranscriptionResult{}, fmt.Errorf("语音转写请求失败：%w", err)
-	}
-	defer response.Body.Close()
-	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return voiceTranscriptionResult{}, fmt.Errorf("语音转写服务返回 HTTP %d：%s", response.StatusCode, voiceServiceError(responseBody))
-	}
-	var decoded struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return voiceTranscriptionResult{}, fmt.Errorf("语音转写响应不是合法 JSON")
-	}
-	text := strings.TrimSpace(decoded.Text)
-	if text == "" {
-		return voiceTranscriptionResult{}, fmt.Errorf("语音转写结果为空")
-	}
-	return voiceTranscriptionResult{Text: text, Model: r.voiceTranscriptionModel()}, nil
-}
-
-func (r *Router) createCodexVoiceTranscription(ctx context.Context, payload voiceTranscriptionRequest, audio []byte) (voiceTranscriptionResult, error) {
 	auth, err := r.loadCodexChatGPTAuth()
 	if err != nil {
 		return voiceTranscriptionResult{}, err
@@ -255,7 +192,7 @@ func (r *Router) loadCodexChatGPTAuth() (codexChatGPTAuth, error) {
 		return codexChatGPTAuth{}, fmt.Errorf("Codex 登录态文件不是合法 JSON")
 	}
 	if !strings.EqualFold(strings.TrimSpace(decoded.AuthMode), "chatgpt") {
-		return codexChatGPTAuth{}, fmt.Errorf("当前 Codex 不是 ChatGPT 登录模式，无法免 API key 使用内置语音转写")
+		return codexChatGPTAuth{}, fmt.Errorf("当前 Codex 不是 ChatGPT 登录模式，无法使用 Codex 内置语音转写")
 	}
 	token := strings.TrimSpace(decoded.Tokens.AccessToken)
 	if token == "" {
@@ -266,23 +203,6 @@ func (r *Router) loadCodexChatGPTAuth() (codexChatGPTAuth, error) {
 	}
 	accountID := firstNonEmpty(strings.TrimSpace(decoded.Tokens.AccountID), chatGPTAccountIDFromJWT(token))
 	return codexChatGPTAuth{AccessToken: token, AccountID: accountID}, nil
-}
-
-func (r *Router) voiceTranscriptionProvider() string {
-	switch strings.ToLower(strings.TrimSpace(r.cfg.Voice.TranscriptionProvider)) {
-	case "", "auto":
-		return "auto"
-	case "codex":
-		return "codex"
-	case "openai":
-		return "openai"
-	default:
-		return strings.ToLower(strings.TrimSpace(r.cfg.Voice.TranscriptionProvider))
-	}
-}
-
-func (r *Router) voiceTranscriptionModel() string {
-	return firstNonEmpty(r.cfg.Voice.TranscriptionModel, "gpt-4o-mini-transcribe")
 }
 
 func voiceFileHeader(payload voiceTranscriptionRequest) textproto.MIMEHeader {
@@ -462,8 +382,7 @@ func isVoiceConfigurationError(err error) bool {
 		return false
 	}
 	message := err.Error()
-	return strings.Contains(message, "未配置语音转写 API Key") ||
-		strings.Contains(message, "未找到 Codex 登录态") ||
+	return strings.Contains(message, "未找到 Codex 登录态") ||
 		strings.Contains(message, "当前 Codex 不是 ChatGPT 登录模式") ||
 		strings.Contains(message, "Codex 登录态缺少") ||
 		strings.Contains(message, "Codex 登录态已过期") ||

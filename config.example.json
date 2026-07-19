@@ -14,9 +14,6 @@
     "ws_token_file": "/Users/you/Library/Application Support/mimi-remote/app-server-ws-token"
   },
   "voice": {
-    "transcription_provider": "openai",
-    "transcription_model": "gpt-4o-mini-transcribe",
-    "transcription_base_url": "https://api.openai.com/v1",
     "codex_transcription_base_url": "https://chatgpt.com/backend-api"
   },
   "codex": {

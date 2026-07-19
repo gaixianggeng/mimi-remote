@@ -440,8 +440,16 @@ func rewriteClaudeModelListResponse(policy *appServerGatewayPolicy, payload []by
 
 func claudeCurrentModelList() []map[string]any {
 	// Claude CLI 的具体模型 ID 会比产品命名更频繁变化；这里用 CLI alias 作为真正发送的
-	// model，避免新名字尚未进入本机 metadata 时触发 fallback warning。展示名仍表达当前推荐代际。
+	// model，避免新名字尚未进入本机 metadata 时触发 fallback warning。为兼容尚不识别 `fable`
+	// 短 alias 的旧 CLI，Fable 使用官方完整 ID；展示名仍表达当前推荐代际。
 	return []map[string]any{
+		claudeModelOption(
+			"claude-fable-5",
+			"Claude Fable 5",
+			"Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
+			false,
+			"high",
+		),
 		claudeModelOption(
 			"opus",
 			"Claude Opus 4.8",

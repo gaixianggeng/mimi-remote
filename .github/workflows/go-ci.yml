@@ -10,6 +10,7 @@ on:
       - "packaging/**"
       - "scripts/check-packaging.sh"
       - "scripts/check-release-artifacts.sh"
+      - "scripts/check-source-size.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
       - "scripts/verify-release.sh"
@@ -29,6 +30,7 @@ on:
       - "packaging/**"
       - "scripts/check-packaging.sh"
       - "scripts/check-release-artifacts.sh"
+      - "scripts/check-source-size.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
       - "scripts/verify-release.sh"
@@ -65,6 +67,9 @@ jobs:
 
       - name: Check formatting
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+
+      - name: Check source size
+        run: bash ./scripts/check-source-size.sh
 
       - name: Check module files
         run: |

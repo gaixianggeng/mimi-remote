@@ -21,7 +21,7 @@ Mimi Remote / `agentd` 的默认安全边界是：用户自己的 iPad 连接用
 
 ## 报告安全问题
 
-如果你发现安全问题，请不要先公开披露细节。可以通过邮件联系：
+如果你发现安全问题，请不要先公开披露细节。可以通过 GitHub Security Advisory，或邮件联系：
 
 ```text
 gaixg94@gmail.com

@@ -883,9 +883,8 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 			"future_option": "keep-app-server-option",
 		},
 		"voice": map[string]any{
-			"transcription_provider": "openai",
-			"transcription_model":    "custom-transcribe-model",
-			"transcription_base_url": "https://voice.example.test/v1",
+			"codex_transcription_base_url": "https://chatgpt.example.test/backend-api",
+			"codex_auth_file":              filepath.Join(dir, "custom-codex-auth.json"),
 		},
 		"codex": map[string]any{
 			"bin":          codexPath,

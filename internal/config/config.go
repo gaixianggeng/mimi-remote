@@ -63,10 +63,6 @@ type AppServerConfig struct {
 }
 
 type VoiceConfig struct {
-	TranscriptionProvider     string `json:"transcription_provider,omitempty"`
-	TranscriptionModel        string `json:"transcription_model"`
-	TranscriptionBaseURL      string `json:"transcription_base_url,omitempty"`
-	TranscriptionAPIKey       string `json:"transcription_api_key,omitempty"`
 	CodexTranscriptionBaseURL string `json:"codex_transcription_base_url,omitempty"`
 	CodexAuthFile             string `json:"codex_auth_file,omitempty"`
 }
@@ -190,9 +186,6 @@ func defaults() Config {
 			Listen:    defaultAppServerListen,
 		},
 		Voice: VoiceConfig{
-			TranscriptionProvider:     "openai",
-			TranscriptionModel:        "gpt-4o-mini-transcribe",
-			TranscriptionBaseURL:      "https://api.openai.com/v1",
 			CodexTranscriptionBaseURL: "https://chatgpt.com/backend-api",
 		},
 		Codex: CodexConfig{
@@ -270,27 +263,11 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
 		cfg.AppServer.Managed = truthy(v)
 	}
-	if v := os.Getenv("AGENTD_TRANSCRIPTION_MODEL"); v != "" {
-		cfg.Voice.TranscriptionModel = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("AGENTD_TRANSCRIPTION_PROVIDER"); v != "" {
-		cfg.Voice.TranscriptionProvider = strings.TrimSpace(strings.ToLower(v))
-	}
-	if v := os.Getenv("AGENTD_TRANSCRIPTION_BASE_URL"); v != "" {
-		cfg.Voice.TranscriptionBaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
-	}
 	if v := os.Getenv("AGENTD_CODEX_TRANSCRIPTION_BASE_URL"); v != "" {
-		cfg.Voice.CodexTranscriptionBaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
-	} else if v := os.Getenv("CODEX_API_BASE_URL"); v != "" {
 		cfg.Voice.CodexTranscriptionBaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
 	}
 	if v := os.Getenv("AGENTD_CODEX_AUTH_FILE"); v != "" {
 		cfg.Voice.CodexAuthFile = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("AGENTD_TRANSCRIPTION_API_KEY"); v != "" {
-		cfg.Voice.TranscriptionAPIKey = strings.TrimSpace(v)
-	} else if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		cfg.Voice.TranscriptionAPIKey = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("AGENTD_DEV_INSECURE"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.DevInsecure = true
@@ -516,11 +493,6 @@ func (c Config) Validate() error {
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Voice.TranscriptionProvider)) {
-	case "", "auto", "codex", "openai":
-	default:
-		return fmt.Errorf("voice.transcription_provider 只支持 auto、codex 或 openai")
 	}
 	if len(c.Projects) == 0 {
 		return fmt.Errorf("projects 不能为空；可在 config.json 配置，或设置 AGENTD_PROJECTS=/path/a,/path/b 或 AGENTD_SCAN_ROOTS=/workspace")
