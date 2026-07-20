@@ -920,6 +920,45 @@ func runBrewService(action string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+const homebrewServiceLabel = "homebrew.mxcl." + config.AppName
+
+func restartHomebrewService(stdout, stderr io.Writer) error {
+	launchctl, err := exec.LookPath("launchctl")
+	if err != nil {
+		return fmt.Errorf("未找到 launchctl，无法原子重启 Homebrew 后台服务：%w", err)
+	}
+
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), homebrewServiceLabel)
+	cmd := exec.Command(launchctl, "kickstart", "-k", target)
+	cmd.Stdout = stdout
+	var launchctlStderr strings.Builder
+	cmd.Stderr = &launchctlStderr
+	if kickstartErr := cmd.Run(); kickstartErr == nil {
+		return nil
+	} else {
+		// 核心设计：已加载的服务必须使用 launchd 的单次 kickstart 原子重启。
+		// 不能执行 brew services restart 的 bootout + bootstrap 两步序列，
+		// 否则 agentd 托管的 Codex 发起重启时，会随第一步退出而执行不到第二步。
+		detail := strings.TrimSpace(launchctlStderr.String())
+		kickstartErr = fmt.Errorf("launchctl kickstart %s 失败：%w", target, kickstartErr)
+		if detail != "" {
+			kickstartErr = fmt.Errorf("%w：%s", kickstartErr, detail)
+		}
+		if !strings.Contains(strings.ToLower(detail), "could not find service") {
+			return kickstartErr
+		}
+		err = kickstartErr
+	}
+
+	// restart 也应能恢复一个尚未加载或已经 stop 的服务。此时当前命令不可能
+	// 由该后台服务托管，可以安全地交给 Homebrew 完成一次 start/bootstrap。
+	fmt.Fprintln(stderr, "Homebrew 后台服务当前未加载，改为重新启动...")
+	if startErr := runBrewService("start", stdout, stderr); startErr != nil {
+		return fmt.Errorf("原子重启失败（%v），且重新启动服务失败：%w", err, startErr)
+	}
+	return nil
+}
+
 const managedServiceUnitName = config.AppName + ".service"
 
 const (
@@ -930,7 +969,10 @@ const (
 func runManagedServiceForPlatform(goos string, action string, stdout, stderr io.Writer) error {
 	switch goos {
 	case "darwin":
-		// macOS 继续完整复用已经验证的 Homebrew service 行为和输出。
+		if action == "restart" {
+			return restartHomebrewService(stdout, stderr)
+		}
+		// start/stop 继续复用 Homebrew；restart 必须保持为上面的 launchd 单次操作。
 		return runBrewService(action, stdout, stderr)
 	case "linux":
 		if err := ensureManagedServiceInstalled(goos); err != nil {
@@ -1493,7 +1535,7 @@ func readyVersionCheckError(reason string) error {
 	return fmt.Errorf("%s%s", reason, readyServiceRecoveryHint)
 }
 
-const readyServiceRecoveryHint = "，无法确认新的 Homebrew 服务已经接管当前 Endpoint。\n请运行：\n  brew services restart mimi-remote\n  agentd logs"
+const readyServiceRecoveryHint = "，无法确认新的 Homebrew 服务已经接管当前 Endpoint。\n请运行：\n  agentd restart\n  agentd logs"
 
 func healthCheckURL(endpoint string) (string, error) {
 	return serviceCheckURL(endpoint, "/healthz")

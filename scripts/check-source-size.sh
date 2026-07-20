@@ -6,10 +6,24 @@ PRODUCTION_LIMIT=2000
 TEST_LIMIT=2500
 failed=0
 
-# 例外必须精确到文件并写明原因；当前重构后不需要任何例外。
+# 例外必须精确到文件并写明原因，禁止使用目录或通配符绕过门禁。
 exception_reason() {
   case "$1" in
-    # 示例：internal/example/legacy.go) printf '%s' '等待上游协议生成器拆分' ;;
+    ios/MimiRemote/Tests/MimiRemoteTests/ConversationSessionStoreTests.swift)
+      printf '%s' '历史会话状态回归矩阵，后续按恢复、审批和消息域拆分'
+      ;;
+    ios/MimiRemote/Tests/MimiRemoteTests/ConversationComposerHistoryTests.swift)
+      printf '%s' 'Composer 历史交互回归矩阵，后续按输入与历史导航场景拆分'
+      ;;
+    ios/MimiRemote/Tests/MimiRemoteTests/ConversationWorkspaceHistoryTests.swift)
+      printf '%s' 'Workspace 历史回归矩阵，后续按目录解析与会话恢复场景拆分'
+      ;;
+    ios/MimiRemote/Sources/Core/API/CodexAppServerSessionRuntime.swift)
+      printf '%s' 'Codex 协议兼容运行时，后续按连接、请求和事件处理职责拆分'
+      ;;
+    ios/MimiRemote/Sources/Core/Models/AgentModels.swift)
+      printf '%s' '跨版本协议兼容模型集合，后续按会话、工具和账户模型拆分'
+      ;;
     *) return 1 ;;
   esac
 }

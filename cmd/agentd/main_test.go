@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,6 +126,13 @@ func TestManagedServiceAdapterUsesPlatformCommands(t *testing.T) {
 			wantArgs:    "services start mimi-remote",
 		},
 		{
+			name:        "mac restart is one launchd operation",
+			goos:        "darwin",
+			commandName: "launchctl",
+			action:      "restart",
+			wantArgs:    fmt.Sprintf("kickstart -k gui/%d/homebrew.mxcl.mimi-remote", os.Getuid()),
+		},
+		{
 			name:        "linux start",
 			goos:        "linux",
 			commandName: "systemctl",
@@ -160,6 +169,66 @@ func TestManagedServiceAdapterUsesPlatformCommands(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDarwinRestartFallsBackToBrewStartWhenServiceIsNotLoaded(t *testing.T) {
+	binDir := t.TempDir()
+	launchctlMarker := filepath.Join(t.TempDir(), "launchctl-called")
+	brewMarker := filepath.Join(t.TempDir(), "brew-called")
+	launchctlBody := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$LAUNCHCTL_MARKER\"\nprintf '%s\\n' 'Could not find service' >&2\nexit 1\n"
+	brewBody := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$BREW_MARKER\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctlBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "brew"), []byte(brewBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("LAUNCHCTL_MARKER", launchctlMarker)
+	t.Setenv("BREW_MARKER", brewMarker)
+
+	var stdout, stderr strings.Builder
+	if err := runManagedServiceForPlatform("darwin", "restart", &stdout, &stderr); err != nil {
+		t.Fatalf("未加载的 Homebrew 服务应回退到 start：%v", err)
+	}
+	launchctlRaw, err := os.ReadFile(launchctlMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(launchctlRaw)); got != fmt.Sprintf("kickstart -k gui/%d/homebrew.mxcl.mimi-remote", os.Getuid()) {
+		t.Fatalf("必须先尝试 launchd 原子重启：%q", got)
+	}
+	brewRaw, err := os.ReadFile(brewMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(brewRaw)); got != "services start mimi-remote" {
+		t.Fatalf("回退只能启动服务，不能再执行非原子的 restart：%q", got)
+	}
+	if !strings.Contains(stderr.String(), "当前未加载") {
+		t.Fatalf("回退时应明确说明服务状态：%q", stderr.String())
+	}
+}
+
+func TestDarwinRestartDoesNotHideAtomicKickstartFailure(t *testing.T) {
+	binDir := t.TempDir()
+	brewMarker := filepath.Join(t.TempDir(), "brew-called")
+	launchctlBody := "#!/bin/sh\nprintf '%s\\n' 'Operation not permitted' >&2\nexit 1\n"
+	brewBody := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$BREW_MARKER\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctlBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "brew"), []byte(brewBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("BREW_MARKER", brewMarker)
+
+	err := runManagedServiceForPlatform("darwin", "restart", io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("非服务缺失错误必须原样失败：%v", err)
+	}
+	assertPathDoesNotExist(t, brewMarker, "原子 kickstart 失败时不能用 start 掩盖真实错误")
 }
 
 func TestManagedLogsLinuxUsesJournalctlAndFollow(t *testing.T) {
@@ -726,7 +795,7 @@ func TestWaitForServiceReadyRejectsOldServerVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("旧 agentd 占用 Endpoint 时必须 fail-closed")
 	}
-	for _, want := range []string{"1.2.2", "1.2.3", "brew services restart mimi-remote", "agentd logs"} {
+	for _, want := range []string{"1.2.2", "1.2.3", "agentd restart", "agentd logs"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("版本不一致错误缺少 %q：%v", want, err)
 		}
@@ -1095,6 +1164,11 @@ func prepareBrewSideEffectProbe(t *testing.T) string {
 	brewPath := filepath.Join(binDir, "brew")
 	brewBody := "#!/bin/sh\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
 	if err := os.WriteFile(brewPath, []byte(brewBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launchctlPath := filepath.Join(binDir, "launchctl")
+	launchctlBody := "#!/bin/sh\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
+	if err := os.WriteFile(launchctlPath, []byte(launchctlBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeMainTestCodex(t, filepath.Join(binDir, "codex"))

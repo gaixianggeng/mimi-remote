@@ -55,6 +55,10 @@ agentd restart
 agentd status
 ```
 
+macOS 上的 `agentd restart` 会让 launchd 通过单次 `kickstart` 原子重启已经加载的服务；它不会先卸载服务再尝试重新加载。因此即使重启命令来自当前 `agentd` 托管的 Codex 任务，新进程也会由 launchd 独立拉起，不会因调用链随旧进程退出而长期停机。服务原本未加载时，命令才会安全回退到 `brew services start`。
+
+不要在 `agentd` 提供的远程任务中直接运行 `brew services restart mimi-remote`。该命令包含独立的停止、启动两步，第一步可能终止正在执行第二步的任务。
+
 如果就绪检查失败：
 
 ```bash

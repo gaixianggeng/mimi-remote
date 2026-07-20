@@ -83,6 +83,8 @@ agentd restart
 agentd stop
 ```
 
+macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
+
 ### Claude Code 可选通道
 
 Claude 通道需要 `alleycat-claude-bridge >= 0.2.1`。bridge 与完整 Mimi Remote 源码同仓维护：
