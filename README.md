@@ -133,3 +133,5 @@ bash ./scripts/verify-release.sh
 - 多用户、云同步、任意 Shell 和公网 SaaS 不属于当前范围。
 
 安全问题请按 [安全政策](SECURITY.md) 私下报告。项目使用 [GNU GPLv3](LICENSE)，并附 App Store / Google Play 分发例外；第三方归属和许可证正文见 [NOTICE.md](NOTICE.md) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+Mimi Remote App 用户可查看双语[隐私政策](docs/privacy-policy.md)、[使用条款](docs/terms-of-use.md)与[支持说明](docs/support.md)。
