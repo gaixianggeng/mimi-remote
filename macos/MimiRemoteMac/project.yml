@@ -1,0 +1,66 @@
+name: MimiRemoteMac
+options:
+  bundleIdPrefix: com.gaixianggeng
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: 9HZ89R58PZ
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_HARDENED_RUNTIME: "YES"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+targets:
+  MimiRemoteMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.mac
+        PRODUCT_NAME: Mimi Remote Mac
+        PRODUCT_MODULE_NAME: MimiRemoteMac
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/MimiRemoteMac.entitlements
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+        GENERATE_INFOPLIST_FILE: "NO"
+    postBuildScripts:
+      - name: Build and embed agentd
+        script: |
+          bash "$SRCROOT/Scripts/embed-agentd.sh"
+        basedOnDependencyAnalysis: false
+  MimiRemoteMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: MimiRemoteMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.macTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  MimiRemoteMac:
+    build:
+      targets:
+        MimiRemoteMac: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - MimiRemoteMacTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

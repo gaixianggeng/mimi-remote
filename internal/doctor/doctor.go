@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
@@ -18,10 +20,13 @@ import (
 )
 
 type Checker struct {
-	version    string
-	cfg        config.Config
-	registry   *projects.Registry
-	configPath string
+	version                    string
+	cfg                        config.Config
+	registry                   *projects.Registry
+	configPath                 string
+	fileAccessMu               sync.RWMutex
+	fileAccessPreflightStarted bool
+	fileAccessPreflight        Check
 }
 
 type Results struct {
@@ -66,6 +71,12 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		c.runtimeCheck(),
 		{Name: "tailscale", OK: commandExists("tailscale"), Message: "检测到 Tailscale 命令", Fix: "安装并登录 Tailscale：https://tailscale.com/download"},
 	}
+	if check := macOSCodeSigningCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
+	if check := c.fileAccessPreflightCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -89,8 +100,10 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 			checks[i].Level = "ok"
 			continue
 		}
-		if checks[i].Name == "tailscale" && !checks[i].OK {
-			checks[i].Message = "未检测到 Tailscale 命令，本机访问仍可使用"
+		if isWarningOnlyCheck(checks[i].Name) {
+			if checks[i].Name == "tailscale" {
+				checks[i].Message = "未检测到 Tailscale 命令，本机访问仍可使用"
+			}
 			checks[i].Level = "warning"
 			continue
 		}
@@ -98,6 +111,65 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		ok = false
 	}
 	return Results{OK: ok, Version: c.version, Listen: c.cfg.Listen, Checks: checks}
+}
+
+func isWarningOnlyCheck(name string) bool {
+	switch name {
+	case "tailscale", "macos-code-signing", "file-access-preflight":
+		return true
+	default:
+		return false
+	}
+}
+
+func macOSCodeSigningCheck(ctx context.Context) Check {
+	if runtime.GOOS != "darwin" {
+		return Check{}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return unstableMacOSCodeSigningCheck("无法确定当前 agentd 可执行文件")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(runCtx, "/usr/bin/codesign", "-d", "-r-", executable).CombinedOutput()
+	if err != nil {
+		return unstableMacOSCodeSigningCheck("agentd 没有可验证的代码签名")
+	}
+	requirement := designatedRequirement(string(output))
+	if !isStableDesignatedRequirement(requirement) {
+		return unstableMacOSCodeSigningCheck("agentd 代码身份绑定当前二进制哈希，重新编译后 macOS 文件授权可能失效")
+	}
+	return Check{Name: "macos-code-signing", OK: true, Message: "agentd 使用可跨构建识别的稳定代码签名"}
+}
+
+func unstableMacOSCodeSigningCheck(message string) Check {
+	return Check{
+		Name:    "macos-code-signing",
+		OK:      false,
+		Message: message,
+		Fix:     "源码开发运行 bash ./scripts/restart-agentd-dev-macos.sh；正式安装请升级到带 Developer ID 签名的版本",
+	}
+}
+
+func designatedRequirement(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if index := strings.Index(line, "designated =>"); index >= 0 {
+			return strings.TrimSpace(line[index+len("designated =>"):])
+		}
+	}
+	return ""
+}
+
+func isStableDesignatedRequirement(requirement string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(requirement))
+	// Go 链接器生成的 ad-hoc 签名只有 cdhash；每次 build 都会变。
+	// 稳定身份至少需要固定 identifier 和受证书链约束的 anchor。
+	return normalized != "" &&
+		!strings.Contains(normalized, "cdhash") &&
+		strings.Contains(normalized, "identifier") &&
+		strings.Contains(normalized, "anchor")
 }
 
 func (c *Checker) configFileCheck() Check {

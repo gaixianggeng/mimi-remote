@@ -4,7 +4,7 @@
 
 Mimi Remote Agent 是运行在用户自己 Mac 或 Linux 开发机上的 Go 服务。它通过受控的 HTTP/WebSocket 接口，把移动端请求转发到本机 Codex app-server，同时负责鉴权、目录授权、协议白名单、服务诊断和资源边界。
 
-这个公开发布镜像只包含后端、安装脚本和发布配置。Mimi Remote 的 iPhone / iPad 客户端源码位于完整开源仓库 [gaixianggeng/codex-ipad-agent](https://github.com/gaixianggeng/codex-ipad-agent)。
+这个公开发布镜像包含后端、Mac 菜单栏宿主、安装脚本和发布配置。Mimi Remote 的 iPhone / iPad 客户端源码位于完整开源仓库 [gaixianggeng/codex-ipad-agent](https://github.com/gaixianggeng/codex-ipad-agent)。
 
 本项目是独立开发的第三方工具，不隶属于 OpenAI，也不代表 OpenAI 官方产品。
 
@@ -29,7 +29,13 @@ iPhone / iPad App
 
 ## 实现
 
-### macOS
+### macOS App（推荐）
+
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg`，打开后把 **Mimi Remote Mac** 拖到 Applications。安装包同时支持 Apple Silicon 和 Intel，App 内已经包含 `agentd`，不要求用户安装 Go 或 Xcode。
+
+首次打开 App 后，在菜单栏完成设置或接管已有 Homebrew 服务；现有配置、Token 和配对关系会保留。安装包使用 Developer ID 签名并经过 Apple Notarization，仍建议下载后核对同一 Release 中的 `Mimi-Remote-Mac.dmg.sha256`。
+
+### Homebrew 后端
 
 前置条件：
 
@@ -48,6 +54,8 @@ agentd status
 ```
 
 `agentd up` 会生成用户私有配置和独立 Token、启动 Homebrew 后台服务、等待 Codex app-server 真正就绪，然后输出短期配对二维码。重复执行会复用现有配置，不会覆盖已经配对的长期 Token。
+
+Agent 或自动化安装使用 `agentd up --no-pair`；它执行相同初始化与就绪检查，但不输出二维码、Endpoint 和长期访问码。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告。需要配对时再由用户在本机终端执行 `agentd pair --qr-only`。
 
 ### Linux
 
@@ -71,19 +79,36 @@ go build -trimpath -o bin/agentd ./cmd/agentd
 ./bin/agentd serve
 ```
 
+上面的命令用于前台调试。反复替换 macOS Homebrew 服务时，应使用稳定签名和可回滚的交接流水线，避免每次编译改变 `cdhash` 后丢失系统文件授权：
+
+```bash
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# 从当前 agentd 托管的远程任务发起
+bash ./scripts/restart-agentd-dev-macos.sh --no-wait
+bash ./scripts/restart-agentd-dev-macos.sh --status
+```
+
 常用命令：
 
 ```bash
 agentd up
+agentd up --no-pair
 agentd status
 agentd pair --qr-only
 agentd doctor --fix
 agentd logs -n 200
 agentd restart
+agentd restart --no-pair
 agentd stop
 ```
 
 macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
+`up --no-pair` 和 `restart --no-pair` 用于自动化，避免在日志中输出二维码、Endpoint 和长期访问码。
+
+每次服务启动时，`agentd` 都会优先异步预检 projects、`scan_roots`、`browse_roots`；当浏览根覆盖当前 Home 时，还会探测 Desktop、Documents、Downloads，尽早触发 macOS“文件与文件夹”提示。预检不递归读取内容，也不会因弹窗未处理而阻塞服务上线，结果可在 `agentd status --json`、Doctor 和日志中查看。
+
+授权 Home 顶层不等于授权 Home 内所有受保护位置。macOS 分别管理 Desktop、Documents、Downloads，“完全磁盘访问”还覆盖其他 App 数据、备份等。需要无人值守访问整个 Home 时，在“系统设置 → 隐私与安全性 → 完全磁盘访问”中一次性添加 `/opt/homebrew/opt/mimi-remote/bin/agentd`。
 
 ### Claude Code 可选通道
 

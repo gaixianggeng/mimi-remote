@@ -36,6 +36,9 @@ type Router struct {
 	upgrader     websocket.Upgrader
 	monitor      *relayMonitor
 	historyMedia *appServerHistoryMediaStore
+	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
+	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
+	tailscalePathLookup tailscaleNetworkPathLookup
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
 	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
@@ -84,6 +87,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
+		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
@@ -103,6 +107,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/version", r.auth.Middleware(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", r.auth.Middleware(http.HandlerFunc(r.doctorHandler)))
 	mux.Handle("/api/diagnostics/relay", r.auth.Middleware(http.HandlerFunc(r.relayDiagnosticsHandler)))
+	mux.Handle("/api/diagnostics/tailscale-path", r.auth.Middleware(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	if cfg.Debug.EnableCodexHistory {
 		mux.Handle("/api/debug/codex-history", r.auth.Middleware(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {

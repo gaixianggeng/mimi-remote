@@ -30,7 +30,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 #### 系统权限
 
 - 相机：仅在用户打开扫码页时读取配对二维码。
-- 麦克风与语音识别：仅在用户主动录入语音时使用。语音识别由 Apple 系统能力完成，是否需要联网由设备、语言和系统设置决定，并受 Apple 隐私政策约束。
+- 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择 Apple 或 Codex 转写。Apple 模式使用设备端 SpeechAnalyzer 实时处理；系统可能从 Apple 下载并维护语言模型，但语音音频不会发送到 Apple 服务器。Codex 模式会把录音发送到用户配置的 Mac，再由 `agentd` 使用用户自己的 Codex 登录态请求 ChatGPT 转写接口；相关处理受用户与 OpenAI 之间的条款约束。Mimi Remote 开发者不接收这些录音。
 - 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
 
 拒绝上述权限不会阻止用户通过手动输入、键盘输入或其他不需要该权限的方式使用对应核心功能。
@@ -78,7 +78,7 @@ Connections may use a local network, a private network such as Tailscale, or an 
 #### System permissions
 
 - Camera: used only while you open the QR pairing scanner.
-- Microphone and speech recognition: used only when you actively dictate text. Recognition uses Apple system capabilities; network use depends on the device, language, and system settings and is governed by Apple's privacy policy.
+- Microphone and speech recognition: used only when you actively dictate text. You can choose Apple or Codex transcription. Apple mode uses SpeechAnalyzer for real-time on-device processing; the system may download and maintain language models from Apple, but voice audio is not sent to Apple servers. Codex mode sends the recording to the Mac you configure, where `agentd` uses your own Codex sign-in to request the ChatGPT transcription endpoint. That processing is governed by the terms between you and OpenAI. The Mimi Remote developer does not receive these recordings.
 - Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
 
 Declining a permission does not prevent use of alternatives such as manual pairing or keyboard input.

@@ -85,6 +85,40 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 	}
 }
 
+func TestDesignatedRequirementRejectsPerBuildCDHash(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		stable bool
+	}{
+		{
+			name:   "go linker ad-hoc signature",
+			output: `# designated => cdhash H"716c95a0649b65115acda41d95f1e30c58a8582c"`,
+			stable: false,
+		},
+		{
+			name:   "apple development identity",
+			output: `designated => identifier "agentd" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: Example"`,
+			stable: true,
+		},
+		{
+			name: "developer id identity",
+			output: `Executable=/opt/homebrew/bin/agentd
+designated => identifier "agentd" and anchor apple generic and certificate leaf[subject.OU] = "TEAMID"`,
+			stable: true,
+		},
+		{name: "missing requirement", output: "Signature=adhoc", stable: false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			requirement := designatedRequirement(testCase.output)
+			if got := isStableDesignatedRequirement(requirement); got != testCase.stable {
+				t.Fatalf("稳定代码身份判定错误：requirement=%q got=%v want=%v", requirement, got, testCase.stable)
+			}
+		})
+	}
+}
+
 func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 

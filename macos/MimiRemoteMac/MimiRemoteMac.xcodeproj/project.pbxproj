@@ -1,0 +1,621 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0233FB757655D673A1588B25 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 414A74A2A5A2877C1A9CB604 /* MenuBarContentView.swift */; };
+		0CA331176F893C656E0CCDA1 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */; };
+		11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */; };
+		2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */; };
+		2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */; };
+		3753BB1F5923C410265B44D3 /* ServiceManagementClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */; };
+		427C6CE3D4E0488047ABA134 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1A62A4B02D2D4B3685ED5AD /* Assets.xcassets */; };
+		43BD61177935A8FEB6E85133 /* ProcessEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */; };
+		58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */; };
+		642F9E49711F073D72016DF1 /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */; };
+		73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067C5878128418FC7FEBE76A /* OnboardingView.swift */; };
+		76C0C8E2D63AABBC7AA2C4ED /* ProcessExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */; };
+		78843D42483895178C480F25 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425D1AFDB58612825840CB62 /* DashboardView.swift */; };
+		7DA4ACD2AA9E502238AC5228 /* AgentLogClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */; };
+		9190117090B67A3342D6120D /* QRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE4D38858D995BC12D0856A /* QRCodeView.swift */; };
+		9381140D2855654A9E07746E /* StatusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4847134E49077F02AF8BBE /* StatusComponents.swift */; };
+		B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE170A943EDB5164E2CD95 /* PairingView.swift */; };
+		B4E72BE5C26B15E8255D9F2B /* HealthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FF645CF76E8BD94261F54A9 /* HealthClient.swift */; };
+		D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */; };
+		DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */; };
+		E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */; };
+		F496A4E680E86AEC0F3AB5E9 /* MimiRemoteMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		7F0954ECFEBF3330D953B679 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9D0F985C3B46602D5A7809A4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B0FA2865256A8052401AEA07;
+			remoteInfo = MimiRemoteMac;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
+		0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManagementClient.swift; sourceTree = "<group>"; };
+		0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiRemoteMacApp.swift; sourceTree = "<group>"; };
+		067C5878128418FC7FEBE76A /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		08DE170A943EDB5164E2CD95 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
+		38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandClient.swift; sourceTree = "<group>"; };
+		414A74A2A5A2877C1A9CB604 /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
+		425D1AFDB58612825840CB62 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
+		4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExecutor.swift; sourceTree = "<group>"; };
+		4A4847134E49077F02AF8BBE /* StatusComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusComponents.swift; sourceTree = "<group>"; };
+		63E0418360C87C9E75E7C24A /* MimiRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MimiRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomebrewServiceClient.swift; sourceTree = "<group>"; };
+		6FF645CF76E8BD94261F54A9 /* HealthClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthClient.swift; sourceTree = "<group>"; };
+		7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessEnvironment.swift; sourceTree = "<group>"; };
+		8BE4D38858D995BC12D0856A /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
+		8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindowPlacementTests.swift; sourceTree = "<group>"; };
+		A1A62A4B02D2D4B3685ED5AD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C187C502CDCBC251CB35D863 /* MimiRemoteMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MimiRemoteMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLogClient.swift; sourceTree = "<group>"; };
+		DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModels.swift; sourceTree = "<group>"; };
+		F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModelsTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		21125DB24F843FD8050EC671 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		34F59161A9BCDF06996411CE = {
+			isa = PBXGroup;
+			children = (
+				DAB574AD822059603BA2BB77 /* Resources */,
+				3739440B15466CB8E0B9D708 /* Sources */,
+				644E82A77796A972C0A1D022 /* Tests */,
+				F4A24875542B877ABFF93DB0 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		3739440B15466CB8E0B9D708 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C99BB8B5F433D41956D51A80 /* App */,
+				21125DB24F843FD8050EC671 /* Domain */,
+				582570E70EAF196E5BA47978 /* Features */,
+				F581E706E2063A1803D12F64 /* Infrastructure */,
+				55F09D69C73F5596F45A75E0 /* Shared */,
+				90EBB60B86D5CC07B86FD6B6 /* State */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		4582ED716415B96BA7CE71B0 /* Pairing */ = {
+			isa = PBXGroup;
+			children = (
+				08DE170A943EDB5164E2CD95 /* PairingView.swift */,
+			);
+			path = Pairing;
+			sourceTree = "<group>";
+		};
+		4851EC28A741A7D1F86397E2 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		55F09D69C73F5596F45A75E0 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				8BE4D38858D995BC12D0856A /* QRCodeView.swift */,
+				4A4847134E49077F02AF8BBE /* StatusComponents.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		582570E70EAF196E5BA47978 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				8C5E3D3FF91A672DE791876B /* Dashboard */,
+				C911B774DE54774E89F61F28 /* Diagnostics */,
+				6A3D806EC959CB76486AA2EA /* MenuBar */,
+				95A7A7AE02B2D68F286356EA /* Onboarding */,
+				4582ED716415B96BA7CE71B0 /* Pairing */,
+				4851EC28A741A7D1F86397E2 /* Settings */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		644E82A77796A972C0A1D022 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */,
+				01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */,
+				95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		6A3D806EC959CB76486AA2EA /* MenuBar */ = {
+			isa = PBXGroup;
+			children = (
+				414A74A2A5A2877C1A9CB604 /* MenuBarContentView.swift */,
+			);
+			path = MenuBar;
+			sourceTree = "<group>";
+		};
+		8C5E3D3FF91A672DE791876B /* Dashboard */ = {
+			isa = PBXGroup;
+			children = (
+				425D1AFDB58612825840CB62 /* DashboardView.swift */,
+			);
+			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		90EBB60B86D5CC07B86FD6B6 /* State */ = {
+			isa = PBXGroup;
+			children = (
+				47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */,
+			);
+			path = State;
+			sourceTree = "<group>";
+		};
+		95A7A7AE02B2D68F286356EA /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				067C5878128418FC7FEBE76A /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		C911B774DE54774E89F61F28 /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
+		C99BB8B5F433D41956D51A80 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		DAB574AD822059603BA2BB77 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A1A62A4B02D2D4B3685ED5AD /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F4A24875542B877ABFF93DB0 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				63E0418360C87C9E75E7C24A /* MimiRemoteMac.app */,
+				C187C502CDCBC251CB35D863 /* MimiRemoteMacTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F581E706E2063A1803D12F64 /* Infrastructure */ = {
+			isa = PBXGroup;
+			children = (
+				38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */,
+				CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */,
+				6FF645CF76E8BD94261F54A9 /* HealthClient.swift */,
+				6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */,
+				7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */,
+				4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */,
+				0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */,
+			);
+			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8D4EC56087511FB2469FE7B9 /* MimiRemoteMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F3B122196951F36B74543A18 /* Build configuration list for PBXNativeTarget "MimiRemoteMacTests" */;
+			buildPhases = (
+				DFB6698EF53240B5D6B4DF90 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FB2AA521ABF13FF6A29C9C80 /* PBXTargetDependency */,
+			);
+			name = MimiRemoteMacTests;
+			packageProductDependencies = (
+			);
+			productName = MimiRemoteMacTests;
+			productReference = C187C502CDCBC251CB35D863 /* MimiRemoteMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B0FA2865256A8052401AEA07 /* MimiRemoteMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 19BEBA0B36901EB9C03F2212 /* Build configuration list for PBXNativeTarget "MimiRemoteMac" */;
+			buildPhases = (
+				15E2B2BA59FFFC97888C53F9 /* Sources */,
+				17006539A5F8B803D410DF9F /* Resources */,
+				F91AC68E6C35C33C896E0D75 /* Build and embed agentd */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MimiRemoteMac;
+			packageProductDependencies = (
+			);
+			productName = MimiRemoteMac;
+			productReference = 63E0418360C87C9E75E7C24A /* MimiRemoteMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9D0F985C3B46602D5A7809A4 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					8D4EC56087511FB2469FE7B9 = {
+						DevelopmentTeam = 9HZ89R58PZ;
+					};
+					B0FA2865256A8052401AEA07 = {
+						DevelopmentTeam = 9HZ89R58PZ;
+					};
+				};
+			};
+			buildConfigurationList = 3224BB87CD869D439D157DB8 /* Build configuration list for PBXProject "MimiRemoteMac" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 34F59161A9BCDF06996411CE;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F4A24875542B877ABFF93DB0 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B0FA2865256A8052401AEA07 /* MimiRemoteMac */,
+				8D4EC56087511FB2469FE7B9 /* MimiRemoteMacTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		17006539A5F8B803D410DF9F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				427C6CE3D4E0488047ABA134 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F91AC68E6C35C33C896E0D75 /* Build and embed agentd */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build and embed agentd";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/Scripts/embed-agentd.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		15E2B2BA59FFFC97888C53F9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */,
+				7DA4ACD2AA9E502238AC5228 /* AgentLogClient.swift in Sources */,
+				E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */,
+				78843D42483895178C480F25 /* DashboardView.swift in Sources */,
+				0CA331176F893C656E0CCDA1 /* DiagnosticsView.swift in Sources */,
+				B4E72BE5C26B15E8255D9F2B /* HealthClient.swift in Sources */,
+				58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */,
+				642F9E49711F073D72016DF1 /* HostStore.swift in Sources */,
+				DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */,
+				0233FB757655D673A1588B25 /* MenuBarContentView.swift in Sources */,
+				F496A4E680E86AEC0F3AB5E9 /* MimiRemoteMacApp.swift in Sources */,
+				73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */,
+				B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */,
+				43BD61177935A8FEB6E85133 /* ProcessEnvironment.swift in Sources */,
+				76C0C8E2D63AABBC7AA2C4ED /* ProcessExecutor.swift in Sources */,
+				9190117090B67A3342D6120D /* QRCodeView.swift in Sources */,
+				3753BB1F5923C410265B44D3 /* ServiceManagementClient.swift in Sources */,
+				9381140D2855654A9E07746E /* StatusComponents.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DFB6698EF53240B5D6B4DF90 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */,
+				2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */,
+				11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FB2AA521ABF13FF6A29C9C80 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B0FA2865256A8052401AEA07 /* MimiRemoteMac */;
+			targetProxy = 7F0954ECFEBF3330D953B679 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3E5528A85F262D4E46F4902E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 9HZ89R58PZ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8A46D61DCF36DDBA796F66BA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.macTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac";
+			};
+			name = Release;
+		};
+		9DAD3841304D8C9A50486CE9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/MimiRemoteMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.mac;
+				PRODUCT_MODULE_NAME = MimiRemoteMac;
+				PRODUCT_NAME = "Mimi Remote Mac";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		B59F6889EAB9355E3984CB44 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 9HZ89R58PZ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		CC410AE5E2AF77872F72D385 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.macTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac";
+			};
+			name = Debug;
+		};
+		DE79B8C39A87A5873C919BC8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/MimiRemoteMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.mac;
+				PRODUCT_MODULE_NAME = MimiRemoteMac;
+				PRODUCT_NAME = "Mimi Remote Mac";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		19BEBA0B36901EB9C03F2212 /* Build configuration list for PBXNativeTarget "MimiRemoteMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9DAD3841304D8C9A50486CE9 /* Debug */,
+				DE79B8C39A87A5873C919BC8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		3224BB87CD869D439D157DB8 /* Build configuration list for PBXProject "MimiRemoteMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E5528A85F262D4E46F4902E /* Debug */,
+				B59F6889EAB9355E3984CB44 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F3B122196951F36B74543A18 /* Build configuration list for PBXNativeTarget "MimiRemoteMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC410AE5E2AF77872F72D385 /* Debug */,
+				8A46D61DCF36DDBA796F66BA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 9D0F985C3B46602D5A7809A4 /* Project object */;
+}

@@ -31,6 +31,11 @@ for command_name in awk basename cmp find go grep mktemp tar tr wc; do
   fi
 done
 
+if [[ "${MIMI_REQUIRE_MACOS_SIGNATURE:-0}" == "1" ]] && ! command -v codesign >/dev/null 2>&1; then
+  echo "发布产物门禁失败：正式 macOS 签名校验缺少 codesign。" >&2
+  exit 127
+fi
+
 sha256_file() {
   local path="$1"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -142,6 +147,21 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
   if [[ "$binary_cgo" != "0" ]]; then
     echo "发布产物门禁失败：$(basename "$archive") 不是 CGO_ENABLED=0 的可移植构建。" >&2
     exit 1
+  fi
+
+  if [[ "$expected_goos" == "darwin" && "${MIMI_REQUIRE_MACOS_SIGNATURE:-0}" == "1" ]]; then
+    if ! codesign --verify --strict --verbose=2 "$temp_dir/agentd" >/dev/null 2>&1; then
+      echo "发布产物门禁失败：$archive_name 中的 agentd 没有有效 Developer ID 签名。" >&2
+      exit 1
+    fi
+    signing_details="$(codesign -d --verbose=4 -r- "$temp_dir/agentd" 2>&1)"
+    if ! grep -Fq 'Authority=Developer ID Application:' <<<"$signing_details" \
+      || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$signing_details" \
+      || ! grep -Fq 'designated => identifier' <<<"$signing_details" \
+      || grep -Fq 'designated => cdhash' <<<"$signing_details"; then
+      echo "发布产物门禁失败：$archive_name 没有可跨版本复用权限的稳定 Developer ID 身份。" >&2
+      exit 1
+    fi
   fi
 
   # Formula 必须引用目标公开仓库中的同名归档，并写入归档的真实摘要。

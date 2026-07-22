@@ -28,7 +28,7 @@ Go Gateway 当前开放 25 个 client frame method，其中 `initialized` 是 no
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
 
-Claude 实验通道使用更小的独立 allowlist。`alleycat-claude-bridge >= 0.2.1` 时额外开放 `account/rateLimits/read`，请求参数固定改写为 `{}`；`0.2.3` 起补齐事件百分比映射。`0.2.5` 起优先复用 Claude Code 已登录凭据主动读取 OAuth usage：macOS 从登录 Keychain 的 `Claude Code-credentials` 获取短期 access token，其他平台可使用权限收紧的 `~/.claude/.credentials.json`，随后请求固定的 Anthropic OAuth usage beta endpoint，将 5h/7d 窗口映射为现有协议。token 只通过子进程 stdin 传给禁用 `.curlrc` 的系统 `curl`，不进入命令参数、日志或磁盘缓存；成功快照缓存 60 秒，Keychain、scope、过期、网络、HTTP 或解析失败均不影响会话链路。
+Claude 实验通道使用更小的独立 allowlist。`alleycat-claude-bridge >= 0.2.1` 时额外开放 `account/rateLimits/read`，请求参数固定改写为 `{}`；`0.2.3` 起补齐事件百分比映射。`0.2.5` 起优先复用 Claude Code 已登录凭据主动读取 OAuth usage：macOS 从登录 Keychain 的 `Claude Code-credentials` 获取短期 access token，其他平台可使用权限收紧的 `~/.claude/.credentials.json`，随后请求固定的 Anthropic OAuth usage beta endpoint，将 5h/7d 窗口映射为现有协议。`0.2.6` 起，macOS token 过期或接口返回 401 时通过系统 PTY 执行 Claude CLI `/status` 认证路径，等待 Keychain 更新后只重试一次；bridge 不直接读取、消费或覆盖 refresh token。access token 只通过子进程 stdin 传给禁用 `.curlrc` 的系统 `curl`，不进入命令参数、日志或磁盘缓存；成功快照缓存 60 秒，Keychain、scope、续期、网络、HTTP 或解析失败均不影响会话链路。
 
 OAuth usage endpoint 不是稳定公开 API，可能被 Anthropic 调整。主动查询失败时 bridge 继续降级到官方 `rate_limit_event`：按 `rateLimitType` 合并缓存 5h/7d 窗口，把事件中的 0...1 `utilization` 映射为 `usedPercent`。未观测到 utilization 的窗口保留 `unavailableReason=usage_percentage_unavailable`，不会伪造为 `0%`；只有 `rejected` 会映射为额度耗尽，`allowed_warning` 不阻断发送。主动查询和事件缓存都不可用时返回 `rateLimits.availability=unavailable`、`unavailableReason=headless_statusline_unavailable`。
 

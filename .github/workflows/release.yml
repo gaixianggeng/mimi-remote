@@ -14,8 +14,8 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-15
-    timeout-minutes: 20
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -40,6 +40,15 @@ jobs:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: bash ./scripts/check-release-prerequisites.sh
 
+      - name: Verify macOS signing prerequisites
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: bash ./scripts/check-macos-release-signing.sh
+
       - name: Check public repository safety
         run: bash ./scripts/check-public-repo-safety.sh
 
@@ -52,6 +61,17 @@ jobs:
         run: |
           go vet ./...
           go test ./... -count=1
+
+      - name: Build Mac installer snapshot
+        run: |
+          bash ./scripts/build-macos-installer.sh \
+            --snapshot \
+            --version "${GITHUB_REF_NAME#v}" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir dist-macos
+
+      - name: Check Mac installer snapshot
+        run: bash ./scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
 
       - name: Build release snapshot
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
@@ -68,8 +88,8 @@ jobs:
 
   release:
     needs: verify
-    runs-on: macos-15
-    timeout-minutes: 30
+    runs-on: macos-26
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -84,6 +104,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Build, sign, and notarize Mac installer
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          bash ./scripts/build-macos-installer.sh \
+            --version "${GITHUB_REF_NAME#v}" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir dist-macos
+
+      - name: Check signed Mac installer
+        run: bash ./scripts/check-macos-installer.sh --require-notarization dist-macos/Mimi-Remote-Mac.dmg
+
       - name: Release
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
@@ -94,6 +130,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           GOTOOLCHAIN: local
+          MIMI_MACOS_SIGNING: required
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+
+      - name: Upload Mac installer to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist-macos/Mimi-Remote-Mac.dmg \
+            dist-macos/Mimi-Remote-Mac.dmg.sha256 \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: Check published release artifacts
+        env:
+          MIMI_REQUIRE_MACOS_SIGNATURE: "1"
         run: bash ./scripts/check-release-artifacts.sh

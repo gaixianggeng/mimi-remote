@@ -620,7 +620,7 @@ func validateGatewayThreadListParams(params map[string]any) error {
 			return fmt.Errorf("thread/list.sortKey 必须是字符串")
 		}
 		switch strings.TrimSpace(text) {
-		case "updated_at":
+		case "updated_at", "recency_at":
 		default:
 			return fmt.Errorf("thread/list.sortKey 不支持：%s", text)
 		}

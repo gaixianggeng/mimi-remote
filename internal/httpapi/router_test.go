@@ -255,6 +255,27 @@ func TestRelayDiagnosticsRequiresAuthAndReportsHTTPMetrics(t *testing.T) {
 	}
 }
 
+func TestTailscaleNetworkPathDiagnosticsRequiresAuth(t *testing.T) {
+	server := newTestServer(t)
+
+	unauthorized := httptest.NewRecorder()
+	server.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/diagnostics/tailscale-path", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("Tailscale 路径诊断必须要求 Bearer Token，got=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	// httptest 默认来源是文档网段，不触发本机 CLI；这里同时验证非 Tailscale 路径可安全降级。
+	diag := httptest.NewRecorder()
+	server.handler.ServeHTTP(diag, authedRequest(t, http.MethodGet, "/api/diagnostics/tailscale-path", nil))
+	if diag.Code != http.StatusOK {
+		t.Fatalf("Tailscale 路径诊断应返回 200，got=%d body=%s", diag.Code, diag.Body.String())
+	}
+	body := decodeJSON(t, diag)
+	if body["kind"] != string(tailscaleNetworkPathNotTailscale) {
+		t.Fatalf("非 Tailscale 来源应返回可降级状态：%v", body)
+	}
+}
+
 func TestGitStatusReturnsReadonlyDiffForAllowedWorkspace(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)

@@ -80,17 +80,17 @@ func run(args []string) error {
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
-		cfg, registry, checker, err := loadRuntimeConfig(args, false)
-		if err != nil {
-			return err
-		}
-		return serve(cfg, registry, checker)
+		return runServe(args)
 	default:
 		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、serve、doctor、version", cmd)
 	}
 }
 
 func runSetup(args []string) error {
+	return runSetupWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
@@ -99,10 +99,11 @@ func runSetup(args []string) error {
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
@@ -117,10 +118,35 @@ func runSetup(args []string) error {
 		return err
 	}
 	if *asJSON {
-		return printJSON(result)
+		if *qrOnly {
+			return printJSONTo(stdout, qrOnlyPairResult(result))
+		}
+		return printJSONTo(stdout, result)
 	}
-	printSetupResult(os.Stdout, result)
+	if *qrOnly {
+		printQROnlyPairResult(stdout, result)
+		return nil
+	}
+	printSetupResult(stdout, result)
 	return nil
+}
+
+func runServe(args []string) error {
+	logFile := ""
+	cfg, registry, checker, err := loadRuntimeConfig(args, false, func(fs *flag.FlagSet) {
+		fs.StringVar(&logFile, "log-file", "", "同时把服务日志写入指定文件")
+	})
+	if err != nil {
+		return err
+	}
+	closeLog, err := configureServeFileLogging(logFile)
+	if err != nil {
+		return err
+	}
+	if closeLog != nil {
+		defer closeLog()
+	}
+	return serve(cfg, registry, checker)
 }
 
 func runUp(args []string) error {
@@ -131,6 +157,7 @@ func runUp(args []string) error {
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -180,37 +207,76 @@ func runUp(args []string) error {
 	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
 		serviceOK = false
 		serviceError = err.Error()
-		if *asJSON {
-			return printJSON(map[string]any{
-				"result":        result,
-				"service_ok":    serviceOK,
-				"service_error": serviceError,
-			})
+		if *noPair {
+			serviceError = safeUpServiceError(serviceError, result)
 		}
-		return fmt.Errorf("Mimi Mac 助手还没有启动成功，暂时不要扫码。\n\n原因：%v\n下一步：\n  agentd doctor --fix\n  agentd logs", err)
+		if *asJSON {
+			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
+		}
+		return fmt.Errorf("Mimi Mac 助手还没有启动成功，暂时不要扫码。\n\n原因：%s\n下一步：\n  agentd doctor --fix\n  agentd logs", serviceError)
 	} else if *waitTimeout > 0 {
 		if *asJSON {
-			return printJSON(map[string]any{
-				"result":     result,
-				"service_ok": serviceOK,
-			})
+			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 		}
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已准备好")
 	}
 	if *asJSON {
-		return printJSON(map[string]any{
-			"result":     result,
-			"service_ok": serviceOK,
-		})
+		return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 	}
 
-	printServeConnection(os.Stdout, result)
+	if *noPair {
+		// Agent/自动化日志可以保留安装进度和安全警告，但不能留存任何连接凭据。
+		printWarnings(os.Stdout, safeUpWarnings(result))
+	} else {
+		printServeConnection(os.Stdout, result)
+	}
 	fmt.Fprintln(os.Stdout, "常用命令：")
 	fmt.Fprintln(os.Stdout, "  agentd status       查看当前连接状态")
 	fmt.Fprintln(os.Stdout, "  agentd pair         刷新配对二维码")
 	fmt.Fprintln(os.Stdout, "  agentd stop         停止当前平台后台服务")
 	fmt.Fprintln(os.Stdout, "  agentd doctor --fix 自动检查并修复常见问题")
 	return nil
+}
+
+func upJSONOutput(result agentsetup.Result, serviceOK bool, serviceError string, noPair bool) map[string]any {
+	output := map[string]any{
+		"service_ok": serviceOK,
+	}
+	if !noPair {
+		// 保持既有 JSON 输出兼容；调用方只有显式启用安全模式时才收窄字段。
+		output["result"] = result
+	} else {
+		output["version"] = version
+		if len(result.Warnings) > 0 {
+			output["warnings"] = safeUpWarnings(result)
+		}
+	}
+	if serviceError != "" {
+		if noPair {
+			serviceError = safeUpServiceError(serviceError, result)
+		}
+		output["service_error"] = serviceError
+	}
+	return output
+}
+
+func safeUpServiceError(serviceError string, result agentsetup.Result) string {
+	// 先替换包含其他凭据的长 URL，再替换 Token 和 Endpoint，避免部分替换后无法命中完整值。
+	return publicStatusError(
+		errors.New(serviceError),
+		result.ConnectURL,
+		result.PairURL,
+		result.Token,
+		result.Endpoint,
+	)
+}
+
+func safeUpWarnings(result agentsetup.Result) []string {
+	warnings := make([]string, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, safeUpServiceError(warning, result))
+	}
+	return warnings
 }
 
 func runStart(args []string) error {
@@ -260,6 +326,7 @@ func runRestart(args []string) error {
 	fs := flag.NewFlagSet("restart", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	noPair := fs.Bool("no-pair", false, "重启成功后不输出二维码和长期访问码，适合远程自动化")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -289,7 +356,9 @@ func runRestart(args []string) error {
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已重新连接")
 	}
-	printServeConnection(os.Stdout, result)
+	if !*noPair {
+		printServeConnection(os.Stdout, result)
+	}
 	return nil
 }
 
@@ -334,6 +403,13 @@ func runStatus(args []string) error {
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
 	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, time.Second)
 	doctorResults := checker.Run(context.Background(), false)
+	if serviceStatus.Ready() {
+		// 服务端 Checker 持有本次启动的异步权限预检结果；CLI 临时创建的 Checker 没有。
+		// readyz 已通过时优先展示服务端状态，使 status 能准确反映重启后的权限预检。
+		if remoteResults, remoteErr := fetchServiceDoctorResults(context.Background(), result.Endpoint, result.Token, time.Second); remoteErr == nil {
+			doctorResults = remoteResults
+		}
+	}
 	status := serviceStatusFields(serviceStatus, result.Token)
 	status["version"] = version
 	status["endpoint"] = result.Endpoint
@@ -723,6 +799,9 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 }
 
 func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker) error {
+	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
+	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
+	checker.StartFileAccessPreflight()
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
 	if cfg.AppServer.Transport != "ws" {
 		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
@@ -1453,6 +1532,47 @@ func waitForServiceReady(ctx context.Context, endpoint string, token string, exp
 	return waitForServiceCheck(ctx, readyURL, strings.TrimSpace(token), "readyz", timeout, func(body io.Reader) error {
 		return validateReadyServiceVersion(body, expectedVersion)
 	})
+}
+
+func fetchServiceDoctorResults(ctx context.Context, endpoint string, token string, timeout time.Duration) (doctor.Results, error) {
+	if timeout <= 0 {
+		return doctor.Results{}, fmt.Errorf("doctor 请求超时必须大于 0")
+	}
+	doctorURL, err := serviceCheckURL(endpoint, "/api/doctor")
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, doctorURL, nil)
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	if value := strings.TrimSpace(token); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return doctor.Results{}, fmt.Errorf("doctor HTTP %d", resp.StatusCode)
+	}
+	var results doctor.Results
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
+	if err := decoder.Decode(&results); err != nil {
+		return doctor.Results{}, fmt.Errorf("doctor 响应不是有效 JSON：%w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return doctor.Results{}, fmt.Errorf("doctor 响应包含多个 JSON 值")
+		}
+		return doctor.Results{}, fmt.Errorf("doctor 响应包含畸形尾部数据：%w", err)
+	}
+	return results, nil
 }
 
 func waitForServiceCheck(ctx context.Context, checkURL string, token string, label string, timeout time.Duration, validate func(body io.Reader) error) error {

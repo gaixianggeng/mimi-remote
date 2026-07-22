@@ -255,6 +255,7 @@ type appServerGatewayPendingHistoryRequest struct {
 	cwd               string
 	cursor            string
 	limit             int64
+	sortKey           string
 	sortDirection     string
 	itemsView         string
 	useStateDBOnly    string

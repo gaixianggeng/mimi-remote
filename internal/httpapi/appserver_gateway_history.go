@@ -131,8 +131,9 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 		cwd, _ := gatewayStringParam(params, "cwd")
 		return appServerGatewayPendingHistoryRequest{
 			method: method, cwd: cwd, cursor: gatewayOptionalStringParam(params, "cursor"),
-			limit: gatewayOptionalInt64Param(params, "limit"), sortDirection: gatewayOptionalStringParam(params, "sortDirection"),
-			itemsView: "list", useStateDBOnly: gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
+			limit: gatewayOptionalInt64Param(params, "limit"), sortKey: gatewayOptionalStringParam(params, "sortKey"),
+			sortDirection: gatewayOptionalStringParam(params, "sortDirection"),
+			itemsView:     "list", useStateDBOnly: gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
 		}, true
 	case "thread/search":
 		// 搜索没有 cwd/threadId，请求指纹必须包含完整的安全参数；预算 subject 则使用固定
@@ -198,13 +199,14 @@ func gatewayHistoryRequestFingerprint(runtimeID string, request appServerGateway
 		CWD            string `json:"cwd,omitempty"`
 		Cursor         string `json:"cursor,omitempty"`
 		Limit          int64  `json:"limit,omitempty"`
+		SortKey        string `json:"sortKey,omitempty"`
 		SortDirection  string `json:"sortDirection,omitempty"`
 		ItemsView      string `json:"itemsView,omitempty"`
 		UseStateDBOnly string `json:"useStateDbOnly,omitempty"`
 		Filter         string `json:"filter,omitempty"`
 	}{
 		Runtime: normalizeAppServerRuntimeID(runtimeID), Method: request.method, ThreadID: request.threadID,
-		CWD: request.cwd, Cursor: request.cursor, Limit: request.limit, SortDirection: request.sortDirection,
+		CWD: request.cwd, Cursor: request.cursor, Limit: request.limit, SortKey: request.sortKey, SortDirection: request.sortDirection,
 		ItemsView: request.itemsView, UseStateDBOnly: request.useStateDBOnly, Filter: request.filterFingerprint,
 	})
 	return string(encoded)

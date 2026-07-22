@@ -17,3 +17,4 @@ bin/
 /logs/
 *.log
 *.tmp
+.build/

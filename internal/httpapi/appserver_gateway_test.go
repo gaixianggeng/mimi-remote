@@ -1209,7 +1209,7 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 	params := map[string]any{
 		"cwd":            "/tmp/project",
 		"limit":          json.Number("50"),
-		"sortKey":        "updated_at",
+		"sortKey":        "recency_at",
 		"sortDirection":  "desc",
 		"useStateDbOnly": true,
 		"unsafe":         "drop-me",
@@ -1222,6 +1222,27 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "useStateDbOnly")
 	if sanitized["useStateDbOnly"] != true {
 		t.Fatalf("thread/list 应保留 useStateDbOnly：%v", sanitized)
+	}
+	if sanitized["sortKey"] != "recency_at" {
+		t.Fatalf("thread/list 应保留 recency_at：%v", sanitized)
+	}
+}
+
+func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {
+	updated, ok := gatewayHistoryRequestFromParams("thread/list", map[string]any{
+		"cwd": "/tmp/project", "limit": json.Number("20"), "sortKey": "updated_at",
+	})
+	if !ok {
+		t.Fatal("thread/list 应进入历史请求指纹")
+	}
+	recency, ok := gatewayHistoryRequestFromParams("thread/list", map[string]any{
+		"cwd": "/tmp/project", "limit": json.Number("20"), "sortKey": "recency_at",
+	})
+	if !ok {
+		t.Fatal("thread/list 应进入历史请求指纹")
+	}
+	if gatewayHistoryRequestFingerprint("codex", updated) == gatewayHistoryRequestFingerprint("codex", recency) {
+		t.Fatal("不同 sortKey 的 thread/list 不能共享并发请求指纹")
 	}
 }
 

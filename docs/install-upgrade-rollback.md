@@ -31,6 +31,15 @@ agentd status
 
 `agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json` 和独立的 app-server Token 文件，以 `0600` 保存，然后启动 Homebrew 后台服务。重复运行会复用现有配置，不会覆盖已经配对的移动端 Token。
 
+Agent 或自动化首次安装必须使用安全模式，初始化与启动逻辑不变，但不输出二维码、Endpoint 或长期访问码：
+
+```bash
+agentd up --no-pair
+agentd up --no-pair --json
+```
+
+JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning，不包含带 Token 的完整 setup `result`。需要配对时由用户在不会进入远程任务日志的本机终端执行 `agentd pair --qr-only`。
+
 ### macOS 升级
 
 先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。
@@ -58,6 +67,57 @@ agentd status
 macOS 上的 `agentd restart` 会让 launchd 通过单次 `kickstart` 原子重启已经加载的服务；它不会先卸载服务再尝试重新加载。因此即使重启命令来自当前 `agentd` 托管的 Codex 任务，新进程也会由 launchd 独立拉起，不会因调用链随旧进程退出而长期停机。服务原本未加载时，命令才会安全回退到 `brew services start`。
 
 不要在 `agentd` 提供的远程任务中直接运行 `brew services restart mimi-remote`。该命令包含独立的停止、启动两步，第一步可能终止正在执行第二步的任务。
+
+### macOS 源码构建与文件授权
+
+macOS 的文件隐私授权不是只按路径保存。系统还会记录可执行文件的 designated requirement，用它判断升级后的程序是不是原来的程序。Go 默认生成的 ad-hoc 签名只有当前二进制的 `cdhash`；每次重新编译都会改变，因此把普通 `go build` 产物直接覆盖到 Homebrew Cellar 后，下一次启动可能再次请求 Desktop、Documents、Downloads、网络卷、其他 App 容器或完全磁盘访问权限。
+
+仓库提供的开发重启流水线保持 Homebrew 配置、label 和 Token 不变，只替换服务二进制：
+
+```bash
+# 本机终端发起并等待 readyz
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# 从当前 agentd/Codex 托管的远程任务发起
+bash ./scripts/restart-agentd-dev-macos.sh --no-wait
+
+# 新服务连接恢复后检查结果
+bash ./scripts/restart-agentd-dev-macos.sh --status
+agentd doctor
+```
+
+完整顺序是：
+
+1. 使用当前源码构建带 Git revision 的候选二进制；
+2. 使用 Keychain 中的 `Apple Development` identity 和固定 identifier `com.gaixianggeng.mimi-remote.agentd.dev` 签名；
+3. 备份当前 Homebrew 二进制，把后续工作提交给独立的 launchd 一次性 job；
+4. 交接 job 原子替换二进制，对既有 `homebrew.mxcl.mimi-remote` 执行单次 `kickstart`；
+5. 最多等待 25 秒，通过 `agentd status --json` 同时验证版本和 `service_ok=true`；
+6. 新版本失败时恢复原二进制，再次 kickstart 并验证旧版本；结果写入 `~/Library/Application Support/mimi-remote/dev-restart/latest-status`，日志写入 `~/Library/Logs/mimi-remote-dev-restart.log`。
+
+如果自动回滚本身也失败，终态会包含旧二进制备份路径并保留该文件，供人工恢复，不会清掉最后一份可用备份。
+
+独立交接 job 是必要的：如果直接让当前远程任务承担“停止旧服务之后的替换、验证和回滚”，旧 agentd 退出时可能一起终止调用链。`--no-wait` 会先完成 launchd 交接并返回，然后延迟两秒再替换，适合人不在 Mac 前时从 iPad 发起。
+
+新进程进入 `serve` 后，会在启动其他运行时组件前发起异步文件权限预检：读取每个 project、`scan_roots`、`browse_roots` 和已配置 Worktree 根的至多一个目录项；如果 `browse_roots` 覆盖当前用户 Home，还会分别探测 `~/Desktop`、`~/Documents`、`~/Downloads`。这会把相应的 macOS“文件与文件夹”提示提前到重启阶段，而不是等到第一个真实任务访问该路径时才出现。预检不递归遍历、不读取文件正文、不创建测试文件。
+
+预检故意不阻塞 HTTP 服务启动。系统权限对话框可能一直等待本机点击，如果为此阻断 readyz，远程重启会被误判失败并回滚，反而让无人值守恢复更困难。预检进行中或发现不可访问目录时，`file-access-preflight` 以 warning 出现在 `agentd status --json` / Doctor，并把具体路径写入 `agentd logs`；它不会掩盖 Token、Codex upstream 等真正的服务错误。
+
+“当前用户目录”不是 macOS TCC 的单一授权边界。[Apple 的“文件与文件夹”说明](https://support.apple.com/guide/mac-help/mchld5a35146/mac)明确将 Desktop、Documents、Downloads 作为分别管理的位置；Home 顶层可读不代表这些目录已获授权。[Apple 的“隐私与安全性”说明](https://support.apple.com/guide/mac-help/mchl211c911f/mac)则把 Mail、Messages、Safari、Time Machine 等其他 App 数据归入“完全磁盘访问”的范围。因此：
+
+- 只处理普通项目：在首次启动时分别允许系统弹出的 Desktop、Documents、Downloads 权限即可；
+- 需要人不在电脑前也能访问整个 Home 或其他 App 数据：在“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加稳定签名的 `/opt/homebrew/opt/mimi-remote/bin/agentd`；
+- 不能通过程序自动点击或绕过这个设置，也不应使用 `tccutil reset` 作为重启步骤，它会清除已有授权。
+
+可直接打开对应设置页，然后点击 `+`；文件选择器中按 `Command-Shift-G` 输入上述绝对路径：
+
+```bash
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+```
+
+第一次从历史 ad-hoc 二进制切换到 `Apple Development` 身份时，新身份不满足旧的 cdhash requirement，macOS 可能仍要求最后一次人工确认。完成这次迁移后，只要继续使用同一开发证书和 identifier，后续重新编译与重启即可复用授权。更换开发团队、证书或 identifier 会形成新身份，需要重新授权，这是预期的安全边界。
+
+Doctor 的 `macos-code-signing` 项会识别 cdhash-only 构建；服务端 Doctor 和 `agentd status --json` 的 `file-access-preflight` 会显示本次启动预检结果。两项都以 warning 报告，不会让仍可连接的健康服务变成不可用。不要用全局关闭 Codex/Claude 审批或 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=true` 代替系统签名；两者属于不同权限层，后者会扩大远程执行风险。
 
 如果就绪检查失败：
 
@@ -237,12 +297,28 @@ rm -rf -- "$HOME/.config/mimi-remote"
 
 ### 维护者发布前本地验收
 
-正式 tag 依赖两个 GitHub 外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
+正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
+
+macOS 产物还必须配置以下 GitHub Actions Secrets：
+
+| Secret | 内容 | 权限边界 |
+| --- | --- | --- |
+| `MACOS_SIGN_P12` | `Developer ID Application` 证书与私钥导出的 PKCS#12，再整体 base64 | 用于签名 agentd Darwin 二进制、Mac App 和 DMG |
+| `MACOS_SIGN_PASSWORD` | PKCS#12 导出密码 | 不写文件、不输出日志 |
+| `MACOS_NOTARY_KEY` | App Store Connect API `.p8` 私钥的 base64 | 只用于 Apple notarization |
+| `MACOS_NOTARY_KEY_ID` | 10 位 API Key ID | 与 `.p8` 配套 |
+| `MACOS_NOTARY_ISSUER_ID` | App Store Connect Issuer UUID | 与 `.p8` 配套 |
+
+Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
+
+发布后的产物门禁会从两个 Darwin 归档重新解包 `agentd`，执行 `codesign --verify --strict`，并要求存在 `Developer ID Application` Authority、TeamIdentifier、identifier + certificate anchor 形式的稳定 designated requirement，同时拒绝 cdhash-only 身份。Mac DMG 会另外验证 `arm64/x86_64` 双架构、内嵌 `agentd`、LaunchAgent、Applications 拖放入口、Developer ID、notarization ticket 和 Gatekeeper 结果。任一步失败都会让 tag workflow 失败，不能把未签名或未公证产物视为成功 Release。
 
 Release workflow 会在 GoReleaser 前读取 GitHub API JSON，检查两个仓库的 `visibility=public` / `private=false`，再使用 Deploy Key 对 Tap `main` 执行 dry-run push 验证写权限，不在日志中回显私钥或 API JSON 原文。如果只需在本地验证 JSON 分支而不连接 GitHub，执行：
 
 ```bash
 bash ./scripts/check-release-prerequisites.sh --self-test
+bash ./scripts/check-macos-release-signing.sh --self-test
+bash ./scripts/restart-agentd-dev-macos.sh --self-test
 ```
 
 维护者在打 tag 前从仓库根目录执行：

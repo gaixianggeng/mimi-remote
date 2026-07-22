@@ -19,6 +19,24 @@ builds:
     ldflags:
       - -s -w -X main.version={{ .Version }}
 
+# 正式 tag 必须显式设置 MIMI_MACOS_SIGNING=required。GoReleaser 会先使用
+# Developer ID 对两个 Darwin 二进制签名并完成 Apple notarization，再把签名后的
+# 二进制交给 archive/checksum/Homebrew Formula 阶段。普通 snapshot 不接触发布私钥。
+notarize:
+  macos:
+    - enabled: '{{ eq (envOrDefault "MIMI_MACOS_SIGNING" "disabled") "required" }}'
+      ids:
+        - agentd
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
 archives:
   - id: agentd
     ids:
