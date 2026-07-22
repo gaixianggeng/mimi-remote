@@ -155,8 +155,15 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
       exit 1
     fi
     signing_details="$(codesign -d --verbose=4 -r- "$temp_dir/agentd" 2>&1)"
+    stable_team_requirement=0
+    if grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$signing_details" \
+      || grep -Eq 'certificate leaf\[subject\.OU\] = "[A-Z0-9]+"' <<<"$signing_details"; then
+      stable_team_requirement=1
+    fi
+    # GoReleaser 的独立 CLI 签名可能不写 CodeDirectory TeamIdentifier，
+    # 但 designated requirement 中的 leaf OU 同样会把权限稳定绑定到开发团队。
     if ! grep -Fq 'Authority=Developer ID Application:' <<<"$signing_details" \
-      || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$signing_details" \
+      || [[ "$stable_team_requirement" != "1" ]] \
       || ! grep -Fq 'designated => identifier' <<<"$signing_details" \
       || grep -Fq 'designated => cdhash' <<<"$signing_details"; then
       echo "发布产物门禁失败：$archive_name 没有可跨版本复用权限的稳定 Developer ID 身份。" >&2
