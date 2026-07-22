@@ -83,8 +83,21 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 WORK_DIR="$(mktemp -d -t mimi-macos-installer)"
 KEYCHAIN_PATH=""
+KEYCHAIN_LIST_FILE=""
 
 cleanup() {
+  if [[ -n "$KEYCHAIN_LIST_FILE" && -f "$KEYCHAIN_LIST_FILE" ]]; then
+    # 恢复用户原有的 Keychain 搜索列表，避免本地正式构建污染开发环境。
+    set --
+    while IFS= read -r original_keychain; do
+      if [[ -n "$original_keychain" ]]; then
+        set -- "$@" "$original_keychain"
+      fi
+    done < "$KEYCHAIN_LIST_FILE"
+    if [[ $# -gt 0 ]]; then
+      security list-keychains -d user -s "$@" >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ -n "$KEYCHAIN_PATH" && -e "$KEYCHAIN_PATH" ]]; then
     security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
   fi
@@ -208,7 +221,11 @@ if [[ "$SNAPSHOT" != "1" ]]; then
   chmod 600 "$P12_PATH" "$NOTARY_KEY_PATH"
 
   KEYCHAIN_PATH="$WORK_DIR/release-signing.keychain-db"
+  KEYCHAIN_LIST_FILE="$WORK_DIR/original-user-keychains.txt"
   KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+  security list-keychains -d user \
+    | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' \
+    > "$KEYCHAIN_LIST_FILE"
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
   security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
   security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -222,6 +239,15 @@ if [[ "$SNAPSHOT" != "1" ]]; then
     -s \
     -k "$KEYCHAIN_PASSWORD" \
     "$KEYCHAIN_PATH" >/dev/null
+
+  # GitHub runner 不会自动搜索显式创建的 Keychain；codesign --keychain 仍要求它在搜索列表中。
+  ACTIVE_KEYCHAINS=("$KEYCHAIN_PATH")
+  while IFS= read -r original_keychain; do
+    if [[ -n "$original_keychain" && "$original_keychain" != "$KEYCHAIN_PATH" ]]; then
+      ACTIVE_KEYCHAINS+=("$original_keychain")
+    fi
+  done < "$KEYCHAIN_LIST_FILE"
+  security list-keychains -d user -s "${ACTIVE_KEYCHAINS[@]}"
 
   CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
     | awk '/Developer ID Application:/ { print $2; exit }')"
