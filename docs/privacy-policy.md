@@ -23,14 +23,14 @@ App 仅在完成用户明确请求时处理以下数据：
 
 #### 用户配置的 Mac 与外部工具
 
-Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd` 在用户控制的 Mac 上调用 Codex；用户明确启用可选 Claude Code bridge 时，也可能调用 Claude Code。相关服务可能按照用户与其提供方之间的条款处理提示词、代码和输出。Mimi Remote 开发者不接收这些内容，也不托管第三方账号凭据。
+Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd` 在用户控制的计算机上调用用户自行安装、配置并登录的兼容开发运行时。相关工具可能按照用户与其提供方之间的条款处理提示词、代码和输出。Mimi Remote 开发者不接收这些内容，也不托管第三方账号凭据。
 
 连接可使用局域网、Tailscale 等私有网络或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
 
 #### 系统权限
 
 - 相机：仅在用户打开扫码页时读取配对二维码。
-- 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择 Apple 或 Codex 转写。Apple 模式使用设备端 SpeechAnalyzer 实时处理；系统可能从 Apple 下载并维护语言模型，但语音音频不会发送到 Apple 服务器。Codex 模式会把录音发送到用户配置的 Mac，再由 `agentd` 使用用户自己的 Codex 登录态请求 ChatGPT 转写接口；相关处理受用户与 OpenAI 之间的条款约束。Mimi Remote 开发者不接收这些录音。
+- 麦克风与语音识别：仅在用户主动录入语音时使用。App 使用系统的设备端语音框架实时处理；系统可能下载并维护语言模型，但语音录音不会发送到 Mimi Remote 开发者、用户配置的主机或模型提供方端点。
 - 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
 
 拒绝上述权限不会阻止用户通过手动输入、键盘输入或其他不需要该权限的方式使用对应核心功能。
@@ -71,14 +71,14 @@ The app processes the following data only to perform actions you request:
 
 #### Your Mac and external tools
 
-Mimi Remote connects directly to an `agentd` endpoint that you enter or import by QR code. On your Mac, `agentd` invokes Codex and, only when you explicitly enable the optional Claude Code bridge, may invoke Claude Code. Those services may process prompts, code, and output under the terms between you and their providers. The developer of Mimi Remote does not receive this content or host third-party account credentials.
+Mimi Remote connects directly to an `agentd` endpoint that you enter or import by QR code. On your computer, `agentd` invokes compatible developer runtimes that you install, configure, and authenticate. Those tools may process prompts, code, and output under the terms between you and their providers. The developer of Mimi Remote does not receive this content or host third-party account credentials.
 
 Connections may use a local network, a private network such as Tailscale, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
 
 #### System permissions
 
 - Camera: used only while you open the QR pairing scanner.
-- Microphone and speech recognition: used only when you actively dictate text. You can choose Apple or Codex transcription. Apple mode uses SpeechAnalyzer for real-time on-device processing; the system may download and maintain language models from Apple, but voice audio is not sent to Apple servers. Codex mode sends the recording to the Mac you configure, where `agentd` uses your own Codex sign-in to request the ChatGPT transcription endpoint. That processing is governed by the terms between you and OpenAI. The Mimi Remote developer does not receive these recordings.
+- Microphone and speech recognition: used only when you actively dictate text. The app uses the system on-device speech framework for real-time processing. The system may download and maintain language models, but recordings are not sent to the Mimi Remote developer, the host you configure, or a model-provider endpoint.
 - Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
 
 Declining a permission does not prevent use of alternatives such as manual pairing or keyboard input.
