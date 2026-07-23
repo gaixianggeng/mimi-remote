@@ -67,47 +67,50 @@ struct MenuBarContentView: View {
                 ) {
                     presentWindow(.diagnostics)
                 }
-            }
-            .padding(.top, 6)
 
-            HStack(spacing: 16) {
-                Button {
+                Divider()
+                    .opacity(0.4)
+                    .padding(.leading, 34)
+
+                MenuActionRow(
+                    title: "设置",
+                    systemImage: "gearshape"
+                ) {
                     openSettings()
                     activateApplication()
-                } label: {
-                    Label("设置", systemImage: "gearshape")
                 }
-                .buttonStyle(.plain)
 
-                Spacer()
+                if store.owner == .macApp {
+                    Divider()
+                        .opacity(0.4)
+                        .padding(.leading, 34)
 
-                Menu {
-                    if store.owner == .macApp {
-                        Button {
-                            Task { await store.restartService() }
-                        } label: {
-                            Label("重新启动服务", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(store.isBusy)
-
-                        Divider()
+                    MenuActionRow(
+                        title: "重新启动服务",
+                        systemImage: "arrow.clockwise",
+                        isEnabled: !store.isBusy,
+                        showsDisclosure: false,
+                        isWorking: store.isBusy
+                    ) {
+                        Task { await store.restartService() }
                     }
-
-                    Button(role: .destructive) {
-                        confirmsQuit = true
-                    } label: {
-                        Label("退出并停止服务…", systemImage: "power")
-                    }
-                } label: {
-                    Label("更多", systemImage: "ellipsis.circle")
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+
+                Divider()
+                    .opacity(0.4)
+                    .padding(.leading, 34)
+
+                MenuActionRow(
+                    title: "退出并停止服务…",
+                    systemImage: "power",
+                    isEnabled: !store.isBusy,
+                    role: .destructive,
+                    showsDisclosure: false
+                ) {
+                    confirmsQuit = true
+                }
             }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 2)
-            .padding(.top, 8)
+            .padding(.top, 6)
         }
         .padding(12)
         .frame(width: 340)
@@ -351,23 +354,32 @@ private struct MenuActionRow: View {
     let title: String
     let systemImage: String
     var isEnabled = true
+    var role: ButtonRole?
+    var showsDisclosure = true
+    var isWorking = false
     let action: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
+        Button(role: role, action: action) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(role == .destructive ? Color.red : Color.secondary)
                     .frame(width: 18)
                 Text(title)
                     .font(.callout.weight(.medium))
+                    .foregroundStyle(role == .destructive ? Color.red : Color.primary)
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.tertiary)
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if showsDisclosure {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 7)
             .frame(maxWidth: .infinity, minHeight: 35, alignment: .leading)

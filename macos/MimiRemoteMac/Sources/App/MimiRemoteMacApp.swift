@@ -50,7 +50,8 @@ private struct MimiMenuBarMark: View {
             .renderingMode(.template)
             .interpolation(.high)
             .scaledToFit()
-            // 粗笔画字标按视觉重量缩小一档，与相邻菜单栏图标保持平衡。
+            // 只缩小可见字标，保留原标签占位，避免点击区域和菜单栏间距一起缩水。
+            .frame(width: 22, height: 16)
             .frame(width: 25, height: 18)
     }
 }

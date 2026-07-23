@@ -123,9 +123,32 @@ final class HostStoreTests: XCTestCase {
         ])
     }
 
+    func testRestartWaitsForAgentToFinishUnregisteringBeforeRegisteringAgain() async {
+        let events = EventRecorder()
+        let registration = LaggingAgentRegistration()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registration.nextStatus() },
+            registerAgent: {
+                // 模拟真实 SMAppService：状态仍为 enabled 时，registerAgent 会直接跳过。
+                guard registration.nextStatus() != .enabled else { return }
+                events.append("register-mac")
+            },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+        await store.bootstrap()
+
+        await store.restartService()
+
+        XCTAssertEqual(events.values, ["unregister-mac", "register-mac"])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
     private func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
+        agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
@@ -144,7 +167,7 @@ final class HostStoreTests: XCTestCase {
             version: { status.version }
         )
         let services = ServiceManagementClient(
-            agentStatus: { .notRegistered },
+            agentStatus: agentStatus,
             registerAgent: registerAgent,
             unregisterAgent: unregisterAgent,
             mainAppStatus: { .enabled },
@@ -199,6 +222,17 @@ final class HostStoreTests: XCTestCase {
             pairExpires: nil
         )
     }()
+}
+
+@MainActor
+private final class LaggingAgentRegistration {
+    private var statusChecks = 0
+
+    func nextStatus() -> ServiceRegistrationState {
+        statusChecks += 1
+        // bootstrap 读取两次；重启后的第一次读取仍返回 enabled，随后才完成注销。
+        return statusChecks <= 3 ? .enabled : .notRegistered
+    }
 }
 
 private enum TestError: LocalizedError {

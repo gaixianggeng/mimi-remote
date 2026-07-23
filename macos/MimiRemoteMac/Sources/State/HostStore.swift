@@ -254,7 +254,9 @@ final class HostStore {
         defer { isBusy = false }
         do {
             try await services.unregisterAgent()
-            try await Task.sleep(for: .milliseconds(250))
+            // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
+            // 必须等状态真正落到未注册后再注册，否则第一次重启可能只完成停止。
+            try await waitForMacAgentUnregistered()
             try services.registerAgent()
             try await waitForMacAgentReady()
         } catch {
@@ -321,6 +323,27 @@ final class HostStore {
         }
         let detail = lastStatus?.serviceError ?? "服务在 15 秒内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
+    }
+
+    private func waitForMacAgentUnregistered() async throws {
+        for attempt in 0..<40 {
+            try Task.checkCancellation()
+            switch services.agentStatus() {
+            case .notRegistered:
+                return
+            case .enabled:
+                break
+            case .requiresApproval:
+                throw ServiceLifecycleError.requiresApproval
+            case .notFound:
+                throw ServiceLifecycleError.agentNotFound
+            }
+
+            if attempt < 39 {
+                try await Task.sleep(for: .milliseconds(125))
+            }
+        }
+        throw ServiceLifecycleError.unregisterTimedOut
     }
 
     private func waitForHomebrewReady(binary: URL) async throws {
@@ -518,4 +541,21 @@ final class HostStore {
         return store
     }
 #endif
+}
+
+private enum ServiceLifecycleError: LocalizedError {
+    case unregisterTimedOut
+    case requiresApproval
+    case agentNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .unregisterTimedOut:
+            "服务停止超时，未继续启动；请稍后重试。"
+        case .requiresApproval:
+            "请先在系统设置的登录项中允许 Mimi Remote Mac。"
+        case .agentNotFound:
+            "App 内缺少 LaunchAgent 配置，请重新安装。"
+        }
+    }
 }
