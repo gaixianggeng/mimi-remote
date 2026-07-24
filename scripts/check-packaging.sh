@@ -154,6 +154,8 @@ if [[ -f scripts/export-public-backend.sh ]]; then
     || fail "公开镜像导出脚本没有包含 Codex Skill。"
   grep -Fq 'scripts/package-skill.sh' scripts/export-public-backend.sh \
     || fail "公开镜像导出脚本没有包含 Skill 打包入口。"
+  grep -Fxq '/dist-skill/' packaging/public/.gitignore \
+    || fail "公开镜像没有忽略 Skill 构建目录，GoReleaser 正式发布会因工作区不干净而失败。"
 fi
 
 release_docs=(README.md docs/install-upgrade-rollback.md)

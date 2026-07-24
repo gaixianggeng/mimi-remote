@@ -13,6 +13,7 @@ config.json
 bin/
 /dist/
 /dist-macos/
+/dist-skill/
 
 # 日志与临时文件
 /logs/
