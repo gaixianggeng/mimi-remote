@@ -14,7 +14,7 @@ struct OnboardingView: View {
 
     var body: some View {
         InfoCard("首次设置") {
-            Text("选择允许 Mimi Remote 发现和打开项目的代码根目录。第一版不会自动授权整个 Home。")
+            Text("选择项目扫描目录。文件浏览和会话产物预览默认授权当前用户 Home，访问仍需要已配对设备的凭据。")
                 .foregroundStyle(.secondary)
 
             HStack {

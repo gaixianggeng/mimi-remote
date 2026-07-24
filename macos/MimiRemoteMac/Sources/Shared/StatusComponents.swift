@@ -32,7 +32,7 @@ struct HostStatusHeader: View {
 
     private var statusColor: Color {
         switch lifecycle {
-        case .ready: .green
+        case .ready: .mimiPrimary
         case .loading, .starting: .blue
         case .notConfigured, .migrationRequired, .degraded: .orange
         case .stopped: .secondary

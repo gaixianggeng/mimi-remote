@@ -31,19 +31,20 @@ type Options struct {
 }
 
 type Result struct {
-	Created            bool     `json:"created"`
-	ConfigPath         string   `json:"config_path"`
-	Endpoint           string   `json:"endpoint"`
-	Token              string   `json:"token"`
-	ConnectURL         string   `json:"connect_url"`
-	PairURL            string   `json:"pair_url"`
-	PairIssuedAt       string   `json:"pair_issued_at"`
-	PairExpiresAt      string   `json:"pair_expires_at"`
-	ScanRoot           string   `json:"scan_root"`
-	BrowseRoot         string   `json:"browse_root"`
-	AppServerListen    string   `json:"app_server_listen"`
-	AppServerTokenFile string   `json:"app_server_token_file"`
-	Warnings           []string `json:"warnings"`
+	Created            bool           `json:"created"`
+	ConfigPath         string         `json:"config_path"`
+	Endpoint           string         `json:"endpoint"`
+	Network            PairingNetwork `json:"network,omitempty"`
+	Token              string         `json:"token"`
+	ConnectURL         string         `json:"connect_url"`
+	PairURL            string         `json:"pair_url"`
+	PairIssuedAt       string         `json:"pair_issued_at"`
+	PairExpiresAt      string         `json:"pair_expires_at"`
+	ScanRoot           string         `json:"scan_root"`
+	BrowseRoot         string         `json:"browse_root"`
+	AppServerListen    string         `json:"app_server_listen"`
+	AppServerTokenFile string         `json:"app_server_token_file"`
+	Warnings           []string       `json:"warnings"`
 }
 
 func Run(ctx context.Context, options Options) (Result, error) {
@@ -108,10 +109,15 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	if err != nil {
 		return Result{}, err
 	}
-	// 默认生成一个单机可运行配置：agentd 对外监听，内部托管 loopback WebSocket app-server。
+	// 默认生成一个真机可连接的配置：优先 Tailscale；缺失时自动开放局域网。
+	// 显式 --listen 仍完全尊重调用方，保留 loopback 模拟器/开发场景。
 	listen := strings.TrimSpace(options.Listen)
+	allowLAN := false
 	if listen == "" {
-		listen = defaultAgentDListen(ctx)
+		listen, allowLAN, err = defaultAgentDNetwork(ctx, defaultPairingNetworkLookups())
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	appServerListen := strings.TrimSpace(options.AppServerListen)
 	if appServerListen == "" {
@@ -119,7 +125,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	}
 
 	cfg := config.Config{
-		Listen: listen,
+		Listen:  listen,
+		Network: config.NetworkConfig{AllowLAN: allowLAN},
 		Auth: config.AuthConfig{
 			Token: token,
 		},
@@ -173,6 +180,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 }
 
 func Pair(ctx context.Context, configPath string) (Result, error) {
+	return PairForNetwork(ctx, configPath, PairingNetworkAuto)
+}
+
+func PairForNetwork(ctx context.Context, configPath string, network PairingNetwork) (Result, error) {
 	cfgPath, err := resolveConfigPath(configPath)
 	if err != nil {
 		return Result{}, err
@@ -181,11 +192,24 @@ func Pair(ctx context.Context, configPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return ResultFromConfig(ctx, cfgPath, cfg), nil
+	return ResultFromConfigForNetwork(ctx, cfgPath, cfg, network)
 }
 
 func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	endpoint, warnings := endpointForListen(ctx, cfg.Listen)
+	result, _ := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+	return result
+}
+
+func ResultFromConfigForNetwork(
+	ctx context.Context,
+	configPath string,
+	cfg config.Config,
+	network PairingNetwork,
+) (Result, error) {
+	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, defaultPairingNetworkLookups())
+	if err != nil {
+		return Result{}, err
+	}
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
 		warnings = append(warnings, "配置中没有 auth.token，iPad 无法完成鉴权；请重新执行 agentd setup --force")
@@ -203,6 +227,7 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 	return Result{
 		ConfigPath:         configPath,
 		Endpoint:           endpoint,
+		Network:            pairingNetworkForEndpoint(endpoint),
 		Token:              token,
 		ConnectURL:         connectionURL("connect", endpoint, token, now, expiresAt),
 		PairURL:            pairingURL(endpoint, token, now, expiresAt),
@@ -213,7 +238,7 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 		AppServerListen:    cfg.AppServer.Listen,
 		AppServerTokenFile: cfg.AppServer.WSTokenFile,
 		Warnings:           warnings,
-	}
+	}, nil
 }
 
 func ConnectURL(endpoint, token string) string {
@@ -298,11 +323,21 @@ func defaultBrowseRoot(raw string) (string, error) {
 	return os.UserHomeDir()
 }
 
-func defaultAgentDListen(ctx context.Context) string {
-	if ip := firstTailscaleIP(ctx); ip != "" {
-		return net.JoinHostPort(ip, defaultAgentDPort)
+func defaultAgentDNetwork(
+	ctx context.Context,
+	lookups pairingNetworkLookups,
+) (listen string, allowLAN bool, err error) {
+	if ip := strings.TrimSpace(lookups.tailscaleIP(ctx)); ip != "" {
+		return net.JoinHostPort(ip, defaultAgentDPort), false, nil
 	}
-	return net.JoinHostPort("127.0.0.1", defaultAgentDPort)
+	if ip := net.ParseIP(strings.TrimSpace(lookups.lanIP())); isPrivateLANIPv4(ip) {
+		// LAN IP 会随 DHCP/Wi-Fi 切换变化，因此监听通配地址并在生成配对码时动态选当前 LAN IP。
+		return net.JoinHostPort("0.0.0.0", defaultAgentDPort), true, nil
+	}
+	return "", false, fmt.Errorf(
+		"未检测到 Tailscale 或可用的局域网 IPv4；请先连接 Wi-Fi/以太网，或为本机开发显式传入 --listen 127.0.0.1:%s",
+		defaultAgentDPort,
+	)
 }
 
 func defaultCodexBin() string {

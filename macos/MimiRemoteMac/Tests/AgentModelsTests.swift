@@ -7,6 +7,7 @@ final class AgentModelsTests: XCTestCase {
         let payload = try JSONDecoder().decode(PairingInfo.self, from: raw)
 
         XCTAssertEqual(payload.endpoint, "http://100.64.0.8:8787")
+        XCTAssertEqual(payload.network, .tailscale)
         XCTAssertTrue(payload.pairURL.contains("pair_sig"))
         XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains("token"))
     }
@@ -16,6 +17,16 @@ final class AgentModelsTests: XCTestCase {
         let payload = try JSONDecoder().decode(PairingInfo.self, from: raw)
 
         XCTAssertEqual(payload.warnings, [])
+    }
+
+    func testPairingPayloadDecodesReportedNetworkAndInfersOldLANPayload() throws {
+        let reported = Data(#"{"endpoint":"http://192.168.31.20:8787","network":"lan","pair_url":"mimiremote://pair?pair_sig=abc","pair_expires_at":"2026-07-22T12:00:00Z"}"#.utf8)
+        let reportedPayload = try JSONDecoder().decode(PairingInfo.self, from: reported)
+        XCTAssertEqual(reportedPayload.network, .localNetwork)
+
+        let legacy = Data(#"{"endpoint":"http://10.0.0.8:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2026-07-22T12:00:00Z"}"#.utf8)
+        let legacyPayload = try JSONDecoder().decode(PairingInfo.self, from: legacy)
+        XCTAssertEqual(legacyPayload.network, .localNetwork)
     }
 
     func testStatusPayloadDecodesDoctorAndReadinessSeparately() throws {

@@ -21,7 +21,7 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>ProcessType</key>
-	<string>Background</string>
+	<string>Interactive</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>ThrottleInterval</key>

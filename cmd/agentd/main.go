@@ -77,12 +77,14 @@ func run(args []string) error {
 		return runLogs(args)
 	case "pair":
 		return runPair(args)
+	case "network":
+		return runNetwork(args)
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、serve、doctor、version", cmd)
 	}
 }
 
@@ -95,7 +97,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -154,7 +156,7 @@ func runUp(args []string) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
@@ -204,7 +206,7 @@ func runUp(args []string) error {
 
 	serviceOK := true
 	serviceError := ""
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		serviceOK = false
 		serviceError = err.Error()
 		if *noPair {
@@ -313,7 +315,7 @@ func runStart(args []string) error {
 		return err
 	}
 
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		return fmt.Errorf("后台服务已提交，但就绪检查未通过，暂不展示配对二维码：%w", err)
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "agentd 后台服务已启动")
@@ -351,7 +353,7 @@ func runRestart(args []string) error {
 	if err := runManagedServiceForPlatform(managedServicePlatform, "restart", os.Stdout, os.Stderr); err != nil {
 		return err
 	}
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		return fmt.Errorf("后台服务已重启，但就绪检查未通过，暂不展示配对二维码：%w", err)
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已重新连接")
@@ -396,19 +398,42 @@ func runStatus(args []string) error {
 		return err
 	}
 
-	cfg, registry, checker, err := loadRuntimeConfigFromPath(*configPath, true)
+	cfg, registry, _, err := loadRuntimeConfigFromPath(*configPath, true)
 	if err != nil {
 		return err
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
-	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, time.Second)
-	doctorResults := checker.Run(context.Background(), false)
-	if serviceStatus.Ready() {
-		// 服务端 Checker 持有本次启动的异步权限预检结果；CLI 临时创建的 Checker 没有。
-		// readyz 已通过时优先展示服务端状态，使 status 能准确反映重启后的权限预检。
-		if remoteResults, remoteErr := fetchServiceDoctorResults(context.Background(), result.Endpoint, result.Token, time.Second); remoteErr == nil {
-			doctorResults = remoteResults
-		}
+	serviceStatus := probeAgentServiceStatus(
+		context.Background(),
+		loopbackServiceEndpoint(result.Endpoint),
+		result.Token,
+		version,
+		2*time.Second,
+	)
+	doctorResults := doctor.Results{
+		OK:      false,
+		Version: version,
+		Checks: []doctor.Check{{
+			Name:    "service-readiness",
+			OK:      false,
+			Level:   "error",
+			Message: "agentd readyz 暂不可用或版本不匹配",
+			Fix:     "运行 agentd logs 查看服务与 Codex app-server 状态",
+		}},
+	}
+	if serviceStatus.ReadinessResults != nil {
+		doctorResults = *serviceStatus.ReadinessResults
+	}
+	if !serviceStatus.Ready() && doctorResults.OK {
+		// 失败 HTTP 理论上会携带 ok=false；若旧服务返回了矛盾结构，仍以探测结果为准。
+		doctorResults.OK = false
+		doctorResults.Checks = append(doctorResults.Checks, doctor.Check{
+			Name:    "service-readiness",
+			OK:      false,
+			Level:   "error",
+			Message: "agentd readyz 暂不可用或版本不匹配",
+			Fix:     "运行 agentd logs 查看服务与 Codex app-server 状态",
+		})
 	}
 	status := serviceStatusFields(serviceStatus, result.Token)
 	status["version"] = version
@@ -458,8 +483,9 @@ func serviceStatusFields(serviceStatus agentServiceStatus, token string) map[str
 }
 
 type agentServiceStatus struct {
-	ProcessErr error
-	ReadyErr   error
+	ProcessErr       error
+	ReadyErr         error
+	ReadinessResults *doctor.Results
 }
 
 func (s agentServiceStatus) ProcessOK() bool {
@@ -472,10 +498,31 @@ func (s agentServiceStatus) Ready() bool {
 
 func probeAgentServiceStatus(ctx context.Context, endpoint string, token string, expectedVersion string, timeout time.Duration) agentServiceStatus {
 	// 两个探测必须独立执行：healthz 只回答进程是否存活，readyz 才回答鉴权、版本和
-	// Codex upstream 是否已经可以承接移动端请求。
+	// Codex upstream 是否已经可以承接移动端请求。并行执行让 status 总耗时受单个 2 秒窗口约束。
+	type readinessProbeResult struct {
+		results doctor.Results
+		err     error
+	}
+	healthResult := make(chan error, 1)
+	readinessResult := make(chan readinessProbeResult, 1)
+	go func() {
+		healthResult <- waitForServiceHealth(ctx, endpoint, timeout)
+	}()
+	go func() {
+		results, err := waitForServiceReadyResults(ctx, endpoint, token, expectedVersion, timeout)
+		readinessResult <- readinessProbeResult{results: results, err: err}
+	}()
+
+	processErr := <-healthResult
+	readiness := <-readinessResult
+	var readinessResultsPointer *doctor.Results
+	if len(readiness.results.Checks) > 0 || strings.TrimSpace(readiness.results.Version) != "" {
+		readinessResultsPointer = &readiness.results
+	}
 	return agentServiceStatus{
-		ProcessErr: waitForServiceHealth(ctx, endpoint, timeout),
-		ReadyErr:   waitForServiceReady(ctx, endpoint, token, expectedVersion, timeout),
+		ProcessErr:       processErr,
+		ReadyErr:         readiness.err,
+		ReadinessResults: readinessResultsPointer,
 	}
 }
 
@@ -528,6 +575,7 @@ func runPair(args []string) error {
 func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
+	networkName := fs.String("network", string(agentsetup.PairingNetworkAuto), "二维码网络：auto、tailscale 或 lan")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息和二维码，不输出长期 Token")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -536,7 +584,11 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	result, err := agentsetup.Pair(context.Background(), *configPath)
+	network, err := agentsetup.ParsePairingNetwork(*networkName)
+	if err != nil {
+		return err
+	}
+	result, err := agentsetup.PairForNetwork(context.Background(), *configPath, network)
 	if err != nil {
 		return err
 	}
@@ -551,6 +603,49 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 		return nil
 	}
 	printPairResult(stdout, result)
+	return nil
+}
+
+func runNetwork(args []string) error {
+	fs := flag.NewFlagSet("network", flag.ExitOnError)
+	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
+	lanEnabled := fs.Bool("lan-enabled", false, "是否允许局域网访问")
+	asJSON := fs.Bool("json", false, "输出 JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	lanFlagProvided := false
+	fs.Visit(func(item *flag.Flag) {
+		if item.Name == "lan-enabled" {
+			lanFlagProvided = true
+		}
+	})
+	if !lanFlagProvided {
+		return fmt.Errorf("必须显式传入 --lan-enabled=true 或 --lan-enabled=false")
+	}
+	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+		return err
+	}
+	changed, err := agentsetup.SetLANAccess(*configPath, *lanEnabled)
+	if err != nil {
+		return err
+	}
+	result := map[string]any{
+		"lan_enabled":      *lanEnabled,
+		"changed":          changed,
+		"restart_required": changed,
+	}
+	if *asJSON {
+		return printJSON(result)
+	}
+	state := "关闭"
+	if *lanEnabled {
+		state = "开启"
+	}
+	fmt.Fprintf(os.Stdout, "局域网访问：%s\n", state)
+	if changed {
+		fmt.Fprintln(os.Stdout, "配置已更新，需要重启 agentd 后生效。")
+	}
 	return nil
 }
 
@@ -832,7 +927,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listenAddresses := agentDListenAddresses(cfg.Listen)
+	listenAddresses := agentDListenAddresses(cfg.Listen, cfg.Network.AllowLAN)
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
 		listener, err := net.Listen("tcp", address)
@@ -874,7 +969,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	})
 }
 
-func agentDListenAddresses(configured string) []string {
+func agentDListenAddresses(configured string, allowLAN bool) []string {
 	address := strings.TrimSpace(configured)
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
@@ -883,6 +978,10 @@ func agentDListenAddresses(configured string) []string {
 
 	normalizedHost := strings.Trim(strings.TrimSpace(host), "[]")
 	ip := net.ParseIP(normalizedHost)
+	if allowLAN {
+		// 只有显式开启局域网后才扩大到 IPv4 通配监听；它同时覆盖 LAN、Tailscale 和 loopback。
+		return []string{net.JoinHostPort("0.0.0.0", port)}
+	}
 	// loopback 和通配地址本身已经覆盖 127.0.0.1；只在绑定具体的 Tailscale/局域网地址时
 	// 增加同端口 loopback，避免为了 Catalyst 本机直连而把服务扩大暴露到所有网卡。
 	if normalizedHost == "" || strings.EqualFold(normalizedHost, "localhost") ||
@@ -1429,16 +1528,18 @@ func printPairResult(w io.Writer, result agentsetup.Result) {
 }
 
 type qrOnlyPairOutput struct {
-	Endpoint      string   `json:"endpoint"`
-	PairURL       string   `json:"pair_url"`
-	PairExpiresAt string   `json:"pair_expires_at"`
-	Warnings      []string `json:"warnings,omitempty"`
+	Endpoint      string                    `json:"endpoint"`
+	Network       agentsetup.PairingNetwork `json:"network,omitempty"`
+	PairURL       string                    `json:"pair_url"`
+	PairExpiresAt string                    `json:"pair_expires_at"`
+	Warnings      []string                  `json:"warnings,omitempty"`
 }
 
 func qrOnlyPairResult(result agentsetup.Result) qrOnlyPairOutput {
 	// 安装日志可能被终端或 CI 留存；安全模式只暴露短期票据，绝不复制长期 Token/connect URL。
 	return qrOnlyPairOutput{
 		Endpoint:      result.Endpoint,
+		Network:       result.Network,
 		PairURL:       result.PairURL,
 		PairExpiresAt: result.PairExpiresAt,
 		Warnings:      result.Warnings,
@@ -1521,58 +1622,61 @@ func waitForServiceHealth(ctx context.Context, endpoint string, timeout time.Dur
 }
 
 func waitForServiceReady(ctx context.Context, endpoint string, token string, expectedVersion string, timeout time.Duration) error {
+	_, err := waitForServiceReadyResults(ctx, endpoint, token, expectedVersion, timeout)
+	return err
+}
+
+func waitForServiceReadyResults(
+	ctx context.Context,
+	endpoint string,
+	token string,
+	expectedVersion string,
+	timeout time.Duration,
+) (doctor.Results, error) {
 	if timeout <= 0 {
-		return nil
+		return doctor.Results{}, nil
 	}
 	readyURL, err := readyCheckURL(endpoint)
 	if err != nil {
-		return err
-	}
-	// readiness 必须走和移动端相同的 Bearer 鉴权链路，并确认响应来自当前版本的 agentd。
-	return waitForServiceCheck(ctx, readyURL, strings.TrimSpace(token), "readyz", timeout, func(body io.Reader) error {
-		return validateReadyServiceVersion(body, expectedVersion)
-	})
-}
-
-func fetchServiceDoctorResults(ctx context.Context, endpoint string, token string, timeout time.Duration) (doctor.Results, error) {
-	if timeout <= 0 {
-		return doctor.Results{}, fmt.Errorf("doctor 请求超时必须大于 0")
-	}
-	doctorURL, err := serviceCheckURL(endpoint, "/api/doctor")
-	if err != nil {
 		return doctor.Results{}, err
 	}
-	requestContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, doctorURL, nil)
-	if err != nil {
-		return doctor.Results{}, err
-	}
-	if value := strings.TrimSpace(token); value != "" {
-		req.Header.Set("Authorization", "Bearer "+value)
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return doctor.Results{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return doctor.Results{}, fmt.Errorf("doctor HTTP %d", resp.StatusCode)
-	}
-	var results doctor.Results
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
-	if err := decoder.Decode(&results); err != nil {
-		return doctor.Results{}, fmt.Errorf("doctor 响应不是有效 JSON：%w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return doctor.Results{}, fmt.Errorf("doctor 响应包含多个 JSON 值")
+	deadline := time.Now().Add(timeout)
+	client := http.Client{Timeout: time.Second}
+	var latest doctor.Results
+	for {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, nil)
+		if requestErr != nil {
+			return latest, requestErr
 		}
-		return doctor.Results{}, fmt.Errorf("doctor 响应包含畸形尾部数据：%w", err)
+		if value := strings.TrimSpace(token); value != "" {
+			req.Header.Set("Authorization", "Bearer "+value)
+		}
+		resp, requestErr := client.Do(req)
+		if requestErr == nil {
+			decoded, decodeErr := decodeReadyServiceResults(resp.Body, expectedVersion)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if decodeErr == nil {
+				latest = decoded
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if decodeErr == nil {
+					return latest, nil
+				}
+				requestErr = decodeErr
+			} else {
+				requestErr = fmt.Errorf("readyz HTTP %d", resp.StatusCode)
+			}
+		}
+		if time.Now().After(deadline) {
+			return latest, requestErr
+		}
+		select {
+		case <-ctx.Done():
+			return latest, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
-	return results, nil
 }
 
 func waitForServiceCheck(ctx context.Context, checkURL string, token string, label string, timeout time.Duration, validate func(body io.Reader) error) error {
@@ -1618,29 +1722,32 @@ func waitForServiceCheck(ctx context.Context, checkURL string, token string, lab
 }
 
 func validateReadyServiceVersion(body io.Reader, expectedVersion string) error {
-	var payload struct {
-		Version string `json:"version"`
-	}
+	_, err := decodeReadyServiceResults(body, expectedVersion)
+	return err
+}
+
+func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.Results, error) {
+	var payload doctor.Results
 	decoder := json.NewDecoder(io.LimitReader(body, 256*1024))
 	if err := decoder.Decode(&payload); err != nil {
-		return readyVersionCheckError(fmt.Sprintf("readyz 响应不是有效 JSON：%v", err))
+		return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("readyz 响应不是有效 JSON：%v", err))
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return readyVersionCheckError("readyz 响应包含多个 JSON 值")
+			return doctor.Results{}, readyVersionCheckError("readyz 响应包含多个 JSON 值")
 		}
-		return readyVersionCheckError(fmt.Sprintf("readyz 响应包含畸形尾部数据：%v", err))
+		return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("readyz 响应包含畸形尾部数据：%v", err))
 	}
 	runningVersion := strings.TrimSpace(payload.Version)
 	if runningVersion == "" {
-		return readyVersionCheckError("readyz 响应缺少 server version")
+		return doctor.Results{}, readyVersionCheckError("readyz 响应缺少 server version")
 	}
 	expectedVersion = strings.TrimSpace(expectedVersion)
 	if isDevelopmentAgentVersion(expectedVersion) || runningVersion == expectedVersion {
-		return nil
+		return payload, nil
 	}
-	return readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+	return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
 }
 
 func isDevelopmentAgentVersion(value string) bool {
@@ -1674,4 +1781,15 @@ func serviceCheckURL(endpoint string, path string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func loopbackServiceEndpoint(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Port() == "" {
+		return endpoint
+	}
+	// setup/start/restart/status 都是本机控制面命令。保留对外展示的 Endpoint，
+	// 但健康与就绪探测固定走同端口 loopback，避免自检绕 Tailscale 后受 Wi-Fi/打洞抖动影响。
+	parsed.Host = net.JoinHostPort("127.0.0.1", parsed.Port())
+	return parsed.String()
 }

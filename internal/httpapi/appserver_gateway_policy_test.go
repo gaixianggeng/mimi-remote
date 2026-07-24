@@ -1861,7 +1861,7 @@ func TestAppServerHistoryImageRedactionRewritesImageGenerationResult(t *testing.
 	}
 }
 
-func TestAppServerHistoryImageRedactionSkipsNonImageGenerationBlobs(t *testing.T) {
+func TestAppServerHistoryImageRedactionSkipsNonImageBlobsAndSmallRawImages(t *testing.T) {
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 
 	// 长文本 base64（可解码但不是图片）不应被改写。
@@ -1878,11 +1878,92 @@ func TestAppServerHistoryImageRedactionSkipsNonImageGenerationBlobs(t *testing.T
 		t.Fatalf("小图 result 不应被改写")
 	}
 
-	// 非 imageGeneration item 的 result 不做嗅探。
+	// 明确图片字段中的大图会被识别；普通字段不做全局 base64 嗅探。
 	bigPNG := base64.StdEncoding.EncodeToString(append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0x02}, 20<<10)...))
-	payload = []byte(`{"id":3,"result":{"data":[{"items":[{"type":"mcpToolCall","result":"` + bigPNG + `"}]}]}}`)
+	payload = []byte(`{"id":3,"result":{"data":[{"items":[{"type":"agentMessage","text":"` + bigPNG + `"}]}]}}`)
 	if _, changed := router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
-		t.Fatalf("mcpToolCall result 当前不在改写范围")
+		t.Fatalf("普通文本字段不应被当成图片改写")
+	}
+}
+
+func TestAppServerHistoryImageRedactionRewritesProtocolVariants(t *testing.T) {
+	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0x03}, 20<<10)...)
+	rawImage := base64.StdEncoding.EncodeToString(pngBytes)
+	dataURL := "data:image/png;base64," + rawImage
+	payload := []byte(`{"id":4,"result":{"thread":{"turns":[{"items":[` +
+		`{"type":"userMessage","content":[{"type":"image","data":"` + rawImage + `"}]},` +
+		`{"type":"mcpToolCall","url":"` + dataURL + `","result":"` + rawImage + `"},` +
+		`{"type":"dynamicToolCall","result":"` + rawImage + `"},` +
+		`{"type":"mcpToolCall","result":{"_meta":{"codex/toolSurface":{"screenshot":{"url":"` + dataURL + `","pageUrl":"https://example.test","tabId":"tab-1"}}}}}` +
+		`]}]}}}`)
+
+	rewritten, changed := router.redactInlineHistoryImagesInGatewayResponse(payload)
+	if !changed {
+		t.Fatalf("redaction 应识别 image.data 和工具图片字段")
+	}
+	if bytes.Contains(rewritten, []byte(rawImage)) || bytes.Contains(rewritten, []byte("data:image/")) {
+		t.Fatalf("redaction 不应保留协议变体中的 inline 图片：len=%d", len(rewritten))
+	}
+
+	var frame struct {
+		Result struct {
+			Thread struct {
+				Turns []struct {
+					Items []map[string]any `json:"items"`
+				} `json:"turns"`
+			} `json:"thread"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &frame); err != nil {
+		t.Fatalf("redacted 响应不是合法 JSON：%v", err)
+	}
+	items := frame.Result.Thread.Turns[0].Items
+	image := items[0]["content"].([]any)[0].(map[string]any)
+	if image["data"] != nil || !strings.HasPrefix(image["url"].(string), appServerHistoryMediaURLPrefix) {
+		t.Fatalf("image.data 应规范化成按需读取 URL：%+v", image)
+	}
+	if image["contentType"] != "image/png" || image["redacted"] != true {
+		t.Fatalf("image.data 应保留图片元数据：%+v", image)
+	}
+
+	mcp := items[1]
+	dynamic := items[2]
+	for _, check := range []struct {
+		name   string
+		object map[string]any
+		fields []string
+	}{
+		{name: "mcpToolCall", object: mcp, fields: []string{"url", "result"}},
+		{name: "dynamicToolCall", object: dynamic, fields: []string{"result"}},
+	} {
+		for _, field := range check.fields {
+			value, _ := check.object[field].(string)
+			if !strings.HasPrefix(value, appServerHistoryMediaURLPrefix) || check.object[field+"Redacted"] != true {
+				t.Fatalf("%s.%s 应替换为按需读取 URL：%+v", check.name, field, check.object)
+			}
+			if check.object[field+"ContentType"] != "image/png" {
+				t.Fatalf("%s.%s 应保留 content type：%+v", check.name, field, check.object)
+			}
+		}
+	}
+
+	nestedResult := items[3]["result"].(map[string]any)
+	nestedMeta := nestedResult["_meta"].(map[string]any)
+	toolSurface := nestedMeta["codex/toolSurface"].(map[string]any)
+	screenshot := toolSurface["screenshot"].(map[string]any)
+	if !strings.HasPrefix(screenshot["url"].(string), appServerHistoryMediaURLPrefix) ||
+		screenshot["urlRedacted"] != true ||
+		screenshot["urlContentType"] != "image/png" {
+		t.Fatalf("嵌套 toolSurface screenshot.url 应替换为按需读取 URL：%+v", screenshot)
+	}
+	if screenshot["pageUrl"] != "https://example.test" || screenshot["tabId"] != "tab-1" {
+		t.Fatalf("截图关联元数据不应被改写：%+v", screenshot)
+	}
+
+	// 多种协议形态引用同一张图时，media store 应按内容去重。
+	if got := len(router.historyMedia.entries); got != 1 {
+		t.Fatalf("相同图片应只保存一份，got=%d", got)
 	}
 }
 

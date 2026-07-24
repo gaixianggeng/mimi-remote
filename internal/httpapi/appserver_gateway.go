@@ -58,7 +58,9 @@ var (
 	appServerGatewayHistoryBudgetMaxRequests            = 6
 	appServerGatewayHistoryBudgetMaxRequestBytes        = int64(64 << 10)
 	appServerGatewayHistoryBudgetMaxResponseBytes       = int64(8 << 20)
-	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 3 << 20
+	// 5 Mbps 链路 15 秒理论可传约 8.9 MiB；取 8 MiB 给协议和控制流量留出余量。
+	// 单次历史响应仍受 2 MiB cap 约束，避免一个大响应独占链路。
+	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 8 << 20
 	appServerGatewayHistoryGlobalWindow                 = appServerGatewayHistoryBudgetWindow
 )
 

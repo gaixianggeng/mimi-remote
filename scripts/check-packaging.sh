@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in awk bash grep ruby; do
+for command_name in awk bash cmp grep mktemp ruby shasum; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Packaging 门禁失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -23,6 +23,8 @@ for required_file in \
   README.md \
   macos/MimiRemoteMac/MimiRemoteMac.xcodeproj/project.pbxproj \
   macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  packaging/skill/install-mimi-remote/SKILL.md \
+  packaging/skill/install-mimi-remote/agents/openai.yaml \
   packaging/systemd/mimi-remote.service \
   scripts/build-macos-installer.sh \
   scripts/check-macos-installer.sh \
@@ -31,6 +33,7 @@ for required_file in \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
+  scripts/package-skill.sh \
   scripts/sign-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
@@ -45,6 +48,7 @@ bash -n \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
+  scripts/package-skill.sh \
   scripts/sign-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
@@ -57,6 +61,25 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
 bash ./scripts/test-install-linux.sh >/dev/null
+
+if [[ -f SKILL.md ]] && ! cmp -s SKILL.md packaging/skill/install-mimi-remote/SKILL.md; then
+  fail "根 SKILL.md 与独立 Skill 包内容不一致。"
+fi
+# BSD 与 GNU mktemp 对 -t 模板的语义不同；显式使用带 XXXXXX 的完整路径，
+# 保证 macOS 本地发布和 Linux GitHub Actions 使用同一实现。
+skill_dist="$(mktemp -d "${TMPDIR:-/tmp}/mimi-skill-check.XXXXXX")"
+trap 'rm -rf "$skill_dist"' EXIT
+bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
+[[ -f "$skill_dist/install-mimi-remote.zip" ]] \
+  || fail "Skill 打包脚本没有生成 install-mimi-remote.zip。"
+[[ -f "$skill_dist/install-mimi-remote.zip.sha256" ]] \
+  || fail "Skill 打包脚本没有生成 SHA-256。"
+(
+  cd "$skill_dist"
+  shasum -a 256 -c install-mimi-remote.zip.sha256 >/dev/null
+) || fail "Skill 发布包 SHA-256 校验失败。"
+rm -rf "$skill_dist"
+trap - EXIT
 
 service_file="packaging/systemd/mimi-remote.service"
 grep -Fqx 'ExecStart=%h/.local/bin/agentd serve --config %h/.config/mimi-remote/config.json' "$service_file" \
@@ -121,6 +144,17 @@ grep -Fq 'scripts/check-macos-installer.sh --require-notarization' .github/workf
   || fail "Release workflow 没有校验 Developer ID 与 notarization。"
 grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
+grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \
+  || fail "Release workflow 没有构建 Codex Skill 发布包。"
+grep -Fq 'dist-skill/install-mimi-remote.zip' .github/workflows/release.yml \
+  || fail "Release workflow 没有上传 Codex Skill 发布包。"
+
+if [[ -f scripts/export-public-backend.sh ]]; then
+  grep -Fq 'packaging/skill/install-mimi-remote' scripts/export-public-backend.sh \
+    || fail "公开镜像导出脚本没有包含 Codex Skill。"
+  grep -Fq 'scripts/package-skill.sh' scripts/export-public-backend.sh \
+    || fail "公开镜像导出脚本没有包含 Skill 打包入口。"
+fi
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)
@@ -138,4 +172,4 @@ grep -Fq 'bash ./scripts/install-linux.sh install' docs/install-upgrade-rollback
 grep -Fq 'replace_existing_artifacts' docs/install-upgrade-rollback.md \
   || fail "运维文档没有说明 Release/tap 部分失败的恢复边界。"
 
-echo "Packaging 门禁通过：Homebrew、systemd 与本地发布入口保持一致。"
+echo "Packaging 门禁通过：Homebrew、systemd、Codex Skill 与本地发布入口保持一致。"

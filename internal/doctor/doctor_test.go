@@ -85,6 +85,39 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 	}
 }
 
+func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
+	checker := newTestChecker(t, config.Config{
+		Listen:  "127.0.0.1:8787",
+		Auth:    config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime: config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{
+			Transport: "ws",
+			Managed:   false,
+			Listen:    "ws://127.0.0.1:4222",
+		},
+		Codex:  config.CodexConfig{Bin: filepath.Join(t.TempDir(), "missing-codex")},
+		Claude: config.ClaudeConfig{Enabled: true, BridgeBin: filepath.Join(t.TempDir(), "missing-bridge")},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.RunReadiness(context.Background())
+	if !results.OK {
+		t.Fatalf("外部诊断不可用不应阻断当前 readiness：%+v", results)
+	}
+	for _, excluded := range []string{"codex", "codex-app-server", "claude-bridge", "tailscale", "macos-code-signing"} {
+		if hasCheck(results, excluded) {
+			t.Fatalf("readiness 不应执行或返回完整诊断项 %q：%+v", excluded, results.Checks)
+		}
+	}
+	for _, required := range []string{"token", "projects", "runtime", "app-server"} {
+		if !hasCheck(results, required) {
+			t.Fatalf("readiness 缺少关键静态检查 %q：%+v", required, results.Checks)
+		}
+	}
+}
+
 func TestDesignatedRequirementRejectsPerBuildCDHash(t *testing.T) {
 	tests := []struct {
 		name   string

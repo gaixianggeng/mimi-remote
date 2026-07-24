@@ -10,6 +10,7 @@ final class HostStore {
     private(set) var status: AgentStatus?
     private(set) var doctor: AgentDoctorResults?
     private(set) var pairing: PairingInfo?
+    private(set) var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
@@ -91,7 +92,9 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
-            pairing = try await agent.setup(workspaceRoot)
+            let nextPairing = try await agent.setup(workspaceRoot)
+            pairing = nextPairing
+            pairingNetwork = nextPairing.network
             await enableLoginLaunchBestEffort()
             try services.registerAgent()
             owner = .macApp
@@ -121,6 +124,7 @@ final class HostStore {
                 return
             }
 
+            try await prepareAutomaticNetworkBeforeServiceStart()
             try await homebrew.stop()
             homebrewLoaded = false
             try services.registerAgent()
@@ -134,7 +138,9 @@ final class HostStore {
 
         // 配对票据不是服务迁移的成功条件；刷新失败时保留已经可用的新服务。
         do {
-            pairing = try await agent.pair()
+            let nextPairing = try await resolvedPairing(for: nil)
+            pairing = nextPairing
+            pairingNetwork = nextPairing.network
         } catch {
             lastError = "服务接管成功，但刷新配对码失败：\(error.localizedDescription)"
         }
@@ -183,13 +189,74 @@ final class HostStore {
         }
     }
 
-    func refreshPairing() async {
+    func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        lastError = nil
         do {
-            pairing = try await agent.pair()
+            let nextPairing = try await resolvedPairing(for: network)
+            pairing = nextPairing
+            pairingNetwork = nextPairing.network
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func prepareAutomaticNetworkBeforeServiceStart() async throws {
+        do {
+            _ = try await agent.pair(.automatic)
+        } catch {
+            // 旧配置可能仍绑定已卸载的 Tailscale IP；启动新服务前先切到 LAN 通配监听。
+            _ = try await agent.setLANAccess(true)
+        }
+    }
+
+    private func resolvedPairing(for requestedNetwork: PairingNetwork?) async throws -> PairingInfo {
+        switch requestedNetwork ?? .automatic {
+        case .automatic:
+            do {
+                return try await agent.pair(.automatic)
+            } catch {
+                // 自动模式只有 Tailscale 不可用时才应降级；LAN 准备失败会返回更可操作的错误。
+                return try await localNetworkPairing()
+            }
+        case .tailscale:
+            return try await agent.pair(.tailscale)
+        case .localNetwork:
+            return try await localNetworkPairing()
+        }
+    }
+
+    private func localNetworkPairing() async throws -> PairingInfo {
+        guard owner == .macApp else {
+            throw AgentClientError.commandFailed("请先将 Homebrew 服务迁移到 Mimi Remote Mac，再启用局域网访问。")
+        }
+        let configuration = try await agent.setLANAccess(true)
+        var restartedForLAN = false
+        if configuration.restartRequired {
+            // LAN 是扩大监听范围；仅配置首次变化时重启，后续刷新二维码不再打断连接。
+            await restartService()
+            guard lifecycle == .ready else {
+                throw AgentClientError.commandFailed(lastError ?? "启用局域网后服务重启失败。")
+            }
+            restartedForLAN = true
+        }
+
+        var nextPairing = try await agent.pair(.localNetwork)
+        if !(await health.checkDirect(nextPairing.endpoint)) {
+            // 配置可能已开启但当前进程尚未加载；直连校验失败时只补一次重启。
+            if !restartedForLAN {
+                await restartService()
+                guard lifecycle == .ready else {
+                    throw AgentClientError.commandFailed(lastError ?? "局域网服务重启失败。")
+                }
+                nextPairing = try await agent.pair(.localNetwork)
+            }
+            guard await health.checkDirect(nextPairing.endpoint) else {
+                throw AgentClientError.commandFailed("局域网地址暂时不可访问，请检查 macOS 本地网络权限或防火墙设置。")
+            }
+        }
+        return nextPairing
     }
 
     func runDoctor(fix: Bool) async {
@@ -295,6 +362,7 @@ final class HostStore {
         case .notRegistered:
             lifecycle = .starting
             do {
+                try await prepareAutomaticNetworkBeforeServiceStart()
                 try services.registerAgent()
                 owner = .macApp
                 try await waitForMacAgentReady()
@@ -478,7 +546,9 @@ final class HostStore {
                    !(await self.health.check(endpoint))
                 {
                     await self.refresh()
-                } else if tick.isMultiple(of: 6) {
+                } else if tick.isMultiple(of: 30) {
+                    // 常驻监控每 10 秒只做 loopback healthz；完整 status 会执行带鉴权的
+                    // upstream WebSocket readiness，降到 5 分钟一次，避免控制面持续干扰数据面。
                     await self.refresh()
                 }
             }
@@ -513,7 +583,22 @@ final class HostStore {
             status: { status },
             statusAt: { _ in status },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
-            pair: { PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
+            setLANAccess: { enabled in
+                NetworkConfigurationResult(
+                    lanEnabled: enabled,
+                    changed: false,
+                    restartRequired: false
+                )
+            },
+            pair: { network in
+                let endpoint = network == .localNetwork ? "http://192.168.31.20:8787" : status.endpoint
+                return PairingInfo(
+                    endpoint: endpoint,
+                    pairURL: "mimiremote://pair?pair_sig=preview-\(network.rawValue)",
+                    expiresAt: "10 分钟后",
+                    warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
+                )
+            },
             version: { status.version }
         )
         let services = ServiceManagementClient(
@@ -529,7 +614,7 @@ final class HostStore {
             agent: agent,
             services: services,
             homebrew: homebrew,
-            health: HealthClient(check: { _ in true }),
+            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
             logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/agentd.log"))
         )
         store.lifecycle = lifecycle

@@ -2,17 +2,29 @@ import Foundation
 
 struct HealthClient: Sendable {
     var check: @Sendable (_ endpoint: String) async -> Bool
+    var checkDirect: @Sendable (_ endpoint: String) async -> Bool
 }
 
 extension HealthClient {
-    static let live = HealthClient { endpoint in
+    static let live = HealthClient(
+        check: { endpoint in
+            await request(endpoint: endpoint, useLoopback: true)
+        },
+        checkDirect: { endpoint in
+            await request(endpoint: endpoint, useLoopback: false)
+        }
+    )
+
+    private static func request(endpoint: String, useLoopback: Bool) async -> Bool {
         guard var components = URLComponents(string: endpoint),
               let port = components.port
         else {
             return false
         }
         components.scheme = "http"
-        components.host = "127.0.0.1"
+        if useLoopback {
+            components.host = "127.0.0.1"
+        }
         components.port = port
         components.path = "/healthz"
         components.query = nil

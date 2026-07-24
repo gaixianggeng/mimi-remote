@@ -1468,8 +1468,9 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 			return
 		}
 		response := fmt.Sprintf(
-			`{"id":%s,"result":{"data":[{"id":"turn-image","items":[{"type":"userMessage","id":"user-image","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"data:image/png;base64,%s","detail":"high"}]}]}]}}`,
+			`{"id":%s,"result":{"data":[{"id":"turn-image","items":[{"type":"userMessage","id":"user-image","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"data:image/png;base64,%s","detail":"high"}]},{"type":"mcpToolCall","id":"browser-image","result":{"_meta":{"codex/toolSurface":{"screenshot":{"url":"data:image/png;base64,%s","pageUrl":"https://example.test","tabId":"tab-1"}}}}}]}]}}`,
 			string(*frame.ID),
+			imagePayload,
 			imagePayload,
 		)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
@@ -1505,6 +1506,7 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 		Result struct {
 			Data []struct {
 				Items []struct {
+					Type    string `json:"type"`
 					Content []struct {
 						Type        string `json:"type"`
 						URL         string `json:"url"`
@@ -1512,6 +1514,20 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 						ByteCount   int    `json:"byteCount"`
 						Redacted    bool   `json:"redacted"`
 					} `json:"content"`
+					Result struct {
+						Meta struct {
+							ToolSurface struct {
+								Screenshot struct {
+									URL            string `json:"url"`
+									URLContentType string `json:"urlContentType"`
+									URLByteCount   int    `json:"urlByteCount"`
+									URLRedacted    bool   `json:"urlRedacted"`
+									PageURL        string `json:"pageUrl"`
+									TabID          string `json:"tabId"`
+								} `json:"screenshot"`
+							} `json:"codex/toolSurface"`
+						} `json:"_meta"`
+					} `json:"result"`
 				} `json:"items"`
 			} `json:"data"`
 		} `json:"result"`
@@ -1528,6 +1544,16 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 	}
 	if content[1].ContentType != "image/png" || content[1].ByteCount == 0 {
 		t.Fatalf("history 图片应保留类型和大小元数据：%+v", content[1])
+	}
+	screenshot := frame.Result.Data[0].Items[1].Result.Meta.ToolSurface.Screenshot
+	if !strings.HasPrefix(screenshot.URL, appServerHistoryMediaURLPrefix) ||
+		!screenshot.URLRedacted ||
+		screenshot.URLContentType != "image/png" ||
+		screenshot.URLByteCount == 0 {
+		t.Fatalf("嵌套 toolSurface screenshot.url 应在 cap 检查前改写：%+v", screenshot)
+	}
+	if screenshot.PageURL != "https://example.test" || screenshot.TabID != "tab-1" {
+		t.Fatalf("嵌套截图关联元数据不应被改写：%+v", screenshot)
 	}
 
 	mediaID := strings.TrimPrefix(content[1].URL, "agentd-history-media://")

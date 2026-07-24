@@ -2,7 +2,7 @@
 
 ## 目标
 
-让个人开发者在新 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径仍是“单机 + Tailscale + 用户自己的 Codex CLI”。
+让个人开发者在新 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
 
 ## 方案
 
@@ -15,7 +15,7 @@
 
 ### macOS 首次安装
 
-前置条件：已安装并登录 Codex CLI，Mac 与移动设备已登录同一个 Tailscale 网络。
+前置条件：已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
 ```bash
 brew update
@@ -29,7 +29,7 @@ agentd status
 
 `agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、版本和真实 app-server WebSocket 握手均已通过。安装与升级只能以后者为成功条件。
 
-`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json` 和独立的 app-server Token 文件，以 `0600` 保存，然后启动 Homebrew 后台服务。重复运行会复用现有配置，不会覆盖已经配对的移动端 Token。
+`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json` 和独立的 app-server Token 文件，以 `0600` 保存，然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置，不会覆盖已经配对的移动端 Token。
 
 Agent 或自动化首次安装必须使用安全模式，初始化与启动逻辑不变，但不输出二维码、Endpoint 或长期访问码：
 

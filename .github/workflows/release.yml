@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   verify:
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -33,6 +34,9 @@ jobs:
 
       - name: Check packaging sources
         run: bash ./scripts/check-packaging.sh
+
+      - name: Build Codex Skill package
+        run: bash ./scripts/package-skill.sh dist-skill
 
       - name: Verify public release prerequisites
         env:
@@ -88,6 +92,7 @@ jobs:
 
   release:
     needs: verify
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -103,6 +108,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Build Codex Skill package
+        run: bash ./scripts/package-skill.sh dist-skill
 
       - name: Build, sign, and notarize Mac installer
         env:
@@ -144,6 +152,8 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             dist-macos/Mimi-Remote-Mac.dmg \
             dist-macos/Mimi-Remote-Mac.dmg.sha256 \
+            dist-skill/install-mimi-remote.zip \
+            dist-skill/install-mimi-remote.zip.sha256 \
             --clobber \
             --repo "$GITHUB_REPOSITORY"
 

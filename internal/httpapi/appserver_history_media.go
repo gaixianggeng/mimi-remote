@@ -30,7 +30,7 @@ var (
 	appServerHistoryMediaJPEGQuality               = 80
 )
 
-// imageGeneration.result 之类的裸 base64 只有大到影响 gateway cap / 隧道带宽时才值得改写；
+// image.data、工具 result 之类的裸 base64 只有大到影响 gateway cap / 隧道带宽时才值得改写；
 // 小图继续内联，避免为几 KB 的内容多一次往返。
 var appServerHistoryMediaMinRawBase64Chars = 16 << 10
 
@@ -435,7 +435,13 @@ func (r *Router) redactInlineHistoryImagesInGatewayResponse(payload []byte) ([]b
 	if r == nil || r.historyMedia == nil {
 		return payload, false
 	}
-	if !bytes.Contains(payload, []byte("data:image/")) && !bytes.Contains(payload, []byte(`"imageGeneration"`)) {
+	// app-server 的历史协议里图片存在多种形态：image.url、image.data、
+	// 工具字段，以及嵌套在 _meta 中的 screenshot.url。先做廉价筛选，避免普通通知反复解析整段 JSON。
+	if !bytes.Contains(payload, []byte("data:image/")) &&
+		!bytes.Contains(payload, []byte(`"image"`)) &&
+		!bytes.Contains(payload, []byte(`"imageGeneration"`)) &&
+		!bytes.Contains(payload, []byte(`"mcpToolCall"`)) &&
+		!bytes.Contains(payload, []byte(`"dynamicToolCall"`)) {
 		return payload, false
 	}
 	var root any
@@ -459,6 +465,12 @@ func (r *Router) redactInlineHistoryImagesValue(value any) bool {
 	case map[string]any:
 		changed := r.redactInlineHistoryImageObject(typed)
 		if r.redactInlineHistoryImageGenerationObject(typed) {
+			changed = true
+		}
+		if r.redactInlineHistoryToolImageObject(typed) {
+			changed = true
+		}
+		if r.redactInlineHistoryDataURLObject(typed) {
 			changed = true
 		}
 		for _, child := range typed {
@@ -488,7 +500,11 @@ func (r *Router) redactInlineHistoryImageObject(object map[string]any) bool {
 	rawURL, _ := object["url"].(string)
 	contentType, data, ok := decodeHistoryImageDataURL(rawURL)
 	if !ok {
-		return false
+		rawData, _ := object["data"].(string)
+		contentType, data, ok = decodeHistoryInlineImage(rawData)
+		if !ok {
+			return false
+		}
 	}
 	id, ok := r.historyMedia.put(contentType, data)
 	if !ok {
@@ -497,6 +513,7 @@ func (r *Router) redactInlineHistoryImageObject(object map[string]any) bool {
 	// 核心逻辑：历史 full 响应里的 inline 图片对首屏文字没有必要，
 	// 先替换成短 URL，避免大 base64 把 gateway 历史 cap 撞爆。
 	object["url"] = appServerHistoryMediaURLPrefix + id
+	delete(object, "data")
 	object["contentType"] = contentType
 	object["byteCount"] = len(data)
 	object["redacted"] = true
@@ -524,6 +541,63 @@ func (r *Router) redactInlineHistoryImageGenerationObject(object map[string]any)
 	object["resultByteCount"] = len(data)
 	object["resultRedacted"] = true
 	return true
+}
+
+// MCP 和 dynamic tool 的图片可能出现在 url（data URL）或 result（裸 base64）。
+// 只检查这些有明确语义的字段，并用图片文件头二次确认，避免误改普通工具文本。
+func (r *Router) redactInlineHistoryToolImageObject(object map[string]any) bool {
+	rawType, _ := object["type"].(string)
+	switch strings.TrimSpace(rawType) {
+	case "mcpToolCall", "dynamicToolCall":
+	default:
+		return false
+	}
+
+	changed := false
+	for _, field := range []string{"url", "result"} {
+		rawValue, _ := object[field].(string)
+		contentType, data, ok := decodeHistoryInlineImage(rawValue)
+		if !ok {
+			continue
+		}
+		id, ok := r.historyMedia.put(contentType, data)
+		if !ok {
+			continue
+		}
+		object[field] = appServerHistoryMediaURLPrefix + id
+		object[field+"ContentType"] = contentType
+		object[field+"ByteCount"] = len(data)
+		object[field+"Redacted"] = true
+		changed = true
+	}
+	return changed
+}
+
+// data:image URL 已经显式声明内容类型，不需要依赖外围对象的 type。
+// 浏览器工具会把截图放在 result._meta["codex/toolSurface"].screenshot.url，
+// screenshot 对象本身没有 type；统一识别 URL 才能避免这类嵌套图片漏过历史响应 cap。
+func (r *Router) redactInlineHistoryDataURLObject(object map[string]any) bool {
+	rawURL, _ := object["url"].(string)
+	contentType, data, ok := decodeHistoryImageDataURL(rawURL)
+	if !ok {
+		return false
+	}
+	id, ok := r.historyMedia.put(contentType, data)
+	if !ok {
+		return false
+	}
+	object["url"] = appServerHistoryMediaURLPrefix + id
+	object["urlContentType"] = contentType
+	object["urlByteCount"] = len(data)
+	object["urlRedacted"] = true
+	return true
+}
+
+func decodeHistoryInlineImage(value string) (string, []byte, bool) {
+	if contentType, data, ok := decodeHistoryImageDataURL(value); ok {
+		return contentType, data, true
+	}
+	return decodeHistoryRawBase64Image(value)
 }
 
 func decodeHistoryRawBase64Image(value string) (string, []byte, bool) {

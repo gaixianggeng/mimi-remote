@@ -27,10 +27,10 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 560, height: 520)
 
-        Window("配对 iPhone 或 iPad", id: AppWindow.pairing.rawValue) {
+        Window("配对设备", id: AppWindow.pairing.rawValue) {
             PairingView(store: store)
         }
-        .defaultSize(width: 460, height: 580)
+        .defaultSize(width: 520, height: 720)
 
         Window("诊断与日志", id: AppWindow.diagnostics.rawValue) {
             DiagnosticsView(store: store)

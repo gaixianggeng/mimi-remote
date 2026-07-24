@@ -2,7 +2,7 @@
 
 ## 目标
 
-Mimi Remote 只配置并访问 Mac 的 Tailscale Endpoint，不维护公网备用地址，也不参与底层链路切换。App 执行连接验证或测速时，会通过 `agentd` 读取一次 Tailscale 状态快照，用于区分直连、Peer Relay 和 DERP；该结果只用于诊断。
+本文只描述 Mimi Remote 的 Tailscale 跨网络模式。该模式使用 Mac 的 Tailscale Endpoint，不维护公网备用地址，也不参与底层链路切换；未安装 Tailscale 时，产品可在同一局域网内改用 LAN 配对。App 执行连接验证或测速时，会通过 `agentd` 读取一次 Tailscale 状态快照，用于区分直连、Peer Relay 和 DERP；该结果只用于诊断。
 
 Tailscale 按网络情况自动选择：
 
@@ -31,7 +31,7 @@ VPS 只运行 Tailscale Peer Relay，不运行 `agentd`、nginx 或 SSH reverse 
 - Mac `agentd`：`<Mac-Tailscale-IP>:8787/TCP`
 - App Endpoint：`http://<Mac-Tailscale-IP>:8787`
 
-App 冷启动、回到前台和 WebSocket 重连时都继续使用同一个 Mac Endpoint。直连失败后的 Peer Relay/DERP 切换由 Tailscale 网络层完成，REST 和 WebSocket 不需要应用层 Endpoint 探测或切换逻辑。
+已经按 Tailscale 配对的 App 在冷启动、回到前台和 WebSocket 重连时都继续使用同一个 Mac Endpoint。直连失败后的 Peer Relay/DERP 切换由 Tailscale 网络层完成，REST 和 WebSocket 不需要应用层 Endpoint 探测或切换逻辑。
 
 连接测速完成业务握手后会调用鉴权接口 `GET /api/diagnostics/tailscale-path`。`agentd` 根据当前请求来源的 Tailscale IP 匹配 `tailscale status --json` 中的 active peer，只返回连接类型和可选 DERP 区域，不返回打洞公网地址或完整 peer 列表。CLI 不可用、peer 已空闲或当前走局域网时，该诊断会降级显示，不影响测速成功与否。
 
@@ -208,4 +208,4 @@ ssh ubuntu@<VPS-Public-IP> \
 - 腾讯云安全组未放行 `40000/UDP` 时，VPS 进程即使显示监听，移动端仍无法主动建立 Peer Relay 连接。
 - Tailscale 官方 DERP 是最终兜底，不能由 Peer Relay 完全替代。
 - Mac 或 iPad 的外网 IP 变化不影响 Tailscale 身份，Tailscale 会重新发布 Endpoint；上海 VPS 继续使用固定公网地址公布 Peer Relay 静态 Endpoint。
-- App 不再有公网备用 Endpoint。Tailscale 整体未连接时，App 会连接失败，需要先恢复 Tailscale，而不是切换应用层地址。
+- App 没有公网备用 Endpoint。Tailscale 整体未连接时，现有 Tailscale 档案会连接失败；两台设备在同一局域网时可从 Mac App 重新生成 LAN 配对信息，否则需要恢复 Tailscale。

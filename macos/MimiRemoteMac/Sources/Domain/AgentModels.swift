@@ -1,20 +1,57 @@
 import Foundation
 
+enum PairingNetwork: String, CaseIterable, Identifiable, Sendable, Codable {
+    case automatic = "auto"
+    case tailscale
+    case localNetwork = "lan"
+
+    var id: String { rawValue }
+
+    static func inferred(from endpoint: String) -> PairingNetwork {
+        guard let host = URLComponents(string: endpoint)?.host else {
+            return .tailscale
+        }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4 else {
+            return .tailscale
+        }
+        if octets[0] == 100, (64...127).contains(octets[1]) {
+            return .tailscale
+        }
+        if octets[0] == 10 ||
+            (octets[0] == 172 && (16...31).contains(octets[1])) ||
+            (octets[0] == 192 && octets[1] == 168)
+        {
+            return .localNetwork
+        }
+        return .tailscale
+    }
+}
+
 struct PairingInfo: Codable, Equatable, Sendable {
     let endpoint: String
+    let network: PairingNetwork
     let pairURL: String
     let expiresAt: String
     let warnings: [String]
 
     enum CodingKeys: String, CodingKey {
         case endpoint
+        case network
         case pairURL = "pair_url"
         case expiresAt = "pair_expires_at"
         case warnings
     }
 
-    init(endpoint: String, pairURL: String, expiresAt: String, warnings: [String]) {
+    init(
+        endpoint: String,
+        network: PairingNetwork? = nil,
+        pairURL: String,
+        expiresAt: String,
+        warnings: [String]
+    ) {
         self.endpoint = endpoint
+        self.network = network ?? PairingNetwork.inferred(from: endpoint)
         self.pairURL = pairURL
         self.expiresAt = expiresAt
         self.warnings = warnings
@@ -23,10 +60,24 @@ struct PairingInfo: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         endpoint = try container.decode(String.self, forKey: .endpoint)
+        network = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
+            ?? PairingNetwork.inferred(from: endpoint)
         pairURL = try container.decode(String.self, forKey: .pairURL)
         expiresAt = try container.decode(String.self, forKey: .expiresAt)
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。
         warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+    }
+}
+
+struct NetworkConfigurationResult: Codable, Equatable, Sendable {
+    let lanEnabled: Bool
+    let changed: Bool
+    let restartRequired: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case lanEnabled = "lan_enabled"
+        case changed
+        case restartRequired = "restart_required"
     }
 }
 

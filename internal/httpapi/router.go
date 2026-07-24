@@ -258,7 +258,7 @@ func (r *Router) healthz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
-	results := r.doctor.Run(req.Context(), false)
+	results := r.doctor.RunReadiness(req.Context())
 	results = appendReadinessCheck(results, r.appServerUpstreamReadinessCheck(req.Context()))
 	status := http.StatusOK
 	if !results.OK {

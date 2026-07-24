@@ -6,7 +6,8 @@ struct AgentCommandClient: Sendable {
     var status: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
-    var pair: @Sendable () async throws -> PairingInfo
+    var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
+    var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
 }
 
@@ -16,7 +17,8 @@ extension AgentCommandClient {
         bundle: Bundle = .main
     ) -> AgentCommandClient {
         let embeddedBinary = bundle.url(forResource: "agentd", withExtension: nil)
-        let configURL = FileManager.default.homeDirectoryForCurrentUser
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let configURL = homeDirectory
             .appending(path: "Library/Application Support/mimi-remote/config.json")
         let environment = ProcessEnvironment.userTooling
 
@@ -61,11 +63,13 @@ extension AgentCommandClient {
             },
             setup: { workspaceRoot in
                 let binary = try requireEmbeddedBinary()
-                let result = try await execute(binary: binary, arguments: [
-                    "setup", "--json", "--qr-only",
-                    "--scan-root", workspaceRoot.path,
-                    "--browse-root", workspaceRoot.path,
-                ])
+                let result = try await execute(
+                    binary: binary,
+                    arguments: setupArguments(
+                        workspaceRoot: workspaceRoot,
+                        browseRoot: homeDirectory
+                    )
+                )
                 return try decode(PairingInfo.self, from: result)
             },
             status: {
@@ -99,11 +103,27 @@ extension AgentCommandClient {
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
             },
-            pair: {
+            setLANAccess: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: [
+                        "network",
+                        "--lan-enabled=\(enabled)",
+                        "--json",
+                    ]
+                ))
+            },
+            pair: { network in
                 let binary = try requireEmbeddedBinary()
                 return try decode(PairingInfo.self, from: try await execute(
                     binary: binary,
-                    arguments: ["pair", "--json", "--qr-only"]
+                    arguments: [
+                        "pair",
+                        "--network", network.rawValue,
+                        "--json",
+                        "--qr-only",
+                    ]
                 ))
             },
             version: {
@@ -114,6 +134,15 @@ extension AgentCommandClient {
         )
     }
 
+    static func setupArguments(workspaceRoot: URL, browseRoot: URL) -> [String] {
+        [
+            "setup", "--json", "--qr-only",
+            // 项目发现只扫描用户选择的代码目录，避免遍历整个 Home。
+            "--scan-root", workspaceRoot.path,
+            // 文件预览和会话产物可能位于 ~/.codex 等目录，浏览权限默认覆盖当前用户 Home。
+            "--browse-root", browseRoot.path,
+        ]
+    }
 }
 
 enum AgentClientError: LocalizedError {

@@ -81,7 +81,7 @@ private_endpoint_matches="$(rg -l --pcre2 \
   "${docs_paths[@]}" || true)"
 report_matches "公开文档包含具体 Tailscale 地址" "$private_endpoint_matches"
 
-home_path_matches="$(rg -l --pcre2 '/Users/(?!me/|you/)[A-Za-z0-9._-]+/|/home/(?!me/|user/)[A-Za-z0-9._-]+/' \
+home_path_matches="$(rg -l --pcre2 '/Users/(?!me/|you/|demo/)[A-Za-z0-9._-]+/|/home/(?!me/|user/|demo/)[A-Za-z0-9._-]+/' \
   "${docs_paths[@]}" || true)"
 report_matches "公开文档包含真实用户主目录" "$home_path_matches"
 

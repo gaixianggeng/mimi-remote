@@ -138,6 +138,7 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 	tests := []struct {
 		name       string
 		configured string
+		allowLAN   bool
 		want       []string
 	}{
 		{name: "Tailscale IPv4", configured: "100.127.16.9:8787", want: []string{"100.127.16.9:8787", "127.0.0.1:8787"}},
@@ -147,11 +148,17 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 		{name: "IPv4 wildcard", configured: "0.0.0.0:8787", want: []string{"0.0.0.0:8787"}},
 		{name: "IPv6 wildcard", configured: "[::]:8787", want: []string{"[::]:8787"}},
 		{name: "invalid keeps original", configured: "bad-address", want: []string{"bad-address"}},
+		{
+			name:       "explicit LAN access uses IPv4 wildcard",
+			configured: "100.127.16.9:8787",
+			allowLAN:   true,
+			want:       []string{"0.0.0.0:8787"},
+		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := agentDListenAddresses(testCase.configured); !reflect.DeepEqual(got, testCase.want) {
+			if got := agentDListenAddresses(testCase.configured, testCase.allowLAN); !reflect.DeepEqual(got, testCase.want) {
 				t.Fatalf("监听地址不符合预期：got=%v want=%v", got, testCase.want)
 			}
 		})
@@ -943,11 +950,17 @@ func TestWaitForServiceReadyUsesBearerAndReadyz(t *testing.T) {
 	}
 }
 
-func TestFetchServiceDoctorResultsUsesBearerAndReturnsStartupPreflight(t *testing.T) {
-	const token = "doctor-service-token"
+func TestWaitForServiceReadyResultsUsesBearerAndDoesNotRequestDoctor(t *testing.T) {
+	const token = "ready-service-token"
+	var doctorRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/doctor" {
-			t.Errorf("服务端 Doctor 路径错误：%s", req.URL.Path)
+		if req.URL.Path == "/api/doctor" {
+			doctorRequests.Add(1)
+			http.Error(w, "status 不应请求完整 doctor", http.StatusInternalServerError)
+			return
+		}
+		if req.URL.Path != "/api/readyz" {
+			t.Errorf("服务端 readiness 路径错误：%s", req.URL.Path)
 		}
 		if req.Header.Get("Authorization") != "Bearer "+token {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -957,24 +970,27 @@ func TestFetchServiceDoctorResultsUsesBearerAndReturnsStartupPreflight(t *testin
 			OK:      true,
 			Version: "1.2.3",
 			Checks: []doctor.Check{{
-				Name:    "file-access-preflight",
+				Name:    "app-server-upstream",
 				OK:      true,
 				Level:   "ok",
-				Message: "启动预检完成",
+				Message: "upstream 可用",
 			}},
 		})
 	}))
 	defer server.Close()
 
-	results, err := fetchServiceDoctorResults(context.Background(), server.URL, token, time.Second)
+	results, err := waitForServiceReadyResults(context.Background(), server.URL, token, "1.2.3", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results.Checks) != 1 || results.Checks[0].Name != "file-access-preflight" {
-		t.Fatalf("status 必须保留服务启动期权限预检：%+v", results)
+	if len(results.Checks) != 1 || results.Checks[0].Name != "app-server-upstream" {
+		t.Fatalf("status 必须直接复用 readyz 结果：%+v", results)
 	}
-	if _, err := fetchServiceDoctorResults(context.Background(), server.URL, "wrong-token", time.Second); err == nil {
-		t.Fatal("服务端 Doctor 必须使用外侧 Bearer Token")
+	if doctorRequests.Load() != 0 {
+		t.Fatalf("status 不应触发完整 doctor：requests=%d", doctorRequests.Load())
+	}
+	if _, err := waitForServiceReadyResults(context.Background(), server.URL, "wrong-token", "1.2.3", time.Nanosecond); err == nil {
+		t.Fatal("服务端 readiness 必须使用外侧 Bearer Token")
 	}
 }
 
@@ -1030,6 +1046,43 @@ func TestWaitForServiceReadyAllowsDevelopmentClientVersion(t *testing.T) {
 
 	if err := waitForServiceReady(context.Background(), server.URL, "token", "devel", time.Second); err != nil {
 		t.Fatalf("默认开发版本不应误伤本地测试服务：%v", err)
+	}
+}
+
+func TestLoopbackServiceEndpointPreservesSchemePortAndPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "tailscale ipv4",
+			endpoint: "http://100.127.16.9:8787",
+			want:     "http://127.0.0.1:8787",
+		},
+		{
+			name:     "lan with path",
+			endpoint: "https://192.168.31.20:9443/base?source=status",
+			want:     "https://127.0.0.1:9443/base?source=status",
+		},
+		{
+			name:     "invalid endpoint unchanged",
+			endpoint: "not-an-endpoint",
+			want:     "not-an-endpoint",
+		},
+		{
+			name:     "missing port unchanged",
+			endpoint: "http://100.127.16.9",
+			want:     "http://100.127.16.9",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := loopbackServiceEndpoint(testCase.endpoint); got != testCase.want {
+				t.Fatalf("loopback Endpoint 错误：got=%q want=%q", got, testCase.want)
+			}
+		})
 	}
 }
 

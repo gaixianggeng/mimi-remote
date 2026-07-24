@@ -54,7 +54,7 @@ struct DiagnosticsView: View {
                 Divider()
                 Text("已修复：\(store.appliedFixes.joined(separator: "；"))")
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color.mimiPrimary)
                     .padding(10)
             }
         }
@@ -71,7 +71,7 @@ private struct DiagnosticCheckRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: check.ok ? "checkmark.circle.fill" : check.isWarning ? "exclamationmark.triangle.fill" : "xmark.circle.fill")
-                .foregroundStyle(check.ok ? .green : check.isWarning ? .orange : .red)
+                .foregroundStyle(check.ok ? Color.mimiPrimary : check.isWarning ? Color.orange : Color.red)
             VStack(alignment: .leading, spacing: 3) {
                 Text(check.name)
                     .font(.headline)

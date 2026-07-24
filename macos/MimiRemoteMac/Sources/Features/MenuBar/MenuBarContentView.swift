@@ -247,7 +247,7 @@ private struct MenuStatusHeader: View {
 
     private var statusColor: Color {
         switch lifecycle {
-        case .ready: .green
+        case .ready: .mimiPrimary
         case .loading, .starting: .blue
         case .notConfigured, .migrationRequired, .degraded: .orange
         case .stopped: .secondary
@@ -299,7 +299,7 @@ private struct MenuConnectionSummary: View {
     private var ownerColor: Color {
         switch owner {
         case .none: .secondary
-        case .macApp: .green
+        case .macApp: .mimiPrimary
         case .homebrew: .orange
         }
     }
@@ -366,11 +366,11 @@ private struct MenuActionRow: View {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.red : Color.secondary)
+                    .foregroundStyle(role == .destructive ? Color.mimiMutedDestructive : Color.secondary)
                     .frame(width: 18)
                 Text(title)
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(role == .destructive ? Color.red : Color.primary)
+                    .foregroundStyle(role == .destructive ? Color.mimiMutedDestructive : Color.primary)
                 Spacer(minLength: 0)
                 if isWorking {
                     ProgressView()

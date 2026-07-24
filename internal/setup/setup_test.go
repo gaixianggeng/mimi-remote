@@ -110,6 +110,60 @@ func TestDefaultBrowseRootDefaultsToHome(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentDNetworkPrefersTailscaleAndFallsBackToLAN(t *testing.T) {
+	tests := []struct {
+		name         string
+		tailscaleIP  string
+		lanIP        string
+		wantListen   string
+		wantAllowLAN bool
+		wantError    string
+	}{
+		{
+			name:        "tailscale preferred",
+			tailscaleIP: "100.100.20.30",
+			lanIP:       "192.168.31.20",
+			wantListen:  "100.100.20.30:8787",
+		},
+		{
+			name:         "lan fallback",
+			lanIP:        "192.168.31.20",
+			wantListen:   "0.0.0.0:8787",
+			wantAllowLAN: true,
+		},
+		{
+			name:      "no reachable network",
+			wantError: "未检测到 Tailscale 或可用的局域网 IPv4",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			listen, allowLAN, err := defaultAgentDNetwork(
+				context.Background(),
+				pairingNetworkLookups{
+					tailscaleIP: func(context.Context) string { return testCase.tailscaleIP },
+					lanIP:       func() string { return testCase.lanIP },
+				},
+			)
+			if testCase.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
+					t.Fatalf("缺少预期错误 %q：%v", testCase.wantError, err)
+				}
+				return
+			}
+			if err != nil || listen != testCase.wantListen || allowLAN != testCase.wantAllowLAN {
+				t.Fatalf(
+					"默认网络选择错误：listen=%q allow_lan=%v err=%v",
+					listen,
+					allowLAN,
+					err,
+				)
+			}
+		})
+	}
+}
+
 func TestRunWritesBrowseRoots(t *testing.T) {
 	clearSetupEnv(t)
 	scanRoot := t.TempDir()

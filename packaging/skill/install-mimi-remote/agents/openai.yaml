@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mimi Remote 安装与维护"
+  short_description: "安装、升级、诊断并维护 Mimi Remote 本地服务与移动端连接"
+  default_prompt: "使用 $install-mimi-remote 安装或维护 Mimi Remote，并完成安全检查与可用性验证。"

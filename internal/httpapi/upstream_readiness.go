@@ -13,8 +13,8 @@ import (
 
 const (
 	appServerReadinessProbeTimeout = 750 * time.Millisecond
-	appServerReadinessSuccessTTL   = 2 * time.Second
-	appServerReadinessFailureTTL   = 250 * time.Millisecond
+	appServerReadinessSuccessTTL   = 10 * time.Second
+	appServerReadinessFailureTTL   = time.Second
 )
 
 type appServerReadinessProbe struct {
