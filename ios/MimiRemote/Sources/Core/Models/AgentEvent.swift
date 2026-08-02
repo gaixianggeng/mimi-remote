@@ -1,5 +1,21 @@
 import Foundation
 
+/// app-server 的内部用户记录不能进入用户气泡或历史标题。中断标记只按完整文本
+/// 过滤，普通用户讨论该字符串时仍可正常展示；既有协议标签继续沿用前缀规则。
+func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
+        return false
+    }
+    let hiddenPrefixes = [
+        "<subagent_notification>",
+        "<turn_aborted>",
+        "<environment_context>",
+        "<codex_internal_context>"
+    ]
+    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+}
+
 // Codex 0.146+ 会把 MCP 工具审批编码成一个空 schema 的 form elicitation。
 // 必须依赖私有元数据精确识别，不能把所有空表单都当成审批，否则第三方 MCP 的普通表单会被误授权。
 enum CodexMCPToolApprovalProtocol {
@@ -809,7 +825,13 @@ struct CodexAppServerEventProjector {
         case "serverRequest/resolved":
             return .approvalResolved(metadata)
         case "warning":
-            return .warning(errorPayload(from: params, fallback: "app-server warning"), metadata)
+            let payload = errorPayload(from: params, fallback: "app-server warning")
+            // 兼容尚未升级的 Claude bridge：allowed_warning 只表示接近额度阈值，
+            // 账号快照会单独更新用量，不应再生成红色时间线故障卡。
+            guard !isNonBlockingClaudeRateLimitWarning(payload) else {
+                return nil
+            }
+            return .warning(payload, metadata)
         case "error":
             clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID)
             return .error(errorPayload(from: params, fallback: "app-server error"), metadata)
@@ -981,7 +1003,7 @@ struct CodexAppServerEventProjector {
         }
         .joined(separator: " ")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else {
+        guard isVisibleAppServerUserMessageText(content) else {
             return nil
         }
         let itemID = metadata.itemID ?? item["id"]?.stringValue
@@ -1568,6 +1590,13 @@ struct CodexAppServerEventProjector {
                 ?? nestedString(in: params, key: "error", nestedKey: "code"),
             retryable: params["retryable"]?.boolValue ?? params["willRetry"]?.boolValue
         )
+    }
+
+    private func isNonBlockingClaudeRateLimitWarning(_ payload: AgentErrorPayload) -> Bool {
+        payload.message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("claude rate-limit status: allowed_warning")
     }
 
     private func appServerMessageID(turnID: TurnID?, itemID: AgentItemID?) -> MessageID? {

@@ -32935,6 +32935,23 @@
         }
       }
     },
+    "ui.value_message_quota_has_been_exhausted" : {
+      "comment" : "Quota-blocking banner title. The placeholder is the active runtime display name, for example Codex or Claude.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ message quota has been exhausted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 消息额度已用尽"
+          }
+        }
+      }
+    },
     "ui.value_minutes": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",

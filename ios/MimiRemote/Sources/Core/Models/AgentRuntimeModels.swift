@@ -641,7 +641,7 @@ struct CodexQuotaNotice: Equatable {
             let suffix = resetText.map { L10n.format("ui.expected_value_recovery_you_can_also_click_increase", $0) }
                 ?? L10n.text("ui.you_can_click_increase_quota_or_reset_usage")
             return CodexQuotaNotice(
-                title: L10n.text("ui.codex_message_quota_has_been_exhausted"),
+                title: L10n.format("ui.value_message_quota_has_been_exhausted", rateLimit.displayName),
                 message: L10n.format("ui.value_the_current_quota_is_not_available_value", rateLimit.displayName, suffix),
                 resetDate: resetDate,
                 blocksSending: true,
