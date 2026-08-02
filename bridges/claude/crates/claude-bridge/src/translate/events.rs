@@ -64,6 +64,7 @@ const SUBAGENT_BUFFER_CAP_PER_PARENT: usize = 32;
 pub struct EventTranslatorState {
     thread_id: String,
     turn_id: String,
+    user_interrupt_requested: bool,
 
     /// Open text content blocks keyed by their `content_block.index`.
     open_message_items: HashMap<u32, OpenItem>,
@@ -150,6 +151,7 @@ impl EventTranslatorState {
         Self {
             thread_id: thread_id.into(),
             turn_id: turn_id.into(),
+            user_interrupt_requested: false,
             open_message_items: HashMap::new(),
             open_thinking_items: HashMap::new(),
             open_tool_calls: HashMap::new(),
@@ -169,6 +171,12 @@ impl EventTranslatorState {
 
     pub fn turn_id(&self) -> &str {
         &self.turn_id
+    }
+
+    /// 由 turn handler 在确认本地 interrupt intent 后调用。translator 自身不根据
+    /// 模糊错误文本推断用户意图，避免吞掉真实的流式故障。
+    pub(crate) fn mark_user_interrupt_requested(&mut self) {
+        self.user_interrupt_requested = true;
     }
 
     /// Translate one outbound claude event into zero or more codex
@@ -999,22 +1007,11 @@ impl EventTranslatorState {
     // rate_limit / result
     // ------------------------------------------------------------------
 
-    fn translate_rate_limit(&self, env: RateLimitEnvelope) -> Vec<ServerNotification> {
-        if env.rate_limit_info.status == "allowed" {
-            return Vec::new();
-        }
-        let message = format!(
-            "claude rate-limit status: {}{}",
-            env.rate_limit_info.status,
-            env.rate_limit_info
-                .resets_at
-                .map(|t| format!(" (resets_at={t})"))
-                .unwrap_or_default()
-        );
-        vec![ServerNotification::Warning(WarningNotification {
-            thread_id: Some(self.thread_id.clone()),
-            message,
-        })]
+    fn translate_rate_limit(&self, _env: RateLimitEnvelope) -> Vec<ServerNotification> {
+        // rate_limit_event 已由 event driver 写入账号快照，并通过
+        // account/rateLimits/updated 通知 App。这里不再生成时间线 Warning：
+        // allowed_warning 只是接近阈值，rejected 也应由阻塞额度横幅统一表达。
+        Vec::new()
     }
 
     fn translate_result(&mut self, result: ResultEnvelope) -> Vec<ServerNotification> {
@@ -1038,7 +1035,9 @@ impl EventTranslatorState {
         // For non-success terminal results, also surface a top-level error so
         // the codex client doesn't have to dig into the matching
         // turn/completed payload.
-        if result.is_error || result.subtype != "success" {
+        if (result.is_error || result.subtype != "success")
+            && !is_user_interrupted_result(&result, self.user_interrupt_requested)
+        {
             let message = result
                 .result
                 .clone()
@@ -1919,7 +1918,13 @@ fn first_context_window(model_usage: &Value) -> Option<i64> {
 
 /// Helper for `handlers/turn.rs`: derive a `TurnStatus`/`TurnError` pair from
 /// the optional error string carried out of a result envelope.
-pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Option<TurnError>) {
+pub fn turn_status_from_result(
+    interrupted: bool,
+    error_message: Option<&str>,
+) -> (TurnStatus, Option<TurnError>) {
+    if interrupted {
+        return (TurnStatus::Interrupted, None);
+    }
     if let Some(message) = error_message {
         (
             TurnStatus::Failed,
@@ -1933,6 +1938,19 @@ pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Opti
     } else {
         (TurnStatus::Completed, None)
     }
+}
+
+/// Claude Code 把用户主动停止流式输出表示成 error result，但这不是运行故障。
+/// 只匹配协议的稳定 terminal_reason 或完整内部标记，避免吞掉普通执行错误。
+pub(crate) fn is_user_interrupted_result(
+    result: &ResultEnvelope,
+    interrupt_requested: bool,
+) -> bool {
+    result
+        .result
+        .as_deref()
+        .is_some_and(|message| message.trim() == "[Request interrupted by user]")
+        || (interrupt_requested && result.terminal_reason.as_deref() == Some("aborted_streaming"))
 }
 
 pub(crate) const CLAUDE_AUTHENTICATION_REQUIRED_CODE: &str = "claude_authentication_required";
@@ -2434,7 +2452,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_allowed_is_silent_and_non_allowed_warns() {
+    fn rate_limit_events_only_update_account_snapshot() {
         let mut s = state();
         let allowed = ClaudeOutbound::RateLimitEvent(RateLimitEnvelope {
             rate_limit_info: crate::pool::claude_protocol::RateLimitInfo {
@@ -2451,21 +2469,22 @@ mod tests {
         });
         assert!(s.translate(allowed).is_empty());
 
-        let warning = ClaudeOutbound::RateLimitEvent(RateLimitEnvelope {
-            rate_limit_info: crate::pool::claude_protocol::RateLimitInfo {
-                status: "warning".into(),
-                utilization: Some(0.91),
-                resets_at: Some(123),
-                rate_limit_type: Some("five_hour".into()),
-                overage_status: None,
-                is_using_overage: None,
-                extra: Default::default(),
-            },
-            uuid: "u1".into(),
-            session_id: "s1".into(),
-        });
-        let out = s.translate(warning);
-        assert!(matches!(&out[0], ServerNotification::Warning(_)));
+        for status in ["allowed_warning", "rejected"] {
+            let event = ClaudeOutbound::RateLimitEvent(RateLimitEnvelope {
+                rate_limit_info: crate::pool::claude_protocol::RateLimitInfo {
+                    status: status.into(),
+                    utilization: Some(0.91),
+                    resets_at: Some(123),
+                    rate_limit_type: Some("five_hour".into()),
+                    overage_status: None,
+                    is_using_overage: None,
+                    extra: Default::default(),
+                },
+                uuid: "u1".into(),
+                session_id: "s1".into(),
+            });
+            assert!(s.translate(event).is_empty(), "status={status}");
+        }
     }
 
     #[test]
@@ -2491,6 +2510,69 @@ mod tests {
         });
         let out = s.translate(result);
         assert!(matches!(&out[0], ServerNotification::Error(_)));
+    }
+
+    #[test]
+    fn user_interrupted_result_does_not_emit_error_notification() {
+        let mut s = state();
+        let result = ResultEnvelope {
+            subtype: "error_during_execution".into(),
+            is_error: true,
+            duration_ms: None,
+            duration_api_ms: None,
+            num_turns: None,
+            result: Some("[Request interrupted by user]".into()),
+            stop_reason: None,
+            session_id: "s1".into(),
+            uuid: "u1".into(),
+            total_cost_usd: None,
+            usage: None,
+            model_usage: None,
+            permission_denials: vec![],
+            terminal_reason: Some("aborted_streaming".into()),
+            api_error_status: None,
+            extra: Default::default(),
+        };
+
+        assert!(is_user_interrupted_result(&result, false));
+        assert!(s.translate(ClaudeOutbound::Result(result)).is_empty());
+
+        let aborted_without_marker = ResultEnvelope {
+            subtype: "error_during_execution".into(),
+            is_error: true,
+            duration_ms: None,
+            duration_api_ms: None,
+            num_turns: None,
+            result: None,
+            stop_reason: None,
+            session_id: "s1".into(),
+            uuid: "u2".into(),
+            total_cost_usd: None,
+            usage: None,
+            model_usage: None,
+            permission_denials: vec![],
+            terminal_reason: Some("aborted_streaming".into()),
+            api_error_status: None,
+            extra: Default::default(),
+        };
+        assert!(!is_user_interrupted_result(&aborted_without_marker, false));
+        let mut without_intent = state();
+        assert!(matches!(
+            &without_intent.translate(ClaudeOutbound::Result(aborted_without_marker.clone()))[0],
+            ServerNotification::Error(_)
+        ));
+        let mut with_intent = state();
+        with_intent.mark_user_interrupt_requested();
+        assert!(is_user_interrupted_result(&aborted_without_marker, true));
+        assert!(
+            with_intent
+                .translate(ClaudeOutbound::Result(aborted_without_marker))
+                .is_empty()
+        );
+        assert_eq!(
+            turn_status_from_result(true, Some("aborted_streaming")),
+            (TurnStatus::Interrupted, None)
+        );
     }
 
     #[test]
@@ -2526,9 +2608,10 @@ mod tests {
             Some(CLAUDE_AUTHENTICATION_REQUIRED_CODE)
         );
 
-        let (status, turn_error) = turn_status_from_result(Some(
-            "Failed to authenticate: OAuth session expired and could not be refreshed",
-        ));
+        let (status, turn_error) = turn_status_from_result(
+            false,
+            Some("Failed to authenticate: OAuth session expired and could not be refreshed"),
+        );
         assert_eq!(status, TurnStatus::Failed);
         assert_eq!(
             turn_error.and_then(|error| error.code).as_deref(),
@@ -2544,7 +2627,7 @@ mod tests {
             "Could not be refreshed after a third-party OAuth failure",
         ] {
             assert!(!is_claude_authentication_failure(unrelated_error));
-            let (_, turn_error) = turn_status_from_result(Some(unrelated_error));
+            let (_, turn_error) = turn_status_from_result(false, Some(unrelated_error));
             assert_eq!(turn_error.and_then(|error| error.code), None);
         }
     }

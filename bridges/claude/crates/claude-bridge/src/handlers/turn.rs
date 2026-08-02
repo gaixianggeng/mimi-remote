@@ -16,9 +16,8 @@
 //! `turn/steer` writes another user envelope on stdin while a turn is in
 //! flight; the existing driver folds the new events into the same `turn_id`.
 //!
-//! `turn/interrupt` sends SIGINT to the claude child (Unix) or
-//! `child.start_kill()` (Windows) and waits for the driver to emit a Failed
-//! `turn/completed`.
+//! `turn/interrupt` uses Claude's control protocol and waits for the driver to
+//! emit an Interrupted `turn/completed`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -44,7 +43,8 @@ use crate::pool::claude_protocol::{ClaudeEvent, ClaudeOutbound, ControlRequestBo
 use crate::pool::process::ClaudeProcessError;
 use crate::state::ConnectionState;
 use crate::translate::events::{
-    EventTranslatorState, is_claude_authentication_failure, turn_status_from_result,
+    EventTranslatorState, is_claude_authentication_failure, is_user_interrupted_result,
+    turn_status_from_result,
 };
 use crate::translate::input::translate_user_input;
 
@@ -133,6 +133,7 @@ static EVENT_DRIVERS: LazyLock<SyncMutex<HashMap<String, EventDriverRegistration
 #[derive(Clone)]
 struct ActiveTurn {
     turn_id: String,
+    interrupt_requested: bool,
 }
 
 struct EventDriverRegistration {
@@ -554,6 +555,7 @@ pub async fn handle_turn_interrupt(
                 actual: active.turn_id,
             });
         }
+        mark_active_turn_interrupt_requested(&params.thread_id, &params.turn_id);
     }
     interrupt_handle(&handle).await;
     Ok(p::TurnInterruptResponse::default())
@@ -616,12 +618,26 @@ fn register_active_turn(thread_id: &str, turn_id: &str) {
         thread_id.to_string(),
         ActiveTurn {
             turn_id: turn_id.to_string(),
+            interrupt_requested: false,
         },
     );
 }
 
 fn active_turn(thread_id: &str) -> Option<ActiveTurn> {
     ACTIVE_TURNS.lock().unwrap().get(thread_id).cloned()
+}
+
+fn mark_active_turn_interrupt_requested(thread_id: &str, turn_id: &str) {
+    if let Some(active) = ACTIVE_TURNS.lock().unwrap().get_mut(thread_id)
+        && active.turn_id == turn_id
+    {
+        active.interrupt_requested = true;
+    }
+}
+
+fn active_turn_interrupt_requested(thread_id: &str, turn_id: &str) -> bool {
+    active_turn(thread_id)
+        .is_some_and(|active| active.turn_id == turn_id && active.interrupt_requested)
 }
 
 pub(super) fn active_turn_id(thread_id: &str) -> Option<String> {
@@ -675,6 +691,7 @@ struct DrivenTurn {
     started_at: i64,
     translator: EventTranslatorState,
     error_message: Option<String>,
+    interrupted: bool,
     interaction_gate: Arc<AsyncMutex<()>>,
     /// Claude control request id → mobile interaction task. A typed
     /// `control_cancel_request` can abort only the waiter it invalidates.
@@ -696,6 +713,7 @@ impl DrivenTurn {
             turn_id,
             started_at,
             error_message: None,
+            interrupted: false,
             interaction_gate: Arc::new(AsyncMutex::new(())),
             interaction_tasks: HashMap::new(),
             turn_guard,
@@ -1052,7 +1070,14 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                     && result.result.as_deref().is_some_and(is_claude_authentication_failure)
         );
         if let ClaudeOutbound::Result(ref r) = payload {
-            if r.is_error || r.subtype != "success" {
+            let interrupt_requested =
+                active_turn_interrupt_requested(&args.thread_id, &turn.turn_id);
+            if is_user_interrupted_result(r, interrupt_requested) {
+                // 用户主动停止只结束当前 turn，不污染错误栏，也不触发任何重试。
+                turn.interrupted = true;
+                turn.error_message = None;
+                turn.translator.mark_user_interrupt_requested();
+            } else if r.is_error || r.subtype != "success" {
                 turn.error_message = Some(
                     r.result
                         .clone()
@@ -1196,10 +1221,14 @@ async fn finish_driven_turn(
         task.abort();
     }
 
-    let dangling_reason = driven
-        .error_message
-        .as_deref()
-        .unwrap_or("claude turn ended before the item completed");
+    let dangling_reason = if driven.interrupted {
+        "claude turn interrupted by user"
+    } else {
+        driven
+            .error_message
+            .as_deref()
+            .unwrap_or("claude turn ended before the item completed")
+    };
     for notif in driven.translator.abort_open_items(dangling_reason) {
         if let p::ServerNotification::ItemCompleted(ref n) = notif {
             args.state
@@ -1210,7 +1239,8 @@ async fn finish_driven_turn(
         }
     }
 
-    let (status, error) = turn_status_from_result(driven.error_message.as_deref());
+    let (status, error) =
+        turn_status_from_result(driven.interrupted, driven.error_message.as_deref());
     let completed_at = now_unix_secs();
     let duration_ms = ((completed_at - driven.started_at) * 1000).max(0);
     let turn = p::Turn {
@@ -1654,6 +1684,9 @@ mod tests {
         register_active_turn(&thread_id, "tu1");
         let active = active_turn(&thread_id).unwrap();
         assert_eq!(active.turn_id, "tu1");
+        assert!(!active.interrupt_requested);
+        mark_active_turn_interrupt_requested(&thread_id, "tu1");
+        assert!(active_turn_interrupt_requested(&thread_id, "tu1"));
         clear_active_turn(&thread_id);
         assert!(active_turn(&thread_id).is_none());
     }
