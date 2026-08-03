@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testClaudeQuotaPresentationFiltersCompatibilityWarningsAndUsesRuntimeName() throws {
+        var projector = CodexAppServerEventProjector()
+
+        let claudeQuotaWarning = try decodeAppServerNotification(#"{"method":"warning","params":{"threadId":"thr_demo","message":"claude rate-limit status: allowed_warning (resets_at=123)"}}"#)
+        XCTAssertNil(projector.project(claudeQuotaWarning))
+
+        let interruptMarker = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"userMessage","id":"interrupt_marker","clientId":"client_interrupt","content":[{"type":"text","text":"[Request interrupted by user]\n"}]}}}"#)
+        XCTAssertNil(projector.project(interruptMarker))
+        XCTAssertFalse(isVisibleAppServerUserMessageText("[Request interrupted by user]\n"))
+        XCTAssertTrue(isVisibleAppServerUserMessageText("讨论 [Request interrupted by user] 的含义"))
+
+        let now = Date(timeIntervalSince1970: 1_780_490_700)
+        let claudeNotice = try XCTUnwrap(CodexQuotaNotice.make(
+            rateLimit: RateLimitSummary(
+                limitID: "claude",
+                limitName: "Claude",
+                reachedType: "rejected",
+                primaryUsedPercent: 91,
+                primaryResetsAt: Int64(now.timeIntervalSince1970) + 3_600
+            ),
+            errorMessage: nil,
+            now: now
+        ))
+        XCTAssertEqual(claudeNotice.title, L10n.format("ui.value_message_quota_has_been_exhausted", "Claude"))
+    }
+
     func testCodexAppServerProjectorKeepsLiveToolActionAndLifecycleSemantics() throws {
         var projector = CodexAppServerEventProjector()
 

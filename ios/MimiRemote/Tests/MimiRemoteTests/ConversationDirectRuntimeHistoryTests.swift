@@ -2000,14 +2000,6 @@ extension ConversationDataFlowTests {
             XCTFail("Expected warning")
         }
 
-        let claudeQuotaWarning = try decodeAppServerNotification(#"{"method":"warning","params":{"threadId":"thr_demo","message":"claude rate-limit status: allowed_warning (resets_at=123)"}}"#)
-        XCTAssertNil(projector.project(claudeQuotaWarning))
-
-        let interruptMarker = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"userMessage","id":"interrupt_marker","clientId":"client_interrupt","content":[{"type":"text","text":"[Request interrupted by user]\n"}]}}}"#)
-        XCTAssertNil(projector.project(interruptMarker))
-        XCTAssertFalse(isVisibleAppServerUserMessageText("[Request interrupted by user]\n"))
-        XCTAssertTrue(isVisibleAppServerUserMessageText("讨论 [Request interrupted by user] 的含义"))
-
         let error = try decodeAppServerNotification(#"{"method":"error","params":{"threadId":"thr_demo","turnId":"turn_demo","error":{"message":"Failed to authenticate","code":"claude_authentication_required"},"willRetry":false}}"#)
         if case .error(let payload, let meta) = try XCTUnwrap(projector.project(error)) {
             XCTAssertEqual(payload.message, "Failed to authenticate")
@@ -2299,19 +2291,6 @@ extension ConversationDataFlowTests {
         let exhaustedNotice = try XCTUnwrap(CodexQuotaNotice.make(rateLimit: exhaustedLimit, errorMessage: nil, now: now))
         XCTAssertTrue(exhaustedNotice.blocksSending)
         XCTAssertEqual(exhaustedNotice.title, L10n.format("ui.value_message_quota_has_been_exhausted", "Codex"))
-
-        let claudeNotice = try XCTUnwrap(CodexQuotaNotice.make(
-            rateLimit: RateLimitSummary(
-                limitID: "claude",
-                limitName: "Claude",
-                reachedType: "rejected",
-                primaryUsedPercent: 91,
-                primaryResetsAt: resetEpoch
-            ),
-            errorMessage: nil,
-            now: now
-        ))
-        XCTAssertEqual(claudeNotice.title, L10n.format("ui.value_message_quota_has_been_exhausted", "Claude"))
 
         let secondaryResetEpoch: Int64 = 1_780_497_900
         let secondaryDriven = try XCTUnwrap(CodexUsageDisplaySummary.make(
