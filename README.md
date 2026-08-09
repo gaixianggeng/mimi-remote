@@ -32,11 +32,11 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/workspace.png" alt="Mimi Remote workspace on iPad" width="100%" />
+  <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote workspace on iPad with projects, recent conversations, and runtime selection visible together" width="100%" />
 </p>
 
 <p align="center">
-  <sub>Current Mimi Remote UI on iPad, prepared from physical-device captures with public demo data.</sub>
+  <sub>The current iPad workspace — the same product capture used by the Mimi Remote website.</sub>
 </p>
 
 Mimi Remote connects directly to your Mac through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your Mac remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.
@@ -48,25 +48,25 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>iPhone · glance and steer</strong><br />
-      <sub>Catch up on the result, add context, approve the next step, or stop a turn.</sub>
+      <strong>iPhone · one column, one thumb</strong><br />
+      <sub>Search and scan every session in a compact, touch-first list.</sub>
     </td>
     <td width="50%" align="center">
-      <strong>iPad · stay in context</strong><br />
-      <sub>Keep the conversation, queued follow-ups, model, permissions, and controls together.</sub>
+      <strong>iPad · sidebar and list together</strong><br />
+      <sub>Keep the active Mac, navigation, recent work, and full session history visible.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/en-US/conversation.png" alt="Mimi Remote conversation on iPhone" width="58%" />
+      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote session list on iPhone in light mode" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/sessions.png" alt="Mimi Remote session list on iPad" width="72%" />
+      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote session list on iPad with the sidebar visible" width="100%" />
     </td>
   </tr>
 </table>
 
-The current screenshot set covers workspace, conversation, session list, settings with token usage, and Mac connection in English and Simplified Chinese on iPhone and iPad. It uses `/Users/demo`, placeholder credentials, and public demo copy; no personal repository, access token, endpoint, or Tailnet address is shown. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
+These images reuse the current capture set from [`web/assets`](web/assets), covering the workspace and session hierarchy across iPhone and iPad. The captured interface uses the Simplified Chinese localization; the app also supports English. Keeping one checked-in image set prevents the website and README from drifting apart again.
 
 ## Leave the desk, not the flow
 
@@ -95,20 +95,20 @@ Mimi Remote keeps the same project and session model across devices, but each su
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Usage stays visible</strong><br />
-      <sub>Token usage, language, appearance, and permissions stay in one focused settings surface.</sub>
+      <strong>Appearance is first-class</strong><br />
+      <sub>Choose light or dark mode, workspace icon sets, and editor-inspired themes.</sub>
     </td>
     <td width="50%" align="center">
-      <strong>Mac connection is explicit</strong><br />
-      <sub>Pairing status and host connectivity are visible before you start remote work.</sub>
+      <strong>Usage and host state stay visible</strong><br />
+      <sub>Token windows, connected Macs, language, model, and permissions share one home.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/settings.png" alt="Mimi Remote settings and token usage on iPad" width="100%" />
+      <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote appearance and workspace icon settings on iPhone in light mode" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/mac-connection.png" alt="Mimi Remote Mac connection settings on iPad" width="100%" />
+      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote token usage, connected Mac, and preferences on iPhone in dark mode" width="58%" />
     </td>
   </tr>
 </table>
@@ -128,7 +128,7 @@ The hierarchy is intentional:
 - **Show state before action:** connection health, runtime readiness, remaining quota, and permission mode are visible before controls that can change or interrupt work.
 - **Use each platform natively:** compact touch hierarchy on iPhone, multi-column workbench on iPad, and a dense menu bar utility on Mac — not one layout stretched across three screens.
 
-The two iPad detail images come from the current MIM-80 physical-device screenshot set. The Mac menu image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
+The mobile images above are the same current assets used by the Mimi Remote website. The Mac menu image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname; capturing it did not restart or replace the installed Mac service.
 
 ## Architecture
 
