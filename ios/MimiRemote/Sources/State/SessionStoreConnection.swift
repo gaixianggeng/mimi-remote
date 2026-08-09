@@ -1636,6 +1636,8 @@ extension SessionStore {
     func synchronizeHistoryReadStates() {
         var next = historyReadStateBySessionID
         var didChange = false
+        // 同一份 sessions 快照里的完成共享观察时间，避免循环顺序制造虚假的先后关系。
+        lazy var snapshotCompletionObservedAt = sessionListNow()
 
         for session in sessions where !session.isLocalDraft {
             var state = next[session.id] ?? SessionHistoryReadState()
@@ -1643,13 +1645,16 @@ extension SessionStore {
 
             if session.isRunning {
                 state.observedRunning = true
+                // 新一轮运行开始后，上一轮“刚完成”立即失效；终态快照不完整时也不能让旧时间重新泄漏。
+                state.completionObservedAt = nil
                 if let activeTurnID = normalizedCompletionTurnID(session.activeTurnID) {
                     state.pendingTurnID = activeTurnID
                 }
             } else {
+                let completedAfterObservedRunning = state.observedRunning
                 let version = SessionCompletionVersion(
                     session: session,
-                    completedTurnID: state.observedRunning ? state.pendingTurnID : nil
+                    completedTurnID: completedAfterObservedRunning ? state.pendingTurnID : nil
                 )
                 guard version.hasStableSignal else {
                     continue
@@ -1668,9 +1673,19 @@ extension SessionStore {
                         } else if selectedSessionID == session.id || wasRead {
                             state.readCompletion = merged
                         }
+                        if completedAfterObservedRunning {
+                            // running → terminal 本身就是可靠完成事件；即使轻量快照尚未推进版本字段，
+                            // 也只在这次转换上记录一次，不让后续普通轮询刷新时间。
+                            state.completionObservedAt = snapshotCompletionObservedAt
+                        }
                     } else {
                         state.latestCompletion = version
                         state.manualUnreadCompletion = nil
+                        // 冷启动或离线期间只能确认“版本不同”，无法确认它刚刚完成；
+                        // 没观察到运行态就明确清空，避免把旧结果放进刚完成。
+                        state.completionObservedAt = completedAfterObservedRunning
+                            ? snapshotCompletionObservedAt
+                            : nil
                         if selectedSessionID == session.id {
                             state.readCompletion = version
                         }
@@ -1679,7 +1694,10 @@ extension SessionStore {
                     state.latestCompletion = version
                     state.manualUnreadCompletion = nil
                     // 旧历史首次进入索引时视为已读；从已观察运行态进入终态才是新结果。
-                    if !state.observedRunning || selectedSessionID == session.id {
+                    state.completionObservedAt = completedAfterObservedRunning
+                        ? snapshotCompletionObservedAt
+                        : nil
+                    if !completedAfterObservedRunning || selectedSessionID == session.id {
                         state.readCompletion = version
                     }
                 }
@@ -1701,6 +1719,7 @@ extension SessionStore {
             )
         }
         publishUnreadHistorySessionIDs(from: next)
+        publishHistoryCompletionObservedAtBySessionID(from: next)
     }
 
     func isHistorySessionUnread(_ session: AgentSession) -> Bool {
@@ -1773,6 +1792,23 @@ extension SessionStore {
             return session.id
         })
         setUnreadHistorySessionIDs(visibleUnreadIDs)
+    }
+
+    private func publishHistoryCompletionObservedAtBySessionID(
+        from states: [SessionID: SessionHistoryReadState]
+    ) {
+        var visibleCompletionDates: [SessionID: Date] = [:]
+        visibleCompletionDates.reserveCapacity(sessions.count)
+        for session in sessions {
+            guard !session.isRunning,
+                  !session.isLocalDraft,
+                  let observedAt = states[session.id]?.completionObservedAt else {
+                continue
+            }
+            // 数据合并层理论上已按 ID 去重；这里仍使用下标覆盖，避免异常重复快照触发字典构造崩溃。
+            visibleCompletionDates[session.id] = observedAt
+        }
+        setHistoryCompletionObservedAtBySessionID(visibleCompletionDates)
     }
 
     private func normalizedCompletionTurnID(_ value: TurnID?) -> TurnID? {

@@ -471,6 +471,9 @@ struct SessionHistoryReadState: Codable, Equatable {
     var readCompletion: SessionCompletionVersion?
     /// 区分用户显式“标为未读”和新完成自然产生的未读，避免选中态同步把前者覆盖。
     var manualUnreadCompletion: SessionCompletionVersion?
+    /// Mimi 首次确认当前完成版本进入终态的本地时间。它不表示跨 App 已读状态，
+    /// 只让“刚完成”在重启后仍能维持一个短而稳定的展示窗口。
+    var completionObservedAt: Date?
     var observedRunning = false
     var pendingTurnID: TurnID?
 

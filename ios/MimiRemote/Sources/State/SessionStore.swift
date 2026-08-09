@@ -96,6 +96,8 @@ final class SessionStore: ObservableObject {
     /// 避免两台 Mac 上碰巧相同的 Session ID 互相禁用操作。
     @Published private(set) var pendingSessionArchiveMutationKeys: Set<ScopedSessionID> = []
     @Published private(set) var unreadHistorySessionIDs: Set<SessionID> = []
+    /// 真实观察到 running → terminal 的本地时间，独立于已读水位，供侧边栏展示短时完成结果。
+    @Published private(set) var historyCompletionObservedAtBySessionID: [SessionID: Date] = [:]
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
@@ -219,6 +221,13 @@ final class SessionStore: ObservableObject {
             return
         }
         unreadHistorySessionIDs = value
+    }
+
+    func setHistoryCompletionObservedAtBySessionID(_ value: [SessionID: Date]) {
+        guard historyCompletionObservedAtBySessionID != value else {
+            return
+        }
+        historyCompletionObservedAtBySessionID = value
     }
 
     func insertPendingSessionArchiveMutationKey(_ key: ScopedSessionID) {
