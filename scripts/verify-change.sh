@@ -103,13 +103,30 @@ collect_paths() {
   done
 }
 
+collect_command_paths() {
+  local source="$1"
+  local output_file="$2"
+  shift 2
+
+  # 先把 Git 输出落到临时文件，再交给循环读取；process substitution 会吞掉
+  # 生产者的退出码，浅克隆或无 merge-base 时可能因此误报“没有变更”。
+  if ! "$@" > "$output_file"; then
+    fail "无法收集 ${source} 变更路径。"
+  fi
+  collect_paths "$source" < "$output_file"
+}
+
 if [[ -n "$paths_file" ]]; then
   collect_paths synthetic < "$paths_file"
 else
-  collect_paths committed < <(git diff --name-only -z --no-renames "${base_ref}...HEAD")
-  collect_paths staged < <(git diff --name-only -z --no-renames --cached)
-  collect_paths unstaged < <(git diff --name-only -z --no-renames)
-  collect_paths untracked < <(git ls-files --others --exclude-standard -z)
+  collect_command_paths committed "$temporary_root/committed-paths" \
+    git diff --name-only -z --no-renames "${base_ref}...HEAD"
+  collect_command_paths staged "$temporary_root/staged-paths" \
+    git diff --name-only -z --no-renames --cached
+  collect_command_paths unstaged "$temporary_root/unstaged-paths" \
+    git diff --name-only -z --no-renames
+  collect_command_paths untracked "$temporary_root/untracked-paths" \
+    git ls-files --others --exclude-standard -z
 fi
 
 for path in "${changed_paths[@]:-}"; do

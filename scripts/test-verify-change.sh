@@ -206,6 +206,17 @@ assert_contains "$collection_output" "go test ./internal/httpapi -count=1"
 assert_contains "$collection_output" "ios-dev.sh build-for-testing"
 assert_contains "$collection_output" "cargo test --locked"
 
+# base 与 HEAD 都存在但没有共同祖先时，git diff 必须显式失败；不能把退出码
+# 吞掉后误报为“没有发现需要验证的变更”。
+empty_tree="$(git -C "$repo_root" mktree </dev/null)"
+unrelated_commit="$(printf 'unrelated\n' | git -C "$repo_root" commit-tree "$empty_tree")"
+collection_failure_output="$test_root/collection-failure.output"
+if (cd "$repo_root" && bash ./scripts/verify-change.sh --plan --base "$unrelated_commit") \
+  >"$collection_failure_output" 2>&1; then
+  fail "无 merge-base 时必须传播 committed 路径收集失败。"
+fi
+assert_contains "$(<"$collection_failure_output")" "无法收集 committed 变更路径。"
+
 rm -rf "$test_root"
 trap - EXIT
 
