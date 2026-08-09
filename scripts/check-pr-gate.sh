@@ -18,11 +18,13 @@ bash -n \
   scripts/ci-pr-scope.sh \
   scripts/check-critical-regressions.sh \
   scripts/check-nightly-release.sh \
+  scripts/check-release-source.sh \
   scripts/check-pr-gate.sh \
   scripts/test-macos-app.sh
 
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
+bash ./scripts/check-release-source.sh --self-test
 
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-pr-gate-check.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
@@ -56,6 +58,7 @@ assert_scope rust_only false false true false bridges/claude/crates/claude-bridg
 assert_scope macos_only false false false true macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift
 assert_scope macos_runner false false false true scripts/test-macos-app.sh
 assert_scope release true false false false scripts/check-release-artifacts.sh
+assert_scope release_source true false false false scripts/check-release-source.sh
 assert_scope windows_release true false false false scripts/build-windows-installer.ps1
 assert_scope ios_release false true false false scripts/ios_testflight_ci.sh
 assert_scope ios_asc_pin false true false false config/release/ios-asc-cli.env

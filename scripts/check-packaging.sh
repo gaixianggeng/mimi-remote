@@ -179,7 +179,7 @@ grep -Fq 'find "$APP_PATH" -type f -print0' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有枚举 App 内全部 Mach-O。"
 grep -Fq 'xcrun vtool -arch' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有逐架构检查 macOS 构建元数据。"
-grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
+grep -Fq 'gh release upload "$RELEASE_TAG"' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
 grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有构建 Codex Skill 发布包。"
