@@ -694,7 +694,8 @@ struct WorkbenchChromeIcon: View {
 struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     let shape: ChromeShape
     let tokens: ThemeTokens
-    var isTinted: Bool = false
+    /// 0 是普通磨砂，1 是完整选中提亮；中间值服务手势驱动的连续状态过渡。
+    var tintLevel: Double = 0
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -706,11 +707,15 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
                 shape.fill(.regularMaterial)
             }
 
-            if isTinted {
+            if tintLevel > 0 {
                 // 选中态用中性提亮而不是主题紫填充：这一屏已经有 Codex 和 Claude
                 // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
-                // 选中由亮度 + 字重 + 是否展开名称共同表达，不需要色相参与。
-                shape.fill(tokens.primaryText.opacity(reduceTransparency ? 0.14 : 0.10))
+                // tintLevel 让亮度与横滑进度 1:1 对应，不需要额外的主题色相。
+                shape.fill(
+                    tokens.primaryText.opacity(
+                        (reduceTransparency ? 0.14 : 0.10) * min(max(tintLevel, 0), 1)
+                    )
+                )
             }
         }
     }
