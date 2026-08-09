@@ -296,6 +296,75 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
+    func testSidebarCollapsesOnlyAdjacentProjectIconsInRunningAndJustCompleted() {
+        let first = makeSession(id: "project-a-first", projectID: "project-a")
+        let adjacentSameProject = makeSession(id: "project-a-second", projectID: "project-a")
+        let differentProject = makeSession(id: "project-b", projectID: "project-b")
+        let separatedSameProject = makeSession(id: "project-a-third", projectID: "project-a")
+        let missingProject = makeSession(id: "missing-project", projectID: "")
+
+        XCTAssertTrue(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: first,
+                previousSession: nil,
+                in: .running
+            )
+        )
+        XCTAssertFalse(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: adjacentSameProject,
+                previousSession: first,
+                in: .running
+            ),
+            "运行中的相邻同项目只展示第一个头像"
+        )
+        XCTAssertFalse(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: adjacentSameProject,
+                previousSession: first,
+                in: .justCompleted
+            ),
+            "刚完成的相邻同项目也应合并头像"
+        )
+        XCTAssertTrue(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: differentProject,
+                previousSession: adjacentSameProject,
+                in: .running
+            )
+        )
+        XCTAssertTrue(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: separatedSameProject,
+                previousSession: differentProject,
+                in: .running
+            ),
+            "同项目被其他项目隔开后要重新展示头像"
+        )
+        for kind in [
+            SessionSidebarSectionKind.needYou,
+            .pinned,
+            .recent,
+        ] {
+            XCTAssertTrue(
+                SessionListPresentation.shouldShowProjectIcon(
+                    for: adjacentSameProject,
+                    previousSession: first,
+                    in: kind
+                ),
+                "\(kind.rawValue) 不在本次合并范围，仍应逐行展示项目身份"
+            )
+        }
+        XCTAssertTrue(
+            SessionListPresentation.shouldShowProjectIcon(
+                for: missingProject,
+                previousSession: missingProject,
+                in: .running
+            ),
+            "缺少项目 ID 时不能把未知会话误合并"
+        )
+    }
+
     func testSidebarKeepsLocalDraftInRunningSection() throws {
         let localDraft = makeSession(
             id: "local-draft",

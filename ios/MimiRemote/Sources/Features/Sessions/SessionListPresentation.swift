@@ -214,6 +214,22 @@ enum SessionListPresentation {
         directoryTail(for: session)
     }
 
+    /// 仅在运行中和刚完成分区合并相邻的同项目头像：第一行保留项目标识，
+    /// 后续行只保留对齐占位。缺少项目 ID 时不合并，避免把不同的未知项目误当成一组。
+    static func shouldShowProjectIcon(
+        for session: AgentSession,
+        previousSession: AgentSession?,
+        in kind: SessionSidebarSectionKind
+    ) -> Bool {
+        guard kind == .running || kind == .justCompleted,
+              let previousSession,
+              !session.projectID.isEmpty else {
+            return true
+        }
+
+        return session.projectID != previousSession.projectID
+    }
+
     /// 按“需要你 → 运行中 → 刚完成 → 置顶 → 最近”建立扁平侧边栏列表。
     /// 先恢复纯活动时间顺序，避免 Store 的置顶投影改变各动态分区内部顺序；重复 ID 只保留第一次出现的会话。
     ///

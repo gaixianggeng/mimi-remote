@@ -696,10 +696,17 @@ struct UnifiedWorkbenchShell: View {
 
             ForEach(sections) { section in
                 Section {
-                    ForEach(section.sessions) { session in
+                    // 仍以 session.id 作为行身份；index 只用来判断相邻项目，
+                    // 避免列表刷新时因下标变化而重建已选中行。
+                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
+                            showsProjectIcon: SessionListPresentation.shouldShowProjectIcon(
+                                for: session,
+                                previousSession: index > 0 ? section.sessions[index - 1] : nil,
+                                in: section.kind
+                            ),
                             layout: layout
                         )
                     }
@@ -776,6 +783,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionLink(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
+        showsProjectIcon: Bool,
         layout: WorkbenchLayout
     ) -> some View {
         Group {
@@ -785,7 +793,8 @@ struct UnifiedWorkbenchShell: View {
                 } label: {
                     sidebarSessionRow(
                         session,
-                        kind: kind
+                        kind: kind,
+                        showsProjectIcon: showsProjectIcon
                     )
                         .contentShape(Rectangle())
                 }
@@ -799,7 +808,8 @@ struct UnifiedWorkbenchShell: View {
                 NavigationLink(value: AppDestination.session(session.id)) {
                     sidebarSessionRow(
                         session,
-                        kind: kind
+                        kind: kind,
+                        showsProjectIcon: showsProjectIcon
                     )
                 }
             }
@@ -813,7 +823,8 @@ struct UnifiedWorkbenchShell: View {
 
     private func sidebarSessionRow(
         _ session: AgentSession,
-        kind: SessionSidebarSectionKind
+        kind: SessionSidebarSectionKind,
+        showsProjectIcon: Bool
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
@@ -821,12 +832,14 @@ struct UnifiedWorkbenchShell: View {
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
             completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
-            // 监视器没有按项目成组，头像若只出现一次会像随机缺失；每行稳定展示项目身份。
-            projectIcon: sidebarProjectIcons[session.projectID]
-                ?? workspaceAppearanceStore.projectIconContent(
-                    profileID: appStore.activeHostScope.profileID,
-                    projectID: session.projectID
-                ),
+            // 同项目连续行只在首行画头像；Row 内的固定宽度占位保持标题对齐。
+            projectIcon: showsProjectIcon
+                ? sidebarProjectIcons[session.projectID]
+                    ?? workspaceAppearanceStore.projectIconContent(
+                        profileID: appStore.activeHostScope.profileID,
+                        projectID: session.projectID
+                    )
+                : nil,
             runtimeActivitySnapshot: sessionStore.runtimeActivitySnapshot(for: session.id)
         )
     }
