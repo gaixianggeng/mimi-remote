@@ -1880,6 +1880,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             preview: "",
             recencyAt: Date().addingTimeInterval(-3 * 60)
         )
+        let completedObservedAt = Date().addingTimeInterval(-3 * 60)
 
         let view = VStack(spacing: 0) {
             List {
@@ -1906,6 +1907,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .needYou,
                         isSelected: false,
                         isRecentlyCompleted: false,
+                        completionObservedAt: nil,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
@@ -1919,7 +1921,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .running,
                         isSelected: true,
                         isRecentlyCompleted: false,
-                        projectIcon: nil,
+                        completionObservedAt: nil,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: RuntimeActivitySnapshot(
                             turnStartedAt: Date().addingTimeInterval(-12 * 60),
                             lastActivityAt: Date()
@@ -1935,7 +1938,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .justCompleted,
                         isSelected: false,
                         isRecentlyCompleted: true,
-                        projectIcon: nil,
+                        completionObservedAt: completedObservedAt,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
                     .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -2179,6 +2183,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         sessionStore.sidebarProjects = [project, secondProject]
         sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]
+        // 这是主会话列表快照，继续验证 Mimi 自己维护的未读标记；
+        // 浮动侧栏的“刚完成”已改用独立的完成观察时间，不影响这里的语义。
         sessionStore.setUnreadHistorySessionIDs([historyRows[1].id, historyRows[5].id])
         sessionStore.selectedSessionID = historyRows[0].id
 

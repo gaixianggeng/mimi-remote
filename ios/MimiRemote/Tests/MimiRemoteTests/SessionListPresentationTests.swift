@@ -163,11 +163,13 @@ final class SessionListPresentationTests: XCTestCase {
         let pinned = makeSession(id: "pinned")
         let recent = makeSession(id: "recent")
         let duplicatePinned = makeSession(id: "pinned", status: SessionStatus.running.rawValue)
+        let now = Date(timeIntervalSince1970: 10_000)
 
         let sections = SessionListPresentation.sidebarSections(
             sessions: [needApproval, needInput, running, waitingWithoutPayload, justCompleted, pinned, recent, duplicatePinned],
             pinnedIDs: Set(["need-approval", "pinned"]),
-            unreadIDs: Set(["completed", "running"])
+            completionObservedAtByID: [justCompleted.id: now.addingTimeInterval(-60)],
+            now: now
         )
 
         XCTAssertEqual(
@@ -186,18 +188,103 @@ final class SessionListPresentationTests: XCTestCase {
         ])
     }
 
-    func testSidebarJustCompletedKeepsFiveAndReturnsOverflowAfterDeduplication() throws {
-        let completed = (0..<7).map { makeSession(id: "completed-\($0)") }
+    func testSidebarJustCompletedKeepsFiveAndLetsOverflowContinueIntoPinnedAndRecent() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let completed = (0..<7).map { index in
+            makeSession(
+                id: "completed-\(index)",
+                recencyAt: now.addingTimeInterval(-Double(index))
+            )
+        }
+        // 输入重复 ID 后仍只占一个槽；第 6、7 个完成候选不能被静默吞掉。
         let sessions = completed + [completed[2]]
         let sections = SessionListPresentation.sidebarSections(
             sessions,
-            unreadIDs: Set(completed.map(\.id))
+            pinnedIDs: [completed[5].id],
+            completionObservedAtByID: Dictionary(
+                uniqueKeysWithValues: completed.map { ($0.id, now.addingTimeInterval(-60)) }
+            ),
+            now: now
         )
 
-        let section = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
-        XCTAssertEqual(section.sessions.map(\.id), (0..<5).map { "completed-\($0)" })
-        XCTAssertEqual(section.overflowCount, 2)
-        XCTAssertEqual(section.overflow, 2)
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        let pinned = try XCTUnwrap(sections.first { $0.kind == .pinned })
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(justCompleted.sessions.map(\.id), (0..<5).map { "completed-\($0)" })
+        XCTAssertEqual(justCompleted.overflowCount, 0)
+        XCTAssertEqual(pinned.sessions.map(\.id), ["completed-5"])
+        XCTAssertEqual(recent.sessions.map(\.id), ["completed-6"])
+        XCTAssertTrue(sections.allSatisfy { $0.overflowCount == 0 })
+    }
+
+    func testSidebarJustCompletedUsesTwoHourWindowBoundaryAndOldTasksBecomeRecent() throws {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let inside = makeSession(
+            id: "inside-window",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let atBoundary = makeSession(
+            id: "at-boundary",
+            recencyAt: now.addingTimeInterval(-120)
+        )
+        let outside = makeSession(
+            id: "outside-window",
+            recencyAt: now.addingTimeInterval(-180)
+        )
+        let completionObservedAtByID: [SessionID: Date] = [
+            inside.id: now.addingTimeInterval(-60 * 60),
+            atBoundary.id: now.addingTimeInterval(-2 * 60 * 60),
+            outside.id: now.addingTimeInterval(-(2 * 60 * 60 + 1)),
+        ]
+
+        let sections = SessionListPresentation.sidebarSections(
+            [inside, atBoundary, outside],
+            completionObservedAtByID: completionObservedAtByID,
+            now: now,
+            justCompletedWindow: 2 * 60 * 60
+        )
+
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(justCompleted.sessions.map(\.id), [inside.id, atBoundary.id])
+        XCTAssertEqual(recent.sessions.map(\.id), [outside.id])
+    }
+
+    func testSidebarJustCompletedRanksByObservedCompletionTimeNotSessionRecency() throws {
+        let now = Date(timeIntervalSince1970: 30_000)
+        // 活动时间故意反向：较新的完成观察对应较旧的会话 recency，避免排序规则被混淆。
+        let olderSession = makeSession(
+            id: "older-session",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let newerCompletion = makeSession(
+            id: "newer-completion",
+            recencyAt: now.addingTimeInterval(-600)
+        )
+        let oldestCompletion = makeSession(
+            id: "oldest-completion",
+            recencyAt: now.addingTimeInterval(-1)
+        )
+
+        let sections = SessionListPresentation.sidebarSections(
+            [olderSession, newerCompletion, oldestCompletion],
+            completionObservedAtByID: [
+                olderSession.id: now.addingTimeInterval(-30 * 60),
+                newerCompletion.id: now.addingTimeInterval(-5 * 60),
+                oldestCompletion.id: now.addingTimeInterval(-60 * 60),
+            ],
+            now: now,
+            justCompletedLimit: 2
+        )
+
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        XCTAssertEqual(
+            justCompleted.sessions.map(\.id),
+            [newerCompletion.id, olderSession.id],
+            "刚完成候选和输出都应按本地观察时间倒序，而不是复用会话活动时间排序"
+        )
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(recent.sessions.map(\.id), [oldestCompletion.id])
     }
 
     func testSidebarRecentIsFallbackWhenAllEarlierGroupsAreEmpty() {
@@ -245,67 +332,6 @@ final class SessionListPresentationTests: XCTestCase {
         let running = try XCTUnwrap(sections.first { $0.kind == .running })
 
         XCTAssertEqual(running.sessions.map(\.id), [newer.id, olderPinned.id])
-    }
-
-    func testSidebarProjectAnchorsAppearOnceAcrossSectionsAndInterleavedRows() {
-        let sections = [
-            SessionSidebarSection(
-                kind: .needYou,
-                sessions: [makeSession(id: "a-need", projectID: "project-a")]
-            ),
-            SessionSidebarSection(
-                kind: .running,
-                sessions: [
-                    makeSession(id: "b-running", projectID: "project-b"),
-                    makeSession(id: "a-running", projectID: "project-a"),
-                ]
-            ),
-            SessionSidebarSection(
-                kind: .recent,
-                sessions: [
-                    makeSession(id: "a-recent", projectID: "project-a"),
-                    makeSession(id: "b-recent", projectID: "project-b"),
-                ]
-            ),
-        ]
-
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections),
-            Set(["a-need", "b-running"])
-        )
-    }
-
-    func testSidebarProjectAnchorFollowsSameSessionWhenUnreadMovesToRecent() {
-        let completed = makeSession(id: "a-completed", projectID: "project-a")
-        let olderSameProject = makeSession(id: "a-older", projectID: "project-a")
-        let otherProject = makeSession(id: "b-recent", projectID: "project-b")
-        let orderedSessions = [completed, olderSameProject, otherProject]
-
-        let beforeOpening = SessionListPresentation.sidebarSections(
-            orderedSessions,
-            unreadIDs: [completed.id]
-        )
-        let afterOpening = SessionListPresentation.sidebarSections(orderedSessions)
-
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: beforeOpening),
-            Set([completed.id, otherProject.id])
-        )
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: afterOpening),
-            Set([completed.id, otherProject.id])
-        )
-    }
-
-    func testSingleProjectSidebarDoesNotAddRedundantProjectAnchor() {
-        let sections = SessionListPresentation.sidebarSections([
-            makeSession(id: "first", projectID: "project-a"),
-            makeSession(id: "second", projectID: "project-a"),
-        ])
-
-        XCTAssertTrue(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections).isEmpty
-        )
     }
 
     func testDirectoryTailPrefersDirFallsBackToProjectAndHandlesTrailingSlashes() {

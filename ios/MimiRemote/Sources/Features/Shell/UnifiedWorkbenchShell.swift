@@ -664,10 +664,17 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
-        let sections = sidebarMonitorSections
-        let projectAnchorSessionIDs = SessionListPresentation.sidebarProjectAnchorSessionIDs(
-            in: sections
-        )
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            sidebarListContent(tokens: tokens, layout: layout, now: context.date)
+        }
+    }
+
+    private func sidebarListContent(
+        tokens: ThemeTokens,
+        layout: WorkbenchLayout,
+        now: Date
+    ) -> some View {
+        let sections = sidebarMonitorSections(now: now)
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -693,7 +700,6 @@ struct UnifiedWorkbenchShell: View {
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
-                            showsProjectAnchor: projectAnchorSessionIDs.contains(session.id),
                             layout: layout
                         )
                     }
@@ -770,7 +776,6 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionLink(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool,
         layout: WorkbenchLayout
     ) -> some View {
         Group {
@@ -780,8 +785,7 @@ struct UnifiedWorkbenchShell: View {
                 } label: {
                     sidebarSessionRow(
                         session,
-                        kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        kind: kind
                     )
                         .contentShape(Rectangle())
                 }
@@ -795,17 +799,11 @@ struct UnifiedWorkbenchShell: View {
                 NavigationLink(value: AppDestination.session(session.id)) {
                     sidebarSessionRow(
                         session,
-                        kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        kind: kind
                     )
                 }
             }
         }
-        .accessibilityValue(
-            sessionStore.isHistorySessionUnread(session)
-                ? L10n.text("ui.unread_result")
-                : ""
-        )
         .sessionRowActions(session)
         .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -815,33 +813,33 @@ struct UnifiedWorkbenchShell: View {
 
     private func sidebarSessionRow(
         _ session: AgentSession,
-        kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool
+        kind: SessionSidebarSectionKind
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
             kind: kind,
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
-            projectIcon: showsProjectAnchor
-                ? sidebarProjectIcons[session.projectID]
-                    ?? workspaceAppearanceStore.projectIconContent(
-                        profileID: appStore.activeHostScope.profileID,
-                        projectID: session.projectID
-                    )
-                : nil,
+            completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
+            // 监视器没有按项目成组，头像若只出现一次会像随机缺失；每行稳定展示项目身份。
+            projectIcon: sidebarProjectIcons[session.projectID]
+                ?? workspaceAppearanceStore.projectIconContent(
+                    profileID: appStore.activeHostScope.profileID,
+                    projectID: session.projectID
+                ),
             runtimeActivitySnapshot: sessionStore.runtimeActivitySnapshot(for: session.id)
         )
     }
 
-    private var sidebarMonitorSections: [SessionSidebarSection] {
+    private func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
         let chronologicallySortedSessions = sessionStore.sortedAllSessions.isEmpty
             ? SessionStore.sortedSessions(sessionStore.sessionLibrarySessions)
             : sessionStore.sortedAllSessions
         return SessionListPresentation.sidebarSections(
             sessions: chronologicallySortedSessions,
             pinnedIDs: sessionStore.pinnedSessionIDs,
-            unreadIDs: sessionStore.unreadHistorySessionIDs
+            completionObservedAtByID: sessionStore.historyCompletionObservedAtBySessionID,
+            now: now
         )
     }
 

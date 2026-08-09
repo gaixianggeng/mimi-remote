@@ -3326,8 +3326,8 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testHistoryUnreadPersistsReadAndReopensForNextCompletion() async {
-        let suiteName = "ConversationSessionStoreTests.HistoryUnread.\(UUID().uuidString)"
+    func testHistoryCompletionObservationPersistsAcrossReadAndRestart() async throws {
+        let suiteName = "ConversationSessionStoreTests.HistoryCompletionObservation.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -3358,17 +3358,26 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: initialHistory.id)
         let client = MockSessionStoreClient(projects: [project], sessions: [initialHistory])
+        let initialObservationDate = Date(timeIntervalSince1970: 100)
+        let firstCompletionObservationDate = Date(timeIntervalSince1970: 120)
+        let secondCompletionObservationDate = Date(timeIntervalSince1970: 140)
+        var sessionListNow = initialObservationDate
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             sessionHistoryReadStateStore: readStateStore,
             clientFactory: { client },
-            webSocketFactory: { MockWebSocketClient() }
+            webSocketFactory: { MockWebSocketClient() },
+            sessionListNow: { sessionListNow }
         )
 
         store.sessions = [initialHistory]
         XCTAssertFalse(store.isHistorySessionUnread(initialHistory), "升级后首次见到的旧历史应建立已读基线")
+        XCTAssertNil(
+            store.historyCompletionObservedAtBySessionID[initialHistory.id],
+            "旧历史首次进入索引没有观察到运行态，不应伪装成刚完成"
+        )
 
         let running = makeSession(
             id: initialHistory.id,
@@ -3383,7 +3392,9 @@ extension ConversationDataFlowTests {
         )
         store.sessions = [running]
         XCTAssertFalse(store.isHistorySessionUnread(running), "进行中会话不能显示历史未读")
+        XCTAssertTrue(store.historyCompletionObservedAtBySessionID.isEmpty)
 
+        sessionListNow = firstCompletionObservationDate
         let firstCompletion = makeSession(
             id: initialHistory.id,
             projectID: project.id,
@@ -3396,9 +3407,19 @@ extension ConversationDataFlowTests {
         )
         store.sessions = [firstCompletion]
         XCTAssertTrue(store.isHistorySessionUnread(firstCompletion))
+        XCTAssertEqual(
+            store.historyCompletionObservedAtBySessionID[firstCompletion.id],
+            firstCompletionObservationDate,
+            "running → terminal 才记录本地完成观察时间"
+        )
 
         await store.selectSession(firstCompletion)
         XCTAssertFalse(store.isHistorySessionUnread(firstCompletion), "打开历史会话后应立即标记已读")
+        XCTAssertEqual(
+            store.historyCompletionObservedAtBySessionID[firstCompletion.id],
+            firstCompletionObservationDate,
+            "Mimi 标记已读不能清除完成观察时间"
+        )
 
         let persisted = readStateStore.load(
             profileID: appStore.notificationRoutingProfileID,
@@ -3406,6 +3427,10 @@ extension ConversationDataFlowTests {
             profiles: appStore.connectionProfiles
         )
         XCTAssertFalse(try XCTUnwrap(persisted[firstCompletion.id]).isUnread)
+        XCTAssertEqual(
+            try XCTUnwrap(persisted[firstCompletion.id]).completionObservedAt,
+            firstCompletionObservationDate
+        )
 
         let restartedStore = SessionStore(
             appStore: appStore,
@@ -3413,15 +3438,39 @@ extension ConversationDataFlowTests {
             logStore: LogStore(),
             sessionHistoryReadStateStore: readStateStore,
             clientFactory: { client },
-            webSocketFactory: { MockWebSocketClient() }
+            webSocketFactory: { MockWebSocketClient() },
+            sessionListNow: { sessionListNow }
         )
         restartedStore.sessions = [firstCompletion]
         XCTAssertFalse(
             restartedStore.isHistorySessionUnread(firstCompletion),
             "App 重启和列表重新加载后不能把已读状态回退"
         )
+        XCTAssertEqual(
+            restartedStore.historyCompletionObservedAtBySessionID[firstCompletion.id],
+            firstCompletionObservationDate,
+            "完成观察时间应随持久化读状态在重启后恢复"
+        )
 
         restartedStore.returnToSessionList()
+        // 离线期间直接发现了新 completion version，但没有观察到 running；这不是可靠的
+        // 完成转换证据，不能写入或复用“刚完成”时间。
+        let offlineCompletion = makeSession(
+            id: firstCompletion.id,
+            projectID: project.id,
+            title: "离线期间完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: firstCompletion.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 25),
+            recencyAt: Date(timeIntervalSince1970: 25)
+        )
+        restartedStore.sessions = [offlineCompletion]
+        XCTAssertNil(
+            restartedStore.historyCompletionObservedAtBySessionID[offlineCompletion.id],
+            "冷启动/离线只知道版本变化时不应标记为刚完成"
+        )
+
         let secondRunning = makeSession(
             id: firstCompletion.id,
             projectID: project.id,
@@ -3435,7 +3484,9 @@ extension ConversationDataFlowTests {
         )
         restartedStore.sessions = [secondRunning]
         XCTAssertFalse(restartedStore.isHistorySessionUnread(secondRunning))
+        XCTAssertTrue(restartedStore.historyCompletionObservedAtBySessionID.isEmpty)
 
+        sessionListNow = secondCompletionObservationDate
         let secondCompletion = makeSession(
             id: firstCompletion.id,
             projectID: project.id,
@@ -3451,15 +3502,24 @@ extension ConversationDataFlowTests {
             restartedStore.isHistorySessionUnread(secondCompletion),
             "同一会话产生新的完成结果后应重新进入未读"
         )
+        XCTAssertEqual(
+            restartedStore.historyCompletionObservedAtBySessionID[secondCompletion.id],
+            secondCompletionObservationDate
+        )
 
         restartedStore.sessions = [secondCompletion]
         XCTAssertTrue(
             restartedStore.isHistorySessionUnread(secondCompletion),
             "相同完成版本的重复刷新不能改变未读判定"
         )
+        XCTAssertEqual(
+            restartedStore.historyCompletionObservedAtBySessionID[secondCompletion.id],
+            secondCompletionObservationDate,
+            "相同完成版本重复快照不能刷新观察时间"
+        )
     }
 
-    func testMarkHistorySessionUnreadPersistsCompletionWatermark() throws {
+    func testMarkHistorySessionUnreadKeepsCompletionObservationPersisted() throws {
         let suiteName = "ConversationSessionStoreTests.MarkUnread.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -3481,19 +3541,42 @@ extension ConversationDataFlowTests {
             recencyAt: Date(timeIntervalSince1970: 40)
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let completionObservedAt = Date(timeIntervalSince1970: 60)
+        let nextCompletionObservedAt = Date(timeIntervalSince1970: 80)
+        var sessionListNow = completionObservedAt
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             sessionHistoryReadStateStore: readStateStore,
-            clientFactory: { client }
+            clientFactory: { client },
+            sessionListNow: { sessionListNow }
         )
         store.sessions = [session]
         XCTAssertFalse(store.isHistorySessionUnread(session))
+        XCTAssertNil(store.historyCompletionObservedAtBySessionID[session.id])
 
+        var running = session
+        running.status = SessionStatus.running.rawValue
+        running.activeTurnID = "turn-mark-unread"
+        running.updatedAt = Date(timeIntervalSince1970: 50)
+        running.recencyAt = Date(timeIntervalSince1970: 50)
+        store.sessions = [running]
+        XCTAssertTrue(store.historyCompletionObservedAtBySessionID.isEmpty)
+
+        var completed = session
+        completed.updatedAt = Date(timeIntervalSince1970: 51)
+        completed.recencyAt = Date(timeIntervalSince1970: 51)
+        store.sessions = [completed]
+        XCTAssertEqual(store.historyCompletionObservedAtBySessionID[session.id], completionObservedAt)
+
+        // 先确认自然完成已读，再回退为手动未读，才能验证两条水位彼此独立。
+        store.markHistorySessionRead(session.id)
+        XCTAssertFalse(store.isHistorySessionUnread(completed))
         store.markHistorySessionUnread(session.id)
 
-        XCTAssertTrue(store.isHistorySessionUnread(session))
+        XCTAssertTrue(store.isHistorySessionUnread(completed))
+        XCTAssertEqual(store.historyCompletionObservedAtBySessionID[session.id], completionObservedAt)
         XCTAssertNil(try XCTUnwrap(store.historyReadStateBySessionID[session.id]).readCompletion)
         let persisted = readStateStore.load(
             profileID: appStore.notificationRoutingProfileID,
@@ -3501,28 +3584,44 @@ extension ConversationDataFlowTests {
             profiles: appStore.connectionProfiles
         )
         XCTAssertTrue(try XCTUnwrap(persisted[session.id]).isUnread)
+        XCTAssertEqual(
+            try XCTUnwrap(persisted[session.id]).completionObservedAt,
+            completionObservedAt
+        )
 
-        store.selectedSessionID = session.id
+        store.selectedSessionID = completed.id
         store.synchronizeHistoryReadStates()
         XCTAssertTrue(
-            store.isHistorySessionUnread(session),
+            store.isHistorySessionUnread(completed),
             "当前选中会话的手动未读不能被普通快照同步覆盖"
         )
+        XCTAssertEqual(store.historyCompletionObservedAtBySessionID[completed.id], completionObservedAt)
 
         // Published Set 只是派生结果；即使被清空，重新同步也必须从 completion 水位恢复。
         store.setUnreadHistorySessionIDs([])
-        XCTAssertFalse(store.isHistorySessionUnread(session))
+        XCTAssertFalse(store.isHistorySessionUnread(completed))
         store.synchronizeHistoryReadStates()
-        XCTAssertTrue(store.isHistorySessionUnread(session))
+        XCTAssertTrue(store.isHistorySessionUnread(completed))
+        XCTAssertEqual(store.historyCompletionObservedAtBySessionID[completed.id], completionObservedAt)
 
-        var nextCompletion = session
-        nextCompletion.updatedAt = Date(timeIntervalSince1970: 41)
-        nextCompletion.recencyAt = Date(timeIntervalSince1970: 41)
+        var nextRunning = completed
+        nextRunning.status = SessionStatus.running.rawValue
+        nextRunning.activeTurnID = "turn-next-completion"
+        nextRunning.updatedAt = Date(timeIntervalSince1970: 70)
+        nextRunning.recencyAt = Date(timeIntervalSince1970: 70)
+        store.sessions = [nextRunning]
+        XCTAssertTrue(store.historyCompletionObservedAtBySessionID.isEmpty)
+
+        sessionListNow = nextCompletionObservedAt
+        var nextCompletion = completed
+        nextCompletion.updatedAt = Date(timeIntervalSince1970: 71)
+        nextCompletion.recencyAt = Date(timeIntervalSince1970: 71)
         store.sessions = [nextCompletion]
         XCTAssertFalse(
             store.isHistorySessionUnread(nextCompletion),
             "当前可见的新完成结果应视为已读，不能继承上一完成版本的手动未读"
         )
+        XCTAssertEqual(store.historyCompletionObservedAtBySessionID[nextCompletion.id], nextCompletionObservedAt)
         XCTAssertNil(
             try XCTUnwrap(store.historyReadStateBySessionID[session.id]).manualUnreadCompletion
         )

@@ -53,7 +53,7 @@ enum SessionSidebarSectionKind: String, CaseIterable, Equatable, Hashable, Ident
 struct SessionSidebarSection: Equatable, Hashable, Identifiable {
     let kind: SessionSidebarSectionKind
     let sessions: [AgentSession]
-    /// 目前只有 justCompleted 会产生溢出数量；其它组固定为 0。
+    /// 保留统一的扩展入口；当前侧边栏分组不会隐藏溢出会话。
     let overflowCount: Int
 
     init(
@@ -74,6 +74,8 @@ struct SessionSidebarSection: Equatable, Hashable, Identifiable {
 
 /// 会话列表需要的纯展示计算，避免 SwiftUI View 同时承担日期和字符串规则。
 enum SessionListPresentation {
+    static let sidebarJustCompletedWindow: TimeInterval = 2 * 60 * 60
+
     /// 按历史时间将会话放入固定日期桶；空桶不返回，桶内保持输入顺序。
     static func historyGroups(
         _ sessions: [AgentSession],
@@ -214,10 +216,16 @@ enum SessionListPresentation {
 
     /// 按“需要你 → 运行中 → 刚完成 → 置顶 → 最近”建立扁平侧边栏列表。
     /// 先恢复纯活动时间顺序，避免 Store 的置顶投影改变各动态分区内部顺序；重复 ID 只保留第一次出现的会话。
+    ///
+    /// “刚完成”只读取 Store 观察到终态转换的本地时间，并限制时间窗口和条数。它与
+    /// Mimi 本地未读水位无关：Codex Desktop 没有向当前协议回传已读回执，不能让
+    /// 本地未读冒充跨 App 完成状态。超过条数上限的完成会话继续参与置顶/最近，不会被静默丢弃。
     static func sidebarSections(
         _ sessions: [AgentSession],
         pinnedIDs: Set<SessionID> = [],
-        unreadIDs: Set<SessionID> = [],
+        completionObservedAtByID: [SessionID: Date] = [:],
+        now: Date = Date(),
+        justCompletedWindow: TimeInterval = SessionListPresentation.sidebarJustCompletedWindow,
         justCompletedLimit: Int = 5,
         recentLimit: Int = 8
     ) -> [SessionSidebarSection] {
@@ -246,11 +254,23 @@ enum SessionListPresentation {
         }
         // 本地草稿代表尚未发送首条消息的新会话，也应固定留在“进行中”，不能被 recent 上限截掉。
         let running = consume { $0.isRunning || $0.isLocalDraft }
-        let unread = consume { session in
-            !session.isLocalDraft && unreadIDs.contains(session.id)
+        let completionCandidates = unclaimed.enumerated().compactMap { index, session -> (AgentSession, Date, Int)? in
+            guard let completionDate = completionObservedAtByID[session.id] else { return nil }
+            let age = now.timeIntervalSince(completionDate)
+            guard age >= 0 && age <= max(0, justCompletedWindow) else { return nil }
+            return (session, completionDate, index)
         }
-        let visibleJustCompleted = Array(unread.prefix(max(0, justCompletedLimit)))
-        let justCompletedOverflow = max(0, unread.count - visibleJustCompleted.count)
+        .sorted { lhs, rhs in
+            if lhs.1 == rhs.1 {
+                return lhs.2 < rhs.2
+            }
+            return lhs.1 > rhs.1
+        }
+        let justCompleted = completionCandidates
+            .prefix(max(0, justCompletedLimit))
+            .map { $0.0 }
+        let justCompletedIDs = Set(justCompleted.map(\.id))
+        unclaimed.removeAll { justCompletedIDs.contains($0.id) }
         let pinned = consume { pinnedIDs.contains($0.id) }
         let recent = Array(unclaimed.prefix(max(0, recentLimit)))
 
@@ -258,12 +278,7 @@ enum SessionListPresentation {
         sections.reserveCapacity(SessionSidebarSectionKind.displayOrder.count)
         appendSection(.needYou, sessions: needYou, to: &sections)
         appendSection(.running, sessions: running, to: &sections)
-        appendSection(
-            .justCompleted,
-            sessions: visibleJustCompleted,
-            overflowCount: justCompletedOverflow,
-            to: &sections
-        )
+        appendSection(.justCompleted, sessions: justCompleted, to: &sections)
         appendSection(.pinned, sessions: pinned, to: &sections)
 
         // recent 不依赖其它分组存在；因此前组全空时仍会展示第一批最近会话。
@@ -275,36 +290,20 @@ enum SessionListPresentation {
     static func sidebarSections(
         sessions: [AgentSession],
         pinnedIDs: Set<SessionID> = [],
-        unreadIDs: Set<SessionID> = [],
+        completionObservedAtByID: [SessionID: Date] = [:],
+        now: Date = Date(),
+        justCompletedWindow: TimeInterval = SessionListPresentation.sidebarJustCompletedWindow,
         justCompletedLimit: Int = 5,
         recentLimit: Int = 8
     ) -> [SessionSidebarSection] {
         sidebarSections(
             sessions,
             pinnedIDs: pinnedIDs,
-            unreadIDs: unreadIDs,
+            completionObservedAtByID: completionObservedAtByID,
+            now: now,
+            justCompletedWindow: justCompletedWindow,
             justCompletedLimit: justCompletedLimit,
             recentLimit: recentLimit
-        )
-    }
-
-    /// 多项目侧栏只给每个项目的第一条可见会话一个身份锚点。
-    ///
-    /// 必须跨 section 去重：点击“刚完成”会立即把会话迁入“最近”，如果每个
-    /// section 独立判断首行，同一项目就会在点击前后反复出现或消失头像。
-    static func sidebarProjectAnchorSessionIDs(
-        in sections: [SessionSidebarSection]
-    ) -> Set<SessionID> {
-        let visibleSessions = stableUniqueSessions(sections.flatMap(\.sessions))
-        guard Set(visibleSessions.map(\.projectID)).count > 1 else {
-            return []
-        }
-
-        var seenProjectIDs: Set<String> = []
-        return Set(
-            visibleSessions.compactMap { session in
-                seenProjectIDs.insert(session.projectID).inserted ? session.id : nil
-            }
         )
     }
 
