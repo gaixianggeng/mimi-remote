@@ -412,18 +412,23 @@ bridge 只保留 Mimi Remote 需要的三个 crate；上游来源和 GPLv3-only 
 
 ## 验证
 
-提交前至少运行：
+先预览 committed、staged、unstaged 和未跟踪变更对应的验证计划；准备推送前只执行
+一次 quick：
 
 ```bash
-go test ./... -count=1
-go vet ./...
-bash ./scripts/check-codex-protocol.sh
-bash ./scripts/check-public-repo-safety.sh
-bash ./scripts/check-third-party-notices.sh
-bash ./scripts/check-ios-privacy-manifest.sh
-bash ./scripts/restart-agentd-dev-macos.sh --self-test
+bash ./scripts/verify-change.sh --plan
+bash ./scripts/verify-change.sh
+```
+
+纯文档和控制面改动不会启动语言构建；产品代码只验证直接受影响的栈，完整回归默认交给
+PR Gate。跨模块、协议、发布或明确高风险改动再运行
+`bash ./scripts/verify-change.sh --full`。相机、通知、Keychain、Tailscale/弱网、性能和
+发布前验收才需要真机。分层规则和专项排障命令见[贡献指南](CONTRIBUTING.md)。
+
+正式发布校验仍需独立于上述分层验证执行：
+
+```bash
 bash ./scripts/verify-release.sh
-cargo test --locked -p alleycat-claude-bridge
 ```
 
 正式 macOS Release 必须通过 Developer ID 签名和 Apple notarization；发布链路另外包含签名凭据预检、Darwin 归档身份校验、打包、Linux 安装、Git 历史凭据扫描、Action SHA 固定和协议漂移门禁，详见 [P0 / P1 发布清单](docs/p0-p1-roadmap.md)。

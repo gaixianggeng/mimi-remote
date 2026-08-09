@@ -14,14 +14,19 @@ for command_name in bash grep mktemp ruby; do
     || fail "缺少命令 ${command_name}。"
 done
 
-bash -n \
+for script_path in \
   scripts/ci-pr-scope.sh \
   scripts/check-critical-regressions.sh \
   scripts/check-nightly-release.sh \
   scripts/check-release-source.sh \
   scripts/check-pr-gate.sh \
-  scripts/test-macos-app.sh
+  scripts/verify-change.sh \
+  scripts/test-verify-change.sh \
+  scripts/test-macos-app.sh; do
+  bash -n -- "$script_path"
+done
 
+bash ./scripts/test-verify-change.sh
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
 bash ./scripts/check-release-source.sh --self-test
