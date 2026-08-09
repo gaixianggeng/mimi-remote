@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 #
+# STALE — this does not refresh what the site currently ships.
+# The assets in web/assets are real-device captures named
+#     {ipad,iphone}-{workspace,sessions}-{light,dark}.png
+# and the site picks between them by appearance, not by language. This script
+# still produces the older seeded, language-suffixed set, so running it will
+# write files the page no longer loads (and will not update the ones it does).
+# Rewrite it against the naming above before using it again.
+#
 # Capture the language-matched product screenshots the marketing site needs.
 #
 # Why this exists: the site shows iPad + iPhone, and swaps the screenshot to
