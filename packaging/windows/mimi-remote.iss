@@ -52,7 +52,7 @@ Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
 Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
-Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
+Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 Name: "{group}\Mimi Remote Logs"; Filename: "{cmd}"; Parameters: "/k """"{app}\agentd.exe"" logs -n 200"""; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 
 [Tasks]
