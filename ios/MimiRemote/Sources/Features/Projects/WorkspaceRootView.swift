@@ -1736,7 +1736,6 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             claudeChannelAvailable: claudeChannelAvailable
         )
     }
-
     private func newSessionButton(tokens: ThemeTokens, showsTitle: Bool) -> some View {
         Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
@@ -1745,20 +1744,22 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             Group {
                 if showsTitle {
                     Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 36)
                 } else {
                     Image(systemName: "square.and.pencil")
                         .frame(
-                            width: WorkbenchChromeIconMetrics.minimumHitTarget,
-                            height: WorkbenchChromeIconMetrics.minimumHitTarget
+                            width: 36,
+                            height: 36
                         )
                 }
             }
-            .font(themeStore.uiFont(.callout, weight: .semibold))
+            .font(themeStore.uiFont(.subheadline, weight: .semibold)).imageScale(.small)
             .foregroundStyle(tokens.primaryActionForeground)
             .background(tokens.primaryAction, in: Capsule())
-            .contentShape(Capsule())
+            .frame(minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                   minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+            .contentShape(Rectangle())
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1766,7 +1767,6 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityValue(selectedRuntime.title)
         .accessibilityIdentifier("workspace.sessions.newSession")
     }
-
     private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
         ZStack {
             // 时间标签位于两张整体卡片之间，横线只帮助扫读，不穿过卡片表面。

@@ -62,7 +62,7 @@ struct WorkspaceRuntimePicker: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isSelected = selection == choice
                 let isAvailable = choice != .claude || claudeChannelAvailable
@@ -78,17 +78,17 @@ struct WorkspaceRuntimePicker: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Image(choice.brandAssetName)
                             .resizable()
                             // 品牌资源是带自身底色的位图，模板着色会把整张画布染成方块。
                             .renderingMode(.original)
                             .scaledToFit()
-                            .frame(width: 17, height: 17)
+                            .frame(width: 14, height: 14)
                             .accessibilityHidden(true)
 
                         Text(choice.listTitle)
-                            .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
+                            .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
                     // 选中态使用品牌色文字和描边，不再与右侧“新建会话”争抢实色主操作层级。
@@ -102,13 +102,11 @@ struct WorkspaceRuntimePicker: View {
                             ? 1
                             : (isAvailable ? 0.78 : 0.52)
                     )
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 32)
                     .background {
                         if isSelected {
-                            // 与右侧“新建会话”共用胶囊曲率；两个入口属于同一层级的会话操作，
-                            // 曲率一致后仍通过实色/描边区分主操作与筛选状态。
+                            // 保留统一的胶囊语言，但用更小的可见高度明确 Runtime 只是次级筛选器。
                             let shape = Capsule()
                             shape
                                 .fill(tokens.contentPanelBackground)
@@ -132,6 +130,12 @@ struct WorkspaceRuntimePicker: View {
                                 )
                         }
                     }
+                    // 视觉表面缩小，透明命中层仍至少 44pt，兼顾层级与实体机触控。
+                    .frame(
+                        minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                        minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                    )
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 .disabled(!isAvailable)
@@ -145,11 +149,12 @@ struct WorkspaceRuntimePicker: View {
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
             }
         }
-        .padding(3)
+        .padding(.horizontal, 2)
         .background {
             // 外轨只负责把两个选项映射为同一控件，保持中性并让内容层级更安静。
             Capsule()
                 .fill(tokens.surface.opacity(colorScheme == .dark ? 0.82 : 0.72))
+                .padding(.vertical, 4)
         }
         .overlay {
             Capsule()
@@ -157,6 +162,7 @@ struct WorkspaceRuntimePicker: View {
                     tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.64),
                     lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
                 )
+                .padding(.vertical, 4)
         }
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityElement(children: .contain)
