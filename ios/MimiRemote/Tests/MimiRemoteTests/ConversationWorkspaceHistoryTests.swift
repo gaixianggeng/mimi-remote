@@ -3229,7 +3229,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(client.requestedMessageLimits, [20])
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         client.resolveHistoryRequest(
             at: 0,
@@ -3332,7 +3332,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(client.requestedMessageLimits, [20])
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         client.resolveHistoryRequest(
             at: 0,
@@ -3417,6 +3417,7 @@ extension ConversationDataFlowTests {
             [.full, .full],
             "终态重开必须绕过相同签名的局部缓存，发出一次权威首屏读取"
         )
+        XCTAssertNil(store.selectedHistorySavingsNotice, "权威重开只显示 progress，不应提前展示 savings 卡片")
         client.resolveHistoryRequest(
             at: 1,
             with: HistoryMessagesPage(messages: [
@@ -3677,7 +3678,7 @@ extension ConversationDataFlowTests {
         await client.waitForHistoryRequestCount(1)
 
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         let firstSummaryTask = Task { await store.loadSummaryHistoryForSelectedSession() }
         await client.waitForHistoryRequestCount(2)
@@ -3719,6 +3720,7 @@ extension ConversationDataFlowTests {
         let reloadFullTask = Task { await store.loadFullHistoryForSelectedSession() }
         await client.waitForHistoryRequestCount(3)
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
         client.resolveHistoryRequest(
             at: 2,
             with: HistoryMessagesPage(
