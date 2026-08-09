@@ -881,7 +881,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
+    func testWorkspaceIconStyleSwitchesAcrossClassicAlbumsEmojiAndJourney() throws {
         // 直接进入工作区，避免恢复到会话详情时底部设置入口不在可访问性树中。
         app.terminate()
         app.launchArguments.append("--debug-open-workspaces")
@@ -906,9 +906,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "onePiece",
             "naruto",
             "digimon",
+            "classicAlbums",
             "emoji"
         ]
         var optionFrames: [CGRect] = []
+        var styleOptions: [String: XCUIElement] = [:]
         for styleID in expectedStyleIdentifiers {
             let option = app.descendant(
                 identifier: "settings.workspaceIconStyle.option.\(styleID)"
@@ -919,8 +921,67 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             )
             assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
             optionFrames.append(option.frame)
+            styleOptions[styleID] = option
         }
         assertWorkspaceStyleGridUsesFourColumns(optionFrames)
+
+        guard let originalStyleID = expectedStyleIdentifiers.first(where: {
+            styleOptions[$0].map(isSelected) == true
+        }) else {
+            XCTFail("工作区图标风格应有且只有一个当前选项")
+            return
+        }
+
+        guard let classicAlbums = styleOptions["classicAlbums"] else {
+            XCTFail("工作区图标风格应提供经典专辑")
+            return
+        }
+        classicAlbums.tap()
+        XCTAssertTrue(waitUntilSelected(classicAlbums), "选择经典专辑后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+
+        let chips = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
+        XCTAssertTrue(chips.firstMatch.waitForExistence(timeout: 15), "工作区应展示专辑封面胶囊")
+        chips.firstMatch.press(forDuration: 1.0)
+        let iconEntry = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+            .firstMatch
+        XCTAssertTrue(iconEntry.waitForExistence(timeout: 8), "专辑主题仍应提供更换封面入口")
+        iconEntry.tap()
+
+        let albumPicker = app.descendant(identifier: "workspace.characterPicker")
+        XCTAssertTrue(albumPicker.waitForExistence(timeout: 10), "专辑主题应打开封面选择器")
+        let expectedAlbumIDs = [
+            "album-dark-side-of-the-moon",
+            "album-wish-you-were-here",
+            "album-atom-heart-mother",
+            "album-sos",
+            "album-abbey-road",
+            "album-21",
+            "album-morning-glory",
+            "album-velvet-underground-nico",
+            "album-norman-fucking-rockwell",
+            "album-cities"
+        ]
+        for albumID in expectedAlbumIDs {
+            XCTAssertTrue(
+                app.descendant(identifier: "workspace.character.\(albumID)")
+                    .waitForExistence(timeout: 5),
+                "经典专辑选择器应展示 \(albumID)"
+            )
+        }
+        let albumButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.character.album-"))
+        XCTAssertEqual(albumButtons.count, 10, "经典专辑选择器应完整展示 10 张原版封面")
+
+        let albumPickerScreenshot = XCTAttachment(screenshot: app.screenshot())
+        albumPickerScreenshot.name = "workspace-classic-album-picker"
+        albumPickerScreenshot.lifetime = .keepAlways
+        add(albumPickerScreenshot)
+        // iPad 为 popover、iPhone 会适配成 sheet；重启同时关闭两种容器，并验证主题已持久化。
+        try relaunchDirectlyIntoWorkspaces()
+        try openWorkspaceAppearanceSettings()
 
         guard firstExistingButton(
             labels: ["西游记", "Journey to the West"],
@@ -929,17 +990,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTFail("工作区图标风格应同时提供《西游记》和 Emoji")
             return
         }
-        let originallyUsedEmoji = isSelected(emoji)
-
         emoji.tap()
         XCTAssertTrue(waitUntilSelected(emoji), "选择 Emoji 后应立即保存")
         try relaunchDirectlyIntoWorkspaces()
-        XCTAssertTrue(
-            currentWorkspaceIconLabelContainsEmoji(),
-            "切换到 Emoji 后，工作区卡片应立即恢复 Emoji 图标"
-        )
-
         try openWorkspaceAppearanceSettings()
+        guard let persistedEmoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+            XCTFail("重新进入设置后应仍能找到 Emoji 选项")
+            return
+        }
+        XCTAssertTrue(isSelected(persistedEmoji), "重启后应保留 Emoji 风格")
         guard let currentJourney = firstExistingButton(
             labels: ["西游记", "Journey to the West"],
             timeout: 5
@@ -950,36 +1009,41 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         currentJourney.tap()
         XCTAssertTrue(waitUntilSelected(currentJourney), "选择《西游记》后应立即保存")
         try relaunchDirectlyIntoWorkspaces()
-        XCTAssertFalse(
-            currentWorkspaceIconLabelContainsEmoji(),
-            "切回《西游记》后，工作区卡片不应继续显示 Emoji"
-        )
-
-        // 真机测试不应永久改变用户原来的视觉偏好。
-        if originallyUsedEmoji {
-            try openWorkspaceAppearanceSettings()
-            guard let originalEmoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
-                XCTFail("测试结束时应能恢复 Emoji 偏好")
-                return
-            }
-            originalEmoji.tap()
-            XCTAssertTrue(waitUntilSelected(originalEmoji), "测试结束时应恢复原 Emoji 偏好")
+        try openWorkspaceAppearanceSettings()
+        guard let persistedJourney = firstExistingButton(
+            labels: ["西游记", "Journey to the West"],
+            timeout: 5
+        ) else {
+            XCTFail("重新进入设置后应仍能找到《西游记》选项")
+            return
         }
+        XCTAssertTrue(isSelected(persistedJourney), "重启后应保留《西游记》风格")
+
+        // 真机测试不应永久改变用户原来的视觉偏好；不只恢复 Emoji，也覆盖其他主题。
+        let originalStyle = app.descendant(
+            identifier: "settings.workspaceIconStyle.option.\(originalStyleID)"
+        )
+        XCTAssertTrue(originalStyle.waitForExistence(timeout: 5), "测试结束时应找到原图标风格")
+        originalStyle.tap()
+        XCTAssertTrue(waitUntilSelected(originalStyle), "测试结束时应恢复原图标风格")
     }
 
     private func assertWorkspaceStyleGridUsesFourColumns(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 8)
-        guard frames.count == 8 else { return }
+        XCTAssertEqual(frames.count, 9)
+        guard frames.count == 9 else { return }
 
         let firstRowY = frames[0].midY
         let secondRowY = frames[4].midY
+        let thirdRowY = frames[8].midY
         for frame in frames.prefix(4) {
             XCTAssertEqual(frame.midY, firstRowY, accuracy: 2, "前四个风格应位于第一排")
         }
-        for frame in frames.suffix(4) {
+        for frame in frames[4..<8] {
             XCTAssertEqual(frame.midY, secondRowY, accuracy: 2, "后四个风格应位于第二排")
         }
-        XCTAssertGreaterThan(secondRowY - firstRowY, 44, "两排风格不应重叠")
+        XCTAssertEqual(frames[8].midY, thirdRowY, accuracy: 2, "最后一个风格应位于第三排")
+        XCTAssertGreaterThan(secondRowY - firstRowY, 44, "前两排风格不应重叠")
+        XCTAssertGreaterThan(thirdRowY - secondRowY, 44, "后两排风格不应重叠")
     }
 
     private func presentQRScanner() throws {
@@ -1215,21 +1279,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             app.wait(for: .runningForeground, timeout: 25),
             "MimiRemote 应能重新进入工作区"
         )
-        let iconButtons = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        let workspaceCards = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
         XCTAssertTrue(
-            iconButtons.firstMatch.waitForExistence(timeout: 15),
-            "重新进入工作区后应展示可更换的图标"
+            workspaceCards.firstMatch.waitForExistence(timeout: 15),
+            "重新进入工作区后应展示工作区胶囊"
         )
-    }
-
-    private func currentWorkspaceIconLabelContainsEmoji() -> Bool {
-        let iconButtons = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
-        guard iconButtons.firstMatch.exists else { return false }
-        let label = iconButtons.firstMatch.label
-        let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
-        return builtInEmoji.contains { label.contains($0) }
     }
 
     private func selectMode(identifier: String) throws {
