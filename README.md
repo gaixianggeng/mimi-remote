@@ -394,6 +394,12 @@ bash ./scripts/verify-change.sh --full
 
 Physical-device validation is reserved for camera, notifications, Keychain, Tailscale/poor-network behavior, performance, and release checks. See [CONTRIBUTING.md](CONTRIBUTING.md) for the tier rules and targeted troubleshooting commands.
 
+Formal release validation remains a separate step from these change tiers:
+
+```bash
+bash ./scripts/verify-release.sh
+```
+
 ## Repository layout
 
 ```text

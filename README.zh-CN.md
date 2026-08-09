@@ -425,6 +425,12 @@ PR Gate。跨模块、协议、发布或明确高风险改动再运行
 `bash ./scripts/verify-change.sh --full`。相机、通知、Keychain、Tailscale/弱网、性能和
 发布前验收才需要真机。分层规则和专项排障命令见[贡献指南](CONTRIBUTING.md)。
 
+正式发布校验仍需独立于上述分层验证执行：
+
+```bash
+bash ./scripts/verify-release.sh
+```
+
 正式 macOS Release 必须通过 Developer ID 签名和 Apple notarization；发布链路另外包含签名凭据预检、Darwin 归档身份校验、打包、Linux 安装、Git 历史凭据扫描、Action SHA 固定和协议漂移门禁，详见 [P0 / P1 发布清单](docs/p0-p1-roadmap.md)。
 
 ## 仓库说明
