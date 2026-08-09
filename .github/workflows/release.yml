@@ -113,6 +113,7 @@ jobs:
           args: release --snapshot --clean --skip=publish
         env:
           GOTOOLCHAIN: local
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
           TAP_DEPLOY_KEY: snapshot-only-not-used
 
       - name: Check release artifacts
@@ -243,6 +244,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           GOTOOLCHAIN: local
           MIMI_MACOS_SIGNING: required

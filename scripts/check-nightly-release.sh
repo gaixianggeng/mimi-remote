@@ -266,6 +266,12 @@ end
   fail_check("Release #{job_name} 没有 checkout source-trust 验证的 immutable SHA") unless
     checkout && checkout.dig("with", "ref").to_s.include?("needs.source-trust.outputs.tag_sha")
 end
+%w[verify release].each do |job_name|
+  goreleaser_step_name = job_name == "verify" ? "Build release snapshot" : "Release"
+  goreleaser_step = step(release_jobs.fetch(job_name), goreleaser_step_name)
+  fail_check("Release #{job_name} 的 GoReleaser 没有绑定 source-trust 校验的 RELEASE_TAG") unless
+    goreleaser_step.dig("env", "GORELEASER_CURRENT_TAG") == "${{ env.RELEASE_TAG }}"
+end
 fail_check("Release workflow 不得从 dispatch 的 main ref 推导发布版本") if
   release.to_s.include?("GITHUB_REF_NAME")
 distributor = File.read(distributor_path)
@@ -352,6 +358,7 @@ self_test() {
   mutate_release 'needs: source-trust' 'needs: []'
   mutate_release 'environment: production-release' 'environment: bypass-release'
   mutate_release 'fetch-depth: 0' 'fetch-depth: 1'
+  mutate_release 'GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}' 'GORELEASER_CURRENT_TAG: v0.0.0'
   mutate_release 'permissions:
   contents: read' 'permissions:
   contents: write'
