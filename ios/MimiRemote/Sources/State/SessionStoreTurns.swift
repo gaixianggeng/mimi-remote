@@ -737,7 +737,7 @@ extension SessionStore {
         }
         if let session = selectedSession,
            isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            setErrorMessage(L10n.text("ui.mac_observe_only"))
+            setErrorMessage(selectedSessionControlNotice ?? L10n.text("ui.mac_observe_only"))
             return false
         }
         if let notice = selectedQuotaNotice, notice.blocksSending {
@@ -991,7 +991,9 @@ extension SessionStore {
               appStore.isConfigured,
               !isAppInBackground,
               !isNetworkUnavailable,
-              let session = sessionsByID[sessionID]
+              let session = sessionsByID[sessionID],
+              !isExternalReadOnlySession(session),
+              !isProtocolReadOnlySession(session)
         else {
             return
         }
@@ -1029,6 +1031,13 @@ extension SessionStore {
                     self?.queuedSessionReadyIDs.insert(sessionID)
                     self?.dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
                 case .failed(let message):
+                    if SessionStore.isExternalWriterConflict(message) {
+                        self?.handleExternalWriterConflict(
+                            sessionID: sessionID,
+                            presentsConnectionError: false
+                        )
+                        return
+                    }
                     self?.queuedSessionReadyIDs.remove(sessionID)
                     self?.setStatusMessage(L10n.format("ui.failed_to_connect_to_queue_to_be_sent", message))
                     self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)

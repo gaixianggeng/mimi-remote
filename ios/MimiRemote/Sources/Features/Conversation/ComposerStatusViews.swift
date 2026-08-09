@@ -307,7 +307,9 @@ struct ComposerStatusTray: View {
     let goalErrorMessage: String?
     let isRefreshDisabled: Bool
     let allowsTakeOver: Bool
+    let allowsConnectionRetry: Bool
     let onTakeOver: () -> Void
+    let onRetryConnection: () -> Void
     let onRefreshUsage: () -> Void
     let onEditGoal: () -> Void
     let onTogglePauseGoal: () -> Void
@@ -376,6 +378,19 @@ struct ComposerStatusTray: View {
                 }
             }
             .layoutPriority(1)
+
+            if allowsConnectionRetry {
+                Button(action: onRetryConnection) {
+                    Label(L10n.text("ui.retry_connection"), systemImage: "arrow.clockwise")
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .frame(minHeight: 44)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                .foregroundStyle(tokens.accent)
+                .help(L10n.text("ui.retry_connection"))
+            }
 
             collapsedDisclosureButton(
                 title: L10n.text("ui.expanded_state"),
@@ -500,7 +515,16 @@ struct ComposerStatusTray: View {
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
-                if allowsTakeOver {
+                if allowsConnectionRetry {
+                    Button(action: onRetryConnection) {
+                        Text(L10n.text("ui.retry_connection"))
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                } else if allowsTakeOver {
                     Button(action: onTakeOver) {
                         Text(L10n.text("ui.take_over"))
                     }

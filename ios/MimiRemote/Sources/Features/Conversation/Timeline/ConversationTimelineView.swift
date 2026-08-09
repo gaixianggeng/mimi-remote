@@ -26,6 +26,8 @@ struct ConversationTimelineView: View {
     // 滚动任务 bookkeeping 不属于界面状态，放在引用对象中避免每次取消/重排任务都触发 body 失效。
     @State private var tailScrollCoordinator = ConversationTailScrollCoordinator()
     @State private var isUserScrollingTimeline = false
+    // 一个视图一个 token；分栏或过渡期同时存在两个 Timeline 时不会互相解除滚动门控。
+    @State private var timelineInteractionSourceID = UUID()
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
@@ -147,6 +149,10 @@ struct ConversationTimelineView: View {
                         return
                     }
                     isUserScrollingTimeline = shouldSuspend
+                    sessionStore.setConversationTimelineInteractionActive(
+                        shouldSuspend,
+                        sourceID: timelineInteractionSourceID
+                    )
                     guard shouldSuspend else {
                         return
                     }
@@ -170,6 +176,10 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: displayedSessionID) { oldID, newID in
+                sessionStore.setConversationTimelineInteractionActive(
+                    false,
+                    sourceID: timelineInteractionSourceID
+                )
                 let shouldPreserveTailFollowLock = isTailFollowLocked
                     && Self.isOptimisticSessionID(oldID)
                     && newID != nil
@@ -206,6 +216,11 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: hostProfileID) { _, _ in
+                sessionStore.setConversationTimelineInteractionActive(
+                    false,
+                    sourceID: timelineInteractionSourceID
+                )
+                isUserScrollingTimeline = false
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
                 shouldFollowMessageTail = true
@@ -319,6 +334,10 @@ struct ConversationTimelineView: View {
                 )
             }
             .onDisappear {
+                sessionStore.setConversationTimelineInteractionActive(
+                    false,
+                    sourceID: timelineInteractionSourceID
+                )
                 cancelPendingTailScrollAttempts()
             }
         }

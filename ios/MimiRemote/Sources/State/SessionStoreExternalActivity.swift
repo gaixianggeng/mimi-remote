@@ -196,7 +196,11 @@ extension SessionStore {
             if !isAppInBackground,
                !isNetworkUnavailable,
                appStore.isConfigured {
-                _ = await refreshExternalActivities()
+                if isConversationTimelineInteractionActive {
+                    deferredExternalActivityVisiblePoll = true
+                } else {
+                    _ = await refreshExternalActivities(deferWhileTimelineScrolling: true)
+                }
                 if externalActivityCapabilityUnavailable {
                     // 旧 agentd 没有该 capability 时结束本次前台轮询，不制造 404/配置请求噪音。
                     return
@@ -209,8 +213,13 @@ extension SessionStore {
 
     @discardableResult
     func refreshExternalActivities(
-        client fixedClient: (any SessionStoreAPIClient)? = nil
+        client fixedClient: (any SessionStoreAPIClient)? = nil,
+        deferWhileTimelineScrolling: Bool = false
     ) async -> Bool {
+        if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+            deferredExternalActivityVisiblePoll = true
+            return false
+        }
         guard !isRefreshingExternalActivity,
               !isAppInBackground,
               !isNetworkUnavailable,
@@ -238,7 +247,8 @@ extension SessionStore {
                 await applyExternalActivitySnapshot(
                     [],
                     client: client,
-                    hostScope: hostScope
+                    hostScope: hostScope,
+                    deferWhileTimelineScrolling: deferWhileTimelineScrolling
                 )
                 guard appStore.activeHostScope == hostScope else { return false }
                 externalActivityCapabilityUnavailable = true
@@ -251,7 +261,8 @@ extension SessionStore {
             await applyExternalActivitySnapshot(
                 response.activities,
                 client: client,
-                hostScope: hostScope
+                hostScope: hostScope,
+                deferWhileTimelineScrolling: deferWhileTimelineScrolling
             )
             return appStore.activeHostScope == hostScope
         } catch {
@@ -267,7 +278,8 @@ extension SessionStore {
     func applyExternalActivitySnapshot(
         _ activities: [ExternalSessionActivity],
         client: any SessionStoreAPIClient,
-        hostScope: HostScope
+        hostScope: HostScope,
+        deferWhileTimelineScrolling: Bool = false
     ) async {
         var nextByID: [SessionID: ExternalSessionActivity] = [:]
         for activity in activities where activity.state.lowercased() == "running" {
@@ -291,11 +303,58 @@ extension SessionStore {
             .subtracting(activeIDs)
         externalReadOnlySessionIDs.formUnion(activeIDs)
         externalReadOnlySessionIDs.formUnion(removedIDs)
-        externalActivityBySessionID = nextByID
+        if externalActivityBySessionID != nextByID {
+            externalActivityBySessionID = nextByID
+        }
+
+        // 控制权边界不能为了帧率延迟：一旦看到 Mac writer，立刻停止队列并退役前台 socket。
+        // 只有会触发全量索引/SwiftUI 投影的 sessions 展示更新延后到滚动结束。
+        for sessionID in activeIDs {
+            stopQueuedSessionMonitoring(sessionID: sessionID)
+        }
+        if let selectedSessionID,
+           activeIDs.contains(selectedSessionID),
+           connectedSessionID == selectedSessionID {
+            disconnectWebSocket()
+        }
+        if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+            deferredExternalActivityVisiblePoll = true
+            return
+        }
+        if deferWhileTimelineScrolling {
+            deferredExternalActivityVisiblePoll = false
+        }
+
+        let selectedActivityNeedsHistoryRefresh: Bool
+        if let selectedSessionID,
+           let activity = nextByID[selectedSessionID] {
+            let selectedSession = sessionsByID[selectedSessionID]
+            selectedActivityNeedsHistoryRefresh = previousByID[selectedSessionID]?.revision != activity.revision
+                || selectedSession?.activeTurnID != activity.turnID
+                || selectedSession?.status != SessionStatus.running.rawValue
+        } else {
+            selectedActivityNeedsHistoryRefresh = false
+        }
+
+        var nextSessions = sessions
+        func updateBatchedSession(
+            _ sessionID: SessionID,
+            mutate: (inout AgentSession) -> Void
+        ) {
+            guard let index = sessionIndexByID[sessionID], nextSessions.indices.contains(index) else {
+                return
+            }
+            let previous = nextSessions[index]
+            var updated = previous
+            mutate(&updated)
+            guard updated != previous else {
+                return
+            }
+            nextSessions[index] = updated
+        }
 
         for (sessionID, activity) in nextByID {
-            stopQueuedSessionMonitoring(sessionID: sessionID)
-            updateSession(sessionID) { session in
+            updateBatchedSession(sessionID) { session in
                 session.status = SessionStatus.running.rawValue
                 session.activeTurnID = activity.turnID
                 session.pendingApproval = nil
@@ -304,14 +363,10 @@ extension SessionStore {
                 session.recencyAt = max(session.recencyAt ?? .distantPast, activity.lastActivityAt)
             }
         }
-        if let selectedSessionID, activeIDs.contains(selectedSessionID) {
-            disconnectWebSocket()
-        }
-
         // 先本地降级，确保 terminal/过期快照一到就从“进行中”移回“历史”；
         // 随后的权威列表与最终历史读取负责补齐标题、消息和最新时间。
         for sessionID in removedIDs {
-            updateSession(sessionID) { session in
+            updateBatchedSession(sessionID) { session in
                 session.status = SessionStatus.history.rawValue
                 session.activeTurnID = nil
                 session.pendingApproval = nil
@@ -319,6 +374,12 @@ extension SessionStore {
             }
             clearForegroundActivity(sessionID: sessionID)
             clearRuntimeActivity(sessionID: sessionID)
+        }
+
+        // 一个 snapshot 可能同时更新多条会话；先在本地数组合并，最后只发布一次，避免
+        // SwiftUI 长列表随每条活动反复重算并造成主线程停顿。相同结果则完全不发布。
+        if nextSessions != sessions {
+            sessions = nextSessions
         }
 
         let newOrMissingProjectIDs = Set(nextByID.values.compactMap { activity in
@@ -332,13 +393,18 @@ extension SessionStore {
             await refreshExternalActivityProject(
                 projectID: projectID,
                 client: client,
-                hostScope: hostScope
+                hostScope: hostScope,
+                deferWhileTimelineScrolling: deferWhileTimelineScrolling
             )
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                deferredExternalActivityVisiblePoll = true
+                return
+            }
         }
 
         if let selectedSessionID,
-           let activity = nextByID[selectedSessionID],
-           previousByID[selectedSessionID]?.revision != activity.revision,
+           nextByID[selectedSessionID] != nil,
+           selectedActivityNeedsHistoryRefresh,
            let session = sessionsByID[selectedSessionID] {
             _ = await loadHistory(
                 for: session,
@@ -346,12 +412,20 @@ extension SessionStore {
                 loadMode: .full,
                 force: true
             )
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                deferredExternalActivityVisiblePoll = true
+                return
+            }
         }
 
         // terminal/过期必须做最后一次强制历史补拉。只读集合在所有 await 完成前保留，
         // 即使磁盘里遗留 `.takenOver`，这段时间也不能触发 resume 或发送。
         for sessionID in removedIDs {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                deferredExternalActivityVisiblePoll = true
+                return
+            }
             if selectedSessionID == sessionID, let session = sessionsByID[sessionID] {
                 _ = await loadHistory(
                     for: session,
@@ -359,24 +433,37 @@ extension SessionStore {
                     loadMode: .full,
                     force: true
                 )
+                if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                    deferredExternalActivityVisiblePoll = true
+                    return
+                }
             }
             let projectID = previousByID[sessionID]?.projectID ?? sessionsByID[sessionID]?.projectID
             if let projectID {
                 await refreshExternalActivityProject(
                     projectID: projectID,
                     client: client,
-                    hostScope: hostScope
+                    hostScope: hostScope,
+                    deferWhileTimelineScrolling: deferWhileTimelineScrolling
                 )
+                if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                    deferredExternalActivityVisiblePoll = true
+                    return
+                }
             }
         }
         guard appStore.activeHostScope == hostScope else { return }
         externalReadOnlySessionIDs.subtract(removedIDs)
+        if deferWhileTimelineScrolling {
+            deferredExternalActivityVisiblePoll = false
+        }
     }
 
     func refreshExternalActivityProject(
         projectID: String,
         client: any SessionStoreAPIClient,
-        hostScope: HostScope
+        hostScope: HostScope,
+        deferWhileTimelineScrolling: Bool = false
     ) async {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             return
@@ -401,6 +488,11 @@ extension SessionStore {
                     workspace: workspace,
                     hostScope: hostScope
                   ) == result.requestedCursor else {
+                return
+            }
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                // 外层 snapshot 可能在 idle 开始，嵌套 thread/list 返回时已经进入滚动。
+                deferredExternalActivityVisiblePoll = true
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))

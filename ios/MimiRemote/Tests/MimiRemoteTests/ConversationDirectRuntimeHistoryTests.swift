@@ -1006,6 +1006,131 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(secondRequests.filter { $0.method == "turn/start" }.count, 1)
     }
 
+    // agentd 重启会丢失进程内 Thread 授权，但 Runtime 仍保留 endpoint+token 对应的旧 context。
+    // 发送路径必须先在同一条新连接上通过受控全局列表重新登记，再重试 resume 一次；
+    // turn/start 本身仍只能发送一次，不能绕过单写者与 handoff 状态机。
+    func testDirectRuntimeReauthorizesCachedThreadAfterAgentdRestartBeforeSending() async throws {
+        let project = AgentProject(
+            id: "proj_gateway_reauthorization",
+            name: "Gateway Reauthorization",
+            path: "/tmp/gateway-reauthorization"
+        )
+        let threadID = "thr_gateway_reauthorization"
+        let threadJSON = appServerThreadJSON(
+            id: threadID,
+            cwd: project.path,
+            source: "appServer",
+            updatedAt: 1_780_490_250
+        )
+        let transportPool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transportPool.make() },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: [
+                        "initialize", "initialized", "thread/list", "thread/read",
+                        "thread/turns/list", "thread/resume", "turn/start",
+                    ]
+                )
+            }
+        )
+
+        let seedTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let firstTransport = try await waitForFakeAppServerTransport(in: transportPool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(firstTransport, method: "initialize")
+        transportResponse(
+            firstTransport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let initialList = try await waitForFakeAppServerRequest(firstTransport, method: "thread/list", after: 1)
+        transportResponse(
+            firstTransport,
+            id: initialList.id,
+            result: appServerThreadListResult([threadJSON], nextCursor: nil)
+        )
+        let seededPage = try await seedTask.value
+        XCTAssertEqual(seededPage.sessions.map(\.id), [threadID])
+
+        firstTransport.failReceive()
+        try await waitForRuntimeConnectionToBecomeUnavailable(runtime)
+
+        let startTask = Task {
+            try await runtime.startTurn(
+                sessionID: threadID,
+                prompt: "agentd 重启后继续",
+                clientMessageID: "client_gateway_reauthorization"
+            )
+        }
+        let secondTransport = try await waitForFakeAppServerTransport(in: transportPool, index: 1)
+        let reconnectInitialize = try await waitForFakeAppServerRequest(secondTransport, method: "initialize")
+        transportResponse(
+            secondTransport,
+            id: reconnectInitialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+
+        let firstResume = try await waitForFakeAppServerRequest(secondTransport, method: "thread/resume", after: 2)
+        let afterFirstResume = await secondTransport.sentMessages().count
+        secondTransport.enqueue(
+            #"{"id":\#(try jsonFragment(for: firstResume.id)),"error":{"code":-32080,"message":"thread/resume.threadId 未由当前 gateway 连接授权","data":{"reason":"thread_not_authorized","method":"thread/resume","threadId":"thr_gateway_reauthorization","accepted":false}}}"#
+        )
+
+        let discovery = try await waitForFakeAppServerRequest(
+            secondTransport,
+            method: "thread/list",
+            after: afterFirstResume
+        )
+        XCTAssertNil(discovery.params?["cwd"], "重新授权只能使用 agentd 裁剪后的无 cwd 全局列表")
+        XCTAssertEqual(discovery.params?["limit"]?.intValue, 50)
+        let afterDiscovery = await secondTransport.sentMessages().count
+        transportResponse(
+            secondTransport,
+            id: discovery.id,
+            result: appServerThreadListResult([threadJSON], nextCursor: nil)
+        )
+
+        let retryResume = try await waitForFakeAppServerRequest(
+            secondTransport,
+            method: "thread/resume",
+            after: afterDiscovery
+        )
+        XCTAssertNotEqual(retryResume.id, firstResume.id)
+        let afterRetryResume = await secondTransport.sentMessages().count
+        transportResponse(
+            secondTransport,
+            id: retryResume.id,
+            result: #"{"thread":\#(threadJSON)}"#
+        )
+
+        let turnStart = try await waitForFakeAppServerRequest(
+            secondTransport,
+            method: "turn/start",
+            after: afterRetryResume
+        )
+        transportResponse(
+            secondTransport,
+            id: turnStart.id,
+            result: #"{"turn":{"id":"turn_gateway_reauthorization","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490251,"completedAt":null,"durationMs":null}}"#
+        )
+
+        let turnID = try await startTask.value
+        XCTAssertEqual(turnID, "turn_gateway_reauthorization")
+        let requests = await secondTransport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(
+            requests.map(\.method),
+            ["initialize", "thread/resume", "thread/list", "thread/resume", "turn/start"]
+        )
+        XCTAssertEqual(requests.filter { $0.method == "thread/list" }.count, 1)
+        XCTAssertEqual(requests.filter { $0.method == "thread/resume" }.count, 2)
+        XCTAssertEqual(requests.filter { $0.method == "turn/start" }.count, 1)
+    }
+
     func testDirectRuntimeRecoversPendingUserInputAfterForegroundReconnectWithoutColdStart() async throws {
         let project = AgentProject(id: "proj_pending_input_recovery", name: "Pending Input Recovery", path: "/tmp/pending-input-recovery")
         let transport = FakeCodexAppServerTransport()

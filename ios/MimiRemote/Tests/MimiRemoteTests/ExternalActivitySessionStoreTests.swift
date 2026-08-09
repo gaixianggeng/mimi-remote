@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import MimiRemote
 
 @MainActor
@@ -26,6 +27,179 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(response.activities[0].projectID, "project-1")
         XCTAssertEqual(response.activities[0].turnID, "turn-1")
         XCTAssertEqual(response.activities[0].revision, "rev-1")
+    }
+
+    func testExternalActivitySnapshotBatchPublishesSessionsOnceForMultipleActivities() async throws {
+        let project = makeProject(id: "proj_external_activity_batch")
+        let firstSession = makeSession(
+            id: "thread-external-batch-1",
+            projectID: project.id,
+            title: "批量活动一",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-batch-1"
+        )
+        let secondSession = makeSession(
+            id: "thread-external-batch-2",
+            projectID: project.id,
+            title: "批量活动二",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-batch-2"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [firstSession, secondSession],
+            workspacePages: [project.id: SessionsPage(sessions: [firstSession, secondSession])]
+        )
+        let store = makeExternalActivityStore(
+            project: project,
+            session: firstSession,
+            client: client
+        )
+        store.sessions = [
+            historyAligned(firstSession, project: project),
+            historyAligned(secondSession, project: project)
+        ]
+
+        var sessionsPublishCount = 0
+        var cancellables = Set<AnyCancellable>()
+        store.$sessions
+            .dropFirst()
+            .sink { _ in sessionsPublishCount += 1 }
+            .store(in: &cancellables)
+
+        await store.applyExternalActivitySnapshot(
+            [
+                makeExternalActivity(
+                    threadID: firstSession.id,
+                    projectID: project.id,
+                    turnID: "turn-batch-1",
+                    revision: "rev-batch-1"
+                ),
+                makeExternalActivity(
+                    threadID: secondSession.id,
+                    projectID: project.id,
+                    turnID: "turn-batch-2",
+                    revision: "rev-batch-2"
+                )
+            ],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(sessionsPublishCount, 1)
+        XCTAssertEqual(store.sessionsByID[firstSession.id]?.activeTurnID, "turn-batch-1")
+        XCTAssertEqual(store.sessionsByID[secondSession.id]?.activeTurnID, "turn-batch-2")
+    }
+
+    func testIdenticalExternalActivitySnapshotDoesNotRepublishSessionsOrActivity() async throws {
+        let project = makeProject(id: "proj_external_activity_noop")
+        let session = makeSession(
+            id: "thread-external-noop",
+            projectID: project.id,
+            title: "相同活动快照",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-noop"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            workspacePages: [project.id: SessionsPage(sessions: [session])]
+        )
+        let store = makeExternalActivityStore(project: project, session: session, client: client)
+        let activity = makeExternalActivity(
+            threadID: session.id,
+            projectID: project.id,
+            turnID: "turn-noop",
+            revision: "rev-noop"
+        )
+
+        var sessionsPublishCount = 0
+        var externalActivityPublishCount = 0
+        var cancellables = Set<AnyCancellable>()
+        store.$sessions
+            .dropFirst()
+            .sink { _ in sessionsPublishCount += 1 }
+            .store(in: &cancellables)
+        store.$externalActivityBySessionID
+            .dropFirst()
+            .sink { _ in externalActivityPublishCount += 1 }
+            .store(in: &cancellables)
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(sessionsPublishCount, 1)
+        XCTAssertEqual(externalActivityPublishCount, 1)
+    }
+
+    func testExternalActivityKeepsControlReadOnlyButDefersSessionPublishDuringScroll() async throws {
+        let project = makeProject(id: "proj_external_scroll_gate")
+        let session = makeSession(
+            id: "thread-external-scroll-gate",
+            projectID: project.id,
+            title: "滚动中的外部活动",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-scroll-gate"
+        )
+        let activity = makeExternalActivity(
+            threadID: session.id,
+            projectID: project.id,
+            turnID: "turn-external-scroll-gate",
+            revision: "rev-external-scroll-gate"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            externalActivityResponses: [
+                ExternalActivityResponse(activities: [activity], scannedAt: Date())
+            ]
+        )
+        let store = makeExternalActivityStore(project: project, session: session, client: client)
+        var sessionsPublishCount = 0
+        let observation = store.$sessions.dropFirst().sink { _ in
+            sessionsPublishCount += 1
+        }
+        let sourceID = UUID()
+        store.setConversationTimelineInteractionActive(true, sourceID: sourceID)
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope,
+            deferWhileTimelineScrolling: true
+        )
+
+        XCTAssertTrue(store.externalReadOnlySessionIDs.contains(session.id), "控制权必须立即收紧")
+        XCTAssertEqual(store.externalActivityBySessionID[session.id], activity)
+        XCTAssertTrue(store.deferredExternalActivityVisiblePoll)
+        XCTAssertEqual(sessionsPublishCount, 0, "滚动中不能发布会触发全量索引的 sessions")
+        XCTAssertEqual(store.sessionsByID[session.id]?.status, SessionStatus.history.rawValue)
+
+        store.setConversationTimelineInteractionActive(false, sourceID: sourceID)
+        let flushTask = try XCTUnwrap(store.deferredVisiblePollingFlushTask)
+        await flushTask.value
+
+        XCTAssertFalse(store.deferredExternalActivityVisiblePoll)
+        XCTAssertEqual(sessionsPublishCount, 1)
+        XCTAssertEqual(store.sessionsByID[session.id]?.status, SessionStatus.running.rawValue)
+        XCTAssertEqual(store.sessionsByID[session.id]?.activeTurnID, activity.turnID)
+        withExtendedLifetime(observation) {}
     }
 
     func testExternalActivityMovesSessionBetweenActiveAndHistoryAndDeduplicatesRevision() async throws {

@@ -343,6 +343,107 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testActiveWriterFailureStopsReconnectAndRequiresExplicitRetry() async throws {
+        let project = makeProject(id: "proj_external_writer")
+        let running = makeSession(
+            id: "sess_external_writer",
+            projectID: project.id,
+            title: "Desktop 中的会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let firstSocket = try XCTUnwrap(sockets.first)
+        firstSocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        firstSocket.emitStatus(.failed(
+            "app-server 错误 -32600：thread \(running.id) already has an active writer"
+        ))
+        let writerNotice = L10n.text(
+            "ui.this_session_is_in_use_by_codex_desktop_automatic_reconnection_has_stopped"
+        )
+        try await waitForWebSocketStatus(.failed(writerNotice), store: store)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 1, "writer 互斥不能进入无效的自动重连循环")
+        XCTAssertNil(store.webSocketReconnectTask)
+        XCTAssertTrue(store.externalWriterConflictSessionIDs.contains(running.id))
+        XCTAssertTrue(store.isExternalReadOnlySession(try XCTUnwrap(store.selectedSession)))
+        XCTAssertTrue(store.isSelectedSessionObserving)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        XCTAssertFalse(store.selectedSessionAllowsTakeOver)
+        XCTAssertTrue(store.selectedSessionAllowsConnectionRetry)
+        XCTAssertEqual(
+            store.selectedSessionControlNotice,
+            L10n.text("ui.close_this_session_in_codex_desktop_then_retry")
+        )
+        XCTAssertEqual(store.errorMessage, writerNotice)
+
+        let sentWhileBlocked = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "不能在 writer 冲突时误发")
+        )
+        XCTAssertFalse(sentWhileBlocked)
+        XCTAssertTrue(firstSocket.sentTurns.isEmpty)
+
+        store.retrySelectedSessionConnectionAfterWriterRelease()
+
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertTrue(store.externalWriterConflictSessionIDs.contains(running.id),
+                      "新连接确认成功前必须继续禁用发送")
+        XCTAssertTrue(store.externalWriterRetryingSessionIDs.contains(running.id))
+        XCTAssertFalse(store.selectedSessionAllowsConnectionRetry)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        XCTAssertEqual(sockets[1].connectedSessionIDs, [running.id])
+        XCTAssertEqual(sockets[1].replayBufferedEventsByConnect, [false])
+
+        sockets[1].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        XCTAssertFalse(store.externalWriterConflictSessionIDs.contains(running.id))
+        XCTAssertFalse(store.externalWriterRetryingSessionIDs.contains(running.id))
+        XCTAssertTrue(store.canSendInSelectedSession)
+        XCTAssertNil(store.selectedSessionControlNotice)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testActiveWriterClassifierDoesNotConsumeOtherAppServerFailures() {
+        XCTAssertTrue(SessionStore.isExternalWriterConflict(
+            "app-server error -32600: thread abc already has an active writer"
+        ))
+        XCTAssertFalse(SessionStore.isExternalWriterConflict(
+            "app-server error -32600: Not initialized"
+        ))
+        XCTAssertFalse(SessionStore.isExternalWriterConflict(
+            "app-server error -32600: thread abc already has an active turn"
+        ))
+    }
+
     func testOfflineSuspendsReconnectAndPreservesSessionQueueAndMessages() async throws {
         let project = makeProject(id: "proj_network_offline")
         let running = makeSession(

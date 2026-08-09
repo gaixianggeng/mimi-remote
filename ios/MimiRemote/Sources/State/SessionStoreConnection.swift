@@ -114,7 +114,10 @@ extension SessionStore {
         replayBufferedEvents: Bool = true,
         allowNonRunning: Bool = false
     ) {
-        guard !isExternalReadOnlySession(session) else {
+        // active writer 的显式重试要穿过只读 guard，但冲突标记会一直保留到 connected，
+        // 因此连接建立期间 Composer 仍不可发送，也不会制造第二个 turn/start。
+        let isRetryingExternalWriter = externalWriterRetryingSessionIDs.contains(session.id)
+        guard !isExternalReadOnlySession(session) || isRetryingExternalWriter else {
             if connectedSessionID == session.id {
                 disconnectWebSocket()
             }
@@ -401,10 +404,16 @@ extension SessionStore {
             }
             cancelWebSocketReconnect(resetAttempts: false)
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+            externalWriterRetryingSessionIDs.remove(sessionID)
+            externalWriterConflictSessionIDs.remove(sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
         case .failed(let message):
+            if Self.isExternalWriterConflict(message) {
+                handleExternalWriterConflict(sessionID: sessionID)
+                return
+            }
             if isNetworkUnavailable {
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
@@ -412,6 +421,7 @@ extension SessionStore {
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID) && !policyRejected
+            externalWriterRetryingSessionIDs.remove(sessionID)
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
@@ -457,6 +467,7 @@ extension SessionStore {
                 return
             }
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
+            externalWriterRetryingSessionIDs.remove(sessionID)
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
@@ -480,6 +491,66 @@ extension SessionStore {
         }
     }
 
+    nonisolated static func isExternalWriterConflict(_ message: String) -> Bool {
+        message.lowercased().contains("already has an active writer")
+    }
+
+    /// active writer 是跨进程互斥，不是传输故障。停止自动重连并保持只读，
+    /// 让用户先释放 Desktop writer，再从同一会话显式、安全地重试 resume。
+    func handleExternalWriterConflict(
+        sessionID: SessionID,
+        presentsConnectionError: Bool = true
+    ) {
+        if presentsConnectionError || connectedSessionID == sessionID {
+            cancelWebSocketReconnect(resetAttempts: true)
+        }
+        externalWriterRetryingSessionIDs.remove(sessionID)
+        externalWriterConflictSessionIDs.insert(sessionID)
+        stopQueuedSessionMonitoring(sessionID: sessionID)
+        if connectedSessionID == sessionID {
+            connectedSessionID = nil
+            connectedHostScope = nil
+            connectedCredentialFingerprint = nil
+            webSocket = nil
+        }
+        markDispatchingQueuedTurnsNeedsConfirmation(
+            sessionID: sessionID,
+            message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
+        )
+        conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+        clearPendingApprovalDecisions(sessionID: sessionID)
+        clearPendingUserInputResponses(sessionID: sessionID)
+        clearForegroundActivity(sessionID: sessionID)
+
+        if presentsConnectionError {
+            let notice = L10n.text("ui.this_session_is_in_use_by_codex_desktop_automatic_reconnection_has_stopped")
+            setWebSocketStatus(.failed(notice))
+            setErrorMessage(notice)
+        }
+    }
+
+    func retrySelectedSessionConnectionAfterWriterRelease() {
+        guard let session = selectedSession,
+              externalWriterConflictSessionIDs.contains(session.id),
+              !externalWriterRetryingSessionIDs.contains(session.id),
+              !session.isLocalDraft,
+              connectionTermination == nil,
+              !appStore.requiresRePairing,
+              appStore.isConfigured,
+              appStore.authenticatedCredentialFingerprint != nil,
+              !isAppInBackground else {
+            return
+        }
+        guard !isNetworkUnavailable else {
+            setErrorMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect"))
+            return
+        }
+        cancelWebSocketReconnect(resetAttempts: true)
+        externalWriterRetryingSessionIDs.insert(session.id)
+        setErrorMessage(nil)
+        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
+    }
+
     @discardableResult
     func terminateConnectionIfCredentialsInvalid(_ error: Error) -> Bool {
         guard appStore.acceptsCredentialInvalidation(error) else {
@@ -493,6 +564,7 @@ extension SessionStore {
         // 认证失败是确定性终止态：保留 projects、sessions、选择和本地消息，只退役无法再使用的
         // 网络连接并取消重试。新凭据提交成功后 commitPreparedConnection 会显式解除该状态。
         connectionTermination = reason
+        cancelDeferredVisiblePollingFlush()
         cancelRemoteSessionSearchRequestsPreservingResults()
         appStore.markCredentialsInvalid()
         appLifecycleSuspendedSessionID = nil
@@ -500,6 +572,8 @@ extension SessionStore {
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
         cancelWebSocketReconnect(resetAttempts: true)
+        externalWriterRetryingSessionIDs = []
+        externalWriterConflictSessionIDs = []
         webSocketConnectionGeneration += 1
         if let connectedSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -583,6 +657,7 @@ extension SessionStore {
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
+              !externalWriterConflictSessionIDs.contains(sessionID),
               connectedSessionID == sessionID,
               connectedHostScope == appStore.activeHostScope,
               selectedSessionID == sessionID,
@@ -2309,6 +2384,7 @@ extension SessionStore {
 
     func clearConnectionData() {
         invalidateCarStatusHostObservation()
+        cancelDeferredVisiblePollingFlush()
         controlledGlobalDiscoveryUnavailable = false
         controlledGlobalSessionIDs = []
         stopRelatedSessionObservation()
@@ -2466,6 +2542,8 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         externalActivityBySessionID = [:]
         externalReadOnlySessionIDs = []
+        externalWriterRetryingSessionIDs = []
+        externalWriterConflictSessionIDs = []
         locallyStartedTurnIDBySessionID = [:]
         isRefreshingExternalActivity = false
         externalActivityCapabilityUnavailable = false

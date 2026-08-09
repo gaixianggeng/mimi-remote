@@ -4875,6 +4875,23 @@
         }
       }
     },
+    "ui.close_this_session_in_codex_desktop_then_retry": {
+      "comment": "Recovery guidance shown when Codex Desktop owns the thread writer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close this session in Codex Desktop. If it is already closed, quit Codex Desktop, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在 Codex Desktop 中关闭此会话；如果已经关闭，请退出 Codex Desktop，然后重试。"
+          }
+        }
+      }
+    },
     "ui.close_to_xcode_s_native_editing_area_and": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -21922,6 +21939,23 @@
         }
       }
     },
+    "ui.retry_connection": {
+      "comment": "Button title for retrying the selected session connection after releasing an external writer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试连接"
+          }
+        }
+      }
+    },
     "ui.retry_failed_websocket_not_connected": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -30130,6 +30164,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个会话正在其他客户端运行。请先在此设备上接管，再提交输入。"
+          }
+        }
+      }
+    },
+    "ui.this_session_is_in_use_by_codex_desktop_automatic_reconnection_has_stopped": {
+      "comment": "Deterministic connection error shown when another app-server process owns the thread writer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session is in use by Codex Desktop. Automatic reconnection has stopped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此会话正由 Codex Desktop 使用，已停止自动重连。"
           }
         }
       }

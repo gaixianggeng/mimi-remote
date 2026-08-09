@@ -1934,6 +1934,72 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testPreviewHistoryMediaCoalescesConcurrentRequestsForSameProfile() async throws {
+        let mediaID = "media-coalesced-\(UUID().uuidString)"
+        let payload = Data("coalesced-history-image".utf8)
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            historyMediaResults: [
+                mediaID: .success(FileReadResponse(
+                    path: "agentd-history-media://\(mediaID)",
+                    name: "coalesced.png",
+                    contentType: "image/png",
+                    size: Int64(payload.count),
+                    contentBase64: payload.base64EncodedString()
+                ))
+            ]
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        async let first = store.previewHistoryMedia(id: mediaID)
+        async let second = store.previewHistoryMedia(id: mediaID)
+        let (firstURL, secondURL) = try await (first, second)
+
+        XCTAssertEqual(firstURL, secondURL)
+        XCTAssertEqual(client.requestedHistoryMediaIDs, [mediaID])
+    }
+
+    func testPreviewHistoryMediaUsesCachedURLWithoutAdditionalRequest() async throws {
+        let mediaID = "media-cached-\(UUID().uuidString)"
+        let payload = Data("cached-history-image".utf8)
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            historyMediaResults: [
+                mediaID: .success(FileReadResponse(
+                    path: "agentd-history-media://\(mediaID)",
+                    name: "cached.png",
+                    contentType: "image/png",
+                    size: Int64(payload.count),
+                    contentBase64: payload.base64EncodedString()
+                ))
+            ]
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        let firstURL = try await store.previewHistoryMedia(id: mediaID)
+        let secondURL = try await store.previewHistoryMedia(id: mediaID)
+
+        XCTAssertEqual(firstURL, secondURL)
+        XCTAssertEqual(client.requestedHistoryMediaIDs, [mediaID])
+        XCTAssertEqual(try Data(contentsOf: secondURL), payload)
+    }
+
     func testPreviewHistoryOutputWritesDecodedPayloadToTemporaryFileOnDemand() async throws {
         let outputID = "output-123"
         let payload = Data("full command output\nline 2".utf8)

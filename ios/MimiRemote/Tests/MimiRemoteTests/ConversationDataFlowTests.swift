@@ -527,6 +527,100 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .idle))
     }
 
+    func testConversationTimelineInteractionTracksSessionsWithoutPublishingStoreChanges() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        var objectWillChangeCount = 0
+        let observation = store.objectWillChange.sink { _ in
+            objectWillChangeCount += 1
+        }
+
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        store.setConversationTimelineInteractionActive(true, sourceID: firstSourceID)
+        store.setConversationTimelineInteractionActive(true, sourceID: secondSourceID)
+        XCTAssertTrue(store.isConversationTimelineInteractionActive)
+        XCTAssertEqual(objectWillChangeCount, 0, "滚动 phase 不能反向触发 SessionStore 的 SwiftUI 全树刷新")
+
+        store.setConversationTimelineInteractionActive(false, sourceID: firstSourceID)
+        XCTAssertTrue(store.isConversationTimelineInteractionActive)
+        store.setConversationTimelineInteractionActive(false, sourceID: secondSourceID)
+        XCTAssertFalse(store.isConversationTimelineInteractionActive)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testSelectedProjectPollResponseDefersUntilTimelineInteractionEnds() async throws {
+        let project = makeProject(id: "proj-scroll-poll-gate")
+        let initial = makeSession(
+            id: "thread-scroll-poll-gate",
+            projectID: project.id,
+            title: "刷新前",
+            status: SessionStatus.history.rawValue,
+            source: "codex"
+        )
+        let refreshed = makeSession(
+            id: initial.id,
+            projectID: project.id,
+            title: "刷新后",
+            status: SessionStatus.history.rawValue,
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [refreshed]),
+            blockOnCall: 1
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.setProjectsIfChanged([project])
+        store.setRecentWorkspacesIfChanged([AgentWorkspace(project: project)])
+        store.sessions = [initial]
+        store.selectedProjectID = project.id
+
+        var sessionsPublishCount = 0
+        let observation = store.$sessions.dropFirst().sink { _ in
+            sessionsPublishCount += 1
+        }
+        let refreshTask = Task { @MainActor in
+            await store.refreshSelectedProjectSessions(
+                showLoading: false,
+                deferWhileTimelineScrolling: true
+            )
+        }
+        await client.waitForBlockedSessionListRefresh()
+
+        let sourceID = UUID()
+        store.setConversationTimelineInteractionActive(true, sourceID: sourceID)
+        client.releaseBlockedSessionListRefresh()
+        let didApplyDuringScroll = await refreshTask.value
+
+        XCTAssertFalse(didApplyDuringScroll)
+        XCTAssertTrue(store.deferredSelectedProjectVisiblePoll)
+        XCTAssertEqual(sessionsPublishCount, 0)
+        XCTAssertEqual(store.sessionsByID[initial.id]?.title, "刷新前")
+
+        store.setConversationTimelineInteractionActive(false, sourceID: sourceID)
+        let flushTask = try XCTUnwrap(store.deferredVisiblePollingFlushTask)
+        await flushTask.value
+
+        XCTAssertFalse(store.deferredSelectedProjectVisiblePoll)
+        XCTAssertEqual(sessionsPublishCount, 1)
+        XCTAssertEqual(store.sessionsByID[initial.id]?.title, "刷新后")
+        withExtendedLifetime(observation) {}
+    }
+
     func testConversationTimelineCacheCatchesUpAfterUserScrollingStops() {
         let first = ConversationMessage(role: .user, content: "第一条")
         let second = ConversationMessage(role: .assistant, content: "第二条")

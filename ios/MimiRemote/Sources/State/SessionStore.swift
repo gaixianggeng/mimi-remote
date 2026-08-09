@@ -79,6 +79,9 @@ final class SessionStore: ObservableObject {
         }
     }
     @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
+    // app-server 的 active writer 冲突不是网络抖动：在用户明确重试成功前保持只读，
+    // 避免发送按钮看似可用、后台却持续用同一 thread/resume 撞锁。
+    @Published var externalWriterConflictSessionIDs: Set<SessionID> = []
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
@@ -321,6 +324,16 @@ final class SessionStore: ObservableObject {
     // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
     // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
     var externalReadOnlySessionIDs: Set<SessionID> = []
+    // 显式重试期间仍保留 externalWriterConflictSessionIDs，从而让 Composer 持续禁用；
+    // 只有新连接真正成功后才解除只读。
+    var externalWriterRetryingSessionIDs: Set<SessionID> = []
+    // 会话正文由 List 驱动惯性滚动时，暂停仅用于“保鲜”的后台列表/活动轮询。
+    // 每个 Timeline 用独立 UUID 登记，避免分栏里同一会话的两个视图互相提前解除门控。
+    // 这些字段故意不是 @Published：滚动 phase 本身不能再反向触发整棵 SwiftUI 树刷新。
+    private(set) var interactingConversationTimelineSourceIDs: Set<UUID> = []
+    var deferredSelectedProjectVisiblePoll = false
+    var deferredExternalActivityVisiblePoll = false
+    var deferredVisiblePollingFlushTask: Task<Void, Never>?
     // 只记录当前 Host 生命周期内由 iPad 的 turn/start 明确返回的 turnID。不能用持久化的
     // `.takenOver` / `.ipadOwned` 代替：同一 thread 后续可能真的在 Mac 启动新 turn。
     // 精确到 session + turn 后，既能过滤 Desktop-origin 历史线程的 rollout 镜像，
@@ -681,6 +694,7 @@ final class SessionStore: ObservableObject {
     }
 
     deinit {
+        deferredVisiblePollingFlushTask?.cancel()
         networkRecoveryTask?.cancel()
         webSocketReconnectTask?.cancel()
         sessionSearchTask?.cancel()
@@ -1521,12 +1535,17 @@ final class SessionStore: ObservableObject {
     }
 
     func isSessionObserving(_ session: AgentSession) -> Bool {
-        session.isRunning && !canControlSession(session)
+        externalWriterConflictSessionIDs.contains(session.id)
+            || (session.isRunning && !canControlSession(session))
     }
 
     var selectedSessionControlNotice: String? {
         guard isSelectedSessionObserving else {
             return nil
+        }
+        if let session = selectedSession,
+           externalWriterConflictSessionIDs.contains(session.id) {
+            return L10n.text("ui.close_this_session_in_codex_desktop_then_retry")
         }
         if let session = selectedSession,
            isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
@@ -1542,12 +1561,83 @@ final class SessionStore: ObservableObject {
         return !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
     }
 
+    var selectedSessionAllowsConnectionRetry: Bool {
+        guard let session = selectedSession else {
+            return false
+        }
+        return externalWriterConflictSessionIDs.contains(session.id)
+            && !externalWriterRetryingSessionIDs.contains(session.id)
+    }
+
     func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
         externalReadOnlySessionIDs.contains(session.id)
+            || externalWriterConflictSessionIDs.contains(session.id)
     }
 
     func isProtocolReadOnlySession(_ session: AgentSession) -> Bool {
         !session.allowsDirectInput
+    }
+
+    var isConversationTimelineInteractionActive: Bool {
+        !interactingConversationTimelineSourceIDs.isEmpty
+    }
+
+    func setConversationTimelineInteractionActive(_ isActive: Bool, sourceID: UUID) {
+        let wasActive = isConversationTimelineInteractionActive
+        if isActive {
+            interactingConversationTimelineSourceIDs.insert(sourceID)
+            deferredVisiblePollingFlushTask?.cancel()
+            deferredVisiblePollingFlushTask = nil
+        } else {
+            interactingConversationTimelineSourceIDs.remove(sourceID)
+        }
+
+        guard wasActive, !isConversationTimelineInteractionActive else {
+            return
+        }
+        scheduleDeferredVisiblePollingFlush()
+    }
+
+    func scheduleDeferredVisiblePollingFlush() {
+        guard deferredSelectedProjectVisiblePoll || deferredExternalActivityVisiblePoll else {
+            return
+        }
+        deferredVisiblePollingFlushTask?.cancel()
+        deferredVisiblePollingFlushTask = Task { @MainActor [weak self] in
+            // 先让 SwiftUI 提交滚动结束帧，再补一次最新快照，避免补刷新与减速末帧竞争主线程。
+            await Task.yield()
+            guard let self, !Task.isCancelled, !self.isConversationTimelineInteractionActive else {
+                return
+            }
+            self.deferredVisiblePollingFlushTask = nil
+
+            if self.deferredExternalActivityVisiblePoll {
+                self.deferredExternalActivityVisiblePoll = false
+                _ = await self.refreshExternalActivities(deferWhileTimelineScrolling: true)
+            }
+            guard !Task.isCancelled, !self.isConversationTimelineInteractionActive else {
+                return
+            }
+            if self.deferredSelectedProjectVisiblePoll {
+                let didApply = await self.refreshSelectedProjectSessions(
+                    showLoading: false,
+                    deferWhileTimelineScrolling: true
+                )
+                guard didApply,
+                      !Task.isCancelled,
+                      !self.isConversationTimelineInteractionActive else {
+                    return
+                }
+                await self.refreshSessionLibraryIndexIfStale(deferWhileTimelineScrolling: true)
+            }
+        }
+    }
+
+    func cancelDeferredVisiblePollingFlush() {
+        deferredVisiblePollingFlushTask?.cancel()
+        deferredVisiblePollingFlushTask = nil
+        deferredSelectedProjectVisiblePoll = false
+        deferredExternalActivityVisiblePoll = false
     }
 
     func takeOverSession(_ session: AgentSession) {

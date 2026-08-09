@@ -768,8 +768,12 @@ struct ComposerView: View {
                 goalErrorMessage: sessionStore.threadGoalErrorMessage,
                 isRefreshDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading,
                 allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
+                allowsConnectionRetry: sessionStore.selectedSessionAllowsConnectionRetry,
                 onTakeOver: {
                     sessionStore.takeOverSelectedSession()
+                },
+                onRetryConnection: {
+                    sessionStore.retrySelectedSessionConnectionAfterWriterRelease()
                 },
                 onRefreshUsage: {
                     Task {

@@ -1153,7 +1153,8 @@ extension SessionStore {
         reuseRecent: Bool? = nil,
         consistency: SessionListConsistency = .fastIndexed,
         activatesProject: Bool = true,
-        foregroundLease: SessionSelectionLease? = nil
+        foregroundLease: SessionSelectionLease? = nil,
+        deferWhileTimelineScrolling: Bool = false
     ) async {
         let canReportForeground: () -> Bool = {
             foregroundLease.map(self.isSelectionLeaseCurrent) ?? true
@@ -1198,6 +1199,14 @@ extension SessionStore {
             }
             guard !activatesProject || selectedProjectID == projectID else {
                 return
+            }
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                // 请求可能在手指落下前已经发出；响应落地前必须再次检查，关闭这段竞态窗口。
+                deferredSelectedProjectVisiblePoll = true
+                return
+            }
+            if deferWhileTimelineScrolling {
+                deferredSelectedProjectVisiblePoll = false
             }
             // refreshSessions 是可见页面的周期 Host API；成功即续期在线证据，
             // 即使会话 payload 未变化，也允许 Widget 在 TTL 中点做有界 heartbeat。

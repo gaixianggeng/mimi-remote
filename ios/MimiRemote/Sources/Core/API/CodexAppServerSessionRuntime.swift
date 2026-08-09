@@ -66,6 +66,12 @@ struct CodexAppServerThreadResumeTask {
     let task: Task<Void, Error>
 }
 
+struct CodexAppServerThreadReauthorizationTask {
+    let connection: CodexAppServerConnection
+    let token: UUID
+    let task: Task<Bool, Error>
+}
+
 struct CodexAppServerThreadSubscriptionLease: Equatable {
     let generation: UInt64
     let wantsEvents: Bool
@@ -126,6 +132,10 @@ actor CodexAppServerSessionRuntime {
     // actor 会在 await thread/resume 时重入；同一连接、同一 thread 的并发监听和发送必须等待同一任务，
     // 否则 gateway 会拒绝重复历史请求，进一步放大上游高负载。
     var threadResumeTasksBySessionID: [SessionID: CodexAppServerThreadResumeTask] = [:]
+    // agentd 重启会清空新 Router 的 thread 授权表，但同 endpoint/token 的 Runtime 仍保留本地 context。
+    // 同一 Thread 的并发 read/turns-list/resume 共用一次受控 thread/list 重新登记，
+    // 避免再次撞 gateway 并发预算；写 RPC 仍必须走既有 resume→handoff→start 顺序。
+    var threadReauthorizationTasksBySessionID: [SessionID: CodexAppServerThreadReauthorizationTask] = [:]
     // unsubscribe 是后台 best-effort RPC，响应可能晚于同一 thread 的新 connectForEvents。
     // 每次订阅意图都换代；迟到退订只能作用于自己的 lease，不能覆盖更新一代的监听。
     var threadSubscriptionLeaseBySessionID: [SessionID: CodexAppServerThreadSubscriptionLease] = [:]
@@ -225,6 +235,7 @@ actor CodexAppServerSessionRuntime {
         rateLimitRefreshTask?.cancel()
         accountTokenUsageRefreshTask?.cancel()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
+        threadReauthorizationTasksBySessionID.values.forEach { $0.task.cancel() }
         turnInterruptRecoveryTasksBySessionID.values.forEach { $0.task.cancel() }
     }
 
@@ -338,6 +349,8 @@ actor CodexAppServerSessionRuntime {
             serverRequestPumpTask = nil
             threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
             threadResumeTasksBySessionID.removeAll(keepingCapacity: false)
+            threadReauthorizationTasksBySessionID.values.forEach { $0.task.cancel() }
+            threadReauthorizationTasksBySessionID.removeAll(keepingCapacity: false)
             finishAttachedEventStreams()
             return
         }
@@ -2169,7 +2182,11 @@ actor CodexAppServerSessionRuntime {
                 // startTurn 的外层循环统一管理 resume 与 turn/start 的 handoff 预算，
                 // 不能在这里再开启一套 9 次内部重试，避免最坏耗时叠加超过 60 秒。
                 try Task.checkCancellation()
-                result = try await connection.send(request, timeout: longRunningRequestTimeout)
+                result = try await sendRecoveringGatewayThreadAuthorization(
+                    request,
+                    connection: connection,
+                    timeout: longRunningRequestTimeout
+                )
             }
         } catch {
             if shouldFallbackFromInitialTurnsPage(error) {
@@ -2187,7 +2204,11 @@ actor CodexAppServerSessionRuntime {
                     )
                 } else {
                     try Task.checkCancellation()
-                    result = try await connection.send(request, timeout: longRunningRequestTimeout)
+                    result = try await sendRecoveringGatewayThreadAuthorization(
+                        request,
+                        connection: connection,
+                        timeout: longRunningRequestTimeout
+                    )
                 }
             } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
@@ -2249,6 +2270,114 @@ actor CodexAppServerSessionRuntime {
         }
         for sessionID in sessionIDs {
             cancelThreadResumeTask(sessionID: sessionID)
+        }
+    }
+
+    func reauthorizeGatewayThreadIfNeeded(
+        sessionID: SessionID,
+        connection: CodexAppServerConnection
+    ) async throws -> Bool {
+        if let existing = threadReauthorizationTasksBySessionID[sessionID] {
+            if existing.connection === connection {
+                return try await existing.task.value
+            }
+            existing.task.cancel()
+            threadReauthorizationTasksBySessionID.removeValue(forKey: sessionID)
+        }
+
+        let token = UUID()
+        let task = Task { [self] in
+            try await performGatewayThreadReauthorization(
+                sessionID: sessionID,
+                connection: connection
+            )
+        }
+        threadReauthorizationTasksBySessionID[sessionID] = CodexAppServerThreadReauthorizationTask(
+            connection: connection,
+            token: token,
+            task: task
+        )
+        do {
+            let didAuthorize = try await task.value
+            clearThreadReauthorizationTask(
+                sessionID: sessionID,
+                connection: connection,
+                token: token
+            )
+            return didAuthorize
+        } catch {
+            clearThreadReauthorizationTask(
+                sessionID: sessionID,
+                connection: connection,
+                token: token
+            )
+            throw error
+        }
+    }
+
+    func performGatewayThreadReauthorization(
+        sessionID: SessionID,
+        connection: CodexAppServerConnection
+    ) async throws -> Bool {
+        guard runtimeProvider == "codex" else {
+            return false
+        }
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        var cursor: String?
+        // 受控全局列表由 agentd 按项目、Git identity 与父子只读关系裁剪；只消费 opaque cursor。
+        // 四页正好覆盖常用最近会话，并为 gateway 15 秒内 6 请求的预算保留原 RPC 重试余量。
+        for _ in 0..<4 {
+            try Task.checkCancellation()
+            guard let current = self.connection, current === connection else {
+                return false
+            }
+            let result = try await connection.send(
+                builder.controlledGlobalThreadList(limit: 50, cursor: cursor),
+                timeout: longRunningRequestTimeout
+            )
+            let object = result?.objectValue ?? [:]
+            let discoveredThreadIDs: [String] = object["data"]?.arrayValue?.compactMap { value in
+                let item = value.objectValue
+                return nonEmpty(
+                    item?["id"]?.stringValue,
+                    item?["threadId"]?.stringValue,
+                    item?["sessionId"]?.stringValue
+                )
+            } ?? []
+            let threadIDs = Set(discoveredThreadIDs)
+            if threadIDs.contains(sessionID) {
+                return true
+            }
+            guard let nextCursor = object["nextCursor"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !nextCursor.isEmpty,
+                nextCursor != cursor else {
+                return false
+            }
+            cursor = nextCursor
+        }
+        return false
+    }
+
+    func clearThreadReauthorizationTask(
+        sessionID: SessionID,
+        connection: CodexAppServerConnection,
+        token: UUID
+    ) {
+        guard let current = threadReauthorizationTasksBySessionID[sessionID],
+              current.connection === connection,
+              current.token == token else {
+            return
+        }
+        threadReauthorizationTasksBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func cancelThreadReauthorizationTasks(for connection: CodexAppServerConnection) {
+        let sessionIDs = threadReauthorizationTasksBySessionID.compactMap { entry in
+            entry.value.connection === connection ? entry.key : nil
+        }
+        for sessionID in sessionIDs {
+            threadReauthorizationTasksBySessionID.removeValue(forKey: sessionID)?.task.cancel()
         }
     }
 
@@ -2726,6 +2855,8 @@ actor CodexAppServerSessionRuntime {
         cancelAllTurnInterruptRecoveryTasks()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
         threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
+        threadReauthorizationTasksBySessionID.values.forEach { $0.task.cancel() }
+        threadReauthorizationTasksBySessionID.removeAll(keepingCapacity: true)
         // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
@@ -2756,6 +2887,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask?.cancel()
         serverRequestPumpTask = nil
         cancelThreadResumeTasks(for: endedConnection)
+        cancelThreadReauthorizationTasks(for: endedConnection)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
@@ -2783,12 +2915,20 @@ actor CodexAppServerSessionRuntime {
     ) async throws -> CodexAppServerJSONValue? {
         let firstConnection = try await ensureConnection()
         do {
-            return try await firstConnection.send(request, timeout: timeout)
+            return try await sendRecoveringGatewayThreadAuthorization(
+                request,
+                connection: firstConnection,
+                timeout: timeout
+            )
         } catch {
             if await recoverConnectionAfterStaleInitialization(firstConnection, error: error) {
                 let secondConnection = try await ensureConnection()
                 do {
-                    return try await secondConnection.send(request, timeout: timeout)
+                    return try await sendRecoveringGatewayThreadAuthorization(
+                        request,
+                        connection: secondConnection,
+                        timeout: timeout
+                    )
                 } catch {
                     await retireCurrentConnectionAfterRecoverableError(secondConnection, error: error)
                     throw error
@@ -2797,6 +2937,74 @@ actor CodexAppServerSessionRuntime {
             await retireCurrentConnectionAfterRecoverableError(firstConnection, error: error)
             throw error
         }
+    }
+
+    func sendRecoveringGatewayThreadAuthorization(
+        _ request: CodexAppServerRequestSpec,
+        connection: CodexAppServerConnection,
+        timeout: TimeInterval?
+    ) async throws -> CodexAppServerJSONValue? {
+        do {
+            return try await connection.send(request, timeout: timeout)
+        } catch let originalError {
+            guard let sessionID = gatewayThreadAuthorizationFailureSessionID(
+                originalError,
+                request: request
+            ) else {
+                throw originalError
+            }
+            // thread_not_authorized 是 gateway 在转发前给出的确定性拒绝。只对 read、turns/list、
+            // resume 做一次受控登记与一次原 RPC 重试；写请求继续走既有单写者/交接状态机。
+            let didAuthorize: Bool
+            do {
+                didAuthorize = try await reauthorizeGatewayThreadIfNeeded(
+                    sessionID: sessionID,
+                    connection: connection
+                )
+            } catch let discoveryError {
+                // managed app-server 可能仍处于重启窗口。连接级或未初始化错误必须交回外层的
+                // 既有重连链，不能吞掉后伪装成最初的授权拒绝。
+                if discoveryError is CancellationError
+                    || isStaleInitializationError(discoveryError)
+                    || isRecoverableConnectionError(discoveryError) {
+                    throw discoveryError
+                }
+                throw originalError
+            }
+            try Task.checkCancellation()
+            guard didAuthorize else {
+                throw originalError
+            }
+            return try await connection.send(request, timeout: timeout)
+        }
+    }
+
+    func gatewayThreadAuthorizationFailureSessionID(
+        _ error: Error,
+        request: CodexAppServerRequestSpec
+    ) -> SessionID? {
+        let recoverableMethods: Set<String> = ["thread/read", "thread/turns/list", "thread/resume"]
+        guard recoverableMethods.contains(request.method),
+              let requestThreadID = request.params?.objectValue?["threadId"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !requestThreadID.isEmpty,
+              case CodexAppServerConnectionError.appServer(let appError) = error,
+              appError.code == -32080 else {
+            return nil
+        }
+
+        if let data = appError.data?.objectValue,
+           data["reason"]?.stringValue == "thread_not_authorized",
+           data["accepted"]?.boolValue == false,
+           data["method"]?.stringValue == request.method,
+           data["threadId"]?.stringValue == requestThreadID {
+            return requestThreadID
+        }
+
+        // 兼容尚未返回结构化 data 的旧 agentd；必须同时精确匹配 code、method 和完整短语，
+        // 不能把 history budget、响应过大或其它 -32080 策略错误误当成可安全重试。
+        let legacyMessage = "\(request.method).threadId 未由当前 gateway 连接授权"
+        return appError.message == legacyMessage ? requestThreadID : nil
     }
 
     /// resume 在 archive→unarchive 的 writer handoff 窗口内不会转发新 RPC，而是返回
@@ -2812,7 +3020,11 @@ actor CodexAppServerSessionRuntime {
         while true {
             try Task.checkCancellation()
             do {
-                return try await connection.send(request, timeout: timeout)
+                return try await sendRecoveringGatewayThreadAuthorization(
+                    request,
+                    connection: connection,
+                    timeout: timeout
+                )
             } catch {
                 guard isRetryableThreadHandoffInProgress(error),
                       threadHandoffRetryDelaysNanoseconds.indices.contains(retryIndex) else {
@@ -2865,6 +3077,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask?.cancel()
         serverRequestPumpTask = nil
         cancelThreadResumeTasks(for: stale)
+        cancelThreadReauthorizationTasks(for: stale)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()

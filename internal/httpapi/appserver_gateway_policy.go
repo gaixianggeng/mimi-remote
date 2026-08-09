@@ -21,6 +21,19 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
 
+type appServerGatewayThreadNotAuthorizedError struct {
+	method   string
+	threadID string
+}
+
+func (e *appServerGatewayThreadNotAuthorizedError) Error() string {
+	return fmt.Sprintf("%s.threadId 未由当前 gateway 连接授权", e.method)
+}
+
+func newAppServerGatewayThreadNotAuthorizedError(method string, threadID string) error {
+	return &appServerGatewayThreadNotAuthorizedError{method: method, threadID: threadID}
+}
+
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
 	return p.validateClientFrameContext(context.Background(), messageType, payload)
 }
@@ -63,7 +76,18 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
-		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		policyErr := &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		var notAuthorized *appServerGatewayThreadNotAuthorizedError
+		if errors.As(err, &notAuthorized) {
+			// 这类拒绝发生在 frame 转发前；accepted=false 让新客户端能安全地先通过
+			// 受控 thread/list 重新登记，再且仅再试一次原只读/恢复 RPC。
+			policyErr.data = gatewayPolicyErrorData("thread_not_authorized", 0, map[string]any{
+				"method":   notAuthorized.method,
+				"threadId": notAuthorized.threadID,
+				"accepted": false,
+			})
+		}
+		return nil, policyErr
 	}
 	p.rememberThreadHandoffCapability(method, params)
 	if err := p.guardThreadHandoffContext(ctx, method, params); err != nil {
@@ -223,7 +247,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
@@ -238,7 +262,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
@@ -257,7 +281,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayMethodMutatesThread(method) && gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
@@ -301,7 +325,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
@@ -313,7 +337,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
@@ -330,7 +354,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
@@ -348,7 +372,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
-			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+			return newAppServerGatewayThreadNotAuthorizedError(method, threadID)
 		}
 		if gatewayThreadRejectsWrites(thread) {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)

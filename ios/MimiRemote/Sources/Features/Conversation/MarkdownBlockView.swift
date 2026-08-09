@@ -593,7 +593,7 @@ private struct ConversationImagePreviewContent: View {
         case .historyMedia(let id):
             embeddedImage = nil
             isLoadingLocalImage = false
-            // history-media 默认接口返回 1600px 内的派生图；只在图片进入可见区域时加载。
+            // history-media 只在图片进入可见区域时加载；列表展示不需要重复解码 1600px 原图。
             await loadHistoryMedia(id: id)
         case .localPath, .unsupported:
             embeddedImage = nil
@@ -815,7 +815,7 @@ private struct ConversationImagePreviewContent: View {
                 fromFileURL: url,
                 cacheKey: "historyMedia:\(targetID)",
                 profileID: profileID,
-                maxPixelSize: 1_600
+                maxPixelSize: 960
             ) else {
                 loadError = L10n.text("ui.historical_pictures_were_read_but_could_not_be")
                 return

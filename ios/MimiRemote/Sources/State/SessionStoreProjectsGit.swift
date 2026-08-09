@@ -6,6 +6,90 @@ private struct ProjectsGitHostLease {
     let client: any SessionStoreAPIClient
 }
 
+/// history-media 行会随长会话滚动反复重建；按 Profile/媒体 ID 合并请求并有限缓存临时文件，
+/// 避免同一张图重复发 HTTP、重复写文件。共享 Task 不继承调用者取消，单个 row 消失不会打断其它 row。
+@MainActor
+private final class HistoryMediaPreviewCoordinator {
+    static let shared = HistoryMediaPreviewCoordinator()
+
+    private struct Key: Hashable {
+        let profileID: String
+        let mediaID: String
+    }
+
+    private let maxCachedEntries = 32
+    private var cachedURLs: [Key: URL] = [:]
+    private var cacheOrder: [Key] = []
+    private var inFlight: [Key: Task<URL, Error>] = [:]
+
+    func preview(
+        profileID: String,
+        mediaID: String,
+        operation: @escaping @MainActor () async throws -> URL
+    ) async throws -> URL {
+        let key = Key(
+            profileID: Self.normalizedProfileID(profileID),
+            mediaID: mediaID
+        )
+
+        if let cachedURL = cachedURLs[key] {
+            if FileManager.default.fileExists(atPath: cachedURL.path) {
+                touch(key)
+                return cachedURL
+            } else {
+                cachedURLs.removeValue(forKey: key)
+                cacheOrder.removeAll { $0 == key }
+            }
+        }
+
+        if let request = inFlight[key] {
+            // 只等待共享任务；调用者取消不会取消这个 unstructured Task。
+            return try await request.value
+        }
+
+        let request = Task<URL, Error> { @MainActor in
+            try await operation()
+        }
+        inFlight[key] = request
+
+        do {
+            let url = try await request.value
+            inFlight.removeValue(forKey: key)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                return url
+            }
+            cachedURLs[key] = url
+            touch(key)
+            trimCache()
+            return url
+        } catch {
+            inFlight.removeValue(forKey: key)
+            throw error
+        }
+    }
+
+    private func touch(_ key: Key) {
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+    }
+
+    private func trimCache() {
+        while cacheOrder.count > maxCachedEntries {
+            let evictedKey = cacheOrder.removeFirst()
+            guard let evictedURL = cachedURLs.removeValue(forKey: evictedKey) else {
+                continue
+            }
+            // 过期临时文件不再由缓存持有，避免长会话把预览目录无限写大。
+            Task { await MediaWorker.shared.discardPreview(at: evictedURL) }
+        }
+    }
+
+    private static func normalizedProfileID(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "legacy" : trimmed
+    }
+}
+
 // 文件预览、命令动作、Git、项目列表与网络恢复按工作区能力集中。
 extension SessionStore {
     private func captureProjectsGitHostLease() throws -> ProjectsGitHostLease {
@@ -79,29 +163,48 @@ extension SessionStore {
     func previewHistoryMedia(id: String) async throws -> URL {
         let lease = try captureProjectsGitHostLease()
         let profileID = mediaProfileScope
-        let response: FileReadResponse
         do {
-            response = try await lease.client.readHistoryMedia(id: id)
+            let url = try await HistoryMediaPreviewCoordinator.shared.preview(
+                profileID: profileID,
+                mediaID: id
+            ) { [weak self] in
+                guard let self else {
+                    throw CancellationError()
+                }
+
+                let response: FileReadResponse
+                do {
+                    response = try await lease.client.readHistoryMedia(id: id)
+                    try self.requireCurrentProjectsGitHost(lease)
+                } catch {
+                    try self.requireCurrentProjectsGitHost(lease)
+                    throw error
+                }
+
+                let url: URL
+                do {
+                    url = try await MediaWorker.shared.previewURL(
+                        from: MediaPreviewPayload(response: response),
+                        profileID: profileID
+                    )
+                } catch {
+                    try self.requireCurrentProjectsGitHost(lease)
+                    throw error
+                }
+                guard self.canApplyProjectsGitResult(lease) else {
+                    await MediaWorker.shared.discardPreview(at: url)
+                    throw CancellationError()
+                }
+                return url
+            }
+            // 共享任务完成后仍需由当前调用者核对主机代次；旧 row 不能把结果提交给新主机。
             try requireCurrentProjectsGitHost(lease)
+            return url
         } catch {
+            // 共享任务的错误也要在调用者上下文重新核对取消/主机代次，保留原有错误映射语义。
             try requireCurrentProjectsGitHost(lease)
             throw error
         }
-        let url: URL
-        do {
-            url = try await MediaWorker.shared.previewURL(
-                from: MediaPreviewPayload(response: response),
-                profileID: profileID
-            )
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
-        }
-        guard canApplyProjectsGitResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
-            throw CancellationError()
-        }
-        return url
     }
 
     // 超大过程输出只在用户主动打开时下载，并交给 QuickLook 渐进展示；
@@ -1607,26 +1710,44 @@ extension SessionStore {
         )
     }
 
-    func refreshSelectedProjectSessions(showLoading: Bool = true) async {
+    @discardableResult
+    func refreshSelectedProjectSessions(
+        showLoading: Bool = true,
+        deferWhileTimelineScrolling: Bool = false
+    ) async -> Bool {
         guard let selectedProjectID else {
-            return
+            return false
+        }
+        if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+            deferredSelectedProjectVisiblePoll = true
+            return false
+        }
+        if deferWhileTimelineScrolling {
+            deferredSelectedProjectVisiblePoll = false
         }
         await refreshSessions(
             forProjectID: selectedProjectID,
             showLoading: showLoading,
-            consistency: showLoading ? .authoritative : .fastIndexed
+            consistency: showLoading ? .authoritative : .fastIndexed,
+            deferWhileTimelineScrolling: deferWhileTimelineScrolling
         )
+        return !deferWhileTimelineScrolling
+            || (!deferredSelectedProjectVisiblePoll && !isConversationTimelineInteractionActive)
     }
 
     /// 为单一全局侧栏加载跨工作区轻量索引。只取 thread/list 首屏，不读取任何消息历史。
-    func refreshSessionLibraryIndex(authoritative: Bool = false) async {
+    func refreshSessionLibraryIndex(
+        authoritative: Bool = false,
+        deferWhileTimelineScrolling: Bool = false
+    ) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
         let hostScope = appStore.activeHostScope
         let generation = appStore.connectionGeneration
+        var wasDeferredForTimelineInteraction = false
         defer {
-            if appStore.activeHostScope == hostScope {
+            if appStore.activeHostScope == hostScope, !wasDeferredForTimelineInteraction {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
@@ -1659,6 +1780,11 @@ extension SessionStore {
                 do {
                     let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
                     guard appStore.connectionGeneration == generation else { return }
+                    if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                        deferredSelectedProjectVisiblePoll = true
+                        wasDeferredForTimelineInteraction = true
+                        return
+                    }
                     recordCarStatusHostObservation(at: sessionListNow())
                     let pageSessionIDs = Set(page.sessions.map(\.id))
                     discoveredSessionIDs.formUnion(pageSessionIDs)
@@ -1750,6 +1876,11 @@ extension SessionStore {
                 hostScope: hostScope
             )
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+            if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+                deferredSelectedProjectVisiblePoll = true
+                wasDeferredForTimelineInteraction = true
+                return
+            }
             mergeSessionLibraryPages(
                 [result],
                 generation: generation,
@@ -1925,17 +2056,35 @@ extension SessionStore {
                   selectedProjectID != nil else {
                 continue
             }
-            await refreshSelectedProjectSessions(showLoading: false)
-            await refreshSessionLibraryIndexIfStale()
+            if isConversationTimelineInteractionActive {
+                deferredSelectedProjectVisiblePoll = true
+                continue
+            }
+            let didApply = await refreshSelectedProjectSessions(
+                showLoading: false,
+                deferWhileTimelineScrolling: true
+            )
+            guard didApply else { continue }
+            await refreshSessionLibraryIndexIfStale(deferWhileTimelineScrolling: true)
         }
     }
 
-    func refreshSessionLibraryIndexIfStale() async {
-        if let lastSessionLibraryIndexRefreshAt,
-           sessionListNow().timeIntervalSince(lastSessionLibraryIndexRefreshAt) < sessionLibraryIndexPollingInterval {
+    func refreshSessionLibraryIndexIfStale(deferWhileTimelineScrolling: Bool = false) async {
+        if deferWhileTimelineScrolling, isConversationTimelineInteractionActive {
+            deferredSelectedProjectVisiblePoll = true
             return
         }
-        await refreshSessionLibraryIndex()
+        if let lastSessionLibraryIndexRefreshAt,
+           sessionListNow().timeIntervalSince(lastSessionLibraryIndexRefreshAt) < sessionLibraryIndexPollingInterval {
+            if deferWhileTimelineScrolling {
+                deferredSelectedProjectVisiblePoll = false
+            }
+            return
+        }
+        await refreshSessionLibraryIndex(deferWhileTimelineScrolling: deferWhileTimelineScrolling)
+        if deferWhileTimelineScrolling, !isConversationTimelineInteractionActive {
+            deferredSelectedProjectVisiblePoll = false
+        }
     }
 
     func sessionListPollingDelayNanoseconds() -> UInt64 {

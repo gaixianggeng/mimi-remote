@@ -1592,6 +1592,16 @@ func TestAppServerGatewayRejectsUnauthorizedThreadIDWithoutForwarding(t *testing
 			if !strings.Contains(errFrame.message, tc.want) {
 				t.Fatalf("unauthorized thread error 应包含 %q，got=%+v", tc.want, errFrame)
 			}
+			var request appServerGatewayFrame
+			if err := json.Unmarshal([]byte(tc.payload), &request); err != nil {
+				t.Fatalf("测试请求不是合法 JSON：%v", err)
+			}
+			if errFrame.data["reason"] != "thread_not_authorized" ||
+				errFrame.data["method"] != request.Method ||
+				errFrame.data["threadId"] != "thread-outside" ||
+				errFrame.data["accepted"] != false {
+				t.Fatalf("unauthorized thread error 必须携带可安全恢复的结构化证据：%+v", errFrame.data)
+			}
 		})
 	}
 	assertNoUpstreamFrame(t, received)
