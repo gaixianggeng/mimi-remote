@@ -517,9 +517,10 @@ extension CodexAppServerSessionRuntime {
         let projectName = project?.name ?? fallbackProject?.name ?? cwd
         let status = sessionStatus(from: thread["status"], forceRunning: forceRunning)
         let preview = thread["preview"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = thread["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? preview?.split(separator: "\n").first.map(String.init)
-            ?? "Thread \(id.prefix(8))"
+        let name = thread["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previewTitle = preview?.split(separator: "\n").first.map(String.init)
+        // id 是协议字段，缺 name/preview 时只给稳定占位标题，不能把 id 伪装成会话名。
+        let title = [name, previewTitle].compactMap { $0 }.first(where: { !$0.isEmpty }) ?? ""
         let cached = contextsBySessionID[id]?.session
         // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
         // turns，就以服务端 turns 为准。即使 turns 里没有 inProgress，也要清掉旧缓存，避免引导发到旧 turn。

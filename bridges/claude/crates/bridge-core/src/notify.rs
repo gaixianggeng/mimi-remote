@@ -50,6 +50,22 @@ impl NotificationSender {
         Ok(())
     }
 
+    /// Answer a client request that arrived on attachment `generation`.
+    /// Returns whether the response was accepted for the attachment that asked
+    /// for it. `false` means that stream has since been replaced and the answer
+    /// was dropped rather than handed to its successor.
+    pub fn send_response(
+        &self,
+        response: JsonRpcResponse,
+        generation: u64,
+    ) -> anyhow::Result<bool> {
+        let frame = serde_json::to_value(JsonRpcMessage::Response(response))?;
+        Ok(self
+            .session
+            .enqueue_for_generation(frame, generation)
+            .is_some())
+    }
+
     /// Issue a server→client request and await the response, with a per-call
     /// timeout. The request id is minted by the session, the pending oneshot
     /// is parked in the session's pending table, and the params are stored in
