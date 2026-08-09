@@ -508,7 +508,9 @@ struct SessionListView: View {
             isEnabled: !showsToolbarSearchField,
             text: $sessionStore.sessionSearchQuery,
             prompt: Text(L10n.text("ui.search_session")),
-            tintColor: tokens.secondaryText,
+            tintColor: tokens.primaryText,
+            toolbarSurface: tokens.background,
+            colorScheme: colorScheme,
             onSubmit: dismissSessionSearchKeyboard
         )
         .toolbar {
@@ -1717,6 +1719,8 @@ private extension View {
         text: Binding<String>,
         prompt: Text,
         tintColor: Color,
+        toolbarSurface: Color,
+        colorScheme: ColorScheme,
         onSubmit: @escaping () -> Void
     ) -> some View {
         if isEnabled {
@@ -1727,6 +1731,10 @@ private extension View {
             )
             // 紧凑布局保留完整的系统搜索框，不再缩成会触发展开转场的第三个工具按钮。
             .tint(tintColor)
+            // 明确给系统搜索栏传递主题的前景/底色，避免快照宿主把浅色模式
+            // 的放大镜和 prompt 渲染成白色；深色主题仍由系统自动反转。
+            .toolbarBackground(toolbarSurface, for: .navigationBar)
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
             .onSubmit(of: .search, onSubmit)
         } else {
             self
