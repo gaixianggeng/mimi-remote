@@ -361,7 +361,7 @@ struct ComposerStatusTray: View {
     }
 
     private func collapsedHeader(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     if sessionControlNotice != nil {
@@ -376,20 +376,14 @@ struct ComposerStatusTray: View {
                         collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
                     }
                 }
+                .frame(minHeight: 44, alignment: .center)
             }
-            .layoutPriority(1)
+            // 固定状态摘要的轨道高度，避免横向 ScrollView 以内容高度参与 HStack
+            // 测量，导致右侧重试图标在收起态向上漂移。
+            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
 
             if allowsConnectionRetry {
-                Button(action: onRetryConnection) {
-                    Label(L10n.text("ui.retry_connection"), systemImage: "arrow.clockwise")
-                        .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .frame(minHeight: 44)
-                        .padding(.horizontal, 6)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                .foregroundStyle(tokens.accent)
-                .help(L10n.text("ui.retry_connection"))
+                retryConnectionButton(tint: tokens.accent)
             }
 
             collapsedDisclosureButton(
@@ -509,21 +503,14 @@ struct ComposerStatusTray: View {
 
     private func observingSegment(_ notice: String, tokens: ThemeTokens) -> some View {
         traySegment(tokens: tokens, minWidth: 132) {
-            HStack(spacing: 7) {
+            HStack(alignment: .center, spacing: 7) {
                 segmentIcon("eye", tint: tokens.secondaryText)
-                Text(L10n.text("ui.just_observe"))
+                Text(L10n.text("ui.observe"))
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
                 if allowsConnectionRetry {
-                    Button(action: onRetryConnection) {
-                        Text(L10n.text("ui.retry_connection"))
-                            .frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.accent)
+                    retryConnectionButton(tint: tokens.accent)
                 } else if allowsTakeOver {
                     Button(action: onTakeOver) {
                         Text(L10n.text("ui.take_over"))
@@ -537,6 +524,21 @@ struct ComposerStatusTray: View {
             .accessibilityElement(children: .combine)
             .accessibilityHint(notice)
         }
+    }
+
+    /// 重试只保留一个图标，展开和收起共用同一套 44pt 命中区，
+    /// 避免本地化后的按钮文字改变状态栏宽度和垂直对齐。
+    private func retryConnectionButton(tint: Color) -> some View {
+        Button(action: onRetryConnection) {
+            Image(systemName: "arrow.clockwise")
+                .font(themeStore.uiFont(size: 16, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .foregroundStyle(tint)
+        .help(L10n.text("ui.retry_connection"))
+        .accessibilityLabel(L10n.text("ui.retry_connection"))
     }
 
     private func quotaSegment(_ notice: CodexQuotaNotice, tokens: ThemeTokens) -> some View {
