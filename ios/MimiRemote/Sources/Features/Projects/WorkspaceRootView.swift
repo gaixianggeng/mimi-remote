@@ -1808,6 +1808,12 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             session.gitBranchName,
             among: branchValues
         )
+        // 运行中的状态导轨是纯视觉提示并对辅助功能隐藏；把状态补进合并元素的 value，
+        // VoiceOver 仍能在不增加第二个可聚焦元素的情况下读到「运行中」。
+        let accessibilityValueParts = [
+            session.isRunning && !showsStatus ? L10n.text("ui.running") : nil,
+            unreadHistorySessionIDs.contains(session.id) ? L10n.text("ui.unread_result") : nil
+        ].compactMap { $0 }
 
         // 标准字体下保持两行：第一行是状态/标题/时间，第二行是分支前缀和最近消息。
         // 辅助功能大字体取消单行裁切，允许卡片自然增高，不通过缩小字体换取几何高度。
@@ -1894,11 +1900,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .frame(minHeight: WorkspaceSessionRowMetrics.minHeight, alignment: .top)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityValue(
-            unreadHistorySessionIDs.contains(session.id)
-                ? L10n.text("ui.unread_result")
-                : ""
-        )
+        .accessibilityValue(accessibilityValueParts.joined(separator: ", "))
     }
 
     /// 状态点脱离标题行独立成列，是为了让它落在固定的横坐标上。
