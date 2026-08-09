@@ -296,7 +296,7 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
-    func testSidebarCollapsesOnlyAdjacentProjectIconsInRunningAndJustCompleted() {
+    func testSidebarUsesOneGroupHeaderForAdjacentProjectsInRunningAndJustCompleted() {
         let first = makeSession(id: "project-a-first", projectID: "project-a")
         let adjacentSameProject = makeSession(id: "project-a-second", projectID: "project-a")
         let differentProject = makeSession(id: "project-b", projectID: "project-b")
@@ -304,22 +304,22 @@ final class SessionListPresentationTests: XCTestCase {
         let missingProject = makeSession(id: "missing-project", projectID: "")
 
         XCTAssertTrue(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: first,
                 previousSession: nil,
                 in: .running
             )
         )
         XCTAssertFalse(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: adjacentSameProject,
                 previousSession: first,
                 in: .running
             ),
-            "运行中的相邻同项目只展示第一个头像"
+            "运行中的相邻同项目只在第一行展示菊花和头像"
         )
         XCTAssertFalse(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: adjacentSameProject,
                 previousSession: first,
                 in: .justCompleted
@@ -327,14 +327,14 @@ final class SessionListPresentationTests: XCTestCase {
             "刚完成的相邻同项目也应合并头像"
         )
         XCTAssertTrue(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: differentProject,
                 previousSession: adjacentSameProject,
                 in: .running
             )
         )
         XCTAssertTrue(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: separatedSameProject,
                 previousSession: differentProject,
                 in: .running
@@ -347,7 +347,7 @@ final class SessionListPresentationTests: XCTestCase {
             .recent,
         ] {
             XCTAssertTrue(
-                SessionListPresentation.shouldShowProjectIcon(
+                SessionListPresentation.startsSidebarProjectGroup(
                     for: adjacentSameProject,
                     previousSession: first,
                     in: kind
@@ -356,7 +356,7 @@ final class SessionListPresentationTests: XCTestCase {
             )
         }
         XCTAssertTrue(
-            SessionListPresentation.shouldShowProjectIcon(
+            SessionListPresentation.startsSidebarProjectGroup(
                 for: missingProject,
                 previousSession: missingProject,
                 in: .running

@@ -546,6 +546,7 @@ struct SessionSidebarMonitorRow: View {
     let isSelected: Bool
     let isRecentlyCompleted: Bool
     let completionObservedAt: Date?
+    let showsStateMarker: Bool
     let projectIcon: WorkspaceProjectIconContent?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
 
@@ -553,8 +554,19 @@ struct SessionSidebarMonitorRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(spacing: 6) {
-            // 所有状态共用固定 leading 槽，终态用透明占位，刷新分组时标题不会横向跳动。
-            stateMarker(tokens: tokens)
+            // 所有状态共用固定 leading 槽；同项目后续行只隐藏视觉菊花，
+            // 仍保留“进行中”无障碍语义，同时避免标题横向跳动。
+            Group {
+                if showsStateMarker {
+                    stateMarker(tokens: tokens)
+                } else if kind == .running {
+                    Color.clear
+                        .accessibilityLabel(L10n.text("ui.in_progress"))
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+            }
                 .frame(width: 12, height: 12)
 
             Group {

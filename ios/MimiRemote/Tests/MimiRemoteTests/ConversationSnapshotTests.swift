@@ -1908,6 +1908,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         isSelected: false,
                         isRecentlyCompleted: false,
                         completionObservedAt: nil,
+                        showsStateMarker: true,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
@@ -1922,6 +1923,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         isSelected: true,
                         isRecentlyCompleted: false,
                         completionObservedAt: nil,
+                        showsStateMarker: true,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: RuntimeActivitySnapshot(
                             turnStartedAt: Date().addingTimeInterval(-12 * 60),
@@ -1939,6 +1941,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         isSelected: false,
                         isRecentlyCompleted: true,
                         completionObservedAt: completedObservedAt,
+                        showsStateMarker: true,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )

@@ -702,7 +702,7 @@ struct UnifiedWorkbenchShell: View {
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
-                            showsProjectIcon: SessionListPresentation.shouldShowProjectIcon(
+                            startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
                                 for: session,
                                 previousSession: index > 0 ? section.sessions[index - 1] : nil,
                                 in: section.kind
@@ -783,7 +783,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionLink(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectIcon: Bool,
+        startsProjectGroup: Bool,
         layout: WorkbenchLayout
     ) -> some View {
         Group {
@@ -794,7 +794,7 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectIcon: showsProjectIcon
+                        startsProjectGroup: startsProjectGroup
                     )
                         .contentShape(Rectangle())
                 }
@@ -809,7 +809,7 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectIcon: showsProjectIcon
+                        startsProjectGroup: startsProjectGroup
                     )
                 }
             }
@@ -824,7 +824,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionRow(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectIcon: Bool
+        startsProjectGroup: Bool
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
@@ -832,8 +832,10 @@ struct UnifiedWorkbenchShell: View {
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
             completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
-            // 同项目连续行只在首行画头像；Row 内的固定宽度占位保持标题对齐。
-            projectIcon: showsProjectIcon
+            // 运行组头同时承担状态和项目身份；后续同项目行隐藏两个标记，
+            // Row 内的固定宽度占位保持标题对齐。
+            showsStateMarker: kind != .running || startsProjectGroup,
+            projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]
                     ?? workspaceAppearanceStore.projectIconContent(
                         profileID: appStore.activeHostScope.profileID,
