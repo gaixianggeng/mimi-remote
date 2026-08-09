@@ -59,6 +59,12 @@ struct ConversationTimelineView: View {
             messages: messages
         )
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
+        let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
+            timelineItemsAreEmpty: timelineItems.isEmpty,
+            isHistoryLoading: isHistoryLoading,
+            isLoadingEarlierHistory: sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID),
+            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil
+        )
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 // 用 List 替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -93,6 +99,12 @@ struct ConversationTimelineView: View {
                                         KeyboardDismissal.dismiss()
                                     })
                                     .id(item.id)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(layout.messageRowInsets)
+                                    .listRowBackground(Color.clear)
+                            }
+                            if shouldShowInlineHistoryLoading {
+                                historyLoadingRow
                                     .listRowSeparator(.hidden)
                                     .listRowInsets(layout.messageRowInsets)
                                     .listRowBackground(Color.clear)
@@ -219,6 +231,30 @@ struct ConversationTimelineView: View {
                 if !isEmpty {
                     HostSwitchSignpost.event("first_text_visible")
                 }
+            }
+            .onChange(of: isHistoryLoading) { _, isLoading in
+                guard isLoading,
+                      shouldShowInlineHistoryLoading,
+                      !isUserScrollingTimeline,
+                      (isTimelineNearBottom
+                          || isTailFollowLocked
+                          || shouldFollowMessageTail
+                          || forceNextMessageTailScroll),
+                      !isPreservingHistoryScroll
+                else {
+                    return
+                }
+                // 加载行位于尾部哨兵之前；仅在用户原本贴底时重锚，避免它插入后落到屏幕外，
+                // 同时不抢走用户已经上翻的历史阅读位置。
+                queueTailScrollAttempts(
+                    timelineItems: timelineItems,
+                    proxy: proxy,
+                    sessionID: displayedSessionID,
+                    expectedTailItemID: timelineItems.last?.id,
+                    animatedFirstAttempt: false,
+                    force: true,
+                    retriesAfterLayout: false
+                )
             }
             .onChange(of: messages.last?.id) { _, newID in
                 guard newID != nil else {
@@ -697,6 +733,18 @@ struct ConversationTimelineView: View {
             isTimelineNearBottom
     }
 
+    static func shouldShowInlineHistoryLoading(
+        timelineItemsAreEmpty: Bool,
+        isHistoryLoading: Bool,
+        isLoadingEarlierHistory: Bool,
+        hasHistorySavingsNotice: Bool
+    ) -> Bool {
+        !timelineItemsAreEmpty
+            && isHistoryLoading
+            && !isLoadingEarlierHistory
+            && !hasHistorySavingsNotice
+    }
+
     private func loadEarlierRow(proxy: ScrollViewProxy, timelineItems: [ConversationTimelineItem]) -> some View {
         HStack {
             Spacer()
@@ -726,6 +774,29 @@ struct ConversationTimelineView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var historyLoadingRow: some View {
+        HStack {
+            HStack(alignment: .center, spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(workbenchSecondaryText)
+                Text(L10n.text("ui.loading_session_records"))
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(workbenchSecondaryText)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(statusChipBackground, in: Capsule())
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("conversation.historyLoading")
+        .accessibilityLabel(L10n.text("ui.loading_session_records"))
+        .allowsHitTesting(false)
     }
 
     private func isNearBottom(_ geometry: ScrollGeometry) -> Bool {

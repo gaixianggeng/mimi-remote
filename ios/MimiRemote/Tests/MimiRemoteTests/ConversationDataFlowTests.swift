@@ -501,6 +501,52 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: processSummary))
     }
 
+    func testConversationTimelineInlineHistoryLoadingConditions() {
+        XCTAssertTrue(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: false
+            )
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: true,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: false
+            ),
+            "空时间线由现有空状态 ProgressView 负责"
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: true,
+                hasHistorySavingsNotice: false
+            ),
+            "加载更早历史时只保留顶部按钮 spinner"
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: true
+            ),
+            "已有 savings notice 时不重复显示 inline 状态行"
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: false,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: false
+            )
+        )
+    }
+
     func testConversationTimelineDoesNotRescrollForEveryBatchedCommand() {
         let command = ConversationMessage(
             role: .system,

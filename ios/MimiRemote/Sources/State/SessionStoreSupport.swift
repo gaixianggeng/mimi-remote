@@ -278,6 +278,9 @@ struct HistoryLoadJob {
     /// 供 history_response_too_large 回退时决定下一级更小的 full 页。
     let fullTurnPageLimit: Int?
     let task: Task<HistoryFirstPageResult, Error>
+    /// 与 foreground reporting 解耦：quiet 会话也可能需要在现有消息尾部显示轻量进度。
+    /// 同一 job 被可见 waiter 加入后会提升为 true，并沿策略重试链传给替代 job。
+    var showsProgress: Bool
     var requiresForegroundReporting: Bool
     var foregroundSuccessStatusMessage: String?
     var foregroundSelectionLease: SessionSelectionLease?
