@@ -355,6 +355,11 @@ extension SessionStore {
         if session.isLocalDraft {
             return true
         }
+        // 普通自动/权威打开只需要 progress；savings 横幅应只在用户明确选择
+        // full/summary，或策略层已经确认需要降级/重试时出现。否则每次短暂的
+        // 首屏请求都会先暴露“正在加载完整历史”的决策卡片，再在成功时立即消失。
+        let shouldShowSavingsNotice = !quiet
+            && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
             return true
         }
@@ -385,7 +390,8 @@ extension SessionStore {
                         promoteHistoryLoadJobForForegroundReporting(
                             existing,
                             sessionID: session.id,
-                            successStatusMessage: successStatusMessage
+                            successStatusMessage: successStatusMessage,
+                            showSavingsNotice: shouldShowSavingsNotice
                         )
                         setHistoryLoadProgress(
                             sessionID: session.id,
@@ -451,7 +457,7 @@ extension SessionStore {
             foregroundSelectionLease: quiet ? nil : currentSelectionLease()
         )
         historyLoadJobsBySessionID[session.id] = job
-        if !quiet {
+        if shouldShowSavingsNotice {
             setHistoryLoadNotice(
                 sessionID: session.id,
                 kind: loadMode == .full ? .loadingFull : .loadingSummary,
@@ -479,7 +485,8 @@ extension SessionStore {
     func promoteHistoryLoadJobForForegroundReporting(
         _ job: HistoryLoadJob,
         sessionID: SessionID,
-        successStatusMessage: String?
+        successStatusMessage: String?,
+        showSavingsNotice: Bool
     ) {
         guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             return
@@ -490,11 +497,13 @@ extension SessionStore {
             current.foregroundSuccessStatusMessage = successStatusMessage
         }
         historyLoadJobsBySessionID[sessionID] = current
-        setHistoryLoadNotice(
-            sessionID: sessionID,
-            kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
-            message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
-        )
+        if showSavingsNotice {
+            setHistoryLoadNotice(
+                sessionID: sessionID,
+                kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
+                message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
+            )
+        }
     }
 
     func scheduleQuietHistoryRefresh(for session: AgentSession) {
