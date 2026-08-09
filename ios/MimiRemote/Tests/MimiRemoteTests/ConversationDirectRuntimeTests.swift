@@ -1365,6 +1365,87 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(turnID, "turn_stale_turn")
     }
 
+    // archive→unarchive 释放 writer 时，agentd 会用结构化 rejected 响应表示“本次 RPC
+    // 尚未转发”。resume 可以在 helper 内发送新请求；turn/start 则必须回到外层重新 resume，
+    // 避免同一旧 frame 与 executing handoff 重叠。生命周期通知也不能取消 pending resume。
+    func testDirectRuntimeRetriesStructuredThreadHandoffForResumeAndTurnStart() async throws {
+        let project = AgentProject(id: "proj_thread_handoff_retry", name: "Thread Handoff Retry", path: "/tmp/thread-handoff-retry")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            // 两次结构化拒绝（resume、turn/start）共用同一 outer 预算；若 helper 嵌套重试，
+            // 下面的请求顺序/次数断言会暴露额外 frame。
+            threadHandoffRetryDelaysNanoseconds: [0, 0],
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list", "thread/read", "thread/resume", "turn/start"]
+                )
+            }
+        )
+
+        let listTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: nil)
+        }
+        let transport = try await waitForFakeAppServerTransport(in: pool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        assertInitializeEnablesExperimentalAPI(initialize)
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490841,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}],"nextCursor":null}"#)
+        _ = try await listTask.value
+
+        let enqueueHandoffInProgress: (CodexAppServerRequestID) throws -> Void = { requestID in
+            transport.enqueue(#"{"id":\#(try jsonFragment(for: requestID)),"error":{"code":-32000,"message":"thread handoff in progress","data":{"accepted":false,"retryable":true,"reason":"thread_handoff_in_progress"}}}"#)
+        }
+
+        let startTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: "thr_thread_handoff_retry",
+                payload: CodexAppServerTurnPayload(prompt: "handoff 完成后继续"),
+                clientMessageID: "client_thread_handoff_retry"
+            )
+        }
+        let beforeResumeMessages = await transport.sentMessages()
+        let firstResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: beforeResumeMessages.count)
+        // 第一次拒绝期间真实 handoff 会先把 thread 标成 notLoaded；先注入生命周期通知，
+        // 再注入 rejected response，确保 pending resume task 真的经历这段交错。
+        transport.enqueue(#"{"method":"thread/status/changed","params":{"threadId":"thr_thread_handoff_retry","status":{"type":"notLoaded"}}}"#)
+        try enqueueHandoffInProgress(firstResume.id)
+        // 只从首个 resume 之后开始扫描，否则 helper 的第一次请求会被重复匹配。
+        let afterFirstResumeMessages = await transport.sentMessages()
+        let retryResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: afterFirstResumeMessages.count)
+        XCTAssertNotEqual(retryResume.id, firstResume.id)
+        transportResponse(transport, id: retryResume.id, result: #"{"thread":{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490842,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}}"#)
+
+        let beforeTurnMessages = await transport.sentMessages()
+        let firstTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: beforeTurnMessages.count)
+        // turn/start 的旧 frame 也被 handoff 拒绝；先让 thread/closed 到达，再回 rejected，
+        // 外层随后必须重新 resume，不能沿用旧 observation/binding。
+        transport.enqueue(#"{"method":"thread/closed","params":{"threadId":"thr_thread_handoff_retry"}}"#)
+        try enqueueHandoffInProgress(firstTurnStart.id)
+        let afterFirstTurnMessages = await transport.sentMessages()
+        let finalResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: afterFirstTurnMessages.count)
+        XCTAssertNotEqual(finalResume.id, firstResume.id)
+        XCTAssertNotEqual(finalResume.id, retryResume.id)
+        transportResponse(transport, id: finalResume.id, result: #"{"thread":{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490843,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}}"#)
+
+        let afterFinalResumeMessages = await transport.sentMessages()
+        let finalTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: afterFinalResumeMessages.count)
+        XCTAssertNotEqual(finalTurnStart.id, firstTurnStart.id)
+        transportResponse(transport, id: finalTurnStart.id, result: #"{"turn":{"id":"turn_thread_handoff_retry","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490843,"completedAt":null,"durationMs":null}}"#)
+
+        let outcome = try await startTask.value
+        XCTAssertEqual(outcome, .active(turnID: "turn_thread_handoff_retry"))
+        let sentMessages = await transport.sentMessages()
+        let sentRequests = sentMessages.compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(sentRequests.map(\.method), ["initialize", "thread/list", "thread/resume", "thread/resume", "turn/start", "thread/resume", "turn/start"])
+        XCTAssertEqual(sentRequests.filter { $0.method == "thread/resume" }.count, 3)
+        XCTAssertEqual(sentRequests.filter { $0.method == "turn/start" }.count, 2)
+    }
+
     func testDirectRuntimeDoesNotRetryNonStaleInvalidRequestError() async throws {
         let project = AgentProject(id: "proj_invalid_32600", name: "Invalid 32600", path: "/tmp/invalid-32600")
         let pool = FakeCodexAppServerTransportPool()

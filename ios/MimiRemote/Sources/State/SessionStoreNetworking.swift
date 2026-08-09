@@ -155,6 +155,7 @@ protocol SessionStoreAPIClient {
     func setThreadName(threadID: String, name: String) async throws
     func compactThread(threadID: String) async throws
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage
@@ -260,6 +261,12 @@ extension SessionStoreAPIClient {
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         throw AgentAPIError.invalidResponse
+    }
+
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        // 旧测试替身/非 app-server 客户端没有 writer handoff 能力；返回幂等结果，
+        // 让导航清理保持 best-effort，同时避免为每个替身引入无意义的 mock 改动。
+        ThreadHandoffResponse(threadID: threadID, status: .alreadyReleased)
     }
 
     func startReview(

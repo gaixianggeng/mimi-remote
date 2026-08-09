@@ -517,6 +517,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedSessionArchivesStorage: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
+    private(set) var requestedThreadHandoffs: [SessionID] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
@@ -1098,6 +1099,11 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func setThreadName(threadID: String, name: String) async throws {
         requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
+    }
+
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        requestedThreadHandoffs.append(threadID)
+        return ThreadHandoffResponse(threadID: threadID, status: .scheduled)
     }
 
     func startReview(

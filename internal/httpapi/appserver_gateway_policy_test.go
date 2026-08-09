@@ -941,7 +941,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		t.Fatalf("plugin/installed 不应开放安装建议：%+v", errFrame)
 	}
 
-	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"unknownFlag":true},` + dangerousTail + `}}`)
+	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"mimiThreadHandoff":true,"unknownFlag":true},` + dangerousTail + `}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
 	}

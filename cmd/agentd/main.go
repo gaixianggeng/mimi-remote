@@ -1021,6 +1021,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		return fmt.Errorf("解析 agentd 私有状态目录失败：%w", err)
 	}
 	gatewayTurnClaimStorePath := filepath.Join(configDir, "state", "gateway-turn-claims.json")
+	threadHandoffRecoveryStorePath := filepath.Join(configDir, "state", "thread-handoff-recovery.json")
 	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg,
 		registry,
@@ -1030,7 +1031,8 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		nil,
 		httpapi.RouterOptions{
-			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
+			GatewayTurnClaimStorePath:      gatewayTurnClaimStorePath,
+			ThreadHandoffRecoveryStorePath: threadHandoffRecoveryStorePath,
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()

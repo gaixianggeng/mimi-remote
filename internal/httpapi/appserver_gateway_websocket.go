@@ -31,7 +31,7 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	defer policy.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
 	go func() {
 		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
@@ -74,14 +74,14 @@ func pingGatewayConnections(ctx context.Context, client *websocket.Conn, upstrea
 	}
 }
 
-func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
 			return gatewayCloseReason("client_read", err)
 		}
 		policyStart := time.Now()
-		forwardPayload, policyErr := policy.validateClientFrame(messageType, payload)
+		forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)

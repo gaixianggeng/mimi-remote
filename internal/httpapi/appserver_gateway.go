@@ -231,8 +231,14 @@ type appServerGatewayPolicy struct {
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
 	globalListCursors     map[string]string
-	beforePendingRemember func()
-	beforeManagedComplete func()
+	// 旧版 iOS 不会在 auto-handoff 后清理本地 resume binding。只有显式声明
+	// 私有 capability 的新版客户端才能启用 turn/completed 自动交接。
+	threadHandoffCapable bool
+	// archive 广播与 closed/notLoaded 在不同 upstream 连接上的到达次序没有保证。
+	// 记录已确认由 coordinator 发起的 archive，直到对应 unarchive 到达。
+	threadHandoffLifecycle map[string]time.Time
+	beforePendingRemember  func()
+	beforeManagedComplete  func()
 }
 
 type appServerGatewayPendingThreadRequest struct {

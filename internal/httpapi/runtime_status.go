@@ -750,6 +750,9 @@ type runtimeWebSocketRPC struct {
 	conn          *websocket.Conn
 	nextID        int64
 	notifications []runtimeWebSocketNotification
+	// 状态探针需要保留通知供后续消费；handoff 只轮询单个 thread，丢弃其他
+	// thread 的广播可避免长时间等待用户输入时无界积累内存。
+	dropNotifications bool
 }
 
 type runtimeWebSocketFrame struct {
@@ -828,7 +831,7 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 				}); err != nil {
 					return err
 				}
-			} else {
+			} else if !c.dropNotifications {
 				c.notifications = append(c.notifications, runtimeWebSocketNotification{
 					Method: frame.Method,
 					Params: append(json.RawMessage(nil), frame.Params...),
