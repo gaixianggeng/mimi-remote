@@ -478,9 +478,9 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
         .workbenchSoftBottomScrollEdge()
-        // 原生搜索抽屉本身已经提供底部留白，抵消 List 额外的顶部边距，
-        // 让首个会话分组更贴近搜索框；宽屏顶栏搜索保持原有位置。
-        .contentMargins(.top, showsToolbarSearchField ? 0 : -24, for: .scrollContent)
+        // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
+        // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
+        .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
         .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(
@@ -1702,6 +1702,15 @@ struct SessionRenameSheet: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func sessionListNativeSearchTopMargin(isEnabled: Bool) -> some View {
+        if isEnabled {
+            contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            self
+        }
+    }
+
     @ViewBuilder
     func sessionListNativeSearchable(
         isEnabled: Bool,
