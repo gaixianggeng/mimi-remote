@@ -354,8 +354,10 @@ mod tests {
     #[test]
     fn merges_five_hour_and_weekly_windows_into_read_and_updated_snapshot() {
         let mut caches = ClaudeCaches::default();
-        caches.refresh_rate_limit(rate_limit_info("five_hour", Some(0.23)));
-        let infos = caches.refresh_rate_limit(rate_limit_info("seven_day", Some(0.57)));
+        let _ = caches.refresh_rate_limit(rate_limit_info("five_hour", Some(0.23)));
+        let infos = caches
+            .refresh_rate_limit(rate_limit_info("seven_day", Some(0.57)))
+            .expect("new weekly window should refresh the snapshot");
         let response = account_rate_limits_response(&infos);
         let snapshot = response.rate_limits;
 
@@ -370,6 +372,22 @@ mod tests {
         };
         assert_eq!(update.rate_limits.primary.unwrap().used_percent, Some(23));
         assert_eq!(update.rate_limits.secondary.unwrap().used_percent, Some(57));
+    }
+
+    #[test]
+    fn skips_duplicate_rate_limit_snapshot_broadcasts() {
+        let mut caches = ClaudeCaches::default();
+        let first = rate_limit_info("five_hour", Some(0.23));
+
+        assert!(caches.refresh_rate_limit(first.clone()).is_some());
+        assert!(caches.refresh_rate_limit(first).is_none());
+
+        // 状态或用量发生变化时仍要广播，保证额度状态不会变旧。
+        assert!(
+            caches
+                .refresh_rate_limit(rate_limit_info("five_hour", Some(0.24)))
+                .is_some()
+        );
     }
 
     #[test]

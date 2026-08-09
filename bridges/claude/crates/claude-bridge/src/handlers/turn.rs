@@ -968,11 +968,13 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                 args.state.refresh_init_cache(init.as_ref().clone());
             }
             ClaudeOutbound::RateLimitEvent(env) => {
-                let infos = args
+                if let Some(infos) = args
                     .state
-                    .refresh_rate_limit_cache(env.rate_limit_info.clone());
-                account_notifications
-                    .push(super::lifecycle::rate_limit_updated_notification(&infos));
+                    .refresh_rate_limit_cache(env.rate_limit_info.clone())
+                {
+                    account_notifications
+                        .push(super::lifecycle::rate_limit_updated_notification(&infos));
+                }
             }
             _ => {}
         }
