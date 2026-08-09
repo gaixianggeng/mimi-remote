@@ -84,6 +84,7 @@ fail_check("Nightly 必须保留 cancel-in-progress:false") unless concurrency["
 
 nightly_jobs = nightly.fetch("jobs")
 plan = nightly_jobs.fetch("plan")
+release_secrets = nightly_jobs.fetch("release-secrets-preflight")
 publish = nightly_jobs.fetch("publish")
 final = nightly_jobs.fetch("final")
 trust_index = step_index(plan, "Trust gate before deduplication API")
@@ -120,18 +121,52 @@ dedup_run = steps(plan).fetch(dedup_index).fetch("run")
 fail_check("Nightly plan 必须输出 source_sha/what_to_test/should_publish") unless
   %w[source_sha what_to_test should_publish].all? { |key| plan.dig("outputs", key).to_s.include?("steps.plan.outputs") }
 
+fail_check("Nightly 发布凭据预检必须在 plan 成功且确定需要发布后运行") unless
+  Array(release_secrets["needs"]) == ["plan"] &&
+  release_secrets["if"].to_s.include?("needs.plan.outputs.should_publish")
+fail_check("Nightly 发布凭据预检必须使用轻量 Ubuntu runner 和短超时") unless
+  release_secrets["runs-on"] == "ubuntu-latest" && release_secrets["timeout-minutes"] == 2
+secrets_step = step(release_secrets, "Require App Store signing secrets")
+required_release_secrets = %w[
+  ASC_KEY_ID
+  ASC_ISSUER_ID
+  ASC_PRIVATE_KEY
+  IOS_APPSTORE_PROVISIONING_PROFILE_BASE64
+  IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64
+  IOS_DISTRIBUTION_CERTIFICATE_BASE64
+  IOS_DISTRIBUTION_CERTIFICATE_PASSWORD
+  IOS_KEYCHAIN_PASSWORD
+]
+fail_check("Nightly 发布凭据预检的 Secret 集合不完整") unless
+  secrets_step.fetch("env").keys.sort == required_release_secrets.sort
+required_release_secrets.each do |name|
+  fail_check("Nightly 发布凭据预检没有读取 #{name}") unless
+    secrets_step.dig("env", name).to_s.include?("secrets.#{name}") &&
+    secrets_step.fetch("run").include?(name)
+end
+fail_check("Nightly 轻量预检不得解码或写出签名材料") if
+  secrets_step.fetch("run").match?(/\bsecurity\b|profileContent|\.p12|\.mobileprovision|\bbase64\s+(?:--decode|-d|-D|<)/i)
+fail_check("Nightly 发布凭据预检必须 fail-closed") unless
+  secrets_step.fetch("run").include?('[[ -n "${!secret_name}" ]]') &&
+  secrets_step.fetch("run").include?("exit 1")
+
 fail_check("Nightly publish 必须复用 ios-ci reusable workflow") unless
   publish["uses"] == "./.github/workflows/ios-ci.yml"
-fail_check("Nightly publish 必须等待 plan 且按 should_publish 条件执行") unless
-  Array(publish["needs"]) == ["plan"] && publish["if"].to_s.include?("needs.plan.outputs.should_publish")
+fail_check("Nightly publish 必须等待 plan 与发布凭据预检") unless
+  Array(publish["needs"]).sort == %w[plan release-secrets-preflight].sort
+fail_check("Nightly publish 必须只在需要发布且凭据预检成功时执行") unless
+  publish["if"].to_s.include?("needs.plan.outputs.should_publish") &&
+  publish["if"].to_s.include?("needs.release-secrets-preflight.result") &&
+  publish["if"].to_s.include?("success")
 publish_with = publish.fetch("with")
 fail_check("Nightly publish source_ref 必须来自 plan SHA") unless publish_with["source_ref"].to_s.include?("needs.plan.outputs.source_sha")
 fail_check("Nightly publish 必须显式启用 reusable TestFlight") unless publish_with["publish_internal_testflight"] == true
 fail_check("Nightly publish What to Test 必须来自 plan") unless publish_with["what_to_test"].to_s.include?("needs.plan.outputs.what_to_test")
 fail_check("Nightly publish 必须使用 secrets: inherit") unless publish["secrets"] == "inherit"
-fail_check("Nightly final 必须 always 聚合 plan 和 publish") unless
-  final["if"].to_s.include?("always()") && Array(final["needs"]).sort == %w[plan publish]
-%w[PLAN_RESULT PUBLISH_RESULT SHOULD_PUBLISH].each do |name|
+fail_check("Nightly final 必须 always 聚合 plan、发布凭据预检和 publish") unless
+  final["if"].to_s.include?("always()") &&
+  Array(final["needs"]).sort == %w[plan publish release-secrets-preflight].sort
+%w[PLAN_RESULT RELEASE_SECRETS_RESULT PUBLISH_RESULT SHOULD_PUBLISH].each do |name|
   fail_check("Nightly final 缺少 #{name} 结果判断") unless final.to_s.include?(name)
 end
 fail_check("Nightly skip 必须按成功结果收敛") unless final.to_s.include?("PUBLISH_RESULT" ) && final.to_s.include?("skipped")
@@ -234,6 +269,8 @@ self_test() {
   mutate_nightly 'value["workflow"] == "Nightly Internal TestFlight" &&' 'true &&'
   mutate_nightly '%w[schedule workflow_dispatch].include?(value["event"]) &&' 'true &&'
   mutate_nightly 'value["uploaded"] == true' 'true'
+  mutate_nightly 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}' 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}'
+  mutate_nightly "needs.release-secrets-preflight.result == 'success'" "true"
 
   cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("      inputs.publish_internal_testflight", "      (github.event_name == '\''workflow_call'\'' && inputs.publish_internal_testflight)"); File.write(p, s)' "$test_root/.github/workflows/ios-ci.yml"
@@ -244,7 +281,7 @@ self_test() {
   cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: attestation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
   expect_failure
-  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、evidence 绑定与 Release validation/attestation 漂移均能失败。"
+  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、evidence 绑定与 Release validation/attestation 漂移均能失败。"
 }
 
 case "${1:---check}" in
