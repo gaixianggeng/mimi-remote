@@ -478,6 +478,9 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
         .workbenchSoftBottomScrollEdge()
+        // 原生搜索抽屉本身已经提供底部留白，抵消 List 额外的顶部边距，
+        // 让首个会话分组更贴近搜索框；宽屏顶栏搜索保持原有位置。
+        .contentMargins(.top, showsToolbarSearchField ? 0 : -24, for: .scrollContent)
         .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(
