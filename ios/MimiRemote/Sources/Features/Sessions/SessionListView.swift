@@ -398,11 +398,18 @@ struct SessionListView: View {
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
-        // 紧凑导航需要给设备切换、搜索、筛选和新建留出同一排空间；
-        // 辅助功能字号也使用系统搜索按钮，避免完整输入框挤压常驻操作。
-        let usesInlineSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
+        // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号改用列表内搜索，避免系统
+        // toolbar 搜索展开时挤走常驻操作，也不再经历可被连续点击打断的搜索转场。
+        let showsToolbarSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
 
         List {
+            if !showsToolbarSearchField {
+                sessionSearchField(tokens: tokens, fillsAvailableWidth: true)
+                    .listRowInsets(.init(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+
             if hasActiveFilters {
                 activeFilterChip(tokens: tokens)
                     .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
@@ -493,14 +500,8 @@ struct SessionListView: View {
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .sessionListSystemSearchable(
-            isEnabled: !usesInlineSearchField,
-            text: $sessionStore.sessionSearchQuery,
-            prompt: Text(L10n.text("ui.search_session")),
-            tintColor: tokens.secondaryText
-        )
         .toolbar {
-            if usesInlineSearchField {
+            if showsToolbarSearchField {
                 if #available(iOS 26.0, *) {
                     ToolbarItem(placement: .topBarLeading) {
                         sessionSearchField(tokens: tokens)
@@ -542,7 +543,7 @@ struct SessionListView: View {
         }
     }
 
-    private func sessionSearchField(tokens: ThemeTokens) -> some View {
+    private func sessionSearchField(tokens: ThemeTokens, fillsAvailableWidth: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(themeStore.uiFont(size: 13, weight: .semibold))
@@ -564,7 +565,10 @@ struct SessionListView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(themeStore.uiFont(size: 13, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
-                        .frame(width: 28, height: 28)
+                        .frame(
+                            width: fillsAvailableWidth ? 44 : 28,
+                            height: fillsAvailableWidth ? 44 : 28
+                        )
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(tokens.tertiaryText)
@@ -572,8 +576,12 @@ struct SessionListView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 36)
-        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+        .frame(height: fillsAvailableWidth ? 44 : 36)
+        .frame(
+            minWidth: fillsAvailableWidth ? nil : 260,
+            idealWidth: fillsAvailableWidth ? nil : 360,
+            maxWidth: fillsAvailableWidth ? .infinity : 420
+        )
         .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1667,30 +1675,6 @@ struct SessionRenameSheet: View {
             if didRename {
                 dismiss()
             }
-        }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func sessionListSystemSearchable(
-        isEnabled: Bool,
-        text: Binding<String>,
-        prompt: Text,
-        tintColor: Color
-    ) -> some View {
-        if isEnabled {
-            if #available(iOS 26.0, *) {
-                searchable(text: text, placement: .toolbar, prompt: prompt)
-                    // iPhone、iPad mini 竖屏和辅助功能字号固定为单一放大镜入口。
-                    .searchToolbarBehavior(.minimize)
-                    .tint(tintColor)
-            } else {
-                searchable(text: text, placement: .toolbar, prompt: prompt)
-                    .tint(tintColor)
-            }
-        } else {
-            self
         }
     }
 }
