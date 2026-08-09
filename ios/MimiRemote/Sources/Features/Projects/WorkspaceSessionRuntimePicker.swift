@@ -54,6 +54,7 @@ struct WorkspaceRuntimePicker: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Namespace private var selectionNamespace
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
@@ -68,11 +69,19 @@ struct WorkspaceRuntimePicker: View {
 
                 Button {
                     guard isAvailable else { return }
-                    selection = choice
+                    if reduceMotion {
+                        selection = choice
+                    } else {
+                        // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
+                        withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
+                            selection = choice
+                        }
+                    }
                 } label: {
                     HStack(spacing: 6) {
                         Image(choice.brandAssetName)
                             .resizable()
+                            // 品牌资源是带自身底色的位图，模板着色会把整张画布染成方块。
                             .renderingMode(.original)
                             .scaledToFit()
                             .frame(width: 17, height: 17)
@@ -82,31 +91,44 @@ struct WorkspaceRuntimePicker: View {
                             .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    // 选中态同时使用主操作实色、前景色和字重；未选中项留在中性轨道内，
-                    // 不把颜色差异当作唯一状态线索。
+                    // 选中态使用品牌色文字和描边，不再与右侧“新建会话”争抢实色主操作层级。
                     .foregroundStyle(
                         isSelected
-                            ? tokens.primaryActionForeground
+                            ? tokens.primaryAction
                             : (isAvailable ? tokens.secondaryText : tokens.tertiaryText)
                     )
                     .opacity(
                         isSelected
                             ? 1
-                            : (isAvailable ? 0.60 : 0.42)
+                            : (isAvailable ? 0.78 : 0.52)
                     )
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 10)
                     .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
                     .contentShape(Rectangle())
                     .background {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(tokens.primaryAction)
-                        }
-                    }
-                    .overlay {
-                        if isSelected, colorSchemeContrast == .increased {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(tokens.primaryActionForeground, lineWidth: 1)
+                            let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            shape
+                                .fill(tokens.contentPanelBackground)
+                                .overlay {
+                                    shape.stroke(
+                                        tokens.primaryAction.opacity(
+                                            colorSchemeContrast == .increased ? 0.82 : 0.34
+                                        ),
+                                        lineWidth: colorSchemeContrast == .increased ? 1.25 : 0.75
+                                    )
+                                }
+                                .shadow(
+                                    color: tokens.primaryAction.opacity(
+                                        colorScheme == .dark ? 0.18 : 0.10
+                                    ),
+                                    radius: 2,
+                                    y: 1
+                                )
+                                .matchedGeometryEffect(
+                                    id: "workspace-runtime-selection",
+                                    in: selectionNamespace
+                                )
                         }
                     }
                 }
@@ -122,19 +144,20 @@ struct WorkspaceRuntimePicker: View {
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
             }
         }
-        .padding(2)
+        .padding(3)
         .background {
-            // 外轨保持中性，选中项才承载主操作色，减少运行时筛选器对会话内容的干扰。
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tokens.surface.opacity(0.72))
+            // 外轨只负责把两个选项映射为同一控件，保持中性并让内容层级更安静。
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(tokens.surface.opacity(colorScheme == .dark ? 0.82 : 0.72))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
-                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
+                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.64),
                     lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
                 )
         }
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")

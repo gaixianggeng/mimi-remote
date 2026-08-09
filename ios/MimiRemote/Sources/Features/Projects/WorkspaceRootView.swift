@@ -1430,7 +1430,7 @@ private enum WorkspaceSessionRowMetrics {
     static let railSpacing: CGFloat = 10
     /// 标准动态字体下两行内容加 10pt 上下留白约 60–64pt；大字体由文本自然撑开。
     static let minHeight: CGFloat = 60
-    static let cardSpacing: CGFloat = 8
+    static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
 }
 
 /// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
@@ -1494,6 +1494,17 @@ private enum WorkspaceSessionRailState {
         case .running:
             return tokens.success
         }
+    }
+}
+
+/// 分组面板只承担内容归组，不编码会话状态。这样长列表保留一块安静的阅读表面，
+/// 状态差异仍由行内导轨和文案表达，不会重新变成一排排漂浮卡片。
+private struct WorkspaceSessionGroupPanel: ViewModifier {
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        content
+            .workbenchSurface(tokens: tokens, role: .groupedPanel)
     }
 }
 
@@ -1603,7 +1614,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     }
 
     /// 需要处理 / 正在运行 / 最近会话三段保留标题与计数；
-    /// 分组本身只用 18pt 左右的留白区分，卡片之间再用 8pt 间距保持紧凑。
+    /// 每段使用一张整体卡片，12 小时边界再把“最近会话”拆成上下两张卡片。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(tokens: ThemeTokens) -> some View {
@@ -1668,11 +1679,53 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             )
             : nil
 
-        // 卡片是独立实色表面；组内用 8pt 空间取代 Divider，组间由外层 18pt 留白区分。
-        VStack(spacing: WorkspaceSessionRowMetrics.cardSpacing) {
+        if let firstStaleIndex {
+            let currentSessions = Array(sessions.prefix(firstStaleIndex))
+            let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
+
+            // 12 小时是信息分组边界，不是卡片内部的一条特殊 Divider。
+            // 边界两侧各自形成完整面板，避免时间标签切进白色内容表面。
+            VStack(alignment: .leading, spacing: 0) {
+                if !currentSessions.isEmpty {
+                    sessionGroupPanel(
+                        sessions: currentSessions,
+                        branchValues: branchValues,
+                        showsLoadMore: false,
+                        tokens: tokens
+                    )
+                }
+
+                twelveHourBoundary(tokens: tokens)
+
+                sessionGroupPanel(
+                    sessions: staleSessions,
+                    branchValues: branchValues,
+                    showsLoadMore: showsLoadMore,
+                    tokens: tokens
+                )
+            }
+        } else {
+            sessionGroupPanel(
+                sessions: sessions,
+                branchValues: branchValues,
+                showsLoadMore: showsLoadMore,
+                tokens: tokens
+            )
+        }
+    }
+
+    private func sessionGroupPanel(
+        sessions: [AgentSession],
+        branchValues: [String?],
+        showsLoadMore: Bool,
+        tokens: ThemeTokens
+    ) -> some View {
+        VStack(spacing: 0) {
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                if index == firstStaleIndex {
-                    twelveHourBoundary(tokens: tokens)
+                if index > 0 {
+                    Divider()
+                        .overlay(tokens.border.opacity(0.62))
+                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
                 }
 
                 Button {
@@ -1686,15 +1739,18 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .buttonStyle(.plain)
                 .sessionRowActions(session)
-                .workbenchSurface(tokens: tokens, role: .groupedPanel)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
             }
 
-            // 加载入口跟随当前最后一个可见分组；即使首屏全是待处理或运行会话，也能继续取回历史。
+            // 加载入口只跟随最后一张面板；12 小时边界存在时自然落在旧会话卡片底部。
             if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
+                Divider()
+                    .overlay(tokens.border.opacity(0.62))
+
                 loadMoreButton(tokens: tokens)
             }
         }
+        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
     }
 
     private func loadMoreButton(tokens: ThemeTokens) -> some View {
@@ -1785,7 +1841,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
 
     private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
         ZStack {
-            // 卡片之间仍保留 12 小时边界；它只占一条轻分隔线，不重新包住会话列表。
+            // 时间标签位于两张整体卡片之间，横线只帮助扫读，不穿过卡片表面。
             Rectangle()
                 .fill(tokens.border.opacity(0.62))
                 .frame(height: 0.5)
@@ -1794,19 +1850,19 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.horizontal, 8)
-                // 缺口与页面底色一致；上下卡片各自有独立表面，不应露出旧面板色块。
+                // 缺口与页面底色一致，确保标签明确悬在两张卡片之间。
                 .background(tokens.background)
                 .fixedSize()
         }
         .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .padding(.vertical, 3)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
     }
 
     private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
-        VStack(spacing: WorkspaceSessionRowMetrics.cardSpacing) {
-            ForEach(0..<3, id: \.self) { _ in
+        VStack(spacing: 0) {
+            ForEach(0..<3, id: \.self) { index in
                 HStack(spacing: WorkspaceSessionRowMetrics.railSpacing) {
                     Color.clear
                         .frame(width: WorkspaceSessionRowMetrics.railWidth)
@@ -1823,10 +1879,16 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
                 .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
-                .workbenchSurface(tokens: tokens, role: .groupedPanel)
+
+                if index < 2 {
+                    Divider()
+                        .overlay(tokens.border.opacity(0.62))
+                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
+                }
             }
         }
         .redacted(reason: .placeholder)
+        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
