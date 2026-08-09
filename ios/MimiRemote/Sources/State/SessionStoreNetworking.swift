@@ -6,6 +6,18 @@ enum AgentSessionForkReason: String, Hashable, Sendable {
     case duplicate = "duplicate"
 }
 
+extension SessionStore {
+    func releaseThreadWriterWhenIdleInBackground(_ threadID: SessionID) {
+        // 必须在进入后台清空 AppStore 凭据前抓住 client/runtime；否则异步 Task
+        // 才调用 clientFactory 时会看到空 Token，handoff 请求根本无法发出。
+        guard let client = try? clientFactory() else { return }
+        Task {
+            // 单独 unsubscribe 不会释放 writer；失败不应阻塞导航或后台挂起。
+            _ = try? await client.releaseThreadWriterWhenIdle(threadID: threadID)
+        }
+    }
+}
+
 // API 外观、网络状态源与事件批处理从 SessionStore 生命周期实现中解耦。
 enum NetworkReachabilityStatus: Equatable, Sendable {
     case unknown
