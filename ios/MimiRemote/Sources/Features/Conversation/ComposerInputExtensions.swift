@@ -208,14 +208,68 @@ extension ComposerView {
     // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，
     // 不改变“无需先点开开关即可操作”的默认形态。
     var composerContextControlsRow: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                skillPickerButton
-                permissionMenu
+        HStack(spacing: 8) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    skillPickerButton
+                    permissionMenu
+                }
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if canCollapseIPadComposer {
+                Button(action: collapseIPadComposer) {
+                    Image(systemName: "chevron.down")
+                        .font(themeStore.uiFont(.caption, weight: .bold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                .accessibilityLabel(L10n.text("ui.collapse_input_box"))
+                .accessibilityIdentifier("composer.collapse")
             }
         }
-        .scrollIndicators(.hidden)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// iPad 收起态是独立的一行卡片，不保留 iPad 完整 Composer 的工具栏。
+    /// 附件条位于外层 `body`，因此这里仅替换输入卡本身，不会清理附件状态。
+    func collapsedIPadComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        return Button(action: expandIPadComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .padding(8)
+        .frame(maxWidth: .infinity)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
+        .overlay {
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .tint(tokens.accent)
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedComposerText)
+        .accessibilityIdentifier("composer.expand")
     }
 
     var selectedVoiceInputProvider: VoiceInputProvider {
@@ -224,6 +278,14 @@ extension ComposerView {
 
     var isPhoneComposer: Bool {
         UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    var isIPadComposer: Bool {
+#if targetEnvironment(macCatalyst)
+        false
+#else
+        UIDevice.current.userInterfaceIdiom == .pad
+#endif
     }
 
     var canCollapsePhoneComposer: Bool {
@@ -237,18 +299,43 @@ extension ComposerView {
             activeSkillQuery == nil
     }
 
-    var usesCollapsedPhoneComposer: Bool {
-        isPhoneComposerCollapsed && canCollapsePhoneComposer
+    /// iPad 可保留附件并收起；正在录音、转写、等待语音确认或 Skill 自动完成时，
+    /// 必须继续展示完整编辑器，避免移除 UITextView 破坏进行中的输入上下文。
+    var canCollapseIPadComposer: Bool {
+        isIPadComposer &&
+            !composerState.voiceDraftNeedsReview &&
+            !isVoicePressActive &&
+            !voiceInput.isPreparing &&
+            !voiceInput.isRecording &&
+            !isVoiceTranscribing &&
+            activeSkillQuery == nil
     }
 
-    var collapsedPhoneComposerText: String {
+    var usesCollapsedPhoneComposer: Bool {
+        isComposerCollapsed && canCollapsePhoneComposer
+    }
+
+    var usesCollapsedIPadComposer: Bool {
+        isComposerCollapsed && canCollapseIPadComposer
+    }
+
+    var collapsedComposerText: String {
         let text = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? composerPlaceholderText : text
     }
 
     func expandPhoneComposer() {
         guard isPhoneComposer else { return }
-        isPhoneComposerCollapsed = false
+        expandComposer()
+    }
+
+    func expandIPadComposer() {
+        guard isIPadComposer else { return }
+        expandComposer()
+    }
+
+    func expandComposer() {
+        isComposerCollapsed = false
         // 焦点请求只服务于这一次“点开输入框”；UITextView 消费后会清空 token，
         // 后续因附件或语音状态重建完整输入框时不会再次误弹键盘。
         composerTextFocusRequestID = UUID()
@@ -256,12 +343,21 @@ extension ComposerView {
 
     func collapsePhoneComposer() {
         guard canCollapsePhoneComposer else { return }
+        collapseComposer()
+    }
+
+    func collapseIPadComposer() {
+        guard canCollapseIPadComposer else { return }
+        collapseComposer()
+    }
+
+    func collapseComposer() {
         // 先让输入法提交 marked text，再把最终文本同步回草稿；折叠只改变展示，不丢编辑状态。
         composerTextSubmitBridge.resignFirstResponder()
         synchronizeComposerTextBeforeDraftScopeChange()
         composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
         activeSkillQuery = nil
-        isPhoneComposerCollapsed = true
+        isComposerCollapsed = true
     }
 
     func collapsePhoneComposerAfterSubmit() {
@@ -270,7 +366,7 @@ extension ComposerView {
         composerTextExternalRevision += 1
         composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
         activeSkillQuery = nil
-        isPhoneComposerCollapsed = true
+        isComposerCollapsed = true
     }
 
     @ViewBuilder

@@ -84,6 +84,68 @@ extension ConversationDataFlowTests {
         XCTAssertGreaterThan(host.view.bounds.width, 0)
     }
 
+    func testIPadComposerDefaultsExpandedAndExplicitCollapseUsesSingleRow() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            throw XCTSkip("该布局回归仅在 iPad 目标上验证")
+        }
+
+        let defaultsSuite = "IPadComposerCollapseTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+
+        let conversationStore = ConversationStore()
+        let sessionStore = SessionStore(
+            appStore: AppStore(
+                defaults: defaults,
+                tokenStore: TokenStore(keychain: TestKeychainOperations())
+            ),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let session = makeSession(
+            id: "ipad-composer-collapse",
+            projectID: "ipad-composer-project",
+            title: "iPad Composer 收起回归",
+            status: SessionStatus.completed.rawValue,
+            source: "codex"
+        )
+        sessionStore.sessionsByID[session.id] = session
+        sessionStore.selectedSessionID = session.id
+        let themeStore = ThemeStore(defaults: defaults)
+
+        let measuredHeight: (Bool?) -> CGFloat = { initiallyCollapsed in
+            let host = UIHostingController(
+                rootView: AnyView(
+                    ComposerView(
+                        availableWidth: 900,
+                        initialComposerCollapsed: initiallyCollapsed
+                    )
+                    .environmentObject(sessionStore)
+                    .environmentObject(themeStore)
+                    .environment(\.horizontalSizeClass, .regular)
+                    .defaultAppStorage(defaults)
+                    .frame(width: 900)
+                )
+            )
+            host.view.frame = CGRect(x: 0, y: 0, width: 900, height: 1_000)
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            return host.sizeThatFits(in: CGSize(width: 900, height: 1_000)).height
+        }
+
+        // 两个独立 Host 避免 SwiftUI 在替换同类型根视图时复用上一棵树的 @State，
+        // 同时用 nil 覆盖生产默认值，确认 iPad 首次进入仍然保持展开。
+        let expandedHeight = measuredHeight(nil)
+        let collapsedHeight = measuredHeight(true)
+
+        XCTAssertGreaterThan(expandedHeight, collapsedHeight)
+        XCTAssertGreaterThanOrEqual(collapsedHeight, 60, "收起态必须保留 44pt 触控行和卡片内边距")
+        XCTAssertLessThanOrEqual(collapsedHeight, 72, "收起态加上 Composer 既有固定间距后仍只能占一行")
+    }
+
     func testComposerRetiredTextViewDropsLateInputMethodCallbacks() {
         var boundText = ""
         var focusRequestID: UUID?

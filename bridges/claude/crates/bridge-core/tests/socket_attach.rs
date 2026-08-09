@@ -142,20 +142,32 @@ async fn reattach_replays_frames_produced_while_disconnected() {
     let (mut read, _write, ack) = attach(&registry, "device-A", Some(cursor)).await;
     assert_eq!(ack["kind"], "resumed");
 
-    // Everything after the cursor comes back, contiguously and in order —
-    // including the response frame the client never got to read. Replay is
-    // over the whole outbound stream, not just notifications.
+    // Everything after the cursor comes back in order, except responses to the
+    // vanished client's own requests: those belong to continuations that died
+    // with the old stream, and the reattaching client numbers its requests from
+    // scratch, so replaying one answers whatever request happens to reuse that
+    // id. Seqs stay strictly increasing but may skip the dropped responses.
     let mut seqs = Vec::new();
     let replayed = loop {
         let frame: Value = read_json_line(&mut read).await.unwrap().unwrap();
+        assert!(
+            frame["method"].is_string(),
+            "a response frame must never be replayed: {frame}"
+        );
         seqs.push(frame["_alleycat_seq"].as_u64().unwrap());
         if frame["params"]["from"] == "while-detached" {
             break frame;
         }
     };
     assert_eq!(replayed["method"], "event");
-    let expected: Vec<u64> = (cursor + 1..=cursor + seqs.len() as u64).collect();
-    assert_eq!(seqs, expected, "replay must have no gaps after the cursor");
+    assert!(
+        seqs.first().is_some_and(|first| *first > cursor),
+        "replay must start after the cursor: {seqs:?}"
+    );
+    assert!(
+        seqs.windows(2).all(|pair| pair[0] < pair[1]),
+        "replay must stay in order: {seqs:?}"
+    );
 }
 
 #[tokio::test]
