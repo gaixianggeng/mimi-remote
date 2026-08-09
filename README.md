@@ -379,28 +379,20 @@ The app rejects public HTTP endpoints at the application layer and is designed f
 
 ## Development checks
 
-Run the checks appropriate to the area you changed:
+Preview the checks selected from committed, staged, unstaged, and untracked changes, then run the quick tier once before pushing:
 
 ```bash
-go test ./... -count=1
-go vet ./...
-bash ./scripts/check-codex-protocol.sh
-bash ./scripts/check-ios-localization.sh
-bash ./scripts/check-public-repo-safety.sh
-bash ./scripts/check-third-party-notices.sh
-bash ./scripts/check-ios-privacy-manifest.sh
-bash ./scripts/restart-agentd-dev-macos.sh --self-test
-bash ./scripts/verify-release.sh
+bash ./scripts/verify-change.sh --plan
+bash ./scripts/verify-change.sh
 ```
 
-For bridge work:
+The quick tier skips language builds for documentation and control-plane-only changes, tests only directly affected stacks, and defers broad regression to PR Gate. Use the full tier for cross-module, protocol, release, or other explicitly high-risk changes:
 
 ```bash
-cargo test --locked \
-  -p alleycat-codex-proto \
-  -p alleycat-bridge-core \
-  -p alleycat-claude-bridge
+bash ./scripts/verify-change.sh --full
 ```
+
+Physical-device validation is reserved for camera, notifications, Keychain, Tailscale/poor-network behavior, performance, and release checks. See [CONTRIBUTING.md](CONTRIBUTING.md) for the tier rules and targeted troubleshooting commands.
 
 ## Repository layout
 
