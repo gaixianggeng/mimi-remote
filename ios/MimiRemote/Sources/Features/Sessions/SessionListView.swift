@@ -398,18 +398,11 @@ struct SessionListView: View {
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
-        // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号改用列表内搜索，避免系统
-        // toolbar 搜索展开时挤走常驻操作，也不再经历可被连续点击打断的搜索转场。
+        // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号使用 navigationBarDrawer
+        // 的完整原生搜索框，避免 toolbar 最小化搜索挤走操作和反复展开转场。
         let showsToolbarSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
 
         List {
-            if !showsToolbarSearchField {
-                sessionSearchField(tokens: tokens, fillsAvailableWidth: true)
-                    .listRowInsets(.init(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-
             if hasActiveFilters {
                 activeFilterChip(tokens: tokens)
                     .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
@@ -486,6 +479,14 @@ struct SessionListView: View {
         .background(tokens.background.ignoresSafeArea())
         .workbenchSoftBottomScrollEdge()
         .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // 原生 navigationBarDrawer 和宽屏顶栏搜索都位于 List 外；列表内任意点击
+                // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
+                dismissSessionSearchKeyboard()
+            }
+        )
         .focusable()
         .focused($hasListKeyboardFocus)
         .onKeyPress(keys: [.upArrow, .downArrow, .return]) { keyPress in
@@ -500,6 +501,13 @@ struct SessionListView: View {
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .sessionListNativeSearchable(
+            isEnabled: !showsToolbarSearchField,
+            text: $sessionStore.sessionSearchQuery,
+            prompt: Text(L10n.text("ui.search_session")),
+            tintColor: tokens.secondaryText,
+            onSubmit: dismissSessionSearchKeyboard
+        )
         .toolbar {
             if showsToolbarSearchField {
                 if #available(iOS 26.0, *) {
@@ -520,6 +528,9 @@ struct SessionListView: View {
                         presentation: .toolbar,
                         manageConnections: manageConnections
                     )
+                    .simultaneousGesture(
+                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                    )
                 }
                 // iOS 26+ 用固定间隔拆分玻璃组；旧系统依靠普通工具栏布局即可。
                 if #available(iOS 26.0, *) {
@@ -529,6 +540,9 @@ struct SessionListView: View {
             // 筛选、刷新合入同一个菜单；加号保持独立，常驻圆形工具按钮固定为两个。
             ToolbarItem(placement: .topBarTrailing) {
                 filterMenu(tokens: tokens)
+                    .simultaneousGesture(
+                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                    )
             }
             newSessionToolbarItem(tokens: tokens)
         }
@@ -543,7 +557,7 @@ struct SessionListView: View {
         }
     }
 
-    private func sessionSearchField(tokens: ThemeTokens, fillsAvailableWidth: Bool = false) -> some View {
+    private func sessionSearchField(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(themeStore.uiFont(size: 13, weight: .semibold))
@@ -555,6 +569,7 @@ struct SessionListView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
+                .onSubmit { dismissSessionSearchKeyboard() }
                 .lineLimit(1)
                 .accessibilityIdentifier("sessions.search")
 
@@ -565,10 +580,7 @@ struct SessionListView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(themeStore.uiFont(size: 13, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
-                        .frame(
-                            width: fillsAvailableWidth ? 44 : 28,
-                            height: fillsAvailableWidth ? 44 : 28
-                        )
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(tokens.tertiaryText)
@@ -576,12 +588,8 @@ struct SessionListView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: fillsAvailableWidth ? 44 : 36)
-        .frame(
-            minWidth: fillsAvailableWidth ? nil : 260,
-            idealWidth: fillsAvailableWidth ? nil : 360,
-            maxWidth: fillsAvailableWidth ? .infinity : 420
-        )
+        .frame(height: 36)
+        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
         .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -891,6 +899,7 @@ struct SessionListView: View {
                 )
 
             Button {
+                dismissSessionSearchKeyboard()
                 keyboardSelectionID = nil
                 select(session)
             } label: {
@@ -1088,6 +1097,7 @@ struct SessionListView: View {
     }
 
     private func presentNewSession(source: NewSessionPresentationSource?) {
+        dismissSessionSearchKeyboard()
         if let onNewSession {
             onNewSession(source)
         } else {
@@ -1101,6 +1111,15 @@ struct SessionListView: View {
         } else {
             Task { await sessionStore.selectSession(session) }
         }
+    }
+
+    private func dismissSessionSearchKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }
 
@@ -1675,6 +1694,30 @@ struct SessionRenameSheet: View {
             if didRename {
                 dismiss()
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func sessionListNativeSearchable(
+        isEnabled: Bool,
+        text: Binding<String>,
+        prompt: Text,
+        tintColor: Color,
+        onSubmit: @escaping () -> Void
+    ) -> some View {
+        if isEnabled {
+            searchable(
+                text: text,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: prompt
+            )
+            // 紧凑布局保留完整的系统搜索框，不再缩成会触发展开转场的第三个工具按钮。
+            .tint(tintColor)
+            .onSubmit(of: .search, onSubmit)
+        } else {
+            self
         }
     }
 }
