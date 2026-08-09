@@ -175,10 +175,52 @@ jobs:
             echo "what_to_test=$what_to_test"
           } >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Upload Nightly Internal TestFlight
+  release-secrets-preflight:
+    name: Verify Nightly release secrets
     needs: plan
     if: needs.plan.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # plan 已先确认 official repo、最新 main 与 immutable SHA；这里只检查
+      # 发布配置是否齐全，避免缺失 Secret 时仍启动昂贵的 macOS 回归。
+      - name: Require App Store signing secrets
+        shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for secret_name in \
+            ASC_KEY_ID \
+            ASC_ISSUER_ID \
+            ASC_PRIVATE_KEY \
+            IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
+            IOS_KEYCHAIN_PASSWORD; do
+            [[ -n "${!secret_name}" ]] || {
+              echo "Required GitHub Actions secret is empty: $secret_name" >&2
+              exit 1
+            }
+          done
+          echo "Nightly release secrets are configured."
+
+  publish:
+    name: Upload Nightly Internal TestFlight
+    needs:
+      - plan
+      - release-secrets-preflight
+    if: >-
+      needs.plan.outputs.should_publish == 'true' &&
+      needs.release-secrets-preflight.result == 'success'
     uses: ./.github/workflows/ios-ci.yml
     with:
       source_ref: ${{ needs.plan.outputs.source_sha }}
@@ -191,6 +233,7 @@ jobs:
     if: always()
     needs:
       - plan
+      - release-secrets-preflight
       - publish
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -199,6 +242,7 @@ jobs:
         shell: bash
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
+          RELEASE_SECRETS_RESULT: ${{ needs.release-secrets-preflight.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           SHOULD_PUBLISH: ${{ needs.plan.outputs.should_publish }}
         run: |
@@ -207,9 +251,13 @@ jobs:
           [[ "$PLAN_RESULT" == "success" ]] \
             || { echo "Nightly plan 失败，拒绝标记成功。" >&2; exit 1; }
           if [[ "$SHOULD_PUBLISH" == "true" ]]; then
+            [[ "$RELEASE_SECRETS_RESULT" == "success" ]] \
+              || { echo "Nightly 发布凭据预检失败，拒绝启动 iOS 回归与上传。" >&2; exit 1; }
             [[ "$PUBLISH_RESULT" == "success" ]] \
               || { echo "Nightly 应发布但 Internal TestFlight 未成功。" >&2; exit 1; }
           else
+            [[ "$RELEASE_SECRETS_RESULT" == "skipped" ]] \
+              || { echo "Nightly 去重分支不得执行发布凭据预检。" >&2; exit 1; }
             [[ "$PUBLISH_RESULT" == "skipped" ]] \
               || { echo "Nightly 去重分支必须保持成功且 publish skipped。" >&2; exit 1; }
           fi
