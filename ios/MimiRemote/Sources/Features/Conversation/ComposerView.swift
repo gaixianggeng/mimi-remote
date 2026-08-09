@@ -55,7 +55,8 @@ struct ComposerView: View {
     @State var isComposerTextComposing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @State var composerTextFocusRequestID: UUID?
-    @State var isPhoneComposerCollapsed: Bool
+    // iPhone 默认收起；iPad 默认保持展开，只有用户点击收起按钮才会置为 true。
+    @State var isComposerCollapsed: Bool
     @State var activeSkillQuery: ComposerSkillQuery?
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
@@ -68,11 +69,17 @@ struct ComposerView: View {
 
     var availableWidth: CGFloat?
 
-    init(availableWidth: CGFloat? = nil, initialGoalStatusExpanded: Bool = false) {
+    init(
+        availableWidth: CGFloat? = nil,
+        initialGoalStatusExpanded: Bool = false,
+        initialComposerCollapsed: Bool? = nil
+    ) {
         self.availableWidth = availableWidth
         _isGoalStatusExpanded = State(initialValue: initialGoalStatusExpanded)
         // iPhone 首屏优先让出回复阅读空间；iPad 继续保留完整输入画布。
-        _isPhoneComposerCollapsed = State(initialValue: UIDevice.current.userInterfaceIdiom == .phone)
+        _isComposerCollapsed = State(
+            initialValue: initialComposerCollapsed ?? (UIDevice.current.userInterfaceIdiom == .phone)
+        )
     }
 
     static let minimumUsableVoiceDuration: TimeInterval = 0.35
@@ -467,8 +474,10 @@ struct ComposerView: View {
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
+        // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动收起，
+        // 发送后也不走 phone-only 的 collapsePhoneComposerAfterSubmit，避免输入区突然消失。
         if isPhoneComposer {
-            isPhoneComposerCollapsed = true
+            isComposerCollapsed = true
         }
     }
 
@@ -880,12 +889,17 @@ struct ComposerView: View {
         Group {
             if isPhoneComposer {
                 phoneComposerCard(tokens: tokens)
+            } else if usesCollapsedIPadComposer {
+                collapsedIPadComposerCard(tokens: tokens)
             } else {
                 composerCard(tokens: tokens)
             }
         }
         .layoutPriority(1)
-        .animation(composerMotionAnimation, value: usesCollapsedPhoneComposer)
+        .animation(
+            composerMotionAnimation,
+            value: usesCollapsedPhoneComposer || usesCollapsedIPadComposer
+        )
     }
 
     /// iPhone 的收起态和编辑态共用同一个卡片与工具栏。过去在两棵完整 View 树之间
@@ -923,7 +937,7 @@ struct ComposerView: View {
     func collapsedPhoneComposerContent(tokens: ThemeTokens) -> some View {
         Button(action: expandPhoneComposer) {
             HStack(spacing: 8) {
-                Text(collapsedPhoneComposerText)
+                Text(collapsedComposerText)
                     .font(themeStore.uiFont(.body))
                     .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
                     .lineLimit(1)
@@ -940,7 +954,45 @@ struct ComposerView: View {
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.expand_input_box"))
-        .accessibilityValue(collapsedPhoneComposerText)
+        .accessibilityValue(collapsedComposerText)
+        .accessibilityIdentifier("composer.expand")
+    }
+
+    /// iPad 收起态是独立的一行卡片，不保留 iPad 完整 Composer 的工具栏。
+    /// 附件条位于外层 `body`，因此这里仅替换输入卡本身，不会清理附件状态。
+    func collapsedIPadComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        return Button(action: expandIPadComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .padding(8)
+        .frame(maxWidth: .infinity)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
+        .overlay {
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .tint(tokens.accent)
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedComposerText)
         .accessibilityIdentifier("composer.expand")
     }
 
