@@ -1,0 +1,44 @@
+name: Mac App CI
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+    paths:
+      - "macos/MimiRemoteMac/**"
+      - "scripts/test-macos-app.sh"
+      - ".github/workflows/macos-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          go version
+          rustc --version
+
+      - name: Build and test Mac App
+        env:
+          MACOS_DERIVED_DATA_PATH: ${{ runner.temp }}/MimiRemoteMacDerivedData
+        run: bash ./scripts/test-macos-app.sh

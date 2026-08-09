@@ -664,10 +664,13 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
-        let sections = sidebarMonitorSections
-        let projectAnchorSessionIDs = SessionListPresentation.sidebarProjectAnchorSessionIDs(
-            in: sections
-        )
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            sidebarListContent(tokens: tokens, layout: layout, now: context.date)
+        }
+    }
+
+    private func sidebarListContent(tokens: ThemeTokens, layout: WorkbenchLayout, now: Date) -> some View {
+        let sections = sidebarMonitorSections(now: now)
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -689,11 +692,16 @@ struct UnifiedWorkbenchShell: View {
 
             ForEach(sections) { section in
                 Section {
-                    ForEach(section.sessions) { session in
+                    // index 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
+                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
-                            showsProjectAnchor: projectAnchorSessionIDs.contains(session.id),
+                            startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
+                                for: session,
+                                previousSession: index > 0 ? section.sessions[index - 1] : nil,
+                                in: section.kind
+                            ),
                             layout: layout
                         )
                     }
@@ -770,7 +778,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionLink(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool,
+        startsProjectGroup: Bool,
         layout: WorkbenchLayout
     ) -> some View {
         Group {
@@ -781,7 +789,7 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        startsProjectGroup: startsProjectGroup
                     )
                         .contentShape(Rectangle())
                 }
@@ -796,16 +804,11 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        startsProjectGroup: startsProjectGroup
                     )
                 }
             }
         }
-        .accessibilityValue(
-            sessionStore.isHistorySessionUnread(session)
-                ? L10n.text("ui.unread_result")
-                : ""
-        )
         .sessionRowActions(session)
         .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -816,14 +819,17 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionRow(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool
+        startsProjectGroup: Bool
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
             kind: kind,
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
-            projectIcon: showsProjectAnchor
+            completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
+            // 运行组头承担状态和项目身份；后续同项目行隐藏标记，Row 固定占位保持标题对齐。
+            showsStateMarker: kind != .running || startsProjectGroup,
+            projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]
                     ?? workspaceAppearanceStore.projectIconContent(
                         profileID: appStore.activeHostScope.profileID,
@@ -834,14 +840,15 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private var sidebarMonitorSections: [SessionSidebarSection] {
+    private func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
         let chronologicallySortedSessions = sessionStore.sortedAllSessions.isEmpty
             ? SessionStore.sortedSessions(sessionStore.sessionLibrarySessions)
             : sessionStore.sortedAllSessions
         return SessionListPresentation.sidebarSections(
             sessions: chronologicallySortedSessions,
             pinnedIDs: sessionStore.pinnedSessionIDs,
-            unreadIDs: sessionStore.unreadHistorySessionIDs
+            completionObservedAtByID: sessionStore.historyCompletionObservedAtBySessionID,
+            now: now
         )
     }
 

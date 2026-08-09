@@ -81,6 +81,7 @@ if [[ "$run_all" -eq 1 ]]; then
   go_scope=true
   ios_scope=true
   rust_scope=true
+  macos_scope=true
   path_count="all"
 else
   if [[ -n "$paths_file" ]]; then
@@ -101,6 +102,7 @@ else
   go_scope=false
   ios_scope=false
   rust_scope=false
+  macos_scope=false
   path_count=0
 
   while IFS= read -r -d '' changed_path; do
@@ -113,12 +115,13 @@ else
         go_scope=true
         ios_scope=true
         rust_scope=true
+        macos_scope=true
         continue
         ;;
     esac
 
     case "$changed_path" in
-      *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
+      *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
         go_scope=true
         ;;
       scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux.sh|scripts/test-install-linux.sh|scripts/package-skill.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
@@ -146,14 +149,21 @@ else
         rust_scope=true
         ;;
     esac
+
+    case "$changed_path" in
+      macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|scripts/test-macos-app.sh)
+        macos_scope=true
+        ;;
+    esac
   done < "$resolved_paths_file"
 fi
 
 output="$(
-  printf 'go=%s\nios=%s\nrust=%s\n' \
+  printf 'go=%s\nios=%s\nrust=%s\nmacos=%s\n' \
     "$go_scope" \
     "$ios_scope" \
-    "$rust_scope"
+    "$rust_scope" \
+    "$macos_scope"
 )"
 printf '%s\n' "$output"
 
@@ -169,6 +179,7 @@ if [[ -n "$summary_file" ]]; then
     echo "- Go and release: \`$go_scope\`"
     echo "- iOS: \`$ios_scope\`"
     echo "- Rust bridge: \`$rust_scope\`"
+    echo "- Mac App: \`$macos_scope\`"
     echo "- Codex protocol and repository safety: \`always\`"
   } >> "$summary_file"
 fi

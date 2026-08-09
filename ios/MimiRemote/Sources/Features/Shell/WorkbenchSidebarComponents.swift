@@ -545,6 +545,8 @@ struct SessionSidebarMonitorRow: View {
     let kind: SessionSidebarSectionKind
     let isSelected: Bool
     let isRecentlyCompleted: Bool
+    let completionObservedAt: Date?
+    var showsStateMarker: Bool = true
     let projectIcon: WorkspaceProjectIconContent?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
 
@@ -552,15 +554,30 @@ struct SessionSidebarMonitorRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(spacing: 6) {
-            if kind == .needYou || kind == .running {
-                // 等待与运行是需要立即扫到的进行态，继续占据 leading 状态槽。
-                stateMarker(tokens: tokens)
-                    .frame(width: 12, height: 12)
+            // 所有状态共用固定 leading 槽；同项目后续行只隐藏视觉菊花，
+            // 仍保留“进行中”无障碍语义，同时避免标题横向跳动。
+            Group {
+                if showsStateMarker {
+                    stateMarker(tokens: tokens)
+                } else if kind == .running {
+                    Color.clear
+                        .accessibilityLabel(L10n.text("ui.in_progress"))
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
             }
+                .frame(width: 12, height: 12)
 
-            if let projectIcon {
-                WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+            Group {
+                if let projectIcon {
+                    WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
             }
+            .frame(width: 18, height: 18)
 
             Text(SessionListPresentation.titleDisplayText(for: session))
                 .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
@@ -571,13 +588,6 @@ struct SessionSidebarMonitorRow: View {
 
             Spacer(minLength: 4)
             detail(tokens: tokens)
-
-            if kind == .justCompleted {
-                // 完成未读属于“待查看结果”，跟随相对时间放在整行 trailing，
-                // 不再与需要处理 / 正在运行的 leading 状态混在一起。
-                SessionUnreadIndicator()
-                    .frame(width: 12, height: 12)
-            }
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -640,7 +650,13 @@ struct SessionSidebarMonitorRow: View {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     Text(runningDuration(at: context.date))
                 }
-            case .justCompleted, .pinned, .recent:
+            case .justCompleted:
+                if let date = completionObservedAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(compactRelativeDuration(from: date, to: context.date))
+                    }
+                }
+            case .pinned, .recent:
                 if let date = session.recencyAt ?? session.updatedAt ?? session.createdAt {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(compactRelativeDuration(from: date, to: context.date))

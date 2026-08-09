@@ -13456,7 +13456,7 @@
       }
     },
     "ui.just_completed": {
-      "comment": "Sidebar section for unread sessions that have just reached a terminal state.",
+      "comment": "Sidebar section for sessions whose terminal transition was observed inside the short just-completed window.",
       "extractionState": "manual",
       "localizations": {
         "en": {

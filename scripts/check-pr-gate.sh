@@ -18,7 +18,8 @@ bash -n \
   scripts/ci-pr-scope.sh \
   scripts/check-critical-regressions.sh \
   scripts/check-nightly-release.sh \
-  scripts/check-pr-gate.sh
+  scripts/check-pr-gate.sh \
+  scripts/test-macos-app.sh
 
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
@@ -31,7 +32,8 @@ assert_scope() {
   local expected_go="$2"
   local expected_ios="$3"
   local expected_rust="$4"
-  shift 4
+  local expected_macos="$5"
+  shift 5
 
   local paths_path="$test_root/${case_name}.paths"
   local output_path="$test_root/${case_name}.output"
@@ -44,28 +46,32 @@ assert_scope() {
     || fail "${case_name} 的 iOS 分类错误。"
   grep -Fqx "rust=$expected_rust" "$output_path" \
     || fail "${case_name} 的 Rust 分类错误。"
+  grep -Fqx "macos=$expected_macos" "$output_path" \
+    || fail "${case_name} 的 Mac App 分类错误。"
 }
 
-assert_scope go_only true false false internal/httpapi/router.go
-assert_scope ios_only false true false ios/MimiRemote/Sources/App/MimiRemoteApp.swift
-assert_scope rust_only false false true bridges/claude/crates/claude-bridge/src/main.rs
-assert_scope release true false false scripts/check-release-artifacts.sh
-assert_scope windows_release true false false scripts/build-windows-installer.ps1
-assert_scope ios_release false true false scripts/ios_testflight_ci.sh
-assert_scope ios_asc_pin false true false config/release/ios-asc-cli.env
-assert_scope ios_asc_test false true false scripts/test-ios-asc-cli.sh
-assert_scope mimi_contract true true false contracts/mimi-protocol/contract.json
-assert_scope mimi_contract_generator true true false internal/protocolcontract/cmd/generate/main.go
-assert_scope critical_runner true true false scripts/test-conversation-regressions.sh
-assert_scope critical_checker true true false scripts/check-critical-regressions.sh
-assert_scope nightly_checker true true false scripts/check-nightly-release.sh
-assert_scope nightly_docs true true false docs/nightly-release.md
-assert_scope ios_device_lease false true false scripts/ios-device-lease.sh
-assert_scope ios_device_management false true false scripts/test-ios-device-management.sh
-assert_scope ios_device_fixture false true false scripts/testdata/ios-device-management/simulators.json
-assert_scope docs_only false false false CONTRIBUTING.md
-assert_scope workflow true true true .github/workflows/pr-gate.yml
-assert_scope mixed true true true \
+assert_scope go_only true false false false internal/httpapi/router.go
+assert_scope ios_only false true false false ios/MimiRemote/Sources/App/MimiRemoteApp.swift
+assert_scope rust_only false false true false bridges/claude/crates/claude-bridge/src/main.rs
+assert_scope macos_only false false false true macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift
+assert_scope macos_runner false false false true scripts/test-macos-app.sh
+assert_scope release true false false false scripts/check-release-artifacts.sh
+assert_scope windows_release true false false false scripts/build-windows-installer.ps1
+assert_scope ios_release false true false false scripts/ios_testflight_ci.sh
+assert_scope ios_asc_pin false true false false config/release/ios-asc-cli.env
+assert_scope ios_asc_test false true false false scripts/test-ios-asc-cli.sh
+assert_scope mimi_contract true true false false contracts/mimi-protocol/contract.json
+assert_scope mimi_contract_generator true true false false internal/protocolcontract/cmd/generate/main.go
+assert_scope critical_runner true true false false scripts/test-conversation-regressions.sh
+assert_scope critical_checker true true false false scripts/check-critical-regressions.sh
+assert_scope nightly_checker true true false false scripts/check-nightly-release.sh
+assert_scope nightly_docs true true false false docs/nightly-release.md
+assert_scope ios_device_lease false true false false scripts/ios-device-lease.sh
+assert_scope ios_device_management false true false false scripts/test-ios-device-management.sh
+assert_scope ios_device_fixture false true false false scripts/testdata/ios-device-management/simulators.json
+assert_scope docs_only false false false false CONTRIBUTING.md
+assert_scope workflow true true true true .github/workflows/pr-gate.yml
+assert_scope mixed true true true false \
   cmd/agentd/main.go \
   ios/MimiRemote/project.yml \
   Cargo.lock
@@ -106,12 +112,27 @@ expected_calls = {
   "go" => "./.github/workflows/go-ci.yml",
   "ios" => "./.github/workflows/ios-ci.yml",
   "rust" => "./.github/workflows/claude-bridge-ci.yml",
+  "macos" => "./.github/workflows/macos-ci.yml",
 }
 jobs = gate.fetch("jobs")
+scope_job = jobs.fetch("scope")
+expected_scope_outputs = %w[go ios rust macos]
+unless scope_job.fetch("outputs").keys.sort == expected_scope_outputs.sort
+  abort("PR Gate 自检失败：Change scope 输出集合不完整。")
+end
+expected_scope_outputs.each do |name|
+  unless scope_job.dig("outputs", name).to_s.include?("steps.scope.outputs.#{name}")
+    abort("PR Gate 自检失败：Change scope 没有透传 #{name} 输出。")
+  end
+end
+
 expected_calls.each do |job_id, workflow_path|
   unless jobs.dig(job_id, "uses") == workflow_path
     abort("PR Gate 自检失败：#{job_id} 没有调用 #{workflow_path}。")
   end
+end
+unless jobs.dig("macos", "if").to_s.include?("needs.scope.outputs.macos")
+  abort("PR Gate 自检失败：Mac App job 没有按 macos scope 执行。")
 end
 
 final_gate = jobs.fetch("gate")
@@ -119,9 +140,36 @@ abort("PR Gate 自检失败：最终 check 名称必须为 PR Gate。") unless f
 unless final_gate["if"].to_s.include?("always()")
   abort("PR Gate 自检失败：最终聚合 job 必须在上游失败或跳过时仍执行。")
 end
-expected_needs = %w[scope codex-protocol repository-safety go ios rust]
+expected_needs = %w[scope codex-protocol repository-safety go ios rust macos]
 unless Array(final_gate["needs"]).sort == expected_needs.sort
   abort("PR Gate 自检失败：最终聚合 job 的 needs 不完整。")
+end
+%w[MACOS_REQUIRED MACOS_RESULT].each do |name|
+  unless final_gate.to_s.include?(name)
+    abort("PR Gate 自检失败：最终聚合缺少 #{name} 判断。")
+  end
+end
+
+macos_path = ".github/workflows/macos-ci.yml"
+macos_workflow = load_workflow(macos_path)
+macos_triggers = triggers(macos_workflow, macos_path)
+macos_push_paths = Array(macos_triggers.dig("push", "paths"))
+unless macos_push_paths.include?("macos/MimiRemoteMac/**") &&
+       macos_push_paths.include?("scripts/test-macos-app.sh")
+  abort("PR Gate 自检失败：Mac App CI 的 main push paths 与 PR scope 不一致。")
+end
+macos_job = macos_workflow.fetch("jobs").fetch("build-and-test")
+unless macos_job["runs-on"] == "macos-26" && macos_job["timeout-minutes"] == 20
+  abort("PR Gate 自检失败：Mac App CI 必须使用 macOS 26 runner 和 20 分钟超时。")
+end
+unless macos_job.to_s.include?("bash ./scripts/test-macos-app.sh")
+  abort("PR Gate 自检失败：Mac App CI 没有运行统一编译测试入口。")
+end
+macos_test_script = File.read("scripts/test-macos-app.sh")
+%w[xcodebuild CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test].each do |fragment|
+  unless macos_test_script.include?(fragment)
+    abort("PR Gate 自检失败：Mac App 编译测试入口缺少 #{fragment}。")
+  end
 end
 
 expected_calls.values.each do |workflow_path|
