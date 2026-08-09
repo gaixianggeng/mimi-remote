@@ -1636,6 +1636,8 @@ extension SessionStore {
     func synchronizeHistoryReadStates() {
         var next = historyReadStateBySessionID
         var didChange = false
+        // 同一份 sessions 快照里的完成共享观察时间，避免循环顺序制造虚假的先后关系。
+        lazy var snapshotCompletionObservedAt = sessionListNow()
 
         for session in sessions where !session.isLocalDraft {
             var state = next[session.id] ?? SessionHistoryReadState()
@@ -1674,14 +1676,16 @@ extension SessionStore {
                         if completedAfterObservedRunning {
                             // running → terminal 本身就是可靠完成事件；即使轻量快照尚未推进版本字段，
                             // 也只在这次转换上记录一次，不让后续普通轮询刷新时间。
-                            state.completionObservedAt = sessionListNow()
+                            state.completionObservedAt = snapshotCompletionObservedAt
                         }
                     } else {
                         state.latestCompletion = version
                         state.manualUnreadCompletion = nil
                         // 冷启动或离线期间只能确认“版本不同”，无法确认它刚刚完成；
                         // 没观察到运行态就明确清空，避免把旧结果放进刚完成。
-                        state.completionObservedAt = completedAfterObservedRunning ? sessionListNow() : nil
+                        state.completionObservedAt = completedAfterObservedRunning
+                            ? snapshotCompletionObservedAt
+                            : nil
                         if selectedSessionID == session.id {
                             state.readCompletion = version
                         }
@@ -1690,7 +1694,9 @@ extension SessionStore {
                     state.latestCompletion = version
                     state.manualUnreadCompletion = nil
                     // 旧历史首次进入索引时视为已读；从已观察运行态进入终态才是新结果。
-                    state.completionObservedAt = completedAfterObservedRunning ? sessionListNow() : nil
+                    state.completionObservedAt = completedAfterObservedRunning
+                        ? snapshotCompletionObservedAt
+                        : nil
                     if !completedAfterObservedRunning || selectedSessionID == session.id {
                         state.readCompletion = version
                     }

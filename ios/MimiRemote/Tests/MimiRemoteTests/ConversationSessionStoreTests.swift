@@ -3538,6 +3538,74 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testBatchCompletionSharesObservationTimeAndKeepsStableOrder() throws {
+        let suiteName = "ConversationSessionStoreTests.BatchCompletionObservation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let project = makeProject(id: "project-batch-completion")
+        let running = (0..<7).map { index in
+            makeSession(
+                id: "batch-completion-\(index)",
+                projectID: project.id,
+                title: "批量完成 \(index)",
+                status: SessionStatus.running.rawValue,
+                source: "codex",
+                resumeID: "batch-completion-\(index)",
+                activeTurnID: "turn-batch-\(index)",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index)),
+                recencyAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let completed = running.enumerated().map { index, session in
+            let activityDate = Date(timeIntervalSince1970: TimeInterval(100 - index))
+            return makeSession(
+                id: session.id,
+                projectID: project.id,
+                title: session.title,
+                status: SessionStatus.history.rawValue,
+                source: "codex",
+                resumeID: session.resumeID,
+                updatedAt: activityDate,
+                recencyAt: activityDate
+            )
+        }
+        var clockTick: TimeInterval = 1_000
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: SessionHistoryReadStateStore(defaults: defaults),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: completed) },
+            sessionListNow: {
+                defer { clockTick += 1 }
+                return Date(timeIntervalSince1970: clockTick)
+            }
+        )
+
+        store.sessions = running
+        store.sessions = completed
+
+        let observations = completed.compactMap {
+            store.historyCompletionObservedAtBySessionID[$0.id]
+        }
+        XCTAssertEqual(observations.count, completed.count)
+        XCTAssertEqual(Set(observations).count, 1, "同一份终态快照只能生成一个完成观察时间")
+
+        let observationDate = try XCTUnwrap(observations.first)
+        let sections = SessionListPresentation.sidebarSections(
+            sessions: completed,
+            completionObservedAtByID: store.historyCompletionObservedAtBySessionID,
+            now: observationDate.addingTimeInterval(1)
+        )
+        XCTAssertEqual(
+            sections.first { $0.kind == .justCompleted }?.sessions.map(\.id),
+            Array(completed.prefix(5)).map(\.id),
+            "批量完成时间相同时应保留原活动顺序，不能按循环中的取时顺序反转"
+        )
+    }
+
     func testMarkHistorySessionUnreadKeepsCompletionObservationPersisted() throws {
         let suiteName = "ConversationSessionStoreTests.MarkUnread.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
