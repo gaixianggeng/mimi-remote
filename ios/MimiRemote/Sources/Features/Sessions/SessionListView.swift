@@ -385,7 +385,7 @@ struct SessionListView: View {
     var onOpenWorkspaces: (() -> Void)?
     var manageConnections: (() -> Void)?
     var prefersTableDensity = false
-    var hidesNavigationTitle = false
+    var usesCompactNavigation = false
     var bottomContentMargin: CGFloat = 16
     var newSessionPresentationNamespace: Namespace.ID?
 
@@ -398,6 +398,9 @@ struct SessionListView: View {
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
+        // 紧凑导航需要给设备切换、搜索、筛选和新建留出同一排空间；
+        // 辅助功能字号也使用系统搜索按钮，避免完整输入框挤压常驻操作。
+        let usesInlineSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
 
         List {
             if hasActiveFilters {
@@ -488,10 +491,28 @@ struct SessionListView: View {
             )
         }
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
-        .navigationTitle(hidesNavigationTitle ? "" : L10n.text("ui.session"))
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $sessionStore.sessionSearchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("ui.search_session"))
+        .sessionListSystemSearchable(
+            isEnabled: !usesInlineSearchField,
+            text: $sessionStore.sessionSearchQuery,
+            prompt: Text(L10n.text("ui.search_session")),
+            tintColor: tokens.secondaryText
+        )
         .toolbar {
+            if usesInlineSearchField {
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .topBarLeading) {
+                        sessionSearchField(tokens: tokens)
+                    }
+                    // 自定义搜索框已经自带表面，隐藏系统共享玻璃，避免深色模式叠出白色底板。
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        sessionSearchField(tokens: tokens)
+                    }
+                }
+            }
             if let manageConnections {
                 ToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
@@ -518,6 +539,45 @@ struct SessionListView: View {
         }
         .onChange(of: lifecycleInput) { _, newInput in
             synchronizeLifecycle(newInput)
+        }
+    }
+
+    private func sessionSearchField(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+
+            TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
+                .font(themeStore.uiFont(size: 14))
+                .foregroundStyle(tokens.primaryText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .lineLimit(1)
+                .accessibilityIdentifier("sessions.search")
+
+            if sessionStore.isSessionSearchActive {
+                Button {
+                    sessionStore.sessionSearchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tokens.tertiaryText)
+                .accessibilityLabel(L10n.text("ui.clear_search"))
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+        .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tokens.border.opacity(0.52), lineWidth: 1)
         }
     }
 
@@ -1607,6 +1667,30 @@ struct SessionRenameSheet: View {
             if didRename {
                 dismiss()
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func sessionListSystemSearchable(
+        isEnabled: Bool,
+        text: Binding<String>,
+        prompt: Text,
+        tintColor: Color
+    ) -> some View {
+        if isEnabled {
+            if #available(iOS 26.0, *) {
+                searchable(text: text, placement: .toolbar, prompt: prompt)
+                    // iPhone、iPad mini 竖屏和辅助功能字号固定为单一放大镜入口。
+                    .searchToolbarBehavior(.minimize)
+                    .tint(tintColor)
+            } else {
+                searchable(text: text, placement: .toolbar, prompt: prompt)
+                    .tint(tintColor)
+            }
+        } else {
+            self
         }
     }
 }

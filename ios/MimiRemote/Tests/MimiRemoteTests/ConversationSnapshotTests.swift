@@ -1808,16 +1808,15 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             height: CGFloat,
             colorScheme: ColorScheme,
             prefersTable: Bool,
-            hidesNavigationTitle: Bool,
             bottomContentMargin: CGFloat,
             dynamicTypeSize: DynamicTypeSize,
             increasedContrast: Bool
         )] = [
-            ("iphone-390-light", 390, 844, .light, false, false, 84, .large, false),
-            ("ipad-mini-744-light", 744, 980, .light, true, true, 84, .large, false),
-            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, true, 16, .large, true),
-            ("split-375-light", 375, 812, .light, false, false, 84, .large, false),
-            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, true, 16, .accessibility3, false),
+            ("iphone-390-light", 390, 844, .light, false, 84, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, true, 84, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, 16, .large, true),
+            ("split-375-light", 375, 812, .light, false, 84, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, 16, .accessibility3, false),
         ]
 
         for scenario in scenarios {
@@ -1826,7 +1825,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 height: scenario.height,
                 colorScheme: scenario.colorScheme,
                 prefersTable: scenario.prefersTable,
-                hidesNavigationTitle: scenario.hidesNavigationTitle,
                 bottomContentMargin: scenario.bottomContentMargin,
                 dynamicTypeSize: scenario.dynamicTypeSize
             )
@@ -2033,7 +2031,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         height: CGFloat,
         colorScheme: ColorScheme,
         prefersTable: Bool,
-        hidesNavigationTitle: Bool,
         bottomContentMargin: CGFloat,
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
@@ -2184,9 +2181,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         return NavigationStack {
             SessionListView(
-                manageConnections: {},
+                manageConnections: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth ? {} : nil,
                 prefersTableDensity: prefersTable,
-                hidesNavigationTitle: hidesNavigationTitle,
+                // 与生产布局一致：iPhone / iPad mini 竖屏使用紧凑导航，宽屏才显示完整搜索框。
+                usesCompactNavigation: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth,
                 bottomContentMargin: bottomContentMargin
             )
         }
