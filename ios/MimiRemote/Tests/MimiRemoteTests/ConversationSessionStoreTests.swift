@@ -3412,6 +3412,15 @@ extension ConversationDataFlowTests {
             firstCompletionObservationDate,
             "running → terminal 才记录本地完成观察时间"
         )
+        let sectionsBeforeOpening = SessionListPresentation.sidebarSections(
+            sessions: [firstCompletion],
+            completionObservedAtByID: store.historyCompletionObservedAtBySessionID,
+            now: firstCompletionObservationDate.addingTimeInterval(1)
+        )
+        XCTAssertEqual(
+            sectionsBeforeOpening.first { $0.kind == .justCompleted }?.sessions.map(\.id),
+            [firstCompletion.id]
+        )
 
         await store.selectSession(firstCompletion)
         XCTAssertFalse(store.isHistorySessionUnread(firstCompletion), "打开历史会话后应立即标记已读")
@@ -3419,6 +3428,16 @@ extension ConversationDataFlowTests {
             store.historyCompletionObservedAtBySessionID[firstCompletion.id],
             firstCompletionObservationDate,
             "Mimi 标记已读不能清除完成观察时间"
+        )
+        let sectionsAfterOpening = SessionListPresentation.sidebarSections(
+            sessions: [firstCompletion],
+            completionObservedAtByID: store.historyCompletionObservedAtBySessionID,
+            now: firstCompletionObservationDate.addingTimeInterval(1)
+        )
+        XCTAssertEqual(
+            sectionsAfterOpening.first { $0.kind == .justCompleted }?.sessions.map(\.id),
+            [firstCompletion.id],
+            "点击只改变已读水位，刚完成行在时间窗内必须保留原分组，避免视觉跳动"
         )
 
         let persisted = readStateStore.load(
