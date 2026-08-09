@@ -79,8 +79,8 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 dir: projects[0].path,
                 title: "确认 Claude Code 运行时状态",
                 status: SessionStatus.completed.rawValue,
-                source: "claude",
-                runtimeProvider: "claude",
+                source: "codex",
+                runtimeProvider: "codex",
                 resumeID: "workspace-history",
                 createdAt: referenceDate.addingTimeInterval(-7_200),
                 updatedAt: referenceDate.addingTimeInterval(-3_000),
@@ -104,6 +104,23 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 preview: "卡片请求不再下载完整 diff。",
                 context: SessionContextSnapshot(
                     git: SessionContextGitInfo(branch: "codex/git-summary-protocol")
+                )
+            ),
+            AgentSession(
+                id: "workspace-stale-history",
+                projectID: projects[0].id,
+                project: projects[0].name,
+                dir: projects[0].path,
+                title: "整理工作区历史会话",
+                status: SessionStatus.completed.rawValue,
+                source: "codex",
+                runtimeProvider: "codex",
+                resumeID: "workspace-stale-history",
+                createdAt: referenceDate.addingTimeInterval(-50_400),
+                updatedAt: referenceDate.addingTimeInterval(-46_800),
+                preview: "十二小时前的会话进入下一张整体卡片。",
+                context: SessionContextSnapshot(
+                    git: SessionContextGitInfo(branch: "codex/workspace-history-grouping")
                 )
             )
         ]

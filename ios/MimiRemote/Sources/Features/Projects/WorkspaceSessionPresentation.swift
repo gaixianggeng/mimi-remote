@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct WorkspaceSessionPresentationKey: Hashable {
     let hostScope: HostScope
@@ -92,4 +93,112 @@ enum WorkspaceSessionPresentation {
         // 请求失败或远端短页时只提交真实可见数量，避免每次重试都把窗口额度空涨 20。
         max(max(1, current), min(max(1, target), max(0, loadedCount)))
     }
+}
+
+/// 泛型视图不能持有静态存储属性，而每行重建 DateFormatter 又很贵；
+/// 这两个格式化器与具体视图无关，提到文件级共享一份。
+/// 工作区最近会话行的几何。左槽不再放运行时品牌图标：这一屏已经被项目胶囊和
+/// Codex/Claude 筛选器各锁定一次，逐行重复的图标是常量，只会和标题抢横向空间。
+/// 槽位改成状态导轨，正常会话用圆点，等待/错误使用异常图标。
+enum WorkspaceSessionRowMetrics {
+    static let horizontalPadding: CGFloat = 14
+    static let railWidth: CGFloat = 16
+    static let railSpacing: CGFloat = 10
+    /// 两行信息保持紧密关联，但用更充足的行间距和上下留白降低长列表压迫感。
+    static let contentSpacing: CGFloat = 5
+    static let verticalPadding: CGFloat = 12
+    /// 标准动态字体下约 68pt；大字体仍由文本自然撑开，不能靠固定高度压缩内容。
+    static let minHeight: CGFloat = 68
+    static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
+}
+
+/// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
+/// 卡片内的状态导轨和文案表达，避免把分组背景误读成会话状态。
+enum WorkspaceSessionGroup: String, CaseIterable {
+    case needsAttention
+    case running
+    case recent
+
+    var title: String {
+        switch self {
+        case .needsAttention:
+            return L10n.text("ui.workspace_group_needs_attention")
+        case .running:
+            return L10n.text("ui.workspace_group_running")
+        case .recent:
+            return L10n.text("ui.workspace_group_recent")
+        }
+    }
+
+    static func of(_ session: AgentSession, status: AgentSessionDisplayStatus) -> WorkspaceSessionGroup {
+        // 失败和等待用户都属于「需要处理」，即使会话仍标记为运行中。
+        if status.tone == .danger || status.tone == .warning {
+            return .needsAttention
+        }
+        return session.isRunning ? .running : .recent
+    }
+
+    static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
+        allCases.filter(groups.contains)
+    }
+}
+
+/// 会话行左槽只表达执行状态，未读改由右端紫点承担，避免同一颗圆点既像状态又像项目色。
+enum WorkspaceSessionRailState {
+    case failed
+    case waiting
+    case running
+
+    static func resolve(
+        status: AgentSessionDisplayStatus,
+        isRunning: Bool
+    ) -> WorkspaceSessionRailState? {
+        switch status.tone {
+        case .danger:
+            return .failed
+        case .warning:
+            return .waiting
+        case .active, .complete, .neutral:
+            // 普通历史会话不点圆点：空槽本身表示「不需要你」。
+            return isRunning ? .running : nil
+        }
+    }
+
+    func color(tokens: ThemeTokens) -> Color {
+        switch self {
+        case .failed:
+            return .red
+        case .waiting:
+            return tokens.warning
+        case .running:
+            return tokens.success
+        }
+    }
+}
+
+/// 分组面板只承担内容归组，不编码会话状态。这样长列表保留一块安静的阅读表面，
+/// 状态差异仍由行内导轨和文案表达，不会重新变成一排排漂浮卡片。
+struct WorkspaceSessionGroupPanel: ViewModifier {
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        content
+            .workbenchSurface(tokens: tokens, role: .groupedPanel)
+    }
+}
+
+enum WorkspaceSessionRowFormatters {
+    static let time: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("Hm")
+        return formatter
+    }()
+
+    static let date: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("Md")
+        return formatter
+    }()
 }
