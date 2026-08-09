@@ -66,7 +66,7 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
   </tr>
 </table>
 
-These images reuse the current capture set from [`web/assets`](web/assets), covering the workspace and session hierarchy across iPhone and iPad. The captured interface uses the Simplified Chinese localization; the app also supports English. Keeping one checked-in image set prevents the website and README from drifting apart again.
+These images reuse the current capture set from [`web/assets`](web/assets), covering the workspace and session hierarchy across iPhone and iPad. They were captured from Debug-only seeded UI with demo hosts, projects, sessions, paths, and usage values—never a maintainer's live workspace or credentials. The interface uses the Simplified Chinese localization; the app also supports English. Keeping one checked-in image set prevents the website and README from drifting apart again.
 
 ## Leave the desk, not the flow
 
@@ -128,7 +128,7 @@ The hierarchy is intentional:
 - **Show state before action:** connection health, runtime readiness, remaining quota, and permission mode are visible before controls that can change or interrupt work.
 - **Use each platform natively:** compact touch hierarchy on iPhone, multi-column workbench on iPad, and a dense menu bar utility on Mac — not one layout stretched across three screens.
 
-The mobile images above are the same current assets used by the Mimi Remote website. The Mac menu image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname; capturing it did not restart or replace the installed Mac service.
+The mobile images above are the same current assets used by the Mimi Remote website and come exclusively from Debug-only seeded UI. The Mac menu image uses the same source tree and the public `mimi-demo.local` hostname; capturing it did not restart or replace the installed Mac service. None of these public screenshots contains a real token, private address, personal path, or live project content.
 
 ## Architecture
 
