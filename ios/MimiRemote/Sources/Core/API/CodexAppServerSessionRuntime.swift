@@ -1240,7 +1240,9 @@ actor CodexAppServerSessionRuntime {
             "id": .string(sessionID),
             "sessionId": .string(sessionID),
             "cwd": cwd,
-            "name": .string("Thread \(sessionID.prefix(8))"),
+            // 这层壳只是拿不到 thread 元数据时的占位；名字留空由投影统一填占位标题，
+            // 不要把 thread id 当成会话名写进去。
+            "name": .null,
             "status": .object(["type": .string("notLoaded")]),
             "modelProvider": .string("openai")
         ]
