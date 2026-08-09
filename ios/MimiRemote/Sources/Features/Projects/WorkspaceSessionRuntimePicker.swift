@@ -52,6 +52,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 struct WorkspaceRuntimePicker: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
@@ -80,11 +82,11 @@ struct WorkspaceRuntimePicker: View {
                             .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    // 三态同时使用层级、字重和透明度：灰度或 Increase Contrast 下，
-                    // 选中项仍靠 semibold，未选中可用项仍是可操作的 secondary，而非 disabled。
+                    // 选中态同时使用主操作实色、前景色和字重；未选中项留在中性轨道内，
+                    // 不把颜色差异当作唯一状态线索。
                     .foregroundStyle(
                         isSelected
-                            ? tokens.primaryAction
+                            ? tokens.primaryActionForeground
                             : (isAvailable ? tokens.secondaryText : tokens.tertiaryText)
                     )
                     .opacity(
@@ -92,13 +94,23 @@ struct WorkspaceRuntimePicker: View {
                             ? 1
                             : (isAvailable ? 0.60 : 0.42)
                     )
-                    // 未选中项只是文字，不带任何容器；运行时的切换频率远低于切工作区，
-                    // 不该在顶部占一个胶囊的重量。
                     .padding(.horizontal, 8)
                     .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
                     .contentShape(Rectangle())
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(tokens.primaryAction)
+                        }
+                    }
+                    .overlay {
+                        if isSelected, colorSchemeContrast == .increased {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(tokens.primaryActionForeground, lineWidth: 1)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 .disabled(!isAvailable)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -107,9 +119,22 @@ struct WorkspaceRuntimePicker: View {
                         ? L10n.text("ui.show_runtime_sessions_hint")
                         : L10n.text("ui.runtime_unavailable_hint")
                 )
+                .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
             }
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .padding(2)
+        .background {
+            // 外轨保持中性，选中项才承载主操作色，减少运行时筛选器对会话内容的干扰。
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tokens.surface.opacity(0.72))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
+                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
+                )
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")

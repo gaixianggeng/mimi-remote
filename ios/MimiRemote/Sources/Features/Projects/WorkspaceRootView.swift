@@ -1423,19 +1423,18 @@ private struct WorkspaceProjectChip: View {
 /// 这两个格式化器与具体视图无关，提到文件级共享一份。
 /// 工作区最近会话行的几何。左槽不再放运行时品牌图标：这一屏已经被项目胶囊和
 /// Codex/Claude 筛选器各锁定一次，逐行重复的图标是常量，只会和标题抢横向空间。
-/// 槽位改成状态导轨，宽度收到一颗圆点，分隔线与标题左缘对齐（同 Mail 的未读点）。
+/// 槽位改成状态导轨，正常会话用圆点，等待/错误使用异常图标。
 private enum WorkspaceSessionRowMetrics {
     static let horizontalPadding: CGFloat = 14
-    static let railWidth: CGFloat = 10
+    static let railWidth: CGFloat = 16
     static let railSpacing: CGFloat = 10
-    /// 工作区行是「续上的入口」，条数少但每条重要：三行内容 + 更松的行高，
-    /// 和会话页 44pt 的搜索结果节奏拉开距离。
-    static let minHeight: CGFloat = 72
-    static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
+    /// 标准动态字体下两行内容加 10pt 上下留白约 60–64pt；大字体由文本自然撑开。
+    static let minHeight: CGFloat = 60
+    static let cardSpacing: CGFloat = 8
 }
 
-/// 会话按「现在要不要你」分三段。三段共用同一套分组容器，状态差异只由
-/// 行内导轨和文案表达，避免一部分有实体背景、另一部分直接铺在页面上造成视觉失衡。
+/// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
+/// 卡片内的状态导轨和文案表达，避免把分组背景误读成会话状态。
 enum WorkspaceSessionGroup: String, CaseIterable {
     case needsAttention
     case running
@@ -1498,18 +1497,6 @@ private enum WorkspaceSessionRailState {
     }
 }
 
-/// 工作区会话的统一内容面板。容器只承担分组，不承担状态编码：浅色用白色 Surface
-/// 稳住下半屏，深色只比页面底亮一档，避免连续分组读成三块高对比“黑砖”。
-/// 行本身没有圆角、填充或阴影，仍靠发丝线维持紧凑列表密度。
-private struct WorkspaceSessionGroupPanel: ViewModifier {
-    let tokens: ThemeTokens
-
-    func body(content: Content) -> some View {
-        content
-            .workbenchSurface(tokens: tokens, role: .groupedPanel)
-    }
-}
-
 private enum WorkspaceSessionRowFormatters {
     static let time: DateFormatter = {
         let formatter = DateFormatter()
@@ -1532,6 +1519,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
@@ -1614,8 +1602,8 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    /// 需要处理 / 正在运行 / 最近会话三段共用分组级内容面板；
-    /// 面板内部仍是紧凑行与发丝线，不退回逐行卡片。
+    /// 需要处理 / 正在运行 / 最近会话三段保留标题与计数；
+    /// 分组本身只用 18pt 左右的留白区分，卡片之间再用 8pt 间距保持紧凑。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(tokens: ThemeTokens) -> some View {
@@ -1655,13 +1643,10 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
 
             Spacer(minLength: 8)
 
-            // 计数只在有多条时才有意义；一条时数字只是重复了下面那一行。
-            if count > 1 {
-                Text("\(count)")
-                    .font(themeStore.uiFont(.subheadline))
-                    .foregroundStyle(tokens.tertiaryText)
-                    .monospacedDigit()
-            }
+            Text("\(count)")
+                .font(themeStore.uiFont(.subheadline))
+                .foregroundStyle(tokens.tertiaryText)
+                .monospacedDigit()
         }
         .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
         .accessibilityElement(children: .combine)
@@ -1683,14 +1668,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             )
             : nil
 
-        VStack(spacing: 0) {
+        // 卡片是独立实色表面；组内用 8pt 空间取代 Divider，组间由外层 18pt 留白区分。
+        VStack(spacing: WorkspaceSessionRowMetrics.cardSpacing) {
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                 if index == firstStaleIndex {
                     twelveHourBoundary(tokens: tokens)
-                } else if index > 0 {
-                    Divider()
-                        .overlay(tokens.border.opacity(0.62))
-                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
                 }
 
                 Button {
@@ -1704,18 +1686,15 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .buttonStyle(.plain)
                 .sessionRowActions(session)
+                .workbenchSurface(tokens: tokens, role: .groupedPanel)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
             }
 
             // 加载入口跟随当前最后一个可见分组；即使首屏全是待处理或运行会话，也能继续取回历史。
             if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
-                Divider()
-                    .overlay(tokens.border.opacity(0.62))
-
                 loadMoreButton(tokens: tokens)
             }
         }
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
     }
 
     private func loadMoreButton(tokens: ThemeTokens) -> some View {
@@ -1752,19 +1731,36 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityIdentifier("workspace.sessions.loadMore")
     }
 
-    /// 一行同时承担两件事：左端图标用当前运行时开新会话，右端切换运行时。
-    /// Codex/Claude 这个维度整屏只出现一次，主操作也不再占用独立的大卡片。
+    /// 筛选器固定在列表左侧，紧接结果区域；新建会话保留在右侧并使用唯一文字操作。
+    /// 页面已经通过筛选器说明 Runtime，卡片不再重复渲染品牌或 Runtime 文案。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 12) {
-            newSessionButton(tokens: tokens)
+        ViewThatFits(in: .horizontal) {
+            // 先尝试单行；按钮和筛选器都保留固有宽度，ViewThatFits 不会把文字压成半截。
+            HStack(spacing: 12) {
+                runtimePicker
 
-            Spacer(minLength: 8)
+                Spacer(minLength: 8)
 
-            WorkspaceRuntimePicker(
-                selection: $selectedRuntime,
-                claudeChannelAvailable: claudeChannelAvailable
-            )
+                newSessionButton(tokens: tokens)
+            }
+
+            // 窄屏或大字体时自然改为两行，筛选器仍排在结果前，新建操作靠右。
+            VStack(alignment: .leading, spacing: 8) {
+                runtimePicker
+
+                HStack {
+                    Spacer(minLength: 0)
+                    newSessionButton(tokens: tokens)
+                }
+            }
         }
+    }
+
+    private var runtimePicker: some View {
+        WorkspaceRuntimePicker(
+            selection: $selectedRuntime,
+            claudeChannelAvailable: claudeChannelAvailable
+        )
     }
 
     private func newSessionButton(tokens: ThemeTokens) -> some View {
@@ -1772,20 +1768,24 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            WorkbenchChromeIcon(systemName: "square.and.pencil")
-                .foregroundStyle(tokens.primaryText)
-                .workbenchChromeCircle(tokens: tokens)
+            Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
+                .font(themeStore.uiFont(.callout, weight: .semibold))
+                .foregroundStyle(tokens.primaryActionForeground)
+                .padding(.horizontal, 12)
+                .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+                .background(tokens.primaryAction, in: Capsule())
+                .contentShape(Capsule())
+                .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.new_session"))
+        .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         .accessibilityValue(selectedRuntime.title)
         .accessibilityIdentifier("workspace.sessions.newSession")
     }
 
     private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
         ZStack {
-            // 直接复用普通列表分隔线的位置，只在中间留出文案缺口，
-            // 避免“默认分隔线 + 分组分隔线”叠成两道横线。
+            // 卡片之间仍保留 12 小时边界；它只占一条轻分隔线，不重新包住会话列表。
             Rectangle()
                 .fill(tokens.border.opacity(0.62))
                 .frame(height: 0.5)
@@ -1794,20 +1794,19 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.horizontal, 8)
-                // 文案缺口必须与分组面板共用同一个 token，深色模式才不会露出矩形色块。
-                .background(tokens.contentPanelBackground)
+                // 缺口与页面底色一致；上下卡片各自有独立表面，不应露出旧面板色块。
+                .background(tokens.background)
                 .fixedSize()
         }
-        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
-        .padding(.trailing, WorkspaceSessionRowMetrics.horizontalPadding)
-        .padding(.vertical, 7)
+        .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+        .padding(.vertical, 3)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
     }
 
     private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 0) {
-            ForEach(0..<3, id: \.self) { index in
+        VStack(spacing: WorkspaceSessionRowMetrics.cardSpacing) {
+            ForEach(0..<3, id: \.self) { _ in
                 HStack(spacing: WorkspaceSessionRowMetrics.railSpacing) {
                     Color.clear
                         .frame(width: WorkspaceSessionRowMetrics.railWidth)
@@ -1824,16 +1823,10 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
                 .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
-
-                if index < 2 {
-                    Divider()
-                        .overlay(tokens.border.opacity(0.62))
-                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
-                }
+                .workbenchSurface(tokens: tokens, role: .groupedPanel)
             }
         }
         .redacted(reason: .placeholder)
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
@@ -1845,19 +1838,28 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         let status = session.displayStatus(foregroundActivity: nil)
         let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
+        let showsStatus = shouldShowRecentSessionStatus(status: status)
 
         let railState = WorkspaceSessionRailState.resolve(
             status: status,
             isRunning: session.isRunning
         )
 
-        // 状态点跟标题行对齐；垂直居中会让它浮在预览行旁边。
-        return HStack(alignment: .top, spacing: WorkspaceSessionRowMetrics.railSpacing) {
-            sessionStateRail(railState, tokens: tokens)
-                .padding(.top, 7)
+        let preview = SessionListPresentation.previewDisplayText(for: session)
+        let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
+            session.gitBranchName,
+            among: branchValues
+        )
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+        // 标准字体下保持两行：第一行是状态/标题/时间，第二行是分支前缀和最近消息。
+        // 辅助功能大字体取消单行裁切，允许卡片自然增高，不通过缩小字体换取几何高度。
+        return HStack(alignment: .top, spacing: WorkspaceSessionRowMetrics.railSpacing) {
+            // 状态单独占一条窄列，使标题与摘要共享同一左边缘，连续扫读时不会横向跳动。
+            sessionStateRail(railState, tokens: tokens)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if sessionStore.isSessionPinned(session.id) {
                         SessionPinnedBadge(compact: true)
                     }
@@ -1865,74 +1867,73 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                     Text(session.title)
                         .font(themeStore.uiFont(.callout, weight: .medium))
                         .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .layoutPriority(1)
 
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 6)
+
+                    if showsStatus {
+                        Text(status.title)
+                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .foregroundStyle(statusTone)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(2)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(status.title)
+                    } else {
+                        Text(sessionTimeText(for: session))
+                            .font(themeStore.uiFont(.caption2))
+                            .foregroundStyle(tokens.tertiaryText)
+                            .fixedSize()
+                    }
+
+                    if unreadHistorySessionIDs.contains(session.id) {
+                        SessionUnreadIndicator()
+                    } else {
+                        // 占位保证未读状态变化不会令时间或状态在右缘跳动。
+                        Color.clear.frame(width: 7, height: 7)
+                    }
                 }
 
-                // 工作区行显示会话页负担不起的东西：这条会话最后说了什么。
-                // 两个列表用同一种材质，靠载荷不同读成两个地方。
-                let preview = SessionListPresentation.previewDisplayText(for: session)
-                if !preview.isEmpty {
-                    Text(preview)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                // 元数据行：只有存在多个 worktree 分支时才把分支贴左，状态 / 时间 / 未读贴右。
-                // 单一分支时隐藏重复值，让标题和预览占满整行；时间戳不会挤在标题右边。
-                // 左端已有状态圆点，这里不再挂小菊花：圆点 + Spinner + 状态文字三样说同一件事。
-                HStack(spacing: 8) {
-                    if let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
-                        session.gitBranchName,
-                        among: branchValues
-                    ) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let branch {
                         HStack(spacing: 4) {
                             SessionBranchIcon(size: 10)
                                 .foregroundStyle(tokens.tertiaryText)
                                 .accessibilityHidden(true)
 
                             Text(branch)
+                                .font(themeStore.uiFont(.caption2))
                                 .foregroundStyle(tokens.tertiaryText)
-                                .lineLimit(1)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                                 .truncationMode(.middle)
+                                .layoutPriority(0)
                         }
+                        // 分支只作为 worktree 前缀；宽度不足时先中间截断，把空间留给摘要。
+                        .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? 220 : 150, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
                     }
 
-                    Spacer(minLength: 8)
-
-                    if shouldShowRecentSessionStatus(session, status: status) {
-                        Text(status.title)
-                            .foregroundStyle(statusTone)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(status.title)
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(themeStore.uiFont(.footnote))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .truncationMode(.tail)
+                            .layoutPriority(1)
                     }
 
-                    Text(sessionTimeText(for: session))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .fixedSize()
-
-                    if unreadHistorySessionIDs.contains(session.id) {
-                        SessionUnreadIndicator()
-                    } else {
-                        // 占位保证有无未读时右缘对齐，列表不会随未读状态左右跳动。
-                        Color.clear.frame(width: 7, height: 7)
-                    }
+                    Spacer(minLength: 0)
                 }
-                .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.vertical, 12)
         .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
+        .padding(.vertical, 9)
+        .frame(minHeight: WorkspaceSessionRowMetrics.minHeight, alignment: .top)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityValue(
@@ -1951,9 +1952,20 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         Group {
             if let state {
-                Circle()
-                    .fill(state.color(tokens: tokens))
-                    .frame(width: 7, height: 7)
+                switch state {
+                case .failed:
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .foregroundStyle(WorkspaceSessionRailState.failed.color(tokens: tokens))
+                case .waiting:
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .foregroundStyle(WorkspaceSessionRailState.waiting.color(tokens: tokens))
+                case .running:
+                    Circle()
+                        .fill(WorkspaceSessionRailState.running.color(tokens: tokens))
+                        .frame(width: 7, height: 7)
+                }
             } else {
                 Color.clear
             }
@@ -1962,11 +1974,9 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityHidden(true)
     }
 
-    private func shouldShowRecentSessionStatus(
-        _ session: AgentSession,
-        status: AgentSessionDisplayStatus
-    ) -> Bool {
-        session.isRunning || status.tone == .warning || status.tone == .danger
+    private func shouldShowRecentSessionStatus(status: AgentSessionDisplayStatus) -> Bool {
+        // 正常运行由绿色状态点表达；只有等待、警告、错误才占用右侧文案空间。
+        status.tone == .warning || status.tone == .danger
     }
 
     /// 状态文字的颜色跟左端圆点保持同一套语义：等待用户橙、失败红、运行中绿。
