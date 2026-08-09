@@ -4179,13 +4179,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On the Mac running Mimi Remote, open Terminal and run claude to sign in again. Then return here and try again."
+            "value": "On the Mac running Mimi Remote, open Terminal and run claude auth login to sign in again. Then return here and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude 并按提示重新登录，然后回到这里重试。"
+            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude auth login 重新登录，然后回到这里重试。"
           }
         }
       }
@@ -4231,13 +4231,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copied claude. Run it in Terminal on your Mac."
+            "value": "Copied claude auth login. Run it in Terminal on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已复制 claude，请在 Mac 的终端运行。"
+            "value": "已复制 claude auth login，请在 Mac 的终端运行。"
           }
         }
       }
@@ -6700,6 +6700,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "复制登录命令"
+          }
+        }
+      }
+    },
+    "ui.copy_login_command_hint": {
+      "comment": "VoiceOver hint for the Claude Code login command copy button.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copies claude auth login to the clipboard; it does not run the command."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将 claude auth login 复制到剪贴板，不会执行命令。"
           }
         }
       }
