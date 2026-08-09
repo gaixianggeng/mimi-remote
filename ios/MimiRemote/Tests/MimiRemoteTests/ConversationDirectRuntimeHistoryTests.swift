@@ -2167,7 +2167,7 @@ extension ConversationDataFlowTests {
             secondaryWindowDurationMins: 10_080
         )
         let display = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: summary, now: now))
-        XCTAssertEqual(display.title, L10n.text("ui.codex_usage"))
+        XCTAssertEqual(display.title, L10n.format("ui.value_dosage", "Codex"))
         XCTAssertEqual(display.primaryText, L10n.format("ui.used_value", "60%"))
         XCTAssertFalse(display.secondaryText.isEmpty)
         XCTAssertEqual(display.progress ?? -1, 0.6, accuracy: 0.0001)
@@ -2284,6 +2284,10 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(almostNearLimit.isNearLimit)
         let nearLimit = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(primaryUsedPercent: 85), now: now))
         XCTAssertTrue(nearLimit.isNearLimit)
+        XCTAssertEqual(
+            nearLimit.nearLimitTitle,
+            L10n.format("ui.value_usage_near_limit", L10n.format("ui.value_dosage", "Codex"), nearLimit.primaryText)
+        )
 
         let exhaustedLimit = RateLimitSummary(limitName: "Codex", primaryUsedPercent: 100, primaryResetsAt: resetEpoch)
         let exhaustedDisplay = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: exhaustedLimit, now: now))

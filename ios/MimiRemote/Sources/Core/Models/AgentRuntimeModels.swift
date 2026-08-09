@@ -323,6 +323,11 @@ struct CodexUsageDisplaySummary: Equatable {
     let isNearLimit: Bool
     let isExhausted: Bool
 
+    /// 只在 Composer 的非阻断状态条中使用，明确告诉用户这是接近阈值而非失败。
+    var nearLimitTitle: String {
+        L10n.format("ui.value_usage_near_limit", title, primaryText)
+    }
+
     static func make(rateLimit: RateLimitSummary?, now: Date = Date()) -> CodexUsageDisplaySummary? {
         guard let rateLimit else {
             return nil
@@ -341,7 +346,7 @@ struct CodexUsageDisplaySummary: Equatable {
         }
 
         return CodexUsageDisplaySummary(
-            title: L10n.text("ui.codex_usage"),
+            title: L10n.format("ui.value_dosage", rateLimit.displayName),
             primaryText: primaryText,
             secondaryText: secondaryText,
             progress: progress,

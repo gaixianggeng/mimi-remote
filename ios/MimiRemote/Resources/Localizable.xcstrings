@@ -32654,6 +32654,23 @@
         }
       }
     },
+    "ui.value_usage_near_limit": {
+      "comment": "Non-blocking quota status shown when the active runtime approaches its usage limit. Placeholders are the runtime usage label and formatted usage value.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ near its limit · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@接近限制 · %@"
+          }
+        }
+      }
+    },
     "ui.value_dosage_ffbd1847": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
