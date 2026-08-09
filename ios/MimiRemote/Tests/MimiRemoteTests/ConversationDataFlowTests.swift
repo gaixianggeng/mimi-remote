@@ -2810,6 +2810,10 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(message.content.contains(rawError))
     }
 
+    func testClaudeAuthenticationRecoveryUsesTerminalLoginCommand() {
+        XCTAssertEqual(ClaudeAuthenticationRecovery.loginCommand, "claude auth login")
+    }
+
     func testLargeDiffPanelItemsDeduplicateAndCollapseTail() throws {
         let fileChangePrefix = L10n.text("ui.file_changes_766e4292")
         let old = ConversationMessage(
