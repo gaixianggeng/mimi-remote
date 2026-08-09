@@ -5,6 +5,15 @@ struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let style: MarkdownStyle
 
+    private enum ListMetrics {
+        // 缩短 marker 占位和 marker 到正文的间距，减少多层列表的 leading；
+        // 有序列表和 task list 保留原有 marker 宽度，避免多位序号或复选框被挤压。
+        static let markerContentSpacing: CGFloat = 6
+        static let bulletMarkerWidth: CGFloat = 16
+        static let orderedMarkerWidth: CGFloat = 30
+        static let taskMarkerWidth: CGFloat = 20
+    }
+
     var body: some View {
         blockView(block)
     }
@@ -20,24 +29,24 @@ struct MarkdownBlockView: View {
         case let .bulletList(items, tight):
             listStack(items: items, tight: tight) { _, item in
                 if let checked = item.checkbox {
-                    taskCheckbox(checked)
+                    taskCheckbox(checked, width: ListMetrics.taskMarkerWidth)
                 } else {
                     Text("•")
                         .font(style.bodyFont.weight(.semibold))
                         .foregroundStyle(style.secondaryColor)
-                        .frame(width: 20, alignment: .trailing)
+                        .frame(width: ListMetrics.bulletMarkerWidth, alignment: .trailing)
                 }
             }
         case let .orderedList(start, items, tight):
             listStack(items: items, tight: tight) { index, item in
                 if let checked = item.checkbox {
-                    taskCheckbox(checked, width: 30)
+                    taskCheckbox(checked, width: ListMetrics.orderedMarkerWidth)
                 } else {
                     Text("\(start + index).")
                         .font(style.bodyFont)
                         .foregroundStyle(style.secondaryColor)
                         .monospacedDigit()
-                        .frame(width: 30, alignment: .trailing)
+                        .frame(width: ListMetrics.orderedMarkerWidth, alignment: .trailing)
                 }
             }
         case let .taskList(items):
@@ -64,7 +73,7 @@ struct MarkdownBlockView: View {
 
     @ViewBuilder
     private func inlineText(_ inline: MarkdownInlineText, font: Font? = nil, expand: Bool = false) -> some View {
-        let text = Text(inline.attributed)
+        let text = Text(styledInlineText(inline))
             .font(font ?? style.bodyFont)
             .foregroundStyle(style.textColor)
             .tint(style.linkColor)
@@ -78,6 +87,16 @@ struct MarkdownBlockView: View {
         }
     }
 
+    private func styledInlineText(_ inline: MarkdownInlineText) -> AttributedString {
+        var attributed = inline.attributed
+        // MarkdownParser 用 inlinePresentationIntent 标记行内 code；显式覆盖 code run
+        // 的字体，才能让行内代码与 fenced code 一样从原先的 14pt 提升到 15pt。
+        for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            attributed[run.range].font = style.codeFont
+        }
+        return attributed
+    }
+
     private func listStack<Marker: View>(
         items: [MarkdownListItem],
         tight: Bool,
@@ -85,7 +104,7 @@ struct MarkdownBlockView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: tight ? 4 : 8) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: ListMetrics.markerContentSpacing) {
                     marker(index, item)
                     VStack(alignment: .leading, spacing: tight ? 3 : style.blockSpacing) {
                         ForEach(item.blocks) { child in
@@ -100,8 +119,8 @@ struct MarkdownBlockView: View {
     private func taskList(_ items: [MarkdownTaskListItem]) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             ForEach(items) { item in
-                HStack(alignment: .top, spacing: 8) {
-                    taskCheckbox(item.checked)
+                HStack(alignment: .top, spacing: ListMetrics.markerContentSpacing) {
+                    taskCheckbox(item.checked, width: ListMetrics.taskMarkerWidth)
 
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(item.blocks) { child in
