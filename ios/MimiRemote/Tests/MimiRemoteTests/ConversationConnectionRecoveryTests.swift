@@ -1854,4 +1854,34 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(closedContext?.session.status, "closed")
         XCTAssertNil(closedContext?.activeTurnID)
     }
+
+    // MIM-120 根因侧：Claude 常驻 bridge 的回放环里可能还留着上一条连接的响应帧。
+    // 只要新连接的请求 id 从 1 重来，旧 model/list 响应就可能兑现新的 thread/list。
+    func testRequestIDsNeverRepeatAcrossConnections() async throws {
+        let firstTransport = FakeCodexAppServerTransport()
+        let firstConnection = CodexAppServerConnection(transport: firstTransport)
+        try await connectFakeAppServer(firstConnection, transport: firstTransport)
+        let firstTask = Task { try await firstConnection.send(CodexAppServerRequestSpec(method: "thread/list")) }
+        let firstRequest = try await waitForFakeAppServerRequest(firstTransport, method: "thread/list")
+        await firstConnection.disconnect()
+        _ = try? await firstTask.value
+
+        let secondTransport = FakeCodexAppServerTransport()
+        let secondConnection = CodexAppServerConnection(transport: secondTransport)
+        try await connectFakeAppServer(secondConnection, transport: secondTransport)
+        let secondTask = Task { try await secondConnection.send(CodexAppServerRequestSpec(method: "thread/list")) }
+        let secondRequest = try await waitForFakeAppServerRequest(secondTransport, method: "thread/list")
+
+        XCTAssertNotEqual(firstRequest.id, secondRequest.id, "重连后的请求 id 不能复用上一条连接的编号")
+
+        // 回放过来的陈旧 model/list 响应带着旧连接的 id，必须无人认领地落地。
+        await secondConnection.ingestTextForTesting(
+            #"{"id":\#(try jsonFragment(for: firstRequest.id)),"result":{"data":[{"id":"sonnet"}],"nextCursor":null}}"#
+        )
+        transportResponse(secondTransport, id: secondRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+
+        let page = try await secondTask.value
+        XCTAssertEqual(page?.objectValue?["data"]?.arrayValue?.count, 0, "thread/list 只能被自己的响应兑现")
+        await secondConnection.disconnect()
+    }
 }
