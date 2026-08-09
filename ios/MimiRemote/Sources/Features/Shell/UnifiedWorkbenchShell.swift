@@ -669,11 +669,7 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sidebarListContent(
-        tokens: ThemeTokens,
-        layout: WorkbenchLayout,
-        now: Date
-    ) -> some View {
+    private func sidebarListContent(tokens: ThemeTokens, layout: WorkbenchLayout, now: Date) -> some View {
         let sections = sidebarMonitorSections(now: now)
 
         return List(selection: selectionBinding(layout: layout)) {
@@ -696,8 +692,7 @@ struct UnifiedWorkbenchShell: View {
 
             ForEach(sections) { section in
                 Section {
-                    // 仍以 session.id 作为行身份；index 只用来判断相邻项目，
-                    // 避免列表刷新时因下标变化而重建已选中行。
+                    // index 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
                     ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
                         sidebarSessionLink(
                             session,
@@ -832,8 +827,7 @@ struct UnifiedWorkbenchShell: View {
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
             completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
-            // 运行组头同时承担状态和项目身份；后续同项目行隐藏两个标记，
-            // Row 内的固定宽度占位保持标题对齐。
+            // 运行组头承担状态和项目身份；后续同项目行隐藏标记，Row 固定占位保持标题对齐。
             showsStateMarker: kind != .running || startsProjectGroup,
             projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]

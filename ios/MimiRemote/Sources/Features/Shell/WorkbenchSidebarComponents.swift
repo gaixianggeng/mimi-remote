@@ -546,7 +546,7 @@ struct SessionSidebarMonitorRow: View {
     let isSelected: Bool
     let isRecentlyCompleted: Bool
     let completionObservedAt: Date?
-    let showsStateMarker: Bool
+    var showsStateMarker: Bool = true
     let projectIcon: WorkspaceProjectIconContent?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
 
