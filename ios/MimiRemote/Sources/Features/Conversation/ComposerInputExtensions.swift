@@ -234,6 +234,44 @@ extension ComposerView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// iPad 收起态是独立的一行卡片，不保留 iPad 完整 Composer 的工具栏。
+    /// 附件条位于外层 `body`，因此这里仅替换输入卡本身，不会清理附件状态。
+    func collapsedIPadComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        return Button(action: expandIPadComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .padding(8)
+        .frame(maxWidth: .infinity)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
+        .overlay {
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .tint(tokens.accent)
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedComposerText)
+        .accessibilityIdentifier("composer.expand")
+    }
+
     var selectedVoiceInputProvider: VoiceInputProvider {
         VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
     }
