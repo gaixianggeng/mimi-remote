@@ -88,6 +88,7 @@ struct VoiceMicButton: View {
     let isTranscribing: Bool
     let usesRealtimeTranscription: Bool
     let onTap: () -> Void
+    var showsRestingSurface = true
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -118,7 +119,8 @@ struct VoiceMicButton: View {
                 ComposerFlatControlSurface(
                     tokens: tokens,
                     cornerRadius: 22,
-                    isEmphasized: false
+                    isEmphasized: false,
+                    showsRestingFill: showsRestingSurface
                 )
             )
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -137,15 +139,18 @@ struct ComposerFlatControlSurface: ViewModifier {
     let tokens: ThemeTokens
     let cornerRadius: CGFloat
     let isEmphasized: Bool
+    let showsRestingFill: Bool
 
     init(
         tokens: ThemeTokens,
         cornerRadius: CGFloat,
-        isEmphasized: Bool
+        isEmphasized: Bool,
+        showsRestingFill: Bool = true
     ) {
         self.tokens = tokens
         self.cornerRadius = cornerRadius
         self.isEmphasized = isEmphasized
+        self.showsRestingFill = showsRestingFill
     }
 
     private var shape: RoundedRectangle {
@@ -153,7 +158,7 @@ struct ComposerFlatControlSurface: ViewModifier {
     }
 
     private var restingFill: Color {
-        guard !isEmphasized else { return .clear }
+        guard !isEmphasized, showsRestingFill else { return .clear }
         return tokens.background
     }
 

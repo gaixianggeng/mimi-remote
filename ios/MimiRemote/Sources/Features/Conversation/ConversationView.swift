@@ -68,8 +68,9 @@ struct ConversationView: View {
                 .padding(.horizontal, layout.horizontalInset)
                 .padding(.top, layout.composerTopPadding)
                 .padding(.bottom, layout.composerBottomPadding)
-                // 不再铺一层近实色 dock：安全区直接沿用会话主背景，只让 Composer
-                // 自己承担唯一的功能材质层，底部视觉不会与消息系统切成两块。
+                .background {
+                    composerReadabilityBackdrop(tokens: tokens)
+                }
             }
             .background(tokens.background.ignoresSafeArea())
             .task(id: sessionStore.selectedSession?.id) {
@@ -80,78 +81,30 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.statusDisplay != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
-            Group {
-                if model.runtimeActivitySnapshot != nil {
-                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                        statusStripContainer(model: model, now: timeline.date)
-                    }
-                } else {
-                    // 只有运行心跳需要秒级刷新；普通错误/状态条保持静态，减少整页重算。
-                    statusStripContainer(model: model, now: Date())
-                }
-            }
-            .padding(.horizontal, layout.horizontalInset)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+        if model.errorMessage != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
+            statusStripContainer(model: model)
+                .padding(.horizontal, layout.horizontalInset)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
         }
     }
 
-    @ViewBuilder
-    private func statusStripContainer(model: ConversationScreenModel, now: Date) -> some View {
-        VStack(spacing: 8) {
+    private func statusStripContainer(model: ConversationScreenModel) -> some View {
+        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(spacing: 8) {
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
             }
             if let notice = model.quotaNotice {
                 quotaLimitBanner(notice)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+            if let message, !message.isEmpty {
+                HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    statusStripContent(model: model, now: now, stacksVertically: false)
+                    errorChip(message)
                     Spacer(minLength: 0)
-                }
-                statusStripContent(model: model, now: now, stacksVertically: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statusStripContent(model: ConversationScreenModel, now: Date, stacksVertically: Bool) -> some View {
-        let status = model.statusDisplay
-        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let runtimeDisplay = RuntimeActivityDisplay.make(
-            snapshot: model.runtimeActivitySnapshot,
-            webSocketStatus: model.webSocketStatus,
-            now: now
-        )
-
-        if status != nil || message?.isEmpty == false {
-            if stacksVertically {
-                VStack(spacing: 8) {
-                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                HStack(spacing: 8) {
-                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func statusStripChips(
-        status: AgentSessionDisplayStatus?,
-        message: String?,
-        runtimeDisplay: RuntimeActivityDisplay?
-    ) -> some View {
-        if let status {
-            statusChip(status, runtimeDisplay: runtimeDisplay)
-        }
-        if let message, !message.isEmpty {
-            errorChip(message)
         }
     }
 
@@ -165,38 +118,6 @@ struct ConversationView: View {
             .padding(.vertical, 6)
             .background(statusChipBackground)
             .clipShape(Capsule())
-    }
-
-    private func statusChip(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> some View {
-        let displayTone = runtimeDisplay?.tone ?? status.tone
-        return HStack(alignment: .center, spacing: 7) {
-            if status.showsSpinner {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(tint(for: displayTone))
-                    .frame(width: 16, height: 16, alignment: .center)
-            } else {
-                Image(systemName: runtimeDisplay?.systemImage ?? status.systemImage)
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .frame(width: 16, height: 16, alignment: .center)
-            }
-            Text(statusText(status, runtimeDisplay: runtimeDisplay))
-        }
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .foregroundStyle(tint(for: displayTone))
-        .lineLimit(1)
-        .minimumScaleFactor(0.82)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(statusChipBackground)
-        .clipShape(Capsule())
-    }
-
-    private func statusText(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> String {
-        if let runtimeDisplay {
-            return L10n.format("ui.current_value_value", status.title, runtimeDisplay.detailText)
-        }
-        return L10n.format("ui.current_value", status.title)
     }
 
     private func historySavingsBanner(_ notice: HistorySavingsNotice) -> some View {
@@ -397,15 +318,28 @@ struct ConversationView: View {
         }
     }
 
-    private func tint(for tone: AgentSessionStatusTone) -> Color {
-        themeStore.tokens(for: colorScheme).tint(for: tone)
-    }
-
     private var statusChipBackground: Color {
         themeStore.tokens(for: colorScheme).elevatedSurface
     }
 
-    private var workbenchSecondaryText: Color {
-        themeStore.tokens(for: colorScheme).secondaryText
+    private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
+        ZStack(alignment: .top) {
+            // 与页面同色的实心区域保证 Composer 后方不会留下可读文字；
+            // 它不是第二张 dock，因此不会重新引入底部色带。
+            tokens.background
+
+            // 渐隐只位于功能层上沿，让滚动文档在进入 Composer 前退到背景。
+            // iOS 26 的 soft scroll edge 继续用于模糊过渡，这里负责可读性下限和旧系统降级。
+            LinearGradient(
+                colors: [.clear, tokens.background],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 28)
+            .offset(y: -28)
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

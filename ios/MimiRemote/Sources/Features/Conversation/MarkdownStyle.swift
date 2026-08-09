@@ -54,7 +54,8 @@ struct MarkdownStyle: Equatable {
     }
 
     var codeFont: Font {
-        .system(size: scaled(14), design: .monospaced)
+        // 行内代码与代码块统一使用 15pt，避免代码在正文排版中显得过小。
+        .system(size: scaled(15), design: .monospaced)
     }
 
     var captionFont: Font {

@@ -1088,15 +1088,23 @@ struct UnifiedWorkbenchShell: View {
                 }
             }
             ToolbarItem(placement: .principal) {
-                // 会话详情优先展示当前任务；Mac 切换保留在上一级主界面，避免全局信息挤占标题。
-                Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
-                    .font(.headline)
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .multilineTextAlignment(.center)
-                    .frame(width: layout.titleMaxWidth)
-                    .accessibilityIdentifier("sessionDetail.title")
+                Group {
+                    if sessionStore.selectedRuntimeActivitySnapshot != nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            sessionDetailNavigationTitle(
+                                layout: layout,
+                                tokens: tokens,
+                                now: context.date
+                            )
+                        }
+                    } else {
+                        sessionDetailNavigationTitle(
+                            layout: layout,
+                            tokens: tokens,
+                            now: Date()
+                        )
+                    }
+                }
             }
             if layout.usesCompactNavigation {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -1605,12 +1613,107 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityLabel(accessibilityLabel)
     }
 
-    private var sessionTitleSubtitle: String {
+    private func sessionDetailNavigationTitle(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        now: Date
+    ) -> some View {
+        let showsStatus = selectedSessionShowsNavigationStatus
+        return VStack(spacing: 1) {
+            // 标题只保留一行当前任务；普通状态收进固定副标题槽，
+            // 避免 running / idle 切换时把整条时间线向下推。
+            Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
+                .font(.headline)
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            HStack(spacing: 5) {
+                if showsStatus {
+                    Circle()
+                        .fill(sessionTitleSubtitleColor(tokens: tokens, now: now))
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                }
+                Text(sessionTitleSubtitle(now: now))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(sessionTitleSubtitleColor(tokens: tokens, now: now))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(width: layout.titleMaxWidth)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
+        .accessibilityValue(sessionTitleAccessibilityValue(now: now))
+        .accessibilityIdentifier("sessionDetail.title")
+    }
+
+    private func sessionTitleSubtitle(now: Date) -> String {
         guard let session = sessionStore.selectedSession else {
             return L10n.text("ui.session")
         }
+
+        if selectedSessionShowsNavigationStatus {
+            let status = session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity)
+            if let snapshot = sessionStore.selectedRuntimeActivitySnapshot {
+                let elapsed = RuntimeActivityDisplay.compactClockDuration(
+                    now.timeIntervalSince(snapshot.turnStartedAt)
+                )
+                return "\(status.title) · \(elapsed)"
+            }
+            return status.title
+        }
+
         let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
         return project.isEmpty ? session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).title : project
+    }
+
+    private func sessionTitleAccessibilityValue(now: Date) -> String {
+        guard let session = sessionStore.selectedSession else {
+            return L10n.text("ui.session")
+        }
+        guard selectedSessionShowsNavigationStatus else {
+            return sessionTitleSubtitle(now: now)
+        }
+
+        let status = session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity)
+        if let runtimeDisplay = RuntimeActivityDisplay.make(
+            snapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            webSocketStatus: sessionStore.webSocketStatus,
+            now: now
+        ) {
+            // 视觉副标题只留状态和时长；连接诊断仍完整提供给 VoiceOver。
+            return "\(status.title) · \(runtimeDisplay.detailText)"
+        }
+        return status.title
+    }
+
+    private var selectedSessionShowsNavigationStatus: Bool {
+        guard let session = sessionStore.selectedSession else {
+            return false
+        }
+        return session.isRunning ||
+            sessionStore.selectedForegroundActivity != nil ||
+            session.pendingApproval != nil ||
+            session.status == SessionStatus.failed.rawValue ||
+            session.status == SessionStatus.waitingForInput.rawValue ||
+            session.status == SessionStatus.waitingForApproval.rawValue
+    }
+
+    private func sessionTitleSubtitleColor(tokens: ThemeTokens, now: Date) -> Color {
+        guard selectedSessionShowsNavigationStatus else {
+            return tokens.tertiaryText
+        }
+        if let runtimeDisplay = RuntimeActivityDisplay.make(
+            snapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            webSocketStatus: sessionStore.webSocketStatus,
+            now: now
+        ) {
+            return tokens.tint(for: runtimeDisplay.tone)
+        }
+        return selectedSessionStatusColor(tokens: tokens)
     }
 
     private func selectedSessionStatusColor(tokens: ThemeTokens) -> Color {

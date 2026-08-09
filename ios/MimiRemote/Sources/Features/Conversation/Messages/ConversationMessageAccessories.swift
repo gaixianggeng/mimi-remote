@@ -568,9 +568,11 @@ struct MessageTimestampCaption: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        Text(text)
+        // 估算时间不使用 warning 色，改用 tertiaryText，并在可见文字前加“~ ”；
+        // VoiceOver 仍通过完整本地化文案明确朗读“估算”，不依赖颜色或符号猜测。
+        Text(isFallback ? "~ \(text)" : text)
             .font(themeStore.uiFont(.caption2, weight: .medium))
-            .foregroundStyle(isFallback ? tokens.warning : (foreground ?? tokens.tertiaryText))
+            .foregroundStyle(isFallback ? tokens.tertiaryText : (foreground ?? tokens.tertiaryText))
             .lineLimit(1)
             .minimumScaleFactor(0.88)
             .accessibilityLabel(isFallback ? L10n.format("ui.message_time_full_estimate_value", text) : L10n.format("ui.message_time_value", text))

@@ -14,6 +14,7 @@ struct ComposerToolbarControlLabel: View {
     let tint: Color?
     let titleMaxWidth: CGFloat?
     let accessibilityLabel: String
+    var showsRestingSurface = true
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -51,7 +52,8 @@ struct ComposerToolbarControlLabel: View {
             ComposerFlatControlSurface(
                 tokens: tokens,
                 cornerRadius: title == nil ? 22 : 12,
-                isEmphasized: isSelected
+                isEmphasized: isSelected,
+                showsRestingFill: showsRestingSurface
             )
         )
         .contentShape(RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous))
@@ -64,19 +66,38 @@ struct ComposerToolbarControlLabel: View {
 /// Menu/Popover。真正的复杂子树由 ComposerView 的独立非内联方法逐个构建。
 struct CompactComposerToolbarShell: View {
     let leadingControls: AnyView
-    let optionsControl: AnyView
-    let microphoneControl: AnyView
+    let toolControls: AnyView
     let submitControl: AnyView
 
     var body: some View {
         HStack(spacing: 8) {
             leadingControls
             Spacer(minLength: 0)
-            optionsControl
-            microphoneControl
+            toolControls
             submitControl
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// 设置与语音各自保留 44pt 命中区，但共用一块安静底衬。
+/// 这样紧凑工具栏只呈现“上下文 / 工具 / 主行动”三个视觉组，不靠缩小触控区换密度。
+struct CompactComposerToolControlsShell: View {
+    let optionsControl: AnyView
+    let microphoneControl: AnyView
+    let backgroundColor: Color
+
+    var body: some View {
+        HStack(spacing: 0) {
+            optionsControl
+            microphoneControl
+        }
+        .background {
+            Capsule()
+                .fill(backgroundColor)
+                .padding(.vertical, 4)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

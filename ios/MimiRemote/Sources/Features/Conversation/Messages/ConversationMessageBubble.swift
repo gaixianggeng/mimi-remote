@@ -20,6 +20,8 @@ struct ConversationMessageContent: View {
                 userImageBubbleSurface
             } else if isAssistantDocument {
                 assistantDocumentSurface
+            } else if isPlainUserMessage {
+                plainUserBubbleSurface
             } else {
                 bubbleSurface
             }
@@ -62,6 +64,39 @@ struct ConversationMessageContent: View {
                 },
                 stop: stop
             )
+    }
+
+    private var plainUserBubbleSurface: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            renderContent
+                // 纯文本用户消息只把正文放进气泡；时间单独落在下方，避免正文右下角
+                // 被时间占位挤出不必要的空白。context menu 仍锚定真实气泡边界。
+                .foregroundStyle(foreground)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(background, in: shape)
+                .overlay {
+                    shape.strokeBorder(bubbleBorder, lineWidth: 1)
+                }
+                .shadow(color: bubbleShadowColor, radius: 2, y: 1)
+                .contentShape(.interaction, shape)
+                .contentShape(.contextMenuPreview, shape)
+                .messageContextMenu(
+                    for: message,
+                    retry: {
+                        retry(message)
+                    },
+                    stop: stop
+                )
+
+            MessageTimestampCaption(
+                text: message.timestampCaptionText,
+                isFallback: message.isTimestampFallback,
+                foreground: timestampForeground
+            )
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var assistantDocumentSurface: some View {
@@ -249,6 +284,13 @@ struct ConversationMessageContent: View {
 
     private var isAssistantDocument: Bool {
         message.role == .assistant && message.kind == .message
+    }
+
+    private var isPlainUserMessage: Bool {
+        message.role == .user
+            && message.kind == .message
+            && !shouldRenderUserImages
+            && !shouldRenderStructuredUserPayload
     }
 
     private var shouldRenderMarkdownMessage: Bool {

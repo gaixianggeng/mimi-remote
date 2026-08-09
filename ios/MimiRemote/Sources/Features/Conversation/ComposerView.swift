@@ -1228,8 +1228,7 @@ struct ComposerView: View {
     func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
         CompactComposerToolbarShell(
             leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
-            optionsControl: compactOptionsControlBox(),
-            microphoneControl: compactMicrophoneControlBox(),
+            toolControls: compactToolControlsBox(),
             submitControl: compactSubmitControlBox()
         )
     }
@@ -1268,13 +1267,25 @@ struct ComposerView: View {
     }
 
     @inline(never)
-    func compactOptionsControlBox() -> AnyView {
-        AnyView(composerOptionsMenu)
+    func compactToolControlsBox() -> AnyView {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return AnyView(
+            CompactComposerToolControlsShell(
+                optionsControl: compactOptionsControlBox(showsRestingSurface: false),
+                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: false),
+                backgroundColor: tokens.background
+            )
+        )
     }
 
     @inline(never)
-    func compactMicrophoneControlBox() -> AnyView {
-        AnyView(voiceMicControl)
+    func compactOptionsControlBox(showsRestingSurface: Bool) -> AnyView {
+        AnyView(composerOptionsMenu(showsRestingSurface: showsRestingSurface))
+    }
+
+    @inline(never)
+    func compactMicrophoneControlBox(showsRestingSurface: Bool) -> AnyView {
+        AnyView(voiceMicControl(showsRestingSurface: showsRestingSurface))
     }
 
     @inline(never)
@@ -1283,6 +1294,10 @@ struct ComposerView: View {
     }
 
     var composerOptionsMenu: some View {
+        composerOptionsMenu(showsRestingSurface: true)
+    }
+
+    func composerOptionsMenu(showsRestingSurface: Bool) -> some View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
@@ -1315,6 +1330,7 @@ struct ComposerView: View {
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
                 systemImage: "slider.horizontal.3",
                 isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
+                showsRestingSurface: showsRestingSurface,
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
@@ -1336,6 +1352,10 @@ struct ComposerView: View {
     }
 
     var voiceMicControl: some View {
+        voiceMicControl(showsRestingSurface: true)
+    }
+
+    func voiceMicControl(showsRestingSurface: Bool) -> some View {
         VoiceMicButton(
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
@@ -1343,7 +1363,8 @@ struct ComposerView: View {
             usesRealtimeTranscription: selectedVoiceInputProvider == .apple,
             onTap: {
                 toggleVoiceInput()
-            }
+            },
+            showsRestingSurface: showsRestingSurface
         )
         .layoutPriority(0)
         .accessibilityIdentifier("composer.voice")
@@ -1508,6 +1529,7 @@ struct ComposerView: View {
         isSelected: Bool = false,
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
+        showsRestingSurface: Bool = true,
         accessibilityLabel: String
     ) -> some View {
         ComposerToolbarControlLabel(
@@ -1517,7 +1539,8 @@ struct ComposerView: View {
             isSelected: isSelected,
             tint: tint,
             titleMaxWidth: titleMaxWidth,
-            accessibilityLabel: accessibilityLabel
+            accessibilityLabel: accessibilityLabel,
+            showsRestingSurface: showsRestingSurface
         )
     }
 
