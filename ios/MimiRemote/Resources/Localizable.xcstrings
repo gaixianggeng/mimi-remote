@@ -6721,6 +6721,24 @@
         }
       }
     },
+    "ui.copy_path": {
+      "comment": "Session menu action that copies the session directory path.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制路径"
+          }
+        }
+      }
+    },
     "ui.counts_joined": {
       "comment": "Join two localized count fragments.",
       "localizations": {
