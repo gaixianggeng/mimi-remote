@@ -84,6 +84,11 @@ type Router struct {
 	accountTokenUsageResult   json.RawMessage
 	accountTokenUsageCachedAt time.Time
 	accountTokenUsageCacheTTL time.Duration
+	// threadHandoffs 在 Mac 侧等待 Codex thread 空闲后执行一次短暂的
+	// archive -> unarchive。thread/unsubscribe 只取消事件订阅，不能释放
+	// resident app-server 持有的 writer lock，因此跨 App 交接必须由进程所有者完成。
+	threadHandoffs        *appServerThreadHandoffCoordinator
+	threadHandoffRecovery *appServerThreadHandoffRecoveryStore
 
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
@@ -108,9 +113,11 @@ type Router struct {
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
-// 空 GatewayTurnClaimStorePath 保持纯内存行为，供普通测试和嵌入式调用使用。
+// 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
+// 必须同时注入两条绝对路径。
 type RouterOptions struct {
-	GatewayTurnClaimStorePath string
+	GatewayTurnClaimStorePath      string
+	ThreadHandoffRecoveryStorePath string
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -206,6 +213,17 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 			autoThreadTitleTimeout,
 		)
 	}
+	r.threadHandoffRecovery = newAppServerThreadHandoffRecoveryStore(options.ThreadHandoffRecoveryStorePath)
+	if err := r.threadHandoffRecovery.LoadError(); err != nil {
+		// fail closed：后续 MarkUnarchiveRequired 会持续失败，因此不会执行新的 archive。
+		log.Printf("app-server thread handoff recovery store unavailable err=%v", err)
+	}
+	r.threadHandoffs = newAppServerThreadHandoffCoordinator(r)
+	// 构造期间同步安装为 executing entry，再异步恢复。这样第一个 gateway 写请求
+	// 也只能等待 unarchive 完成，不能抢先取消重启恢复。
+	for _, threadID := range r.threadHandoffRecovery.ThreadIDs() {
+		r.threadHandoffs.Schedule(threadID)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
@@ -253,6 +271,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/voice/transcribe", authed(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/runtime/status", authed(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
+	mux.Handle(appServerThreadHandoffPath, authed(http.HandlerFunc(r.appServerThreadHandoffHandler)))
 	mux.Handle("/api/app-server/external-activity", authed(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
@@ -280,6 +299,9 @@ func (r *Router) Shutdown() {
 	}
 	if r.autoThreadTitles != nil {
 		r.autoThreadTitles.Close()
+	}
+	if r.threadHandoffs != nil {
+		r.threadHandoffs.Close()
 	}
 	r.runtimeStatus.Close()
 	r.claudeBridge.shutdown()

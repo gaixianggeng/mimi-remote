@@ -1855,6 +1855,264 @@ extension ConversationDataFlowTests {
         XCTAssertNil(closedContext?.activeTurnID)
     }
 
+    // archive→unarchive 释放 writer 时，agentd 会用结构化 rejected 响应表示“本次 RPC
+    // 尚未转发”。resume 可以在 helper 内发送新请求；turn/start 则必须回到外层重新 resume，
+    // 避免同一旧 frame 与 executing handoff 重叠。生命周期通知也不能取消 pending resume。
+    func testDirectRuntimeRetriesStructuredThreadHandoffForResumeAndTurnStart() async throws {
+        let project = AgentProject(id: "proj_thread_handoff_retry", name: "Thread Handoff Retry", path: "/tmp/thread-handoff-retry")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            // 两次结构化拒绝（resume、turn/start）共用同一 outer 预算；若 helper 嵌套重试，
+            // 下面的请求顺序/次数断言会暴露额外 frame。
+            threadHandoffRetryDelaysNanoseconds: [0, 0],
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list", "thread/read", "thread/resume", "turn/start"]
+                )
+            }
+        )
+
+        let listTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: nil)
+        }
+        let transport = try await waitForFakeAppServerTransport(in: pool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        assertInitializeEnablesExperimentalAPI(initialize)
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490841,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}],"nextCursor":null}"#)
+        _ = try await listTask.value
+
+        let enqueueHandoffInProgress: (CodexAppServerRequestID) throws -> Void = { requestID in
+            transport.enqueue(#"{"id":\#(try jsonFragment(for: requestID)),"error":{"code":-32000,"message":"thread handoff in progress","data":{"accepted":false,"retryable":true,"reason":"thread_handoff_in_progress"}}}"#)
+        }
+
+        let startTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: "thr_thread_handoff_retry",
+                payload: CodexAppServerTurnPayload(prompt: "handoff 完成后继续"),
+                clientMessageID: "client_thread_handoff_retry"
+            )
+        }
+        let beforeResumeMessages = await transport.sentMessages()
+        let firstResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: beforeResumeMessages.count)
+        // 第一次拒绝期间真实 handoff 会先把 thread 标成 notLoaded；先注入生命周期通知，
+        // 再注入 rejected response，确保 pending resume task 真的经历这段交错。
+        transport.enqueue(#"{"method":"thread/status/changed","params":{"threadId":"thr_thread_handoff_retry","status":{"type":"notLoaded"}}}"#)
+        try enqueueHandoffInProgress(firstResume.id)
+        // 只从首个 resume 之后开始扫描，否则 helper 的第一次请求会被重复匹配。
+        let afterFirstResumeMessages = await transport.sentMessages()
+        let retryResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: afterFirstResumeMessages.count)
+        XCTAssertNotEqual(retryResume.id, firstResume.id)
+        transportResponse(transport, id: retryResume.id, result: #"{"thread":{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490842,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}}"#)
+
+        let beforeTurnMessages = await transport.sentMessages()
+        let firstTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: beforeTurnMessages.count)
+        // turn/start 的旧 frame 也被 handoff 拒绝；先让 thread/closed 到达，再回 rejected，
+        // 外层随后必须重新 resume，不能沿用旧 observation/binding。
+        transport.enqueue(#"{"method":"thread/closed","params":{"threadId":"thr_thread_handoff_retry"}}"#)
+        try enqueueHandoffInProgress(firstTurnStart.id)
+        let afterFirstTurnMessages = await transport.sentMessages()
+        let finalResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: afterFirstTurnMessages.count)
+        XCTAssertNotEqual(finalResume.id, firstResume.id)
+        XCTAssertNotEqual(finalResume.id, retryResume.id)
+        transportResponse(transport, id: finalResume.id, result: #"{"thread":{"id":"thr_thread_handoff_retry","sessionId":"thr_thread_handoff_retry","preview":"handoff retry","ephemeral":false,"modelProvider":"openai","createdAt":1780490840,"updatedAt":1780490843,"status":{"type":"idle"},"path":null,"cwd":"/tmp/thread-handoff-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"handoff retry","turns":[]}}"#)
+
+        let afterFinalResumeMessages = await transport.sentMessages()
+        let finalTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: afterFinalResumeMessages.count)
+        XCTAssertNotEqual(finalTurnStart.id, firstTurnStart.id)
+        transportResponse(transport, id: finalTurnStart.id, result: #"{"turn":{"id":"turn_thread_handoff_retry","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490843,"completedAt":null,"durationMs":null}}"#)
+
+        let outcome = try await startTask.value
+        XCTAssertEqual(outcome, .active(turnID: "turn_thread_handoff_retry"))
+        let sentMessages = await transport.sentMessages()
+        let sentRequests = sentMessages.compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(sentRequests.map(\.method), ["initialize", "thread/list", "thread/resume", "thread/resume", "turn/start", "thread/resume", "turn/start"])
+        XCTAssertEqual(sentRequests.filter { $0.method == "thread/resume" }.count, 3)
+        XCTAssertEqual(sentRequests.filter { $0.method == "turn/start" }.count, 2)
+    }
+
+    // agentd 收到 turn/completed 后会延迟 archive→unarchive，详情页仍在当前连接时也会
+    // 推送 notLoaded。这个通知必须使下一次发送重新 thread/resume，不能沿用旧绑定直接 turn/start。
+    func testNotLoadedNotificationClearsResumeBindingBeforeNextTurn() async throws {
+        let project = AgentProject(id: "proj_auto_handoff_not_loaded", name: "Auto Handoff", path: "/tmp/auto-handoff-not-loaded")
+        let threadID = "thread_auto_handoff_not_loaded"
+        let threadJSON = appServerThreadJSON(
+            id: threadID,
+            cwd: project.path,
+            source: "appServer",
+            updatedAt: 1780494000
+        )
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: [
+                "initialize", "initialized", "thread/read", "thread/resume", "turn/start"
+            ]
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+
+        let connectTask = Task {
+            try await runtime.connectForEvents(sessionID: threadID)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 1)
+        transportResponse(transport, id: read.id, result: #"{"thread":\#(threadJSON)}"#)
+        let initialResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        transportResponse(transport, id: initialResume.id, result: #"{"thread":\#(threadJSON)}"#)
+        try await connectTask.value
+        let didResumeInitially = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertTrue(didResumeInitially)
+
+        // 通过真实 FakeTransport 通知泵注入 agentd 的终态状态变化。
+        transport.enqueue(#"{"method":"thread/status/changed","params":{"threadId":"\#(threadID)","status":{"type":"notLoaded"}}}"#)
+        for _ in 0..<200 {
+            if await runtime.threadsResumedOnConnection.contains(threadID) == false {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let didResumeAfterNotLoaded = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertFalse(didResumeAfterNotLoaded)
+
+        let messagesBeforeNextTurn = await transport.sentMessages()
+        let nextTurnTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: threadID,
+                payload: CodexAppServerTurnPayload(prompt: "自动 handoff 后继续"),
+                clientMessageID: "client_auto_handoff_not_loaded"
+            )
+        }
+        let resumedBeforeTurn = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: messagesBeforeNextTurn.count
+        )
+        XCTAssertEqual(resumedBeforeTurn.params?.objectValue?["threadId"]?.stringValue, threadID)
+        transportResponse(transport, id: resumedBeforeTurn.id, result: #"{"thread":\#(threadJSON)}"#)
+        let nextTurnStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeNextTurn.count
+        )
+        let messagesAfterNextTurn = await transport.sentMessages()
+        let nextResumeIndex = try XCTUnwrap(messagesAfterNextTurn.firstIndex { text in
+            (try? decodeAppServerRequest(text).method) == "thread/resume"
+        })
+        let nextTurnIndex = try XCTUnwrap(messagesAfterNextTurn.firstIndex { text in
+            (try? decodeAppServerRequest(text).method) == "turn/start"
+        })
+        XCTAssertLessThan(nextResumeIndex, nextTurnIndex)
+        transportResponse(
+            transport,
+            id: nextTurnStart.id,
+            result: #"{"turn":{"id":"turn_auto_handoff_not_loaded","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780494001,"completedAt":null,"durationMs":null}}"#
+        )
+        let nextTurnOutcome = try await nextTurnTask.value
+        XCTAssertEqual(nextTurnOutcome, .active(turnID: "turn_auto_handoff_not_loaded"))
+    }
+
+    // handoff coordinator 产生的私有 lifecycle 不能被当成普通 thread/closed：它只清理
+    // 当前连接的 resume binding，保留会话/交互状态，并让下一次发送重新走 resume→turn/start。
+    func testPrivateThreadHandoffLifecycleOnlyClearsBindingBeforeNextTurn() async throws {
+        let project = AgentProject(id: "proj_private_handoff_lifecycle", name: "Private Handoff", path: "/tmp/private-handoff-lifecycle")
+        let threadID = "thread_private_handoff_lifecycle"
+        let threadJSON = appServerThreadJSON(
+            id: threadID,
+            cwd: project.path,
+            source: "appServer",
+            updatedAt: 1780494100
+        )
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: [
+                "initialize", "initialized", "thread/read", "thread/resume", "turn/start"
+            ]
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+
+        let connectTask = Task {
+            try await runtime.connectForEvents(sessionID: threadID)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 1)
+        transportResponse(transport, id: read.id, result: #"{"thread":\#(threadJSON)}"#)
+        let initialResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        transportResponse(transport, id: initialResume.id, result: #"{"thread":\#(threadJSON)}"#)
+        try await connectTask.value
+        let didResumeInitially = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertTrue(didResumeInitially)
+
+        // params 保留原 lifecycle 字段，并由 gateway 追加 originalMethod；Runtime 只消费 threadId。
+        transport.enqueue(#"{"method":"_mimi/threadHandoff/lifecycle","params":{"threadId":"\#(threadID)","originalMethod":"thread/closed"}}"#)
+        for _ in 0..<200 {
+            if await runtime.threadsResumedOnConnection.contains(threadID) == false {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let didResumeAfterPrivateLifecycle = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertFalse(didResumeAfterPrivateLifecycle)
+        let contextAfterPrivateLifecycle = await runtime.contextsBySessionID[threadID]
+        XCTAssertNotEqual(contextAfterPrivateLifecycle?.session.status, "closed")
+
+        let messagesBeforeNextTurn = await transport.sentMessages()
+        let nextTurnTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: threadID,
+                payload: CodexAppServerTurnPayload(prompt: "私有 handoff 后继续"),
+                clientMessageID: "client_private_handoff_lifecycle"
+            )
+        }
+        let resumedBeforeTurn = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: messagesBeforeNextTurn.count
+        )
+        transportResponse(transport, id: resumedBeforeTurn.id, result: #"{"thread":\#(threadJSON)}"#)
+        let nextTurnStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeNextTurn.count
+        )
+        transportResponse(
+            transport,
+            id: nextTurnStart.id,
+            result: #"{"turn":{"id":"turn_private_handoff_lifecycle","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780494101,"completedAt":null,"durationMs":null}}"#
+        )
+        let outcome = try await nextTurnTask.value
+        XCTAssertEqual(outcome, .active(turnID: "turn_private_handoff_lifecycle"))
+        let sentMessages = await transport.sentMessages()
+        let sentRequests = sentMessages.compactMap { try? decodeAppServerRequest($0) }
+        let methods = sentRequests.map(\.method)
+        XCTAssertEqual(methods.suffix(2), ["thread/resume", "turn/start"])
+    }
+
     // MIM-120 根因侧：Claude 常驻 bridge 的回放环里可能还留着上一条连接的响应帧。
     // 只要新连接的请求 id 从 1 重来，旧 model/list 响应就可能兑现新的 thread/list。
     func testRequestIDsNeverRepeatAcrossConnections() async throws {

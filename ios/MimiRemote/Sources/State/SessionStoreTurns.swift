@@ -250,15 +250,6 @@ extension SessionStore {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
     }
 
-    func unsubscribeThreadInBackground(_ threadID: SessionID) {
-        Task { [weak self] in
-            guard let self else { return }
-            // unsubscribe 只释放当前 app-server 连接的订阅，不中断后台运行中的 Turn。
-            // 生命周期清理失败不应阻塞会话切换；断线后连接关闭仍会回收上游状态。
-            _ = try? await self.clientFactory().unsubscribeThread(threadID: threadID)
-        }
-    }
-
     static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {
         normalizedRuntimeProvider == "codex" ? nil : normalizedRuntimeProvider
     }
@@ -354,7 +345,7 @@ extension SessionStore {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
             } else {
-                unsubscribeThreadInBackground(previousSession.id)
+                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
     }
@@ -528,7 +519,7 @@ extension SessionStore {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
             } else {
-                unsubscribeThreadInBackground(previousSession.id)
+                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
         if let previousSession,
@@ -1769,6 +1760,15 @@ extension SessionStore {
         let reconnectSessionID = connectedSessionID
             ?? (webSocketReconnectTask == nil ? nil : selectedSessionID)
             ?? networkSuspendedSessionID
+        // 退到后台前先把当前实际持有前台连接的 Codex thread 交给 agentd。
+        // active turn 不需要在这里等待：服务端会返回 scheduled，并在 turn idle 后释放 writer。
+        // 有本地排队 turn 时沿用切会话的 guard，避免后台释放后丢失仍待发送的队列上下文。
+        if let handoffSessionID = connectedSessionID ?? selectedSessionID,
+           let handoffSession = sessionsByID[handoffSessionID],
+           supportsCodexThreadManagement(handoffSession),
+           queuedRunningTurnsBySessionID[handoffSessionID]?.isEmpty != false {
+            releaseThreadWriterWhenIdleInBackground(handoffSessionID)
+        }
         if let reconnectSessionID, sessionsByID[reconnectSessionID] != nil {
             if isNetworkUnavailable {
                 networkSuspendedSessionID = reconnectSessionID

@@ -68,6 +68,14 @@ final class AgentAPIClientRequestTests: XCTestCase {
             ) { client in
                 _ = try await client.externalActivities()
             },
+            .init(
+                "thread handoff",
+                path: "/api/app-server/thread-handoff",
+                method: "POST",
+                json: ["thread_id": "thread-contract"]
+            ) { client in
+                _ = try await client.scheduleThreadHandoff(threadID: "thread-contract")
+            },
             .init("relay diagnostics", path: "/api/diagnostics/relay", method: "GET") { client in
                 _ = try await client.relayDiagnostics()
             },
@@ -374,6 +382,29 @@ final class AgentAPIClientRequestTests: XCTestCase {
         }
     }
 
+    func testThreadHandoffDecodesResponse() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ThreadHandoffResponseURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let client = AgentAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "mobile-contract-token",
+            session: session
+        )
+        let response = try await client.scheduleThreadHandoff(threadID: "thread-response")
+
+        XCTAssertEqual(response.threadID, "thread-response")
+        XCTAssertEqual(response.status, .scheduled)
+        let request = try XCTUnwrap(ThreadHandoffResponseURLProtocol.lastRequest())
+        XCTAssertEqual(request.url?.path, "/api/app-server/thread-handoff")
+        XCTAssertEqual(request.httpMethod, "POST")
+        let body = try XCTUnwrap(request.httpBody)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertTrue(NSDictionary(dictionary: object).isEqual(to: ["thread_id": "thread-response"]))
+    }
+
     private func assert(_ request: URLRequest, matches contract: RESTRequestContract) {
         XCTAssertEqual(request.url?.host, "127.0.0.1", "\(contract.name) host")
         XCTAssertEqual(request.url?.port, 8787, "\(contract.name) port")
@@ -537,6 +568,61 @@ private final class AgentAPIRequestStubURLProtocol: URLProtocol {
         stream.open()
         defer { stream.close() }
 
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4 * 1024)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}
+
+/// 成功响应只用于锁定 handoff DTO 的解码，不改变上面的“所有契约都必须发出请求”桩。
+private final class ThreadHandoffResponseURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var requestStorage: URLRequest?
+
+    static func lastRequest() -> URLRequest? {
+        lock.withLock { requestStorage }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        var capturedRequest = request
+        if capturedRequest.httpBody == nil, let stream = capturedRequest.httpBodyStream {
+            capturedRequest.httpBody = Self.readAll(from: stream)
+        }
+        Self.lock.withLock { Self.requestStorage = capturedRequest }
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"thread_id":"thread-response","status":"scheduled"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func readAll(from stream: InputStream) -> Data {
+        stream.open()
+        defer { stream.close() }
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 4 * 1024)
         while true {

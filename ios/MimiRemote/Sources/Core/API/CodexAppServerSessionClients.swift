@@ -221,6 +221,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.unsubscribeThread(threadID: threadID)
     }
 
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        try await runtime.releaseThreadWriterWhenIdle(threadID: threadID)
+    }
+
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -592,6 +596,11 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         try await bundle.runtime(forSessionID: threadID).unsubscribeThread(threadID: threadID)
+    }
+
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        try await bundle.runtime(forSessionID: threadID)
+            .releaseThreadWriterWhenIdle(threadID: threadID)
     }
 
     func startReview(

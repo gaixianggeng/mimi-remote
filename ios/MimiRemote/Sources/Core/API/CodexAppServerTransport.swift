@@ -327,7 +327,10 @@ actor CodexAppServerConnection {
             // app-server 要求客户端声明能力；这里保持最小能力集，避免移动端误触实验外的鉴权路径。
             "capabilities": .object([
                 "experimentalApi": .bool(true),
-                "requestAttestation": .bool(false)
+                "requestAttestation": .bool(false),
+                // gateway 会在转发给 Codex 前剥离该私有字段。它只用于让新版
+                // agentd 确认客户端能处理 auto-handoff 产生的 notLoaded。
+                "mimiThreadHandoff": .bool(true)
             ])
         ])
         do {
