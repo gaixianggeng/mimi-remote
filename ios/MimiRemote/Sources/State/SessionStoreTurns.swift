@@ -561,7 +561,8 @@ extension SessionStore {
             disconnectWebSocket()
         } else {
             // 非运行会话有两种可能：真历史，或被瞬时 idle 误读降级的运行会话。
-            // 已有缓存时先展示缓存、后台静默补一次最新页；同时仍建立事件订阅——
+            // 已有缓存时先展示缓存、后台补一次最新页；失败和 savings notice 仍保持静默，
+            // 同时仍建立事件订阅——
             // thread/resume 的权威状态能立即纠正误判，之后的 turn 事件也能直接推进来，
             // 不再要求手动刷新。
             let didRefreshHistory: Bool
@@ -577,10 +578,12 @@ extension SessionStore {
             if needsAuthoritativeReconciliation {
                 // 列表已经把 thread 判为终态、正文却仍停在本地等待态时，updatedAt/revision/seq
                 // 可能与离开前完全相同，普通 quiet refresh 会误复用局部缓存。显式重新打开只
-                // 做一次无感权威读取，让正文、状态和列表分组在建立新监听前先收敛。
+                // 做一次权威读取；正文、状态和列表分组在建立新监听前先收敛，消息尾部用轻量进度
+                // 表达 assistant 历史仍在补齐。
                 didRefreshHistory = await loadHistory(
                     for: session,
                     quiet: true,
+                    showsProgress: true,
                     force: true,
                     reason: .authoritativeReopen
                 )
@@ -593,7 +596,7 @@ extension SessionStore {
                     clearRuntimeActivity(sessionID: session.id)
                 }
             } else if conversationStore.hasLoadedHistory(sessionID: session.id) {
-                scheduleQuietHistoryRefresh(for: session)
+                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
                 didRefreshHistory = true
             } else {
                 didRefreshHistory = await loadHistoryIfNeeded(for: session)
