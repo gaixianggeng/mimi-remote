@@ -1428,8 +1428,11 @@ private enum WorkspaceSessionRowMetrics {
     static let horizontalPadding: CGFloat = 14
     static let railWidth: CGFloat = 16
     static let railSpacing: CGFloat = 10
-    /// 标准动态字体下两行内容加 10pt 上下留白约 60–64pt；大字体由文本自然撑开。
-    static let minHeight: CGFloat = 60
+    /// 两行信息保持紧密关联，但用更充足的行间距和上下留白降低长列表压迫感。
+    static let contentSpacing: CGFloat = 5
+    static let verticalPadding: CGFloat = 12
+    /// 标准动态字体下约 68pt；大字体仍由文本自然撑开，不能靠固定高度压缩内容。
+    static let minHeight: CGFloat = 68
     static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
 }
 
@@ -1867,7 +1870,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                     Color.clear
                         .frame(width: WorkspaceSessionRowMetrics.railWidth)
 
-                    VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 8) {
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
                             .fill(tokens.elevatedSurface)
                             .frame(width: 210, height: 12)
@@ -1878,6 +1881,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                     Spacer(minLength: 8)
                 }
                 .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+                .padding(.vertical, WorkspaceSessionRowMetrics.verticalPadding)
                 .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
 
                 if index < 2 {
@@ -1920,7 +1924,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             sessionStateRail(railState, tokens: tokens)
                 .padding(.top, 5)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.contentSpacing) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if sessionStore.isSessionPinned(session.id) {
                         SessionPinnedBadge(compact: true)
@@ -1994,7 +1998,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             }
         }
         .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .padding(.vertical, 9)
+        .padding(.vertical, WorkspaceSessionRowMetrics.verticalPadding)
         .frame(minHeight: WorkspaceSessionRowMetrics.minHeight, alignment: .top)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)

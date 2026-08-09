@@ -107,16 +107,17 @@ struct WorkspaceRuntimePicker: View {
                     .contentShape(Rectangle())
                     .background {
                         if isSelected {
-                            let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            // 与右侧“新建会话”共用胶囊曲率；两个入口属于同一层级的会话操作，
+                            // 曲率一致后仍通过实色/描边区分主操作与筛选状态。
+                            let shape = Capsule()
                             shape
                                 .fill(tokens.contentPanelBackground)
                                 .overlay {
-                                    shape.stroke(
-                                        tokens.primaryAction.opacity(
-                                            colorSchemeContrast == .increased ? 0.82 : 0.34
-                                        ),
-                                        lineWidth: colorSchemeContrast == .increased ? 1.25 : 0.75
-                                    )
+                                    // 常规模式不描边，避免选中态像获得焦点的输入框；
+                                    // 增强对比度仅补中性轮廓，不重新引入紫色边框。
+                                    if colorSchemeContrast == .increased {
+                                        shape.stroke(tokens.border, lineWidth: 1)
+                                    }
                                 }
                                 .shadow(
                                     color: tokens.primaryAction.opacity(
@@ -147,11 +148,11 @@ struct WorkspaceRuntimePicker: View {
         .padding(3)
         .background {
             // 外轨只负责把两个选项映射为同一控件，保持中性并让内容层级更安静。
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            Capsule()
                 .fill(tokens.surface.opacity(colorScheme == .dark ? 0.82 : 0.72))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            Capsule()
                 .stroke(
                     tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.64),
                     lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
