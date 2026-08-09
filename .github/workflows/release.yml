@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  repository_dispatch:
+    types:
+      - release
 
 permissions:
   contents: read
@@ -12,15 +12,40 @@ concurrency:
   group: mimi-remote-release
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+
 jobs:
+  source-trust:
+    name: Verify release source
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      tag_sha: ${{ steps.source.outputs.tag_sha }}
+    steps:
+      - name: Checkout trusted main source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      # 这个 job 不读取任何 Secret；来源不可信时，签名与写 Release 的 job 都不会启动。
+      - name: Trust gate before release secrets
+        id: source
+        run: bash ./scripts/check-release-source.sh --check
+
   verify:
+    needs: source-trust
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 30
+    environment: production-release
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ needs.source-trust.outputs.tag_sha }}
           fetch-depth: 0
 
       - name: Setup Go
@@ -73,7 +98,7 @@ jobs:
         run: |
           bash ./scripts/build-macos-installer.sh \
             --snapshot \
-            --version "${GITHUB_REF_NAME#v}" \
+            --version "${RELEASE_TAG#v}" \
             --build-number "$GITHUB_RUN_NUMBER" \
             --output-dir dist-macos
 
@@ -88,18 +113,23 @@ jobs:
           args: release --snapshot --clean --skip=publish
         env:
           GOTOOLCHAIN: local
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
           TAP_DEPLOY_KEY: snapshot-only-not-used
 
       - name: Check release artifacts
         run: bash ./scripts/check-release-artifacts.sh
 
   verify-windows:
+    needs: source-trust
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: windows-latest
     timeout-minutes: 35
+    environment: production-release
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.source-trust.outputs.tag_sha }}
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -128,14 +158,14 @@ jobs:
               $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
               [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
               ./scripts/build-windows-installer.ps1 `
-                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -Version ($env:RELEASE_TAG).TrimStart('v') `
                 -OutputDirectory dist-windows `
                 -PfxPath $pfx `
                 -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
             } else {
               Write-Warning 'Windows signing secrets are absent. Publishing an unsigned installer that may trigger Microsoft Defender SmartScreen.'
               ./scripts/build-windows-installer.ps1 `
-                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -Version ($env:RELEASE_TAG).TrimStart('v') `
                 -OutputDirectory dist-windows `
                 -AllowUnsignedRelease
             }
@@ -162,17 +192,20 @@ jobs:
 
   release:
     needs:
+      - source-trust
       - verify
       - verify-windows
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 45
+    environment: production-release
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ needs.source-trust.outputs.tag_sha }}
           fetch-depth: 0
 
       - name: Setup Go
@@ -196,7 +229,7 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: |
           bash ./scripts/build-macos-installer.sh \
-            --version "${GITHUB_REF_NAME#v}" \
+            --version "${RELEASE_TAG#v}" \
             --build-number "$GITHUB_RUN_NUMBER" \
             --output-dir dist-macos
 
@@ -211,6 +244,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           GOTOOLCHAIN: local
           MIMI_MACOS_SIGNING: required
@@ -224,7 +258,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" \
+          gh release upload "$RELEASE_TAG" \
             dist-macos/Mimi-Remote-Mac.dmg \
             dist-macos/Mimi-Remote-Mac.dmg.sha256 \
             dist-skill/install-mimi-remote.zip \
@@ -239,11 +273,13 @@ jobs:
 
   publish-windows:
     needs:
+      - source-trust
       - release
       - verify-windows
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: windows-latest
     timeout-minutes: 10
+    environment: production-release
     permissions:
       contents: write
     steps:
@@ -259,4 +295,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $files = Get-ChildItem -LiteralPath dist-windows -File
-          gh release upload $env:GITHUB_REF_NAME $files.FullName --clobber --repo $env:GITHUB_REPOSITORY
+          gh release upload $env:RELEASE_TAG $files.FullName --clobber --repo $env:GITHUB_REPOSITORY

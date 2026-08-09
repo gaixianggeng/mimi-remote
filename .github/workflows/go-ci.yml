@@ -17,6 +17,7 @@ on:
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-macos-release-signing.sh"
       - "scripts/check-release-artifacts.sh"
+      - "scripts/check-release-source.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
       - "scripts/install-linux.sh"

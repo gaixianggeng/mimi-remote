@@ -10,7 +10,7 @@
 - 同一 SHA 已有成功 Nightly 时，普通定时或手工触发只做成功的 skip；需要重发时手工选择 `force_publish`。
 - 确定需要发布后，先在轻量 Ubuntu job 中只检查 ASC、主 App / Widget profile、分发证书与临时 Keychain Secrets 是否齐全；缺失配置会在启动 macOS Simulator 回归前失败。profile 内容、App Group、Team、Bundle ID、证书和签名身份仍由后续发布 job 完整校验。
 - 发布 job 复用 iOS CI 的归档、签名和 `ios_testflight_ci.sh`，成功后保存 `nightly-testflight-<SHA>` evidence artifact 30 天。
-- 正式 iOS 候选通过 iOS CI 的 `workflow_dispatch` 和 `publish_app_store` 手工触发；正式 Mac、agentd、Windows 仍由维护者在当前 `main` 上创建并推送 `v*` tag，沿用现有 Release workflow。
+- 正式 iOS 候选通过 iOS CI 的 `workflow_dispatch` 和 `publish_app_store` 手工触发。正式 Mac、agentd、Windows 由维护者从已经进入 `main` 的 commit 创建并推送 `vX.Y.Z` tag，再发送 `repository_dispatch:release` 并传入该 tag；tag push 本身不读取发布 Secret。GitHub 固定从默认分支加载 Release workflow，workflow 再在不读取 Secret 的轻量 job 中核对官方仓库、受信 main SHA、目标 tag 与 `origin/main` 可达性，最后才允许签名和发布 job 进入 `production-release` Environment。
 
 ## 实现
 

@@ -211,9 +211,69 @@ fail_check("Nightly evidence JSON 字段不完整") unless %w[source_sha run_id 
 fail_check("Nightly evidence artifact 配置错误") unless artifact["uses"].to_s.match?(/@[0-9a-f]{40}\z/) && artifact.dig("with", "name").to_s.include?("nightly-testflight-") && artifact.dig("with", "retention-days") == 30
 
 release_triggers = triggers(release, release_path)
-fail_check("Release 只能由 v* tag push 触发") unless
-  release_triggers.keys == ["push"] && release_triggers.dig("push", "tags") == ["v*"]
+release_dispatch = release_triggers["repository_dispatch"]
+fail_check("Release 只能由默认分支 repository_dispatch:release 触发") unless
+  release_triggers.keys == ["repository_dispatch"] &&
+  release_dispatch == { "types" => ["release"] }
+fail_check("Release 顶层权限必须严格保持 contents:read") unless
+  release["permissions"] == { "contents" => "read" }
+fail_check("Release RELEASE_TAG 必须只来自 dispatch input") unless
+  release.dig("env", "RELEASE_TAG").to_s.include?("github.event.client_payload.release_tag") &&
+  release.fetch("env").keys == ["RELEASE_TAG"]
 fail_check("release.yml 不得依赖 release-validation/readiness/attestation") if release.to_s.match?(/release-validation|readiness|attestation/i)
+release_jobs = release.fetch("jobs")
+expected_release_jobs = %w[source-trust verify verify-windows release publish-windows]
+fail_check("Release jobs 集合存在未受 source-trust 约束的旁路") unless
+  release_jobs.keys.sort == expected_release_jobs.sort
+release_trust = release_jobs.fetch("source-trust")
+expected_trust_keys = %w[name if runs-on timeout-minutes outputs steps]
+fail_check("Release source-trust 含未允许的权限、Environment 或控制字段") unless
+  release_trust.keys.sort == expected_trust_keys.sort
+fail_check("Release source-trust 必须只输出 checker 验证的 tag_sha") unless
+  release_trust.fetch("outputs").keys == ["tag_sha"] &&
+  release_trust.dig("outputs", "tag_sha").to_s.include?("steps.source.outputs.tag_sha")
+fail_check("Release source-trust 仓库条件不可放宽") unless
+  release_trust["if"] == "github.repository == 'gaixianggeng/mimi-remote'"
+fail_check("Release source-trust 必须使用轻量 Ubuntu runner 和短超时") unless
+  release_trust["runs-on"] == "ubuntu-latest" && release_trust["timeout-minutes"] == 3
+fail_check("Release source-trust 必须且只能包含 checkout 与 trust 两步") unless
+  steps(release_trust).length == 2
+release_trust_checkout = steps(release_trust).fetch(0)
+fail_check("Release source-trust checkout 含可跳过或忽略失败的字段") unless
+  release_trust_checkout.keys.sort == %w[name uses with]
+fail_check("Release source-trust 必须完整 checkout tag 与 main 历史") unless
+  release_trust_checkout["uses"].to_s.start_with?("actions/checkout@") &&
+  release_trust_checkout.dig("with", "fetch-depth") == 0 &&
+  release_trust_checkout.dig("with", "ref").to_s.include?("github.sha")
+release_trust_step = step(release_trust, "Trust gate before release secrets")
+fail_check("Release source-trust 不得读取 Secrets") if release_trust.to_s.include?("secrets.")
+fail_check("Release trust step 含 continue-on-error、if 或其他旁路字段") unless
+  release_trust_step.keys.sort == %w[id name run] && release_trust_step["id"] == "source"
+fail_check("Release source-trust 没有调用统一来源校验入口") unless
+  release_trust_step["run"] == "bash ./scripts/check-release-source.sh --check"
+
+%w[verify verify-windows release publish-windows].each do |job_name|
+  job = release_jobs.fetch(job_name)
+  fail_check("Release #{job_name} 仓库条件不可放宽") unless
+    job["if"] == "github.repository == 'gaixianggeng/mimi-remote'"
+  fail_check("Release #{job_name} 没有显式依赖 source-trust") unless
+    Array(job["needs"]).include?("source-trust")
+  fail_check("Release #{job_name} 没有绑定 production-release Environment") unless
+    job["environment"] == "production-release"
+end
+%w[verify verify-windows release].each do |job_name|
+  checkout = steps(release_jobs.fetch(job_name)).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
+  fail_check("Release #{job_name} 没有 checkout source-trust 验证的 immutable SHA") unless
+    checkout && checkout.dig("with", "ref").to_s.include?("needs.source-trust.outputs.tag_sha")
+end
+%w[verify release].each do |job_name|
+  goreleaser_step_name = job_name == "verify" ? "Build release snapshot" : "Release"
+  goreleaser_step = step(release_jobs.fetch(job_name), goreleaser_step_name)
+  fail_check("Release #{job_name} 的 GoReleaser 没有绑定 source-trust 校验的 RELEASE_TAG") unless
+    goreleaser_step.dig("env", "GORELEASER_CURRENT_TAG") == "${{ env.RELEASE_TAG }}"
+end
+fail_check("Release workflow 不得从 dispatch 的 main ref 推导发布版本") if
+  release.to_s.include?("GITHUB_REF_NAME")
 distributor = File.read(distributor_path)
 fail_check("Internal TestFlight 组校验必须 fail-closed") unless distributor.include?('unless group.dig("attributes", "isInternalGroup") == true')
 
@@ -281,7 +341,48 @@ self_test() {
   cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: attestation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
   expect_failure
-  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、evidence 绑定与 Release validation/attestation 漂移均能失败。"
+  mutate_release() {
+    local old_value="$1"
+    local new_value="$2"
+    cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
+    ruby -e '
+      path, old_value, new_value = ARGV
+      source = File.read(path)
+      abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
+      File.write(path, source.sub(old_value, new_value))
+    ' "$test_root/.github/workflows/release.yml" "$old_value" "$new_value"
+    expect_failure
+  }
+  mutate_release 'repository_dispatch:' 'push:'
+  mutate_release 'run: bash ./scripts/check-release-source.sh --check' 'run: echo bypassed'
+  mutate_release 'needs: source-trust' 'needs: []'
+  mutate_release 'environment: production-release' 'environment: bypass-release'
+  mutate_release 'fetch-depth: 0' 'fetch-depth: 1'
+  mutate_release 'GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}' 'GORELEASER_CURRENT_TAG: v0.0.0'
+  mutate_release 'permissions:
+  contents: read' 'permissions:
+  contents: write'
+  mutate_release '    name: Verify release source' '    name: Verify release source
+    permissions:
+      contents: write'
+  mutate_release '      - name: Trust gate before release secrets
+        id: source
+        run:' '      - name: Trust gate before release secrets
+        id: source
+        continue-on-error: true
+        run:'
+  mutate_release '  verify:' '  bypass-release-trust:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: production-release
+    steps:
+      - run: echo "$STOLEN"
+        env:
+          STOLEN: ${{ secrets.TAP_DEPLOY_KEY }}
+
+  verify:'
+  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、evidence 绑定、Release default-branch source-trust、旁路 job 与 validation/attestation 漂移均能失败。"
 }
 
 case "${1:---check}" in
