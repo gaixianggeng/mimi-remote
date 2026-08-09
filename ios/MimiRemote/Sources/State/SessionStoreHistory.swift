@@ -391,6 +391,9 @@ extension SessionStore {
                     // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
                     // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
                     // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
+                    if shouldShowProgress {
+                        promoteHistoryLoadJobForVisibleProgress(existing, sessionID: session.id)
+                    }
                     if !quiet {
                         promoteHistoryLoadJobForForegroundReporting(
                             existing,
@@ -478,6 +481,7 @@ extension SessionStore {
             allowPolicyRetry: allowPolicyRetry,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
             task: task,
+            showsProgress: shouldShowProgress,
             requiresForegroundReporting: !quiet,
             foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage,
             foregroundSelectionLease: quiet ? nil : currentSelectionLease()
@@ -533,6 +537,16 @@ extension SessionStore {
                 message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
             )
         }
+    }
+
+    func promoteHistoryLoadJobForVisibleProgress(_ job: HistoryLoadJob, sessionID: SessionID) {
+        guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
+            return
+        }
+        // quiet 后台 job 被当前会话的可见 waiter 加入后，后续缩页/summary 替代任务
+        // 也必须继承这项能力，不能只靠外层 defer 清理旧 token 的进度。
+        current.showsProgress = true
+        historyLoadJobsBySessionID[sessionID] = current
     }
 
     func scheduleQuietHistoryRefresh(for session: AgentSession, showsProgress: Bool = false) {
@@ -675,6 +689,7 @@ extension SessionStore {
                     return await loadHistory(
                         for: session,
                         quiet: effectiveQuiet,
+                        showsProgress: current.showsProgress,
                         loadMode: .full,
                         force: true,
                         reason: .automatic,
@@ -695,6 +710,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
@@ -720,6 +736,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,

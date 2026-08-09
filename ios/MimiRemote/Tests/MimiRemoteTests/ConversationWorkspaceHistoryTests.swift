@@ -3527,6 +3527,134 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
+    func testVisibleQuietHistoryOversizeRetryClearsReplacementProgress() async {
+        let project = makeProject(id: "proj_visible_quiet_oversize_retry")
+        let history = makeSession(
+            id: "thread_visible_quiet_oversize_retry",
+            projectID: project.id,
+            title: "可见静默缩页",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let load = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(
+                reason: "history_response_too_large",
+                responseBytes: 9_000_000,
+                maxResponseBytes: 5_242_880
+            )
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "可见 quiet full 缩页重试期间必须继续显示进度"
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:visible-quiet-oversize-retry",
+                    role: "assistant",
+                    content: "缩页后的完整历史",
+                    createdAt: Date(timeIntervalSince1970: 20)
+                )
+            ])
+        )
+        _ = await load.value
+
+        XCTAssertNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "替代 full job 完成后必须清除进度，不能永久旋转"
+        )
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩页后的完整历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testVisibleQuietHistorySummaryFallbackClearsReplacementProgress() async {
+        let project = makeProject(id: "proj_visible_quiet_summary_fallback")
+        let history = makeSession(
+            id: "thread_visible_quiet_summary_fallback",
+            projectID: project.id,
+            title: "可见静默缩略降级",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let load = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(reason: "history_response_too_large")
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "可见 quiet summary fallback 期间必须继续显示进度"
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(
+                        id: "rollout:visible-quiet-summary-fallback",
+                        role: "assistant",
+                        content: "自动缩略历史",
+                        createdAt: Date(timeIntervalSince1970: 20)
+                    )
+                ],
+                loadMode: .economy
+            )
+        )
+        _ = await load.value
+
+        XCTAssertNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "替代 economy job 完成后必须清除进度，不能永久旋转"
+        )
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["自动缩略历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
     func testReopeningTerminalSessionWithLocalWaitingForcesAuthoritativeHistoryReconciliation() async {
         let project = makeProject(id: "proj_detached_completion")
         let unchangedTimestamp = Date(timeIntervalSince1970: 100)
