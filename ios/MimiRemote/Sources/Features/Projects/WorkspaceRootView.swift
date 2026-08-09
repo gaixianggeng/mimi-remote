@@ -128,53 +128,46 @@ enum WorkspaceStripLayout {
     static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
         max(0, viewportWidth - horizontalPadding * 2)
     }
+}
 
-    /// 粗略估算一行胶囊的总宽度，用来挑展开档位。
-    /// 只需要够准到"多展开一个会不会挤"，估偏了也不会让胶囊够不到——
-    /// 外层始终是可横向滚动的，这是它和 ViewThatFits 判定的关键区别。
-    static func estimatedRowWidth(names: [String], expandedNames: Set<String>) -> CGFloat {
-        guard !names.isEmpty else { return 0 }
-        let widths = names.map { name -> CGFloat in
-            guard expandedNames.contains(name) else { return chipHeight }
-            // 图标 + 间距 + 文字 + 左右内边距。CJK 按一个字 ~14pt、其余 ~7.5pt 估。
-            let textWidth = name.reduce(CGFloat.zero) { partial, character in
-                partial + (character.isASCII ? 7.5 : 14)
-            }
-            return chipIconSize + 8 + textWidth + 24
-        }
-        return widths.reduce(0, +) + chipSpacing * CGFloat(names.count - 1)
+/// 把分页 ScrollView 的像素偏移转换成项目索引空间。顶部胶囊只消费这个连续值，
+/// 因而 25% 的横滑就是 25% 的收缩/展开，不需要等 selection 在中点切换。
+enum WorkspacePagerTransition {
+    nonisolated static func pagePosition(
+        contentOffsetX: CGFloat,
+        leadingInset: CGFloat,
+        viewportWidth: CGFloat,
+        pageCount: Int
+    ) -> CGFloat? {
+        guard viewportWidth > 0, pageCount > 0 else { return nil }
+        let rawPosition = (contentOffsetX + leadingInset) / viewportWidth
+        guard rawPosition.isFinite else { return nil }
+        return min(max(rawPosition, 0), CGFloat(pageCount - 1))
     }
+    nonisolated static func selectionProgress(
+        projectIndex: Int,
+        pagePosition: CGFloat
+    ) -> CGFloat {
+        min(max(1 - abs(CGFloat(projectIndex) - pagePosition), 0), 1)
+    }
+}
+/// 高频滚动几何只发布给胶囊自身，避免横滑每一帧都重算完整的工作区会话列表。
+@MainActor
+private final class WorkspacePagerTransitionState: ObservableObject {
+    @Published private(set) var pagePosition: CGFloat?
 
-    /// 把有限的“展开名称”名额以选中项为中心向两侧发放。
-    /// 名额为偶数时优先给右侧，符合从左到右的阅读顺序。
-    static func centeredNameWindow(
-        projectIDs: [String],
-        limit: Int,
-        aroundIndex selected: Int?
-    ) -> Set<String> {
-        guard limit > 0, !projectIDs.isEmpty else { return [] }
-        guard limit < projectIDs.count else { return Set(projectIDs) }
-
-        let center = selected.map { min(max($0, 0), projectIDs.count - 1) } ?? 0
-        var lower = center
-        var upper = center
-        var chosen = [center]
-
-        while chosen.count < limit {
-            let canGoUpper = upper + 1 < projectIDs.count
-            let canGoLower = lower - 1 >= 0
-            guard canGoUpper || canGoLower else { break }
-
-            if canGoUpper, chosen.count.isMultiple(of: 2) == false || !canGoLower {
-                upper += 1
-                chosen.append(upper)
-            } else if canGoLower {
-                lower -= 1
-                chosen.append(lower)
-            }
+    func update(pagePosition: CGFloat?) {
+        if let current = self.pagePosition, let pagePosition,
+           abs(current - pagePosition) < 0.0001 {
+            return
         }
-
-        return Set(chosen.map { projectIDs[$0] })
+        guard self.pagePosition != pagePosition else { return }
+        // 几何值已经是系统滚动的呈现帧；禁止再套动画，否则胶囊会落后于手指。
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            self.pagePosition = pagePosition
+        }
     }
 }
 
@@ -325,7 +318,9 @@ struct WorkspaceRootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
+    @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
@@ -344,9 +339,6 @@ struct WorkspaceRootView: View {
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
-    /// 胶囊行的真实可用宽度，用来挑展开档位。0 表示尚未量到。
-    @State private var measuredStripWidth: CGFloat = 0
-
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -446,6 +438,7 @@ struct WorkspaceRootView: View {
             }
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
+            pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
         .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
@@ -457,7 +450,7 @@ struct WorkspaceRootView: View {
             OpenWorkspaceSheet { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
-                selectedWorkspaceID = workspaceID
+                selectWorkspace(id: workspaceID)
             }
         }
         .sheet(item: $gitInspectionTarget) { target in
@@ -558,7 +551,11 @@ struct WorkspaceRootView: View {
     /// 要等落定才更新，滑到一半上方胶囊不动、松手才跳，正好丢掉跟手感。
     /// 分页物理特性（跟手、速度投射、可中断反向）由系统提供，不自己写 DragGesture。
     private func projectPager(tokens: ThemeTokens) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // scrollTransition 闭包是 Sendable；先冻结成值类型快照，避免直接跨隔离域读取 Environment。
+        let allowsSpatialMotion = !reduceMotion
+        let projectCount = sessionStore.sidebarProjects.count
+
+        return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 0) {
                 ForEach(sessionStore.sidebarProjects) { project in
                     // 状态行下沉进详情视图，与会话列表共用同一组内边距并紧贴列表：
@@ -577,8 +574,8 @@ struct WorkspaceRootView: View {
                     // 手指走，所以缩放是 1:1 可中断的，而不是松手后再播一段固定动画。
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                         content
-                            .scaleEffect(phase.isIdentity ? 1 : 0.93)
-                            .opacity(phase.isIdentity ? 1 : 0.55)
+                            .scaleEffect(!allowsSpatialMotion || phase.isIdentity ? 1 : 0.97)
+                            .opacity(!allowsSpatialMotion || phase.isIdentity ? 1 : 0.72)
                     }
                     .id(project.id)
                 }
@@ -588,6 +585,16 @@ struct WorkspaceRootView: View {
         .scrollTargetBehavior(.paging)
         // 直接绑定唯一的选择来源：点胶囊会滚动分页，滑动分页会回写胶囊选中态。
         .scrollPosition(id: $selectedWorkspaceID, anchor: .center)
+        .onScrollGeometryChange(for: CGFloat?.self) { geometry in
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: geometry.contentOffset.x,
+                leadingInset: geometry.contentInsets.leading,
+                viewportWidth: geometry.containerSize.width,
+                pageCount: projectCount
+            )
+        } action: { _, pagePosition in
+            pagerTransitionState.update(pagePosition: pagePosition)
+        }
         .scrollIndicators(.hidden)
     }
 
@@ -693,20 +700,13 @@ struct WorkspaceRootView: View {
                 // （视觉快照）里和真机行为不一致。onGeometryChange 只观测已经排好的
                 // 真实宽度，不参与布局协商。
                 ScrollView(.horizontal, showsIndicators: false) {
-                    projectChips(
-                        expandedNameLimit: expandedNameLimit(forWidth: measuredStripWidth),
-                        tokens: tokens
-                    )
+                    projectChips(tokens: tokens)
                 }
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.width
-                } action: { newWidth in
-                    guard newWidth > 0, measuredStripWidth != newWidth else { return }
-                    measuredStripWidth = newWidth
-                }
-                .onChange(of: selectedWorkspaceID) { _, selectedID in
+                .onChange(of: selectedWorkspaceID) { previousID, selectedID in
                     guard let selectedID else { return }
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    // 首次恢复选择直接定位，避免页面刚出现就自行滑动；后续切换与正文分页
+                    // 共用同一个临界阻尼 token，快速反向点击会从当前画面连续改向。
+                    withAnimation(previousID == nil ? nil : workspaceSelectionAnimation) {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
@@ -728,42 +728,9 @@ struct WorkspaceRootView: View {
         .accessibilityLabel(L10n.text("ui.workspace_list"))
     }
 
-    /// 在给定宽度下能展开多少个名称。从最宽的档位往下退，取第一个装得下的。
-    private func expandedNameLimit(forWidth width: CGFloat) -> Int {
-        // 宽度尚未量到时按全展开渲染：胶囊行始终可横向滚动，
-        // 首帧偏宽只是多展开几个名字，而塌成 0 会让整行只剩一个胶囊。
-        guard width > 0 else { return .max }
-        let projects = sessionStore.sidebarProjects
-        guard !projects.isEmpty else { return 0 }
-
-        let names = projects.map(\.name)
-        let selectedIndex = projects.firstIndex { $0.id == selectedWorkspaceID }
-        let ids = projects.map(\.id)
-
-        for limit in [Int.max, 8, 6, 4, 3, 2, 1] {
-            let expandedIDs = WorkspaceStripLayout.centeredNameWindow(
-                projectIDs: ids,
-                limit: limit,
-                aroundIndex: selectedIndex
-            )
-            let expandedNames = Set(
-                zip(ids, names).compactMap { expandedIDs.contains($0.0) ? $0.1 : nil }
-            )
-            let estimate = WorkspaceStripLayout.estimatedRowWidth(
-                names: names,
-                expandedNames: expandedNames
-            )
-            if estimate <= width {
-                return limit
-            }
-        }
-        return 0
-    }
-
-    /// 各档位共用同一份胶囊构造，只有展开名称的数量不同；
-    /// 分支结构必须一致，否则 ViewThatFits 切换档位时会重建整行而不是平滑改宽。
-    /// `expandedNameLimit` 为 0 表示只展开选中项。
-    private func projectChips(expandedNameLimit: Int, tokens: ThemeTokens) -> some View {
+    /// 所有项目始终保留同一份 View 身份；名称不插入/移除，而是按分页进度裁切宽度，
+    /// 这样反向横滑可以直接沿当前画面恢复，不会重建 HStack 或跳回逻辑选中态。
+    private func projectChips(tokens: ThemeTokens) -> some View {
         let profileID = appStore.activeHostScope.profileID
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
@@ -776,14 +743,7 @@ struct WorkspaceRootView: View {
             profileID: profileID,
             projectIDs: projectIDs
         )
-        // 名额以选中项为中心向两侧分配。从最左边开始发会让选中项右侧的邻居先被收缩，
-        // 视线跟着选择移动时出现断裂——这正是“滑到哪个才放大哪个”被破坏的原因。
         let selectedIndex = sessionStore.sidebarProjects.firstIndex { $0.id == selectedWorkspaceID }
-        let expandedNameIDs = WorkspaceStripLayout.centeredNameWindow(
-            projectIDs: projectIDs,
-            limit: expandedNameLimit,
-            aroundIndex: selectedIndex
-        )
 
         // 胶囊数量等于本机工作区数量，且每个都很轻；用 HStack 而不是 LazyHStack，
         // 否则选中项展开时宽度动画会因为懒加载复用而跳变。
@@ -809,9 +769,10 @@ struct WorkspaceRootView: View {
                         gitSummary: nil,
                         hasRunningSession: false,
                         isUnavailable: false,
-                        isSelected: false,
-                        showsName: expandedNameLimit > 0,
-                        distanceFromSelection: 0,
+                        isSelected: index == 0,
+                        projectIndex: index,
+                        distanceFromSelection: index,
+                        pagerTransitionState: pagerTransitionState,
                         allowsCustomization: false,
                         tokens: tokens,
                         action: {},
@@ -831,6 +792,7 @@ struct WorkspaceRootView: View {
                         )
                     let displayedEmoji = emojiAssignments[project.id]
                         ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
+                    let projectIndex = projectIDs.firstIndex(of: project.id) ?? 0
                     let unavailableCharacterIDs: Set<String> =
                         projectIDs.count
                             <= WorkspaceAppearanceStore.characters(for: iconStyle).count
@@ -861,13 +823,14 @@ struct WorkspaceRootView: View {
                         hasRunningSession: projectSessions.contains(where: \.isRunning),
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         isSelected: selectedWorkspaceID == project.id,
-                        showsName: expandedNameIDs.contains(project.id) || selectedWorkspaceID == project.id,
-                        distanceFromSelection: selectedIndex.map { abs(($0) - (projectIDs.firstIndex(of: project.id) ?? $0)) } ?? 0,
+                        projectIndex: projectIndex,
+                        distanceFromSelection: selectedIndex.map { abs($0 - projectIndex) } ?? 0,
+                        pagerTransitionState: pagerTransitionState,
                         allowsCustomization: true,
                         tokens: tokens
                     ) {
                         // 工作区页面只更新本地浏览选择，避免切换胶囊时意外改变当前会话上下文。
-                        selectedWorkspaceID = project.id
+                        selectWorkspace(project)
                     } onOpenGitChanges: {
                         gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
                     } onConfirmRemove: {
@@ -877,9 +840,31 @@ struct WorkspaceRootView: View {
                 }
             }
         }
-        // 这里不能加 maxWidth 约束：ViewThatFits 靠子视图的固有宽度判断放不放得下，
-        // 一旦声明 .infinity，展开态会永远“合身”，窄屏上就退不回压缩态。
         .padding(.vertical, 8)
+    }
+
+    /// 项目切换属于高频状态变化，使用无回弹、可重定向的统一 spring。
+    /// Reduce Motion 下禁用空间动画，保留明确的静态选中态。
+    private var workspaceSelectionAnimation: Animation? {
+        let motion = MimiMotion.stateTransition.resolve(reduceMotion: reduceMotion)
+        return motion.allowsSpatialMotion ? motion.animation : nil
+    }
+    private func selectWorkspace(_ project: AgentProject) {
+        selectWorkspace(id: project.id)
+    }
+    private func selectWorkspace(id: String) {
+        guard selectedWorkspaceID != id else { return }
+        withAnimation(workspaceSelectionAnimation) {
+            selectedWorkspaceID = id
+        }
+    }
+    /// 目录恢复和数据同步不代表用户发起了导航；禁止隐式动画，避免首次进入工作区自行滑动。
+    private func restoreWorkspaceSelection(_ id: String?) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedWorkspaceID = id
+        }
     }
 
     /// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
@@ -981,7 +966,7 @@ struct WorkspaceRootView: View {
     private func synchronizeSelection() {
         let projects = sessionStore.sidebarProjects
         guard !projects.isEmpty else {
-            selectedWorkspaceID = nil
+            restoreWorkspaceSelection(nil)
             return
         }
         if let selectedWorkspaceID,
@@ -991,13 +976,13 @@ struct WorkspaceRootView: View {
         if let selectedWorkspaceID {
             let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
             if projects.contains(where: { $0.id == retainedID }) {
-                self.selectedWorkspaceID = retainedID
+                restoreWorkspaceSelection(retainedID)
                 return
             }
         }
-        selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
+        restoreWorkspaceSelection(sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        } ?? projects.first?.id
+        } ?? projects.first?.id)
     }
 
     private func removeWorkspace(_ project: AgentProject) {
@@ -1239,11 +1224,11 @@ private struct WorkspaceProjectChip: View {
     let hasRunningSession: Bool
     let isUnavailable: Bool
     let isSelected: Bool
-    /// 展开名称与选中是两件事：宽度够时所有胶囊都展开，选中仍只由亮度和字重表达。
-    let showsName: Bool
+    let projectIndex: Int
     /// 距选中项的档数。只用来做透明度和图标微缩的衰减，不改变行高——
     /// 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖动。
     let distanceFromSelection: Int
+    @ObservedObject var pagerTransitionState: WorkspacePagerTransitionState
     let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void
@@ -1252,41 +1237,52 @@ private struct WorkspaceProjectChip: View {
 
     @State private var isPresentingIconPicker = false
     @State private var isPresentingRemoveConfirmation = false
+    @State private var measuredNameWidth: CGFloat = 0
 
     var body: some View {
+        let progress = selectionProgress
+
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
                 iconTile
 
-                if showsName {
-                    Text(project.name)
-                        .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
+                Text(project.name)
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(
+                        tokens.secondaryText.mix(
+                            with: tokens.primaryText,
+                            by: Double(progress)
+                        )
+                    )
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.leading, 8)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        guard width > 0, measuredNameWidth != width else { return }
+                        measuredNameWidth = width
+                    }
+                    .frame(width: measuredNameWidth * progress, alignment: .leading)
+                    .clipped()
+                    .opacity(Double(progress))
             }
-            .padding(.horizontal, showsName ? 12 : 8)
+            .padding(.horizontal, 8 + 4 * progress)
             .frame(height: WorkspaceStripLayout.chipHeight)
-            // 选中与未选中共用同一块磨砂：差别只在中性提亮和是否展开名称，
-            // 一行里不会出现两种材质浓度。
+            // 中性提亮和名称宽度读取同一份 0...1 进度，旧项目退场与新项目进入同帧发生。
             .background {
-                WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens, isTinted: isSelected)
+                WorkbenchChromeMaterial(
+                    shape: Capsule(),
+                    tokens: tokens,
+                    tintLevel: Double(progress)
+                )
             }
             // 波形衰减：越远离选中项越淡。只动透明度，不动行高——
             // 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖。
-            .opacity(showsName ? 1 : max(0.42, 1 - Double(distanceFromSelection) * 0.16))
+            .opacity(max(0.42, 1 - Double(visualDistance) * 0.16))
             .contentShape(Capsule())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .animation(
-            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.86),
-            value: showsName
-        )
-        .animation(
-            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.9),
-            value: distanceFromSelection
-        )
         .contextMenu { contextActions }
         .popover(isPresented: $isPresentingIconPicker, arrowEdge: .top) {
             iconPicker
@@ -1311,6 +1307,22 @@ private struct WorkspaceProjectChip: View {
         .accessibilityLabel(accessibilitySummary)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("workspace.card.\(project.id)")
+    }
+    /// Reduce Motion 下只在分页落定后静态切换；正常模式完全读取系统滚动的呈现位置。
+    private var selectionProgress: CGFloat {
+        guard !reduceMotion, let pagePosition = pagerTransitionState.pagePosition else {
+            return isSelected ? 1 : 0
+        }
+        return WorkspacePagerTransition.selectionProgress(
+            projectIndex: projectIndex,
+            pagePosition: pagePosition
+        )
+    }
+    private var visualDistance: CGFloat {
+        guard !reduceMotion, let pagePosition = pagerTransitionState.pagePosition else {
+            return CGFloat(distanceFromSelection)
+        }
+        return abs(CGFloat(projectIndex) - pagePosition)
     }
 
     @ViewBuilder
@@ -1423,7 +1435,6 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
@@ -1682,18 +1693,17 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityIdentifier("workspace.sessions.loadMore")
     }
 
-    /// 筛选器固定在列表左侧，紧接结果区域；新建会话保留在右侧并使用唯一文字操作。
+    /// 筛选器固定在列表左侧，紧接结果区域；新建会话保留在右侧。
+    /// 按容器真实宽度选择文字版或图标版，iPad mini 竖屏和窄分屏不再被 regular Size Class 误判为宽布局。
     /// 页面已经通过筛选器说明 Runtime，卡片不再重复渲染品牌或 Runtime 文案。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         ViewThatFits(in: .horizontal) {
-            // 先尝试单行；按钮和筛选器都保留固有宽度，ViewThatFits 不会把文字压成半截。
-            HStack(spacing: 12) {
-                runtimePicker
+            // 760pt 是文字操作的内容宽度档位：iPad mini 竖屏会自然落到图标版，
+            // 宽 iPad 仍保留明确标签；旋转和窗口缩放时由 SwiftUI 自动重新选择。
+            recentSessionsHeaderLine(tokens: tokens, showsNewSessionTitle: true)
+                .frame(minWidth: 760)
 
-                Spacer(minLength: 8)
-
-                newSessionButton(tokens: tokens)
-            }
+            recentSessionsHeaderLine(tokens: tokens, showsNewSessionTitle: false)
 
             // 窄屏或大字体时自然改为两行，筛选器仍排在结果前，新建操作靠右。
             VStack(alignment: .leading, spacing: 8) {
@@ -1701,9 +1711,22 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
 
                 HStack {
                     Spacer(minLength: 0)
-                    newSessionButton(tokens: tokens)
+                    newSessionButton(tokens: tokens, showsTitle: false)
                 }
             }
+        }
+    }
+
+    private func recentSessionsHeaderLine(
+        tokens: ThemeTokens,
+        showsNewSessionTitle: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            runtimePicker
+
+            Spacer(minLength: 8)
+
+            newSessionButton(tokens: tokens, showsTitle: showsNewSessionTitle)
         }
     }
 
@@ -1714,19 +1737,29 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         )
     }
 
-    private func newSessionButton(tokens: ThemeTokens) -> some View {
+    private func newSessionButton(tokens: ThemeTokens, showsTitle: Bool) -> some View {
         Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
-                .font(themeStore.uiFont(.callout, weight: .semibold))
-                .foregroundStyle(tokens.primaryActionForeground)
-                .padding(.horizontal, 12)
-                .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
-                .background(tokens.primaryAction, in: Capsule())
-                .contentShape(Capsule())
-                .fixedSize(horizontal: true, vertical: false)
+            Group {
+                if showsTitle {
+                    Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+                } else {
+                    Image(systemName: "square.and.pencil")
+                        .frame(
+                            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+                            height: WorkbenchChromeIconMetrics.minimumHitTarget
+                        )
+                }
+            }
+            .font(themeStore.uiFont(.callout, weight: .semibold))
+            .foregroundStyle(tokens.primaryActionForeground)
+            .background(tokens.primaryAction, in: Capsule())
+            .contentShape(Capsule())
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
