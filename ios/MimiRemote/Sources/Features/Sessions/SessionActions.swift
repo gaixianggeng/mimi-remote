@@ -123,6 +123,7 @@ struct SessionActionMenuContent: View {
                 } label: {
                     Label(L10n.text("ui.copy_path"), systemImage: "folder")
                 }
+                .accessibilityValue(fullDirectoryPath)
 
                 Divider()
             }
