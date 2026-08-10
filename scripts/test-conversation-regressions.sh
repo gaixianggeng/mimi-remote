@@ -4,22 +4,53 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "==> Go unit and gateway integration regressions"
-if command -v go >/dev/null 2>&1; then
-  go_bin="$(command -v go)"
-elif [[ -x /usr/local/go/bin/go ]]; then
-  # 从 Xcode/Codex 启动的非交互 shell 可能没有加载 /usr/local/go/bin。
-  go_bin="/usr/local/go/bin/go"
-else
-  echo "未找到 Go，请安装 Go 或将 go 加入 PATH" >&2
-  exit 1
+usage() {
+  cat <<'EOF'
+用法：
+  bash ./scripts/test-conversation-regressions.sh [--ios-only]
+
+默认执行 Go 与 iOS 关键链路回归。--ios-only 供已经由独立 Go 验证覆盖的
+iOS CI / full 验证使用，只跳过 Go 阶段，不改变任何 XCTest selector。
+EOF
+}
+
+ios_only=false
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --ios-only)
+      ios_only=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "不支持的参数：$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$ios_only" == false ]]; then
+  echo "==> Go unit and gateway integration regressions"
+  if command -v go >/dev/null 2>&1; then
+    go_bin="$(command -v go)"
+  elif [[ -x /usr/local/go/bin/go ]]; then
+    # 从 Xcode/Codex 启动的非交互 shell 可能没有加载 /usr/local/go/bin。
+    go_bin="/usr/local/go/bin/go"
+  else
+    echo "未找到 Go，请安装 Go 或将 go 加入 PATH" >&2
+    exit 1
+  fi
+  "$go_bin" test \
+    ./internal/auth \
+    ./internal/config \
+    ./internal/appserver \
+    ./internal/httpapi \
+    -count=1
 fi
-"$go_bin" test \
-  ./internal/auth \
-  ./internal/config \
-  ./internal/appserver \
-  ./internal/httpapi \
-  -count=1
 
 echo "==> iOS conversation regressions"
 # 这些测试组覆盖 Mimi Remote 对话请求链路和发布安全边界：
