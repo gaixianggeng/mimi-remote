@@ -52,6 +52,8 @@ assert_full_plan() {
 
 docs_output="$(assert_plan docs_only CONTRIBUTING.md docs/support.md)"
 assert_contains "$docs_output" "判定：纯文档/静态内容"
+assert_contains "$docs_output" "PR Gate scope：go=false, ios=false, rust=false, macos=false, docs=true"
+assert_contains "$docs_output" "bash ./scripts/check-docs-static.sh"
 assert_not_contains "$docs_output" "ios-dev.sh build-for-testing"
 assert_not_contains "$docs_output" "ios-dev.sh target"
 assert_not_contains "$docs_output" "ios-dev.sh leases"
@@ -67,6 +69,7 @@ assert_not_contains "$nested_docs_output" "cargo test"
 
 ios_output="$(assert_plan ios_only ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_output" "ios-dev.sh build-for-testing"
+assert_contains "$ios_output" "docs=false"
 assert_contains "$ios_output" "check-source-size.sh"
 assert_not_contains "$ios_output" "go test"
 assert_not_contains "$ios_output" "cargo test"
