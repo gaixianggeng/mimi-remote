@@ -10,6 +10,37 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 379))
         XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 380))
         XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 520))
+        XCTAssertFalse(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: nil))
+        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 296))
+        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 320))
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 296), 40)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 320), 52)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 380), 72)
+    }
+
+    func testPhoneComposerTextStartsAtOneLineAndGrowsToBoundedHeight() {
+        let minimum = ComposerTextLayoutPolicy.minimumHeight(
+            isPhone: true,
+            usesCompactMetrics: true,
+            fontLineHeight: 20
+        )
+        let maximum = ComposerTextLayoutPolicy.maximumHeight(
+            isPhone: true,
+            usesCompactMetrics: true,
+            fontLineHeight: 20
+        )
+
+        XCTAssertEqual(minimum, 36)
+        XCTAssertGreaterThan(maximum, minimum)
+        XCTAssertLessThanOrEqual(maximum, 180)
+        XCTAssertEqual(
+            ComposerTextLayoutPolicy.minimumHeight(
+                isPhone: false,
+                usesCompactMetrics: true,
+                fontLineHeight: 20
+            ),
+            72
+        )
     }
 
     func testCompactComposerToolbarRendersWithoutGenericMetadataStackOverflow() throws {

@@ -7,6 +7,7 @@ struct ConversationLayout: Equatable {
     // 紧凑工具栏不再依靠 ViewThatFits 同时构造两棵完整控件树。达到这个宽度后
     // 才显示模型标题；更窄时仍通过 accessibilityValue 提供完整模型信息。
     static let compactComposerModelTitleMinimumWidth: CGFloat = 380
+    static let phoneComposerModelTitleMinimumWidth: CGFloat = 240
 
     let horizontalInset: CGFloat
     let messageSideSpacer: CGFloat
@@ -39,6 +40,20 @@ struct ConversationLayout: Equatable {
             return false
         }
         return availableWidth >= compactComposerModelTitleMinimumWidth
+    }
+
+    static func phoneComposerShowsModelTitle(availableWidth: CGFloat?) -> Bool {
+        guard let availableWidth else {
+            return false
+        }
+        return availableWidth >= phoneComposerModelTitleMinimumWidth
+    }
+
+    static func compactComposerModelTitleMaxWidth(availableWidth: CGFloat?) -> CGFloat {
+        guard let availableWidth else { return 40 }
+        if availableWidth < 300 { return 40 }
+        if availableWidth < 340 { return 52 }
+        return 72
     }
 
     init(

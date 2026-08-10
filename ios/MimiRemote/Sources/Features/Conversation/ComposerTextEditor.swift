@@ -77,6 +77,15 @@ final class ComposerTextSubmitBridge {
         activeTextView?.resignFirstResponder()
     }
 
+    func resetTextAfterSubmit(to text: String) {
+        guard let textView = activeTextView else { return }
+        // iPhone 发送后继续复用同一个 UITextView。先把 UIKit 的权威文本同步为空，
+        // 再结束编辑，避免 textViewDidEndEditing 把刚发送的旧正文重新写回草稿。
+        textView.text = text
+        textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        textView.resignFirstResponder()
+    }
+
     func prepareForRemoval(text: String) {
         guard let textView = activeTextView else { return }
         // 先退休旧编辑器，再清空/失焦。iPhone 发送后会立即替换整个输入卡片，

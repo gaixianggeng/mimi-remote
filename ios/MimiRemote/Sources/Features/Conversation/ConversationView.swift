@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct ConversationView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
@@ -324,14 +326,29 @@ struct ConversationView: View {
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
         ZStack(alignment: .top) {
-            // 与页面同色的实心区域保证 Composer 后方不会留下可读文字；
-            // 它不是第二张 dock，因此不会重新引入底部色带。
-            tokens.background
+            if reduceTransparency || UIDevice.current.userInterfaceIdiom != .phone {
+                // 辅助功能和 iPad 继续使用确定性实色，避免降低既有可读性。
+                tokens.background
+            } else {
+                // iPhone 只给材质层一个柔和 tint，不再用整块实色截断正文；字形打散
+                // 由 Composer 自身的 regularMaterial 完成，避免两层 Material 相互叠加。
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        tokens.background.opacity(colorScheme == .light ? 0.18 : 0.12),
+                        tokens.background.opacity(colorScheme == .light ? 0.34 : 0.24)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
 
-            // 渐隐只位于功能层上沿，让滚动文档在进入 Composer 前退到背景。
-            // iOS 26 的 soft scroll edge 继续用于模糊过渡，这里负责可读性下限和旧系统降级。
+            // 上沿渐隐避免最后一行在卡片边界处被硬切；透明模式下保持更轻的过渡。
             LinearGradient(
-                colors: [.clear, tokens.background],
+                colors: [
+                    .clear,
+                    tokens.background.opacity(reduceTransparency ? 1 : 0.56)
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )

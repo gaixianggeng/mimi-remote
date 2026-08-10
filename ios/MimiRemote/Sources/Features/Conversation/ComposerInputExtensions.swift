@@ -3,12 +3,45 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
+enum ComposerTextLayoutPolicy {
+    static func minimumHeight(
+        isPhone: Bool,
+        usesCompactMetrics: Bool,
+        fontLineHeight: CGFloat
+    ) -> CGFloat {
+        guard isPhone else {
+            return usesCompactMetrics ? 72 : 92
+        }
+        // 36pt 只承载一行正文；外围卡片 padding 继续提供可点击余量。
+        // 大字号按真实行高增长，避免 Dynamic Type 首行被裁切。
+        return max(36, ceil(fontLineHeight) + 8)
+    }
+
+    static func maximumHeight(
+        isPhone: Bool,
+        usesCompactMetrics: Bool,
+        fontLineHeight: CGFloat
+    ) -> CGFloat {
+        guard isPhone else {
+            return usesCompactMetrics ? 220 : 300
+        }
+        let minimum = minimumHeight(
+            isPhone: true,
+            usesCompactMetrics: usesCompactMetrics,
+            fontLineHeight: fontLineHeight
+        )
+        // 标准字号约五行后转为内部滚动；辅助功能字号最多增至 180pt，
+        // 避免输入区吞掉整块会话阅读空间。
+        return max(minimum, min(180, ceil(fontLineHeight * 5.2)))
+    }
+}
+
 struct ComposerToolbarControlLabel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
     let title: String?
-    let systemImage: String
+    let systemImage: String?
     let trailingSystemImage: String?
     let isSelected: Bool
     let tint: Color?
@@ -22,14 +55,14 @@ struct ComposerToolbarControlLabel: View {
         let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.primaryText)
 
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                // 收起态和编辑态共用同一套中等视觉尺寸；44pt 命中区保持不变。
-                // 16pt 是原先次操作 14pt 与主操作 17pt 之间的稳定中值。
-                .font(themeStore.uiFont(size: 16, weight: .semibold))
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+            }
             if let title {
                 Text(title)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .frame(maxWidth: titleMaxWidth, alignment: .leading)
             }
             if let trailingSystemImage {
@@ -309,17 +342,6 @@ extension ComposerView {
 #endif
     }
 
-    var canCollapsePhoneComposer: Bool {
-        isPhoneComposer &&
-            composerState.attachments.isEmpty &&
-            !composerState.voiceDraftNeedsReview &&
-            !isVoicePressActive &&
-            !voiceInput.isPreparing &&
-            !voiceInput.isRecording &&
-            !isVoiceTranscribing &&
-            activeSkillQuery == nil
-    }
-
     /// iPad 可保留附件并收起；正在录音、转写、等待语音确认或 Skill 自动完成时，
     /// 必须继续展示完整编辑器，避免移除 UITextView 破坏进行中的输入上下文。
     var canCollapseIPadComposer: Bool {
@@ -332,10 +354,6 @@ extension ComposerView {
             activeSkillQuery == nil
     }
 
-    var usesCollapsedPhoneComposer: Bool {
-        isComposerCollapsed && canCollapsePhoneComposer
-    }
-
     var usesCollapsedIPadComposer: Bool {
         isComposerCollapsed && canCollapseIPadComposer
     }
@@ -343,11 +361,6 @@ extension ComposerView {
     var collapsedComposerText: String {
         let text = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? composerPlaceholderText : text
-    }
-
-    func expandPhoneComposer() {
-        guard isPhoneComposer else { return }
-        expandComposer()
     }
 
     func expandIPadComposer() {
@@ -360,11 +373,6 @@ extension ComposerView {
         // 焦点请求只服务于这一次“点开输入框”；UITextView 消费后会清空 token，
         // 后续因附件或语音状态重建完整输入框时不会再次误弹键盘。
         composerTextFocusRequestID = UUID()
-    }
-
-    func collapsePhoneComposer() {
-        guard canCollapsePhoneComposer else { return }
-        collapseComposer()
     }
 
     func collapseIPadComposer() {
@@ -381,13 +389,14 @@ extension ComposerView {
         isComposerCollapsed = true
     }
 
-    func collapsePhoneComposerAfterSubmit() {
+    func resetPhoneComposerAfterSubmit() {
         guard isPhoneComposer else { return }
-        // takeDraftForSubmit 已清空稳定草稿；移除 UIKit 编辑器前也清空其文本，避免失焦回调把已发送内容写回来。
+        // takeDraftForSubmit 已清空稳定草稿；iPhone 不再移除编辑器，而是同步清空同一个
+        // UITextView 并回到一行。先清 UIKit 再失焦，防止旧正文被结束编辑回调写回。
         composerTextExternalRevision += 1
-        composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
+        composerTextSubmitBridge.resetTextAfterSubmit(to: composerState.draft)
+        measuredComposerTextHeight = 0
         activeSkillQuery = nil
-        isComposerCollapsed = true
     }
 
     @ViewBuilder
@@ -777,16 +786,19 @@ extension ComposerView {
     }
 
     var composerMinHeight: CGFloat {
-        // 始终保留约三至四行的可点击编辑空间，输入第一行文字时也不缩小。输入区是页面
-        // 主操作，不应退化成附着在工具栏上方的窄缝；更大的落点也更适合 iPad 键盘与触控笔。
-        usesCompactComposerMetrics ? 72 : 92
+        ComposerTextLayoutPolicy.minimumHeight(
+            isPhone: isPhoneComposer,
+            usesCompactMetrics: usesCompactComposerMetrics,
+            fontLineHeight: composerUIFont.lineHeight
+        )
     }
 
     var composerMaxHeight: CGFloat {
-        if usesCompactComposerMetrics {
-            return 220
-        }
-        return 300
+        ComposerTextLayoutPolicy.maximumHeight(
+            isPhone: isPhoneComposer,
+            usesCompactMetrics: usesCompactComposerMetrics,
+            fontLineHeight: composerUIFont.lineHeight
+        )
     }
 
     var composerTextHeight: CGFloat {

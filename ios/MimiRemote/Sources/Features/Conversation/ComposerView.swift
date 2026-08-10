@@ -55,7 +55,7 @@ struct ComposerView: View {
     @State var isComposerTextComposing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @State var composerTextFocusRequestID: UUID?
-    // iPhone 默认收起；iPad 默认保持展开，只有用户点击收起按钮才会置为 true。
+    // 收起状态只服务 iPad 的显式操作；iPhone 始终保留可直接编辑的一行输入。
     @State var isComposerCollapsed: Bool
     @State var activeSkillQuery: ComposerSkillQuery?
     @State var selectedSkillSuggestionIndex = 0
@@ -76,10 +76,7 @@ struct ComposerView: View {
     ) {
         self.availableWidth = availableWidth
         _isGoalStatusExpanded = State(initialValue: initialGoalStatusExpanded)
-        // iPhone 首屏优先让出回复阅读空间；iPad 继续保留完整输入画布。
-        _isComposerCollapsed = State(
-            initialValue: initialComposerCollapsed ?? (UIDevice.current.userInterfaceIdiom == .phone)
-        )
+        _isComposerCollapsed = State(initialValue: initialComposerCollapsed ?? false)
     }
 
     static let minimumUsableVoiceDuration: TimeInterval = 0.35
@@ -346,7 +343,7 @@ struct ComposerView: View {
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
-        collapsePhoneComposerAfterSubmit()
+        resetPhoneComposerAfterSubmit()
         sessionStore.removeComposerDraft(for: submittedDraftScope)
         let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
@@ -382,7 +379,7 @@ struct ComposerView: View {
         ) else {
             return false
         }
-        collapsePhoneComposerAfterSubmit()
+        resetPhoneComposerAfterSubmit()
         sessionStore.removeComposerDraft(for: submittedDraftScope)
         let objective = submitted.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !objective.isEmpty else {
@@ -474,11 +471,8 @@ struct ComposerView: View {
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
-        // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动收起，
-        // 发送后也不走 phone-only 的 collapsePhoneComposerAfterSubmit，避免输入区突然消失。
-        if isPhoneComposer {
-            isComposerCollapsed = true
-        }
+        // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
+        // iPhone 复用同一个编辑器，外部 revision 会把新会话草稿同步进 TextKit。
     }
 
     func isOptimisticSessionHandoff(
@@ -898,29 +892,19 @@ struct ComposerView: View {
         .layoutPriority(1)
         .animation(
             composerMotionAnimation,
-            value: usesCollapsedPhoneComposer || usesCollapsedIPadComposer
+            value: usesCollapsedIPadComposer
         )
     }
 
-    /// iPhone 的收起态和编辑态共用同一个卡片与工具栏。过去在两棵完整 View 树之间
-    /// 切换，即使按钮的声明尺寸相同，SwiftUI 仍会把它们当成退出/进入元素并参与缩放，
-    /// 视觉上就像聚焦后整排图标突然变大。现在只替换上方内容区，底部工具栏身份稳定。
+    /// iPhone 始终保留同一个编辑器和工具栏：空草稿是一行，正文增加时按 TextKit
+    /// 实际高度自然向上生长。这样不再需要向上箭头，也避免切换 View 树打断输入法。
     func phoneComposerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
         return VStack(alignment: .leading, spacing: 8) {
-            Group {
-                if usesCollapsedPhoneComposer {
-                    collapsedPhoneComposerContent(tokens: tokens)
-                        .transition(.opacity)
-                } else {
-                    expandedPhoneComposerContent(tokens: tokens)
-                        .transition(.opacity)
-                }
-            }
+            expandedPhoneComposerContent(tokens: tokens)
 
-            // 工具栏始终位于同一个父视图和源码位置，展开输入区时只向上生长，
-            // 不重新插入按钮，也不对按钮做 scale transition。
+            // 工具栏身份稳定，输入区增高时只向上生长，不重新插入或缩放按钮。
             compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         }
         .padding(8)
@@ -932,30 +916,6 @@ struct ComposerView: View {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
         .tint(tokens.accent)
-    }
-
-    func collapsedPhoneComposerContent(tokens: ThemeTokens) -> some View {
-        Button(action: expandPhoneComposer) {
-            HStack(spacing: 8) {
-                Text(collapsedComposerText)
-                    .font(themeStore.uiFont(.body))
-                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Image(systemName: "chevron.up")
-                    .font(themeStore.uiFont(.caption2, weight: .bold))
-                    .foregroundStyle(tokens.tertiaryText)
-            }
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.expand_input_box"))
-        .accessibilityValue(collapsedComposerText)
-        .accessibilityIdentifier("composer.expand")
     }
 
     func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
@@ -1002,11 +962,21 @@ struct ComposerView: View {
         tokens: ThemeTokens
     ) -> some View {
         if colorScheme == .light {
-            if colorSchemeContrast == .increased {
+            if reduceTransparency || colorSchemeContrast == .increased {
                 // 增强对比度靠实线边界定义卡片，阴影保持克制，避免和描边叠成脏边。
                 shape
                     .fill(tokens.inputBackground)
                     .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
+            } else if isPhoneComposer {
+                // iPhone 让正文层在卡片后方保持连续，但由 regularMaterial 充分打散字形；
+                // 主题 tint 负责稳定浅色/深色内容上的对比，不再依赖整块实色底板。
+                shape
+                    .fill(.regularMaterial)
+                    .overlay {
+                        shape.fill(tokens.inputBackground.opacity(0.42))
+                    }
+                    .shadow(color: Color.black.opacity(0.045), radius: 2, y: 1)
+                    .shadow(color: Color.black.opacity(0.055), radius: 9, y: 3)
             } else {
                 // 输入卡和侧栏共用清晰白色；短接触阴影收住边缘，轻环境阴影只表达少量浮起。
                 // 半径与偏移刻意收紧，避免 r20 / y10 在暖底上形成第三圈模糊白色。
@@ -1222,7 +1192,9 @@ struct ComposerView: View {
     }
 
     var compactToolbarShowsModelTitle: Bool {
-        ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
+        isPhoneComposer
+            ? ConversationLayout.phoneComposerShowsModelTitle(availableWidth: availableWidth)
+            : ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
     }
 
     func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
@@ -1258,7 +1230,7 @@ struct ComposerView: View {
 
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
-        AnyView(modelPickerControl(showsTitle: showsTitle))
+        AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
 
     @inline(never)
@@ -1319,12 +1291,6 @@ struct ComposerView: View {
             }
             .accessibilityIdentifier("composer.mode.goal")
 
-            if canCollapsePhoneComposer {
-                Divider()
-                Button(action: collapsePhoneComposer) {
-                    Label(L10n.text("ui.collapse_input_box"), systemImage: "chevron.down")
-                }
-            }
         } label: {
             composerToolbarControlLabel(
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
@@ -1524,7 +1490,7 @@ struct ComposerView: View {
 
     func composerToolbarControlLabel(
         title: String?,
-        systemImage: String,
+        systemImage: String?,
         trailingSystemImage: String? = nil,
         isSelected: Bool = false,
         tint: Color? = nil,
@@ -1679,20 +1645,23 @@ struct ComposerView: View {
 
     @ViewBuilder
     var modelPickerControl: some View {
-        modelPickerControl(showsTitle: true)
+        modelPickerControl(showsTitle: true, usesCompactTitle: false)
     }
 
     @ViewBuilder
-    func modelPickerControl(showsTitle: Bool) -> some View {
+    func modelPickerControl(showsTitle: Bool, usesCompactTitle: Bool = false) -> some View {
+        let visibleTitle = usesCompactTitle ? compactModelPickerTitle : modelPickerTriggerTitle
         Button {
             showsModelGridPicker.toggle()
         } label: {
             composerToolbarControlLabel(
-                // 320/344pt 设备只隐藏可见标题，完整模型信息仍通过 accessibilityValue 提供。
-                title: showsTitle ? modelPickerTriggerTitle : nil,
-                systemImage: "cpu",
+                // iPhone 底层只外显模型名；模型 + 推理强度仍通过 accessibilityValue 提供。
+                title: showsTitle ? visibleTitle : nil,
+                systemImage: usesCompactTitle ? nil : "cpu",
                 trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
-                titleMaxWidth: usesCompactComposerMetrics ? 82 : 150,
+                titleMaxWidth: usesCompactTitle
+                    ? ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
+                    : (usesCompactComposerMetrics ? 82 : 150),
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
             .contentTransition(.opacity)
@@ -1793,6 +1762,18 @@ struct ComposerView: View {
               let title = ModelReasoningGridCatalog.triggerTitle(
                   for: selectedModel,
                   effort: selectedEffort,
+                  layout: modelReasoningGridLayout
+              )
+        else {
+            return selectedModelSummaryTitle
+        }
+        return title
+    }
+
+    var compactModelPickerTitle: String {
+        guard let selectedModel = effectiveModelID,
+              let title = ModelReasoningGridCatalog.compactTriggerTitle(
+                  for: selectedModel,
                   layout: modelReasoningGridLayout
               )
         else {

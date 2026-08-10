@@ -253,6 +253,20 @@ enum ModelReasoningGridCatalog {
         return "\(shortTitle(for: option, kind: layout.kind)) · \(effortTitle(effort))"
     }
 
+    static func compactTriggerTitle(
+        for modelID: String,
+        layout: ModelReasoningGridLayout
+    ) -> String? {
+        guard let option = layout.model(matching: modelID) else { return nil }
+        let title = shortTitle(for: option, kind: layout.kind)
+        guard layout.kind == .claude, title.hasPrefix("Claude ") else {
+            return title
+        }
+        // 底部工具层已经由当前会话 runtime 提供上下文，省略重复的 Provider 前缀，
+        // 让常见 Claude 模型在 iPhone 窄宽度下仍能完整显示为「Opus 5」。
+        return String(title.dropFirst("Claude ".count))
+    }
+
     static func shortTitle(
         for option: CodexAppServerModelOption,
         kind _: ModelReasoningGridKind
