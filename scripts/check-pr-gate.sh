@@ -19,6 +19,8 @@ for script_path in \
   scripts/check-critical-regressions.sh \
   scripts/check-nightly-release.sh \
   scripts/check-release-source.sh \
+  scripts/check-public-repo-safety.sh \
+  scripts/test-public-repo-safety.sh \
   scripts/check-pr-gate.sh \
   scripts/verify-change.sh \
   scripts/test-verify-change.sh \
@@ -30,6 +32,7 @@ bash ./scripts/test-verify-change.sh
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
 bash ./scripts/check-release-source.sh --self-test
+bash ./scripts/test-public-repo-safety.sh
 
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-pr-gate-check.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
@@ -140,6 +143,12 @@ expected_calls.each do |job_id, workflow_path|
     abort("PR Gate 自检失败：#{job_id} 没有调用 #{workflow_path}。")
   end
 end
+repository_safety_call = jobs.fetch("repository-safety")
+unless repository_safety_call.dig("with", "mode") == "pull-request" &&
+       repository_safety_call.dig("with", "base_sha").to_s.include?("github.event.pull_request.base.sha") &&
+       repository_safety_call.dig("with", "head_sha").to_s.include?("github.event.pull_request.head.sha")
+  abort("PR Gate 自检失败：Repository safety 必须显式传入 PR mode/base/head。")
+end
 unless jobs.dig("macos", "if").to_s.include?("needs.scope.outputs.macos")
   abort("PR Gate 自检失败：Mac App job 没有按 macos scope 执行。")
 end
@@ -179,6 +188,44 @@ macos_test_script = File.read("scripts/test-macos-app.sh")
   unless macos_test_script.include?(fragment)
     abort("PR Gate 自检失败：Mac App 编译测试入口缺少 #{fragment}。")
   end
+end
+
+safety_path = ".github/workflows/public-repo-safety.yml"
+safety_workflow = load_workflow(safety_path)
+safety_triggers = triggers(safety_workflow, safety_path)
+safety_inputs = safety_triggers.dig("workflow_call", "inputs")
+unless safety_inputs.is_a?(Hash) &&
+       safety_inputs.dig("mode", "default") == "full-history" &&
+       safety_inputs.dig("base_sha", "default") == "" &&
+       safety_inputs.dig("head_sha", "default") == ""
+  abort("PR Gate 自检失败：公开仓库安全门的 reusable inputs 必须默认 fail closed 到完整历史。")
+end
+safety_job = safety_workflow.fetch("jobs").fetch("verify")
+safety_steps = safety_job.fetch("steps")
+safety_checkout = safety_steps.find { |step| step["name"] == "Checkout" }
+unless safety_checkout&.dig("with", "fetch-depth") == 0
+  abort("PR Gate 自检失败：公开仓库安全门必须保留完整 checkout，才能扫描 PR 中间提交。")
+end
+safety_plan = safety_steps.find { |step| step["name"] == "Plan repository safety checks" }
+unless safety_plan && safety_plan["id"] == "safety" &&
+       safety_plan.to_s.include?("--pull-request") &&
+       safety_plan.to_s.include?("--base") &&
+       safety_plan.to_s.include?("--head") &&
+       safety_plan.to_s.include?("--github-output")
+  abort("PR Gate 自检失败：公开仓库安全门缺少 fail-closed 的 PR 范围规划。")
+end
+safety_go = safety_steps.find { |step| step["name"] == "Setup Go" }
+unless safety_go && safety_go["if"] == "steps.safety.outputs.third_party == 'true'"
+  abort("PR Gate 自检失败：Setup Go 必须只在第三方许可检查需要时运行。")
+end
+safety_install = safety_steps.find { |step| step["name"] == "Install repository safety tools" }
+unless safety_install.to_s.include?("command -v rg")
+  abort("PR Gate 自检失败：公开仓库安全工具安装必须优先复用 runner 已有 ripgrep。")
+end
+safety_check = safety_steps.find { |step| step["name"] == "Check public repository safety" }
+unless safety_check && safety_check.to_s.include?("--pull-request") &&
+       safety_check.to_s.include?("--full-history")
+  abort("PR Gate 自检失败：公开仓库安全门没有按 PR/main 事件选择历史范围。")
 end
 
 expected_calls.values.each do |workflow_path|

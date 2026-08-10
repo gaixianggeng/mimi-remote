@@ -370,7 +370,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/check-third-party-notices.sh|NOTICE.md|THIRD_PARTY_NOTICES.md)
+    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/test-public-repo-safety.sh|scripts/check-third-party-notices.sh|NOTICE.md|THIRD_PARTY_NOTICES.md)
       has_repository_security_control=true
       ;;
   esac

@@ -55,6 +55,10 @@ jobs:
   repository-safety:
     name: Repository safety
     uses: ./.github/workflows/public-repo-safety.yml
+    with:
+      mode: pull-request
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
 
   go:
     name: Go and release
