@@ -1283,6 +1283,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: false,
             isGoalUpdating: false,
             // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
@@ -1423,6 +1424,16 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         }
     }
 
+    func testEmbeddedGoalTrayUsesComposerSurfaceAndAlignedPadding() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
+
+        XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
+    }
+
     func testGoalTrayLightPhoneSurfaceBecomesOpaqueForAccessibility() {
         let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
             isExpanded: false,
@@ -1474,6 +1485,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: true,
             isGoalUpdating: false,
             goalErrorMessage: nil,

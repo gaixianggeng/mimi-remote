@@ -254,6 +254,23 @@ enum ComposerStatusTrayMaterialStrength: Equatable {
     case regular
 }
 
+enum ComposerStatusTrayPlacement: Equatable {
+    case standalone
+    case embedded
+
+    var usesIndependentSurface: Bool {
+        self == .standalone
+    }
+
+    var expandedContentPadding: CGFloat {
+        self == .embedded ? 2 : 10
+    }
+
+    var collapsedLeadingPadding: CGFloat {
+        self == .embedded ? 0 : 10
+    }
+}
+
 struct ComposerStatusTraySurfaceStyle: Equatable {
     let materialStrength: ComposerStatusTrayMaterialStrength
     let surfaceTintOpacity: Double
@@ -314,6 +331,7 @@ struct ComposerStatusTray: View {
     let quotaNotice: CodexQuotaNotice?
     let usage: CodexUsageDisplaySummary?
     let goal: ThreadGoal?
+    let placement: ComposerStatusTrayPlacement
     let isGoalExpanded: Bool
     let isGoalUpdating: Bool
     let goalErrorMessage: String?
@@ -352,20 +370,24 @@ struct ComposerStatusTray: View {
                 .foregroundStyle(tokens.warning)
             }
         }
-        .padding(isGoalExpanded ? 10 : 0)
+        .padding(isGoalExpanded ? placement.expandedContentPadding : 0)
         // 状态栏和输入卡共用同一条 composer 轨道；展开后也不要另设宽度上限，
         // 否则 iPad 宽屏下会出现上窄下宽、左右边界不一致的视觉断层。
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            traySurface(shape: shape, tokens: tokens, surfaceStyle: surfaceStyle)
+            if placement.usesIndependentSurface {
+                traySurface(shape: shape, tokens: tokens, surfaceStyle: surfaceStyle)
+            }
         }
         .overlay {
-            shape.strokeBorder(
-                tokens.resolvedScheme == .light
-                    ? Color.black.opacity(surfaceStyle.borderOpacity)
-                    : tokens.border.opacity(surfaceStyle.borderOpacity),
-                lineWidth: 0.75
-            )
+            if placement.usesIndependentSurface {
+                shape.strokeBorder(
+                    tokens.resolvedScheme == .light
+                        ? Color.black.opacity(surfaceStyle.borderOpacity)
+                        : tokens.border.opacity(surfaceStyle.borderOpacity),
+                    lineWidth: 0.75
+                )
+            }
         }
         .accessibilityElement(children: .contain)
     }
@@ -396,7 +418,8 @@ struct ComposerStatusTray: View {
                 action: onToggleGoalExpanded
             )
         }
-        .padding(.leading, 10)
+        // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
+        .padding(.leading, placement.collapsedLeadingPadding)
         .padding(.trailing, 2)
         .frame(minHeight: 44)
     }
@@ -512,18 +535,20 @@ struct ComposerStatusTray: View {
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
+                    .accessibilityHint(notice)
                 if allowsTakeOver {
                     Button(action: onTakeOver) {
                         Text(L10n.text("ui.take_over"))
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.accent)
+                    .accessibilityHint(notice)
                 }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityHint(notice)
         }
     }
 

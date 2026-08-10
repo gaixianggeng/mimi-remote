@@ -93,7 +93,11 @@ struct ComposerView: View {
         // 不再叠加玻璃材质、键帽高光或投影。
         VStack(alignment: .leading, spacing: 10) {
             queuedTurnTray
-            composerStatusTray
+            // iPhone 把会话状态并入唯一 Composer 外壳；iPad 继续使用独立托盘，
+            // 保留宽屏上的信息密度与既有收起布局。
+            if !isPhoneComposer {
+                composerStatusTray
+            }
             pendingApprovalAction
             pendingUserInputAction
             voiceErrorMessage
@@ -761,6 +765,7 @@ struct ComposerView: View {
                 quotaNotice: nil,
                 usage: usageNotice,
                 goal: visibleGoal,
+                placement: isPhoneComposer ? .embedded : .standalone,
                 isGoalExpanded: isGoalStatusExpanded,
                 isGoalUpdating: sessionStore.isUpdatingThreadGoal,
                 goalErrorMessage: sessionStore.threadGoalErrorMessage,
@@ -798,7 +803,7 @@ struct ComposerView: View {
             )
             .environmentObject(themeStore)
             .transition(
-                reduceMotion
+                reduceMotion || isPhoneComposer
                     ? .opacity
                     : .move(edge: .top).combined(with: .opacity)
             )
@@ -906,6 +911,9 @@ struct ComposerView: View {
         let shape = RoundedRectangle(cornerRadius: 26, style: .continuous)
 
         return VStack(alignment: .leading, spacing: 4) {
+            // 状态是输入上下文的一部分，不再单独绘制第二张材质卡。展开时整个
+            // Composer 向上生长，编辑器和主工具栏仍保持同一外轮廓与阅读顺序。
+            composerStatusTray
             expandedPhoneComposerContent(tokens: tokens)
 
             // 工具栏身份稳定，输入区增高时只向上生长，不重新插入或缩放按钮。
