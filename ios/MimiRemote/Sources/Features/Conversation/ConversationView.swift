@@ -59,6 +59,10 @@ struct ConversationView: View {
                     )
                 )
             }
+            // 测量层必须先占满 NavigationStack 实际分配的详情列，再把结果回写给
+            // ConversationLayout。若跟随 List / Composer 的 intrinsic width 收缩，
+            // 固定宽度的 Composer 会把下一帧继续锁在最小 240pt，形成宽度反馈环。
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onGeometryChange(for: CGFloat.self) { geometry in
                 geometry.size.width
             } action: { width in
