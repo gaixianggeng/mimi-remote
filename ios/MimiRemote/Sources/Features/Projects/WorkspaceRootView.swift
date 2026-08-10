@@ -1743,18 +1743,23 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         } label: {
             Group {
                 if showsTitle {
-                    Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
+                    Label(L10n.text("ui.new_session_3da224c4"), systemImage: "plus")
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .imageScale(.small)
                         .padding(.horizontal, 10)
                         .frame(minHeight: 36)
                 } else {
-                    Image(systemName: "square.and.pencil")
+                    // 紧凑布局也使用纯加号，避免“方框＋铅笔”被误解为编辑当前内容。
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
                         .frame(
                             width: 36,
                             height: 36
                         )
+                        .offset(y: -0.5)
                 }
             }
-            .font(themeStore.uiFont(.subheadline, weight: .semibold)).imageScale(.small)
             .foregroundStyle(tokens.primaryActionForeground)
             .background(tokens.primaryAction, in: Capsule())
             .frame(minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
