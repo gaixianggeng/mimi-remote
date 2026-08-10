@@ -2,18 +2,13 @@ import XCTest
 @testable import MimiRemote
 
 final class LocalizationTests: XCTestCase {
-    func testRuntimeCatalogUsesEnglishWhenTestLanguageIsEnglish() throws {
-        try XCTSkipUnless(
-            Locale.preferredLanguages.first?.lowercased().hasPrefix("en") == true,
-            "需使用 xcodebuild -testLanguage en 运行英文目录冒烟测试"
-        )
-
-        // 核心回归与英文 smoke 复用同一 App 容器。这里临时回到“跟随系统”，
-        // 避免前序快照测试残留的显式语言偏好覆盖 -testLanguage en。
+    func testRuntimeCatalogUsesStoredEnglishLanguage() {
+        // 日常核心回归固定 zh-Hans；显式写入 App 语言可在同一 XCTest 进程
+        // 验证英文资源确实被打包且运行时可选择，不必为每个 PR 再启动一次 Simulator。
         let defaults = UserDefaults.standard
         let hadStoredLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
         let previousLanguage = defaults.string(forKey: AppLanguage.preferenceKey)
-        defaults.removeObject(forKey: AppLanguage.preferenceKey)
+        defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
         defer {
             if hadStoredLanguage {
                 defaults.set(previousLanguage, forKey: AppLanguage.preferenceKey)
@@ -22,6 +17,7 @@ final class LocalizationTests: XCTestCase {
             }
         }
 
+        XCTAssertEqual(AppLanguage.stored(), .english)
         XCTAssertEqual(L10n.text("ui.settings"), "settings")
         XCTAssertEqual(
             L10n.format("ui.awaiting_approval_value_value", "Review diff", " · Low risk"),

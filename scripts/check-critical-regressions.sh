@@ -35,6 +35,8 @@ grep -Fq './internal/httpapi \' "$runner" \
   || fail "Go 集成层缺少 internal/httpapi。"
 grep -Fq '  -count=1' "$runner" \
   || fail "Go 回归必须禁用测试缓存。"
+grep -Fq -- '-only-testing:MimiRemoteTests/LocalizationTests' "$runner" \
+  || fail "日常核心回归未合并双语资源测试。"
 grep -Fq 'func TestCriticalJourneyFixtureMatchesAgentDGateway(' \
   internal/httpapi/protocol_contract_test.go \
   || fail "Go 缺少共享关键链路 fixture 回归。"

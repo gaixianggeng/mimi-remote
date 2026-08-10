@@ -90,7 +90,7 @@ assert_contains "$rust_shared_output" "-p alleycat-claude-bridge"
 
 ios_full_output="$(assert_full_plan ios_full ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_full_output" "test-conversation-regressions.sh"
-assert_contains "$ios_full_output" "test-ios-localization-smoke.sh"
+assert_not_contains "$ios_full_output" "test-ios-localization-smoke.sh"
 assert_not_contains "$ios_full_output" "ios-dev.sh build-for-testing"
 
 rust_full_output="$(assert_full_plan rust_full bridges/claude/crates/claude-bridge/src/lib.rs)"
