@@ -290,6 +290,137 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
         XCTAssertTrue(recovered.ownsSessionEpoch)
     }
 
+    func testLegacyDaemonOnlyLedgerMigratesWithoutRewritingDaemonFlag() async throws {
+        let defaults = makeDefaults()
+        seedLegacyDaemonOnlyLedger(in: defaults)
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        let migrated = try await client.setEnabled(true, "/tmp/codex")
+
+        // 旧版已经证明 daemon flag 由 Mimi 写入；迁移只补齐 CODEX_HOME 和
+        // 新会话 epoch，绝不能重复 setenv daemon 或覆盖外部值。
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/tmp/codex")
+        XCTAssertNotNil(launchctl.sessionEpoch)
+        XCTAssertEqual(launchctl.events, [
+            "set-\(CodexDesktopIntegrationClient.codexHomeKey)",
+            "set-\(CodexDesktopIntegrationClient.ownershipEpochKey)",
+        ])
+        XCTAssertTrue(migrated.ownsEnvironment)
+        XCTAssertTrue(migrated.ownsCodexHome)
+        XCTAssertTrue(migrated.ownsSessionEpoch)
+        XCTAssertEqual(defaults.string(forKey: "MimiRemoteMac.codexDesktop.writtenValue"), "1")
+        XCTAssertTrue(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsEnvironment"))
+        XCTAssertEqual(
+            defaults.string(forKey: "MimiRemoteMac.codexDesktop.writtenCodexHome"),
+            "/tmp/codex"
+        )
+        XCTAssertTrue(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsCodexHome"))
+        XCTAssertEqual(
+            defaults.string(forKey: "MimiRemoteMac.codexDesktop.writtenSessionEpoch"),
+            launchctl.sessionEpoch
+        )
+        XCTAssertTrue(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsSessionEpoch"))
+        XCTAssertEqual(
+            defaults.string(forKey: "MimiRemoteMac.codexDesktop.codexHome"),
+            "/tmp/codex"
+        )
+    }
+
+    func testLegacyLedgerWithExplicitFalseNewOwnershipKeyRefusesMigration() async throws {
+        let defaults = makeDefaults()
+        seedLegacyDaemonOnlyLedger(in: defaults)
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsCodexHome")
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.setEnabled(true, "/tmp/codex")
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertNil(launchctl.codexHome)
+        XCTAssertNil(launchctl.sessionEpoch)
+        XCTAssertTrue(launchctl.events.isEmpty)
+    }
+
+    func testLegacyLedgerWithPreviousValueRefusesMigration() async throws {
+        let defaults = makeDefaults()
+        seedLegacyDaemonOnlyLedger(in: defaults)
+        defaults.set("previous", forKey: "MimiRemoteMac.codexDesktop.previousValue")
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.setEnabled(true, "/tmp/codex")
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertNil(launchctl.codexHome)
+        XCTAssertNil(launchctl.sessionEpoch)
+        XCTAssertTrue(launchctl.events.isEmpty)
+    }
+
+    func testSameDaemonAndHomeValuesWithoutLegacyLedgerAreNotClaimed() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        launchctl.codexHome = "/tmp/codex"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.setEnabled(true, "/tmp/codex")
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/tmp/codex")
+        XCTAssertNil(launchctl.sessionEpoch)
+        XCTAssertTrue(launchctl.events.isEmpty)
+        XCTAssertFalse(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsEnvironment"))
+        XCTAssertFalse(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsCodexHome"))
+        XCTAssertFalse(defaults.bool(forKey: "MimiRemoteMac.codexDesktop.ownsSessionEpoch"))
+    }
+
+    func testLegacyDaemonOnlyLedgerRejectsExternalCodexHome() async throws {
+        let defaults = makeDefaults()
+        seedLegacyDaemonOnlyLedger(in: defaults)
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        launchctl.codexHome = "/other/codex"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.setEnabled(true, "/tmp/codex")
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/other/codex")
+        XCTAssertNil(launchctl.sessionEpoch)
+        XCTAssertTrue(launchctl.events.isEmpty)
+    }
+
+    func testLegacyDaemonOnlyLedgerRejectsExternalSessionEpoch() async throws {
+        let defaults = makeDefaults()
+        seedLegacyDaemonOnlyLedger(in: defaults)
+        let launchctl = FakeLaunchctlState()
+        launchctl.daemon = "1"
+        launchctl.sessionEpoch = "external-epoch"
+        let client = makeStateClient(defaults: defaults, state: launchctl)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.setEnabled(true, "/tmp/codex")
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertNil(launchctl.codexHome)
+        XCTAssertEqual(launchctl.sessionEpoch, "external-epoch")
+        XCTAssertTrue(launchctl.events.isEmpty)
+    }
+
     func testCommittedWriteDoesNotDependOnPostCommitGetenv() async throws {
         let defaults = makeDefaults()
         let state = FakeLaunchctlState()
@@ -582,6 +713,12 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
 
     private func makeDefaults() -> UserDefaults {
         UserDefaults(suiteName: "MimiRemoteMac.CodexDesktopTests.\(UUID().uuidString)")!
+    }
+
+    private func seedLegacyDaemonOnlyLedger(in defaults: UserDefaults) {
+        defaults.set(true, forKey: "MimiRemoteMac.codexDesktop.enabled")
+        defaults.set("1", forKey: "MimiRemoteMac.codexDesktop.writtenValue")
+        defaults.set(true, forKey: "MimiRemoteMac.codexDesktop.ownsEnvironment")
     }
 
     private func XCTAssertThrowsErrorAsync(

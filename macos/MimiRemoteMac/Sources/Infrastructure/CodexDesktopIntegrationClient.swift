@@ -423,6 +423,40 @@ private final class CodexDesktopIntegrationRuntime {
         defaults.string(forKey: Self.canonicalCodexHomeKey)
     }
 
+    /// 旧版只记录了 daemon flag 的 ownership，没有 CODEX_HOME 或会话 epoch。
+    /// 只有在偏好仍为启用、且所有新版账本字段都不存在时，才能证明这条
+    /// `writtenValue == "1"` 确实来自 Mimi；一次性迁移会保留 daemon ownership，
+    /// 再补写 canonical CODEX_HOME 和新的随机 epoch。更宽松的判断会把新会话
+    /// 中其他程序写入的同值配置误认成 Mimi，因而必须保持 fail-closed。
+    private var isLegacyDaemonOnlyOwnershipLedger: Bool {
+        guard
+            let enabled = defaults.object(forKey: Self.enabledKey) as? Bool,
+            enabled,
+            let written = defaults.object(forKey: Self.writtenValueKey) as? String,
+            written == "1",
+            let ownsDaemon = defaults.object(forKey: Self.ownsEnvironmentKey) as? Bool,
+            ownsDaemon
+        else {
+            return false
+        }
+
+        // 不能用 bool(forKey:) / string(forKey:) 推断“字段不存在”：UserDefaults
+        // 会把显式 false、空字符串或错误类型映射成 false/nil，从而把部分新版
+        // 账本误认作旧版。只要任一新版 ownership 字段曾落盘，就拒绝迁移。
+        let newerOwnershipKeys = [
+            Self.previousValueKey,
+            Self.previousCodexHomeKey,
+            Self.writtenCodexHomeKey,
+            Self.ownsCodexHomeKey,
+            Self.writtenSessionEpochKey,
+            Self.ownsSessionEpochKey,
+            Self.canonicalCodexHomeKey,
+        ]
+        return newerOwnershipKeys.allSatisfy {
+            defaults.object(forKey: $0) == nil
+        }
+    }
+
     private func applyPreference(
         _ enabled: Bool,
         codexHome: String?
@@ -447,6 +481,10 @@ private final class CodexDesktopIntegrationRuntime {
                 && currentSessionEpoch != nil
                 && currentSessionEpoch == writtenSessionEpoch
             let sessionResetIsSafe = officialValuesAreEmpty
+                && currentSessionEpoch == nil
+            let isLegacyMigration = isLegacyDaemonOnlyOwnershipLedger
+                && current == "1"
+                && currentCodexHome == nil
                 && currentSessionEpoch == nil
 
             // 同一登录会话里，Mimi 之前写入的值一旦被清空/改写，就视为外部
@@ -473,6 +511,7 @@ private final class CodexDesktopIntegrationRuntime {
             if hadAnyOwnership,
                !sessionResetIsSafe,
                !currentEpochIsOwned,
+               !isLegacyMigration,
                (current == writtenValue || currentCodexHome == writtenCodexHome)
             {
                 // 两个官方值即使“恰好相同”，新会话里没有 Mimi 的 epoch 也不能
@@ -489,6 +528,14 @@ private final class CodexDesktopIntegrationRuntime {
                 throw externalConflictWithoutClearing(
                     CodexDesktopIntegrationClient.environmentKey,
                     current
+                )
+            }
+            if current == "1", !hadDaemonOwnership {
+                // 没有旧 Mimi ledger 时，不能因为外部恰好写入了 "1" 就认领
+                // daemon flag；这也覆盖了 CODEX_HOME 尚为空的部分配置。
+                throw externalConflictWithoutClearing(
+                    CodexDesktopIntegrationClient.environmentKey,
+                    current ?? "(已被外部清除)"
                 )
             }
             if let currentCodexHome, currentCodexHome != codexHome {
@@ -570,7 +617,7 @@ private final class CodexDesktopIntegrationRuntime {
                     written: "1",
                     ownsKey: Self.ownsEnvironmentKey
                 )
-            } else if !(hadDaemonOwnership && currentEpochIsOwned) {
+            } else if !hadDaemonOwnership && !isLegacyMigration {
                 clearDaemonOwnership(keepPrevious: false)
             }
             if codexHomeNeedsWrite {
