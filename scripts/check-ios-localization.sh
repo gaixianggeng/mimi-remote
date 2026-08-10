@@ -78,6 +78,8 @@ else:
         "run: bash ./scripts/check-ios-localization.sh",
         '"scripts/test-ios-localization-smoke.sh"',
         "run: bash ./scripts/test-ios-localization-smoke.sh",
+        "inputs.publish_internal_testflight ||",
+        "github.event_name == 'workflow_dispatch' && inputs.publish_app_store",
     ):
         if required not in workflow:
             errors.append(f"iOS CI workflow is missing localization coverage: {required}")
@@ -94,6 +96,10 @@ for script_name, required in (
     for flag in required:
         if flag not in script:
             errors.append(f"{script_name} must set {flag}")
+
+core_runner = Path("scripts/test-conversation-regressions.sh").read_text()
+if "-only-testing:MimiRemoteTests/LocalizationTests" not in core_runner:
+    errors.append("Core iOS regression must include LocalizationTests")
 
 def localized_values(entry, language):
     localization = entry.get("localizations", {}).get(language)

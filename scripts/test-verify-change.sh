@@ -90,8 +90,13 @@ assert_contains "$rust_shared_output" "-p alleycat-claude-bridge"
 
 ios_full_output="$(assert_full_plan ios_full ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_full_output" "test-conversation-regressions.sh"
-assert_contains "$ios_full_output" "test-ios-localization-smoke.sh"
+assert_contains "$ios_full_output" "--ios-only"
+assert_not_contains "$ios_full_output" "test-ios-localization-smoke.sh"
 assert_not_contains "$ios_full_output" "ios-dev.sh build-for-testing"
+
+mixed_full_output="$(assert_full_plan mixed_full internal/httpapi/router.go ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
+assert_contains "$mixed_full_output" "go test ./... -count=1"
+assert_contains "$mixed_full_output" "test-conversation-regressions.sh --ios-only"
 
 rust_full_output="$(assert_full_plan rust_full bridges/claude/crates/claude-bridge/src/lib.rs)"
 assert_contains "$rust_full_output" "-p alleycat-codex-proto"

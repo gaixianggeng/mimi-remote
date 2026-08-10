@@ -566,8 +566,8 @@ if [[ "$direct_ios" == true ]]; then
   add_check "iOS 验证前只解析一次目标" "bash ./scripts/ios-dev.sh target"
   add_check "iOS 验证前只查看一次设备占用" "bash ./scripts/ios-dev.sh leases"
   if [[ "$mode" == "full" ]]; then
-    add_check "iOS full 执行核心关键链路回归" "bash ./scripts/test-conversation-regressions.sh"
-    add_check "iOS full 执行英文文案 smoke" "bash ./scripts/test-ios-localization-smoke.sh"
+    # Go 变更由上方独立 Go 计划覆盖；iOS 阶段不在 macOS/Simulator 链路重复执行。
+    add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only"
   else
     add_check "iOS quick 只编译一次可复用测试产物" "bash ./scripts/ios-dev.sh build-for-testing"
   fi
