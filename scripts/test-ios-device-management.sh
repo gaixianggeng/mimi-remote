@@ -296,6 +296,56 @@ assert_contains "$(cat "$busy_output")" "未切换到其他测试设备" \
 wait "$holder_pid"
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] || fail "进程正常结束后必须释放租约"
 
+reuse_derived_data="$TEMP_DIR/reuse-derived"
+: > "$IOS_TEST_XCODEBUILD_LOG"
+reuse_missing_output="$TEMP_DIR/reuse-missing.log"
+set +e
+IOS_DERIVED_DATA_PATH="$reuse_derived_data" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" test-without-building \
+  -only-testing:MimiRemoteTests/LocalizationTests >"$reuse_missing_output" 2>&1
+reuse_missing_status=$?
+set -e
+assert_equal "3" "$reuse_missing_status" \
+  "缺少 build-for-testing 产物时 test-without-building 必须失败"
+assert_contains "$(cat "$reuse_missing_output")" "请先对同一 destination 和 DerivedData 执行 build-for-testing" \
+  "复用产物缺失时必须给出可操作提示"
+[[ ! -s "$IOS_TEST_XCODEBUILD_LOG" ]] \
+  || fail "复用产物缺失时不得调用 xcodebuild 或静默重新编译"
+
+IOS_DERIVED_DATA_PATH="$reuse_derived_data" \
+IOS_TEST_CREATE_TEST_PRODUCTS=1 \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build-for-testing -quiet
+IOS_DERIVED_DATA_PATH="$reuse_derived_data" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" test-without-building \
+  -only-testing:MimiRemoteTests/LocalizationTests
+reuse_xcodebuild_log="$(cat "$IOS_TEST_XCODEBUILD_LOG")"
+assert_contains "$reuse_xcodebuild_log" "build-for-testing" \
+  "复用链路必须先执行 build-for-testing"
+assert_contains "$reuse_xcodebuild_log" "test-without-building" \
+  "复用链路必须执行 test-without-building"
+assert_equal "2" "$(printf '%s\n' "$reuse_xcodebuild_log" | grep -Fc -- "-destination platform=iOS Simulator,id=M5-27-UDID")" \
+  "构建与复用测试必须使用同一固定 M5 destination"
+assert_equal "2" "$(printf '%s\n' "$reuse_xcodebuild_log" | grep -Fc -- "-derivedDataPath $reuse_derived_data")" \
+  "构建与复用测试必须使用同一 DerivedData"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] \
+  || fail "复用测试结束后必须释放固定 M5 租约"
+
+: > "$IOS_TEST_XCODEBUILD_LOG"
+IOS_DERIVED_DATA_PATH="$reuse_derived_data" \
+bash "$ROOT_DIR/scripts/test-ios-localization-smoke.sh"
+assert_equal "test" "$(awk 'END { print $NF }' "$IOS_TEST_XCODEBUILD_LOG")" \
+  "直接运行测试脚本时必须保留自行构建并测试的默认行为"
+invalid_action_output="$TEMP_DIR/invalid-test-action.log"
+set +e
+IOS_TEST_ACTION=build \
+IOS_DERIVED_DATA_PATH="$reuse_derived_data" \
+bash "$ROOT_DIR/scripts/test-ios-localization-smoke.sh" >"$invalid_action_output" 2>&1
+invalid_action_status=$?
+set -e
+assert_equal "2" "$invalid_action_status" "测试脚本必须拒绝非白名单 IOS_TEST_ACTION"
+assert_contains "$(cat "$invalid_action_output")" "只支持 test 或 test-without-building" \
+  "非法测试 action 必须给出明确提示"
+
 m5_26_started="$TEMP_DIR/m5-26-started"
 m5_27_started="$TEMP_DIR/m5-27-started"
 IOS_TARGET_MODE=simulator \

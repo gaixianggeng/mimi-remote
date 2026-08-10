@@ -162,14 +162,21 @@ jobs:
       - name: Check Mimi protocol contract
         run: bash ./scripts/check-mimi-protocol-contract.sh
 
+      - name: Build iOS test products once
+        run: bash ./scripts/ios-dev.sh build-for-testing -quiet
+
       - name: Run core regressions
         run: bash ./scripts/test-conversation-regressions.sh
+        env:
+          IOS_TEST_ACTION: test-without-building
 
       # The core regression suite deliberately uses the established zh-Hans/CN
       # baseline. Run the localization unit tests independently in English so a
       # fresh GitHub runner cannot mask an English bundle lookup regression.
       - name: Run English localization smoke
         run: bash ./scripts/test-ios-localization-smoke.sh
+        env:
+          IOS_TEST_ACTION: test-without-building
 
   app-store-release:
     needs: conversation-regressions

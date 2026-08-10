@@ -35,6 +35,10 @@ grep -Fq './internal/httpapi \' "$runner" \
   || fail "Go 集成层缺少 internal/httpapi。"
 grep -Fq '  -count=1' "$runner" \
   || fail "Go 回归必须禁用测试缓存。"
+grep -Fq 'IOS_TEST_ACTION:-test' "$runner" \
+  || fail "iOS runner 必须在单独运行时默认自行构建并测试。"
+grep -Fq 'test|test-without-building' "$runner" \
+  || fail "iOS runner 缺少显式的可复用测试 action 白名单。"
 grep -Fq 'func TestCriticalJourneyFixtureMatchesAgentDGateway(' \
   internal/httpapi/protocol_contract_test.go \
   || fail "Go 缺少共享关键链路 fixture 回归。"

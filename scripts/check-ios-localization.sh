@@ -78,9 +78,12 @@ else:
         "run: bash ./scripts/check-ios-localization.sh",
         '"scripts/test-ios-localization-smoke.sh"',
         "run: bash ./scripts/test-ios-localization-smoke.sh",
+        "run: bash ./scripts/ios-dev.sh build-for-testing -quiet",
     ):
         if required not in workflow:
             errors.append(f"iOS CI workflow is missing localization coverage: {required}")
+    if workflow.count("IOS_TEST_ACTION: test-without-building") != 2:
+        errors.append("iOS CI must reuse one test build for core and English test steps")
 
 for script_name, required in (
     ("scripts/test-conversation-regressions.sh", ("-testLanguage zh-Hans", "-testRegion CN")),
@@ -91,6 +94,8 @@ for script_name, required in (
         errors.append(f"Missing localization test script: {script_name}")
         continue
     script = script_path.read_text()
+    if 'IOS_TEST_ACTION:-test' not in script:
+        errors.append(f"{script_name} must default IOS_TEST_ACTION to test")
     for flag in required:
         if flag not in script:
             errors.append(f"{script_name} must set {flag}")
