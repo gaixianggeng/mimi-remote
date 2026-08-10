@@ -44,6 +44,45 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             },
             "GPT-5.6 Sol · Extra High"
         )
+        XCTAssertEqual(
+            modelID.flatMap { ModelReasoningGridCatalog.compactTriggerTitle(for: $0, layout: layout) },
+            "5.6 Sol"
+        )
+        XCTAssertEqual(
+            modelID.flatMap {
+                ModelReasoningGridCatalog.compactTriggerTitle(
+                    for: $0,
+                    effort: .high,
+                    layout: layout
+                )
+            },
+            "5.6 Sol High"
+        )
+        XCTAssertEqual(
+            modelID.flatMap {
+                ModelReasoningGridCatalog.compactTriggerTitle(
+                    for: $0,
+                    effort: .xhigh,
+                    layout: layout
+                )
+            },
+            "5.6 Sol XH"
+        )
+        let hyphenatedOptions = [
+            CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6-Sol", isDefault: true)
+        ]
+        let hyphenatedLayout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: hyphenatedOptions
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.compactTriggerTitle(
+                for: "gpt-5.6-sol",
+                effort: .high,
+                layout: hyphenatedLayout
+            ),
+            "5.6 Sol High"
+        )
     }
 
     func testClaudeUsesServerOrderedTopThreeModelsAndStandardFourEfforts() {
@@ -61,6 +100,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(
             claudeLayout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
             ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 5"]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.compactTriggerTitle(for: "opus", layout: claudeLayout),
+            "Opus 5"
         )
         XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.low), "Light")

@@ -696,6 +696,63 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
     }
 
+    func testConversationTopUnderlapOnlyDependsOnDeviceAndTransparencyPreference() {
+        // WebSocket error、history/quota notice 不进入这个策略：瞬态业务状态只能显示提示，
+        // 不能切换导航栏与 List 的 safe-area 几何。
+        XCTAssertTrue(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: true,
+                reduceTransparency: false
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: true,
+                reduceTransparency: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: false,
+                reduceTransparency: false
+            )
+        )
+    }
+
+    func testTranslucentComposerBackdropRequiresSystemSoftScrollEdge() {
+        // 半透明底衬最深只有 10–12%，真正虚化正文的是 soft scroll edge。紧凑宽度的
+        // composerBottomPadding 是 0，底衬又要盖到 home indicator，所以没有 soft edge
+        // 的 iOS 18–25 必须退回实色，否则正文会近乎全对比度地从输入卡下沿滚过去。
+        XCTAssertTrue(
+            ConversationView.usesTranslucentComposerBackdrop(
+                isPhone: true,
+                reduceTransparency: false,
+                hasSoftScrollEdge: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.usesTranslucentComposerBackdrop(
+                isPhone: true,
+                reduceTransparency: false,
+                hasSoftScrollEdge: false
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.usesTranslucentComposerBackdrop(
+                isPhone: true,
+                reduceTransparency: true,
+                hasSoftScrollEdge: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.usesTranslucentComposerBackdrop(
+                isPhone: false,
+                reduceTransparency: false,
+                hasSoftScrollEdge: true
+            )
+        )
+    }
+
     func testConversationTimelineRapidSessionSwitchesKeepValidTailTarget() async throws {
 #if targetEnvironment(macCatalyst)
         // 该回归用例专门覆盖 iOS 27 UICollectionView 的快照/IndexPath 竞态；
