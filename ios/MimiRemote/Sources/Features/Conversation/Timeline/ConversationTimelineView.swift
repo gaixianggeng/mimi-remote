@@ -9,6 +9,7 @@ struct ConversationTimelineView: View {
     @Environment(\.colorScheme) private var colorScheme
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
+    let allowsTopUnderlap: Bool
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     // 在会话切换、本地提交或用户主动“回到底部”后，旧 List 的滚动几何可能还会
@@ -30,9 +31,14 @@ struct ConversationTimelineView: View {
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
 
-    init(layout: ConversationLayout, sessionID: SessionID? = nil) {
+    init(
+        layout: ConversationLayout,
+        sessionID: SessionID? = nil,
+        allowsTopUnderlap: Bool = false
+    ) {
         self.layout = layout
         explicitSessionID = sessionID
+        self.allowsTopUnderlap = allowsTopUnderlap
     }
 
     private var displayedSessionID: SessionID? {
@@ -133,9 +139,9 @@ struct ConversationTimelineView: View {
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .background(tokens.conversationCanvasBackground)
-                // Composer 是唯一的底部功能材质；时间线只在它后方留一层柔和渐隐，
-                // 不再在输入区外侧切出一整块与页面不同的底色。
-                .workbenchSoftBottomScrollEdge()
+                // 顶部正文进入导航层、底部正文经过 Composer 时都使用系统柔和虚化；
+                // 不再在任一边缘切出一整块与页面不同的实色底板。
+                .workbenchSoftConversationScrollEdges(allowsTopUnderlap: allowsTopUnderlap)
                 .simultaneousGesture(TapGesture().onEnded {
                     KeyboardDismissal.dismiss()
                 })

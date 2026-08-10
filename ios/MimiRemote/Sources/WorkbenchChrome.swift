@@ -734,8 +734,27 @@ extension View {
         .contentShape(Circle())
     }
 
-    /// 底部滚动边缘统一使用柔和渐隐：内容经过浮动 Tab Bar 或 Composer 后方时只有渐变模糊，
-    /// 不会像 `hard` 那样切出一条横贯全宽的边界线。iOS 26 之前没有该效果，保持原样。
+    /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer
+    /// 后方时都由系统提供渐进式虚化，不会像 `hard` 那样切出横贯全宽的边界线。
+    /// iOS 26 之前没有该效果，保持原样。
+    @ViewBuilder
+    func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            if allowsTopUnderlap {
+                // scrollEdgeEffectStyle 只负责已经发生重叠时的虚化；真正的 List 还必须
+                // 延伸进顶部安全区，正文才能成为导航控制层后方的采样内容。
+                ignoresSafeArea(.container, edges: .top)
+                    .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+            } else {
+                scrollEdgeEffectStyle(.soft, for: .bottom)
+            }
+        } else {
+            self
+        }
+    }
+
+    /// 非会话列表只需要底部浮动 Chrome 的柔和过渡；保留独立入口，避免普通列表
+    /// 因会话页的 top underlap 策略改变自身安全区布局。
     @ViewBuilder
     func workbenchSoftBottomScrollEdge() -> some View {
         if #available(iOS 26.0, *) {

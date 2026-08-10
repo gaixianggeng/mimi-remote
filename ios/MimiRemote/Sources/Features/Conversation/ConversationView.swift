@@ -46,7 +46,17 @@ struct ConversationView: View {
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
-                ConversationTimelineView(layout: layout)
+                ConversationTimelineView(
+                    layout: layout,
+                    // 固定提示条出现时先保留普通安全区布局，避免 List 的顶部 underlap
+                    // 穿到提示条后方。范围只限正常透明度的 iPhone；iPad 与 Reduce
+                    // Transparency 继续保留原安全区几何和实色导航层。
+                    allowsTopUnderlap: UIDevice.current.userInterfaceIdiom == .phone
+                        && !reduceTransparency
+                        && model.errorMessage == nil
+                        && model.historySavingsNotice == nil
+                        && model.quotaNotice == nil
+                )
             }
             .onGeometryChange(for: CGFloat.self) { geometry in
                 geometry.size.width

@@ -971,12 +971,13 @@ struct ComposerView: View {
                     .fill(tokens.inputBackground)
                     .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
             } else if isPhoneComposer {
-                // iPhone 让正文层在卡片后方保持连续；单层 ultraThinMaterial 负责打散字形，
-                // 半透明白色 tint 把空白区域提到纸白，但仍保留正文经过时的模糊层次。
+                // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
+                // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
+                // 亮度只用一层很轻的白色 tint 调整，避免恢复成不透明白卡。
                 shape
-                    .fill(.ultraThinMaterial.opacity(0.45))
+                    .fill(.regularMaterial)
                     .overlay {
-                        shape.fill(tokens.inputBackground.opacity(0.52))
+                        shape.fill(tokens.inputBackground.opacity(0.14))
                     }
                     .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
                     .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)

@@ -1783,15 +1783,22 @@ private struct CompactSessionNavigationMaterialModifier: ViewModifier {
             if reduceTransparency {
                 content
                     .toolbarBackground(tokens.inputBackground, for: .navigationBar)
-                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbarBackgroundVisibility(.visible, for: .navigationBar)
                     .toolbarColorScheme(colorScheme, for: .navigationBar)
             } else {
-                content
-                    // compact 会话只声明这一层原生材质。不要先铺主题实色、也不要再给
-                    // Material 加 opacity，否则 blur 与高光会一起被削弱，真机上只剩灰条。
-                    .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-                    .toolbarBackground(.visible, for: .navigationBar)
-                    .toolbarColorScheme(colorScheme, for: .navigationBar)
+                if #available(iOS 26.0, *) {
+                    content
+                        // iOS 26 的返回与菜单已经自带 Liquid Glass；隐藏整条固定底板，
+                        // 由真正 underlap 的 List + soft edge 提供透明、渐进虚化。
+                        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                        .toolbarColorScheme(colorScheme, for: .navigationBar)
+                } else {
+                    content
+                        // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
+                        .toolbarBackground(.regularMaterial, for: .navigationBar)
+                        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                        .toolbarColorScheme(colorScheme, for: .navigationBar)
+                }
             }
         } else {
             // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
