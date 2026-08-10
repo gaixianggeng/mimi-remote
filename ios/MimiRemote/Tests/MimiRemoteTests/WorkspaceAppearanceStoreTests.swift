@@ -60,7 +60,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .onePiece,
             .naruto,
             .digimon,
-            .classicAlbums
+            .classicAlbums,
+            .worldArt
         ]
         let newCharacters = newStyles.flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
@@ -73,8 +74,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 "\(style.rawValue) 应提供 10 个角色"
             )
         }
-        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 100)
-        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 100)
+        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 110)
+        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 110)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
@@ -85,38 +86,64 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             albums.map(\.id),
             [
                 "album-dark-side-of-the-moon",
-                "album-wish-you-were-here",
+                "album-rumours",
                 "album-atom-heart-mother",
-                "album-sos",
+                "album-ziggy-stardust",
                 "album-abbey-road",
-                "album-21",
+                "album-thriller",
                 "album-morning-glory",
                 "album-velvet-underground-nico",
-                "album-norman-fucking-rockwell",
-                "album-cities"
+                "album-nevermind",
+                "album-ok-computer"
             ]
         )
         XCTAssertEqual(
             albums.map(\.assetName),
             [
                 "WorkspaceAlbumDarkSideOfTheMoon",
-                "WorkspaceAlbumWishYouWereHere",
+                "WorkspaceAlbumRumours",
                 "WorkspaceAlbumAtomHeartMother",
-                "WorkspaceAlbumSOS",
+                "WorkspaceAlbumZiggyStardust",
                 "WorkspaceAlbumAbbeyRoad",
-                "WorkspaceAlbum21",
+                "WorkspaceAlbumThriller",
                 "WorkspaceAlbumMorningGlory",
                 "WorkspaceAlbumVelvetUndergroundNico",
-                "WorkspaceAlbumNormanFuckingRockwell",
-                "WorkspaceAlbumCities"
+                "WorkspaceAlbumNevermind",
+                "WorkspaceAlbumOKComputer"
             ]
         )
         XCTAssertEqual(
             WorkspaceIconStyle.classicAlbums.representativeAssetName,
-            "WorkspaceAlbumDarkSideOfTheMoon"
+            "WorkspaceAlbumAtomHeartMother"
         )
         XCTAssertEqual(Set(albums.map(\.id)).count, 10)
         XCTAssertEqual(Set(albums.map(\.assetName)).count, 10)
+    }
+
+    func testWorldArtPoolKeepsCuratedOrderAndRepresentativeAsset() {
+        let artworks = WorkspaceAppearanceStore.characters(for: .worldArt)
+
+        XCTAssertEqual(
+            artworks.map(\.id),
+            [
+                "art-van-gogh-self-portrait",
+                "art-great-wave",
+                "art-manet-boating",
+                "art-degas-dancing-class",
+                "art-view-of-toledo",
+                "art-death-of-socrates",
+                "art-vermeer-water-pitcher",
+                "art-madame-x",
+                "art-washington-crossing-delaware",
+                "art-springtime"
+            ]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.worldArt.representativeAssetName,
+            "WorkspaceArtVanGoghSelfPortrait"
+        )
+        XCTAssertEqual(Set(artworks.map(\.id)).count, 10)
+        XCTAssertEqual(Set(artworks.map(\.assetName)).count, 10)
     }
 
     func testEveryNewCharacterStyleAssignsTenProjectsUniquelyAndStably() {
@@ -132,7 +159,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .onePiece,
             .naruto,
             .digimon,
-            .classicAlbums
+            .classicAlbums,
+            .worldArt
         ]
 
         for style in newStyles {
@@ -187,10 +215,11 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 .naruto,
                 .digimon,
                 .classicAlbums,
+                .worldArt,
                 .emoji
             ]
         )
-        XCTAssertEqual(WorkspaceIconStyle.visibleStyles.count, 9)
+        XCTAssertEqual(WorkspaceIconStyle.visibleStyles.count, 10)
         XCTAssertEqual(
             WorkspaceIconStyle.selectableStyles(currentStyle: .journey),
             WorkspaceIconStyle.visibleStyles
@@ -345,7 +374,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
-    func testClassicAlbumStyleAndChoicePersistAcrossStoreRebuild() {
+    func testLegacyClassicAlbumChoiceMapsToReplacementAcrossStoreRebuild() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         store.setStyle(.classicAlbums, profileID: "mac-a")
         store.setCustomCharacterID(
@@ -364,11 +393,11 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 profileID: "mac-a",
                 projectID: "project-1"
             ),
-            "album-sos"
+            "album-ziggy-stardust"
         )
         XCTAssertEqual(
             restored.character(profileID: "mac-a", projectID: "project-1").id,
-            "album-sos"
+            "album-ziggy-stardust"
         )
     }
 

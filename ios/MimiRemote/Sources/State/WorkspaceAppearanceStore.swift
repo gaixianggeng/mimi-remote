@@ -14,6 +14,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     case naruto
     case digimon
     case classicAlbums
+    case worldArt
     case emoji
 
     var id: String { rawValue }
@@ -28,6 +29,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         .naruto,
         .digimon,
         .classicAlbums,
+        .worldArt,
         .emoji
     ]
 
@@ -67,6 +69,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_digimon"
         case .classicAlbums:
             return "ui.workspace_icon_style_classic_albums"
+        case .worldArt:
+            return "ui.workspace_icon_style_world_art"
         case .emoji:
             return "ui.emoji"
         }
@@ -100,6 +104,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_compact_digimon"
         case .classicAlbums:
             return "ui.workspace_icon_style_compact_classic_albums"
+        case .worldArt:
+            return "ui.workspace_icon_style_compact_world_art"
         case .emoji:
             return "ui.workspace_icon_style_compact_emoji"
         }
@@ -133,7 +139,9 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         case .digimon:
             return "WorkspaceCharacterDigimonAgumon"
         case .classicAlbums:
-            return "WorkspaceAlbumDarkSideOfTheMoon"
+            return "WorkspaceAlbumAtomHeartMother"
+        case .worldArt:
+            return "WorkspaceArtVanGoghSelfPortrait"
         case .emoji:
             return nil
         }
@@ -388,15 +396,30 @@ final class WorkspaceAppearanceStore: ObservableObject {
     /// 经典专辑复用角色图标链路，以保持现有按 style 分桶的持久化和跨页面展示一致。
     static let classicAlbumsCharacters = [
         WorkspaceCharacterIcon(id: "album-dark-side-of-the-moon", assetName: "WorkspaceAlbumDarkSideOfTheMoon", nameKey: "ui.workspace_album_dark_side_of_the_moon"),
-        WorkspaceCharacterIcon(id: "album-wish-you-were-here", assetName: "WorkspaceAlbumWishYouWereHere", nameKey: "ui.workspace_album_wish_you_were_here"),
+        WorkspaceCharacterIcon(id: "album-rumours", assetName: "WorkspaceAlbumRumours", nameKey: "ui.workspace_album_rumours"),
         WorkspaceCharacterIcon(id: "album-atom-heart-mother", assetName: "WorkspaceAlbumAtomHeartMother", nameKey: "ui.workspace_album_atom_heart_mother"),
-        WorkspaceCharacterIcon(id: "album-sos", assetName: "WorkspaceAlbumSOS", nameKey: "ui.workspace_album_sos"),
+        WorkspaceCharacterIcon(id: "album-ziggy-stardust", assetName: "WorkspaceAlbumZiggyStardust", nameKey: "ui.workspace_album_ziggy_stardust"),
         WorkspaceCharacterIcon(id: "album-abbey-road", assetName: "WorkspaceAlbumAbbeyRoad", nameKey: "ui.workspace_album_abbey_road"),
-        WorkspaceCharacterIcon(id: "album-21", assetName: "WorkspaceAlbum21", nameKey: "ui.workspace_album_21"),
+        WorkspaceCharacterIcon(id: "album-thriller", assetName: "WorkspaceAlbumThriller", nameKey: "ui.workspace_album_thriller"),
         WorkspaceCharacterIcon(id: "album-morning-glory", assetName: "WorkspaceAlbumMorningGlory", nameKey: "ui.workspace_album_morning_glory"),
         WorkspaceCharacterIcon(id: "album-velvet-underground-nico", assetName: "WorkspaceAlbumVelvetUndergroundNico", nameKey: "ui.workspace_album_velvet_underground_nico"),
-        WorkspaceCharacterIcon(id: "album-norman-fucking-rockwell", assetName: "WorkspaceAlbumNormanFuckingRockwell", nameKey: "ui.workspace_album_norman_fucking_rockwell"),
-        WorkspaceCharacterIcon(id: "album-cities", assetName: "WorkspaceAlbumCities", nameKey: "ui.workspace_album_cities")
+        WorkspaceCharacterIcon(id: "album-nevermind", assetName: "WorkspaceAlbumNevermind", nameKey: "ui.workspace_album_nevermind"),
+        WorkspaceCharacterIcon(id: "album-ok-computer", assetName: "WorkspaceAlbumOKComputer", nameKey: "ui.workspace_album_ok_computer")
+    ]
+
+    /// 世界名画优先使用公共领域馆藏，并预裁成稳定的方形构图，避免圆形与 MeeGo 蒙版
+    /// 再次截掉主体；作品来源和公共领域状态记录在 THIRD_PARTY_NOTICES.md。
+    static let worldArtCharacters = [
+        WorkspaceCharacterIcon(id: "art-van-gogh-self-portrait", assetName: "WorkspaceArtVanGoghSelfPortrait", nameKey: "ui.workspace_art_van_gogh_self_portrait"),
+        WorkspaceCharacterIcon(id: "art-great-wave", assetName: "WorkspaceArtGreatWave", nameKey: "ui.workspace_art_great_wave"),
+        WorkspaceCharacterIcon(id: "art-manet-boating", assetName: "WorkspaceArtManetBoating", nameKey: "ui.workspace_art_manet_boating"),
+        WorkspaceCharacterIcon(id: "art-degas-dancing-class", assetName: "WorkspaceArtDegasDancingClass", nameKey: "ui.workspace_art_degas_dancing_class"),
+        WorkspaceCharacterIcon(id: "art-view-of-toledo", assetName: "WorkspaceArtViewOfToledo", nameKey: "ui.workspace_art_view_of_toledo"),
+        WorkspaceCharacterIcon(id: "art-death-of-socrates", assetName: "WorkspaceArtDeathOfSocrates", nameKey: "ui.workspace_art_death_of_socrates"),
+        WorkspaceCharacterIcon(id: "art-vermeer-water-pitcher", assetName: "WorkspaceArtVermeerWaterPitcher", nameKey: "ui.workspace_art_vermeer_water_pitcher"),
+        WorkspaceCharacterIcon(id: "art-madame-x", assetName: "WorkspaceArtMadameX", nameKey: "ui.workspace_art_madame_x"),
+        WorkspaceCharacterIcon(id: "art-washington-crossing-delaware", assetName: "WorkspaceArtWashingtonCrossing", nameKey: "ui.workspace_art_washington_crossing_delaware"),
+        WorkspaceCharacterIcon(id: "art-springtime", assetName: "WorkspaceArtSpringtime", nameKey: "ui.workspace_art_springtime")
     ]
 
     static let builtInCharactersByStyle: [WorkspaceIconStyle: [WorkspaceCharacterIcon]] = [
@@ -410,7 +433,20 @@ final class WorkspaceAppearanceStore: ObservableObject {
         .onePiece: onePieceCharacters,
         .naruto: narutoCharacters,
         .digimon: digimonCharacters,
-        .classicAlbums: classicAlbumsCharacters
+        .classicAlbums: classicAlbumsCharacters,
+        .worldArt: worldArtCharacters
+    ]
+
+    /// 已发布的专辑 ID 不直接删除：显式选择过旧封面的用户升级后落到同位置的新专辑，
+    /// 避免偏好静默失效；下一次主动选择时会自然写入新的规范 ID。
+    private static let legacyCharacterIDAliasesByStyle: [WorkspaceIconStyle: [String: String]] = [
+        .classicAlbums: [
+            "album-wish-you-were-here": "album-rumours",
+            "album-sos": "album-ziggy-stardust",
+            "album-21": "album-thriller",
+            "album-norman-fucking-rockwell": "album-nevermind",
+            "album-cities": "album-ok-computer"
+        ]
     ]
 
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
@@ -669,10 +705,10 @@ final class WorkspaceAppearanceStore: ObservableObject {
             storedValue = preferences.characterIDsByStyleAndProject[style.rawValue]?[projectID]
         }
         guard let storedValue,
-              Self.character(id: storedValue, style: style) != nil else {
+              let character = Self.character(id: storedValue, style: style) else {
             return nil
         }
-        return storedValue
+        return character.id
     }
 
     func defaultCharacterID(profileID: String, projectID: String) -> String {
@@ -908,7 +944,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     static func character(id: String, style: WorkspaceIconStyle) -> WorkspaceCharacterIcon? {
-        characters(for: style).first { $0.id == id }
+        let canonicalID = legacyCharacterIDAliasesByStyle[style]?[id] ?? id
+        return characters(for: style).first { $0.id == canonicalID }
     }
 
     static func character(id: String) -> WorkspaceCharacterIcon? {

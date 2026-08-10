@@ -881,7 +881,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    func testWorkspaceIconStyleSwitchesAcrossClassicAlbumsEmojiAndJourney() throws {
+    func testWorkspaceIconStyleSwitchesAcrossClassicAlbumsWorldArtEmojiAndJourney() throws {
         // 直接进入工作区，避免恢复到会话详情时底部设置入口不在可访问性树中。
         app.terminate()
         app.launchArguments.append("--debug-open-workspaces")
@@ -907,32 +907,30 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "naruto",
             "digimon",
             "classicAlbums",
+            "worldArt",
             "emoji"
         ]
         var optionFrames: [CGRect] = []
-        var styleOptions: [String: XCUIElement] = [:]
+        var originalStyleID: String?
         for styleID in expectedStyleIdentifiers {
-            let option = app.descendant(
-                identifier: "settings.workspaceIconStyle.option.\(styleID)"
-            )
-            XCTAssertTrue(
-                option.waitForExistence(timeout: 5),
-                "工作区图标风格应展示 \(styleID)"
-            )
+            guard let option = scrollToWorkspaceStyleOption(styleID, in: picker) else {
+                XCTFail("工作区图标风格应能横向滑动到 \(styleID)")
+                return
+            }
             assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
             optionFrames.append(option.frame)
-            styleOptions[styleID] = option
+            if isSelected(option) {
+                originalStyleID = styleID
+            }
         }
-        assertWorkspaceStyleGridUsesFourColumns(optionFrames)
+        assertWorkspaceStylePickerUsesExactlyTwoRows(optionFrames)
 
-        guard let originalStyleID = expectedStyleIdentifiers.first(where: {
-            styleOptions[$0].map(isSelected) == true
-        }) else {
+        guard let originalStyleID else {
             XCTFail("工作区图标风格应有且只有一个当前选项")
             return
         }
 
-        guard let classicAlbums = styleOptions["classicAlbums"] else {
+        guard let classicAlbums = scrollToWorkspaceStyleOption("classicAlbums", in: picker) else {
             XCTFail("工作区图标风格应提供经典专辑")
             return
         }
@@ -954,15 +952,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(albumPicker.waitForExistence(timeout: 10), "专辑主题应打开封面选择器")
         let expectedAlbumIDs = [
             "album-dark-side-of-the-moon",
-            "album-wish-you-were-here",
+            "album-rumours",
             "album-atom-heart-mother",
-            "album-sos",
+            "album-ziggy-stardust",
             "album-abbey-road",
-            "album-21",
+            "album-thriller",
             "album-morning-glory",
             "album-velvet-underground-nico",
-            "album-norman-fucking-rockwell",
-            "album-cities"
+            "album-nevermind",
+            "album-ok-computer"
         ]
         for albumID in expectedAlbumIDs {
             XCTAssertTrue(
@@ -983,26 +981,73 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try relaunchDirectlyIntoWorkspaces()
         try openWorkspaceAppearanceSettings()
 
-        guard firstExistingButton(
-            labels: ["西游记", "Journey to the West"],
-            timeout: 5
-        ) != nil, let emoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
-            XCTFail("工作区图标风格应同时提供《西游记》和 Emoji")
+        let reopenedPicker = app.descendant(identifier: "settings.workspaceIconStyle")
+        guard let worldArt = scrollToWorkspaceStyleOption("worldArt", in: reopenedPicker) else {
+            XCTFail("工作区图标风格应提供世界名画")
+            return
+        }
+        worldArt.tap()
+        XCTAssertTrue(waitUntilSelected(worldArt), "选择世界名画后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+
+        let artChips = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
+        XCTAssertTrue(artChips.firstMatch.waitForExistence(timeout: 15), "工作区应展示名画图标胶囊")
+        artChips.firstMatch.press(forDuration: 1.0)
+        let artIconEntry = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+            .firstMatch
+        XCTAssertTrue(artIconEntry.waitForExistence(timeout: 8), "世界名画主题仍应提供更换作品入口")
+        artIconEntry.tap()
+
+        let artPicker = app.descendant(identifier: "workspace.characterPicker")
+        XCTAssertTrue(artPicker.waitForExistence(timeout: 10), "世界名画主题应打开作品选择器")
+        let expectedArtworkIDs = [
+            "art-van-gogh-self-portrait",
+            "art-great-wave",
+            "art-manet-boating",
+            "art-degas-dancing-class",
+            "art-view-of-toledo",
+            "art-death-of-socrates",
+            "art-vermeer-water-pitcher",
+            "art-madame-x",
+            "art-washington-crossing-delaware",
+            "art-springtime"
+        ]
+        for artworkID in expectedArtworkIDs {
+            XCTAssertTrue(
+                app.descendant(identifier: "workspace.character.\(artworkID)")
+                    .waitForExistence(timeout: 5),
+                "世界名画选择器应展示 \(artworkID)"
+            )
+        }
+        let artworkButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.character.art-"))
+        XCTAssertEqual(artworkButtons.count, 10, "世界名画选择器应完整展示 10 幅作品")
+
+        let artPickerScreenshot = XCTAttachment(screenshot: app.screenshot())
+        artPickerScreenshot.name = "workspace-world-art-picker"
+        artPickerScreenshot.lifetime = .keepAlways
+        add(artPickerScreenshot)
+
+        try relaunchDirectlyIntoWorkspaces()
+        try openWorkspaceAppearanceSettings()
+        let emojiPicker = app.descendant(identifier: "settings.workspaceIconStyle")
+        guard let emoji = scrollToWorkspaceStyleOption("emoji", in: emojiPicker) else {
+            XCTFail("工作区图标风格应提供 Emoji")
             return
         }
         emoji.tap()
         XCTAssertTrue(waitUntilSelected(emoji), "选择 Emoji 后应立即保存")
         try relaunchDirectlyIntoWorkspaces()
         try openWorkspaceAppearanceSettings()
-        guard let persistedEmoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+        let persistedEmojiPicker = app.descendant(identifier: "settings.workspaceIconStyle")
+        guard let persistedEmoji = scrollToWorkspaceStyleOption("emoji", in: persistedEmojiPicker) else {
             XCTFail("重新进入设置后应仍能找到 Emoji 选项")
             return
         }
         XCTAssertTrue(isSelected(persistedEmoji), "重启后应保留 Emoji 风格")
-        guard let currentJourney = firstExistingButton(
-            labels: ["西游记", "Journey to the West"],
-            timeout: 5
-        ) else {
+        guard let currentJourney = scrollToWorkspaceStyleOption("journey", in: persistedEmojiPicker) else {
             XCTFail("重新进入设置后应仍能找到《西游记》选项")
             return
         }
@@ -1010,9 +1055,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(waitUntilSelected(currentJourney), "选择《西游记》后应立即保存")
         try relaunchDirectlyIntoWorkspaces()
         try openWorkspaceAppearanceSettings()
-        guard let persistedJourney = firstExistingButton(
-            labels: ["西游记", "Journey to the West"],
-            timeout: 5
+        let persistedJourneyPicker = app.descendant(identifier: "settings.workspaceIconStyle")
+        guard let persistedJourney = scrollToWorkspaceStyleOption(
+            "journey",
+            in: persistedJourneyPicker
         ) else {
             XCTFail("重新进入设置后应仍能找到《西游记》选项")
             return
@@ -1020,30 +1066,54 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(isSelected(persistedJourney), "重启后应保留《西游记》风格")
 
         // 真机测试不应永久改变用户原来的视觉偏好；不只恢复 Emoji，也覆盖其他主题。
-        let originalStyle = app.descendant(
-            identifier: "settings.workspaceIconStyle.option.\(originalStyleID)"
-        )
-        XCTAssertTrue(originalStyle.waitForExistence(timeout: 5), "测试结束时应找到原图标风格")
+        guard let originalStyle = scrollToWorkspaceStyleOption(
+            originalStyleID,
+            in: persistedJourneyPicker
+        ) else {
+            XCTFail("测试结束时应找到原图标风格")
+            return
+        }
         originalStyle.tap()
         XCTAssertTrue(waitUntilSelected(originalStyle), "测试结束时应恢复原图标风格")
     }
 
-    private func assertWorkspaceStyleGridUsesFourColumns(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 9)
-        guard frames.count == 9 else { return }
+    private func assertWorkspaceStylePickerUsesExactlyTwoRows(_ frames: [CGRect]) {
+        XCTAssertEqual(frames.count, 10)
+        guard frames.count == 10 else { return }
 
-        let firstRowY = frames[0].midY
-        let secondRowY = frames[4].midY
-        let thirdRowY = frames[8].midY
-        for frame in frames.prefix(4) {
-            XCTAssertEqual(frame.midY, firstRowY, accuracy: 2, "前四个风格应位于第一排")
+        var rowCenters: [CGFloat] = []
+        for frame in frames where !rowCenters.contains(where: { abs($0 - frame.midY) <= 2 }) {
+            rowCenters.append(frame.midY)
         }
-        for frame in frames[4..<8] {
-            XCTAssertEqual(frame.midY, secondRowY, accuracy: 2, "后四个风格应位于第二排")
+        rowCenters.sort()
+        XCTAssertEqual(rowCenters.count, 2, "全部风格应固定在两行内横向滑动")
+        guard rowCenters.count == 2 else { return }
+        XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
+    }
+
+    private func scrollToWorkspaceStyleOption(
+        _ styleID: String,
+        in picker: XCUIElement
+    ) -> XCUIElement? {
+        let option = app.descendant(
+            identifier: "settings.workspaceIconStyle.option.\(styleID)"
+        )
+        if option.waitForExistence(timeout: 0.5), option.isHittable {
+            return option
         }
-        XCTAssertEqual(frames[8].midY, thirdRowY, accuracy: 2, "最后一个风格应位于第三排")
-        XCTAssertGreaterThan(secondRowY - firstRowY, 44, "前两排风格不应重叠")
-        XCTAssertGreaterThan(thirdRowY - secondRowY, 44, "后两排风格不应重叠")
+        for _ in 0..<6 {
+            picker.swipeLeft()
+            if option.waitForExistence(timeout: 0.5), option.isHittable {
+                return option
+            }
+        }
+        for _ in 0..<6 {
+            picker.swipeRight()
+            if option.waitForExistence(timeout: 0.5), option.isHittable {
+                return option
+            }
+        }
+        return nil
     }
 
     private func presentQRScanner() throws {

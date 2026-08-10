@@ -50,6 +50,33 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
 | `Simple Icons Linux / Tux SVG` | `16.27.0` | iOS 运行时资源 |
 
+## 公共领域视觉素材
+
+### 目标
+
+「世界名画」工作区图标仅使用馆藏方明确标记为公共领域的作品，避免为新增风格继续扩大商业插画或影视角色的授权风险。
+
+### 方案与实现
+
+以下图像来自 The Metropolitan Museum of Art Collection API。获取时对应对象的 `isPublicDomain` 均为 `true`；App 内资源只做了方形构图裁切和 256 × 256 像素缩放。
+
+| App 资源 | 艺术家与作品 | 馆藏记录 |
+| --- | --- | --- |
+| `WorkspaceArtVanGoghSelfPortrait.png` | Vincent van Gogh — *Self-Portrait with a Straw Hat* | [The Met 436532](https://www.metmuseum.org/art/collection/search/436532) |
+| `WorkspaceArtGreatWave.png` | Katsushika Hokusai — *Under the Wave off Kanagawa (The Great Wave)* | [The Met 39799](https://www.metmuseum.org/art/collection/search/39799) |
+| `WorkspaceArtManetBoating.png` | Édouard Manet — *Boating* | [The Met 436947](https://www.metmuseum.org/art/collection/search/436947) |
+| `WorkspaceArtDegasDancingClass.png` | Edgar Degas — *The Dancing Class* | [The Met 436141](https://www.metmuseum.org/art/collection/search/436141) |
+| `WorkspaceArtViewOfToledo.png` | El Greco — *View of Toledo* | [The Met 436575](https://www.metmuseum.org/art/collection/search/436575) |
+| `WorkspaceArtDeathOfSocrates.png` | Jacques Louis David — *The Death of Socrates* | [The Met 436105](https://www.metmuseum.org/art/collection/search/436105) |
+| `WorkspaceArtVermeerWaterPitcher.png` | Johannes Vermeer — *Young Woman with a Water Pitcher* | [The Met 437881](https://www.metmuseum.org/art/collection/search/437881) |
+| `WorkspaceArtMadameX.png` | John Singer Sargent — *Madame X* | [The Met 12127](https://www.metmuseum.org/art/collection/search/12127) |
+| `WorkspaceArtWashingtonCrossing.png` | Emanuel Leutze — *Washington Crossing the Delaware* | [The Met 11417](https://www.metmuseum.org/art/collection/search/11417) |
+| `WorkspaceArtSpringtime.png` | Pierre Auguste Cot — *Springtime* | [The Met 438158](https://www.metmuseum.org/art/collection/search/438158) |
+
+### 风险与优化
+
+公共领域状态仅覆盖本节列出的名画图像，不覆盖 App 内的专辑封面或动漫角色资源。专辑封面上线公开发行版本前仍需单独确认展示授权；The Met 的名称和链接仅用于来源记录，不表示其为本产品背书。
+
 ## 许可证正文
 
 ### Go standard library/runtime go1.25.0
