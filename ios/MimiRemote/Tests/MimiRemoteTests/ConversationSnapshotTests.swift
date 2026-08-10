@@ -1426,10 +1426,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
     func testEmbeddedGoalTrayUsesComposerSurfaceAndAlignedPadding() {
         XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+        XCTAssertTrue(ComposerStatusTrayPlacement.embedded.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
 
         XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
+        XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
     }

@@ -269,6 +269,10 @@ enum ComposerStatusTrayPlacement: Equatable {
     var collapsedLeadingPadding: CGFloat {
         self == .embedded ? 0 : 10
     }
+
+    var usesEmbeddedStatusChip: Bool {
+        self == .embedded
+    }
 }
 
 struct ComposerStatusTraySurfaceStyle: Equatable {
@@ -479,8 +483,36 @@ struct ComposerStatusTray: View {
                 .lineLimit(1)
         }
         .frame(height: 28)
-        .padding(.horizontal, 2)
+        .padding(.horizontal, placement.usesEmbeddedStatusChip ? 8 : 2)
+        .background {
+            if placement.usesEmbeddedStatusChip {
+                // 内嵌状态用一枚轻量 tonal chip 提供身份，不使用 Material 或阴影，
+                // 避免重新长成一张悬浮卡片，也不再用横线切断整个 Composer。
+                Capsule(style: .continuous)
+                    .fill(embeddedStatusChipFill(tokens: tokens))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(embeddedStatusChipBorder(tokens: tokens), lineWidth: 0.5)
+                    }
+            }
+        }
         .accessibilityElement(children: .combine)
+    }
+
+    private func embeddedStatusChipFill(tokens: ThemeTokens) -> Color {
+        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
+        if colorSchemeContrast == .increased {
+            return base.opacity(0.08)
+        }
+        return base.opacity(tokens.resolvedScheme == .light ? 0.025 : 0.06)
+    }
+
+    private func embeddedStatusChipBorder(tokens: ThemeTokens) -> Color {
+        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
+        if colorSchemeContrast == .increased {
+            return base.opacity(0.20)
+        }
+        return base.opacity(tokens.resolvedScheme == .light ? 0.07 : 0.12)
     }
 
     /// 收起态只保留一个 44pt 命中区，视觉上不再叠一层独立方形按钮。

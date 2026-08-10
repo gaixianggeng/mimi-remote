@@ -340,13 +340,14 @@ struct ConversationView: View {
     }
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
-        ZStack(alignment: .top) {
+        Group {
             if reduceTransparency || UIDevice.current.userInterfaceIdiom != .phone {
                 // 辅助功能和 iPad 继续使用确定性实色，避免降低既有可读性。
                 tokens.conversationCanvasBackground
             } else {
-                // iPhone 只给材质层一个柔和 tint，不再用整块实色截断正文；字形打散
-                // 由 Composer 自身的 regularMaterial 完成，避免两层 Material 相互叠加。
+                // 只保留一条连续衰减。此前在 inset 上沿额外拼接 28pt 渐变，交界处会从
+                // 32% 背景色突然跳回透明，在深色代码块上形成一条明显的亮带。
+                // 字形虚化继续交给 Composer 自身的 Material，避免叠加第二层采样。
                 LinearGradient(
                     colors: [
                         .clear,
@@ -357,18 +358,6 @@ struct ConversationView: View {
                     endPoint: .bottom
                 )
             }
-
-            // 上沿渐隐避免最后一行在卡片边界处被硬切；透明模式下保持更轻的过渡。
-            LinearGradient(
-                colors: [
-                    .clear,
-                    tokens.conversationCanvasBackground.opacity(reduceTransparency ? 1 : 0.32)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 28)
-            .offset(y: -28)
         }
         .ignoresSafeArea(edges: .bottom)
         .allowsHitTesting(false)
