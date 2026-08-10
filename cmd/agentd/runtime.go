@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -20,17 +21,38 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("runtime", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
+	codexSharing := fs.String("codex-sharing", "", "Codex Desktop 共享 app-server：enabled 或 disabled")
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*claudePreference) == "" {
-		return fmt.Errorf("必须显式传入 --claude=auto、--claude=enabled 或 --claude=disabled")
+	hasClaude := strings.TrimSpace(*claudePreference) != ""
+	hasCodexSharing := strings.TrimSpace(*codexSharing) != ""
+	if hasClaude == hasCodexSharing {
+		return fmt.Errorf("必须且只能传入 --claude 或 --codex-sharing 其中一项")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
+	if hasCodexSharing {
+		enabled, err := parseEnabledDisabled(*codexSharing)
+		if err != nil {
+			return err
+		}
+		configureCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		result, err := agentsetup.ConfigureCodexSharing(configureCtx, *configPath, enabled)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, result.Message)
+		return nil
+	}
+
 	preference, err := agentsetup.ParseClaudeActivationPreference(*claudePreference)
 	if err != nil {
 		return err
@@ -66,4 +88,15 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, "配置已更新，需要重启 agentd 后生效。")
 	}
 	return nil
+}
+
+func parseEnabledDisabled(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "enabled", "true", "1":
+		return true, nil
+	case "disabled", "false", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("--codex-sharing 只支持 enabled 或 disabled")
+	}
 }

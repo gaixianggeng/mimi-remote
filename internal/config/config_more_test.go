@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -77,7 +78,8 @@ func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
 	}
 	clearAgentdEnv(t)
 
-	// 旧配置（pty + stdio，且没有 listen）不能再让 Load/Validate 直接失败，必须平滑迁移到 ws gateway。
+	// 旧配置（pty + stdio，且没有 listen）不能再让 Load/Validate 直接失败，
+	// 必须平滑迁移到兼容的 legacy WS transport；共享 daemon 只能显式启用。
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("旧 stdio 配置应平滑迁移而不是报错：%v", err)
@@ -86,10 +88,37 @@ func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
 		t.Fatalf("runtime.type 应迁移为 codex_app_server，实际 %q", cfg.Runtime.Type)
 	}
 	if cfg.AppServer.Transport != "ws" {
-		t.Fatalf("app_server.transport 应迁移为 ws，实际 %q", cfg.AppServer.Transport)
+		t.Fatalf("app_server.transport 应迁移为 legacy ws，实际 %q", cfg.AppServer.Transport)
 	}
-	if cfg.AppServer.Listen != defaultAppServerListen {
-		t.Fatalf("迁移后缺失的 listen 应补默认 loopback upstream，实际 %q", cfg.AppServer.Listen)
+	if cfg.AppServer.Listen != DefaultAppServerWebSocketListen() {
+		t.Fatalf("迁移后缺失的 listen 应补 legacy ws upstream，实际 %q", cfg.AppServer.Listen)
+	}
+}
+
+func TestLoadFillsUnixListenWhenConfigOmitsIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Unix daemon")
+	}
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth":       AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		"app_server": map[string]any{"transport": "unix", "managed": true},
+		"projects":   []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearAgentdEnv(t)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("省略 listen 的 unix 配置应补官方默认值：%v", err)
+	}
+	if cfg.AppServer.Listen != "unix://" {
+		t.Fatalf("unix 配置不应继承 WS 默认 listen：%q", cfg.AppServer.Listen)
 	}
 }
 
@@ -289,6 +318,47 @@ func TestValidateRejectsUnsafeAppServerListen(t *testing.T) {
 	cfg.AppServer.Listen = "127.0.0.1:8390"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("loopback app-server ws 监听应允许用于本机调试：%v", err)
+	}
+}
+
+func TestValidateRejectsUnrecoverableSharedFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 shared Unix transport")
+	}
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Runtime.Type = "codex_app_server"
+	cfg.AppServer.Transport = "unix"
+	cfg.AppServer.Listen = "unix://"
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+
+	cfg.AppServer.SharedFallback = &AppServerFallbackConfig{
+		Transport: "unix",
+		Managed:   true,
+		Listen:    "unix://",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("共享 fallback 必须是可恢复的 WS transport")
+	}
+
+	cfg.AppServer.SharedFallback = &AppServerFallbackConfig{
+		Transport: "ws",
+		Managed:   true,
+		Listen:    "ws://0.0.0.0:4222",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("共享 fallback 的 WS endpoint 必须是 loopback")
+	}
+
+	cfg.AppServer.SharedFallback.Listen = "ws://127.0.0.1:4222"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("合法 shared fallback 应可验证并用于回滚：%v", err)
+	}
+
+	cfg.AppServer.Transport = "ws"
+	cfg.AppServer.Listen = "ws://127.0.0.1:4222"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("恢复为 WS 后不能遗留 shared_fallback 账本")
 	}
 }
 

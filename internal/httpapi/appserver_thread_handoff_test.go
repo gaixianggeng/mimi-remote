@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gorilla/websocket"
 )
 
@@ -414,6 +416,41 @@ func TestAppServerThreadHandoffHandlerRequiresAuthorizedWritableThread(t *testin
 	}
 }
 
+func TestAppServerThreadHandoffIsNoopForSharedDaemon(t *testing.T) {
+	coordinator := &appServerThreadHandoffCoordinator{
+		entries: map[string]*appServerThreadHandoffEntry{},
+		run: func(context.Context, string, func() bool) (appServerThreadHandoffOutcome, error) {
+			t.Fatal("共享 daemon 不能再执行 archive/unarchive handoff")
+			return "", nil
+		},
+	}
+	defer coordinator.Close()
+	router := &Router{
+		cfg:            config.Config{AppServer: config.AppServerConfig{Transport: "unix"}},
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		threadHandoffs: coordinator,
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-shared", runtimeID: "codex", scopeID: "demo"})
+	recorder := httptest.NewRecorder()
+	router.appServerThreadHandoffHandler(recorder, authedRequest(t, http.MethodPost, appServerThreadHandoffPath, appServerThreadHandoffRequest{ThreadID: "thread-shared"}))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("旧客户端在共享 daemon 上应收到兼容成功，got=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response appServerThreadHandoffResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != "already_released" {
+		t.Fatalf("共享 daemon 不应调度 handoff：%+v", response)
+	}
+	coordinator.mu.Lock()
+	entries := len(coordinator.entries)
+	coordinator.mu.Unlock()
+	if entries != 0 {
+		t.Fatalf("共享 daemon 不应创建 handoff entry，count=%d", entries)
+	}
+}
+
 func TestRunCodexThreadHandoffWaitsForIdleThenArchivesAndRestores(t *testing.T) {
 	statuses := []string{"active", "idle", "idle"}
 	router, methods := threadHandoffRPCFixture(t, "thread-idle", statuses, nil)
@@ -501,6 +538,38 @@ func TestRunCodexThreadHandoffRecoveryJournalSurvivesRepeatedUnarchiveFailure(t 
 	}
 }
 
+func TestRunCodexThreadHandoffRecoveryClearsMarkerWhenThreadIsAlreadyUnarchived(t *testing.T) {
+	const threadID = "thread-already-unarchived"
+	router, methods := threadHandoffRPCFixtureWithRPCError(
+		t,
+		threadID,
+		[]string{"idle"},
+		func(method string) *appserver.RPCError {
+			if method == "thread/unarchive" {
+				return &appserver.RPCError{Code: -32600, Message: "no archived rollout found for thread id " + threadID}
+			}
+			return nil
+		},
+	)
+	storePath := filepath.Join(t.TempDir(), "state", "thread-handoff-recovery.json")
+	router.threadHandoffRecovery = newAppServerThreadHandoffRecoveryStore(storePath)
+	if err := router.threadHandoffRecovery.MarkUnarchiveRequired(threadID); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := router.runCodexThreadHandoff(context.Background(), threadID, func() bool { return true }, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != appServerThreadHandoffReleased || router.threadHandoffRecovery.RequiresUnarchive(threadID) {
+		t.Fatalf("已不在 archive 中时应清理 marker：outcome=%s", outcome)
+	}
+	got := collectThreadHandoffMethods(methods)
+	if countThreadHandoffMethod(got, "thread/unarchive") != 1 || countThreadHandoffMethod(got, "thread/read") != 0 {
+		t.Fatalf("启动恢复应直接收敛一次 unarchive：methods=%v", got)
+	}
+}
+
 func TestRunCodexThreadHandoffDoesNotArchiveWhenRecoveryJournalCannotPersist(t *testing.T) {
 	const threadID = "thread-store-failure"
 	router, methods := threadHandoffRPCFixture(t, threadID, []string{"idle", "idle"}, nil)
@@ -527,6 +596,24 @@ func threadHandoffRPCFixture(
 	statuses []string,
 	shouldFail func(method string) bool,
 ) (*Router, <-chan string) {
+	var failure func(string) *appserver.RPCError
+	if shouldFail != nil {
+		failure = func(method string) *appserver.RPCError {
+			if shouldFail(method) {
+				return &appserver.RPCError{Code: -32000, Message: "injected failure"}
+			}
+			return nil
+		}
+	}
+	return threadHandoffRPCFixtureWithRPCError(t, threadID, statuses, failure)
+}
+
+func threadHandoffRPCFixtureWithRPCError(
+	t *testing.T,
+	threadID string,
+	statuses []string,
+	failure func(method string) *appserver.RPCError,
+) (*Router, <-chan string) {
 	t.Helper()
 	methods := make(chan string, 32)
 	var statusMu sync.Mutex
@@ -542,12 +629,15 @@ func threadHandoffRPCFixture(
 		if frame.ID == nil {
 			return
 		}
-		if shouldFail != nil && shouldFail(method) {
-			_ = conn.WriteJSON(map[string]any{
-				"id":    frame.ID,
-				"error": map[string]any{"code": -32000, "message": "injected failure"},
-			})
-			return
+		if failure != nil {
+			rpcErr := failure(method)
+			if rpcErr != nil {
+				_ = conn.WriteJSON(map[string]any{
+					"id":    frame.ID,
+					"error": rpcErr,
+				})
+				return
+			}
 		}
 		var result any = map[string]any{}
 		switch method {

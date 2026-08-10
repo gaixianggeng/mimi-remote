@@ -40,6 +40,17 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testCodexSharingConfigurationArgumentsUseOfficialSwitchOnly() {
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingConfigurationArguments(enabled: true),
+            ["runtime", "--codex-sharing=enabled", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingConfigurationArguments(enabled: false),
+            ["runtime", "--codex-sharing=disabled", "--json"]
+        )
+    }
+
     func testProcessCancellationIsReportedAsCancellation() async {
         let executor = ProcessExecutor()
         let task = Task {

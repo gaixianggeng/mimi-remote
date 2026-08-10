@@ -10,6 +10,11 @@ struct AgentCommandClient: Sendable {
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
     ) async throws -> ClaudeConfigurationResult
+    var configureCodexSharing: @Sendable (
+        _ enabled: Bool
+    ) async throws -> CodexSharingConfigurationResult = { enabled in
+        CodexSharingConfigurationResult(enabled: enabled)
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
@@ -118,6 +123,17 @@ extension AgentCommandClient {
                     timeout: .seconds(10)
                 ))
             },
+            configureCodexSharing: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(
+                    CodexSharingConfigurationResult.self,
+                    from: try await execute(
+                        binary: binary,
+                        arguments: codexSharingConfigurationArguments(enabled: enabled),
+                        timeout: .seconds(25)
+                    )
+                )
+            },
             setLANAccess: { enabled in
                 let binary = try requireEmbeddedBinary()
                 return try decode(NetworkConfigurationResult.self, from: try await execute(
@@ -180,6 +196,14 @@ extension AgentCommandClient {
             arguments.append("--restore-enabled=\(restoreEnabled)")
         }
         return arguments
+    }
+
+    static func codexSharingConfigurationArguments(enabled: Bool) -> [String] {
+        [
+            "runtime",
+            "--codex-sharing=\(enabled ? "enabled" : "disabled")",
+            "--json",
+        ]
     }
 }
 

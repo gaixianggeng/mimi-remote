@@ -7,12 +7,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
-        // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
-        app.launchArguments += [
-            "--debug-skip-pairing",
-            "--debug-seed-ui"
-        ]
+        if !name.contains("testLiveSharedDaemonIdleThreadCanContinue") {
+            // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
+            // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
+            app.launchArguments += [
+                "--debug-skip-pairing",
+                "--debug-seed-ui"
+            ]
+        }
         if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
             app.launchArguments.append("--debug-seed-mcp-approval-ui")
         }
@@ -55,6 +57,51 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
+    }
+
+    func testLiveSharedDaemonIdleThreadCanContinue() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let threadID = environment["MIMI_LIVE_THREAD_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !threadID.isEmpty,
+              let expectedReply = environment["MIMI_LIVE_EXPECTED_REPLY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !expectedReply.isEmpty else {
+            throw XCTSkip("仅在提供真实共享 daemon thread 与预期回复时执行")
+        }
+        let message = environment["MIMI_LIVE_MESSAGE"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "Reply exactly \(expectedReply). Do not call tools."
+
+        try enterWorkbenchIfNeeded()
+        let targetRow = app.descendant(identifier: "sessions.row.\(threadID)")
+        XCTAssertTrue(
+            targetRow.waitForExistence(timeout: 35),
+            "共享 daemon 新建的真实会话应出现在手机会话列表"
+        )
+        targetRow.tap()
+
+        let input = app.descendant(identifier: "composer.textInput")
+        XCTAssertTrue(input.waitForExistence(timeout: 30), "打开真实会话后应显示 Composer 输入框")
+        input.tap()
+        input.typeText(message)
+
+        let send = app.descendant(identifier: "composer.send")
+        XCTAssertTrue(send.waitForExistence(timeout: 10), "Composer 应显示发送按钮")
+        XCTAssertTrue(send.isEnabled, "输入消息后发送按钮应可用")
+        send.tap()
+
+        let reply = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS %@", expectedReply))
+            .firstMatch
+        XCTAssertTrue(
+            reply.waitForExistence(timeout: 120),
+            "Desktop 仅打开空闲会话时，真机应能在同一 thread 继续发送并收到回复"
+        )
+
+        for failureText in ["already has an active writer", "-32600", "发送失败", "Sending failed"] {
+            XCTAssertFalse(
+                app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", failureText)).firstMatch.exists,
+                "续写成功后不应出现 writer 冲突或发送失败：\(failureText)"
+            )
+        }
     }
 
     private func openHostInstaller() throws {

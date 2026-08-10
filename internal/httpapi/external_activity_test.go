@@ -1,15 +1,76 @@
 package httpapi
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 )
+
+func TestRouterExternalActivityUsesConfiguredCodexHome(t *testing.T) {
+	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
+	codexHome := filepath.Join(t.TempDir(), "custom-codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Codex.Env["CODEX_HOME"] = codexHome
+
+	rolloutPath := filepath.Join(codexHome, "active-thread.jsonl")
+	rollout := fmt.Sprintf(
+		"{\"timestamp\":\"2026-08-11T04:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":%q,\"cwd\":%q,\"originator\":\"Codex Desktop\",\"thread_source\":\"user\"}}\n"+
+			"{\"timestamp\":\"2026-08-11T04:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-custom-home\"}}\n",
+		"thread-custom-home",
+		projectDir,
+	)
+	if err := os.WriteFile(rolloutPath, []byte(rollout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(rolloutPath, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := sql.Open("sqlite", filepath.Join(codexHome, "state_5.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		create table threads (
+			id text primary key,
+			cwd text not null,
+			source text not null,
+			thread_source text not null,
+			rollout_path text not null,
+			updated_at_ms integer not null,
+			archived integer not null default 0
+		);
+		create table thread_spawn_edges (child_thread_id text);
+		insert into threads values (?, ?, 'vscode', 'user', ?, 1, 0);
+	`, "thread-custom-home", projectDir, rolloutPath); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, router := NewRouterWithRuntime(cfg, registry, manager, checker, "test", nil)
+	t.Cleanup(router.Shutdown)
+	active, err := router.codexDesktopThreadActive("thread-custom-home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active {
+		t.Fatal("Router 应从配置 CODEX_HOME 的 state_5.sqlite 识别 Desktop active turn")
+	}
+}
 
 type stubExternalActivitySource struct {
 	activities []codexhistory.ExternalActivity

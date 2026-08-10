@@ -852,6 +852,475 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
+    func testCodexEnableConfiguresBackendBeforeWritingDesktopEnvironment() async {
+        let events = EventRecorder()
+        let sharing = SharingFlag()
+        var desktopEnabled = false
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(
+                    enabled: desktopEnabled,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(
+                    enabled: desktopEnabled,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            setEnabled: { enabled, codexHome in
+                events.append("desktop-\(enabled)")
+                desktopEnabled = enabled
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: enabled,
+                    environmentValue: enabled ? "1" : nil,
+                    codexHome: enabled ? codexHome : nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            restartAndApply: { Self.codexDesktopSnapshot(enabled: desktopEnabled, appInstalled: true, appRunning: false) }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: sharing.value) },
+            configureCodexSharing: { enabled in
+                events.append("backend-\(enabled)")
+                sharing.set(enabled)
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    transport: enabled ? "unix" : "websocket",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+        XCTAssertEqual(events.values, ["backend-true", "desktop-true"])
+
+        await store.setCodexDesktopEnabled(false)
+        XCTAssertEqual(
+            events.values,
+            ["backend-true", "desktop-true", "desktop-false", "backend-false"]
+        )
+    }
+
+    func testCommittedRealDesktopWriteDoesNotRollBackBackendOnFinalGetenvFailure() async {
+        let events = EventRecorder()
+        let launchctl = HostCodexLaunchctlState()
+        let desktop = CodexDesktopIntegrationClient.live(
+            defaults: UserDefaults(
+                suiteName: "MimiRemoteMac.HostStoreCodexDesktop.\(UUID().uuidString)"
+            )!,
+            launchctl: CodexDesktopLaunchctlClient(
+                getenv: { key in
+                    if launchctl.failReads {
+                        throw NSError(
+                            domain: "HostStoreTests",
+                            code: 99,
+                            userInfo: [NSLocalizedDescriptionKey: "模拟提交后的 launchctl 读取失败"]
+                        )
+                    }
+                    switch key {
+                    case CodexDesktopIntegrationClient.environmentKey:
+                        return launchctl.daemon
+                    case CodexDesktopIntegrationClient.codexHomeKey:
+                        return launchctl.codexHome
+                    case CodexDesktopIntegrationClient.ownershipEpochKey:
+                        return launchctl.sessionEpoch
+                    default:
+                        return nil
+                    }
+                },
+                setenv: { key, value in
+                    switch key {
+                    case CodexDesktopIntegrationClient.environmentKey:
+                        launchctl.daemon = value
+                    case CodexDesktopIntegrationClient.codexHomeKey:
+                        launchctl.codexHome = value
+                    case CodexDesktopIntegrationClient.ownershipEpochKey:
+                        launchctl.sessionEpoch = value
+                        launchctl.failReads = true
+                    default:
+                        break
+                    }
+                },
+                unsetenv: { key in
+                    switch key {
+                    case CodexDesktopIntegrationClient.environmentKey:
+                        launchctl.daemon = nil
+                    case CodexDesktopIntegrationClient.codexHomeKey:
+                        launchctl.codexHome = nil
+                    case CodexDesktopIntegrationClient.ownershipEpochKey:
+                        launchctl.sessionEpoch = nil
+                    default:
+                        break
+                    }
+                }
+            ),
+            application: CodexDesktopApplicationClient(
+                current: { CodexDesktopApplicationInfo(bundleURL: nil, isRunning: false) },
+                terminateAndWait: { _ in },
+                open: { _, _ in }
+            )
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: true) },
+            configureCodexSharing: { enabled in
+                events.append("backend-\(enabled)")
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    changed: true,
+                    transport: enabled ? "unix" : "websocket",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertEqual(events.values, ["backend-true"])
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/tmp/codex")
+        XCTAssertNotNil(launchctl.sessionEpoch)
+        XCTAssertNil(store.codexDesktopError)
+        XCTAssertTrue(store.codexDesktopEnabled)
+    }
+
+    func testBootstrapWithoutLocalCodexPreferenceDoesNotWriteDesktopEnvironment() async {
+        let writes = EventRecorder()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: false,
+                    enabled: false,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: false,
+                    enabled: false,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            setEnabled: { enabled, _ in
+                writes.append("set-\(enabled)")
+                return CodexDesktopEnvironmentSnapshot(enabled: enabled, appInstalled: true)
+            },
+            restartAndApply: { CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true) }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: true) },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+
+        XCTAssertTrue(writes.values.isEmpty)
+        XCTAssertFalse(store.codexDesktopEnabled)
+    }
+
+    func testBootstrapRestoresExplicitCodexPreferenceAfterLoginEnvironmentReset() async {
+        let writes = EventRecorder()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            setEnabled: { enabled, codexHome in
+                writes.append("set-\(enabled)-\(codexHome ?? "nil")")
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: enabled,
+                    environmentValue: enabled ? "1" : nil,
+                    codexHome: enabled ? codexHome : nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(enabled: true, appInstalled: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: true) },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(writes.values, ["set-true-/tmp/codex"])
+        XCTAssertTrue(store.codexDesktopEnabled)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+    }
+
+    func testDisabledCodexIntegrationDoesNotRequireRestartJustBecauseDesktopIsRunning() async {
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: false,
+                    appInstalled: true,
+                    appRunning: true
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: false,
+                    appInstalled: true,
+                    appRunning: true
+                )
+            },
+            setEnabled: { enabled, _ in
+                CodexDesktopEnvironmentSnapshot(enabled: enabled, appInstalled: true, appRunning: true)
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: false) },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(store.codexDesktopStatusTitle, "已关闭")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testEnableDesktopFailureRollsBackBackendChangedBySameOperation() async {
+        let events = EventRecorder()
+        let sharing = SharingFlag()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true)
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true)
+            },
+            setEnabled: { enabled, _ in
+                events.append("desktop-\(enabled)")
+                throw TestError.expected
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: sharing.value) },
+            configureCodexSharing: { enabled in
+                events.append("backend-\(enabled)")
+                sharing.set(enabled)
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    changed: true,
+                    transport: enabled ? "unix" : "ws",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertEqual(events.values, ["backend-true", "desktop-true", "backend-false"])
+        XCTAssertFalse(sharing.value)
+        XCTAssertFalse(store.codexDesktopEnabled)
+        XCTAssertNotNil(store.codexDesktopError)
+    }
+
+    func testDisableRunningDesktopKeepsRestartActionAvailable() async {
+        let sharing = SharingFlag()
+        sharing.set(true)
+        var enabled = true
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: enabled,
+                    environmentValue: enabled ? "1" : nil,
+                    codexHome: enabled ? "/tmp/codex" : nil,
+                    appInstalled: true,
+                    appRunning: true
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: enabled,
+                    environmentValue: enabled ? "1" : nil,
+                    codexHome: enabled ? "/tmp/codex" : nil,
+                    appInstalled: true,
+                    appRunning: true
+                )
+            },
+            setEnabled: { next, codexHome in
+                enabled = next
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: next,
+                    environmentValue: next ? "1" : nil,
+                    codexHome: next ? codexHome : nil,
+                    appInstalled: true,
+                    appRunning: true,
+                    restartRequired: true
+                )
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: false,
+                    appInstalled: true,
+                    appRunning: true,
+                    restartRequired: false
+                )
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: sharing.value) },
+            configureCodexSharing: { next in
+                sharing.set(next)
+                return CodexSharingConfigurationResult(
+                    enabled: next,
+                    changed: true,
+                    transport: next ? "unix" : "ws",
+                    codexHome: next ? "/tmp/codex" : nil
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(false)
+
+        XCTAssertEqual(store.codexDesktopStatusTitle, "需要重启")
+        XCTAssertTrue(store.canRestartCodexDesktop)
+    }
+
+    func testBackendReloadFailureRestoresPreviousConfigurationBeforeDesktopWrite() async {
+        let events = EventRecorder()
+        let sharing = SharingFlag()
+        var registrations = 0
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: { CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true) },
+            bootstrap: { CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true) },
+            setEnabled: { enabled, _ in
+                events.append("desktop-\(enabled)")
+                return CodexDesktopEnvironmentSnapshot(enabled: enabled, appInstalled: true)
+            },
+            restartAndApply: { CodexDesktopEnvironmentSnapshot(enabled: false, appInstalled: true) }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: { Self.statusWithCodex(shared: sharing.value) },
+            registerAgent: {
+                registrations += 1
+                events.append("register-\(registrations)")
+                if registrations == 2 { throw TestError.expected }
+            },
+            configureCodexSharing: { enabled in
+                events.append("backend-\(enabled)")
+                sharing.set(enabled)
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    changed: true,
+                    restartRequired: true,
+                    transport: enabled ? "unix" : "ws",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertEqual(events.values, [
+            "register-1",
+            "backend-true",
+            "register-2",
+            "backend-false",
+            "register-3",
+        ])
+        XCTAssertFalse(sharing.value)
+        XCTAssertFalse(events.values.contains("desktop-true"))
+        XCTAssertNotNil(store.codexDesktopError)
+    }
+
+    func testHomebrewOwnerCannotChangeCodexDesktopIntegration() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            configureCodexSharing: { enabled in
+                events.append("backend-\(enabled)")
+                return CodexSharingConfigurationResult(enabled: enabled)
+            }
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertTrue(events.values.isEmpty)
+        XCTAssertNotNil(store.codexDesktopError)
+        XCTAssertFalse(store.canChangeCodexDesktop)
+    }
+
+    func testCompleteSetupDoesNotSilentlyEnableCodexSharing() async throws {
+        let backendCalls = EventRecorder()
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appending(path: "mimi-codex-setup-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+        let store = makeStore(
+            configExists: false,
+            configureCodexSharing: { enabled in
+                backendCalls.append("backend-\(enabled)")
+                return CodexSharingConfigurationResult(enabled: enabled)
+            }
+        )
+
+        await store.completeSetup(workspaceRoot: workspaceRoot)
+
+        XCTAssertTrue(backendCalls.values.isEmpty)
+    }
+
     private func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
@@ -877,11 +1346,15 @@ final class HostStoreTests: XCTestCase {
                 previousPreference: .automatic
             )
         },
+        configureCodexSharing: @escaping @Sendable (Bool) async throws -> CodexSharingConfigurationResult = { enabled in
+            CodexSharingConfigurationResult(enabled: enabled)
+        },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
         pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil,
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
+        codexDesktop: CodexDesktopIntegrationClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
@@ -893,6 +1366,7 @@ final class HostStoreTests: XCTestCase {
             statusAt: { _ in readyStatus },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
             configureClaude: configureClaude,
+            configureCodexSharing: configureCodexSharing,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             version: { readyStatus.version }
@@ -925,6 +1399,7 @@ final class HostStoreTests: XCTestCase {
                 reveal: {},
                 fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
             ),
+            codexDesktop: codexDesktop,
             terminateApplication: terminateApplication
         )
     }
@@ -1006,6 +1481,55 @@ final class HostStoreTests: XCTestCase {
         )
     }
 
+    private nonisolated static func statusWithCodex(shared: Bool) -> AgentStatus {
+        AgentStatus(
+            processOK: readyStatus.processOK,
+            serviceOK: readyStatus.serviceOK,
+            processError: readyStatus.processError,
+            serviceError: readyStatus.serviceError,
+            version: readyStatus.version,
+            endpoint: readyStatus.endpoint,
+            configPath: readyStatus.configPath,
+            projects: readyStatus.projects,
+            doctorOK: readyStatus.doctorOK,
+            doctor: readyStatus.doctor,
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2026-08-03T03:00:00Z",
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "codex",
+                        title: "Codex",
+                        enabled: true,
+                        state: .connected,
+                        authMode: "chatgpt",
+                        planType: "plus",
+                        reason: nil,
+                        rateLimits: nil,
+                        transport: shared ? "unix" : "websocket",
+                        shared: shared,
+                        codexHome: shared ? "/tmp/codex" : nil
+                    ),
+                ]
+            )
+        )
+    }
+
+    private nonisolated static func codexDesktopSnapshot(
+        enabled: Bool,
+        appInstalled: Bool,
+        appRunning: Bool
+    ) -> CodexDesktopEnvironmentSnapshot {
+        CodexDesktopEnvironmentSnapshot(
+            hasLocalPreference: true,
+            enabled: enabled,
+            environmentValue: enabled ? "1" : nil,
+            codexHome: enabled ? "/tmp/codex" : nil,
+            appInstalled: appInstalled,
+            appRunning: appRunning
+        )
+    }
+
     private nonisolated static func claudeConfiguration(
         enabled: Bool,
         preference: ClaudeActivationPreference,
@@ -1065,6 +1589,23 @@ private final class EventRecorder: @unchecked Sendable {
     }
 }
 
+private final class SharingFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
 private final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -1081,4 +1622,11 @@ private final class CallCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return value
     }
+}
+
+private final class HostCodexLaunchctlState: @unchecked Sendable {
+    var daemon: String?
+    var codexHome: String?
+    var sessionEpoch: String?
+    var failReads = false
 }

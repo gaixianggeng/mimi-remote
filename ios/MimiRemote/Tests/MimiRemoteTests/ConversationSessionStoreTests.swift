@@ -5592,7 +5592,7 @@ private actor AccountTokenUsageResponseGate {
 
 @MainActor
 extension ConversationDataFlowTests {
-    func testLeavingSessionListSchedulesWriterHandoff() async {
+    func testLeavingSessionListUnsubscribesWithoutWriterHandoff() async {
         let project = makeProject(id: "proj_handoff_list")
         let session = makeSession(
             id: "thread-handoff-list",
@@ -5607,10 +5607,11 @@ extension ConversationDataFlowTests {
 
         await store.selectSession(session)
         store.returnToSessionList()
-        await waitForThreadHandoffs([session.id], client: client)
+        await waitForThreadUnsubscribes([session.id], client: client)
+        XCTAssertTrue(client.requestedThreadHandoffs.isEmpty)
     }
 
-    func testSwitchingFromAToBSchedulesOnlyPreviousThreadHandoff() async {
+    func testSwitchingFromAToBUnsubscribesOnlyPreviousThreadWithoutWriterHandoff() async {
         let project = makeProject(id: "proj_handoff_switch")
         let sessionA = makeSession(
             id: "thread-handoff-a",
@@ -5633,10 +5634,11 @@ extension ConversationDataFlowTests {
 
         await store.selectSession(sessionA)
         await store.selectSession(sessionB)
-        await waitForThreadHandoffs([sessionA.id], client: client)
+        await waitForThreadUnsubscribes([sessionA.id], client: client)
+        XCTAssertTrue(client.requestedThreadHandoffs.isEmpty)
     }
 
-    func testBackgroundHandoffUsesSelectedThreadAndHonorsQueuedTurnGuard() async {
+    func testBackgroundKeepsWriterAndHonorsQueuedTurnGuard() async {
         let project = makeProject(id: "proj_handoff_background")
         let session = makeSession(
             id: "thread-handoff-background",
@@ -5651,7 +5653,11 @@ extension ConversationDataFlowTests {
         await store.selectSession(session)
 
         store.suspendForBackground()
-        await waitForThreadHandoffs([session.id], client: client)
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        XCTAssertTrue(client.requestedThreadHandoffs.isEmpty)
+        XCTAssertTrue(client.requestedThreadUnsubscribes.isEmpty)
 
         let queuedClient = MockSessionStoreClient(projects: [project], sessions: [session])
         let queuedStore = makeThreadHandoffStore(project: project, sessions: [session], client: queuedClient)
@@ -5670,6 +5676,7 @@ extension ConversationDataFlowTests {
             await Task.yield()
         }
         XCTAssertTrue(queuedClient.requestedThreadHandoffs.isEmpty)
+        XCTAssertTrue(queuedClient.requestedThreadUnsubscribes.isEmpty)
     }
 
     private func makeThreadHandoffStore(
@@ -5690,17 +5697,17 @@ extension ConversationDataFlowTests {
         return store
     }
 
-    private func waitForThreadHandoffs(
+    private func waitForThreadUnsubscribes(
         _ expected: [SessionID],
         client: MockSessionStoreClient,
         timeout: Int = 80
     ) async {
         for _ in 0..<timeout {
-            if client.requestedThreadHandoffs == expected {
+            if client.requestedThreadUnsubscribes == expected {
                 return
             }
             await Task.yield()
         }
-        XCTAssertEqual(client.requestedThreadHandoffs, expected)
+        XCTAssertEqual(client.requestedThreadUnsubscribes, expected)
     }
 }

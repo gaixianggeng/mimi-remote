@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -93,8 +94,11 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
+	if check := c.localDaemonLifecycleCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
-	if check := c.appServerGatewayCheck(); check.Name != "" {
+	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if checkPort {
@@ -106,7 +110,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 // RunReadiness 只执行能够直接判断当前 HTTP/gateway 是否可承接移动端请求的本地检查。
 // codesign、CLI --help、bridge --version 等外部进程属于完整诊断；把它们放进高频 readyz
 // 会在主机高负载时制造假离线，并让 status 子进程超过 macOS App 的执行上限。
-func (c *Checker) RunReadiness(_ context.Context) Results {
+func (c *Checker) RunReadiness(ctx context.Context) Results {
 	projectsCount := len(c.registry.List())
 	tokenOK := c.cfg.DevInsecure || c.cfg.Auth.Token != ""
 	tokenMessage := "Token 已配置"
@@ -124,7 +128,7 @@ func (c *Checker) RunReadiness(_ context.Context) Results {
 	if check := c.appServerTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
-	if check := c.appServerGatewayCheck(); check.Name != "" {
+	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
 	return c.results(checks)
@@ -152,7 +156,7 @@ func (c *Checker) results(checks []Check) Results {
 
 func isWarningOnlyCheck(name string) bool {
 	switch name {
-	case "tailscale", "macos-code-signing", "file-access-preflight":
+	case "tailscale", "macos-code-signing", "file-access-preflight", "codex-daemon-lifecycle-external":
 		return true
 	default:
 		return false
@@ -218,6 +222,9 @@ func (c *Checker) configFileCheck() Check {
 }
 
 func (c *Checker) appServerTokenFileCheck() Check {
+	if strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
+		return Check{}
+	}
 	path := strings.TrimSpace(c.cfg.AppServer.WSTokenFile)
 	if path == "" {
 		if c.cfg.AppServer.Managed && strings.EqualFold(firstNonEmpty(c.cfg.AppServer.Transport, "ws"), "ws") {
@@ -293,7 +300,7 @@ func (c *Checker) runtimeCheck() Check {
 	return Check{Name: "runtime", OK: true, Message: "当前运行时：codex_app_server"}
 }
 
-func (c *Checker) appServerGatewayCheck() Check {
+func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 	transport := c.cfg.AppServer.Transport
 	if transport == "" {
 		transport = "ws"
@@ -312,8 +319,28 @@ func (c *Checker) appServerGatewayCheck() Check {
 			Message: "Codex app-server 不应暴露到非 loopback 网络",
 			Fix:     "将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
 		}
+	case "unix":
+		if listen := strings.TrimSpace(c.cfg.AppServer.Listen); listen != "" && listen != appserver.LocalDaemonListen {
+			return Check{Name: "app-server", OK: false, Message: "共享 Codex daemon 地址无效", Fix: "将 app_server.listen 设置为 unix://"}
+		}
+		socketPath, err := appserver.LocalDaemonSocketPath(c.cfg.Codex.Env)
+		if err != nil {
+			return Check{Name: "app-server", OK: false, Message: "共享 Codex daemon 路径不可用", Fix: err.Error()}
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		probe, err := appserver.ProbeLocalDaemonInfo(probeCtx, socketPath)
+		cancel()
+		if err != nil {
+			return Check{
+				Name:    "app-server",
+				OK:      false,
+				Message: "共享 Codex daemon 当前不可连接",
+				Fix:     "先在 Mac 设置中重新启用共享服务；若提示 standalone 缺失，请安装官方 Codex 命令行工具",
+			}
+		}
+		return Check{Name: "app-server", OK: true, Message: "Codex Desktop 与 Mimi 使用同一私有 Unix app-server（" + probe.Version + "）"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=ws"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=unix 或 ws"}
 	}
 }
 
@@ -332,12 +359,62 @@ func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
 		return Check{Name: "codex-app-server", OK: false, Message: "Codex CLI 不支持 app-server 命令", Fix: "升级 Codex CLI，然后重新执行 agentd doctor"}
 	}
 	help := string(out)
-	for _, flag := range []string{"--listen", "--ws-auth", "--ws-token-file"} {
+	requiredFlags := []string{"--listen"}
+	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
+		requiredFlags = append(requiredFlags, "--ws-auth", "--ws-token-file")
+	}
+	for _, flag := range requiredFlags {
 		if !strings.Contains(help, flag) {
-			return Check{Name: "codex-app-server", OK: false, Message: "Codex app-server 缺少必要 WebSocket 参数", Fix: "升级 Codex CLI 到支持 app-server WebSocket 的版本"}
+			return Check{Name: "codex-app-server", OK: false, Message: "Codex app-server 缺少必要 transport 参数", Fix: "升级 Codex CLI 到支持共享 app-server 的版本"}
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
+		daemonCtx, daemonCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer daemonCancel()
+		if output, err := exec.CommandContext(daemonCtx, c.cfg.Codex.Bin, "app-server", "daemon", "start", "--help").CombinedOutput(); err != nil || !strings.Contains(string(output), "local app server daemon") {
+			return Check{Name: "codex-app-server", OK: false, Message: "Codex CLI 不支持 local daemon", Fix: "升级 Codex CLI 后重新运行 agentd doctor"}
+		}
+		return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server Unix daemon 能力可用"}
+	}
 	return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server WebSocket 能力可用"}
+}
+
+func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {
+	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
+		return Check{}
+	}
+	checkName := "codex-daemon-lifecycle"
+	if !c.cfg.AppServer.Managed {
+		// 外部 Unix upstream 的生命周期由部署方负责；doctor 仍报告风险，但不
+		// 应替外部 owner 宣布服务不可用。
+		checkName = "codex-daemon-lifecycle-external"
+	}
+	check := Check{
+		Name: checkName,
+		Fix:  "安装官方 standalone Codex 命令行工具，确保 Mac 重启后 local daemon 仍可自动恢复",
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	status, err := appserver.InspectLocalDaemonLifecycle(runCtx, appserver.LocalDaemonOptions{
+		CodexBin: c.cfg.Codex.Bin,
+		Env:      c.cfg.Codex.Env,
+	})
+	cancel()
+	if err != nil {
+		check.Message = "共享 daemon 当前可由 socket 检查，但官方生命周期状态不可用"
+		return check
+	}
+	expectedSocket, err := appserver.LocalDaemonSocketPath(c.cfg.Codex.Env)
+	if err != nil {
+		check.Message = "无法解析共享 daemon 的 CODEX_HOME"
+		return check
+	}
+	if err := appserver.ValidateLocalDaemonLifecycle(status, expectedSocket); err != nil {
+		check.Message = "当前共享 daemon 可用，但冷启动恢复条件不完整：" + err.Error()
+		return check
+	}
+	check.OK = true
+	check.Message = "官方 Codex daemon 生命周期可恢复（" + status.AppServerVersion + "）"
+	return check
 }
 
 func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {

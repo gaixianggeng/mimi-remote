@@ -7,13 +7,12 @@ enum AgentSessionForkReason: String, Hashable, Sendable {
 }
 
 extension SessionStore {
-    func releaseThreadWriterWhenIdleInBackground(_ threadID: SessionID) {
-        // 必须在进入后台清空 AppStore 凭据前抓住 client/runtime；否则异步 Task
-        // 才调用 clientFactory 时会看到空 Token，handoff 请求根本无法发出。
+    func unsubscribeThreadInBackground(_ threadID: SessionID) {
+        // 移动端优先保留 thread writer；离开详情只撤销事件订阅，不主动把 writer
+        // 交给 Desktop，避免手机回到同一会话时被迫重新抢占或陷入冲突重连。
         guard let client = try? clientFactory() else { return }
         Task {
-            // 单独 unsubscribe 不会释放 writer；失败不应阻塞导航或后台挂起。
-            _ = try? await client.releaseThreadWriterWhenIdle(threadID: threadID)
+            _ = try? await client.unsubscribeThread(threadID: threadID)
         }
     }
 }

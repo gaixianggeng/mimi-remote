@@ -144,7 +144,7 @@ flowchart LR
         Host["Mimi Remote Mac<br/>install · pair · Doctor · service lifecycle"]
         Agent["agentd<br/>auth · REST API · WebSocket gateway · policy"]
         Local["Scoped host operations<br/>projects · files · Git · Worktrees · actions"]
-        Codex["Codex app-server<br/>managed loopback process"]
+        Codex["Codex app-server<br/>shared local daemon or loopback fallback"]
         Bridge["alleycat-claude-bridge<br/>resident · experimental"]
         Claude["Claude Code headless<br/>one stdio process per thread"]
         State["Local state<br/>workspaces · credentials · histories"]
@@ -170,7 +170,7 @@ There are three paths through the system:
 2. **Bounded host capabilities:** project discovery, safe file reads, Git, managed Worktrees, diagnostics, voice proxying, and configured actions use authenticated REST endpoints implemented by `agentd`. They do not pass through Codex.
 3. **Agent sessions:** the mobile app uses one external Codex-compatible JSON-RPC/WebSocket gateway. `agentd` validates the runtime, method, project-derived working directory, payload size, and connection budget before routing the request to the primary Codex app-server or the experimental Claude bridge.
 
-Codex app-server is a managed loopback process and remains the primary runtime. The optional resident Claude bridge keeps a stable session key and replay cursor across mobile reconnects, then owns one headless Claude Code stdio process per active thread. Provider-specific differences stay behind this adapter boundary; the shared mobile UI does not imply feature parity.
+Codex app-server remains the primary runtime. On macOS, users can explicitly enable the official local daemon so Codex Desktop and Mimi Remote share one writer process; the compatible managed loopback WebSocket remains the rollback/default path. This lets the phone continue an idle Desktop-opened thread without forking, while an actively running Desktop turn stays read-only. The optional resident Claude bridge keeps a stable session key and replay cursor across mobile reconnects, then owns one headless Claude Code stdio process per active thread. Provider-specific differences stay behind this adapter boundary; the shared mobile UI does not imply feature parity.
 
 The security boundary is deliberately concentrated on the Mac:
 
@@ -250,7 +250,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` creates private local configuration and separate tokens, starts the service, waits for the app-server WebSocket, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address.
+`agentd up` creates private local configuration and separate tokens, starts the service, waits for the configured app-server transport, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. The shared Codex Desktop daemon is opt-in; see [Codex Desktop shared daemon (Chinese)](docs/codex-shared-daemon.md) for requirements, rollback, and verification.
 
 Useful commands:
 

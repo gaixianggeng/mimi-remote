@@ -341,12 +341,44 @@ func (p *ManagedWebSocketProcess) captureStderr(stderr io.Reader) {
 }
 
 func buildManagedEnv(extra map[string]string) []string {
-	env := os.Environ()
+	// Desktop 的 transport 选择只属于 Electron 进程。若 Mac App 通过 launchctl
+	// 为未来 Desktop 设置了这些键，不能继续透传给 agentd 启动的 Codex 子进程；
+	// 这样既避免未来 CLI 解释同名开关形成递归，也不会把 Desktop 外部 WS URL 扩散。
+	filtered := map[string]struct{}{
+		LocalDaemonEnvironmentKey:                   {},
+		"CODEX_APP_SERVER_WS_URL":                   {},
+		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": {},
+	}
+	values := make(map[string]string, len(os.Environ())+len(extra))
+	order := make([]string, 0, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		if _, blocked := filtered[key]; blocked {
+			continue
+		}
+		if _, exists := values[key]; !exists {
+			order = append(order, key)
+		}
+		values[key] = value
+	}
 	for k, v := range extra {
 		if strings.TrimSpace(k) == "" {
 			continue
 		}
-		env = append(env, k+"="+v)
+		if _, blocked := filtered[k]; blocked {
+			continue
+		}
+		if _, exists := values[k]; !exists {
+			order = append(order, k)
+		}
+		values[k] = v
+	}
+	env := make([]string, 0, len(order))
+	for _, key := range order {
+		env = append(env, key+"="+values[key])
 	}
 	return env
 }

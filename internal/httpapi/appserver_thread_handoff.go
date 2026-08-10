@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 )
 
 const (
@@ -347,6 +347,17 @@ func (r *Router) appServerThreadHandoffHandler(w http.ResponseWriter, req *http.
 		writeError(w, http.StatusForbidden, "只读子会话不能执行跨应用交接")
 		return
 	}
+	if r.usesSharedCodexAppServer() {
+		// Unix 配置只证明 agentd/iOS 已连接共享 daemon，不能证明 Desktop
+		// 新进程一定采用了同一 transport。旧版 iOS 仍可能调用该接口；这里的
+		// already_released 只是兼容 ACK，表示无需在 daemon 内 archive/unarchive，
+		// 不是 Desktop attach 的运行态证明。
+		writeJSON(w, http.StatusAccepted, appServerThreadHandoffResponse{
+			ThreadID: threadID,
+			Status:   "already_released",
+		})
+		return
+	}
 	if r.threadHandoffs == nil || !r.threadHandoffs.Schedule(threadID) {
 		writeError(w, http.StatusServiceUnavailable, "Codex thread 交接服务暂不可用")
 		return
@@ -368,7 +379,8 @@ func (r *Router) reclaimCodexThreadHandoff(ctx context.Context, threadID string)
 
 func (p *appServerGatewayPolicy) scheduleThreadHandoffAfterTerminal(frame *appServerGatewayFrame) {
 	if p == nil || p.router == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
-		strings.TrimSpace(frame.Method) != "turn/completed" || !p.supportsThreadHandoff() {
+		p.router.usesSharedCodexAppServer() || strings.TrimSpace(frame.Method) != "turn/completed" ||
+		!p.supportsThreadHandoff() {
 		return
 	}
 	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
@@ -377,6 +389,10 @@ func (p *appServerGatewayPolicy) scheduleThreadHandoffAfterTerminal(frame *appSe
 		return
 	}
 	p.router.threadHandoffs.ScheduleAfter(threadID, appServerTerminalHandoffGrace)
+}
+
+func (r *Router) usesSharedCodexAppServer() bool {
+	return r != nil && strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix")
 }
 
 func (p *appServerGatewayPolicy) rewriteOwnedThreadHandoffLifecycle(
@@ -504,7 +520,10 @@ func (r *Router) openThreadHandoffRPC(ctx context.Context) (*runtimeWebSocketRPC
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, appServerThreadHandoffRPCTimeout)
 	defer cancel()
-	dialer := websocket.Dialer{HandshakeTimeout: appServerThreadHandoffRPCTimeout}
+	dialer, err := r.appServerUpstreamDialer(appServerThreadHandoffRPCTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
 	conn, response, err := dialer.DialContext(dialCtx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -631,11 +650,21 @@ func (r *Router) ensureCodexThreadUnarchived(ctx context.Context, threadID strin
 		lastErr = currentRPC.call(recoveryCtx, "thread/unarchive", map[string]any{"threadId": threadID}, &result)
 		closeConnection()
 		cancel()
-		if lastErr == nil {
+		if lastErr == nil || isThreadHandoffAlreadyUnarchived(lastErr) {
 			return nil
 		}
 	}
 	return lastErr
+}
+
+func isThreadHandoffAlreadyUnarchived(err error) bool {
+	var rpcErr *appserver.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != -32600 {
+		return false
+	}
+	// Codex 对“已经不在 archive 中”的幂等 unarchive 返回 InvalidRequest。
+	// 这证明没有用户数据留在归档态，durable marker 应收敛而不是永久重试。
+	return strings.Contains(strings.ToLower(strings.TrimSpace(rpcErr.Message)), "no archived rollout found")
 }
 
 func waitThreadHandoff(ctx context.Context, delay time.Duration) bool {

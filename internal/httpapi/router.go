@@ -167,9 +167,13 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	runtime SessionRuntime,
 	options RouterOptions,
 ) (http.Handler, *Router) {
-	externalActivity := externalActivitySource(codexhistory.NewDefaultExternalActivityTracker(registry))
+	// external activity 必须读取与共享 daemon 相同的 CODEX_HOME。否则自定义
+	// CODEX_HOME 下 Desktop 已有 active turn 时，移动端会因为查错数据库而误放行写入。
+	externalActivityDB := codexhistory.ExternalActivityDatabasePath(cfg.Codex.Env)
+	externalActivity := externalActivitySource(codexhistory.NewExternalActivityTracker(externalActivityDB, registry))
 	if strings.TrimSpace(options.GatewayTurnClaimStorePath) != "" {
-		externalActivity = codexhistory.NewDefaultExternalActivityTrackerWithClaimStore(
+		externalActivity = codexhistory.NewExternalActivityTrackerWithClaimStore(
+			externalActivityDB,
 			registry,
 			options.GatewayTurnClaimStorePath,
 		)

@@ -74,6 +74,19 @@ func TestExternalActivityReadsStateDatabaseWithoutSQLiteCLI(t *testing.T) {
 	}
 }
 
+func TestExternalActivityDatabasePathUsesConfiguredCodexHome(t *testing.T) {
+	configuredHome := filepath.Join(t.TempDir(), "configured-codex-home")
+	processHome := filepath.Join(t.TempDir(), "process-codex-home")
+	t.Setenv("CODEX_HOME", processHome)
+
+	if got, want := ExternalActivityDatabasePath(map[string]string{"CODEX_HOME": configuredHome}), filepath.Join(configuredHome, "state_5.sqlite"); got != want {
+		t.Fatalf("配置 CODEX_HOME 应优先于进程环境：want %q, got %q", want, got)
+	}
+	if got, want := ExternalActivityDatabasePath(nil), filepath.Join(processHome, "state_5.sqlite"); got != want {
+		t.Fatalf("缺少配置时应复用进程 CODEX_HOME：want %q, got %q", want, got)
+	}
+}
+
 func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	valid := fixture.writeRollout("valid", "Codex Desktop", fixture.projectDir,

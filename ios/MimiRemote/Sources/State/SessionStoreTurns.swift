@@ -345,7 +345,7 @@ extension SessionStore {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
             } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
+                unsubscribeThreadInBackground(previousSession.id)
             }
         }
     }
@@ -519,7 +519,7 @@ extension SessionStore {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
             } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
+                unsubscribeThreadInBackground(previousSession.id)
             }
         }
         if let previousSession,
@@ -1763,15 +1763,6 @@ extension SessionStore {
         let reconnectSessionID = connectedSessionID
             ?? (webSocketReconnectTask == nil ? nil : selectedSessionID)
             ?? networkSuspendedSessionID
-        // 退到后台前先把当前实际持有前台连接的 Codex thread 交给 agentd。
-        // active turn 不需要在这里等待：服务端会返回 scheduled，并在 turn idle 后释放 writer。
-        // 有本地排队 turn 时沿用切会话的 guard，避免后台释放后丢失仍待发送的队列上下文。
-        if let handoffSessionID = connectedSessionID ?? selectedSessionID,
-           let handoffSession = sessionsByID[handoffSessionID],
-           supportsCodexThreadManagement(handoffSession),
-           queuedRunningTurnsBySessionID[handoffSessionID]?.isEmpty != false {
-            releaseThreadWriterWhenIdleInBackground(handoffSessionID)
-        }
         if let reconnectSessionID, sessionsByID[reconnectSessionID] != nil {
             if isNetworkUnavailable {
                 networkSuspendedSessionID = reconnectSessionID
