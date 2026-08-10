@@ -159,4 +159,10 @@ func TestControlPanelScalesLayoutFor4KDisplayDPI(t *testing.T) {
 	if got := panel.scale(34); got != 51 {
 		t.Fatalf("34 logical pixels at 150%% DPI = %d, want 51", got)
 	}
+	if width, height := scaleControlPanelValue(controlPanelLogicalWidth, 144), scaleControlPanelValue(controlPanelLogicalHeight, 144); width != 900 || height != 825 {
+		t.Fatalf("control panel bounds at 150%% DPI = %dx%d, want 900x825", width, height)
+	}
+	if width, height := scaleControlPanelValue(controlPanelLogicalWidth, 192), scaleControlPanelValue(controlPanelLogicalHeight, 192); width != 1200 || height != 1100 {
+		t.Fatalf("control panel bounds at 200%% DPI = %dx%d, want 1200x1100", width, height)
+	}
 }

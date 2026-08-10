@@ -74,6 +74,9 @@ const (
 	swpNoZOrder   = 0x0004
 	swpNoActivate = 0x0010
 	defaultDPI    = 96
+
+	controlPanelLogicalWidth  = 600
+	controlPanelLogicalHeight = 550
 )
 
 const (
@@ -104,6 +107,7 @@ var (
 	procPanelGetSystemMetrics = panelUser32.NewProc("GetSystemMetrics")
 	procPanelGetDpiForSystem  = panelUser32.NewProc("GetDpiForSystem")
 	procPanelGetDpiForWindow  = panelUser32.NewProc("GetDpiForWindow")
+	procPanelGetWindowRect    = panelUser32.NewProc("GetWindowRect")
 	procPanelSetWindowPos     = panelUser32.NewProc("SetWindowPos")
 	procPanelIsDialogMessageW = panelUser32.NewProc("IsDialogMessageW")
 	procPanelInvalidateRect   = panelUser32.NewProc("InvalidateRect")
@@ -267,6 +271,7 @@ func (a *trayApplication) showControlPanel() {
 		}
 	}
 	a.panel.showDashboardView()
+	a.panel.ensureWindowDPI()
 	a.panel.syncFromApplication()
 	procPanelShowWindow.Call(a.panel.window, swRestore)
 	procPanelShowWindow.Call(a.panel.window, swShow)
@@ -329,10 +334,8 @@ func (p *controlPanel) create() error {
 		return fmt.Errorf("注册 Windows 控制面板失败：%v", registerErr)
 	}
 
-	const width = 600
-	const height = 550
-	windowWidth := p.scale(width)
-	windowHeight := p.scale(height)
+	windowWidth := p.scale(controlPanelLogicalWidth)
+	windowHeight := p.scale(controlPanelLogicalHeight)
 	screenWidth, _, _ := procPanelGetSystemMetrics.Call(0)
 	screenHeight, _, _ := procPanelGetSystemMetrics.Call(1)
 	x := p.scale(80)
@@ -361,8 +364,8 @@ func (p *controlPanel) create() error {
 			actualDPI := uint32(dpi)
 			if actualDPI != p.dpi {
 				p.dpi = actualDPI
-				windowWidth = p.scale(width)
-				windowHeight = p.scale(height)
+				windowWidth = p.scale(controlPanelLogicalWidth)
+				windowHeight = p.scale(controlPanelLogicalHeight)
 				if int(screenWidth) > windowWidth {
 					x = (int(screenWidth) - windowWidth) / 2
 				}
@@ -396,12 +399,45 @@ func controlPanelSystemDPI() uint32 {
 	return defaultDPI
 }
 
-func (p *controlPanel) scale(value int) int {
-	dpi := int(p.dpi)
+// ensureWindowDPI resolves the DPI from the window's actual monitor immediately
+// before it is shown. Windows can create a hidden Per-Monitor V2 window at its
+// logical fallback size before the monitor DPI is available, without sending a
+// later WM_DPICHANGED. Always reconciling the outer bounds here prevents a
+// 600x550 physical-pixel panel on 150%/200% displays.
+func (p *controlPanel) ensureWindowDPI() {
+	if p == nil || p.window == 0 {
+		return
+	}
+	actualDPI := p.dpi
+	if procPanelGetDpiForWindow.Find() == nil {
+		if dpi, _, _ := procPanelGetDpiForWindow.Call(p.window); dpi >= defaultDPI {
+			actualDPI = uint32(dpi)
+		}
+	}
+	if actualDPI < defaultDPI {
+		actualDPI = defaultDPI
+	}
+
+	var bounds panelRect
+	if result, _, _ := procPanelGetWindowRect.Call(p.window, uintptr(unsafe.Pointer(&bounds))); result == 0 {
+		return
+	}
+	width := scaleControlPanelValue(controlPanelLogicalWidth, actualDPI)
+	height := scaleControlPanelValue(controlPanelLogicalHeight, actualDPI)
+	bounds.Right = bounds.Left + int32(width)
+	bounds.Bottom = bounds.Top + int32(height)
+	p.handleDPIChanged(actualDPI, &bounds)
+}
+
+func scaleControlPanelValue(value int, dpi uint32) int {
 	if dpi < defaultDPI {
 		dpi = defaultDPI
 	}
-	return (value*dpi + defaultDPI/2) / defaultDPI
+	return (value*int(dpi) + defaultDPI/2) / defaultDPI
+}
+
+func (p *controlPanel) scale(value int) int {
+	return scaleControlPanelValue(value, p.dpi)
 }
 
 func (p *controlPanel) scale32(value int32) int32 {
