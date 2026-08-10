@@ -1099,6 +1099,77 @@ extension ConversationDataFlowTests {
         await refreshTask.value
     }
 
+    func testConcurrentSessionLibraryRefreshesShareControlledGlobalTraversal() async throws {
+        let project = makeProject(id: "proj_library_global_singleflight")
+        let gate = SessionLibraryGlobalRequestGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                await gate.blockUntilReleased()
+                return SessionsPage(sessions: [])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let first = Task { await store.refreshSessionLibraryIndex() }
+        await gate.waitForEntryCount(1)
+        let second = Task { await store.refreshSessionLibraryIndex() }
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            1,
+            "两个 View 同时挂载时必须共享同一轮无 cwd thread/list"
+        )
+
+        await gate.releaseAll()
+        await first.value
+        await second.value
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 1)
+    }
+
+    func testAuthoritativeSessionLibraryRefreshRunsAfterSharedFastTraversal() async throws {
+        let project = makeProject(id: "proj_library_global_authoritative_upgrade")
+        let gate = SessionLibraryGlobalRequestGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                await gate.blockUntilReleased()
+                return SessionsPage(sessions: [])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let fast = Task { await store.refreshSessionLibraryIndex() }
+        await gate.waitForEntryCount(1)
+        let authoritative = Task {
+            await store.refreshSessionLibraryIndex(authoritative: true)
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 1)
+
+        await gate.releaseAll()
+        await fast.value
+        await authoritative.value
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            2,
+            "权威刷新必须先共享在途弱刷新，再独立执行一轮，不能把弱结果冒充完成"
+        )
+    }
+
     func testRecentSessionsUsesLatestActivityAcrossEveryWorkspace() async {
         let projects = (0..<9).map { makeProject(id: "proj_recent_\($0)") }
         let workspaces = projects.enumerated().map { index, project in
@@ -2141,5 +2212,37 @@ extension ConversationDataFlowTests {
         let page = try await secondTask.value
         XCTAssertEqual(page?.objectValue?["data"]?.arrayValue?.count, 0, "thread/list 只能被自己的响应兑现")
         await secondConnection.disconnect()
+    }
+}
+
+private actor SessionLibraryGlobalRequestGate {
+    private var entryCount = 0
+    private var isReleased = false
+    private var blockedContinuations: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func blockUntilReleased() async {
+        entryCount += 1
+        let readyWaiters = entryWaiters.filter { entryCount >= $0.count }
+        entryWaiters.removeAll { entryCount >= $0.count }
+        readyWaiters.forEach { $0.continuation.resume() }
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            blockedContinuations.append(continuation)
+        }
+    }
+
+    func waitForEntryCount(_ count: Int) async {
+        guard entryCount < count else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append((count, continuation))
+        }
+    }
+
+    func releaseAll() {
+        isReleased = true
+        let continuations = blockedContinuations
+        blockedContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 }

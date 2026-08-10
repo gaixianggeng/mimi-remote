@@ -173,6 +173,13 @@ struct SessionListFirstPageCacheEntry {
     let loadedAt: Date
 }
 
+struct SessionLibraryIndexRefreshJob {
+    let id: UUID
+    let hostScope: HostScope
+    let authoritative: Bool
+    let task: Task<Void, Never>
+}
+
 struct HistoryFirstPageInFlight {
     let token: Int
     let task: Task<HistoryMessagesPage, Error>
@@ -262,12 +269,34 @@ struct HistoryLoadSignature: Equatable {
     }
 }
 
+struct ExternalActivityHistoryAttempt: Equatable {
+    let revision: String
+    let turnID: TurnID?
+}
+
+enum ExternalActivityHistoryFallbackMode: Equatable {
+    /// full 已确定不可用，但 economy 仍可按 revision 对账；瞬时失败只重试 economy。
+    case economy
+    /// 当前 turn 缺少安全分页边界，或连 economy 也确定超限；等新 turn/terminal 再 full。
+    case skip
+}
+
+struct ExternalActivityHistoryFallback: Equatable {
+    let turnID: TurnID?
+    let mode: ExternalActivityHistoryFallbackMode
+}
+
 // 会话首屏历史按 session 维度复用，而不是按选中动作复用。
 // 用户来回切会话、前台恢复、手动刷新可能同时触发 before=nil 请求；
 // 这里保留一轮加载的 task 和 session 快照，用来避免同一个大 session 反复请求。
 struct HistoryLoadJob {
     let token: Int
     let sessionSignature: HistoryLoadSignature
+    /// 请求开始时观察到的外部活动 revision。完成时只推进这一精确水位，避免把请求期间
+    /// 新出现的 revision 误记成已被旧快照覆盖。
+    let externalActivityRevision: String?
+    /// 与 revision 同时捕获的 turn。只有结果页确实包含这个 turn，才证明快照覆盖了该 revision。
+    let externalActivityTurnID: TurnID?
     let loadMode: HistoryMessagesPage.LoadMode
     /// 恢复代次要求 bypass 时，不能加入一个更早创建的 reuseRecent job。
     let cachePolicy: HistoryFirstPageCachePolicy

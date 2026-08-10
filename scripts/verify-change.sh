@@ -139,6 +139,7 @@ go_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "go" { print $2 }')"
 ios_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "ios" { print $2 }')"
 rust_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "rust" { print $2 }')"
 macos_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "macos" { print $2 }')"
+docs_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "docs" { print $2 }')"
 
 is_documentation_path() {
   case "$1" in
@@ -370,7 +371,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/check-third-party-notices.sh|NOTICE.md|THIRD_PARTY_NOTICES.md)
+    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/test-public-repo-safety.sh|scripts/check-third-party-notices.sh|NOTICE.md|THIRD_PARTY_NOTICES.md)
       has_repository_security_control=true
       ;;
   esac
@@ -496,6 +497,10 @@ if [[ "${#python_paths[@]}" -gt 0 ]]; then
   add_check "变更的 Python 脚本先做无产物语法检查" "$python_command"
 fi
 
+if [[ "$docs_scope" == true ]]; then
+  add_check "文档与公开发布说明使用轻量静态门禁" "bash ./scripts/check-docs-static.sh"
+fi
+
 if [[ "$has_gate_control" == true && "$has_repository_security_control" == false ]]; then
   add_check "CI 编排或路径分类变化必须通过 Gate 自检" "bash ./scripts/check-pr-gate.sh"
 fi
@@ -608,7 +613,7 @@ else
   echo "- 来源计数：committed=${committed_count}, staged=${staged_count}, unstaged=${unstaged_count}, untracked=${untracked_count}"
 fi
 echo "- 去重后路径：${#changed_paths[@]}"
-echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}"
+echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
 echo
 
 if [[ "${#changed_paths[@]}" -eq 0 ]]; then

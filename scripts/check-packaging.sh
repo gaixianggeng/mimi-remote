@@ -18,6 +18,7 @@ done
 
 for required_file in \
   .github/workflows/pr-gate.yml \
+  .github/workflows/docs-ci.yml \
   .github/workflows/go-ci.yml \
   .github/workflows/release.yml \
   .goreleaser.yml \
@@ -31,6 +32,7 @@ for required_file in \
   packaging/windows/register-service.ps1 \
   scripts/build-macos-installer.sh \
   scripts/ci-pr-scope.sh \
+  scripts/check-docs-static.sh \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
@@ -54,6 +56,7 @@ done
 bash -n \
   scripts/build-macos-installer.sh \
   scripts/ci-pr-scope.sh \
+  scripts/check-docs-static.sh \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \

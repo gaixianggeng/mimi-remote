@@ -177,6 +177,9 @@ protocol SessionStoreAPIClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
+    /// 仅在底层支持原生 turn 分页时返回最新完整 turn；旧 thread/read 实现返回 nil，
+    /// 调用方必须回退完整历史，不能把一条 message 误当成一个 turn。
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage?
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
@@ -471,6 +474,10 @@ extension SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
         try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        nil
     }
 
 }

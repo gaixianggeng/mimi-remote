@@ -106,9 +106,10 @@ bash ./scripts/test-conversation-regressions.sh
 门禁并行执行以下检查：
 
 - 始终执行 Codex 协议快照、公开仓库安全和 PR Gate 配置自检；
+- README、CONTRIBUTING 与 `docs/**` 只执行轻量文档静态门禁，检查安装、App Store 和 Nightly/Release 说明；
 - Go、Windows/Linux 打包或 Release 相关路径调用现有 Go CI；
 - Mac App 源码与 Xcode 工程路径调用独立 Mac App CI，使用无签名 build 运行现有 Scheme 单测；
-- iOS、App Store/TestFlight 脚本或相关文档路径调用现有 iOS CI；
+- iOS 源码、App Store/TestFlight 脚本或配置路径调用现有 iOS CI；
 - Cargo 或 `bridges/claude` 路径调用现有 Rust bridge CI；
 - `.github/workflows`、`.github/actions` 或 Gate 分类脚本变化时执行全部语言检查。
 
@@ -127,8 +128,8 @@ bash ./scripts/check-packaging.sh
 ```
 
 `PR Gate` 红灯时先打开失败的子 job；最终聚合 job 只负责判断必需检查是否成功，
-真正的错误日志保留在 `Go and release`、`iOS`、`Rust bridge`、`Mac App`、`Codex protocol`
-或 `Repository safety` 中。`Detect change scope` 失败时，先用下面的命令确认
+真正的错误日志保留在 `Go and release`、`iOS`、`Rust bridge`、`Mac App`、
+`Docs and static policy`、`Codex protocol` 或 `Repository safety` 中。`Detect change scope` 失败时，先用下面的命令确认
 base/head 可读取且路径分类符合预期：
 
 ```bash
