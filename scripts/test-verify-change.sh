@@ -106,6 +106,9 @@ assert_contains "$rust_full_output" "-p alleycat-claude-bridge"
 security_output="$(assert_plan security_control scripts/check-public-repo-safety.sh)"
 assert_contains "$security_output" "bash ./scripts/check-public-repo-safety.sh"
 
+security_self_test_output="$(assert_plan security_self_test scripts/test-public-repo-safety.sh)"
+assert_contains "$security_self_test_output" "bash ./scripts/check-public-repo-safety.sh"
+
 security_workflow_output="$(assert_plan security_workflow .github/workflows/public-repo-safety.yml)"
 assert_contains "$security_workflow_output" "bash ./scripts/check-public-repo-safety.sh"
 assert_not_contains "$security_workflow_output" "bash ./scripts/check-pr-gate.sh"
