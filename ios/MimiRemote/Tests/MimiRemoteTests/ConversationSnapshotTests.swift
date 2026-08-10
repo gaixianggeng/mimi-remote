@@ -1409,19 +1409,56 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         }
     }
 
-    func testGoalTrayLightPhoneSurfaceMatchesComposerMaterial() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .light,
-                reduceTransparency: false,
-                isPhone: true
+    /// 「仅观察」展开前后渲染的内容完全一样，那颗 chevron 点下去什么也不会发生。
+    /// 目标、额度这类真的有下文的状态必须继续保留开合。
+    func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
+        func makeTray(
+            sessionControlNotice: String? = nil,
+            quotaNotice: CodexQuotaNotice? = nil,
+            usage: CodexUsageDisplaySummary? = nil,
+            goal: ThreadGoal? = nil
+        ) -> ComposerStatusTray {
+            ComposerStatusTray(
+                sessionControlNotice: sessionControlNotice,
+                quotaNotice: quotaNotice,
+                usage: usage,
+                goal: goal,
+                placement: .embedded,
+                isGoalExpanded: false,
+                isGoalUpdating: false,
+                goalErrorMessage: nil,
+                isRefreshDisabled: false,
+                allowsTakeOver: true,
+                onTakeOver: {},
+                onRefreshUsage: {},
+                onEditGoal: {},
+                onTogglePauseGoal: {},
+                onCompleteGoal: {},
+                onClearGoal: {},
+                onToggleGoalExpanded: {}
             )
-
-            XCTAssertEqual(style.materialStrength, .thin)
-            XCTAssertEqual(style.surfaceTintOpacity, 0.14)
-            XCTAssertEqual(style.borderOpacity, 0.09)
         }
+
+        XCTAssertFalse(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。").hasExpandableDetail,
+            "只有观察状态时不应该提供展开入口"
+        )
+
+        let goal = ThreadGoal(
+            threadID: "thread-disclosure",
+            objective: "继续推进海报编辑体验。",
+            status: .active,
+            tokenBudget: 2_000_000,
+            tokensUsed: 120_000,
+            timeUsedSeconds: 240,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        XCTAssertTrue(makeTray(goal: goal).hasExpandableDetail)
+        XCTAssertTrue(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。", goal: goal).hasExpandableDetail,
+            "观察态叠加目标时仍要能展开目标详情"
+        )
     }
 
     func testEmbeddedGoalTrayUsesComposerSurfaceAndAlignedPadding() {
@@ -1436,24 +1473,45 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
     }
 
-    func testGoalTrayLightPhoneSurfaceBecomesOpaqueForAccessibility() {
+    func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
         let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
             isExpanded: false,
             scheme: .light,
-            reduceTransparency: true,
-            isPhone: true
+            reduceTransparency: true
         )
         let increasedContrast = ComposerStatusTraySurfaceStyle.resolve(
             isExpanded: false,
             scheme: .light,
             reduceTransparency: false,
-            isPhone: true,
             increasedContrast: true
         )
 
         XCTAssertEqual(reducedTransparency.materialStrength, .opaque)
+        XCTAssertEqual(reducedTransparency.borderOpacity, 0.08)
         XCTAssertEqual(increasedContrast.materialStrength, .opaque)
         XCTAssertEqual(increasedContrast.borderOpacity, 0.5)
+    }
+
+    /// iPhone 恒定使用 `.embedded`，那条路径完全不绘制 `traySurface`。
+    /// 这里锁住这个前提，避免以后又给 `resolve` 加一条真机永远走不到的 phone 分支。
+    func testEmbeddedGoalTrayNeverDrawsIndependentTraySurface() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+
+        // 浅色下 `.thin` 只可能来自已删除的 phone 分支；独立托盘必须始终是实色。
+        for isExpanded in [false, true] {
+            for reduceTransparency in [false, true] {
+                for increasedContrast in [false, true] {
+                    let style = ComposerStatusTraySurfaceStyle.resolve(
+                        isExpanded: isExpanded,
+                        scheme: .light,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    )
+                    XCTAssertEqual(style.materialStrength, .opaque)
+                    XCTAssertEqual(style.surfaceTintOpacity, 1)
+                }
+            }
+        }
     }
 
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {

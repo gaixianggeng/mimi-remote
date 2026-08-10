@@ -280,25 +280,17 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
     let surfaceTintOpacity: Double
     let borderOpacity: Double
 
+    /// 只有 `.standalone` 会真正绘制这套表面。iPhone 恒定使用 `.embedded`，
+    /// 状态直接长在 Composer 外壳里，材质由 Composer 自身提供，因此这里不需要
+    /// 也不应该再有一条 phone 专用分支——那只会让样式看起来被覆盖，实际却渲染不到。
     static func resolve(
         isExpanded: Bool,
         scheme: ThemeResolvedScheme,
         reduceTransparency: Bool,
-        isPhone: Bool = false,
         increasedContrast: Bool = false
     ) -> Self {
         if scheme == .light {
-            // iPhone 状态条和输入框必须共享同一套材质与 tint；否则两块相邻表面即使
-            // 只差少量白色覆盖，也会被看成两种不同的卡片。层级只交给边框和阴影。
-            if isPhone && !reduceTransparency && !increasedContrast {
-                return Self(
-                    materialStrength: .thin,
-                    surfaceTintOpacity: 0.14,
-                    borderOpacity: 0.09
-                )
-            }
-
-            // iPad 以及辅助功能模式继续使用确定性的暖白实色，保证长状态内容可读。
+            // 浅色独立托盘使用确定性的暖白实色，保证长状态内容可读。
             return Self(
                 materialStrength: .opaque,
                 surfaceTintOpacity: 1,
@@ -352,11 +344,11 @@ struct ComposerStatusTray: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let surfaceStyle = surfaceStyle(tokens: tokens)
-        let shape = RoundedRectangle(cornerRadius: isGoalExpanded ? 20 : 16, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: showsExpandedLayout ? 20 : 16, style: .continuous)
 
-        VStack(alignment: .leading, spacing: isGoalExpanded ? 8 : 0) {
+        VStack(alignment: .leading, spacing: showsExpandedLayout ? 8 : 0) {
             // 展开态把状态内容和收起按钮放到同一行，避免先出现一整行空白按钮区。
-            if isGoalExpanded {
+            if showsExpandedLayout {
                 expandedTrayContent(tokens: tokens)
             } else {
                 collapsedHeader(tokens: tokens)
@@ -364,7 +356,7 @@ struct ComposerStatusTray: View {
 
             // 收起态只表达“发生了什么”；详细错误随展开内容渐进披露，避免状态条
             // 因两行错误信息重新长成一张常驻卡片。
-            if isGoalExpanded, let trimmedGoalError {
+            if showsExpandedLayout, let trimmedGoalError {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle")
                     Text(trimmedGoalError)
@@ -415,12 +407,14 @@ struct ComposerStatusTray: View {
             }
             .layoutPriority(1)
 
-            collapsedDisclosureButton(
-                title: L10n.text("ui.expanded_state"),
-                systemImage: "chevron.down",
-                tint: tokens.secondaryText,
-                action: onToggleGoalExpanded
-            )
+            if hasExpandableDetail {
+                collapsedDisclosureButton(
+                    title: L10n.text("ui.expanded_state"),
+                    systemImage: "chevron.down",
+                    tint: tokens.secondaryText,
+                    action: onToggleGoalExpanded
+                )
+            }
         }
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
@@ -470,6 +464,18 @@ struct ComposerStatusTray: View {
 
     private var hasStatusModules: Bool {
         sessionControlNotice != nil || quotaNotice != nil || usage != nil
+    }
+
+    /// 展开只会多出目标详情、额度完整文案和刷新入口。只挂着「仅观察」时，展开态和
+    /// 收起态渲染的内容完全一样，那颗 chevron 点了什么也不会发生，纯属噪声。
+    /// 目标、额度这类真的有下文的状态继续保留开合。
+    var hasExpandableDetail: Bool {
+        goal != nil || quotaNotice != nil || usage != nil
+    }
+
+    /// 没有可展开内容时忽略外部的展开状态，避免目标被清空后停在一个收不回去的展开态。
+    private var showsExpandedLayout: Bool {
+        isGoalExpanded && hasExpandableDetail
     }
 
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
@@ -800,23 +806,12 @@ struct ComposerStatusTray: View {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
         case .thin:
-            if tokens.resolvedScheme == .light {
-                // 与 iPhone Composer 逐项复用 thinMaterial + 14% input tint；这里不叠
-                // 第二层 Material，避免相邻表面出现不同色温或模糊厚度。
-                shape
-                    .fill(.thinMaterial)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(surfaceStyle.surfaceTintOpacity))
-                    }
-                    .shadow(color: Color.black.opacity(0.025), radius: 2, y: 1)
-            } else {
-                // 深色收起态维持薄材质，不再额外抬高层级。
-                shape
-                    .fill(.thinMaterial)
-                    .overlay {
-                        shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
-                    }
-            }
+            // `.thin` 只在深色收起态出现；浅色独立托盘一律走 `.opaque`。
+            shape
+                .fill(.thinMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
+                }
         }
     }
 
@@ -825,7 +820,6 @@ struct ComposerStatusTray: View {
             isExpanded: isGoalExpanded,
             scheme: tokens.resolvedScheme,
             reduceTransparency: reduceTransparency,
-            isPhone: UIDevice.current.userInterfaceIdiom == .phone,
             increasedContrast: colorSchemeContrast == .increased
         )
     }

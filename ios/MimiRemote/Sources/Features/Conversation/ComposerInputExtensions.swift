@@ -715,7 +715,7 @@ extension ComposerView {
         let surfaceInset: CGFloat = usesPhonePrimaryStyle ? 2 : 4
         let foreground: Color = enabled
             ? tokens.primaryActionForeground
-            : (usesPhonePrimaryStyle ? tokens.primaryActionForeground.opacity(0.90) : tokens.tertiaryText)
+            : (usesPhonePrimaryStyle ? tokens.composerInactiveActionForeground : tokens.tertiaryText)
         let fill: Color = enabled
             ? tokens.primaryAction
             : (usesPhonePrimaryStyle ? tokens.composerInactiveActionSurface : .clear)

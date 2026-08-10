@@ -336,6 +336,29 @@ extension ThemeTokens {
         }
     }
 
+    /// 禁用发送时的图标墨色。浅色下不能继续沿用启用态的白字：白色压在
+    /// composerInactiveActionSurface 上只有约 1.3:1，箭头会整个消失在色块里，
+    /// 而空草稿正是进入会话的默认状态。这里改用同族的低饱和梅紫墨，
+    /// 既保持 4.5:1 以上的可辨识度，又明显弱于启用态的实心紫。
+    var composerInactiveActionForeground: Color {
+        guard preset == .codex else {
+            // 其它主题的禁用底是 20% 强调色，前景交给该外观自己的高对比墨色，
+            // 避免逐个主题重新校准一套近似紫。Gruvbox 这类高明度暖底会把墨色
+            // 迅速冲淡，所以留到 0.8 才降级，而不是常见的半透明。
+            return primaryText.opacity(0.80)
+        }
+        switch resolvedScheme {
+        case .light:
+            return Color(
+                red: 122.0 / 255.0,
+                green: 85.0 / 255.0,
+                blue: 112.0 / 255.0
+            )
+        case .dark:
+            return Color.white.opacity(0.62)
+        }
+    }
+
     var planCardBackground: Color {
         guard preset == .codex else {
             return elevatedSurface

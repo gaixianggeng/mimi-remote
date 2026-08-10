@@ -444,6 +444,47 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.accent, tokens.workspaceCardSelectionFill), 3.0)
     }
 
+    /// 空草稿是进入会话的默认状态，禁用态发送按钮必须仍然看得清箭头。
+    /// 之前浅色下用 primaryActionForeground（纯白）压在 composerInactiveActionSurface
+    /// 上只有约 1.3:1，图标会整个消失在色块里。
+    func testComposerInactiveSendGlyphStaysVisibleInEveryPreset() {
+        let store = ThemeStore(defaults: defaults)
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                store.mode = scheme == .light ? .light : .dark
+                let tokens = store.tokens(for: scheme)
+                // 两个 token 都可能带 alpha，必须先合成到真实底色再比对比度。
+                let fill = flatten(tokens.composerInactiveActionSurface, over: tokens.conversationCanvasBackground)
+                let glyph = flatten(tokens.composerInactiveActionForeground, over: fill)
+
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(glyph, fill),
+                    3.0,
+                    "\(preset.title) \(scheme) 禁用发送图标与底色对比度不足"
+                )
+            }
+        }
+    }
+
+    func testCodexLightInactiveSendGlyphMeetsTextContrast() {
+        let store = ThemeStore(defaults: defaults)
+        store.preset = .codex
+        store.mode = .light
+        let tokens = store.tokens(for: .light)
+        let fill = flatten(tokens.composerInactiveActionSurface, over: tokens.conversationCanvasBackground)
+
+        XCTAssertGreaterThanOrEqual(
+            contrastRatio(flatten(tokens.composerInactiveActionForeground, over: fill), fill),
+            4.5
+        )
+        // 禁用态必须明显弱于启用态，否则两种状态在底栏上分不出来。
+        XCTAssertLessThan(
+            contrastRatio(flatten(tokens.composerInactiveActionForeground, over: fill), fill),
+            contrastRatio(tokens.primaryActionForeground, tokens.primaryAction)
+        )
+    }
+
     func testThemeVersionIncrementsWhenVisualStateChanges() {
         let store = ThemeStore(defaults: defaults)
         let originalVersion = store.themeVersion
@@ -483,6 +524,19 @@ final class ThemeStoreTests: XCTestCase {
         let green = lhs.green - rhs.green
         let blue = lhs.blue - rhs.blue
         return sqrt(red * red + green * green + blue * blue)
+    }
+
+    /// 把带 alpha 的颜色合成到不透明底色上。对比度公式只对不透明色成立，
+    /// 直接拿半透明 token 去算会得出偏乐观的结果。
+    private func flatten(_ color: Color, over base: Color) -> Color {
+        let top = rgba(color)
+        let bottom = rgba(base)
+        let alpha = top.alpha
+        return Color(
+            red: Double(top.red * alpha + bottom.red * (1 - alpha)),
+            green: Double(top.green * alpha + bottom.green * (1 - alpha)),
+            blue: Double(top.blue * alpha + bottom.blue * (1 - alpha))
+        )
     }
 
     private func contrastRatio(_ foreground: Color, _ background: Color) -> CGFloat {

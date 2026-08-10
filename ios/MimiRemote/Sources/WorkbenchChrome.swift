@@ -741,10 +741,11 @@ extension View {
     func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
         if #available(iOS 26.0, *) {
             if allowsTopUnderlap {
-                // scrollEdgeEffectStyle 只负责已经发生重叠时的虚化；真正的 List 还必须
-                // 延伸进顶部安全区，正文才能成为导航控制层后方的采样内容。
-                ignoresSafeArea(.container, edges: .top)
-                    .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
+                // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
+                // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
+                // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
+                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
