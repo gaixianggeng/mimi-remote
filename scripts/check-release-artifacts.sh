@@ -17,6 +17,7 @@ REQUIRED_FILES=(
   "README.md"
   "LICENSE"
   "NOTICE.md"
+  "TRADEMARKS.md"
   "THIRD_PARTY_NOTICES.md"
   "SECURITY.md"
   "config.example.json"
