@@ -50,6 +50,9 @@ extension SessionStore {
 
         externalActivityBySessionID.removeValue(forKey: sessionID)
         externalReadOnlySessionIDs.remove(sessionID)
+        externalActivityHistoryRevisionBySessionID.removeValue(forKey: sessionID)
+        externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+        externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
         updateSession(sessionID) { session in
             session.status = SessionStatus.running.rawValue
             session.activeTurnID = turnID
@@ -289,6 +292,22 @@ extension SessionStore {
         let removedIDs = Set(previousByID.keys)
             .union(externalReadOnlySessionIDs)
             .subtracting(activeIDs)
+        for sessionID in removedIDs {
+            externalActivityHistoryRevisionBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
+        }
+        for (sessionID, activity) in nextByID {
+            guard let previousActivity = previousByID[sessionID],
+                  normalizedExternalActivityTurnID(previousActivity.turnID)
+                    != normalizedExternalActivityTurnID(activity.turnID) else {
+                continue
+            }
+            // fallback 只对当前 turn 有效。新 turn 必须恢复 full，并重新建立覆盖水位。
+            externalActivityHistoryRevisionBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
+        }
         externalReadOnlySessionIDs.formUnion(activeIDs)
         externalReadOnlySessionIDs.formUnion(removedIDs)
         externalActivityBySessionID = nextByID
@@ -337,15 +356,20 @@ extension SessionStore {
         }
 
         if let selectedSessionID,
-           let activity = nextByID[selectedSessionID],
-           previousByID[selectedSessionID]?.revision != activity.revision,
-           let session = sessionsByID[selectedSessionID] {
-            _ = await loadHistory(
-                for: session,
-                quiet: true,
-                loadMode: .full,
-                force: true
-            )
+           let activity = nextByID[selectedSessionID] {
+            let attempt = externalActivityHistoryAttempt(activity)
+            let fallback = externalActivityHistoryFallbackBySessionID[selectedSessionID]
+            let skipsCurrentTurn = fallback?.turnID == attempt.turnID && fallback?.mode == .skip
+            if externalActivityHistoryRevisionBySessionID[selectedSessionID] != activity.revision,
+               !skipsCurrentTurn,
+               externalActivityHistoryAttemptBySessionID[selectedSessionID] != attempt {
+                _ = await refreshSelectedExternalActivityHistory(
+                    sessionID: selectedSessionID,
+                    revision: activity.revision,
+                    client: client,
+                    hostScope: hostScope
+                )
+            }
         }
 
         // terminal/过期必须做最后一次强制历史补拉。只读集合在所有 await 完成前保留，
@@ -371,6 +395,286 @@ extension SessionStore {
         }
         guard appStore.activeHostScope == hostScope else { return }
         externalReadOnlySessionIDs.subtract(removedIDs)
+    }
+
+    /// 外部运行中的 turn 会让 rollout revision 高频变化。已加载完整首屏后只补最新一个 turn，
+    /// 再增量合并到现有时间线；否则 5 秒轮询会反复下载同一份 10-turn 大页。
+    /// 首次加载和 terminal 最终对账仍走完整历史，分页边界与结束态语义保持不变。
+    func refreshSelectedExternalActivityHistory(
+        sessionID: SessionID,
+        revision: String,
+        client: any SessionStoreAPIClient,
+        hostScope: HostScope
+    ) async -> Bool {
+        guard appStore.activeHostScope == hostScope,
+              selectedSessionID == sessionID,
+              externalActivityBySessionID[sessionID]?.revision == revision,
+              let initialSession = sessionsByID[sessionID] else {
+            return false
+        }
+
+        // 首屏任务与轮询撞在一起时先加入已有 single-flight。请求开始时记录的 activity
+        // revision 会在成功落盘后推进覆盖水位；若它更旧，再继续做一次轻量 latest-turn 对账。
+        if let existingHistoryJob = historyLoadJobsBySessionID[sessionID] {
+            _ = await awaitHistoryLoadJob(
+                existingHistoryJob,
+                session: initialSession,
+                quiet: true,
+                successStatusMessage: nil
+            )
+            guard appStore.activeHostScope == hostScope,
+                  selectedSessionID == sessionID,
+                  externalActivityBySessionID[sessionID]?.revision == revision else {
+                return false
+            }
+            if externalActivityHistoryRevisionBySessionID[sessionID] == revision {
+                return true
+            }
+        }
+
+        if let fallback = matchingExternalActivityHistoryFallback(sessionID: sessionID) {
+            return await refreshExternalActivityFallbackHistory(
+                sessionID: sessionID,
+                revision: revision,
+                fallback: fallback,
+                hostScope: hostScope
+            )
+        }
+
+        guard hasLoadedFullHistorySnapshot(sessionID: sessionID) else {
+            guard let session = sessionsByID[sessionID] else { return false }
+            let didLoad = await loadHistory(
+                for: session,
+                quiet: true,
+                loadMode: .full,
+                force: true
+            )
+            if didLoad, let activity = externalActivityBySessionID[sessionID] {
+                let attempt = externalActivityHistoryAttempt(activity)
+                if attempt.turnID == nil {
+                    // 缺少 turnID 时只能按 revision 去重，不能写成 turn 级 `.skip`；
+                    // 否则后续 revision 变化也会被永久挡住，运行中的新输出将停止更新。
+                    recordExternalActivityHistoryAttempt(
+                        sessionID: sessionID,
+                        attempt: attempt,
+                        hostScope: hostScope
+                    )
+                } else if historyLoadedQualityBySessionID[sessionID] != .full {
+                    recordExternalActivityHistoryFallback(
+                        sessionID: sessionID,
+                        attempt: attempt,
+                        mode: .economy,
+                        hostScope: hostScope
+                    )
+                    recordExternalActivityHistoryAttempt(
+                        sessionID: sessionID,
+                        attempt: attempt,
+                        hostScope: hostScope
+                    )
+                }
+            }
+            return externalActivityHistoryRevisionBySessionID[sessionID] == revision
+        }
+
+        guard let expectedTurnID = externalActivityBySessionID[sessionID]?.turnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedTurnID.isEmpty else {
+            // 缺少 turn 身份时不能安全增量合并。完整刷新成功后只抑制同一 revision；
+            // 新 revision 仍需重新对账，避免把整个未知 turn 永久冻结。
+            guard let session = sessionsByID[sessionID] else { return false }
+            let didLoad = await loadHistory(
+                for: session,
+                quiet: true,
+                loadMode: .full,
+                force: true
+            )
+            if didLoad {
+                recordExternalActivityHistoryAttempt(
+                    sessionID: sessionID,
+                    attempt: ExternalActivityHistoryAttempt(revision: revision, turnID: nil),
+                    hostScope: hostScope
+                )
+            }
+            return externalActivityHistoryRevisionBySessionID[sessionID] == revision
+        }
+
+        do {
+            let historyLoadToken = historyLoadJobTokenBySessionID[sessionID]
+            let historyPageToken = historyPageRequestTokenBySessionID[sessionID]
+            let page = try await client.latestTurnHistoryPage(sessionID: sessionID)
+            guard appStore.activeHostScope == hostScope,
+                  selectedSessionID == sessionID,
+                  let currentActivity = externalActivityBySessionID[sessionID],
+                  currentActivity.revision == revision,
+                  currentActivity.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedTurnID,
+                  historyLoadJobTokenBySessionID[sessionID] == historyLoadToken,
+                  historyPageRequestTokenBySessionID[sessionID] == historyPageToken,
+                  historyLoadJobsBySessionID[sessionID] == nil else {
+                return false
+            }
+            guard let page else {
+                // 旧 app-server 的 thread/read 不支持“一个完整 turn”的边界，沿用原有完整刷新。
+                guard let session = sessionsByID[sessionID] else { return false }
+                let didLoad = await loadHistory(
+                    for: session,
+                    quiet: true,
+                    loadMode: .full,
+                    force: true
+                )
+                let attempt = ExternalActivityHistoryAttempt(revision: revision, turnID: expectedTurnID)
+                let existingFallback = matchingExternalActivityHistoryFallback(sessionID: sessionID)
+                if didLoad || existingFallback?.mode == .skip {
+                    // 旧协议的 limit=1 只是“一条 message”，不能继续按 revision 反复整页读取。
+                    // 同一 turn 后续写入跳过；但 full 超限后 economy 只是瞬时失败时，
+                    // 必须保留 .economy，让下一轮只重试缩略页，不能误升级为永久跳过。
+                    recordExternalActivityHistoryFallback(
+                        sessionID: sessionID,
+                        attempt: attempt,
+                        mode: .skip,
+                        hostScope: hostScope
+                    )
+                }
+                return externalActivityHistoryRevisionBySessionID[sessionID] == revision
+            }
+            guard !page.messages.isEmpty,
+                  page.messages.contains(where: { $0.turnID == expectedTurnID }) else {
+                // rollout revision 可能先于 turns/list 可见；不推进水位，下次轮询继续对账。
+                return false
+            }
+            ingestHistoryContext(page.context, fallbackSessionID: sessionID)
+            conversationStore.setHistory(
+                page.messages,
+                sessionID: sessionID,
+                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+            )
+            // latest-turn 补丁不能覆盖完整首屏保存的 older cursor，否则“加载更早”会从
+            // 最新一条重新翻页。snapshot seq 仍需推进，供后续事件回放去重。
+            recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
+            if let currentSession = sessionsByID[sessionID] {
+                historyLoadedSignatureBySessionID[sessionID] = HistoryLoadSignature(session: currentSession)
+            }
+            historyLoadedQualityBySessionID[sessionID] = .full
+            freshEmptyHistorySignatureBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryRevisionBySessionID[sessionID] = revision
+            return true
+        } catch {
+            _ = terminateConnectionIfCredentialsInvalid(error)
+            if historyPolicyFailure(from: error)?.reason == "history_response_too_large" {
+                // 单个最新 turn 已确定超过 gateway cap。同一 turn 后续 revision 改走 economy，
+                // economy 瞬时失败也只重试 economy；新 turn 才恢复 full。
+                let attempt = ExternalActivityHistoryAttempt(revision: revision, turnID: expectedTurnID)
+                recordExternalActivityHistoryFallback(
+                    sessionID: sessionID,
+                    attempt: attempt,
+                    mode: .economy,
+                    hostScope: hostScope
+                )
+                if let fallback = matchingExternalActivityHistoryFallback(sessionID: sessionID) {
+                    return await refreshExternalActivityFallbackHistory(
+                        sessionID: sessionID,
+                        revision: revision,
+                        fallback: fallback,
+                        hostScope: hostScope
+                    )
+                }
+            }
+            // 普通超时、空页和错 turn 不记录 attempt，同 revision 会在下次轮询重试。
+            return false
+        }
+    }
+
+    func normalizedExternalActivityTurnID(_ turnID: TurnID?) -> TurnID? {
+        guard let value = turnID?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    func externalActivityHistoryAttempt(_ activity: ExternalSessionActivity) -> ExternalActivityHistoryAttempt {
+        ExternalActivityHistoryAttempt(
+            revision: activity.revision,
+            turnID: normalizedExternalActivityTurnID(activity.turnID)
+        )
+    }
+
+    func matchingExternalActivityHistoryFallback(sessionID: SessionID) -> ExternalActivityHistoryFallback? {
+        guard let activity = externalActivityBySessionID[sessionID],
+              let fallback = externalActivityHistoryFallbackBySessionID[sessionID],
+              fallback.turnID == normalizedExternalActivityTurnID(activity.turnID) else {
+            return nil
+        }
+        return fallback
+    }
+
+    func recordExternalActivityHistoryAttempt(
+        sessionID: SessionID,
+        attempt: ExternalActivityHistoryAttempt,
+        hostScope: HostScope
+    ) {
+        guard appStore.activeHostScope == hostScope,
+              selectedSessionID == sessionID,
+              let activity = externalActivityBySessionID[sessionID],
+              externalActivityHistoryAttempt(activity) == attempt else {
+            return
+        }
+        externalActivityHistoryAttemptBySessionID[sessionID] = attempt
+    }
+
+    func recordExternalActivityHistoryFallback(
+        sessionID: SessionID,
+        attempt: ExternalActivityHistoryAttempt,
+        mode: ExternalActivityHistoryFallbackMode,
+        hostScope: HostScope? = nil
+    ) {
+        guard hostScope.map({ appStore.activeHostScope == $0 }) ?? true,
+              selectedSessionID == sessionID,
+              let activity = externalActivityBySessionID[sessionID],
+              externalActivityHistoryAttempt(activity) == attempt else {
+            return
+        }
+        externalActivityHistoryFallbackBySessionID[sessionID] = ExternalActivityHistoryFallback(
+            turnID: attempt.turnID,
+            mode: mode
+        )
+        if mode == .skip {
+            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+        }
+    }
+
+    func refreshExternalActivityFallbackHistory(
+        sessionID: SessionID,
+        revision: String,
+        fallback: ExternalActivityHistoryFallback,
+        hostScope: HostScope
+    ) async -> Bool {
+        guard appStore.activeHostScope == hostScope,
+              selectedSessionID == sessionID,
+              let activity = externalActivityBySessionID[sessionID],
+              activity.revision == revision,
+              fallback.turnID == normalizedExternalActivityTurnID(activity.turnID),
+              externalActivityHistoryFallbackBySessionID[sessionID] == fallback else {
+            return false
+        }
+        guard fallback.mode == .economy, let session = sessionsByID[sessionID] else {
+            return false
+        }
+        let didLoad = await loadHistory(
+            for: session,
+            quiet: true,
+            loadMode: .economy,
+            force: true
+        )
+        if didLoad {
+            let attempt = externalActivityHistoryAttempt(activity)
+            // economy fallback 可跨 revision 复用，但成功结果只覆盖当前 revision。
+            // 对 nil turn 写 `.skip` 会把后续所有 revision 永久冻结。
+            recordExternalActivityHistoryAttempt(
+                sessionID: sessionID,
+                attempt: attempt,
+                hostScope: hostScope
+            )
+        }
+        return didLoad
     }
 
     func refreshExternalActivityProject(

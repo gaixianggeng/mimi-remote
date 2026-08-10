@@ -586,7 +586,8 @@ extension SessionStore {
               connectedSessionID == sessionID,
               connectedHostScope == appStore.activeHostScope,
               selectedSessionID == sessionID,
-              sessionsByID[sessionID] != nil,
+              let session = sessionsByID[sessionID],
+              !isExternalReadOnlySession(session),
               appStore.isConfigured else {
             return false
         }
@@ -620,6 +621,8 @@ extension SessionStore {
 
         let attempt = webSocketReconnectAttemptBySessionID[sessionID, default: 0] + 1
         webSocketReconnectTask?.cancel()
+        webSocketReconnectGeneration &+= 1
+        let reconnectGeneration = webSocketReconnectGeneration
         webSocketReconnectAttemptBySessionID[sessionID] = attempt
         let delay = webSocketReconnectDelayNanoseconds(attempt)
         setWebSocketStatus(.connecting)
@@ -641,37 +644,60 @@ extension SessionStore {
             }
 
             await MainActor.run { [weak self] in
+                guard self?.webSocketReconnectGeneration == reconnectGeneration else { return }
                 self?.webSocketReconnectTask = nil
             }
-            await self?.runScheduledWebSocketReconnect(sessionID: sessionID, attempt: attempt)
+            await self?.runScheduledWebSocketReconnect(
+                sessionID: sessionID,
+                attempt: attempt,
+                reconnectGeneration: reconnectGeneration
+            )
         }
     }
 
     func cancelWebSocketReconnect(resetAttempts: Bool) {
         webSocketReconnectTask?.cancel()
         webSocketReconnectTask = nil
+        // attempt 在 reset 后可能复用同一个整数；单调租约确保已经越过 sleep 的旧任务
+        // 也无法在切会话/连通后继续执行 preflight。
+        webSocketReconnectGeneration &+= 1
         if resetAttempts {
             webSocketReconnectAttemptBySessionID.removeAll()
         }
     }
 
-    func runScheduledWebSocketReconnect(sessionID: SessionID, attempt: Int) async {
+    func runScheduledWebSocketReconnect(
+        sessionID: SessionID,
+        attempt: Int,
+        reconnectGeneration: UInt64
+    ) async {
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
+              !Task.isCancelled,
+              webSocketReconnectGeneration == reconnectGeneration,
               selectedSessionID == sessionID,
               webSocketReconnectAttemptBySessionID[sessionID] == attempt,
-              let latestSession = sessionsByID[sessionID] else {
+              let latestSession = sessionsByID[sessionID],
+              !isExternalReadOnlySession(latestSession) else {
             return
         }
         guard selectedSessionID == sessionID else {
             return
         }
-        let refreshedSession = await refreshSessionSnapshotBeforeReconnect(sessionID: sessionID) ?? latestSession
+        let refreshedSession = await refreshSessionSnapshotBeforeReconnect(
+            sessionID: sessionID,
+            reconnectGeneration: reconnectGeneration
+        ) ?? latestSession
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
-              selectedSessionID == sessionID else {
+              !Task.isCancelled,
+              webSocketReconnectGeneration == reconnectGeneration,
+              selectedSessionID == sessionID,
+              webSocketReconnectAttemptBySessionID[sessionID] == attempt,
+              let currentSession = sessionsByID[sessionID],
+              !isExternalReadOnlySession(currentSession) else {
             return
         }
         // 快照可能在上游刚恢复时把运行中的 turn 误读成 idle；不能据此一次性放弃重连。
@@ -680,13 +706,30 @@ extension SessionStore {
         connectWebSocket(refreshedSession, isReconnectAttempt: true, allowNonRunning: true)
     }
 
-    func refreshSessionSnapshotBeforeReconnect(sessionID: SessionID) async -> AgentSession? {
-        guard let current = sessionsByID[sessionID] else {
+    func refreshSessionSnapshotBeforeReconnect(
+        sessionID: SessionID,
+        reconnectGeneration: UInt64
+    ) async -> AgentSession? {
+        guard !Task.isCancelled,
+              webSocketReconnectGeneration == reconnectGeneration,
+              let current = sessionsByID[sessionID],
+              !isExternalReadOnlySession(current) else {
             return nil
         }
         do {
             let client = try clientFactory()
+            // 以 preflight 开始时刻判断短缓存，不能等 thread/read 返回后再算；弱网下 read
+            // 自身可能跨过 4 秒 TTL，导致明明刚加载成功的首屏仍被重复下载。
+            let hadRecentAppliedFullAtPreflightStart = hasRecentFullHistoryFirstPage(sessionID: sessionID)
             let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
+            // external-activity 可能在 session/read 期间确认该线程由 Mac 持有。此时 reconnect
+            // 已失效，不能让迟到的恢复任务继续发 10-turn full，再在只读 guard 处才停下。
+            guard !Task.isCancelled,
+                  webSocketReconnectGeneration == reconnectGeneration,
+                  selectedSessionID == sessionID,
+                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                return nil
+            }
             let refreshed = self.session(response.session, in: workspaceForSession(current))
             upsert(refreshed)
             if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
@@ -694,9 +737,24 @@ extension SessionStore {
                 logStore.append(recentOutput, sessionID: sessionID, seq: response.lastSeq)
             }
             // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
-            await loadHistory(for: refreshed)
+            guard !Task.isCancelled,
+                  webSocketReconnectGeneration == reconnectGeneration,
+                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                return nil
+            }
+            // 首屏刚完成后，底层事件订阅若短暂结束，会在约 1 秒内进入 reconnect。
+            // thread/read 更新 metadata signature 后普通 loadHistory 会绕过短缓存，造成同一
+            // 10-turn 大页立刻再传一次。缓存窗内依赖 replay/resume；真正较长断线仍补拉历史。
+            if !hadRecentAppliedFullAtPreflightStart || !hasLoadedFullHistorySnapshot(sessionID: sessionID) {
+                await loadHistory(for: refreshed)
+            }
             return refreshed
         } catch {
+            guard !Task.isCancelled,
+                  webSocketReconnectGeneration == reconnectGeneration,
+                  selectedSessionID == sessionID else {
+                return nil
+            }
             if terminateConnectionIfCredentialsInvalid(error) {
                 return nil
             }
@@ -2448,6 +2506,8 @@ extension SessionStore {
             workspaceSessionFirstPageCompletionByKey = [:]
         }
         sessionListCooldownUntilByBudgetKey = [:]
+        sessionLibraryIndexRefreshJob?.task.cancel()
+        sessionLibraryIndexRefreshJob = nil
         lastSessionLibraryIndexRefreshAt = nil
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
         sessionListReconciliationTasksByProjectID = [:]
@@ -2502,6 +2562,9 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         externalActivityBySessionID = [:]
         externalReadOnlySessionIDs = []
+        externalActivityHistoryRevisionBySessionID = [:]
+        externalActivityHistoryAttemptBySessionID = [:]
+        externalActivityHistoryFallbackBySessionID = [:]
         locallyStartedTurnIDBySessionID = [:]
         isRefreshingExternalActivity = false
         externalActivityCapabilityUnavailable = false

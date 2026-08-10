@@ -475,6 +475,8 @@ extension SessionStore {
         let job = HistoryLoadJob(
             token: jobToken,
             sessionSignature: signature,
+            externalActivityRevision: externalActivityBySessionID[session.id]?.revision,
+            externalActivityTurnID: externalActivityBySessionID[session.id]?.turnID,
             loadMode: loadMode,
             cachePolicy: cachePolicy,
             recoveryGeneration: recoveryGeneration,
@@ -575,6 +577,20 @@ extension SessionStore {
             && historyLoadedQualityBySessionID[sessionID] == .full
     }
 
+    /// 重连预检只需要判断“刚刚是否已经拿到过同会话的完整首屏”。这里故意忽略
+    /// thread/read 刷新的 metadata signature：resume 后的短暂断流会更新 session 元数据，
+    /// 但在 4 秒缓存窗内立刻绕过缓存重拉同一大页只会放大弱网开销。超过短窗后仍按
+    /// 正常恢复链路补拉，真正断线期间的消息也会由事件回放与后续历史对账兜底。
+    func hasRecentFullHistoryFirstPage(sessionID: SessionID, now: Date = Date()) -> Bool {
+        guard hasLoadedFullHistorySnapshot(sessionID: sessionID) else { return false }
+        return historyFirstPageCacheByKey.contains { key, entry in
+            key.profileID == appStore.activeHostScope.profileID
+                && key.sessionID == sessionID
+                && key.loadMode == .full
+                && now.timeIntervalSince(entry.loadedAt) < historyFirstPageCacheTTL
+        }
+    }
+
     func awaitHistoryLoadJob(
         _ job: HistoryLoadJob,
         session: AgentSession,
@@ -624,6 +640,18 @@ extension SessionStore {
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
+        if job.loadMode == .full,
+           let activityRevision = job.externalActivityRevision,
+           let activityTurnID = job.externalActivityTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !activityTurnID.isEmpty,
+           externalActivityBySessionID[sessionID]?.revision == activityRevision,
+           externalActivityBySessionID[sessionID]?.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) == activityTurnID,
+           result.page.messages.contains(where: { $0.turnID == activityTurnID }) {
+            externalActivityHistoryRevisionBySessionID[sessionID] = activityRevision
+            // 手动/恢复 full 再次成功后，撤销此前的 turn 级降级，后续 revision 可恢复 latest full。
+            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
+        }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -701,6 +729,16 @@ extension SessionStore {
                 }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
                     deferredFullHistorySessionIDs.insert(sessionID)
+                    if let revision = job.externalActivityRevision {
+                        recordExternalActivityHistoryFallback(
+                            sessionID: sessionID,
+                            attempt: ExternalActivityHistoryAttempt(
+                                revision: revision,
+                                turnID: normalizedExternalActivityTurnID(job.externalActivityTurnID)
+                            ),
+                            mode: .economy
+                        )
+                    }
                 }
                 let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
@@ -718,6 +756,28 @@ extension SessionStore {
                     recoveryGeneration: job.recoveryGeneration,
                     noticeMessageOverride: effectiveQuiet ? nil : message
                 )
+            case .economy where policyFailure.reason == "history_response_too_large":
+                if let revision = job.externalActivityRevision {
+                    let turnID = normalizedExternalActivityTurnID(job.externalActivityTurnID)
+                    let attempt = ExternalActivityHistoryAttempt(revision: revision, turnID: turnID)
+                    if turnID == nil {
+                        // 未知 turn 不能使用跨 revision 的 `.skip`，否则运行中的后续输出会永久冻结。
+                        // 保留既有 economy fallback，仅记住本 revision 已尝试；新 revision 仍只重试 economy。
+                        recordExternalActivityHistoryAttempt(
+                            sessionID: sessionID,
+                            attempt: attempt,
+                            hostScope: appStore.activeHostScope
+                        )
+                    } else {
+                        // economy 也确定超限后，同一 turn 的 revision churn 只能跳过网络对账；
+                        // 新 turn 与 terminal 会清理该降级并恢复 full。
+                        recordExternalActivityHistoryFallback(
+                            sessionID: sessionID,
+                            attempt: attempt,
+                            mode: .skip
+                        )
+                    }
+                }
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
@@ -3277,6 +3337,15 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
+        externalActivityHistoryRevisionBySessionID = externalActivityHistoryRevisionBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
+        externalActivityHistoryAttemptBySessionID = externalActivityHistoryAttemptBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
+        externalActivityHistoryFallbackBySessionID = externalActivityHistoryFallbackBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {

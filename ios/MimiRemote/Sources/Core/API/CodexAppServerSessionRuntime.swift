@@ -965,6 +965,31 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
+    /// 外部活动轮询只需要对账正在写入的最新 turn。这里明确禁止回退 thread/read：
+    /// legacy 路径的 limit 是 message 数，不具备“完整一个 turn”的增量合并语义。
+    func latestTurnHistoryPage(sessionID: SessionID) async throws -> HistoryMessagesPage? {
+        let config = try await ensureConfig()
+        guard shouldUseThreadTurnsList(config: config) else {
+            return nil
+        }
+        do {
+            return try await messagesPageFromTurnPages(
+                sessionID: sessionID,
+                before: nil,
+                limit: 1,
+                loadMode: .full,
+                projects: config.projects,
+                recoveringInterruptedTurnID: nil
+            )
+        } catch {
+            if shouldFallbackFromThreadTurnsList(error) {
+                threadTurnsListUnavailable = true
+                return nil
+            }
+            throw error
+        }
+    }
+
     func messagesPageFromFullThreadRead(
         sessionID: SessionID,
         before: String?,
