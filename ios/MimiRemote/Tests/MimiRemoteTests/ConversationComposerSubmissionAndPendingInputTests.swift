@@ -733,3 +733,164 @@ extension ConversationDataFlowTests {
         )
     }
 }
+
+@MainActor
+final class ComposerStatusTrayBehaviorTests: XCTestCase {
+    /// 「仅观察」展开前后没有更多内容时，不应该展示无效的 disclosure。
+    func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
+        XCTAssertFalse(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。").hasExpandableDetail,
+            "只有观察状态时不应该提供展开入口"
+        )
+
+        let messageDate = Date(timeIntervalSince1970: 1_782_879_660)
+        let goal = ThreadGoal(
+            threadID: "thread-disclosure",
+            objective: "继续推进海报编辑体验。",
+            status: .active,
+            tokenBudget: 2_000_000,
+            tokensUsed: 120_000,
+            timeUsedSeconds: 240,
+            createdAt: messageDate,
+            updatedAt: messageDate
+        )
+        XCTAssertTrue(makeTray(goal: goal).hasExpandableDetail)
+        XCTAssertTrue(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。", goal: goal).hasExpandableDetail,
+            "观察态叠加目标时仍要能展开目标详情"
+        )
+    }
+
+    func testEmbeddedGoalTrayUsesComposerSurfaceAndAlignedPadding() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+        XCTAssertTrue(ComposerStatusTrayPlacement.embedded.usesEmbeddedStatusChip)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
+
+        XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
+        XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
+    }
+
+    func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
+        let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: true
+        )
+        let increasedContrast = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: false,
+            increasedContrast: true
+        )
+
+        XCTAssertEqual(reducedTransparency.materialStrength, .opaque)
+        XCTAssertEqual(reducedTransparency.borderOpacity, 0.08)
+        XCTAssertEqual(increasedContrast.materialStrength, .opaque)
+        XCTAssertEqual(increasedContrast.borderOpacity, 0.5)
+    }
+
+    /// iPhone 恒定使用 `.embedded`，这条路径不绘制独立的 `traySurface`。
+    func testEmbeddedGoalTrayNeverDrawsIndependentTraySurface() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+
+        for isExpanded in [false, true] {
+            for reduceTransparency in [false, true] {
+                for increasedContrast in [false, true] {
+                    let style = ComposerStatusTraySurfaceStyle.resolve(
+                        isExpanded: isExpanded,
+                        scheme: .light,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    )
+                    XCTAssertEqual(style.materialStrength, .opaque)
+                    XCTAssertEqual(style.surfaceTintOpacity, 1)
+                }
+            }
+        }
+    }
+
+    func testComposerSendModeLabelsUseConsistentModeSuffix() {
+        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
+        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
+        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
+        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
+    }
+
+    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
+        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+        let expanded = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: true,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+
+        XCTAssertEqual(collapsed.materialStrength, .thin)
+        XCTAssertEqual(expanded.materialStrength, .regular)
+        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
+        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
+        XCTAssertEqual(collapsed.borderOpacity, 0.58)
+        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+    }
+
+    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.05)
+        }
+    }
+
+    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .dark,
+                reduceTransparency: true
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.58)
+        }
+    }
+
+    private func makeTray(
+        sessionControlNotice: String? = nil,
+        quotaNotice: CodexQuotaNotice? = nil,
+        usage: CodexUsageDisplaySummary? = nil,
+        goal: ThreadGoal? = nil
+    ) -> ComposerStatusTray {
+        ComposerStatusTray(
+            sessionControlNotice: sessionControlNotice,
+            quotaNotice: quotaNotice,
+            usage: usage,
+            goal: goal,
+            placement: .embedded,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            goalErrorMessage: nil,
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+    }
+}
