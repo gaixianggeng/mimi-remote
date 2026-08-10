@@ -375,7 +375,7 @@ For the complete, code-oriented capability matrix and risk list, see [project st
 
 Mimi Remote has no ads, analytics SDK, or maintainer-operated telemetry service. Project content, conversations, logs, code, and Codex/Claude credentials remain on your devices unless you explicitly use a third-party service such as Codex, Claude Code, GitHub, Codex voice transcription, or MCP. Apple voice input uses on-device SpeechAnalyzer processing.
 
-The app rejects public HTTP endpoints at the application layer and is designed for Tailscale or same-LAN private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), and [support page](docs/support.md).
+The app rejects public HTTP endpoints at the application layer and is designed for Tailscale or same-LAN private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), [trademark and brand policy](TRADEMARKS.md), and [support page](docs/support.md).
 
 ## Development checks
 
@@ -416,6 +416,10 @@ Open a [GitHub issue](https://github.com/gaixianggeng/mimi-remote/issues/new) wi
 
 ## License
 
-Mimi Remote's iOS app, Go backend, and documentation are licensed under [GNU GPLv3](LICENSE) with an additional App Store / Google Play distribution permission under GPLv3 section 7. Commercial use is not prohibited, but distribution of modified versions or binaries must meet GPLv3 obligations, including corresponding source and the same license.
+Mimi Remote's iOS app, Go backend, and documentation are licensed under [GNU GPLv3](LICENSE) with an additional App Store / Google Play distribution permission under GPLv3 section 7. Commercial use and paid distribution are allowed. If you distribute a GPL-covered modified work or object code to another party, however, you must ensure recipients receive the GPLv3 rights for that covered work and provide Corresponding Source or a GPLv3-compliant way to obtain it. You may not distribute that covered work as a closed-source product that withholds those rights or the required access to Corresponding Source; independent works and third-party components remain governed by their own licenses.
+
+GPLv3 grants rights in code, not additional rights to the Mimi Remote name, logo, app icon, or official-distribution identity. A user-facing modified product that uses those Project Marks must follow the [Trademark and Brand Policy](TRADEMARKS.md); without written permission, it must use independent branding and must not present itself as an official release. Truthful “based on Mimi Remote” and compatibility statements remain permitted.
 
 [`bridges/claude`](bridges/claude) is derived from Alleycat contributors and remains [GPLv3-only](bridges/claude/LICENSE); the root store-distribution exception does not apply to that upstream code. Third-party notices are in [NOTICE.md](NOTICE.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Historical versions previously and explicitly released under the MIT License remain governed by that original license; this change does not retroactively revoke rights already granted.

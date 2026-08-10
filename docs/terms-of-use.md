@@ -1,12 +1,12 @@
 # Mimi Remote 使用条款 / Terms of Use
 
-生效日期 / Effective date：2026-07-20
+生效日期 / Effective date：2026-08-10
 
 ## 中文
 
 ### 目标
 
-Mimi Remote 是连接用户自有或获授权 Mac 开发环境的原生客户端。安装或使用 Mimi Remote 即表示你同意本条款；不同意时请停止使用并删除 App。
+Mimi Remote 是连接用户自有或获授权 Mac 开发环境的原生客户端。安装或使用 Mimi Remote 官方发行版，即表示你就该产品的使用行为同意本条款；不同意时请停止使用该发行版。接收、运行、修改和传播 GPL 覆盖代码的权利由适用的开源许可证独立授予，不以接受本使用条款为条件。
 
 ### 方案
 
@@ -20,7 +20,11 @@ Mimi Remote 是连接用户自有或获授权 Mac 开发环境的原生客户端
 
 Codex、Claude Code、Tailscale、GitHub、MCP Server 及其他外部工具由各自提供方运营并适用其各自条款。Mimi Remote 是独立第三方客户端，不隶属于或代表这些提供方，也不承诺外部服务持续可用或保持协议兼容。
 
-Mimi Remote 源码按 GNU GPLv3 及仓库 `LICENSE` 中的 App Store / Google Play 分发例外提供。第三方组件继续适用各自许可证。产品名称、图标和品牌标识不会因源码许可证而自动授予额外商标权利。
+开源代码与本使用条款分层适用。Mimi Remote 自有源码按 [GNU GPLv3 与商店分发额外许可](../LICENSE)提供，第三方组件继续适用各自许可证。任何人都可以在遵守适用许可证的前提下商业使用或收费分发。向第三方分发 GPL 覆盖的修改作品或目标代码时，必须针对该 GPL 覆盖作品履行 GPLv3 要求，包括保留适用声明、在适用时标记修改、确保接收者取得 GPLv3 规定的权利，并按 GPLv3 要求提供对应源码或合规的源码获取方式；不得把该覆盖作品作为不向接收者提供这些权利或源码获取方式的闭源产品分发。独立作品和第三方组件仍适用各自许可证。
+
+本条款不减少适用开源许可证授予的权利。两者就某一开源组件发生冲突时，以该组件的开源许可证为准；停止使用 App 也不会撤销已经根据开源许可证取得的代码权利。此前已经明确按 MIT License 发布的历史版本继续受其原有许可。
+
+源码许可证不授予 Mimi Remote 产品名称、Logo、App 图标或官方发行身份的额外使用权。商标和来源识别规则不是复制、运行、修改或分发代码的额外许可条件；但面向用户的修改版产品或发行物如果使用项目标识，该使用必须遵守[商标与品牌使用政策](../TRADEMARKS.md)。未经书面授权，其主要品牌和发行身份应保持独立，并且不得暗示由 Mimi Remote 官方维护者发布、认可或支持。如实说明来源、兼容性以及保留许可证要求的归属声明不受影响。
 
 ### 风险与优化
 
@@ -32,7 +36,7 @@ Mimi Remote 源码按 GNU GPLv3 及仓库 `LICENSE` 中的 App Store / Google Pl
 
 ### Purpose
 
-Mimi Remote is a native client for a Mac development environment that you own or are authorized to use. By installing or using Mimi Remote, you agree to these terms. If you do not agree, stop using and delete the app.
+Mimi Remote is a native client for a Mac development environment that you own or are authorized to use. By installing or using an official Mimi Remote distribution, you agree to these Terms as they apply to product use. If you do not agree, stop using that distribution. Your rights to receive, run, modify, and propagate GPL-covered code are granted independently by the applicable open-source licenses and do not depend on accepting these Terms.
 
 ### Approach
 
@@ -46,7 +50,11 @@ You must not use Mimi Remote to access devices or data without authorization, in
 
 Codex, Claude Code, Tailscale, GitHub, MCP servers, and other external tools are operated under their providers' terms. Mimi Remote is an independent third-party client; it is not affiliated with or acting on behalf of those providers and does not guarantee their availability or continued protocol compatibility.
 
-Mimi Remote source code is provided under GNU GPLv3 and the App Store / Google Play distribution exception in the repository `LICENSE`. Third-party components remain subject to their respective licenses. Source licensing does not grant additional rights to product names, icons, or brand identifiers.
+Open-source code and these Terms apply at separate layers. Mimi Remote-owned source code is provided under [GNU GPLv3 with the additional store-distribution permission](../LICENSE), while third-party components remain subject to their own licenses. Anyone may use the software commercially or charge for distribution while complying with the applicable licenses. If you distribute a GPL-covered modified work or object code to another party, you must meet GPLv3's requirements for that covered work, including preserving applicable notices, marking changes when required, ensuring recipients receive the rights provided by GPLv3, and providing Corresponding Source or a GPLv3-compliant way to obtain it. You may not distribute that covered work as a closed-source product that withholds those rights or the required access to Corresponding Source. Independent works and third-party components remain governed by their own licenses.
+
+These Terms do not reduce rights granted by an applicable open-source license. If they conflict for an open-source component, that component's open-source license controls. Stopping use of the app does not revoke code rights already obtained under an open-source license. Historical versions previously released under the MIT License remain governed by that license.
+
+The source-code licenses do not grant additional rights to the Mimi Remote product name, logo, app icon, or official-distribution identity. Trademark and source-identification rules are not additional conditions on permission to copy, run, modify, or distribute the code. If a user-facing modified product or distribution uses Project Marks, that use must comply with the [Trademark and Brand Policy](../TRADEMARKS.md). Without written permission, its primary brand and distribution identity must remain independent and must not imply that it is published, endorsed, or supported by the official Mimi Remote maintainers. Truthful source or compatibility references and attribution notices required by the licenses remain permitted.
 
 ### Risks and future changes
 
