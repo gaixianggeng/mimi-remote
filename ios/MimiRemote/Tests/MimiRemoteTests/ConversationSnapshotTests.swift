@@ -1408,6 +1408,41 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         }
     }
 
+    func testGoalTrayLightPhoneSurfaceMatchesComposerMaterial() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false,
+                isPhone: true
+            )
+
+            XCTAssertEqual(style.materialStrength, .thin)
+            XCTAssertEqual(style.surfaceTintOpacity, 0.14)
+            XCTAssertEqual(style.borderOpacity, 0.09)
+        }
+    }
+
+    func testGoalTrayLightPhoneSurfaceBecomesOpaqueForAccessibility() {
+        let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: true,
+            isPhone: true
+        )
+        let increasedContrast = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: false,
+            isPhone: true,
+            increasedContrast: true
+        )
+
+        XCTAssertEqual(reducedTransparency.materialStrength, .opaque)
+        XCTAssertEqual(increasedContrast.materialStrength, .opaque)
+        XCTAssertEqual(increasedContrast.borderOpacity, 0.5)
+    }
+
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
         for isExpanded in [false, true] {
             let style = ComposerStatusTraySurfaceStyle.resolve(

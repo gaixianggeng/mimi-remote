@@ -696,6 +696,29 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
     }
 
+    func testConversationTopUnderlapOnlyDependsOnDeviceAndTransparencyPreference() {
+        // WebSocket error、history/quota notice 不进入这个策略：瞬态业务状态只能显示提示，
+        // 不能切换导航栏与 List 的 safe-area 几何。
+        XCTAssertTrue(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: true,
+                reduceTransparency: false
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: true,
+                reduceTransparency: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationView.shouldAllowTopUnderlap(
+                isPhone: false,
+                reduceTransparency: false
+            )
+        )
+    }
+
     func testConversationTimelineRapidSessionSwitchesKeepValidTailTarget() async throws {
 #if targetEnvironment(macCatalyst)
         // 该回归用例专门覆盖 iOS 27 UICollectionView 的快照/IndexPath 竞态；

@@ -262,15 +262,26 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
     static func resolve(
         isExpanded: Bool,
         scheme: ThemeResolvedScheme,
-        reduceTransparency: Bool
+        reduceTransparency: Bool,
+        isPhone: Bool = false,
+        increasedContrast: Bool = false
     ) -> Self {
-        // 浅色额度条和输入卡必须使用同一块不透明暖白，避免薄材质混入背景后偏成冷灰。
-        // 两者的主次改由阴影深度表达，而不是再增加一套近似的表面色。
         if scheme == .light {
+            // iPhone 状态条和输入框必须共享同一套材质与 tint；否则两块相邻表面即使
+            // 只差少量白色覆盖，也会被看成两种不同的卡片。层级只交给边框和阴影。
+            if isPhone && !reduceTransparency && !increasedContrast {
+                return Self(
+                    materialStrength: .thin,
+                    surfaceTintOpacity: 0.14,
+                    borderOpacity: 0.09
+                )
+            }
+
+            // iPad 以及辅助功能模式继续使用确定性的暖白实色，保证长状态内容可读。
             return Self(
                 materialStrength: .opaque,
                 surfaceTintOpacity: 1,
-                borderOpacity: reduceTransparency ? 0.08 : 0.05
+                borderOpacity: increasedContrast ? 0.5 : (reduceTransparency ? 0.08 : 0.05)
             )
         }
 
@@ -295,6 +306,7 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
 struct ComposerStatusTray: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -731,12 +743,23 @@ struct ComposerStatusTray: View {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
         case .thin:
-            // 深色收起态维持薄材质，不再额外抬高层级。
-            shape
-                .fill(.thinMaterial)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
-                }
+            if tokens.resolvedScheme == .light {
+                // 与 iPhone Composer 逐项复用 thinMaterial + 14% input tint；这里不叠
+                // 第二层 Material，避免相邻表面出现不同色温或模糊厚度。
+                shape
+                    .fill(.thinMaterial)
+                    .overlay {
+                        shape.fill(tokens.inputBackground.opacity(surfaceStyle.surfaceTintOpacity))
+                    }
+                    .shadow(color: Color.black.opacity(0.025), radius: 2, y: 1)
+            } else {
+                // 深色收起态维持薄材质，不再额外抬高层级。
+                shape
+                    .fill(.thinMaterial)
+                    .overlay {
+                        shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
+                    }
+            }
         }
     }
 
@@ -744,7 +767,9 @@ struct ComposerStatusTray: View {
         ComposerStatusTraySurfaceStyle.resolve(
             isExpanded: isGoalExpanded,
             scheme: tokens.resolvedScheme,
-            reduceTransparency: reduceTransparency
+            reduceTransparency: reduceTransparency,
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+            increasedContrast: colorSchemeContrast == .increased
         )
     }
 

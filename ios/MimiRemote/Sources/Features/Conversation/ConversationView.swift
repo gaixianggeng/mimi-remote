@@ -46,16 +46,17 @@ struct ConversationView: View {
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
+                    // 状态提示只占用自己的布局高度，不能改变导航栏与时间线的材质模式；
+                    // List 扩展进顶部安全区后也始终让提示保持在正文之上。
+                    .zIndex(1)
                 ConversationTimelineView(
                     layout: layout,
-                    // 固定提示条出现时先保留普通安全区布局，避免 List 的顶部 underlap
-                    // 穿到提示条后方。范围只限正常透明度的 iPhone；iPad 与 Reduce
-                    // Transparency 继续保留原安全区几何和实色导航层。
-                    allowsTopUnderlap: UIDevice.current.userInterfaceIdiom == .phone
-                        && !reduceTransparency
-                        && model.errorMessage == nil
-                        && model.historySavingsNotice == nil
-                        && model.quotaNotice == nil
+                    // 顶部 underlap 只由设备与辅助功能决定；WebSocket 错误、额度提示等
+                    // 瞬态业务状态不得切换 List 的 safe-area 几何，否则材质会消失并跳动。
+                    allowsTopUnderlap: Self.shouldAllowTopUnderlap(
+                        isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+                        reduceTransparency: reduceTransparency
+                    )
                 )
             }
             .onGeometryChange(for: CGFloat.self) { geometry in
@@ -89,6 +90,10 @@ struct ConversationView: View {
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
         }
+    }
+
+    static func shouldAllowTopUnderlap(isPhone: Bool, reduceTransparency: Bool) -> Bool {
+        isPhone && !reduceTransparency
     }
 
     @ViewBuilder

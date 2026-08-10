@@ -973,9 +973,10 @@ struct ComposerView: View {
             } else if isPhoneComposer {
                 // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
                 // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 亮度只用一层很轻的白色 tint 调整，避免恢复成不透明白卡。
+                // 顶部使用 soft scroll edge，Composer 降到更轻一档的 thinMaterial；
+                // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
                 shape
-                    .fill(.regularMaterial)
+                    .fill(.thinMaterial)
                     .overlay {
                         shape.fill(tokens.inputBackground.opacity(0.14))
                     }
