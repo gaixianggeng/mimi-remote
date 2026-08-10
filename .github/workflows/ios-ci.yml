@@ -73,10 +73,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-ci-${{ github.ref }}
-  # TestFlight 上传不能被同一 main 上的新 push 或手工运行中途取消；PR Gate
-  # 自身仍会取消过时的 PR caller，因此这里优先保证签名发布的原子性。
-  cancel-in-progress: false
+  # 普通回归与签名发布使用不同组：新提交可以取消过时的 Simulator 回归，
+  # 但不能取消或排队阻塞同一 main 上正在执行的 TestFlight 上传。
+  group: >-
+    ios-ci-${{ (inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) && 'release' || 'regression' }}-${{ github.ref }}
+  cancel-in-progress: >-
+    ${{ !(inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) }}
 
 jobs:
   conversation-regressions:
