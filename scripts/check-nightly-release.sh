@@ -202,7 +202,16 @@ trust_run = trust.fetch("run")
 ].each { |needle| fail_check("iOS trust gate 缺少 #{needle}") unless trust_run.include?(needle) }
 upload = app.dig("env", "IOS_TESTFLIGHT_UPLOAD").to_s
 fail_check("iOS upload 必须严格使用 1/0 二选一") unless upload.include?("'1'") && upload.include?("'0'") && app.dig("env", "IOS_TESTFLIGHT_VALIDATE").to_s == "0"
-fail_check("iOS CI 不得取消正在运行的 TestFlight 上传") unless ios.dig("concurrency", "cancel-in-progress") == false
+ios_concurrency = ios.fetch("concurrency")
+concurrency_group = ios_concurrency.fetch("group").to_s.gsub(/\s+/, "")
+cancel_expression = ios_concurrency.fetch("cancel-in-progress").to_s.gsub(/\s+/, "")
+expected_release_predicate = "(inputs.publish_internal_testflight||(github.event_name=='workflow_dispatch'&&inputs.publish_app_store))"
+expected_group = 'ios-ci-${{' + expected_release_predicate + "&&'release'||'regression'" + '}}-${{github.ref}}'
+expected_cancel_expression = '${{!' + expected_release_predicate + '}}'
+fail_check("iOS CI 必须把 TestFlight release 与普通 regression concurrency group 分开") unless
+  concurrency_group == expected_group
+fail_check("iOS CI 只能取消普通回归，不能取消 TestFlight 上传") unless
+  cancel_expression == expected_cancel_expression
 evidence = step(app, "Write Nightly TestFlight evidence")
 artifact = step(app, "Upload Nightly TestFlight evidence")
 fail_check("Nightly evidence 只能由显式 reusable publish input 生成") unless
@@ -331,6 +340,22 @@ self_test() {
   mutate_nightly 'value["uploaded"] == true' 'true'
   mutate_nightly 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}' 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}'
   mutate_nightly "needs.release-secrets-preflight.result == 'success'" "true"
+
+  mutate_ios() {
+    local old_value="$1"
+    local new_value="$2"
+    cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/ios-ci.yml"
+    ruby -e '
+      path, old_value, new_value = ARGV
+      source = File.read(path)
+      abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
+      File.write(path, source.sub(old_value, new_value))
+    ' "$test_root/.github/workflows/ios-ci.yml" "$old_value" "$new_value"
+    expect_failure
+  }
+  mutate_ios "&& 'release' || 'regression'" "&& 'regression' || 'regression'"
+  mutate_ios '${{ !(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store)) }}' '${{ false }}'
+  mutate_ios '!(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store))' '!inputs.publish_internal_testflight'
 
   cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("      inputs.publish_internal_testflight", "      (github.event_name == '\''workflow_call'\'' && inputs.publish_internal_testflight)"); File.write(p, s)' "$test_root/.github/workflows/ios-ci.yml"
