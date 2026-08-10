@@ -179,6 +179,80 @@ extension ConversationDataFlowTests {
         })
     }
 
+    func testDirectRuntimeLatestTurnHistoryUsesOneCompleteTurnPage() async throws {
+        let project = AgentProject(id: "proj_latest_turn", name: "Latest Turn", path: "/tmp/latest-turn")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/read", "thread/turns/list"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let pageTask = Task {
+            try await client.latestTurnHistoryPage(sessionID: "thr_latest_turn")
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let metadataRead = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        XCTAssertEqual(metadataRead.params?.objectValue?["includeTurns"]?.boolValue, false)
+        transportResponse(
+            transport,
+            id: metadataRead.id,
+            result: #"{"thread":{"id":"thr_latest_turn","sessionId":"thr_latest_turn","preview":"latest","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"active"},"path":null,"cwd":"/tmp/latest-turn","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"latest","turns":[]}}"#
+        )
+        let turnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        XCTAssertEqual(turnsRequest.params?.objectValue?["limit"]?.intValue, 1)
+        XCTAssertEqual(turnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(turnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        transportResponse(
+            transport,
+            id: turnsRequest.id,
+            result: #"{"data":[{"id":"turn_latest","status":"inProgress","items":[{"type":"userMessage","id":"item_latest_user","content":[{"type":"text","text":"latest prompt"}]},{"type":"agentMessage","id":"item_latest_agent","text":"latest answer","phase":"commentary"}]}],"nextCursor":"older"}"#
+        )
+
+        let pageResult = try await pageTask.value
+        let page = try XCTUnwrap(pageResult)
+        XCTAssertEqual(page.messages.map(\.content), ["latest prompt", "latest answer"])
+        XCTAssertEqual(Set(page.messages.compactMap(\.turnID)), ["turn_latest"])
+    }
+
+    func testDirectRuntimeLatestTurnHistoryDoesNotFallbackToFullThreadRead() async throws {
+        let project = AgentProject(id: "proj_latest_turn_legacy", name: "Legacy Latest", path: "/tmp/latest-legacy")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/read"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let pageTask = Task {
+            try await client.latestTurnHistoryPage(sessionID: "thr_latest_legacy")
+        }
+
+        let page = try await pageTask.value
+        XCTAssertNil(page)
+        let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requests.contains { $0.method == "thread/read" })
+        XCTAssertFalse(requests.contains { $0.method == "thread/turns/list" })
+    }
+
     func testPagedTurnsRecoverMissedCompletionForCachedActiveSession() async throws {
         let project = AgentProject(id: "proj_turn_page_recovery", name: "Turn Page Recovery", path: "/tmp/turn-page-recovery")
         let transport = FakeCodexAppServerTransport()
