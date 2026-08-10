@@ -36,15 +36,8 @@ echo "==> iOS conversation regressions"
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
-ios_test_action="${IOS_TEST_ACTION:-test}"
-case "$ios_test_action" in
-  test|test-without-building) ;;
-  *)
-    echo "IOS_TEST_ACTION 只支持 test 或 test-without-building：$ios_test_action" >&2
-    exit 2
-    ;;
-esac
-bash "$ROOT_DIR/scripts/ios-dev.sh" "$ios_test_action" \
+# - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
+bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
@@ -106,4 +99,5 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" "$ios_test_action" \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
-  -only-testing:MimiRemoteTests/ProtocolContractTests
+  -only-testing:MimiRemoteTests/ProtocolContractTests \
+  -only-testing:MimiRemoteTests/LocalizationTests

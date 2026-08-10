@@ -32,7 +32,7 @@ SELECTED_TRANSPORT=""
 usage() {
   cat <<'EOF'
 用法：
-  bash ./scripts/ios-dev.sh [build|build-for-testing|test|test-without-building|run]
+  bash ./scripts/ios-dev.sh [build|build-for-testing|test|run]
   bash ./scripts/ios-dev.sh target
   bash ./scripts/ios-dev.sh destination
   bash ./scripts/ios-dev.sh prepare
@@ -41,8 +41,7 @@ usage() {
 
 默认目标：
   build/run: USB 真机 → 本地网络真机 → 固定 iPad Simulator
-  build-for-testing/test/test-without-building:
-             精确固定 iPad Pro 13-inch (M5)，忙或缺失时明确失败
+  test:      精确固定 iPad Pro 13-inch (M5)，忙或缺失时明确失败
   Scheme:    MimiRemote
   Config:    Debug
 
@@ -412,19 +411,6 @@ run_xcodebuild() {
     "$action"
 }
 
-require_reusable_test_products() {
-  local products_dir="$SELECTED_DERIVED_DATA/Build/Products"
-  local xctestrun_path
-
-  for xctestrun_path in "$products_dir"/*.xctestrun; do
-    [[ -f "$xctestrun_path" ]] && return 0
-  done
-
-  echo "找不到可复用的 iOS 测试产物：$products_dir/*.xctestrun" >&2
-  echo "请先对同一 destination 和 DerivedData 执行 build-for-testing。" >&2
-  return 3
-}
-
 run_device_action() {
   local action="$1"
   shift
@@ -507,17 +493,12 @@ case "$command_name" in
       run_xcodebuild build "$@"
     fi
     ;;
-  build-for-testing|test|test-without-building)
+  build-for-testing|test)
     require_command "$XCODEBUILD_BIN"
     require_command "$XCRUN_BIN"
     require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
     acquire_fixed_test_target "$lease_command"
-    if [[ "$command_name" == "test-without-building" ]]; then
-      # 复用模式只消费同一固定设备和 DerivedData 下的现有测试产物；
-      # 缺失时明确失败，避免 CI 静默退回第二次完整编译。
-      require_reusable_test_products
-    fi
     run_xcodebuild "$command_name" "$@"
     ;;
   run)
