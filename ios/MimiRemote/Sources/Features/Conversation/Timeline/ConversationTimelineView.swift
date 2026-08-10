@@ -132,7 +132,7 @@ struct ConversationTimelineView: View {
                 ))
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
-                .background(tokens.background)
+                .background(tokens.conversationCanvasBackground)
                 // Composer 是唯一的底部功能材质；时间线只在它后方留一层柔和渐隐，
                 // 不再在输入区外侧切出一整块与页面不同的底色。
                 .workbenchSoftBottomScrollEdge()
@@ -178,7 +178,7 @@ struct ConversationTimelineView: View {
                         returnToTimelineTail(timelineItems: timelineItems, proxy: proxy)
                     }
                     // 放在输入区正上方的视觉中轴，不与用户气泡或右侧滚动条争抢空间。
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 10)
                 }
             }
             .onChange(of: displayedSessionID) { oldID, newID in
@@ -1097,6 +1097,7 @@ struct ConversationTimelineView: View {
 /// 回到底部按钮和滚动实现放在同一文件，避免为单个私有控件扩张工程文件清单。
 private struct ConversationReturnToTailButton: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
     let tokens: ThemeTokens
     let accessibilityLabel: String
     let action: () -> Void
@@ -1108,6 +1109,7 @@ private struct ConversationReturnToTailButton: View {
         .buttonStyle(.plain)
         .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier("conversation.returnToTail")
     }
 
     @ViewBuilder
@@ -1120,9 +1122,10 @@ private struct ConversationReturnToTailButton: View {
                             Circle().fill(tokens.elevatedSurface)
                         }
                     }
-                    // iOS 26+ 保留原生交互玻璃；Reduce Transparency 关闭玻璃动画与透明度。
+                    // regular glass 先打散正文再折射，避免 clear glass 把下方大字扭成不可辨识符号。
+                    // Reduce Transparency 关闭玻璃动画与透明度。
                     .glassEffect(
-                        reduceTransparency ? .identity : .clear.interactive(),
+                        reduceTransparency ? .identity : .regular.interactive(),
                         in: .circle
                     )
             } else {
@@ -1140,22 +1143,24 @@ private struct ConversationReturnToTailButton: View {
         .overlay {
             Circle()
                 .stroke(
-                    tokens.border.opacity(reduceTransparency ? 0.72 : 0.42),
+                    colorScheme == .light
+                        ? Color.black.opacity(reduceTransparency ? 0.22 : 0.10)
+                        : Color.white.opacity(reduceTransparency ? 0.28 : 0.14),
                     lineWidth: 0.75
                 )
         }
         .shadow(
-            color: Color.black.opacity(reduceTransparency ? 0.14 : 0.10),
-            radius: 7,
-            y: 3
+            color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
+            radius: 6,
+            y: 2
         )
     }
 
     private var baseLabel: some View {
         Image(systemName: "arrow.down")
-            .font(.system(size: 16, weight: .semibold))
+            .font(.system(size: 17, weight: .medium))
             .foregroundStyle(tokens.primaryText)
-            .frame(width: 44, height: 44)
+            .frame(width: 48, height: 48)
     }
 }
 

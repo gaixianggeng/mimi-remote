@@ -1134,7 +1134,7 @@ struct UnifiedWorkbenchShell: View {
                         }
                     } label: {
                         WorkbenchChromeIcon(systemName: "ellipsis")
-                            .foregroundStyle(tokens.secondaryText)
+                            .foregroundStyle(tokens.primaryText.opacity(0.72))
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
@@ -1174,9 +1174,16 @@ struct UnifiedWorkbenchShell: View {
                 inspectorToolbarItem(layout: layout, tokens: tokens)
             }
         }
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.conversationCanvasBackground.ignoresSafeArea())
         .toolbar(.hidden, for: .tabBar)
-        .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
+        .modifier(
+            CompactSessionNavigationMaterialModifier(
+                isEnabled: layout.usesCompactNavigation,
+                tokens: tokens,
+                colorScheme: themeStore.resolvedColorScheme(for: colorScheme),
+                reduceTransparency: reduceTransparency
+            )
+        )
         .sessionActionSheets(presentation: $sessionActionPresentation)
         .environment(
             \.openSubagentSession,
@@ -1636,7 +1643,11 @@ struct UnifiedWorkbenchShell: View {
                         .accessibilityHidden(true)
                 }
                 Text(sessionTitleSubtitle(now: now))
-                    .font(.caption2.weight(.medium))
+                    .font(
+                        layout.usesCompactNavigation
+                            ? .subheadline.weight(.regular)
+                            : .caption2.weight(.medium)
+                    )
                     .foregroundStyle(sessionTitleSubtitleColor(tokens: tokens, now: now))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1754,6 +1765,40 @@ struct UnifiedWorkbenchShell: View {
         case .failed: return .red
         case .terminated: return .red
         case .disconnected: return tokens.tertiaryText
+        }
+    }
+}
+
+/// 只给紧凑会话页一条稳定的导航材质层；iPad 工作台继续沿用原有滚动边缘策略，
+/// 避免全局强制可见后重新出现整条实色导航栏。
+private struct CompactSessionNavigationMaterialModifier: ViewModifier {
+    let isEnabled: Bool
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            if reduceTransparency {
+                content
+                    .toolbarBackground(tokens.inputBackground, for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbarColorScheme(colorScheme, for: .navigationBar)
+            } else {
+                content
+                    // compact 会话只声明这一层原生材质。不要先铺主题实色、也不要再给
+                    // Material 加 opacity，否则 blur 与高光会一起被削弱，真机上只剩灰条。
+                    .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbarColorScheme(colorScheme, for: .navigationBar)
+            }
+        } else {
+            // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
+            // 全局工作台暖底重新显形，把纸白阅读层切成两种色温。
+            content
+                .toolbarBackground(tokens.conversationCanvasBackground, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
         }
     }
 }

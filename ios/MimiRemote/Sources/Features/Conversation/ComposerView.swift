@@ -104,6 +104,10 @@ struct ComposerView: View {
             attachmentStrip
             composerStatusRow
             composerInputRow(tokens: tokens)
+        }
+        // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
+        // 它仍会吃掉一段 spacing，让 iPhone 输入卡无故悬高 10pt。
+        .background(alignment: .topLeading) {
             voiceKeyboardShortcutButton
                 .overlay {
                     composerKeyboardShortcutButtons
@@ -899,9 +903,9 @@ struct ComposerView: View {
     /// iPhone 始终保留同一个编辑器和工具栏：空草稿是一行，正文增加时按 TextKit
     /// 实际高度自然向上生长。这样不再需要向上箭头，也避免切换 View 树打断输入法。
     func phoneComposerCard(tokens: ThemeTokens) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 26, style: .continuous)
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 4) {
             expandedPhoneComposerContent(tokens: tokens)
 
             // 工具栏身份稳定，输入区增高时只向上生长，不重新插入或缩放按钮。
@@ -925,10 +929,9 @@ struct ComposerView: View {
             skillAutocompletePanel(skills: skillSuggestions)
             voiceReviewNotice
         }
-        // 卡片外缘在两态都固定为 8pt；编辑区额外补 4pt，使正文仍与原先
-        // 12pt 的阅读边距一致，而工具栏不会因聚焦改变位置或视觉尺寸。
-        .padding(.horizontal, 4)
-        .padding(.top, 4)
+        // 水平保留 10pt 阅读边距，与参考输入光标位置对齐；竖向由外层 8pt 统一控制，避免单行态
+        // 在编辑器与工具栏之间多出一档空白。
+        .padding(.horizontal, 2)
     }
 
     func composerCard(tokens: ThemeTokens) -> some View {
@@ -968,15 +971,15 @@ struct ComposerView: View {
                     .fill(tokens.inputBackground)
                     .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
             } else if isPhoneComposer {
-                // iPhone 让正文层在卡片后方保持连续，但由 regularMaterial 充分打散字形；
-                // 主题 tint 负责稳定浅色/深色内容上的对比，不再依赖整块实色底板。
+                // iPhone 让正文层在卡片后方保持连续；单层 ultraThinMaterial 负责打散字形，
+                // 半透明白色 tint 把空白区域提到纸白，但仍保留正文经过时的模糊层次。
                 shape
-                    .fill(.regularMaterial)
+                    .fill(.ultraThinMaterial.opacity(0.45))
                     .overlay {
-                        shape.fill(tokens.inputBackground.opacity(0.42))
+                        shape.fill(tokens.inputBackground.opacity(0.52))
                     }
-                    .shadow(color: Color.black.opacity(0.045), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.055), radius: 9, y: 3)
+                    .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
+                    .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)
             } else {
                 // 输入卡和侧栏共用清晰白色；短接触阴影收住边缘，轻环境阴影只表达少量浮起。
                 // 半径与偏移刻意收紧，避免 r20 / y10 在暖底上形成第三圈模糊白色。
@@ -1004,12 +1007,15 @@ struct ComposerView: View {
                 text: composerDraftBinding,
                 submitBridge: composerTextSubmitBridge,
                 font: composerUIFont,
-                textColor: UIColor(tokens.primaryText),
+                textColor: UIColor(tokens.conversationPrimaryText),
                 tintColor: UIColor(tokens.accent),
                 externalTextRevision: composerTextExternalRevision,
                 focusRequestID: $composerTextFocusRequestID,
                 minHeight: composerMinHeight,
                 maxHeight: composerMaxHeight,
+                textContainerInset: isPhoneComposer
+                    ? UIEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
+                    : .zero,
                 onSubmit: { submitDraft() },
                 onContentHeightChange: { height in
                     if abs(measuredComposerTextHeight - height) > 0.5 {
@@ -1048,10 +1054,11 @@ struct ComposerView: View {
             .frame(height: composerTextHeight)
 
             if composerState.draft.isEmpty && !isComposerTextComposing {
-                // ComposerTextView 把 textContainerInset 归零，占位文案与正文同源，无需再补 padding。
+                // 占位文案复用 TextKit 的手机上内边距，确保首行文字与真实输入基线一致。
                 Text(composerPlaceholderText)
                     .font(themeStore.uiFont(.body))
-                    .foregroundStyle(tokens.tertiaryText)
+                    .foregroundStyle(tokens.conversationTertiaryText)
+                    .padding(.top, isPhoneComposer ? 8 : 0)
                     .allowsHitTesting(false)
             }
         }
@@ -1140,7 +1147,10 @@ struct ComposerView: View {
             return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
         }
         // 浅色使用中性黑低透明描边，既得到清晰轮廓，也不会把暖灰边缘误读成第三种表面色。
-        return colorScheme == .light ? Color.black.opacity(0.06) : tokens.border.opacity(0.58)
+        if colorScheme == .light {
+            return Color.black.opacity(isPhoneComposer ? 0.09 : 0.06)
+        }
+        return tokens.border.opacity(0.58)
     }
 
     var composerPlaceholderText: String {
@@ -1170,7 +1180,7 @@ struct ComposerView: View {
         if colorSchemeContrast == .increased {
             return 1.25
         }
-        return colorScheme == .light ? 1 : 0.75
+        return colorScheme == .light && !isPhoneComposer ? 1 : 0.75
     }
 
     @ViewBuilder
@@ -1197,26 +1207,41 @@ struct ComposerView: View {
             : ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
     }
 
+    var compactToolbarShowsInlineDeliveryControl: Bool {
+        ConversationLayout.compactComposerShowsInlineDeliveryControl(
+            isPhone: isPhoneComposer,
+            availableWidth: availableWidth,
+            canChooseDelivery: canChooseRunningFollowUpDelivery
+        )
+    }
+
+    var foldsRunningFollowUpDeliveryIntoOptions: Bool {
+        canChooseRunningFollowUpDelivery
+            && usesCompactComposerMetrics
+            && !compactToolbarShowsInlineDeliveryControl
+    }
+
     func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
         CompactComposerToolbarShell(
             leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
             toolControls: compactToolControlsBox(),
-            submitControl: compactSubmitControlBox()
+            submitControl: compactSubmitControlBox(),
+            spacing: isPhoneComposer ? 6 : 8
         )
     }
 
     @inline(never)
     func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let deliveryControl = canChooseRunningFollowUpDelivery
+        // iPhone 运行态把投递方式收进设置菜单，避免第六个控件挤破 320–390pt 工具栏。
+        // iPad 保留原有平铺入口。
+        let deliveryControl = compactToolbarShowsInlineDeliveryControl
             ? compactDeliveryControlBox()
             : nil
         return AnyView(
             CompactComposerLeadingControlsShell(
                 addControl: compactAddContentControlBox(),
                 modelControl: compactModelControlBox(showsTitle: showsModelTitle),
-                deliveryControl: deliveryControl,
-                backgroundColor: tokens.background
+                deliveryControl: deliveryControl
             )
         )
     }
@@ -1240,12 +1265,10 @@ struct ComposerView: View {
 
     @inline(never)
     func compactToolControlsBox() -> AnyView {
-        let tokens = themeStore.tokens(for: colorScheme)
         return AnyView(
             CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(showsRestingSurface: false),
-                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: false),
-                backgroundColor: tokens.background
+                optionsControl: compactOptionsControlBox(showsRestingSurface: true),
+                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: true)
             )
         )
     }
@@ -1291,6 +1314,10 @@ struct ComposerView: View {
             }
             .accessibilityIdentifier("composer.mode.goal")
 
+            if foldsRunningFollowUpDeliveryIntoOptions {
+                Divider()
+                followUpDeliveryMenuItems
+            }
         } label: {
             composerToolbarControlLabel(
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
@@ -1308,13 +1335,22 @@ struct ComposerView: View {
     }
 
     var composerOptionsAccessibilityValue: String {
+        var values: [String] = []
         if composerState.isPlanModeSelected {
-            return L10n.text("ui.planning_mode")
+            values.append(L10n.text("ui.planning_mode"))
+        } else if composerState.isGoalModeSelected {
+            values.append(L10n.text("ui.target_task"))
+        } else {
+            values.append(L10n.text("ui.normal"))
         }
-        if composerState.isGoalModeSelected {
-            return L10n.text("ui.target_task")
+        if foldsRunningFollowUpDeliveryIntoOptions {
+            values.append(
+                guidedFollowUpEnabled && canUseGuidedFollowUp
+                    ? L10n.text("ui.lead_current_reply")
+                    : L10n.text("ui.queue_for_next_round")
+            )
         }
-        return L10n.text("ui.normal")
+        return values.joined(separator: " · ")
     }
 
     var voiceMicControl: some View {
@@ -1330,7 +1366,8 @@ struct ComposerView: View {
             onTap: {
                 toggleVoiceInput()
             },
-            showsRestingSurface: showsRestingSurface
+            showsRestingSurface: showsRestingSurface,
+            usesPhoneStyle: isPhoneComposer
         )
         .layoutPriority(0)
         .accessibilityIdentifier("composer.voice")
@@ -1496,6 +1533,7 @@ struct ComposerView: View {
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
         showsRestingSurface: Bool = true,
+        usesCondensedTitle: Bool = false,
         accessibilityLabel: String
     ) -> some View {
         ComposerToolbarControlLabel(
@@ -1506,8 +1544,31 @@ struct ComposerView: View {
             tint: tint,
             titleMaxWidth: titleMaxWidth,
             accessibilityLabel: accessibilityLabel,
-            showsRestingSurface: showsRestingSurface
+            showsRestingSurface: showsRestingSurface,
+            usesPhoneStyle: isPhoneComposer,
+            usesCondensedTitle: usesCondensedTitle
         )
+    }
+
+    @ViewBuilder
+    var followUpDeliveryMenuItems: some View {
+        if canChooseRunningFollowUpDelivery {
+            let isGuidedAvailable = canUseGuidedFollowUp
+            let isGuidedSelected = guidedFollowUpEnabled && isGuidedAvailable
+            Section(L10n.text("ui.send_method")) {
+                Button {
+                    selectFollowUpDelivery(guided: false)
+                } label: {
+                    Label(L10n.text("ui.queue_default"), systemImage: isGuidedSelected ? "clock" : "checkmark")
+                }
+                Button {
+                    selectFollowUpDelivery(guided: true)
+                } label: {
+                    Label(isGuidedAvailable ? L10n.text("ui.lead_current_reply") : L10n.text("ui.guide_current_reply_no_active_round_currently"), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
+                }
+                .disabled(!isGuidedAvailable)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1517,19 +1578,7 @@ struct ComposerView: View {
             let isGuidedAvailable = canUseGuidedFollowUp
             let isGuidedSelected = guidedFollowUpEnabled && isGuidedAvailable
             Menu {
-                Section(L10n.text("ui.send_method")) {
-                    Button {
-                        selectFollowUpDelivery(guided: false)
-                    } label: {
-                        Label(L10n.text("ui.queue_default"), systemImage: isGuidedSelected ? "clock" : "checkmark")
-                    }
-                    Button {
-                        selectFollowUpDelivery(guided: true)
-                    } label: {
-                        Label(isGuidedAvailable ? L10n.text("ui.lead_current_reply") : L10n.text("ui.guide_current_reply_no_active_round_currently"), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
-                    }
-                    .disabled(!isGuidedAvailable)
-                }
+                followUpDeliveryMenuItems
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isGuidedSelected ? "text.bubble.fill" : "clock")
@@ -1655,13 +1704,17 @@ struct ComposerView: View {
             showsModelGridPicker.toggle()
         } label: {
             composerToolbarControlLabel(
-                // iPhone 底层只外显模型名；模型 + 推理强度仍通过 accessibilityValue 提供。
+                // iPhone 用短标签外显模型与推理档位；完整名称仍通过 accessibilityValue 提供。
                 title: showsTitle ? visibleTitle : nil,
                 systemImage: usesCompactTitle ? nil : "cpu",
-                trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
+                trailingSystemImage: ConversationLayout.compactComposerShowsFastModeIndicator(
+                    usesCompactMetrics: usesCompactComposerMetrics,
+                    isFastModeSelected: isFastModeSelected
+                ) ? "bolt.fill" : nil,
                 titleMaxWidth: usesCompactTitle
                     ? ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
                     : (usesCompactComposerMetrics ? 82 : 150),
+                usesCondensedTitle: usesCompactTitle,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
             .contentTransition(.opacity)
@@ -1772,8 +1825,12 @@ struct ComposerView: View {
 
     var compactModelPickerTitle: String {
         guard let selectedModel = effectiveModelID,
+              let selectedEffort = developerModeEnabled
+                  ? composerState.turnOptions.reasoningEffort
+                  : selectedModelGridSelection.effort,
               let title = ModelReasoningGridCatalog.compactTriggerTitle(
                   for: selectedModel,
+                  effort: selectedEffort,
                   layout: modelReasoningGridLayout
               )
         else {

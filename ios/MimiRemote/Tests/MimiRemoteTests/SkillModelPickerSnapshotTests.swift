@@ -46,7 +46,42 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
         XCTAssertEqual(
             modelID.flatMap { ModelReasoningGridCatalog.compactTriggerTitle(for: $0, layout: layout) },
-            "GPT-5.6 Sol"
+            "5.6 Sol"
+        )
+        XCTAssertEqual(
+            modelID.flatMap {
+                ModelReasoningGridCatalog.compactTriggerTitle(
+                    for: $0,
+                    effort: .high,
+                    layout: layout
+                )
+            },
+            "5.6 Sol High"
+        )
+        XCTAssertEqual(
+            modelID.flatMap {
+                ModelReasoningGridCatalog.compactTriggerTitle(
+                    for: $0,
+                    effort: .xhigh,
+                    layout: layout
+                )
+            },
+            "5.6 Sol XH"
+        )
+        let hyphenatedOptions = [
+            CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6-Sol", isDefault: true)
+        ]
+        let hyphenatedLayout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: hyphenatedOptions
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.compactTriggerTitle(
+                for: "gpt-5.6-sol",
+                effort: .high,
+                layout: hyphenatedLayout
+            ),
+            "5.6 Sol High"
         )
     }
 

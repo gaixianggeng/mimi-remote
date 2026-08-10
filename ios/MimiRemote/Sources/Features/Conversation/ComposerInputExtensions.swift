@@ -48,16 +48,26 @@ struct ComposerToolbarControlLabel: View {
     let titleMaxWidth: CGFloat?
     let accessibilityLabel: String
     var showsRestingSurface = true
+    var usesPhoneStyle = false
+    var usesCondensedTitle = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let cornerRadius: CGFloat = title == nil ? 22 : (usesPhoneStyle ? 20 : 12)
+        let surfaceInset: CGFloat = usesPhoneStyle ? 2 : 4
         // 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
-        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.primaryText)
+        let restingForeground = usesPhoneStyle ? tokens.conversationPrimaryText : tokens.primaryText
+        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? restingForeground)
 
         HStack(spacing: 6) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .font(
+                        themeStore.uiFont(
+                            size: usesPhoneStyle ? 17 : 16,
+                            weight: usesPhoneStyle ? .medium : .semibold
+                        )
+                    )
             }
             if let title {
                 Text(title)
@@ -71,25 +81,37 @@ struct ComposerToolbarControlLabel: View {
                     .accessibilityHidden(true)
             }
         }
-        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .font(
+            usesPhoneStyle && usesCondensedTitle
+                ? themeStore.uiFont(size: 15, weight: .medium)
+                : themeStore.uiFont(
+                    usesPhoneStyle ? .body : .caption,
+                    weight: usesPhoneStyle ? .medium : .semibold
+                )
+        )
         .foregroundStyle(foreground)
         .frame(height: 44)
-        .padding(.horizontal, title == nil ? 0 : 12)
+        .padding(
+            .horizontal,
+            title == nil ? 0 : (usesPhoneStyle ? (usesCondensedTitle ? 12 : 14) : 12)
+        )
         .frame(minWidth: 44)
         .background {
-            RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(isSelected ? tokens.accent : Color.clear)
-                .padding(4)
+                .padding(surfaceInset)
         }
         .modifier(
             ComposerFlatControlSurface(
                 tokens: tokens,
-                cornerRadius: title == nil ? 22 : 12,
+                cornerRadius: cornerRadius,
                 isEmphasized: isSelected,
-                showsRestingFill: showsRestingSurface
+                showsRestingFill: showsRestingSurface,
+                surfaceInset: surfaceInset,
+                usesNeutralControlSurface: usesPhoneStyle
             )
         )
-        .contentShape(RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -101,9 +123,10 @@ struct CompactComposerToolbarShell: View {
     let leadingControls: AnyView
     let toolControls: AnyView
     let submitControl: AnyView
+    var spacing: CGFloat = 8
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: spacing) {
             leadingControls
             Spacer(minLength: 0)
             toolControls
@@ -113,47 +136,35 @@ struct CompactComposerToolbarShell: View {
     }
 }
 
-/// 设置与语音各自保留 44pt 命中区，但共用一块安静底衬。
-/// 这样紧凑工具栏只呈现“上下文 / 工具 / 主行动”三个视觉组，不靠缩小触控区换密度。
+/// 设置与语音各自保留 44pt 命中区和独立键帽；6pt 间隔表达同组关系，
+/// 不再用一整块胶囊把两个不同动作粘在一起。
 struct CompactComposerToolControlsShell: View {
     let optionsControl: AnyView
     let microphoneControl: AnyView
-    let backgroundColor: Color
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 6) {
             optionsControl
             microphoneControl
-        }
-        .background {
-            Capsule()
-                .fill(backgroundColor)
-                .padding(.vertical, 4)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
 }
 
-/// 左侧连续胶囊同样保持固定类型；每个复杂控件先在独立栈帧里擦除，
+/// 左侧控件保持固定类型，但视觉上各自成面；每个复杂控件先在独立栈帧里擦除，
 /// 再传入这里组合，防止真机在收集泛型元数据时触发 __chkstk_darwin。
 struct CompactComposerLeadingControlsShell: View {
     let addControl: AnyView
     let modelControl: AnyView
     let deliveryControl: AnyView?
-    let backgroundColor: Color
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 6) {
             addControl
             modelControl
             if let deliveryControl {
                 deliveryControl
             }
-        }
-        .background {
-            Capsule()
-                .fill(backgroundColor)
-                .padding(.vertical, 4)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -696,8 +707,18 @@ extension ComposerView {
         } else {
             title = isGoalMode ? L10n.text("ui.send_target") : isPlanMode ? L10n.text("ui.generate_plan") : isGuidedFollowUp ? L10n.text("ui.guide") : L10n.text("ui.send")
         }
-        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : "paperplane.fill")
+        let usesPhonePrimaryStyle = isPhoneComposer && !showLabels
+        let standardSendSymbol = usesPhonePrimaryStyle ? "arrow.up" : "paperplane.fill"
+        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : standardSendSymbol)
         let enabled = canSubmitDraft
+        let cornerRadius: CGFloat = showLabels ? 12 : 22
+        let surfaceInset: CGFloat = usesPhonePrimaryStyle ? 2 : 4
+        let foreground: Color = enabled
+            ? tokens.primaryActionForeground
+            : (usesPhonePrimaryStyle ? tokens.primaryActionForeground.opacity(0.90) : tokens.tertiaryText)
+        let fill: Color = enabled
+            ? tokens.primaryAction
+            : (usesPhonePrimaryStyle ? tokens.composerInactiveActionSurface : .clear)
 
         // 自绘成与“按住说话”同高同圆角的实心主按钮，让语音/发送成为右侧一组协调的主操作，
         // 而不是一个系统 prominent 小按钮配一个自定义大胶囊那种割裂感。
@@ -706,30 +727,37 @@ extension ComposerView {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: symbol)
-                    .font(themeStore.uiFont(size: 16, weight: .bold))
+                    .font(
+                        themeStore.uiFont(
+                            size: usesPhonePrimaryStyle ? 17 : 16,
+                            weight: usesPhonePrimaryStyle ? .semibold : .bold
+                        )
+                    )
                 if showLabels {
                     Text(title)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(enabled ? tokens.primaryActionForeground : tokens.tertiaryText)
+            .foregroundStyle(foreground)
             .frame(height: 44)
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
             .background {
-                RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous)
-                    .fill(enabled ? tokens.primaryAction : Color.clear)
-                    .padding(4)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+                    .padding(surfaceInset)
             }
             .modifier(
                 ComposerFlatControlSurface(
                     tokens: tokens,
-                    cornerRadius: showLabels ? 12 : 22,
-                    isEmphasized: enabled
+                    cornerRadius: cornerRadius,
+                    isEmphasized: enabled || usesPhonePrimaryStyle,
+                    surfaceInset: surfaceInset,
+                    usesNeutralControlSurface: usesPhonePrimaryStyle
                 )
             )
-            .contentShape(RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .keyboardShortcut(.return, modifiers: .command)

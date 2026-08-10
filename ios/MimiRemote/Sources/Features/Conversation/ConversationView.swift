@@ -67,14 +67,14 @@ struct ConversationView: View {
                         .frame(width: composerWidth)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, layout.horizontalInset)
+                .padding(.horizontal, layout.composerHorizontalInset)
                 .padding(.top, layout.composerTopPadding)
                 .padding(.bottom, layout.composerBottomPadding)
                 .background {
                     composerReadabilityBackdrop(tokens: tokens)
                 }
             }
-            .background(tokens.background.ignoresSafeArea())
+            .background(tokens.conversationCanvasBackground.ignoresSafeArea())
             .task(id: sessionStore.selectedSession?.id) {
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
@@ -328,15 +328,15 @@ struct ConversationView: View {
         ZStack(alignment: .top) {
             if reduceTransparency || UIDevice.current.userInterfaceIdiom != .phone {
                 // 辅助功能和 iPad 继续使用确定性实色，避免降低既有可读性。
-                tokens.background
+                tokens.conversationCanvasBackground
             } else {
                 // iPhone 只给材质层一个柔和 tint，不再用整块实色截断正文；字形打散
                 // 由 Composer 自身的 regularMaterial 完成，避免两层 Material 相互叠加。
                 LinearGradient(
                     colors: [
                         .clear,
-                        tokens.background.opacity(colorScheme == .light ? 0.18 : 0.12),
-                        tokens.background.opacity(colorScheme == .light ? 0.34 : 0.24)
+                        tokens.conversationCanvasBackground.opacity(0.04),
+                        tokens.conversationCanvasBackground.opacity(colorScheme == .light ? 0.10 : 0.12)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -347,7 +347,7 @@ struct ConversationView: View {
             LinearGradient(
                 colors: [
                     .clear,
-                    tokens.background.opacity(reduceTransparency ? 1 : 0.56)
+                    tokens.conversationCanvasBackground.opacity(reduceTransparency ? 1 : 0.32)
                 ],
                 startPoint: .top,
                 endPoint: .bottom

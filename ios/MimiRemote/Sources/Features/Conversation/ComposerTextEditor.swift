@@ -146,6 +146,7 @@ struct ComposerTextView: UIViewRepresentable {
     @Binding var focusRequestID: UUID?
     let minHeight: CGFloat
     let maxHeight: CGFloat
+    var textContainerInset: UIEdgeInsets = .zero
     let onSubmit: () -> Bool
     let onContentHeightChange: (CGFloat) -> Void
     let onCompositionStateChange: (Bool) -> Void
@@ -181,7 +182,7 @@ struct ComposerTextView: UIViewRepresentable {
         textView.isScrollEnabled = true
         textView.alwaysBounceVertical = false
         textView.showsVerticalScrollIndicator = true
-        textView.textContainerInset = .zero
+        textView.textContainerInset = textContainerInset
         textView.textContainer.lineFragmentPadding = 0
         textView.keyboardDismissMode = .interactive
         textView.smartDashesType = .no
@@ -233,6 +234,10 @@ struct ComposerTextView: UIViewRepresentable {
             }
             if uiView.tintColor != tintColor {
                 uiView.tintColor = tintColor
+            }
+            if uiView.textContainerInset != textContainerInset {
+                uiView.textContainerInset = textContainerInset
+                needsContentHeightReport = true
             }
 
             if uiView.hasMarkedText, coordinator.lastSyncedText == text, !shouldForceExternalTextSync {

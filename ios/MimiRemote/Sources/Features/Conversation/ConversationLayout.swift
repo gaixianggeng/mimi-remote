@@ -8,8 +8,11 @@ struct ConversationLayout: Equatable {
     // 才显示模型标题；更窄时仍通过 accessibilityValue 提供完整模型信息。
     static let compactComposerModelTitleMinimumWidth: CGFloat = 380
     static let phoneComposerModelTitleMinimumWidth: CGFloat = 240
+    // compact iPad 只有达到这档宽度，才同时容纳模型标题、投递方式、工具组和主行动。
+    static let compactComposerInlineDeliveryMinimumWidth: CGFloat = 440
 
     let horizontalInset: CGFloat
+    let composerHorizontalInset: CGFloat
     let messageSideSpacer: CGFloat
     let composerAvailableWidth: CGFloat
     let composerMaxWidth: CGFloat
@@ -49,11 +52,32 @@ struct ConversationLayout: Equatable {
         return availableWidth >= phoneComposerModelTitleMinimumWidth
     }
 
+    static func compactComposerShowsInlineDeliveryControl(
+        isPhone: Bool,
+        availableWidth: CGFloat?,
+        canChooseDelivery: Bool
+    ) -> Bool {
+        guard canChooseDelivery, !isPhone, let availableWidth else {
+            return false
+        }
+        return availableWidth >= compactComposerInlineDeliveryMinimumWidth
+    }
+
+    static func compactComposerShowsFastModeIndicator(
+        usesCompactMetrics: Bool,
+        isFastModeSelected: Bool
+    ) -> Bool {
+        isFastModeSelected && !usesCompactMetrics
+    }
+
     static func compactComposerModelTitleMaxWidth(availableWidth: CGFloat?) -> CGFloat {
-        guard let availableWidth else { return 40 }
-        if availableWidth < 300 { return 40 }
-        if availableWidth < 340 { return 52 }
-        return 72
+        guard let availableWidth else { return 36 }
+        if availableWidth < 300 { return 36 }
+        if availableWidth < 340 { return 48 }
+        if availableWidth < 360 { return 64 }
+        // 标准 iPhone 宽度优先展示「5.6 Sol High」短标签；固定上限继续约束
+        // 服务端可能返回的冗长标题，避免模型控件挤压语音和发送主行动。
+        return 88
     }
 
     init(
@@ -74,8 +98,11 @@ struct ConversationLayout: Equatable {
 
         // 与会话库 20pt 的卡片轨道接近，同时给 320/344pt 极窄屏保留必要内容宽度。
         horizontalInset = isCompactWidth ? (isVeryCompactWidth ? 12 : 16) : (isTightPadWidth ? 16 : 24)
+        // iPhone 的 Composer 是底部功能层，不应被正文轨道的页边距继续收窄。
+        // 只放宽输入卡，不改变消息行长和左右身份感。
+        composerHorizontalInset = isCompactWidth ? (isVeryCompactWidth ? 6 : 8) : horizontalInset
         messageSideSpacer = isCompactWidth ? 12 : (isTightPadWidth ? 24 : 56)
-        composerAvailableWidth = max(240, visibleContainerWidth - horizontalInset * 2)
+        composerAvailableWidth = max(240, visibleContainerWidth - composerHorizontalInset * 2)
         // iPhone 横屏仍然是 compact size class，但不应该把输入卡拉满整条长边。
         // 居中的宽度上限同时缩短正文行长，并给系统返回手势留出清晰的边缘空间。
         composerMaxWidth = isWideCompact

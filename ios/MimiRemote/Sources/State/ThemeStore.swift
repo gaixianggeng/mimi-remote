@@ -256,6 +256,86 @@ extension ThemeTokens {
         }
     }
 
+    /// 长文会话使用接近纸白的中性画布，避免暖色页面透过顶栏和 Composer 材质后
+    /// 被重复染黄。范围只限阅读会话，侧栏与工作区仍保留 Codex 的暖白识别度。
+    var conversationCanvasBackground: Color {
+        guard preset == .codex, resolvedScheme == .light else {
+            return background
+        }
+        return Color(
+            red: 250.0 / 255.0,
+            green: 250.0 / 255.0,
+            blue: 248.0 / 255.0
+        )
+    }
+
+    /// 长文阅读层使用中性黑而不是全局暖棕文字；同一张 iPhone 截图中可与
+    /// Claude 的 #181818 正文对齐，同时不改变侧栏和工作台的主题识别度。
+    var conversationPrimaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return primaryText }
+        // SwiftUI 文本栅格化会与纸白背景做少量边缘混合；源色取 #101010 后，
+        // 实体 iPhone 截图中的完整字干落在参考图的 #181818。
+        return Color(
+            red: 16.0 / 255.0,
+            green: 16.0 / 255.0,
+            blue: 16.0 / 255.0
+        )
+    }
+
+    var conversationSecondaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return secondaryText }
+        return Color(
+            red: 112.0 / 255.0,
+            green: 112.0 / 255.0,
+            blue: 110.0 / 255.0
+        )
+    }
+
+    var conversationTertiaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return tertiaryText }
+        return Color(
+            red: 142.0 / 255.0,
+            green: 142.0 / 255.0,
+            blue: 139.0 / 255.0
+        )
+    }
+
+    /// Composer 内部的低频控件使用独立的中性表面色。它比页面底色更冷、比输入卡更实，
+    /// 因此在半透明材质上仍能形成清楚分组，又不会叠第二层 Material 造成浑浊。
+    var composerControlSurface: Color {
+        guard preset == .codex else {
+            return surface
+        }
+        switch resolvedScheme {
+        case .light:
+            return Color(
+                red: 242.0 / 255.0,
+                green: 241.0 / 255.0,
+                blue: 238.0 / 255.0
+            )
+        case .dark:
+            return Color(red: 0.176, green: 0.165, blue: 0.176)
+        }
+    }
+
+    /// 禁用发送仍保留主行动的位置和轮廓，但用低饱和暖色明确表达“尚不可发送”。
+    /// 这比把按钮清空成普通工具键更稳定，也避免底栏出现六个同权重入口。
+    var composerInactiveActionSurface: Color {
+        guard preset == .codex else {
+            return accent.opacity(0.20)
+        }
+        switch resolvedScheme {
+        case .light:
+            return Color(
+                red: 234.0 / 255.0,
+                green: 218.0 / 255.0,
+                blue: 210.0 / 255.0
+            )
+        case .dark:
+            return Color(red: 0.310, green: 0.255, blue: 0.282)
+        }
+    }
+
     var planCardBackground: Color {
         guard preset == .codex else {
             return elevatedSurface
@@ -368,7 +448,7 @@ extension ThemeTokens {
     }
 
     var userBubbleForeground: Color {
-        primaryText
+        conversationPrimaryText
     }
 
     func tint(for tone: AgentSessionStatusTone) -> Color {

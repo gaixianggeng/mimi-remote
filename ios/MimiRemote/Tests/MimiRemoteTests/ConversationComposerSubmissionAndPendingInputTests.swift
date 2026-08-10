@@ -13,9 +13,60 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: nil))
         XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 296))
         XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 320))
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 296), 40)
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 320), 52)
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 380), 72)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 296), 36)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 320), 48)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 350), 64)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 380), 88)
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: true,
+                availableWidth: 390,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 320,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 439,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertTrue(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 440,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsFastModeIndicator(
+                usesCompactMetrics: true,
+                isFastModeSelected: true
+            )
+        )
+        XCTAssertTrue(
+            ConversationLayout.compactComposerShowsFastModeIndicator(
+                usesCompactMetrics: false,
+                isFastModeSelected: true
+            )
+        )
+
+        // 320pt 小屏：Fast 状态不另占图标，运行态投递方式收进设置；+、受控模型名、
+        // 设置、语音和发送都保留 44pt 命中区，
+        // 组间/组内 6pt 后仍不能超过卡片 8pt 内边距以内的可用宽度。
+        let narrowLayout = ConversationLayout(containerWidth: 320, horizontalSizeClass: .compact)
+        let modelControlWidth: CGFloat = max(44, 48 + 24)
+        let leadingControlsWidth = 44 + 6 + modelControlWidth
+        let toolControlsWidth: CGFloat = 44 + 6 + 44
+        let requiredToolbarWidth = leadingControlsWidth + toolControlsWidth + 44 + 18
+        XCTAssertLessThanOrEqual(requiredToolbarWidth, narrowLayout.composerAvailableWidth - 16)
     }
 
     func testPhoneComposerTextStartsAtOneLineAndGrowsToBoundedHeight() {
