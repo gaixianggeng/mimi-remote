@@ -39,7 +39,6 @@ on:
       - "scripts/ios_asc_cli.sh"
       - "scripts/test-ios-asc-cli.sh"
       - "scripts/check-source-size.sh"
-      - "scripts/check-mimi-protocol-contract.sh"
       - "docs/app-store/**"
       - "docs/privacy-policy.md"
       - "docs/support.md"
@@ -93,15 +92,8 @@ jobs:
           fetch-depth: 0
           clean: true
 
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
       - name: Show toolchain
         run: |
-          go version
           xcodebuild -version
           xcrun simctl list devices available
 
@@ -159,11 +151,9 @@ jobs:
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
 
-      - name: Check Mimi protocol contract
-        run: bash ./scripts/check-mimi-protocol-contract.sh
-
       - name: Run core regressions
-        run: bash ./scripts/test-conversation-regressions.sh
+        # Go 与共享契约由独立 Go CI 覆盖；macOS runner 只执行 iOS selector。
+        run: bash ./scripts/test-conversation-regressions.sh --ios-only
 
       # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时
       # 才额外启动一次英文系统环境，避免每个 PR/main 都承担第二次 Simulator 启动。
