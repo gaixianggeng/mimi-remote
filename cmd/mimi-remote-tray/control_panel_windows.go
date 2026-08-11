@@ -1056,7 +1056,13 @@ func controlPanelWindowProc(window uintptr, msg uint32, wParam uintptr, lParam u
 	case wmDPIChanged:
 		var suggested *panelRect
 		if lParam != 0 {
-			suggested = (*panelRect)(unsafe.Pointer(lParam))
+			var rect panelRect
+			procPanelMoveMemory.Call(
+				uintptr(unsafe.Pointer(&rect)),
+				lParam,
+				unsafe.Sizeof(rect),
+			)
+			suggested = &rect
 		}
 		panel.handleDPIChanged(uint32(wParam)&0xffff, suggested)
 		return 0
@@ -1077,9 +1083,17 @@ func controlPanelWindowProc(window uintptr, msg uint32, wParam uintptr, lParam u
 		panel.paint(window)
 		return 0
 	case wmDrawItem:
-		item := (*panelDrawItem)(unsafe.Pointer(lParam))
-		if item != nil && item.ControlType == odtButton {
-			panel.drawActionButton(item)
+		if lParam == 0 {
+			break
+		}
+		var item panelDrawItem
+		procPanelMoveMemory.Call(
+			uintptr(unsafe.Pointer(&item)),
+			lParam,
+			unsafe.Sizeof(item),
+		)
+		if item.ControlType == odtButton {
+			panel.drawActionButton(&item)
 			return 1
 		}
 	case wmCtlColorStatic:
