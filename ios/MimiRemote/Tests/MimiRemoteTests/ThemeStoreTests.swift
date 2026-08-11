@@ -581,6 +581,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
+        XCTAssertEqual(WorkbenchNavigationTitleMetrics.compactSubtitleFontSize, 9)
     }
 
     func testWorkbenchLayoutUsesCompactNavigationOnLegacyIPadMiniPortraitWidth() {

@@ -1645,7 +1645,10 @@ struct UnifiedWorkbenchShell: View {
                 Text(sessionTitleSubtitle(now: now))
                     .font(
                         layout.usesCompactNavigation
-                            ? .subheadline.weight(.regular)
+                            ? .system(
+                                size: WorkbenchNavigationTitleMetrics.compactSubtitleFontSize,
+                                weight: .regular
+                            )
                             : .caption2.weight(.medium)
                     )
                     .foregroundStyle(sessionTitleSubtitleColor(tokens: tokens, now: now))
