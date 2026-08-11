@@ -14,7 +14,7 @@ Mimi Remote 是独立开发的第三方客户端。它连接用户自己 Mac 上
 
 Copyright (c) 2026 Gaixiang Geng
 
-本仓库自有的 iOS App、Go 后端和文档使用 GNU GPLv3，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。完整条款见 [LICENSE](LICENSE)。
+本仓库自有的 iOS App、Mac App、Go 后端和文档使用 GNU GPLv3，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。完整条款见 [LICENSE](LICENSE)。
 
 商业使用和收费分发并未被禁止。向第三方分发 GPL 覆盖的修改作品或目标代码时，必须针对该 GPL 覆盖作品履行 GPLv3 要求，包括保留适用声明、在适用时标记修改、确保接收者取得 GPLv3 规定的权利，并按 GPLv3 要求提供对应源码或合规的源码获取方式；不得把该覆盖作品作为不向接收者提供这些权利或源码获取方式的闭源产品分发。独立作品和第三方组件仍适用各自许可证。此前已经明确以 MIT License 发布的历史版本继续受其原有许可。
 
