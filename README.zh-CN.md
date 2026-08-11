@@ -460,6 +460,7 @@ Mimi Remote 支持 iOS / iPadOS 18 及以上版本。iOS 26+ 继续使用 Liquid
 - [与 Litter 的能力对照](docs/litter-comparison.md)
 - [隐私政策](docs/privacy-policy.md)
 - [使用条款](docs/terms-of-use.md)
+- [商标与品牌使用政策](TRADEMARKS.md)
 - [支持说明](docs/support.md)
 - [安全政策](SECURITY.md)
 
@@ -471,7 +472,9 @@ Mimi Remote 不包含广告、分析 SDK 或开发者自建遥测，不把项目
 
 ## License
 
-Mimi Remote 自有的 iOS App、Go 后端和文档使用 [GNU GPLv3](LICENSE)，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。商业使用并未被禁止，但分发修改版或二进制时仍须遵守 GPLv3，包括向接收者提供对应源码和同等许可。
+Mimi Remote 自有的 iOS App、Mac App、Go 后端和文档使用 [GNU GPLv3](LICENSE)，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。允许商业使用和收费分发；但如果向第三方分发 GPL 覆盖的修改作品或目标代码，必须确保接收者取得该覆盖作品的 GPLv3 权利，并按 GPLv3 要求提供对应源码或合规的源码获取方式。不能把该覆盖作品作为不向接收者提供这些权利或源码获取方式的闭源产品分发；独立作品和第三方组件仍适用各自许可证。
+
+GPLv3 授予的是代码相关权利，不自动授予 Mimi Remote 名称、Logo、App 图标或官方发行身份。面向用户的修改版产品如果使用这些项目标识，必须遵守[商标与品牌使用政策](TRADEMARKS.md)；未经书面授权，应使用独立品牌且不得冒充官方版本。如实说明“基于 Mimi Remote”或兼容性仍然允许。
 
 [`bridges/claude`](bridges/claude) 源自 Alleycat 多位贡献者，保留独立的 [GPLv3-only](bridges/claude/LICENSE)；仓库根目录的商店分发额外许可不适用于这部分上游代码。
 

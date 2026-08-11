@@ -8,7 +8,7 @@
 
 Mimi Remote 的目标是让 iPhone / iPad 安全连接用户自己的 Mac，在明确授权的工作区内远程使用 Codex。项目保持单机优先：不建设云端账号系统，不把代码、Codex 凭证或完整会话托管到开发者服务器。
 
-完整源码与新版本的目标 canonical 仓库为 `gaixianggeng/mimi-remote`，包括 iOS App、Mac App、Go 后端、Claude bridge、测试、文档、DMG、Go/Linux 归档、Homebrew Formula 和安装 Skill。仓库内代码与发布配置已经为新身份做好准备，但本 PR 不执行 GitHub 外部删除或改名；原完整源码仓库与同名历史归档的一次性切换按[中文仓库改名 runbook](operations/github-repository-rename-runbook.zh-CN.md)执行，历史产物离线备份，不再维护第二份在线仓库。自有 iOS / Go 代码使用 GNU GPLv3 并附 App Store / Google Play 分发例外，从 Alleycat 收窄导入的 `bridges/claude` 保留 GPLv3-only 和上游归属。
+完整源码与新版本的目标 canonical 仓库为 `gaixianggeng/mimi-remote`，包括 iOS App、Mac App、Go 后端、Claude bridge、测试、文档、DMG、Go/Linux 归档、Homebrew Formula 和安装 Skill。仓库内代码与发布配置已经为新身份做好准备，但本 PR 不执行 GitHub 外部删除或改名；原完整源码仓库与同名历史归档的一次性切换按[中文仓库改名 runbook](operations/github-repository-rename-runbook.zh-CN.md)执行，历史产物离线备份，不再维护第二份在线仓库。自有 iOS / Mac / Go 代码使用 GNU GPLv3，并附 App Store / Google Play 分发例外；从 Alleycat 收窄导入的 `bridges/claude` 保留 GPLv3-only 和上游归属。
 
 ## 方案
 

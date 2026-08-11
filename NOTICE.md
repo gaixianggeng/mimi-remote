@@ -14,9 +14,9 @@ Mimi Remote 是独立开发的第三方客户端。它连接用户自己 Mac 上
 
 Copyright (c) 2026 Gaixiang Geng
 
-本仓库自有的 iOS App、Go 后端和文档使用 GNU GPLv3，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。完整条款见 [LICENSE](LICENSE)。
+本仓库自有的 iOS App、Mac App、Go 后端和文档使用 GNU GPLv3，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。完整条款见 [LICENSE](LICENSE)。
 
-商业使用并未被禁止，但分发修改版或二进制时仍须遵守 GPLv3，包括保留版权与许可声明、标记修改，并向接收者提供对应源码和同等许可。此前已经明确以 MIT License 发布的历史版本继续受其原有许可。
+商业使用和收费分发并未被禁止。向第三方分发 GPL 覆盖的修改作品或目标代码时，必须针对该 GPL 覆盖作品履行 GPLv3 要求，包括保留适用声明、在适用时标记修改、确保接收者取得 GPLv3 规定的权利，并按 GPLv3 要求提供对应源码或合规的源码获取方式；不得把该覆盖作品作为不向接收者提供这些权利或源码获取方式的闭源产品分发。独立作品和第三方组件仍适用各自许可证。此前已经明确以 MIT License 发布的历史版本继续受其原有许可。
 
 [`bridges/claude`](bridges/claude) 源自 Alleycat 多位贡献者，按 [GPLv3-only](bridges/claude/LICENSE) 分发。根目录中的 App Store / Google Play 额外许可只由 Mimi Remote 自有代码的 copyright holders 授予，不适用于其他上游贡献者拥有版权的 bridge 代码。具体来源和导入 commit 见 [UPSTREAM.md](bridges/claude/UPSTREAM.md)。
 
@@ -52,6 +52,8 @@ Swift Package Manager 依赖：
 本仓库不打包用户的 Codex 凭证，也不托管第三方服务账号。
 
 ## 品牌与设计边界
+
+开源许可证授予的是代码、二进制和文档的相关权利，不自动授予 Mimi Remote 产品名称、Logo、App 图标或官方发行身份。面向用户的修改版产品如果使用这些项目标识，必须遵守[商标与品牌使用政策](TRADEMARKS.md)；未经书面授权，应使用独立的主要品牌且不得冒充官方版本。如实说明来源与兼容性仍然允许。
 
 除上述用于兼容性说明和运行时区分的服务标识外，本项目不会把自己宣传为任何商业产品的免费替代品，也不会以复刻其他产品的 UI、交互、图标、截图或文案为目标。
 

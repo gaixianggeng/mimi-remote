@@ -42,4 +42,4 @@ Claude CLI `/status` 认证路径并重新读取 Keychain；PTY 固定在无业�
 
 ## 来源与协议
 
-代码来源、导入 commit 和本地修改见 [UPSTREAM.md](UPSTREAM.md)。本目录保留上游 [GNU GPLv3-only](LICENSE)，不适用仓库根目录为自有 iOS / Go 代码提供的 App Store / Google Play 分发例外。
+代码来源、导入 commit 和本地修改见 [UPSTREAM.md](UPSTREAM.md)。本目录保留上游 [GNU GPLv3-only](LICENSE)，不适用仓库根目录为自有 iOS / Mac / Go 代码提供的 App Store / Google Play 分发例外。
