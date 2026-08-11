@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		154000000000000000000001 /* SessionStoreWorkspaceRuntimePagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154000000000000000000002 /* SessionStoreWorkspaceRuntimePagination.swift */; };
+		154000000000000000000003 /* WorkspaceSessionSingleFlightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154000000000000000000004 /* WorkspaceSessionSingleFlightTests.swift */; };
 		0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */; };
 		038DE2248E14CF16EC1AAB30 /* SessionContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E033E7A8267D3C3494835305 /* SessionContextModels.swift */; };
 		03E7996441667D59DF2F9E3A /* CameraAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54AAB784C642D2B0234E48BA /* CameraAttachmentTests.swift */; };
@@ -324,6 +326,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		154000000000000000000002 /* SessionStoreWorkspaceRuntimePagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreWorkspaceRuntimePagination.swift; sourceTree = "<group>"; };
+		154000000000000000000004 /* WorkspaceSessionSingleFlightTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionSingleFlightTests.swift; sourceTree = "<group>"; };
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectRuntimeTests.swift; sourceTree = "<group>"; };
 		02BA631A94730FC521FE15F6 /* AssistantTextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantTextNormalizer.swift; sourceTree = "<group>"; };
@@ -782,6 +786,7 @@
 				85879EDF3D64609C3C6BA873 /* WorkspaceGitSummaryTests.swift */,
 				B75153DC244B9C9543B87E2E /* WorkspaceSessionAuthoritativeContinuationTests.swift */,
 				C896DA13C5A44DA224A17CAB /* WorkspaceSessionLoadingTests.swift */,
+				154000000000000000000004 /* WorkspaceSessionSingleFlightTests.swift */,
 				E9BCF1B2E13945C6F706C8BD /* WorkspaceSessionPresentationTests.swift */,
 				327AF69020E348B4AE9F7BBE /* WorkspaceVisualSnapshotTests.swift */,
 				7DD567ECF6024FEEF09274D5 /* __Snapshots__ */,
@@ -1181,6 +1186,7 @@
 				D78D8C49C36228C60EF5D096 /* SessionStoreLifecycleWorkspaces.swift */,
 				DC7DA3118F7DF5B276A9BE1D /* SessionStoreNetworking.swift */,
 				C5A44E24BB7F5E7F9FD31191 /* SessionStoreProjectsGit.swift */,
+				154000000000000000000002 /* SessionStoreWorkspaceRuntimePagination.swift */,
 				3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */,
 				A38A8CE5A8F1D7EE3889F078 /* SessionStoreTurns.swift */,
 				1F63FE197E70AD192F429877 /* ThemeStore.swift */,
@@ -1514,6 +1520,7 @@
 				951475AE3120CB42A905E3B3 /* WorkspaceGitSummaryTests.swift in Sources */,
 				B7D06C05B900E3DC9336891D /* WorkspaceSessionAuthoritativeContinuationTests.swift in Sources */,
 				EA70EC72EE3F9B6B81CF4E71 /* WorkspaceSessionLoadingTests.swift in Sources */,
+				154000000000000000000003 /* WorkspaceSessionSingleFlightTests.swift in Sources */,
 				5B378569754B50364C872318 /* WorkspaceSessionPresentationTests.swift in Sources */,
 				626E053AFAE30F345EEFC01D /* WorkspaceVisualSnapshotTests.swift in Sources */,
 			);
@@ -1639,6 +1646,7 @@
 				5B092289C5F40E2A9B3622B9 /* SessionStoreLifecycleWorkspaces.swift in Sources */,
 				509445C02B3E5D545DB2808B /* SessionStoreNetworking.swift in Sources */,
 				A71327B3931B9947D3A58A5E /* SessionStoreProjectsGit.swift in Sources */,
+				154000000000000000000001 /* SessionStoreWorkspaceRuntimePagination.swift in Sources */,
 				5CD51AE13B5D23F8FBE444C5 /* SessionStoreSupport.swift in Sources */,
 				D4B700AC9DF628887258F469 /* SessionStoreTurns.swift in Sources */,
 				FE5964208A6DD5D8EF26BAC8 /* SettingsChoiceRow.swift in Sources */,
