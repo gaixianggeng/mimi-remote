@@ -287,7 +287,10 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 		if entry.metaThreadID != candidate.ThreadID ||
 			!isTopLevelExternalThreadSource(entry.threadSource) ||
 			!entry.active ||
-			entry.gatewayOwned {
+			entry.gatewayOwned ||
+			t.hasGatewayInterruptedTurn(entry.metaThreadID, entry.turnID) {
+			// runtime 重启只证明账本里的精确旧 Turn 已结束；同 Thread 后续
+			// 新 Turn 的 ID 不匹配 tombstone，仍会恢复 external 只读保护。
 			continue
 		}
 		// SQLite cwd 和 session_meta cwd 都必须落在同一个白名单项目中。

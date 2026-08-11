@@ -670,6 +670,16 @@ func TestExternalActivityManagedRuntimeRestartProjectsOwnedTurnAsInterrupted(t *
 		t.Fatal(err)
 	}
 	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	path := fixture.writeRollout(
+		"thread-restarted",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(lastEvidenceAt, "task_started", "turn-restarted"),
+	)
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-restarted", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
 
 	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now)
 	interrupted := fixture.tracker.GatewayInterruptedTurns("thread-restarted")
@@ -678,6 +688,19 @@ func TestExternalActivityManagedRuntimeRestartProjectsOwnedTurnAsInterrupted(t *
 	}
 	if len(fixture.tracker.ownedGatewayTurns) != 0 {
 		t.Fatalf("已被上一代进程终止的 owned claim 不应继续 active：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("精确中断 Turn 不得继续投影为 external running：%+v", got)
+	}
+
+	nextTurnAt := now.Add(time.Second)
+	fixture.appendLine(path, externalEventLineAt(nextTurnAt, "task_started", "turn-mac-next"))
+	if err := os.Chtimes(path, nextTurnAt, nextTurnAt); err != nil {
+		t.Fatal(err)
+	}
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-mac-next" {
+		t.Fatalf("同 Thread 后续真正的 Mac Turn 必须恢复 external 只读：%+v", got)
 	}
 	stored, err := newGatewayTurnClaimStore(claimPath).load()
 	if err != nil {

@@ -625,6 +625,11 @@ func (t *ExternalActivityTracker) hasGatewayOwnedTurnClaim(threadID string, turn
 	return ok
 }
 
+func (t *ExternalActivityTracker) hasGatewayInterruptedTurn(threadID string, turnID string) bool {
+	_, ok := t.interruptedGatewayTurns[gatewayOwnedTurnClaimKey(threadID, turnID)]
+	return ok
+}
+
 func (t *ExternalActivityTracker) removeGatewayOwnedTurnClaim(threadID string, turnID string) {
 	key := gatewayOwnedTurnClaimKey(threadID, turnID)
 	if _, ok := t.ownedGatewayTurns[key]; !ok {
