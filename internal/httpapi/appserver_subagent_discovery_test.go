@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -201,6 +202,9 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	})
 	symlinkedWorktree = filepath.Join(browseRoot, "codex-external-link")
 	if err := os.Symlink(externalWorktree, symlinkedWorktree); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows symlink creation requires Developer Mode or elevation")
+		}
 		t.Fatal(err)
 	}
 	secondExternalWorktree = filepath.Join(browseRoot, "codex-second-worktree")
