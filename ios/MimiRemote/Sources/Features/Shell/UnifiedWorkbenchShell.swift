@@ -1643,12 +1643,10 @@ struct UnifiedWorkbenchShell: View {
                         .accessibilityHidden(true)
                 }
                 Text(sessionTitleSubtitle(now: now))
+                    // 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
                     .font(
                         layout.usesCompactNavigation
-                            ? .system(
-                                size: WorkbenchNavigationTitleMetrics.compactSubtitleFontSize,
-                                weight: .regular
-                            )
+                            ? themeStore.uiFont(.caption2, weight: .medium)
                             : .caption2.weight(.medium)
                     )
                     .foregroundStyle(sessionTitleSubtitleColor(tokens: tokens, now: now))

@@ -654,11 +654,6 @@ struct WorkbenchLayout: Equatable {
     }
 }
 
-enum WorkbenchNavigationTitleMetrics {
-    // iPhone 导航标题下方的运行状态是三级信息，按真机验收固定为 9pt。
-    static let compactSubtitleFontSize: CGFloat = 9
-}
-
 enum WorkbenchSidebarSurfaceMetrics {
     static let minimumContainerWidth: CGFloat = 860
     // 与原 NavigationSplitView 的 ideal width 保持一致，避免切换为浮层后顶部信息再次拥挤。
