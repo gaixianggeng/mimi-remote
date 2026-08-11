@@ -19,6 +19,11 @@ import (
 )
 
 const (
+	CodexRuntimeKindManagedWebSocket = "managed_websocket"
+	CodexRuntimeKindLocalDaemon      = "local_daemon"
+)
+
+const (
 	runtimeStatusRefreshTimeout = 9 * time.Second
 	runtimeStatusSuccessTTL     = 5 * time.Minute
 	runtimeStatusFailureTTL     = 15 * time.Second
@@ -301,6 +306,18 @@ func (r *Router) SetCodexRuntimeStartedAt(startedAt time.Time) {
 	r.runtimeProcessMu.Lock()
 	r.codexRuntimeStartedAt = startedAt.UTC()
 	r.runtimeProcessMu.Unlock()
+}
+
+// SetCodexRuntimeIdentity 同时记录状态接口所需的启动时间，并把稳定 runtime 类型
+// 交给精确 Turn tracker。类型不同的 runtime 可能同时存活，不能只靠时间比较。
+func (r *Router) SetCodexRuntimeIdentity(kind string, startedAt time.Time) {
+	if r == nil {
+		return
+	}
+	r.SetCodexRuntimeStartedAt(startedAt)
+	if source, ok := r.externalActivity.(gatewayInterruptedTurnSource); ok {
+		source.SetCodexRuntimeIdentity(kind, startedAt)
+	}
 }
 
 func (r *Router) codexRuntimeStartTime() *time.Time {

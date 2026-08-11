@@ -18,6 +18,11 @@ type gatewayTurnStartRegistrar interface {
 	RegisterGatewayTurnStart(threadID string, clientUserMessageID string)
 }
 
+type gatewayInterruptedTurnSource interface {
+	SetCodexRuntimeIdentity(kind string, startedAt time.Time)
+	GatewayInterruptedTurns(threadID string) map[string]time.Time
+}
+
 type externalActivityResponse struct {
 	Activities []codexhistory.ExternalActivity `json:"activities"`
 	ScannedAt  time.Time                       `json:"scanned_at"`

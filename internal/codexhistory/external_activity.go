@@ -79,17 +79,23 @@ type externalRolloutCacheEntry struct {
 	gatewayTurnPending             bool
 	gatewayTurnPendingAt           time.Time
 	gatewayTurnPendingRegisteredAt time.Time
+	gatewayTurnPendingRuntimeKind  string
+	gatewayTurnPendingRuntimeStart time.Time
 	gatewayOwned                   bool
 	turnStartedAt                  time.Time
 }
 
 type gatewayTurnRegistration struct {
-	registeredAt time.Time
+	registeredAt     time.Time
+	runtimeKind      string
+	runtimeStartedAt time.Time
 }
 
 type gatewayTurnEvidence struct {
-	registeredAt time.Time
-	eventAt      time.Time
+	registeredAt     time.Time
+	eventAt          time.Time
+	runtimeKind      string
+	runtimeStartedAt time.Time
 }
 
 type externalRolloutRecord struct {
@@ -124,25 +130,29 @@ type ExternalActivityTracker struct {
 	// ownedGatewayTurns 是精确的 Thread+Turn 归属证据。生产环境可为它配置
 	// 私有 claim store，使 managed app-server 被重启强杀后，新 Tracker 仍能
 	// 区分旧 iPad turn 与真正的新 Mac turn。
-	ownedGatewayTurns   map[string]gatewayOwnedTurnClaim
-	gatewayClaimStore   *gatewayTurnClaimStore
-	gatewayClaimsLoaded bool
-	gatewayClaimsDirty  bool
-	diagnostics         ExternalActivityDiagnostics
+	ownedGatewayTurns       map[string]gatewayOwnedTurnClaim
+	interruptedGatewayTurns map[string]gatewayInterruptedTurn
+	gatewayClaimStore       *gatewayTurnClaimStore
+	gatewayClaimsLoaded     bool
+	gatewayClaimsDirty      bool
+	codexRuntimeKind        string
+	codexRuntimeStartedAt   time.Time
+	diagnostics             ExternalActivityDiagnostics
 }
 
 func NewExternalActivityTracker(db string, registry *projects.Registry) *ExternalActivityTracker {
 	return &ExternalActivityTracker{
-		store:               NewThreadStore(db),
-		registry:            registry,
-		now:                 time.Now,
-		stat:                os.Stat,
-		open:                os.Open,
-		query:               sqliteQueryFunc,
-		files:               map[string]externalRolloutCacheEntry{},
-		gatewayTurns:        map[string]gatewayTurnRegistration{},
-		ownedGatewayTurns:   map[string]gatewayOwnedTurnClaim{},
-		gatewayClaimsLoaded: true,
+		store:                   NewThreadStore(db),
+		registry:                registry,
+		now:                     time.Now,
+		stat:                    os.Stat,
+		open:                    os.Open,
+		query:                   sqliteQueryFunc,
+		files:                   map[string]externalRolloutCacheEntry{},
+		gatewayTurns:            map[string]gatewayTurnRegistration{},
+		ownedGatewayTurns:       map[string]gatewayOwnedTurnClaim{},
+		interruptedGatewayTurns: map[string]gatewayInterruptedTurn{},
+		gatewayClaimsLoaded:     true,
 	}
 }
 
@@ -200,7 +210,11 @@ func (t *ExternalActivityTracker) RegisterGatewayTurnStart(threadID string, clie
 		t.gatewayTurns = map[string]gatewayTurnRegistration{}
 	}
 	key := gatewayTurnRegistrationKey(threadID, clientUserMessageID)
-	t.gatewayTurns[key] = gatewayTurnRegistration{registeredAt: now}
+	t.gatewayTurns[key] = gatewayTurnRegistration{
+		registeredAt:     now,
+		runtimeKind:      t.codexRuntimeKind,
+		runtimeStartedAt: t.codexRuntimeStartedAt,
+	}
 	t.gatewayClaimsDirty = true
 	t.trimGatewayTurnClaims()
 	t.persistGatewayTurnClaims()
@@ -526,16 +540,18 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 			if matched &&
 				entry.active &&
 				gatewayTurnEvidenceMatchesTaskStart(evidence, entry.turnStartedAt) {
-				entry.gatewayOwned = true
-				t.setGatewayOwnedTurnClaim(
+				t.recordGatewayTurnOwnership(
 					entry.metaThreadID,
 					entry.turnID,
-					evidence.eventAt,
+					evidence,
 				)
+				entry.gatewayOwned = t.hasGatewayOwnedTurnClaim(entry.metaThreadID, entry.turnID)
 			} else if matched && !entry.active {
 				entry.gatewayTurnPending = true
 				entry.gatewayTurnPendingAt = evidence.eventAt
 				entry.gatewayTurnPendingRegisteredAt = evidence.registeredAt
+				entry.gatewayTurnPendingRuntimeKind = evidence.runtimeKind
+				entry.gatewayTurnPendingRuntimeStart = evidence.runtimeStartedAt
 			}
 		case "task_started":
 			turnStartedAt, _ := parseExternalRolloutTimestamp(record.Timestamp)
@@ -545,20 +561,26 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 			pendingOwned := entry.gatewayTurnPending &&
 				gatewayTurnEvidenceMatchesTaskStart(
 					gatewayTurnEvidence{
-						registeredAt: entry.gatewayTurnPendingRegisteredAt,
-						eventAt:      entry.gatewayTurnPendingAt,
+						registeredAt:     entry.gatewayTurnPendingRegisteredAt,
+						eventAt:          entry.gatewayTurnPendingAt,
+						runtimeKind:      entry.gatewayTurnPendingRuntimeKind,
+						runtimeStartedAt: entry.gatewayTurnPendingRuntimeStart,
 					},
 					turnStartedAt,
 				)
 			if pendingOwned {
-				t.setGatewayOwnedTurnClaim(
+				t.recordGatewayTurnOwnership(
 					entry.metaThreadID,
 					turnID,
-					entry.gatewayTurnPendingAt,
+					gatewayTurnEvidence{
+						registeredAt:     entry.gatewayTurnPendingRegisteredAt,
+						eventAt:          entry.gatewayTurnPendingAt,
+						runtimeKind:      entry.gatewayTurnPendingRuntimeKind,
+						runtimeStartedAt: entry.gatewayTurnPendingRuntimeStart,
+					},
 				)
 			}
-			entry.gatewayOwned = pendingOwned ||
-				t.hasGatewayOwnedTurnClaim(entry.metaThreadID, turnID)
+			entry.gatewayOwned = t.hasGatewayOwnedTurnClaim(entry.metaThreadID, turnID)
 			// 全量重扫会先经过历史 turn，不能让历史 task_started 删除时间更晚的
 			// 持久化 claim。只有时间上不早于 claim 的不同 turn 才能证明控制边界
 			// 已前进；没有 exact claim 的新 Mac turn 仍会恢复 external 只读保护。
@@ -574,6 +596,7 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 				terminalTurnID = entry.turnID
 			}
 			t.removeGatewayOwnedTurnClaim(entry.metaThreadID, terminalTurnID)
+			t.removeGatewayInterruptedTurn(entry.metaThreadID, terminalTurnID)
 			// 旧 turn 的迟到 terminal 不能终止已经开始的新 turn。
 			if turnID == "" || entry.turnID == "" || turnID == entry.turnID {
 				entry.active = false
@@ -590,6 +613,8 @@ func clearGatewayTurnPending(entry *externalRolloutCacheEntry) {
 	entry.gatewayTurnPending = false
 	entry.gatewayTurnPendingAt = time.Time{}
 	entry.gatewayTurnPendingRegisteredAt = time.Time{}
+	entry.gatewayTurnPendingRuntimeKind = ""
+	entry.gatewayTurnPendingRuntimeStart = time.Time{}
 }
 
 func expireGatewayTurnPending(entry *externalRolloutCacheEntry, now time.Time) bool {
@@ -635,8 +660,10 @@ func (t *ExternalActivityTracker) consumeGatewayTurnRegistration(
 		return gatewayTurnEvidence{}, false
 	}
 	return gatewayTurnEvidence{
-		registeredAt: registration.registeredAt,
-		eventAt:      eventAt,
+		registeredAt:     registration.registeredAt,
+		eventAt:          eventAt,
+		runtimeKind:      registration.runtimeKind,
+		runtimeStartedAt: registration.runtimeStartedAt,
 	}, true
 }
 
