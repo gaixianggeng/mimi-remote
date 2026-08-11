@@ -42,7 +42,10 @@ enum SessionIndexRowDensity: Equatable {
         case .table:
             // iPad 表格行的状态位于标题下方，降低 1pt，明确它是二级信息。
             return 10.5
-        case .compact, .rail:
+        case .compact:
+            // iPhone 紧凑行空间更小，仅降低 0.5pt，兼顾层级与真机可读性。
+            return 9.5
+        case .rail:
             return metadataFontSize
         }
     }
