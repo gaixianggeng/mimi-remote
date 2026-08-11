@@ -49,7 +49,7 @@ Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项�
 
 Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 或 Tailscale，也不代表这些公司的官方产品。Codex 是主要支持的 Runtime；可选的 Claude Code bridge 仍处于实验阶段。
 
-> 当前还没有公开 App Store 版本。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装 iOS App，也可以从源码构建。
+> Mimi Remote 已在部分地区的 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 上架。[TestFlight](https://testflight.apple.com/join/jhGPbSk6) 继续提供 Beta 构建，开发者也可以从源码构建。
 
 <table>
   <tr>
@@ -168,7 +168,7 @@ flowchart LR
 - **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及已在宿主电脑安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
 - **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
 - **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
-- **当前 iOS 安装方式：**尚无公开 App Store 包。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装；也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
+- **当前 iOS 安装方式：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装公开版本；Beta 构建继续通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 提供。也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
 - **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
 
 ## 快速开始
@@ -177,7 +177,7 @@ flowchart LR
 
 1. **准备 Codex：**在宿主电脑安装 Codex CLI，完成 Runtime 自身认证并确认已经就绪；Mimi Remote 不配置 Provider 凭证或计费。
 2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
-3. **安装 iOS App：**加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
+3. **安装 iOS App：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 下载 Mimi Remote，或加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) 获取 Beta 构建；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
 4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
 推荐使用平台正式安装包：Windows 使用一键 EXE 安装器（有证书时使用 Authenticode 签名；无证书时明确标记为 `unsigned-release`），macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
@@ -258,7 +258,7 @@ https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mi
 
 ### 安装 iOS App
 
-Mimi Remote 要求 iOS / iPadOS 18 或更高版本。最简单的安装方式是加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)。iOS 26+ 提供完整高级视觉与设备端语音体验；较早的受支持系统会对不可用能力进行明确降级。
+当前源码支持 iOS / iPadOS 18 或更高版本；App Store 的地区可用性和最低系统要求以各地区当前商店页面为准。在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装公开版本，或加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) 获取 Beta 构建。iOS 26+ 提供完整高级视觉与设备端语音体验；较早的受支持系统会对不可用能力进行明确降级。
 
 如需从源码构建，请使用安装了 Xcode 26 或更高版本和 XcodeGen 的 Mac：
 

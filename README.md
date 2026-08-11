@@ -50,7 +50,7 @@ Mimi Remote connects directly to your Mac through Tailscale or the same local ne
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale. Codex is the primary supported runtime; the optional Claude Code bridge is experimental.
 
-> There is no public App Store release yet. Install the iOS app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source.
+> Install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. [TestFlight](https://testflight.apple.com/join/jhGPbSk6) remains available for beta builds, and developers can build from source.
 
 <table>
   <tr>
@@ -167,7 +167,7 @@ Check these before you install:
 - **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
-- **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
+- **iOS installation today:** install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. Use [TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds, or build from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
 - **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
 
 ## Install and run
@@ -176,7 +176,7 @@ Check these before you install:
 
 1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
 2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
-3. **Install the iOS app:** join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6). Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
+3. **Install the iOS app:** download Mimi Remote from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, or join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds. Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
 ### Windows host
@@ -258,7 +258,7 @@ Ask `$skill-installer` to install that GitHub path. Each GitHub Release also inc
 
 ### Install the iOS app
 
-Mimi Remote requires iOS/iPadOS 18 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path. iOS 26+ gets the full advanced visual and on-device speech experience; earlier supported systems use deliberate fallbacks for unsupported capabilities.
+The current source tree supports iOS/iPadOS 18 or later; App Store availability and minimum OS requirements follow the current listing for each region. Install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, or join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds. iOS 26+ gets the full advanced visual and on-device speech experience; earlier supported systems use deliberate fallbacks for unsupported capabilities.
 
 To build the app from source instead, use a Mac with Xcode 26 or later and install XcodeGen before generating the Xcode project:
 
