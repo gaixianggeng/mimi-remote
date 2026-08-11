@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -92,6 +93,39 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	if !ok || capabilities["rename"] != true || capabilities["compact"] != true ||
 		capabilities["review"] != true || capabilities["external_activity"] != true {
 		t.Fatalf("Codex channel 应声明 rename/compact/review/external_activity 能力：%v", channels[0])
+	}
+}
+
+func TestAppServerGatewayUsesOfficialUnixDaemonTransport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Unix socket")
+	}
+	codexHome, err := os.MkdirTemp("/tmp", "mimi-gateway.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(codexHome) })
+	router := &Router{cfg: config.Config{
+		AppServer: config.AppServerConfig{Transport: "unix", Managed: true, Listen: "unix://"},
+		Codex:     config.CodexConfig{Env: map[string]string{"CODEX_HOME": codexHome}},
+	}}
+	upstreamURL, err := router.appServerUpstreamWebSocketURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstreamURL != appserver.LocalDaemonHandshakeURL() {
+		t.Fatalf("Unix daemon 必须使用官方 WebSocket handshake URL：%q", upstreamURL)
+	}
+	headers, err := router.appServerUpstreamHeaders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("Unix socket 由文件权限鉴权，不应注入 WS token：%v", headers)
+	}
+	dialer, err := router.appServerUpstreamDialer(time.Second)
+	if err != nil || dialer.NetDialContext == nil {
+		t.Fatalf("Unix transport 必须提供 UDS dialer：dialer=%+v err=%v", dialer, err)
 	}
 }
 

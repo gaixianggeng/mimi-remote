@@ -19,9 +19,9 @@ const (
 	gatewayTurnClaimStoreVersion  = 1
 	gatewayTurnClaimStoreMaxBytes = 512 * 1024
 	gatewayTurnClaimStoreLimit    = 512
-	// owned claim 的 TTL 必须长于 rollout 的外部活动 stale 窗口。这样被 managed
-	// app-server 重启终止的静止 rollout 在 claim 过期时也已经 stale，不会重新锁住 iOS。
-	gatewayOwnedTurnClaimTTL = defaultExternalActivityStaleAfter + 10*time.Minute
+	// 保持现有 40 分钟的 owned claim TTL。它只限制 gateway 归属证据的保存时长，
+	// 不决定 external turn 是否仍 active；claim 过期后会安全降级为只读 external。
+	gatewayOwnedTurnClaimTTL = 40 * time.Minute
 	// 长 turn 只在 rollout 确实继续写入时延长证据，且限制落盘频率，避免流式事件导致频繁 fsync。
 	gatewayOwnedTurnClaimRefreshInterval = time.Minute
 )

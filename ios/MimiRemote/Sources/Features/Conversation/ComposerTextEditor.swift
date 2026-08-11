@@ -191,6 +191,9 @@ struct ComposerTextView: UIViewRepresentable {
         textView.autocorrectionType = .no
         textView.spellCheckingType = .no
         textView.accessibilityLabel = L10n.text("ui.enter_tasks_or_follow_up_instructions")
+        // 真机端到端验收需要稳定定位真实输入控件；identifier 只服务可访问性与 UI 测试，
+        // 不改变 UITextView 的焦点、提交或草稿同步语义。
+        textView.accessibilityIdentifier = "composer.textInput"
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         consumeFocusRequestIfNeeded(for: textView, coordinator: context.coordinator)
         // 初始属性配置可能触发 TextKit 内部回调；最后再接入 delegate，避免把创建阶段

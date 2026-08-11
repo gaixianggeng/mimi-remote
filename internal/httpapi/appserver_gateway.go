@@ -586,6 +586,11 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游鉴权不可用，请在电脑运行 agentd doctor")
 		return
 	}
+	dialer, err := r.appServerUpstreamDialer(4 * time.Second)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
+		return
+	}
 
 	client, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
@@ -597,7 +602,6 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
 	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
 	// 收到可重试错误，而不是每次都白等 10s。外侧握手已完成后才拨号，确保畸形握手不会占用 upstream。
-	dialer := websocket.Dialer{HandshakeTimeout: 4 * time.Second}
 	dialStart := time.Now()
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
 	dialDuration := time.Since(dialStart)
@@ -648,6 +652,12 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		if _, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); err != nil {
+			return "", err
+		}
+		return appserver.LocalDaemonHandshakeURL(), nil
+	}
 	raw := strings.TrimSpace(r.cfg.AppServer.Listen)
 	if raw == "" {
 		return "", fmt.Errorf("app_server.listen 未配置，无法启用 app-server raw gateway")
@@ -693,6 +703,10 @@ func isLoopbackGatewayHost(host string) bool {
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		// Unix socket 由 0700 目录 + 0600 socket 约束同一用户，不使用 WebSocket Bearer。
+		return nil, nil
+	}
 	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
 	if tokenFile == "" {
 		if r.cfg.AppServer.Managed {
@@ -712,4 +726,15 @@ func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 	// app-server upstream capability token 和 iPad 访问 agentd 的 token 分离，避免把外侧 token 复用到本机上游。
 	headers.Set("Authorization", "Bearer "+token)
 	return headers, nil
+}
+
+func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		socketPath, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env)
+		if err != nil {
+			return websocket.Dialer{}, err
+		}
+		return appserver.LocalDaemonWebSocketDialer(socketPath, timeout), nil
+	}
+	return websocket.Dialer{HandshakeTimeout: timeout}, nil
 }

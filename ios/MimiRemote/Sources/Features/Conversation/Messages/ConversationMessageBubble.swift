@@ -124,6 +124,9 @@ struct ConversationMessageContent: View {
             for: message,
             stop: stop
         )
+        // 真机 smoke 需要区分助手正文和用户 prompt；identifier 不携带正文或 UUID，
+        // 只增加稳定的测试定位信息，不改变 VoiceOver 的 label/value。
+        .accessibilityIdentifier("conversation.message.assistant")
     }
 
     private var bubbleChrome: some View {

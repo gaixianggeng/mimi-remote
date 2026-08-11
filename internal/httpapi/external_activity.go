@@ -52,6 +52,31 @@ func (r *Router) registerGatewayTurnStart(runtimeID string, method string, paylo
 	registrar.RegisterGatewayTurnStart(threadID, clientUserMessageID)
 }
 
+// codexDesktopThreadActive 只在 external activity 已给出同一线程的明确运行证据时
+// 返回 true。Snapshot 读取失败由调用方按可用性策略处理；这里不能把“无法观测”
+// 猜成“Desktop 正在运行”，否则一次 SQLite 短暂锁定会重新锁死空闲会话。
+func (r *Router) codexDesktopThreadActive(threadID string) (bool, error) {
+	if r == nil || r.externalActivity == nil {
+		return false, nil
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false, nil
+	}
+	activities, err := r.externalActivity.Snapshot()
+	if err != nil {
+		return false, err
+	}
+	for _, activity := range activities {
+		if strings.TrimSpace(activity.ThreadID) == threadID &&
+			strings.EqualFold(strings.TrimSpace(activity.Source), "codex_desktop") &&
+			strings.EqualFold(strings.TrimSpace(activity.State), "running") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (r *Router) externalActivityHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		methodNotAllowed(w)

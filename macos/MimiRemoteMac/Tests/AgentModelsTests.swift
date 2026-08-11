@@ -137,6 +137,48 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertEqual(runtimes[1].state, .disabled)
     }
 
+    func testRuntimeSharingFieldsAreOptionalForLegacyAgentStatus() throws {
+        let legacy = AgentRuntimeStatus(
+            id: "codex",
+            title: "Codex",
+            enabled: true,
+            state: .connected,
+            authMode: "chatgpt",
+            planType: "plus",
+            reason: nil,
+            rateLimits: nil
+        )
+        let legacyData = try JSONEncoder().encode(legacy)
+        let decodedLegacy = try JSONDecoder().decode(AgentRuntimeStatus.self, from: legacyData)
+        XCTAssertNil(decodedLegacy.transport)
+        XCTAssertNil(decodedLegacy.shared)
+
+        let shared = AgentRuntimeStatus(
+            id: "codex",
+            title: "Codex",
+            enabled: true,
+            state: .connected,
+            authMode: "chatgpt",
+            planType: "plus",
+            reason: nil,
+            rateLimits: nil,
+            transport: "unix",
+            shared: true
+        )
+        let decodedShared = try JSONDecoder().decode(
+            AgentRuntimeStatus.self,
+            from: JSONEncoder().encode(shared)
+        )
+        XCTAssertEqual(decodedShared.transport, "unix")
+        XCTAssertEqual(decodedShared.shared, true)
+
+        let sharing = try JSONDecoder().decode(
+            CodexSharingConfigurationResult.self,
+            from: Data(#"{"enabled":true,"changed":true,"restart_required":true,"transport":"unix","codex_home":"/Users/test/.codex","message":"ready"}"#.utf8)
+        )
+        XCTAssertEqual(sharing.codexHome, "/Users/test/.codex")
+    }
+
     func testUnknownRuntimeStateFailsClosedWithoutBreakingAgentStatusDecode() throws {
         let raw = Data(#"""
         {

@@ -263,7 +263,7 @@ extension SessionStore {
                 // turnID 与被标成 Mac 活动的 turn 精确一致时，允许旧连接完成这次对账；
                 // Host 已切换、turnID 不同或普通旧回调仍全部丢弃。
                 guard isCurrentConnection ||
-                        self.canReconcileAcceptedTurnFromRetiredSocket(
+                        self.canReconcileTurnOutcomeFromRetiredSocket(
                             sessionID: session.id,
                             outcome: outcome,
                             hostScope: hostScope

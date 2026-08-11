@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -187,7 +185,10 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 	if err != nil {
 		return "", false, err
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: autoThreadTitleTimeout}
+	dialer, err := g.router.appServerUpstreamDialer(autoThreadTitleTimeout)
+	if err != nil {
+		return "", false, err
+	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
