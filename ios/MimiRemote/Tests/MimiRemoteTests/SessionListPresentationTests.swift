@@ -455,7 +455,7 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(SessionIndexRowDensity.table.metadataFontSize, 11.5)
         XCTAssertEqual(SessionIndexRowDensity.table.statusFontSize, 10.5)
         XCTAssertEqual(SessionIndexRowDensity.compact.metadataFontSize, 10)
-        XCTAssertEqual(SessionIndexRowDensity.compact.statusFontSize, 9.5)
+        XCTAssertEqual(SessionIndexRowDensity.compact.statusFontSize, 9)
     }
 
     private func makeSession(
