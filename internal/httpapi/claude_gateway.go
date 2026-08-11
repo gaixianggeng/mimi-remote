@@ -757,8 +757,7 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			deadline := time.Now().Add(appServerGatewayWriteWindow)
-			if err := writeWebSocketControl(client, clientWriteMu, websocket.PingMessage, nil, deadline); err != nil {
+			if err := writeWebSocketControl(client, clientWriteMu, websocket.PingMessage, nil, appServerGatewayWriteWindow); err != nil {
 				return
 			}
 		}

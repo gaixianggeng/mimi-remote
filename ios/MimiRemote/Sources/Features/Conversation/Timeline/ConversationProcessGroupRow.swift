@@ -52,29 +52,44 @@ struct ConversationWorkGroupRow<Content: View>: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
-            statusMarker
-
-            Group {
-                if group.status == .running {
-                    // 只让运行中的标题按秒刷新；终态行保持静态，避免历史 List 无意义重绘。
-                    SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(group.title(at: context.date))
-                    }
-                } else {
-                    Text(group.title())
-                }
+            if group.status != .completed {
+                statusMarker
             }
-            .font(themeStore.uiFont(size: 14, weight: .medium))
-            .foregroundStyle(headerTint)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Image(systemName: "chevron.right")
-                .font(themeStore.uiFont(.caption2, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText.opacity(0.76))
-                .frame(width: 18, height: 18)
-                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            HStack(alignment: .center, spacing: 6) {
+                Group {
+                    if group.status == .running {
+                        // 只让运行中的标题按秒刷新；终态行保持静态，避免历史 List 无意义重绘。
+                        SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(group.title(at: context.date))
+                        }
+                    } else {
+                        Text(group.title())
+                    }
+                }
+                .font(themeStore.uiFont(size: 14, weight: .medium))
+                .foregroundStyle(headerTint)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+
+                Text(activityCountLabel)
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText.opacity(0.82))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Image(systemName: "chevron.right")
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText.opacity(0.76))
+                    .frame(width: 18, height: 18)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+
+            Spacer(minLength: 0)
         }
+        // 完成态移除信息量有限的图标，活动数量和 chevron 收紧到标题旁；
+        // Button 仍保留至少 44pt 高度和整行 contentShape，触控与辅助功能命中区不变。
         .frame(minHeight: 44)
         .contentShape(Rectangle())
     }
@@ -88,10 +103,7 @@ struct ConversationWorkGroupRow<Content: View>: View {
                 .tint(tokens.accent)
                 .frame(width: 14, height: 18)
         case .completed:
-            Image(systemName: "square.stack.3d.up.fill")
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 14, height: 18)
+            EmptyView()
         case .interrupted:
             Image(systemName: "stop.circle.fill")
                 .font(themeStore.uiFont(size: 11, weight: .semibold))
@@ -118,6 +130,10 @@ struct ConversationWorkGroupRow<Content: View>: View {
             state,
             L10n.plural("ui.activities_count", count: group.activityCount)
         )
+    }
+
+    private var activityCountLabel: String {
+        L10n.plural("ui.activities_count", count: group.activityCount)
     }
 
     private var headerTint: Color {
@@ -195,21 +211,35 @@ struct ConversationProcessGroupRow: View, Equatable {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
-            statusMarker
+            if group.status != .completed {
+                statusMarker
+            }
 
-            Text(summaryText)
-                .font(themeStore.uiFont(size: 14, weight: .medium))
-                .foregroundStyle(headerTint)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .center, spacing: 6) {
+                Text(summaryText)
+                    .font(themeStore.uiFont(size: 14, weight: .medium))
+                    .foregroundStyle(headerTint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
 
-            Image(systemName: "chevron.right")
-                .font(themeStore.uiFont(.caption2, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText.opacity(0.76))
-                .frame(width: 18, height: 18)
-                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                Text(activityCountLabel)
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText.opacity(0.82))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Image(systemName: "chevron.right")
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText.opacity(0.76))
+                    .frame(width: 18, height: 18)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+
+            Spacer(minLength: 0)
         }
+        // 完成态不再重复展示没有状态信息的图标，数量和 chevron 直接贴近标题；
+        // Button 仍保留 44pt 以上整行命中区，运行/失败/中断标记继续保留。
         .frame(minHeight: 44)
         .contentShape(Rectangle())
     }
@@ -223,10 +253,7 @@ struct ConversationProcessGroupRow: View, Equatable {
                 .tint(tokens.accent)
                 .frame(width: 14, height: 18)
         case .completed:
-            Image(systemName: "circle.fill")
-                .font(themeStore.uiFont(size: 5, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 14, height: 18)
+            EmptyView()
         case .interrupted:
             Image(systemName: "stop.circle.fill")
                 .font(themeStore.uiFont(size: 11, weight: .semibold))
@@ -259,6 +286,10 @@ struct ConversationProcessGroupRow: View, Equatable {
         [group.title, group.failureDetail]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+
+    private var activityCountLabel: String {
+        L10n.plural("ui.activities_count", count: group.activities.count)
     }
 
     private var headerTint: Color {

@@ -221,6 +221,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.unsubscribeThread(threadID: threadID)
     }
 
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        try await runtime.releaseThreadWriterWhenIdle(threadID: threadID)
+    }
+
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -252,6 +256,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
         try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: loadMode)
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        try await runtime.latestTurnHistoryPage(sessionID: sessionID)
     }
 }
 
@@ -594,6 +602,11 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         try await bundle.runtime(forSessionID: threadID).unsubscribeThread(threadID: threadID)
     }
 
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        try await bundle.runtime(forSessionID: threadID)
+            .releaseThreadWriterWhenIdle(threadID: threadID)
+    }
+
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -626,6 +639,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             limit: limit,
             loadMode: loadMode
         )
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        try await bundle.runtime(forSessionID: sessionID).latestTurnHistoryPage(sessionID: sessionID)
     }
 
 }
@@ -907,6 +924,15 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             )
         }
         if case CodexAppServerConnectionError.appServer(let appError) = error {
+            if let data = appError.data?.objectValue,
+               data["accepted"]?.boolValue == false,
+               data["retryable"]?.boolValue == true,
+               data["reason"]?.stringValue == "external_thread_active" {
+                return .retryableExternalThreadActive(
+                    message: error.localizedDescription,
+                    retryAfterMilliseconds: max(0, data["retry_after_ms"]?.intValue ?? 1_000)
+                )
+            }
             if let activeTurnID = CodexAppServerSessionRuntime.activeTurnIDFromConflict(error) {
                 return .activeTurnConflict(
                     activeTurnID: activeTurnID,

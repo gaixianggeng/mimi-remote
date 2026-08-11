@@ -363,6 +363,8 @@ rm -rf -- "$HOME/.config/mimi-remote"
 
 正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：canonical 主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。仓库删除与改名是独立于代码合并的短维护窗口人工操作，具体顺序见[中文仓库改名 runbook](operations/github-repository-rename-runbook.zh-CN.md)。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
 
+正式发布只接受官方仓库的 `vX.Y.Z` tag，而且 tag 指向的 commit 必须已经进入当前 `origin/main`。为避免非 main tag 携带并执行它自己的高权限 workflow，单纯 push tag 不再触发正式发布；维护者通过 `repository_dispatch:release` 传入 tag，GitHub 固定从默认分支加载 workflow。workflow 会先 checkout 受信的 main SHA 并运行不读取任何 Secret 的 `source-trust` job，确认 checker 自身、workflow SHA 和当前 `origin/main` 一致，再用 `git merge-base --is-ancestor` 验证目标 tag 来源；后续 macOS / Windows 签名及 `contents:write` job 全部依赖该结果并绑定只允许 `main` 的 `production-release` Environment。仓库 ruleset 另外禁止删除或改写 `v*` tag；部分失败只允许在同一个 tag、同一个 commit 上重跑。
+
 macOS 产物还必须配置以下 GitHub Actions Secrets：
 
 | Secret | 内容 | 权限边界 |
@@ -398,6 +400,18 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test
 
 ```bash
 bash ./scripts/verify-release.sh
+```
+
+校验通过后创建并推送 tag，再发送只能从默认分支加载 workflow 的 Release 事件：
+
+```bash
+release_tag="v0.3.1"
+git tag "$release_tag"
+git push origin "$release_tag"
+gh api --method POST \
+  repos/gaixianggeng/mimi-remote/dispatches \
+  -f event_type=release \
+  -f "client_payload[release_tag]=$release_tag"
 ```
 
 该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。

@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -19,7 +21,13 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
 
+var errAppServerExternalThreadActive = errors.New("Codex Desktop 正在运行此会话")
+
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
+	return p.validateClientFrameContext(context.Background(), messageType, payload)
+}
+
+func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context, messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
 	if p.isClosed() {
 		return nil, &appServerGatewayPolicyError{message: "app-server gateway 连接已关闭"}
 	}
@@ -59,6 +67,37 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
+	if err := p.guardExternalDesktopThread(method, params); err != nil {
+		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
+		p.forgetPending(frame.ID)
+		return nil, &appServerGatewayPolicyError{
+			id:      frame.ID,
+			message: err.Error(),
+			data: map[string]any{
+				"reason":         "external_thread_active",
+				"accepted":       false,
+				"retryable":      true,
+				"retry_after_ms": int64(1000),
+			},
+		}
+	}
+	p.rememberThreadHandoffCapability(method, params)
+	if err := p.guardThreadHandoffContext(ctx, method, params); err != nil {
+		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
+		p.forgetPending(frame.ID)
+		policyErr := &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		if errors.Is(err, errAppServerThreadHandoffExecuting) {
+			// 这个错误在 frame 写入 upstream 前产生，accepted=false 是 iOS 能够
+			// 安全重发相同 turn/start 的关键证据，不能退化成 uncertain。
+			policyErr.data = map[string]any{
+				"reason":         "thread_handoff_in_progress",
+				"accepted":       false,
+				"retryable":      true,
+				"retry_after_ms": appServerThreadHandoffRetryAfter.Milliseconds(),
+			}
+		}
+		return nil, policyErr
+	}
 	if policyErr := p.reserveHistoryRequest(frame.ID, method, params, len(payload)); policyErr != nil {
 		p.forgetPending(frame.ID)
 		return nil, policyErr
@@ -90,6 +129,91 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
 	_, ok := appServerAllowedMethodsForRuntime(p.runtimeID)[method]
 	return ok
+}
+
+func (p *appServerGatewayPolicy) guardThreadHandoff(method string, params map[string]any) error {
+	return p.guardThreadHandoffContext(context.Background(), method, params)
+}
+
+func (p *appServerGatewayPolicy) guardThreadHandoffContext(ctx context.Context, method string, params map[string]any) error {
+	if normalizeAppServerRuntimeID(p.runtimeID) != "codex" || !gatewayMethodReclaimsThread(method) {
+		return nil
+	}
+	threadID, ok := gatewayStringParam(params, "threadId")
+	if !ok {
+		return nil
+	}
+	if err := p.router.reclaimCodexThreadHandoff(ctx, threadID); err != nil {
+		if errors.Is(err, errAppServerThreadHandoffExecuting) {
+			return fmt.Errorf("%s.threadId 正在完成跨应用交接，请稍后重试：%w", method, errAppServerThreadHandoffExecuting)
+		}
+		return fmt.Errorf("%s.threadId 无法取消跨应用交接：%w", method, err)
+	}
+	return nil
+}
+
+func gatewayMethodReclaimsThread(method string) bool {
+	switch method {
+	case "thread/resume", "thread/fork", "thread/name/set", "thread/compact/start",
+		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
+		"review/start", "turn/start", "turn/steer", "turn/interrupt":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *appServerGatewayPolicy) guardExternalDesktopThread(method string, params map[string]any) error {
+	if p == nil || p.router == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
+		!gatewayMethodRequiresExternalIdle(method) {
+		return nil
+	}
+	threadID, ok := gatewayStringParam(params, "threadId")
+	if !ok {
+		return nil
+	}
+	active, err := p.router.codexDesktopThreadActive(threadID)
+	if err != nil {
+		// 外部活动是同机 rollout 的辅助证据，不是鉴权边界。读取失败时保留现有
+		// same-thread 发送能力，避免 SQLite 短暂锁定把空闲会话误判为只读。
+		log.Printf("external activity guard unavailable: %v", err)
+		return nil
+	}
+	if active {
+		return fmt.Errorf("%s.threadId 当前由 Codex Desktop 运行，请等待本轮结束后重试：%w", method, errAppServerExternalThreadActive)
+	}
+	return nil
+}
+
+func gatewayMethodRequiresExternalIdle(method string) bool {
+	switch method {
+	case "thread/fork", "thread/name/set", "thread/compact/start",
+		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
+		"review/start", "turn/start", "turn/steer", "turn/interrupt":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *appServerGatewayPolicy) rememberThreadHandoffCapability(method string, params map[string]any) {
+	if p == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" || method != "initialize" {
+		return
+	}
+	capabilities, _ := params["capabilities"].(map[string]any)
+	capable, _ := capabilities["mimiThreadHandoff"].(bool)
+	p.mu.Lock()
+	p.threadHandoffCapable = capable
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) supportsThreadHandoff() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.threadHandoffCapable
 }
 
 func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any, validated appServerGatewayValidatedParams) error {

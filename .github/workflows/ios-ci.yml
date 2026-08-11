@@ -39,23 +39,13 @@ on:
       - "scripts/ios_asc_cli.sh"
       - "scripts/test-ios-asc-cli.sh"
       - "scripts/check-source-size.sh"
-      - "scripts/check-mimi-protocol-contract.sh"
-      - "docs/app-store/**"
-      - "docs/privacy-policy.md"
-      - "docs/support.md"
-      - "docs/terms-of-use.md"
-      - "docs/mimi-protocol-contracts.md"
       - ".github/workflows/ios-ci.yml"
       - ".github/workflows/nightly.yml"
       - "scripts/check-nightly-release.sh"
       - "scripts/check-pr-gate.sh"
       - "scripts/ci-pr-scope.sh"
-      - "docs/nightly-release.md"
-      - "docs/local-testflight.md"
       - "config/release/ios-asc-cli.env"
       - "config/release/ios-testflight.local.env"
-      - "README.md"
-      - "README.zh-CN.md"
       - ".xcodebuildmcp/config.yaml"
   workflow_dispatch:
     inputs:
@@ -74,10 +64,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-ci-${{ github.ref }}
-  # TestFlight 上传不能被同一 main 上的新 push 或手工运行中途取消；PR Gate
-  # 自身仍会取消过时的 PR caller，因此这里优先保证签名发布的原子性。
-  cancel-in-progress: false
+  # 普通回归与签名发布使用不同组：新提交可以取消过时的 Simulator 回归，
+  # 但不能取消或排队阻塞同一 main 上正在执行的 TestFlight 上传。
+  group: >-
+    ios-ci-${{ (inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) && 'release' || 'regression' }}-${{ github.ref }}
+  cancel-in-progress: >-
+    ${{ !(inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) }}
 
 jobs:
   conversation-regressions:
@@ -93,15 +85,8 @@ jobs:
           fetch-depth: 0
           clean: true
 
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
       - name: Show toolchain
         run: |
-          go version
           xcodebuild -version
           xcrun simctl list devices available
 
@@ -159,16 +144,16 @@ jobs:
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
 
-      - name: Check Mimi protocol contract
-        run: bash ./scripts/check-mimi-protocol-contract.sh
-
       - name: Run core regressions
-        run: bash ./scripts/test-conversation-regressions.sh
+        # Go 与共享契约由独立 Go CI 覆盖；macOS runner 只执行 iOS selector。
+        run: bash ./scripts/test-conversation-regressions.sh --ios-only
 
-      # The core regression suite deliberately uses the established zh-Hans/CN
-      # baseline. Run the localization unit tests independently in English so a
-      # fresh GitHub runner cannot mask an English bundle lookup regression.
+      # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时
+      # 才额外启动一次英文系统环境，避免每个 PR/main 都承担第二次 Simulator 启动。
       - name: Run English localization smoke
+        if: >-
+          inputs.publish_internal_testflight ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)
         run: bash ./scripts/test-ios-localization-smoke.sh
 
   app-store-release:

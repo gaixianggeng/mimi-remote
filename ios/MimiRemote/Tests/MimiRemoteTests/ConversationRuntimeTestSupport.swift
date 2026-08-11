@@ -355,6 +355,7 @@ func assertInitializeEnablesExperimentalAPI(
     // 初始化时必须声明 experimentalApi，否则计划模式会被真实服务端拒绝或降级。
     XCTAssertEqual(capabilities?["experimentalApi"]?.boolValue, true, file: file, line: line)
     XCTAssertEqual(capabilities?["requestAttestation"]?.boolValue, false, file: file, line: line)
+    XCTAssertEqual(capabilities?["mimiThreadHandoff"]?.boolValue, true, file: file, line: line)
 }
 
 func waitForFakeAppServerResponse(

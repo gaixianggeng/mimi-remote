@@ -20,6 +20,8 @@ jobs:
       go: ${{ steps.scope.outputs.go }}
       ios: ${{ steps.scope.outputs.ios }}
       rust: ${{ steps.scope.outputs.rust }}
+      macos: ${{ steps.scope.outputs.macos }}
+      docs: ${{ steps.scope.outputs.docs }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -54,6 +56,10 @@ jobs:
   repository-safety:
     name: Repository safety
     uses: ./.github/workflows/public-repo-safety.yml
+    with:
+      mode: pull-request
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
 
   go:
     name: Go and release
@@ -73,6 +79,18 @@ jobs:
     if: needs.scope.outputs.rust == 'true'
     uses: ./.github/workflows/claude-bridge-ci.yml
 
+  macos:
+    name: Mac App
+    needs: scope
+    if: needs.scope.outputs.macos == 'true'
+    uses: ./.github/workflows/macos-ci.yml
+
+  docs:
+    name: Docs and static policy
+    needs: scope
+    if: needs.scope.outputs.docs == 'true'
+    uses: ./.github/workflows/docs-ci.yml
+
   gate:
     name: PR Gate
     if: always()
@@ -83,6 +101,8 @@ jobs:
       - go
       - ios
       - rust
+      - macos
+      - docs
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -98,6 +118,10 @@ jobs:
           IOS_RESULT: ${{ needs.ios.result }}
           RUST_REQUIRED: ${{ needs.scope.outputs.rust }}
           RUST_RESULT: ${{ needs.rust.result }}
+          MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          DOCS_REQUIRED: ${{ needs.scope.outputs.docs }}
+          DOCS_RESULT: ${{ needs.docs.result }}
         run: |
           set -euo pipefail
 
@@ -131,6 +155,8 @@ jobs:
           require_scoped_success "Go and release" "$GO_REQUIRED" "$GO_RESULT"
           require_scoped_success "iOS" "$IOS_REQUIRED" "$IOS_RESULT"
           require_scoped_success "Rust bridge" "$RUST_REQUIRED" "$RUST_RESULT"
+          require_scoped_success "Mac App" "$MACOS_REQUIRED" "$MACOS_RESULT"
+          require_scoped_success "Docs and static policy" "$DOCS_REQUIRED" "$DOCS_RESULT"
 
           {
             echo "## PR Gate"
@@ -143,6 +169,8 @@ jobs:
             echo "| Go and release | \`$GO_REQUIRED\` | \`$GO_RESULT\` |"
             echo "| iOS | \`$IOS_REQUIRED\` | \`$IOS_RESULT\` |"
             echo "| Rust bridge | \`$RUST_REQUIRED\` | \`$RUST_RESULT\` |"
+            echo "| Mac App | \`$MACOS_REQUIRED\` | \`$MACOS_RESULT\` |"
+            echo "| Docs and static policy | \`$DOCS_REQUIRED\` | \`$DOCS_RESULT\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$failures" -ne 0 ]]; then

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -82,12 +83,20 @@ type RuntimeConfig struct {
 }
 
 type AppServerConfig struct {
+	Transport      string                   `json:"transport"`
+	Managed        bool                     `json:"managed"`
+	Listen         string                   `json:"listen,omitempty"`
+	WSTokenFile    string                   `json:"ws_token_file,omitempty"`
+	SharedFallback *AppServerFallbackConfig `json:"shared_fallback,omitempty"`
+	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
+	AutoTitle bool `json:"auto_title"`
+}
+
+type AppServerFallbackConfig struct {
 	Transport   string `json:"transport"`
 	Managed     bool   `json:"managed"`
 	Listen      string `json:"listen,omitempty"`
 	WSTokenFile string `json:"ws_token_file,omitempty"`
-	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
-	AutoTitle bool `json:"auto_title"`
 }
 
 type VoiceConfig struct {
@@ -164,20 +173,37 @@ func load(path string) (Config, error) {
 	path = expandPath(path)
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil {
+			listenConfigured := false
+			var document map[string]json.RawMessage
+			if json.Unmarshal(b, &document) == nil {
+				var appServer map[string]json.RawMessage
+				if raw, ok := document["app_server"]; ok && json.Unmarshal(raw, &appServer) == nil {
+					_, listenConfigured = appServer["listen"]
+				}
+			}
 			if err := json.Unmarshal(b, &cfg); err != nil {
 				return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
+			}
+			if normalizeTransport(cfg.AppServer.Transport) == "unix" && !listenConfigured {
+				// defaults() 必须自身可 Validate，因此带 WS 默认 listen；但 JSON
+				// 显式选 Unix 且省略 listen 时，不能把这个结构体默认误当成用户配置。
+				cfg.AppServer.Listen = ""
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return Config{}, fmt.Errorf("读取配置文件失败：%w", err)
 		}
 	}
 
-	applyEnv(&cfg)
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
+	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
+	applyEnv(&cfg)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
 	if strings.EqualFold(cfg.AppServer.Transport, "ws") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
 		// 旧配置迁移到 ws 后可能没有 listen；补一个默认 loopback upstream，避免 Validate 直接失败。
-		cfg.AppServer.Listen = defaultAppServerListen
+		cfg.AppServer.Listen = defaultAppServerWebSocketListen
+	}
+	if strings.EqualFold(cfg.AppServer.Transport, "unix") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
+		cfg.AppServer.Listen = defaultAppServerUnixListen
 	}
 	scanned, err := discoverProjects(cfg.ScanRoots)
 	if err != nil {
@@ -199,8 +225,30 @@ func expandPath(path string) string {
 	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
 }
 
-// defaultAppServerListen 是托管 Codex app-server 的默认 loopback WebSocket upstream，仅本机可达。
-const defaultAppServerListen = "ws://127.0.0.1:4222"
+const (
+	// defaultAppServerWebSocketListen 是兼容默认；共享 daemon 只能显式启用。
+	defaultAppServerWebSocketListen = "ws://127.0.0.1:4222"
+	// defaultAppServerUnixListen 使用 Codex 官方 CODEX_HOME 控制 socket。
+	defaultAppServerUnixListen = "unix://"
+)
+
+func DefaultAppServerTransport() string {
+	// 默认保持独立 WS，保证没有安装官方 standalone daemon 的机器仍可启动。
+	// macOS 共享 daemon 会改变 Desktop 的进程环境与 app-server 所有权，必须
+	// 通过 Mac 设置页 / `runtime --codex-sharing=enabled` 显式启用。
+	return "ws"
+}
+
+func DefaultAppServerListen() string {
+	if DefaultAppServerTransport() == "unix" {
+		return defaultAppServerUnixListen
+	}
+	return defaultAppServerWebSocketListen
+}
+
+func DefaultAppServerWebSocketListen() string {
+	return defaultAppServerWebSocketListen
+}
 
 func defaults() Config {
 	return Config{
@@ -209,9 +257,9 @@ func defaults() Config {
 			Type: "codex_app_server",
 		},
 		AppServer: AppServerConfig{
-			Transport: "ws",
+			Transport: DefaultAppServerTransport(),
 			Managed:   true,
-			Listen:    defaultAppServerListen,
+			Listen:    DefaultAppServerListen(),
 			AutoTitle: true,
 		},
 		Voice: VoiceConfig{
@@ -282,6 +330,10 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_TRANSPORT"); v != "" {
 		cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(v))
+		if strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_LISTEN")) == "" {
+			// transport 显式切换时不能沿用另一种 transport 的默认 listen。
+			cfg.AppServer.Listen = ""
+		}
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_LISTEN"); v != "" {
 		cfg.AppServer.Listen = strings.TrimSpace(v)
@@ -346,8 +398,13 @@ func normalizeRuntimeType(raw string) string {
 func normalizeTransport(raw string) string {
 	value := strings.TrimSpace(strings.ToLower(raw))
 	switch value {
-	case "", "stdio", "unix", "off":
-		// 旧配置平滑迁移：直连链路只保留 ws gateway，历史 stdio/unix/off 等 transport 统一归一到 ws。
+	case "":
+		return DefaultAppServerTransport()
+	case "unix":
+		return "unix"
+	case "stdio", "off":
+		// 历史 stdio/off 配置继续按旧行为迁移到独立 WS runtime。共享 daemon
+		// 会改变进程所有权，必须由用户通过 codex-sharing 显式启用，不能在升级时静默切换。
 		return "ws"
 	default:
 		return value
@@ -519,15 +576,36 @@ func (c Config) Validate() error {
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
-	case "ws":
+	case "ws", "unix":
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ws")
+		return fmt.Errorf("app_server.transport 只支持 ws 或 unix")
 	}
 	if strings.EqualFold(c.AppServer.Transport, "ws") && strings.TrimSpace(c.AppServer.Listen) == "" {
 		return fmt.Errorf("app_server.listen 不能为空")
 	}
 	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
 		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")
+	}
+	if strings.EqualFold(c.AppServer.Transport, "unix") {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("app_server.transport=unix 不支持 Windows")
+		}
+		if listen := strings.TrimSpace(c.AppServer.Listen); listen != "" && listen != defaultAppServerUnixListen {
+			return fmt.Errorf("共享 Codex local daemon 只支持 app_server.listen=unix://")
+		}
+	}
+	if fallback := c.AppServer.SharedFallback; fallback != nil {
+		// shared_fallback 是关闭共享模式时唯一的可恢复点；加载时就验证，避免
+		// “启用看似成功、真正需要回滚时才发现配置不可用”。
+		if !strings.EqualFold(strings.TrimSpace(c.AppServer.Transport), "unix") {
+			return fmt.Errorf("app_server.shared_fallback 只允许用于共享 Unix transport")
+		}
+		if !strings.EqualFold(strings.TrimSpace(fallback.Transport), "ws") {
+			return fmt.Errorf("app_server.shared_fallback.transport 只支持 ws")
+		}
+		if strings.TrimSpace(fallback.Listen) == "" || !isLoopbackListen(fallback.Listen) {
+			return fmt.Errorf("app_server.shared_fallback.listen 只允许 loopback WebSocket")
+		}
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

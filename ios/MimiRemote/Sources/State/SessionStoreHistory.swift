@@ -337,12 +337,14 @@ extension SessionStore {
         return isStillFresh
     }
 
-    // quiet 模式用于切回已加载会话时的后台补拉：界面继续展示缓存，不出进度条，
-    // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。
+    // quiet 模式用于切回已加载会话时的后台补拉：默认界面继续展示缓存，不出进度条，
+    // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。选中会话可用 showsProgress
+    // 只打开轻量进度反馈，不改变 quiet 的失败和 notice 语义。
     @discardableResult
     func loadHistory(
         for session: AgentSession,
         quiet: Bool = false,
+        showsProgress: Bool? = nil,
         loadMode: HistoryMessagesPage.LoadMode = .full,
         force: Bool = false,
         reason: HistoryLoadReason = .automatic,
@@ -355,6 +357,14 @@ extension SessionStore {
         if session.isLocalDraft {
             return true
         }
+        // quiet 只控制失败、状态和 savings notice 是否打扰用户；选中的已缓存会话仍可
+        // 显示轻量历史补拉进度，避免消息区只有本地 user 气泡而看不出 assistant 仍在补齐。
+        let shouldShowProgress = showsProgress ?? !quiet
+        // 普通自动/权威打开只需要 progress；savings 横幅应只在用户明确选择
+        // full/summary，或策略层已经确认需要降级/重试时出现。否则每次短暂的
+        // 首屏请求都会先暴露“正在加载完整历史”的决策卡片，再在成功时立即消失。
+        let shouldShowSavingsNotice = !quiet
+            && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
             return true
         }
@@ -381,32 +391,57 @@ extension SessionStore {
                     // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
                     // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
                     // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
+                    if shouldShowProgress {
+                        promoteHistoryLoadJobForVisibleProgress(existing, sessionID: session.id)
+                    }
                     if !quiet {
                         promoteHistoryLoadJobForForegroundReporting(
                             existing,
                             sessionID: session.id,
-                            successStatusMessage: successStatusMessage
+                            successStatusMessage: successStatusMessage,
+                            showSavingsNotice: shouldShowSavingsNotice
                         )
-                        setHistoryLoadProgress(
-                            sessionID: session.id,
-                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
-                            fraction: 0.32
-                        )
+                        if shouldShowProgress {
+                            setHistoryLoadProgress(
+                                sessionID: session.id,
+                                title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
+                                fraction: 0.32
+                            )
+                        }
                         let didLoad = await awaitHistoryLoadJob(
                             existing,
                             session: session,
                             quiet: false,
                             successStatusMessage: successStatusMessage
                         )
-                        clearHistoryLoadProgress(sessionID: session.id)
+                        if shouldShowProgress {
+                            clearHistoryLoadProgress(
+                                sessionID: session.id,
+                                ifCurrentHistoryLoadJobToken: existing.token
+                            )
+                        }
                         return didLoad
                     }
-                    return await awaitHistoryLoadJob(
+                    if shouldShowProgress {
+                        setHistoryLoadProgress(
+                            sessionID: session.id,
+                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
+                            fraction: 0.32
+                        )
+                    }
+                    let didLoad = await awaitHistoryLoadJob(
                         existing,
                         session: session,
                         quiet: quiet,
                         successStatusMessage: successStatusMessage
                     )
+                    if shouldShowProgress {
+                        clearHistoryLoadProgress(
+                            sessionID: session.id,
+                            ifCurrentHistoryLoadJobToken: existing.token
+                        )
+                    }
+                    return didLoad
                 }
             } else {
                 switch reason {
@@ -440,18 +475,21 @@ extension SessionStore {
         let job = HistoryLoadJob(
             token: jobToken,
             sessionSignature: signature,
+            externalActivityRevision: externalActivityBySessionID[session.id]?.revision,
+            externalActivityTurnID: externalActivityBySessionID[session.id]?.turnID,
             loadMode: loadMode,
             cachePolicy: cachePolicy,
             recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
             task: task,
+            showsProgress: shouldShowProgress,
             requiresForegroundReporting: !quiet,
             foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage,
             foregroundSelectionLease: quiet ? nil : currentSelectionLease()
         )
         historyLoadJobsBySessionID[session.id] = job
-        if !quiet {
+        if shouldShowSavingsNotice {
             setHistoryLoadNotice(
                 sessionID: session.id,
                 kind: loadMode == .full ? .loadingFull : .loadingSummary,
@@ -461,16 +499,19 @@ extension SessionStore {
             )
         }
 
-        if !quiet {
+        if shouldShowProgress {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.ready_to_load_full_history") : L10n.text("ui.prepare_to_load_abbreviated_history"), fraction: 0.08)
         }
         defer {
-            if !quiet {
-                clearHistoryLoadProgress(sessionID: session.id)
+            if shouldShowProgress {
+                clearHistoryLoadProgress(
+                    sessionID: session.id,
+                    ifCurrentHistoryLoadJobToken: jobToken
+                )
             }
         }
 
-        if !quiet {
+        if shouldShowProgress {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"), fraction: 0.32)
         }
         return await awaitHistoryLoadJob(job, session: session, quiet: quiet, successStatusMessage: successStatusMessage)
@@ -479,7 +520,8 @@ extension SessionStore {
     func promoteHistoryLoadJobForForegroundReporting(
         _ job: HistoryLoadJob,
         sessionID: SessionID,
-        successStatusMessage: String?
+        successStatusMessage: String?,
+        showSavingsNotice: Bool
     ) {
         guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             return
@@ -490,19 +532,31 @@ extension SessionStore {
             current.foregroundSuccessStatusMessage = successStatusMessage
         }
         historyLoadJobsBySessionID[sessionID] = current
-        setHistoryLoadNotice(
-            sessionID: sessionID,
-            kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
-            message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
-        )
+        if showSavingsNotice {
+            setHistoryLoadNotice(
+                sessionID: sessionID,
+                kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
+                message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
+            )
+        }
     }
 
-    func scheduleQuietHistoryRefresh(for session: AgentSession) {
+    func promoteHistoryLoadJobForVisibleProgress(_ job: HistoryLoadJob, sessionID: SessionID) {
+        guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
+            return
+        }
+        // quiet 后台 job 被当前会话的可见 waiter 加入后，后续缩页/summary 替代任务
+        // 也必须继承这项能力，不能只靠外层 defer 清理旧 token 的进度。
+        current.showsProgress = true
+        historyLoadJobsBySessionID[sessionID] = current
+    }
+
+    func scheduleQuietHistoryRefresh(for session: AgentSession, showsProgress: Bool = false) {
         Task { [weak self] in
             guard let self, self.selectedSessionID == session.id else {
                 return
             }
-            await self.loadHistory(for: session, quiet: true)
+            await self.loadHistory(for: session, quiet: true, showsProgress: showsProgress)
         }
     }
 
@@ -521,6 +575,20 @@ extension SessionStore {
     func hasLoadedFullHistorySnapshot(sessionID: SessionID) -> Bool {
         conversationStore.hasLoadedHistory(sessionID: sessionID)
             && historyLoadedQualityBySessionID[sessionID] == .full
+    }
+
+    /// 重连预检只需要判断“刚刚是否已经拿到过同会话的完整首屏”。这里故意忽略
+    /// thread/read 刷新的 metadata signature：resume 后的短暂断流会更新 session 元数据，
+    /// 但在 4 秒缓存窗内立刻绕过缓存重拉同一大页只会放大弱网开销。超过短窗后仍按
+    /// 正常恢复链路补拉，真正断线期间的消息也会由事件回放与后续历史对账兜底。
+    func hasRecentFullHistoryFirstPage(sessionID: SessionID, now: Date = Date()) -> Bool {
+        guard hasLoadedFullHistorySnapshot(sessionID: sessionID) else { return false }
+        return historyFirstPageCacheByKey.contains { key, entry in
+            key.profileID == appStore.activeHostScope.profileID
+                && key.sessionID == sessionID
+                && key.loadMode == .full
+                && now.timeIntervalSince(entry.loadedAt) < historyFirstPageCacheTTL
+        }
     }
 
     func awaitHistoryLoadJob(
@@ -572,6 +640,18 @@ extension SessionStore {
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
+        if job.loadMode == .full,
+           let activityRevision = job.externalActivityRevision,
+           let activityTurnID = job.externalActivityTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !activityTurnID.isEmpty,
+           externalActivityBySessionID[sessionID]?.revision == activityRevision,
+           externalActivityBySessionID[sessionID]?.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) == activityTurnID,
+           result.page.messages.contains(where: { $0.turnID == activityTurnID }) {
+            externalActivityHistoryRevisionBySessionID[sessionID] = activityRevision
+            // 手动/恢复 full 再次成功后，撤销此前的 turn 级降级，后续 revision 可恢复 latest full。
+            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
+            externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
+        }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -637,6 +717,7 @@ extension SessionStore {
                     return await loadHistory(
                         for: session,
                         quiet: effectiveQuiet,
+                        showsProgress: current.showsProgress,
                         loadMode: .full,
                         force: true,
                         reason: .automatic,
@@ -648,6 +729,16 @@ extension SessionStore {
                 }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
                     deferredFullHistorySessionIDs.insert(sessionID)
+                    if let revision = job.externalActivityRevision {
+                        recordExternalActivityHistoryFallback(
+                            sessionID: sessionID,
+                            attempt: ExternalActivityHistoryAttempt(
+                                revision: revision,
+                                turnID: normalizedExternalActivityTurnID(job.externalActivityTurnID)
+                            ),
+                            mode: .economy
+                        )
+                    }
                 }
                 let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
@@ -657,6 +748,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
@@ -664,6 +756,28 @@ extension SessionStore {
                     recoveryGeneration: job.recoveryGeneration,
                     noticeMessageOverride: effectiveQuiet ? nil : message
                 )
+            case .economy where policyFailure.reason == "history_response_too_large":
+                if let revision = job.externalActivityRevision {
+                    let turnID = normalizedExternalActivityTurnID(job.externalActivityTurnID)
+                    let attempt = ExternalActivityHistoryAttempt(revision: revision, turnID: turnID)
+                    if turnID == nil {
+                        // 未知 turn 不能使用跨 revision 的 `.skip`，否则运行中的后续输出会永久冻结。
+                        // 保留既有 economy fallback，仅记住本 revision 已尝试；新 revision 仍只重试 economy。
+                        recordExternalActivityHistoryAttempt(
+                            sessionID: sessionID,
+                            attempt: attempt,
+                            hostScope: appStore.activeHostScope
+                        )
+                    } else {
+                        // economy 也确定超限后，同一 turn 的 revision churn 只能跳过网络对账；
+                        // 新 turn 与 terminal 会清理该降级并恢复 full。
+                        recordExternalActivityHistoryFallback(
+                            sessionID: sessionID,
+                            attempt: attempt,
+                            mode: .skip
+                        )
+                    }
+                }
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
@@ -682,6 +796,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
@@ -913,7 +1028,22 @@ extension SessionStore {
             // best-effort 取消旧 job；即使底层请求已发出，token 校验也会阻止迟到结果覆盖当前视图。
             job.task.cancel()
             historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+            // 新 job 可能继续保持 quiet；先清掉旧代可见进度，由替代 job
+            // 按自己的 showsProgress 选择是否重新写入。
+            clearHistoryLoadProgress(sessionID: sessionID)
         }
+    }
+
+    func clearHistoryLoadProgress(
+        sessionID: SessionID,
+        ifCurrentHistoryLoadJobToken token: Int
+    ) {
+        // 旧 job 被权威重开/恢复任务取代后可能才结束 await；只允许当前代清进度，
+        // 避免旧 waiter 把新 job 刚写入的加载反馈误删。
+        guard historyLoadJobTokenBySessionID[sessionID] == token else {
+            return
+        }
+        clearHistoryLoadProgress(sessionID: sessionID)
     }
 
     func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind, message customMessage: String? = nil) {
@@ -3207,6 +3337,15 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
+        externalActivityHistoryRevisionBySessionID = externalActivityHistoryRevisionBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
+        externalActivityHistoryAttemptBySessionID = externalActivityHistoryAttemptBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
+        externalActivityHistoryFallbackBySessionID = externalActivityHistoryFallbackBySessionID.filter {
+            validSessionIDs.contains($0.key)
+        }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {

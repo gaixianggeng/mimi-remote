@@ -1987,44 +1987,67 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 40), 0)
     }
 
-    func testCenteredNameWindowAllocatesAroundSelection() {
-        let ids = ["a", "b", "c", "d", "e"]
+    func testWorkspacePagerTransitionNormalizesScrollGeometry() {
+        XCTAssertEqual(
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: -24,
+                leadingInset: 24,
+                viewportWidth: 400,
+                pageCount: 3
+            ),
+            0
+        )
+        XCTAssertEqual(
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: 500,
+                leadingInset: 0,
+                viewportWidth: 400,
+                pageCount: 3
+            ),
+            1.25
+        )
+        XCTAssertEqual(
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: 1_200,
+                leadingInset: 0,
+                viewportWidth: 400,
+                pageCount: 3
+            ),
+            2
+        )
+        XCTAssertNil(
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: 0,
+                leadingInset: 0,
+                viewportWidth: 0,
+                pageCount: 3
+            )
+        )
+    }
 
-        // 名额以选中项为中心，而不是从最左边开始。
-        XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 2),
-            ["b", "c", "d"]
-        )
+    func testWorkspacePagerTransitionInterpolatesAdjacentChipsOneToOne() {
+        for progress in [CGFloat(0.25), 0.5, 0.75] {
+            XCTAssertEqual(
+                WorkspacePagerTransition.selectionProgress(
+                    projectIndex: 0,
+                    pagePosition: progress
+                ),
+                1 - progress,
+                accuracy: 0.0001
+            )
+            XCTAssertEqual(
+                WorkspacePagerTransition.selectionProgress(
+                    projectIndex: 1,
+                    pagePosition: progress
+                ),
+                progress,
+                accuracy: 0.0001
+            )
+        }
 
-        // 选中项贴着左端时，名额全部溢向右侧，不能少发。
         XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 0),
-            ["a", "b", "c"]
-        )
-
-        // 贴着右端同理。
-        XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 4),
-            ["c", "d", "e"]
-        )
-
-        // 名额不小于总数时全部展开；为 0 时只剩选中项自己（由调用方兜底）。
-        XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 99, aroundIndex: 1),
-            Set(ids)
-        )
-        XCTAssertTrue(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 0, aroundIndex: 1).isEmpty
-        )
-
-        // 越界或缺失的选中下标不能崩，退化成从头分配。
-        XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 2, aroundIndex: nil),
-            ["a", "b"]
-        )
-        XCTAssertEqual(
-            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 2, aroundIndex: 99),
-            ["d", "e"]
+            WorkspacePagerTransition.selectionProgress(projectIndex: 2, pagePosition: 0.5),
+            0
         )
     }
 
@@ -3229,7 +3252,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(client.requestedMessageLimits, [20])
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         client.resolveHistoryRequest(
             at: 0,
@@ -3332,7 +3355,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(client.requestedMessageLimits, [20])
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         client.resolveHistoryRequest(
             at: 0,
@@ -3347,6 +3370,288 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(conversationStore.messages(for: running.id).map(\.content), ["合并首屏历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testVisibleQuietHistoryLoadJoiningExistingJobKeepsProgressUntilCompletion() async {
+        let project = makeProject(id: "proj_visible_quiet_join")
+        let history = makeSession(
+            id: "thread_visible_quiet_join",
+            projectID: project.id,
+            title: "合并静默历史",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let backgroundLoad = Task {
+            await store.loadHistory(for: history, quiet: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+
+        let visibleJoin = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil], "可见 waiter 应加入已有 job，不重复请求")
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "加入已有 quiet job 后，进度必须保留到共享请求完成"
+        )
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:visible-quiet-join",
+                    role: "assistant",
+                    content: "共享历史已加载",
+                    createdAt: Date(timeIntervalSince1970: 10)
+                )
+            ])
+        )
+        _ = await backgroundLoad.value
+        _ = await visibleJoin.value
+
+        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testReplacedHistoryJobCannotClearReplacementProgress() async {
+        let project = makeProject(id: "proj_replaced_history_progress")
+        let history = makeSession(
+            id: "thread_replaced_history_progress",
+            projectID: project.id,
+            title: "历史进度换代",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let staleLoad = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+
+        let replacementLoad = Task {
+            await store.loadHistory(
+                for: history,
+                quiet: true,
+                showsProgress: true,
+                force: true,
+                reason: .authoritativeReopen
+            )
+        }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertNotNil(store.historyLoadProgress(sessionID: history.id))
+
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        _ = await staleLoad.value
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "迟到的旧 job 不得清除替代 job 的进度"
+        )
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:replacement-history",
+                    role: "assistant",
+                    content: "新一代权威历史",
+                    createdAt: Date(timeIntervalSince1970: 20)
+                )
+            ])
+        )
+        _ = await replacementLoad.value
+
+        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testBackgroundQuietHistoryRefreshKeepsProgressHidden() async {
+        let project = makeProject(id: "proj_background_quiet_progress")
+        let history = makeSession(
+            id: "thread_background_quiet_progress",
+            projectID: project.id,
+            title: "后台静默历史",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        store.scheduleQuietHistoryRefresh(for: history)
+        await client.waitForHistoryRequestCount(1)
+
+        XCTAssertNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "恢复链路的默认 quiet refresh 不应意外改成可见状态"
+        )
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testVisibleQuietHistoryOversizeRetryClearsReplacementProgress() async {
+        let project = makeProject(id: "proj_visible_quiet_oversize_retry")
+        let history = makeSession(
+            id: "thread_visible_quiet_oversize_retry",
+            projectID: project.id,
+            title: "可见静默缩页",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let load = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(
+                reason: "history_response_too_large",
+                responseBytes: 9_000_000,
+                maxResponseBytes: 5_242_880
+            )
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "可见 quiet full 缩页重试期间必须继续显示进度"
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:visible-quiet-oversize-retry",
+                    role: "assistant",
+                    content: "缩页后的完整历史",
+                    createdAt: Date(timeIntervalSince1970: 20)
+                )
+            ])
+        )
+        _ = await load.value
+
+        XCTAssertNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "替代 full job 完成后必须清除进度，不能永久旋转"
+        )
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩页后的完整历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testVisibleQuietHistorySummaryFallbackClearsReplacementProgress() async {
+        let project = makeProject(id: "proj_visible_quiet_summary_fallback")
+        let history = makeSession(
+            id: "thread_visible_quiet_summary_fallback",
+            projectID: project.id,
+            title: "可见静默缩略降级",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedSessionID = history.id
+
+        let load = Task {
+            await store.loadHistory(for: history, quiet: true, showsProgress: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(reason: "history_response_too_large")
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "可见 quiet summary fallback 期间必须继续显示进度"
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(
+                        id: "rollout:visible-quiet-summary-fallback",
+                        role: "assistant",
+                        content: "自动缩略历史",
+                        createdAt: Date(timeIntervalSince1970: 20)
+                    )
+                ],
+                loadMode: .economy
+            )
+        )
+        _ = await load.value
+
+        XCTAssertNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "替代 economy job 完成后必须清除进度，不能永久旋转"
+        )
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["自动缩略历史"])
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
@@ -3417,6 +3722,17 @@ extension ConversationDataFlowTests {
             [.full, .full],
             "终态重开必须绕过相同签名的局部缓存，发出一次权威首屏读取"
         )
+        XCTAssertTrue(
+            conversationStore.messages(for: running.id).contains {
+                $0.role == .user && $0.content == "讲个笑话"
+            },
+            "权威历史补拉期间先保留可见的本地 user 消息"
+        )
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: running.id),
+            "已有本地 user 消息时仍应展示轻量历史加载进度"
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice, "权威重开只显示 progress，不应提前展示 savings 卡片")
         client.resolveHistoryRequest(
             at: 1,
             with: HistoryMessagesPage(messages: [
@@ -3442,6 +3758,7 @@ extension ConversationDataFlowTests {
         )
         await reopen.value
 
+        XCTAssertNil(store.historyLoadProgress(sessionID: running.id))
         XCTAssertTrue(
             conversationStore.messages(for: running.id).contains {
                 $0.role == .assistant && $0.content == "程序员去海边，发现浪都是递归的。"
@@ -3578,11 +3895,17 @@ extension ConversationDataFlowTests {
         await store.selectSession(updated)
         await client.waitForHistoryRequestCount(2)
 
-        // 后台补拉不能把“正在加载完整历史”或失败横幅盖到已有会话上。
+        // 后台补拉只显示时间线内轻量进度，不能把 savings 或失败横幅盖到已有会话上。
+        XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "已缓存历史" })
+        XCTAssertNotNil(
+            store.historyLoadProgress(sessionID: history.id),
+            "缓存消息可见时，签名变化触发的静默补拉仍需给出轻量进度"
+        )
         XCTAssertNil(store.selectedHistorySavingsNotice)
         client.failHistoryRequest(at: 1, with: MockError.timeout)
         try await Task.sleep(nanoseconds: 30_000_000)
 
+        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
         XCTAssertNil(store.selectedHistorySavingsNotice)
         XCTAssertNil(store.errorMessage)
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
@@ -3677,7 +4000,7 @@ extension ConversationDataFlowTests {
         await client.waitForHistoryRequestCount(1)
 
         XCTAssertEqual(client.requestedMessageLoadModes, [.full])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "自动首屏 full 加载只显示 progress，不应提前展示缩略选择卡片")
 
         let firstSummaryTask = Task { await store.loadSummaryHistoryForSelectedSession() }
         await client.waitForHistoryRequestCount(2)
@@ -3719,6 +4042,7 @@ extension ConversationDataFlowTests {
         let reloadFullTask = Task { await store.loadFullHistoryForSelectedSession() }
         await client.waitForHistoryRequestCount(3)
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
         client.resolveHistoryRequest(
             at: 2,
             with: HistoryMessagesPage(

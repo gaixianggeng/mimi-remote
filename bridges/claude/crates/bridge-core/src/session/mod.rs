@@ -231,7 +231,46 @@ impl Session {
     /// read it off the wire. Codex's JSON-RPC envelopes use serde without
     /// `deny_unknown_fields`, so existing litter-side parsers ignore it.
     /// Non-object payloads are passed through unstamped.
-    pub fn enqueue(&self, mut payload: Value) -> u64 {
+    pub fn enqueue(&self, payload: Value) -> u64 {
+        self.enqueue_inner(payload)
+    }
+
+    /// Enqueue a frame that is only meaningful to one attachment — a response
+    /// to a request that arrived on it. Returns `None` without touching the
+    /// ring when that attachment has already been replaced.
+    ///
+    /// Dropping is the whole point: the successor stream numbers its requests
+    /// from scratch, so delivering a response minted for the previous one
+    /// answers whatever request reused the id.
+    pub fn enqueue_for_generation(&self, mut payload: Value, generation: u64) -> Option<u64> {
+        // generation 校验、序号分配和 live 投递必须以 attachment 锁作为同一个
+        // 临界区。否则连接可能在校验后、ring 写入前被替换，旧响应仍会占用
+        // replay 容量，极端情况下还会挤掉真正需要重放的通知。
+        //
+        // 锁顺序与 install_attachment / publish_server_request 一致：
+        // attachment → ring，避免引入反向等待。
+        let attachment = self.attachment.lock().unwrap();
+        let current = attachment
+            .as_ref()
+            .filter(|attachment| attachment.generation == generation)?;
+
+        let seq = {
+            let mut ring = self.ring.lock().unwrap();
+            let next = ring.next_seq_peek();
+            stamp_alleycat_seq(&mut payload, next);
+            let assigned = ring.push(payload.clone());
+            debug_assert_eq!(assigned, next, "ring assigned a different seq than peeked");
+            assigned
+        };
+        let _ = current.live_tx.send(Sequenced {
+            seq,
+            payload,
+            bytes: 0,
+        });
+        Some(seq)
+    }
+
+    fn enqueue_inner(&self, mut payload: Value) -> u64 {
         let seq = {
             let mut ring = self.ring.lock().unwrap();
             let next = ring.next_seq_peek();
@@ -420,6 +459,15 @@ impl Session {
         let backlog: Vec<Sequenced> = backlog
             .into_iter()
             .filter(|frame| !is_unanswered_server_request(&frame.payload, &outstanding))
+            // A response belongs to exactly one request on exactly one
+            // attachment, and that attachment is gone by definition here. The
+            // client that reattaches numbers its requests from scratch, so a
+            // replayed response can land on a live request that merely reuses
+            // the old id — `model/list` and `thread/list` both answer
+            // `{data, nextCursor}`, so the model catalogue silently becomes
+            // the recent-thread list. Nothing downstream can tell the two
+            // apart, so the frame must not be replayed at all.
+            .filter(|frame| !is_client_request_response(&frame.payload))
             .collect();
         // Whatever we could or couldn't replay, a prompt still waiting on the
         // user is state the client has to be told about — it is the whole
@@ -630,6 +678,23 @@ fn is_unanswered_server_request(
     outstanding.contains_key(&key)
 }
 
+/// True when `payload` is a response to a client→server request: it carries an
+/// id and a `result`/`error`, and no `method` of its own. Server→client
+/// requests also carry an id but always name a `method`, and they stay
+/// replayable — the client still has to answer them.
+fn is_client_request_response(payload: &Value) -> bool {
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    if object.contains_key("method") {
+        return false;
+    }
+    if !matches!(object.get("id"), Some(Value::String(_) | Value::Number(_))) {
+        return false;
+    }
+    object.contains_key("result") || object.contains_key("error")
+}
+
 fn outstanding_replay_message(outstanding: &HashMap<String, OutstandingRequest>) -> Option<Value> {
     if outstanding.is_empty() {
         return None;
@@ -704,6 +769,64 @@ mod tests {
         assert_eq!(handle.outcome, AttachOutcome::Resumed);
         let seqs: Vec<_> = handle.backlog.iter().map(|f| f.seq).collect();
         assert_eq!(seqs, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn response_for_a_replaced_attachment_is_dropped_not_handed_to_its_successor() {
+        let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
+        let first = session.install_attachment(None);
+        let mut second = session.install_attachment(None);
+
+        // The first stream's request finishes after its client was replaced.
+        let dropped = session.enqueue_for_generation(
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "result": {"data": []}}),
+            first.generation,
+        );
+        assert_eq!(dropped, None, "陈旧响应不能进环，更不能投给继任连接");
+        assert!(
+            session
+                .enqueue_for_generation(
+                    serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"data": []}}),
+                    second.generation,
+                )
+                .is_some()
+        );
+
+        let delivered = second.live_rx.recv().await.expect("当前连接的响应仍要送达");
+        assert_eq!(delivered.seq, 1, "陈旧响应不能消耗 replay 序号");
+        assert_eq!(delivered.payload["id"], 1);
+    }
+
+    #[test]
+    fn resumed_attach_never_replays_client_request_responses() {
+        let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
+        session.enqueue(notif("a"));
+        // The reattaching client restarts its request ids at 1, so replaying
+        // this would answer its next request with a model catalogue.
+        session.enqueue(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {"data": [{"id": "sonnet"}], "nextCursor": null},
+        }));
+        session.enqueue(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "error": {"code": -32600, "message": "nope"},
+        }));
+        // Server→client requests carry an id too, but the client still owes
+        // them an answer, so they stay in the backlog.
+        session.enqueue(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "applyPatchApproval",
+            "params": {},
+        }));
+        session.enqueue(notif("b"));
+
+        let handle = session.install_attachment(Some(1));
+        assert_eq!(handle.outcome, AttachOutcome::Resumed);
+        let seqs: Vec<_> = handle.backlog.iter().map(|f| f.seq).collect();
+        assert_eq!(seqs, vec![4, 5]);
     }
 
     #[test]

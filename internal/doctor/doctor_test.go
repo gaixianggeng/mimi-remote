@@ -87,6 +87,25 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 	}
 }
 
+func TestManagedDaemonLifecycleFailureBlocksDoctor(t *testing.T) {
+	checker := &Checker{}
+	results := checker.results([]Check{{
+		Name:    "codex-daemon-lifecycle",
+		Message: "standalone 缺失",
+	}})
+	if results.OK || len(results.Checks) != 1 || results.Checks[0].Level != "error" {
+		t.Fatalf("managed Unix 冷启动条件缺失必须阻断 doctor：%+v", results)
+	}
+
+	external := checker.results([]Check{{
+		Name:    "codex-daemon-lifecycle-external",
+		Message: "外部 owner 生命周期不可验证",
+	}})
+	if !external.OK || len(external.Checks) != 1 || external.Checks[0].Level != "warning" {
+		t.Fatalf("external Unix 生命周期由部署方负责，应保留 warning：%+v", external)
+	}
+}
+
 func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:  "127.0.0.1:8787",

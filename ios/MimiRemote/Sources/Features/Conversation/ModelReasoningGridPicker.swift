@@ -253,6 +253,47 @@ enum ModelReasoningGridCatalog {
         return "\(shortTitle(for: option, kind: layout.kind)) · \(effortTitle(effort))"
     }
 
+    static func compactTriggerTitle(
+        for modelID: String,
+        layout: ModelReasoningGridLayout
+    ) -> String? {
+        guard let option = layout.model(matching: modelID) else { return nil }
+        let title = shortTitle(for: option, kind: layout.kind)
+        if layout.kind == .claude, title.hasPrefix("Claude ") {
+            // 底部工具层已经由当前会话 runtime 提供上下文，省略重复的 Provider 前缀，
+            // 让常见 Claude 模型在 iPhone 窄宽度下仍能完整显示为「Opus 5」。
+            return String(title.dropFirst("Claude ".count))
+        }
+        if layout.kind == .codex, title.lowercased().hasPrefix("gpt-") {
+            // 部分服务端标题使用「GPT-5.6-Sol」，部分使用「GPT-5.6 Sol」。
+            // compact 标签统一成面向人的空格写法，避免真机底栏残留内部模型 ID 风格。
+            return String(title.dropFirst("GPT-".count))
+                .replacingOccurrences(of: "-", with: " ")
+        }
+        return title
+    }
+
+    static func compactTriggerTitle(
+        for modelID: String,
+        effort: CodexAppServerReasoningEffort,
+        layout: ModelReasoningGridLayout
+    ) -> String? {
+        guard let title = compactTriggerTitle(for: modelID, layout: layout) else { return nil }
+        // Claude 的模型名已经足够区分；Codex 同名模型的推理档位会显著影响行为，
+        // 因此在手机底栏用短标签同步展示，完整名称仍留在模型面板与 VoiceOver。
+        guard layout.kind == .codex else { return title }
+        return "\(title) \(compactEffortTitle(effort))"
+    }
+
+    static func compactEffortTitle(_ effort: CodexAppServerReasoningEffort) -> String {
+        switch effort {
+        case .xhigh:
+            return "XH"
+        default:
+            return effortTitle(effort)
+        }
+    }
+
     static func shortTitle(
         for option: CodexAppServerModelOption,
         kind _: ModelReasoningGridKind

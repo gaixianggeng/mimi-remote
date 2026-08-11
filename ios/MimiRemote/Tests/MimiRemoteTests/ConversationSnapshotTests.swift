@@ -1283,6 +1283,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: false,
             isGoalUpdating: false,
             // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
@@ -1367,61 +1368,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testComposerSendModeLabelsUseConsistentModeSuffix() {
-        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
-        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
-        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
-        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
-    }
-
-    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
-        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-        let expanded = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: true,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-
-        XCTAssertEqual(collapsed.materialStrength, .thin)
-        XCTAssertEqual(expanded.materialStrength, .regular)
-        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
-        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
-        XCTAssertEqual(collapsed.borderOpacity, 0.58)
-        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
-    }
-
-    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .light,
-                reduceTransparency: false
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.05)
-        }
-    }
-
-    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .dark,
-                reduceTransparency: true
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.58)
-        }
-    }
-
     func testExpandedGoalTrayDarkMaterialSeparatesBackdropContent() {
         let themeStore = makeThemeStore()
         let goal = ThreadGoal(
@@ -1439,6 +1385,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: true,
             isGoalUpdating: false,
             goalErrorMessage: nil,
@@ -1808,16 +1755,15 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             height: CGFloat,
             colorScheme: ColorScheme,
             prefersTable: Bool,
-            hidesNavigationTitle: Bool,
             bottomContentMargin: CGFloat,
             dynamicTypeSize: DynamicTypeSize,
             increasedContrast: Bool
         )] = [
-            ("iphone-390-light", 390, 844, .light, false, false, 84, .large, false),
-            ("ipad-mini-744-light", 744, 980, .light, true, true, 84, .large, false),
-            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, true, 16, .large, true),
-            ("split-375-light", 375, 812, .light, false, false, 84, .large, false),
-            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, true, 16, .accessibility3, false),
+            ("iphone-390-light", 390, 844, .light, false, 84, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, true, 84, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, 16, .large, true),
+            ("split-375-light", 375, 812, .light, false, 84, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, 16, .accessibility3, false),
         ]
 
         for scenario in scenarios {
@@ -1826,7 +1772,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 height: scenario.height,
                 colorScheme: scenario.colorScheme,
                 prefersTable: scenario.prefersTable,
-                hidesNavigationTitle: scenario.hidesNavigationTitle,
                 bottomContentMargin: scenario.bottomContentMargin,
                 dynamicTypeSize: scenario.dynamicTypeSize
             )
@@ -1880,6 +1825,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             preview: "",
             recencyAt: Date().addingTimeInterval(-3 * 60)
         )
+        let completedObservedAt = Date().addingTimeInterval(-3 * 60)
 
         let view = VStack(spacing: 0) {
             List {
@@ -1906,6 +1852,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .needYou,
                         isSelected: false,
                         isRecentlyCompleted: false,
+                        completionObservedAt: nil,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
@@ -1919,7 +1866,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .running,
                         isSelected: true,
                         isRecentlyCompleted: false,
-                        projectIcon: nil,
+                        completionObservedAt: nil,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: RuntimeActivitySnapshot(
                             turnStartedAt: Date().addingTimeInterval(-12 * 60),
                             lastActivityAt: Date()
@@ -1935,7 +1883,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .justCompleted,
                         isSelected: false,
                         isRecentlyCompleted: true,
-                        projectIcon: nil,
+                        completionObservedAt: completedObservedAt,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
                     .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -2033,7 +1982,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         height: CGFloat,
         colorScheme: ColorScheme,
         prefersTable: Bool,
-        hidesNavigationTitle: Bool,
         bottomContentMargin: CGFloat,
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
@@ -2179,14 +2127,16 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         sessionStore.sidebarProjects = [project, secondProject]
         sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]
+        // 主列表继续验证 Mimi 本地未读；浮动侧栏的“刚完成”使用独立的完成观察时间。
         sessionStore.setUnreadHistorySessionIDs([historyRows[1].id, historyRows[5].id])
         sessionStore.selectedSessionID = historyRows[0].id
 
         return NavigationStack {
             SessionListView(
-                manageConnections: {},
+                manageConnections: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth ? {} : nil,
                 prefersTableDensity: prefersTable,
-                hidesNavigationTitle: hidesNavigationTitle,
+                // 与生产布局一致：iPhone / iPad mini 竖屏使用紧凑导航，宽屏才显示完整搜索框。
+                usesCompactNavigation: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth,
                 bottomContentMargin: bottomContentMargin
             )
         }

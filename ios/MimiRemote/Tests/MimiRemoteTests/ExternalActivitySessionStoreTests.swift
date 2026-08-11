@@ -3,6 +3,27 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testExternalThreadActiveTurnSendOutcomeRemainsRetryable() {
+        let error = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32600,
+            message: "thread is active in Codex Desktop",
+            data: .object([
+                "accepted": .bool(false),
+                "retryable": .bool(true),
+                "reason": .string("external_thread_active"),
+                "retry_after_ms": .int(1_500)
+            ])
+        ))
+
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: error),
+            .retryableExternalThreadActive(
+                message: error.localizedDescription,
+                retryAfterMilliseconds: 1_500
+            )
+        )
+    }
+
     func testExternalActivityResponseDecodesOnlyReadOnlyIdentityAndRevisionFields() throws {
         let data = Data(#"""
         {
@@ -26,6 +47,80 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(response.activities[0].projectID, "project-1")
         XCTAssertEqual(response.activities[0].turnID, "turn-1")
         XCTAssertEqual(response.activities[0].revision, "rev-1")
+    }
+
+    func testDirectRuntimeLatestTurnHistoryUsesOneCompleteTurnPage() async throws {
+        let project = AgentProject(id: "proj_latest_turn", name: "Latest Turn", path: "/tmp/latest-turn")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/read", "thread/turns/list"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let pageTask = Task {
+            try await client.latestTurnHistoryPage(sessionID: "thr_latest_turn")
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let metadataRead = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        XCTAssertEqual(metadataRead.params?.objectValue?["includeTurns"]?.boolValue, false)
+        transportResponse(
+            transport,
+            id: metadataRead.id,
+            result: #"{"thread":{"id":"thr_latest_turn","sessionId":"thr_latest_turn","preview":"latest","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"active"},"path":null,"cwd":"/tmp/latest-turn","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"latest","turns":[]}}"#
+        )
+        let turnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        XCTAssertEqual(turnsRequest.params?.objectValue?["limit"]?.intValue, 1)
+        XCTAssertEqual(turnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(turnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        transportResponse(
+            transport,
+            id: turnsRequest.id,
+            result: #"{"data":[{"id":"turn_latest","status":"inProgress","items":[{"type":"userMessage","id":"item_latest_user","content":[{"type":"text","text":"latest prompt"}]},{"type":"agentMessage","id":"item_latest_agent","text":"latest answer","phase":"commentary"}]}],"nextCursor":"older"}"#
+        )
+
+        let pageResult = try await pageTask.value
+        let page = try XCTUnwrap(pageResult)
+        XCTAssertEqual(page.messages.map(\.content), ["latest prompt", "latest answer"])
+        XCTAssertEqual(Set(page.messages.compactMap(\.turnID)), ["turn_latest"])
+    }
+
+    func testDirectRuntimeLatestTurnHistoryDoesNotFallbackToFullThreadRead() async throws {
+        let project = AgentProject(id: "proj_latest_turn_legacy", name: "Legacy Latest", path: "/tmp/latest-legacy")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/read"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let pageTask = Task {
+            try await client.latestTurnHistoryPage(sessionID: "thr_latest_legacy")
+        }
+
+        let page = try await pageTask.value
+        XCTAssertNil(page)
+        let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requests.contains { $0.method == "thread/read" })
+        XCTAssertFalse(requests.contains { $0.method == "thread/turns/list" })
     }
 
     func testExternalActivityMovesSessionBetweenActiveAndHistoryAndDeduplicatesRevision() async throws {
@@ -64,7 +159,12 @@ extension ConversationDataFlowTests {
             workspacePages: [project.id: SessionsPage(sessions: [history])],
             historyPages: [
                 threadID: HistoryMessagesPage(messages: [
-                    CodexHistoryMessage(role: "assistant", content: "Mac 输出", createdAt: Date())
+                    CodexHistoryMessage(
+                        role: "assistant",
+                        content: "Mac 输出",
+                        createdAt: Date(),
+                        turnID: "turn-1"
+                    )
                 ])
             ],
             externalActivityResponses: responses
@@ -81,6 +181,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessionsByID[threadID]?.activeTurnID, "turn-1")
         XCTAssertEqual(store.externalActivityPollingDelayNanoseconds(), 5_000_000_000)
         XCTAssertEqual(client.requestedMessageSessionIDs.count, 1)
+        XCTAssertEqual(client.requestedMessageLimits, [20])
 
         let duplicateRefresh = await store.refreshExternalActivities(client: client)
         XCTAssertTrue(duplicateRefresh)
@@ -93,6 +194,11 @@ extension ConversationDataFlowTests {
         let revisedRefresh = await store.refreshExternalActivities(client: client)
         XCTAssertTrue(revisedRefresh)
         XCTAssertEqual(client.requestedMessageSessionIDs.count, 2)
+        XCTAssertEqual(
+            client.requestedMessageLimits,
+            [20, 1],
+            "运行中 revision 更新只应增量读取最新一个 turn"
+        )
 
         let completedRefresh = await store.refreshExternalActivities(client: client)
         XCTAssertTrue(completedRefresh)
@@ -108,6 +214,805 @@ extension ConversationDataFlowTests {
             3,
             "terminal 快照应执行一次最终历史刷新"
         )
+        XCTAssertEqual(client.requestedMessageLimits, [20, 1, 20])
+    }
+
+    func testExternalActivityRevisionMergesLatestTurnWithoutReplacingLoadedHistoryCursor() async throws {
+        let project = makeProject(id: "proj_external_tail_refresh")
+        let threadID = "thread-external-tail"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Mac 长会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let olderMessage = CodexHistoryMessage(
+            role: "user",
+            content: "已加载的较早历史",
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let latestMessage = CodexHistoryMessage(
+            role: "assistant",
+            content: "Mac 最新输出",
+            createdAt: Date(timeIntervalSince1970: 20),
+            turnID: "turn-running"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            historyPages: [
+                threadID: HistoryMessagesPage(
+                    messages: [latestMessage],
+                    previousCursor: "turns:new-tail-cursor",
+                    hasMoreBefore: true
+                )
+            ]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([olderMessage], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        store.historyPreviousCursorBySessionID[threadID] = "turns:loaded-full-cursor"
+        store.historyHasMoreBeforeBySessionID[threadID] = true
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-running",
+                revision: "rev-tail"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [1])
+        XCTAssertEqual(
+            store.conversationStore.messages(for: threadID).map(\.content),
+            ["已加载的较早历史", "Mac 最新输出"]
+        )
+        XCTAssertEqual(store.historyPreviousCursorBySessionID[threadID], "turns:loaded-full-cursor")
+        XCTAssertTrue(store.historyHasMoreBeforeBySessionID[threadID] == true)
+        XCTAssertEqual(store.externalActivityHistoryRevisionBySessionID[threadID], "rev-tail")
+    }
+
+    func testExternalActivityRevisionRetriesWhenLatestTurnRefreshFails() async throws {
+        let project = makeProject(id: "proj_external_tail_retry")
+        let threadID = "thread-external-tail-retry"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Mac 长会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            messagesError: MockError.timeout
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-retry"
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [1, 1])
+        XCTAssertNil(store.externalActivityHistoryRevisionBySessionID[threadID])
+    }
+
+    func testExternalActivityRevisionWithoutTurnIDRetriesOnlyWhenRevisionChanges() async throws {
+        let project = makeProject(id: "proj_external_missing_turn")
+        let threadID = "thread-external-missing-turn"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "缺少 turn 身份",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    role: "assistant",
+                    content: "未归属输出",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-now-visible"
+                )
+            ])]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        let activity = ExternalSessionActivity(
+            threadID: threadID,
+            projectID: project.id,
+            source: "codex_desktop",
+            state: "running",
+            turnID: nil,
+            revision: "rev-no-turn",
+            lastActivityAt: Date(timeIntervalSince1970: 100)
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let revisedWithoutTurn = ExternalSessionActivity(
+            threadID: threadID,
+            projectID: project.id,
+            source: "codex_desktop",
+            state: "running",
+            turnID: nil,
+            revision: "rev-no-turn-2",
+            lastActivityAt: Date(timeIntervalSince1970: 110)
+        )
+        await store.applyExternalActivitySnapshot(
+            [revisedWithoutTurn],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+        XCTAssertNil(store.externalActivityHistoryRevisionBySessionID[threadID])
+        XCTAssertEqual(
+            store.externalActivityHistoryAttemptBySessionID[threadID],
+            ExternalActivityHistoryAttempt(revision: "rev-no-turn-2", turnID: nil)
+        )
+        XCTAssertNil(store.externalActivityHistoryFallbackBySessionID[threadID])
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-now-visible",
+                revision: "rev-turn-visible"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20, 1])
+        XCTAssertEqual(store.externalActivityHistoryRevisionBySessionID[threadID], "rev-turn-visible")
+        XCTAssertNil(store.externalActivityHistoryFallbackBySessionID[threadID])
+    }
+
+    func testExternalActivityLatestTurnOversizeDoesNotRetryFullForSameTurn() async throws {
+        let project = makeProject(id: "proj_external_tail_oversize")
+        let threadID = "thread-external-tail-oversize"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "最新 turn 超限",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            messagesError: historyPolicyError(
+                reason: "history_response_too_large",
+                responseBytes: 9_000_000,
+                maxResponseBytes: 5_242_880,
+                method: "thread/turns/list",
+                itemsView: "full"
+            )
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        let firstActivity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-oversize",
+            revision: "rev-oversize-1"
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [firstActivity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-oversize",
+                revision: "rev-oversize-2"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [1, 60])
+        XCTAssertNil(store.externalActivityHistoryRevisionBySessionID[threadID])
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.mode, .skip)
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.turnID, "turn-oversize")
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-new",
+                revision: "rev-new-turn"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [1, 60, 1, 60])
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.turnID, "turn-new")
+    }
+
+    func testExternalActivityFullOversizeRetriesOnlyEconomyUntilNewTurnOrTerminal() async throws {
+        let project = makeProject(id: "proj_external_full_oversize")
+        let threadID = "thread-external-full-oversize"
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "完整历史超限",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [running])
+        )
+        let store = makeExternalActivityStore(project: project, session: running, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        let firstActivity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-full-oversize-1"
+        )
+
+        let firstRefresh = Task {
+            await store.applyExternalActivitySnapshot(
+                [firstActivity],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(
+                reason: "history_response_too_large",
+                responseBytes: 9_000_000,
+                maxResponseBytes: 5_242_880,
+                method: "thread/read",
+                itemsView: "fullread"
+            )
+        )
+        await client.waitForHistoryRequestCount(2)
+        client.failHistoryRequest(at: 1, with: MockError.timeout)
+        await firstRefresh.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.mode, .economy)
+        XCTAssertNil(store.externalActivityHistoryAttemptBySessionID[threadID])
+
+        let retryEconomy = Task {
+            await store.applyExternalActivitySnapshot(
+                [firstActivity],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(3)
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    role: "assistant",
+                    content: "缩略历史 R1",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-running"
+                )],
+                loadMode: .economy,
+                notice: "当前显示缩略历史。"
+            )
+        )
+        await retryEconomy.value
+
+        await store.applyExternalActivitySnapshot(
+            [firstActivity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60, 60])
+
+        let revisedActivity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-full-oversize-2"
+        )
+        let revisedEconomy = Task {
+            await store.applyExternalActivitySnapshot(
+                [revisedActivity],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(4)
+        client.resolveHistoryRequest(
+            at: 3,
+            with: HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    role: "assistant",
+                    content: "缩略历史 R2",
+                    createdAt: Date(timeIntervalSince1970: 30),
+                    turnID: "turn-running"
+                )],
+                loadMode: .economy
+            )
+        )
+        await revisedEconomy.value
+
+        let newTurnActivity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-new",
+            revision: "rev-new-turn"
+        )
+        let newTurnFull = Task {
+            await store.applyExternalActivitySnapshot(
+                [newTurnActivity],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(5)
+        client.resolveHistoryRequest(
+            at: 4,
+            with: HistoryMessagesPage(messages: [CodexHistoryMessage(
+                role: "assistant",
+                content: "新 turn 完整历史",
+                createdAt: Date(timeIntervalSince1970: 40),
+                turnID: "turn-new"
+            )])
+        )
+        await newTurnFull.value
+
+        let terminalRefresh = Task {
+            await store.applyExternalActivitySnapshot(
+                [],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(6)
+        client.resolveHistoryRequest(
+            at: 5,
+            with: HistoryMessagesPage(messages: [CodexHistoryMessage(
+                role: "assistant",
+                content: "终态完整历史",
+                createdAt: Date(timeIntervalSince1970: 50),
+                turnID: "turn-new"
+            )])
+        )
+        await terminalRefresh.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60, 60, 60, 20, 20])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy, .economy, .full, .full])
+        XCTAssertNil(store.externalActivityHistoryFallbackBySessionID[threadID])
+    }
+
+    func testExternalActivityRevisionMissingExpectedTurnRetriesLatestPage() async throws {
+        let project = makeProject(id: "proj_external_wrong_turn")
+        let threadID = "thread-external-wrong-turn"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "turn 尚未可见",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    role: "assistant",
+                    content: "旧 turn 输出",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-older"
+                )
+            ])]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-wrong-turn"
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [1, 1])
+        XCTAssertNil(store.externalActivityHistoryRevisionBySessionID[threadID])
+    }
+
+    func testExternalActivityFullHistoryWithoutExpectedTurnDoesNotAdvanceCoverage() async throws {
+        let project = makeProject(id: "proj_external_full_lag")
+        let threadID = "thread-external-full-lag"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "完整页尚未看见 turn",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [])]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-full-lag"
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 1])
+        XCTAssertNil(store.externalActivityHistoryRevisionBySessionID[threadID])
+    }
+
+    func testLateExternalActivityTailDoesNotOverwriteNewerFullHistoryJob() async throws {
+        let project = makeProject(id: "proj_external_tail_race")
+        let threadID = "thread-external-tail-race"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "并发历史刷新",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-running",
+            revision: "rev-race"
+        )
+
+        let activityTask = Task { @MainActor in
+            await store.applyExternalActivitySnapshot(
+                [activity],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+
+        let fullHistoryTask = Task { @MainActor in
+            guard let currentSession = store.sessionsByID[threadID] else { return false }
+            return await store.loadHistory(
+                for: currentSession,
+                quiet: true,
+                loadMode: .full,
+                force: true,
+                reason: .manualFull
+            )
+        }
+        await client.waitForHistoryRequestCount(2)
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "fresh-full-message",
+                    role: "assistant",
+                    content: "更新的完整历史",
+                    createdAt: Date(timeIntervalSince1970: 30),
+                    turnID: "turn-running"
+                )
+            ])
+        )
+        let didLoadFullHistory = await fullHistoryTask.value
+        XCTAssertTrue(didLoadFullHistory)
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "late-tail-message",
+                    role: "assistant",
+                    content: "迟到的旧增量",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-running"
+                )
+            ])
+        )
+        await activityTask.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [1, 20])
+        XCTAssertEqual(
+            store.conversationStore.messages(for: threadID).map(\.content),
+            ["更新的完整历史"]
+        )
+        XCTAssertEqual(store.externalActivityHistoryRevisionBySessionID[threadID], "rev-race")
+    }
+
+    func testExternalActivityRevisionFallsBackToOneFullRefreshWithoutTurnPaging() async throws {
+        let project = makeProject(id: "proj_external_legacy_refresh")
+        let threadID = "thread-external-legacy"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "旧 app-server 会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            historyPages: [
+                threadID: HistoryMessagesPage(messages: [
+                    CodexHistoryMessage(
+                        role: "assistant",
+                        content: "完整历史回退",
+                        createdAt: Date(timeIntervalSince1970: 20),
+                        turnID: "turn-running"
+                    )
+                ])
+            ],
+            supportsLatestTurnHistoryPage: false
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(role: "user", content: "已有历史", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: history)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-running",
+                revision: "rev-legacy"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedMessageLimits, [20])
+        XCTAssertEqual(store.externalActivityHistoryRevisionBySessionID[threadID], "rev-legacy")
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.mode, .skip)
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-running",
+                revision: "rev-legacy-2"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        XCTAssertEqual(client.requestedMessageLimits, [20])
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-new",
+                revision: "rev-legacy-new-turn"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+    }
+
+    func testExternalActivityLegacyFullOversizeRetriesOnlyEconomyAfterTransientFailure() async throws {
+        let project = makeProject(id: "proj_external_legacy_oversize")
+        let threadID = "thread-external-legacy-oversize"
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "旧协议大历史",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [running]),
+            supportsLatestTurnHistoryPage: false
+        )
+        let store = makeExternalActivityStore(project: project, session: running, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.conversationStore.setHistory([
+            CodexHistoryMessage(
+                role: "assistant",
+                content: "已加载历史",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: "turn-running"
+            )
+        ], sessionID: threadID)
+        store.historyLoadedSignatureBySessionID[threadID] = HistoryLoadSignature(session: running)
+        store.historyLoadedQualityBySessionID[threadID] = .full
+
+        let firstRefresh = Task {
+            await store.applyExternalActivitySnapshot(
+                [makeExternalActivity(
+                    threadID: threadID,
+                    projectID: project.id,
+                    turnID: "turn-running",
+                    revision: "rev-legacy-oversize-1"
+                )],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(
+                reason: "history_response_too_large",
+                responseBytes: 9_000_000,
+                maxResponseBytes: 5_242_880,
+                method: "thread/read",
+                itemsView: "fullread"
+            )
+        )
+        await client.waitForHistoryRequestCount(2)
+        client.failHistoryRequest(at: 1, with: MockError.timeout)
+        await firstRefresh.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.mode, .economy)
+
+        let economyRetry = Task {
+            await store.applyExternalActivitySnapshot(
+                [makeExternalActivity(
+                    threadID: threadID,
+                    projectID: project.id,
+                    turnID: "turn-running",
+                    revision: "rev-legacy-oversize-2"
+                )],
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForHistoryRequestCount(3)
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    role: "assistant",
+                    content: "缩略历史恢复",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-running"
+                )],
+                loadMode: .economy
+            )
+        )
+        await economyRetry.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60, 60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
+        XCTAssertEqual(store.externalActivityHistoryFallbackBySessionID[threadID]?.mode, .economy)
     }
 
     func testExternalActivityOverridesLegacyTakenOverAndBlocksControlRPCs() async throws {
@@ -188,6 +1093,217 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(socket.sentApprovals.isEmpty)
         XCTAssertEqual(socket.sentCtrlCCount, 0)
         XCTAssertTrue(client.createPayloads.isEmpty)
+    }
+
+    func testExternalReadOnlySessionDoesNotRunPendingWebSocketReconnectPreflight() async throws {
+        let project = makeProject(id: "proj_external_reconnect_guard")
+        let threadID = "thread-external-reconnect-guard"
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Mac 只读会话",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: "turn-mac"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            workspacePages: [project.id: SessionsPage(sessions: [running])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    role: "assistant",
+                    content: "不应由迟到 reconnect 重拉",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-mac"
+                )
+            ])]
+        )
+        let store = makeExternalActivityStore(project: project, session: running, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.externalReadOnlySessionIDs.insert(threadID)
+        store.externalActivityBySessionID[threadID] = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-mac",
+            revision: "rev-external-reconnect"
+        )
+        store.connectedSessionID = threadID
+        store.connectedHostScope = store.appStore.activeHostScope
+        store.webSocketReconnectAttemptBySessionID[threadID] = 1
+
+        XCTAssertFalse(store.shouldAutoReconnectWebSocket(sessionID: threadID))
+        let reconnectGeneration = store.webSocketReconnectGeneration
+        let refreshed = await store.refreshSessionSnapshotBeforeReconnect(
+            sessionID: threadID,
+            reconnectGeneration: reconnectGeneration
+        )
+        XCTAssertNil(refreshed)
+        await store.runScheduledWebSocketReconnect(
+            sessionID: threadID,
+            attempt: 1,
+            reconnectGeneration: reconnectGeneration
+        )
+
+        XCTAssertTrue(client.requestedSessionIDs.isEmpty)
+        XCTAssertTrue(client.requestedMessageLimits.isEmpty)
+    }
+
+    func testReconnectPreflightReusesJustLoadedFullHistoryAfterMetadataRefresh() async throws {
+        let project = makeProject(id: "proj_reconnect_recent_history")
+        let threadID = "thread-reconnect-recent-history"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "刚加载完成的长会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        var refreshed = history
+        refreshed.updatedAt = Date(timeIntervalSince1970: 200)
+        let sessionGate = SessionResponseGate()
+        let socket = MockWebSocketClient()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            sessionHandler: { _, _ in try await sessionGate.response() },
+            historyPages: [threadID: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    role: "assistant",
+                    content: "刚完成的完整首屏",
+                    createdAt: Date(timeIntervalSince1970: 100)
+                )
+            ])]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client, socket: socket)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+
+        let firstLoad = await store.loadHistory(for: history, quiet: true)
+        XCTAssertTrue(firstLoad)
+        XCTAssertEqual(client.requestedMessageLimits, [20])
+
+        store.webSocketReconnectAttemptBySessionID[threadID] = 1
+        let reconnectGeneration = store.webSocketReconnectGeneration
+        let reconnect = Task { @MainActor in
+            await store.runScheduledWebSocketReconnect(
+                sessionID: threadID,
+                attempt: 1,
+                reconnectGeneration: reconnectGeneration
+            )
+        }
+        await sessionGate.waitUntilRequested()
+        // 模拟 thread/read 自身很慢并跨过 4 秒 TTL；是否复用必须锚定 preflight 开始时刻。
+        for key in Array(store.historyFirstPageCacheByKey.keys) {
+            guard let entry = store.historyFirstPageCacheByKey[key] else { continue }
+            store.historyFirstPageCacheByKey[key] = HistoryFirstPageCacheEntry(
+                page: entry.page,
+                loadedAt: .distantPast,
+                token: entry.token
+            )
+        }
+        sessionGate.resolve(SessionResponse(session: refreshed))
+        await reconnect.value
+
+        XCTAssertEqual(store.sessionsByID[threadID]?.updatedAt, refreshed.updatedAt)
+        XCTAssertEqual(client.requestedSessionIDs, [threadID])
+        XCTAssertEqual(
+            client.requestedMessageLimits,
+            [20],
+            "thread/read 更新 metadata 后，4 秒短窗内不能再次下载同一完整首屏"
+        )
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID], "短缓存只省略重复历史，不能阻止 reconnect/resume")
+
+        // 下一次 preflight 开始时缓存已经过期，必须恢复正常的历史补拉，不能把短窗变成长久跳过。
+        store.webSocketReconnectAttemptBySessionID[threadID] = 2
+        let expiredReconnectGeneration = store.webSocketReconnectGeneration
+        let expiredReconnect = Task { @MainActor in
+            await store.runScheduledWebSocketReconnect(
+                sessionID: threadID,
+                attempt: 2,
+                reconnectGeneration: expiredReconnectGeneration
+            )
+        }
+        await sessionGate.waitUntilRequested()
+        sessionGate.resolve(SessionResponse(session: refreshed))
+        await expiredReconnect.value
+
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID, threadID])
+    }
+
+    func testExternalActivityInvalidatesReconnectWhileSessionReadIsInFlight() async throws {
+        let project = makeProject(id: "proj_external_reconnect_race")
+        let threadID = "thread-external-reconnect-race"
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "重连中切为 Mac 只读",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: "turn-mac"
+        )
+        let gate = SessionResponseGate()
+        let socket = MockWebSocketClient()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            workspacePages: [project.id: SessionsPage(sessions: [running])],
+            sessionHandler: { _, _ in try await gate.response() },
+            historyPages: [threadID: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    role: "assistant",
+                    content: "Mac 最新输出",
+                    createdAt: Date(timeIntervalSince1970: 20),
+                    turnID: "turn-mac"
+                )
+            ])]
+        )
+        let store = makeExternalActivityStore(project: project, session: running, client: client, socket: socket)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.connectedSessionID = threadID
+        store.connectedHostScope = store.appStore.activeHostScope
+        store.webSocketReconnectAttemptBySessionID[threadID] = 1
+        let reconnectGeneration = store.webSocketReconnectGeneration
+
+        let reconnect = Task { @MainActor in
+            await store.runScheduledWebSocketReconnect(
+                sessionID: threadID,
+                attempt: 1,
+                reconnectGeneration: reconnectGeneration
+            )
+        }
+        await gate.waitUntilRequested()
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-mac",
+                revision: "rev-race"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        gate.resolve(SessionResponse(session: running))
+        await reconnect.value
+
+        XCTAssertEqual(client.requestedSessionIDs, [threadID])
+        XCTAssertEqual(
+            client.requestedMessageLimits,
+            [20],
+            "唯一 full 来自 external-activity 对账；迟到的 reconnect 不能再发第二页"
+        )
+        XCTAssertTrue(socket.connectedSessionIDs.isEmpty)
     }
 
     func testLocallyStartedTurnIgnoresMatchingDesktopOriginActivityButNotNewMacTurn() async throws {
@@ -372,7 +1488,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
         XCTAssertNil(store.connectedSessionID)
         XCTAssertGreaterThanOrEqual(socket.disconnectCallCount, 1)
-        XCTAssertTrue(store.canReconcileAcceptedTurnFromRetiredSocket(
+        XCTAssertTrue(store.canReconcileTurnOutcomeFromRetiredSocket(
             sessionID: threadID,
             outcome: .accepted(turnID: "turn-local-race"),
             hostScope: store.appStore.activeHostScope
@@ -452,6 +1568,94 @@ extension ConversationDataFlowTests {
                 .first(where: { $0.clientMessageID == clientMessageID })?
                 .sendStatus,
             .sent
+        )
+    }
+
+    func testRetryableExternalThreadActiveKeepsMessageQueuedUntilDesktopTurnEnds() async throws {
+        let project = makeProject(id: "proj_external_retryable_send")
+        let threadID = "thread-external-retryable-send"
+        let clientMessageID = "client-external-retryable-send"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "外部占用后续发",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-desktop-live",
+            revision: "rev-desktop-live"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            workspacePages: [project.id: SessionsPage(sessions: [session])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [])],
+            externalActivityResponses: [
+                ExternalActivityResponse(activities: [activity], scannedAt: Date()),
+                ExternalActivityResponse(activities: [], scannedAt: Date())
+            ]
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: session,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.sessionControlStateByID[threadID] = .takenOver
+        let payload = CodexAppServerTurnPayload(prompt: "Desktop 完成后继续发送")
+        store.conversationStore.appendLocalUser(
+            payload.previewText,
+            sessionID: threadID,
+            clientMessageID: clientMessageID,
+            sendStatus: .sending,
+            turnPayload: payload
+        )
+
+        store.handleTurnSendOutcome(
+            clientMessageID: clientMessageID,
+            sessionID: threadID,
+            outcome: .retryableExternalThreadActive(
+                message: "Desktop 正在执行这个会话",
+                retryAfterMilliseconds: 0
+            )
+        )
+
+        for _ in 0..<80 where client.externalActivityCallCount < 1 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(client.externalActivityCallCount, 1)
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .waiting
+        )
+        XCTAssertEqual(
+            store.conversationStore.messages(for: threadID)
+                .first(where: { $0.clientMessageID == clientMessageID })?
+                .sendStatus,
+            .local
+        )
+        XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertTrue(socket.sentTurns.isEmpty)
+
+        let terminalRefresh = await store.refreshExternalActivities(client: client)
+        XCTAssertTrue(terminalRefresh)
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+
+        socket.emitStatus(.connected)
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, payload.textPrompt)
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .dispatching
         )
     }
 
@@ -903,7 +2107,7 @@ extension ConversationDataFlowTests {
     private func makeExternalActivityStore(
         project: AgentProject,
         session: AgentSession,
-        client: MockSessionStoreClient,
+        client: any SessionStoreAPIClient,
         socket: MockWebSocketClient = MockWebSocketClient(),
         externalActivitySleep: @escaping (UInt64) async -> Void = { _ in }
     ) -> SessionStore {

@@ -24,6 +24,12 @@ const (
 	appServerGatewayPath        = "/api/app-server/ws"
 	appServerPolicyErrorCode    = -32080
 	appServerGatewayWriteWindow = 10 * time.Second
+	// 小帧继续使用原有 10 秒保护；历史大帧则按保守下行速率扩展期限。
+	// 这样不会拖慢正常链路，只避免 4–5 MiB 页面在弱网即将写完时被主动断开并整页重传。
+	appServerGatewayLargeFrameThreshold      = 256 << 10
+	appServerGatewayLargeFrameBytesPerSecond = 96 << 10
+	appServerGatewayLargeFrameMaxWriteWindow = 75 * time.Second
+	appServerGatewayPongGrace                = 20 * time.Second
 	// 个人/小团队场景通常只有 1–2 个移动端。保留重连余量，同时限制一个泄漏的 token
 	// 无限建立“移动端 WS + 本机 upstream WS”连接，避免耗尽文件描述符和 goroutine。
 	appServerGatewayMaxConnections = 8
@@ -43,22 +49,27 @@ const (
 )
 
 var (
-	appServerGatewayReadLimit                     int64 = 64 << 20
-	appServerGatewayPongWait                            = 60 * time.Second
-	appServerGatewayPingPeriod                          = 45 * time.Second
-	appServerGatewayPendingThreadTTL                    = 30 * time.Second
-	appServerGatewayPendingThreadMax                    = 128
-	appServerGatewayPendingClientRequestTTL             = 2 * time.Minute
-	appServerGatewayPendingClientRequestMax             = 256
-	appServerGatewayPendingServerRequestTTL             = 24 * time.Hour
-	appServerGatewayPendingServerRequestMax             = 256
-	appServerGatewayPendingHistoryRequestTTL            = 2 * time.Minute
-	appServerGatewayPendingHistoryRequestMax            = 256
-	appServerGatewayHistoryResponseCapBytes             = 5 << 20
-	appServerGatewayHistoryBudgetWindow                 = 15 * time.Second
-	appServerGatewayHistoryBudgetMaxRequests            = 6
-	appServerGatewayHistoryBudgetMaxRequestBytes        = int64(64 << 10)
-	appServerGatewayHistoryBudgetMaxResponseBytes       = int64(8 << 20)
+	appServerGatewayReadLimit  int64 = 64 << 20
+	appServerGatewayPingPeriod       = 45 * time.Second
+	// 大帧写入期间当前 reader 会同步等待 client WriteMessage，ping 也会等待同一把写锁。
+	// Pong 窗口必须覆盖“一整个 ping 周期 + 最大大帧写入 + 控制帧写入 + 网络余量”，
+	// 否则放宽写超时后反而可能被旧的 60 秒读超时提前断开，触发整页重传。
+	appServerGatewayPongWait = appServerGatewayPingPeriod +
+		appServerGatewayLargeFrameMaxWriteWindow + appServerGatewayWriteWindow +
+		appServerGatewayPongGrace
+	appServerGatewayPendingThreadTTL              = 30 * time.Second
+	appServerGatewayPendingThreadMax              = 128
+	appServerGatewayPendingClientRequestTTL       = 2 * time.Minute
+	appServerGatewayPendingClientRequestMax       = 256
+	appServerGatewayPendingServerRequestTTL       = 24 * time.Hour
+	appServerGatewayPendingServerRequestMax       = 256
+	appServerGatewayPendingHistoryRequestTTL      = 2 * time.Minute
+	appServerGatewayPendingHistoryRequestMax      = 256
+	appServerGatewayHistoryResponseCapBytes       = 5 << 20
+	appServerGatewayHistoryBudgetWindow           = 15 * time.Second
+	appServerGatewayHistoryBudgetMaxRequests      = 6
+	appServerGatewayHistoryBudgetMaxRequestBytes  = int64(64 << 10)
+	appServerGatewayHistoryBudgetMaxResponseBytes = int64(8 << 20)
 	// 5 Mbps 链路下单次 5 MiB payload 理论约需 8.4 秒；15 秒窗口保留协议和弱网余量。
 	// 8 MiB 总预算继续限制同一窗口内的重复大响应，避免放宽单次 cap 后独占链路。
 	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 8 << 20
@@ -231,8 +242,14 @@ type appServerGatewayPolicy struct {
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
 	globalListCursors     map[string]string
-	beforePendingRemember func()
-	beforeManagedComplete func()
+	// 旧版 iOS 不会在 auto-handoff 后清理本地 resume binding。只有显式声明
+	// 私有 capability 的新版客户端才能启用 turn/completed 自动交接。
+	threadHandoffCapable bool
+	// archive 广播与 closed/notLoaded 在不同 upstream 连接上的到达次序没有保证。
+	// 记录已确认由 coordinator 发起的 archive，直到对应 unarchive 到达。
+	threadHandoffLifecycle map[string]time.Time
+	beforePendingRemember  func()
+	beforeManagedComplete  func()
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -569,6 +586,11 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游鉴权不可用，请在电脑运行 agentd doctor")
 		return
 	}
+	dialer, err := r.appServerUpstreamDialer(4 * time.Second)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
+		return
+	}
 
 	client, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
@@ -580,7 +602,6 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
 	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
 	// 收到可重试错误，而不是每次都白等 10s。外侧握手已完成后才拨号，确保畸形握手不会占用 upstream。
-	dialer := websocket.Dialer{HandshakeTimeout: 4 * time.Second}
 	dialStart := time.Now()
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
 	dialDuration := time.Since(dialStart)
@@ -631,6 +652,12 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		if _, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); err != nil {
+			return "", err
+		}
+		return appserver.LocalDaemonHandshakeURL(), nil
+	}
 	raw := strings.TrimSpace(r.cfg.AppServer.Listen)
 	if raw == "" {
 		return "", fmt.Errorf("app_server.listen 未配置，无法启用 app-server raw gateway")
@@ -676,6 +703,10 @@ func isLoopbackGatewayHost(host string) bool {
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		// Unix socket 由 0700 目录 + 0600 socket 约束同一用户，不使用 WebSocket Bearer。
+		return nil, nil
+	}
 	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
 	if tokenFile == "" {
 		if r.cfg.AppServer.Managed {
@@ -695,4 +726,15 @@ func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 	// app-server upstream capability token 和 iPad 访问 agentd 的 token 分离，避免把外侧 token 复用到本机上游。
 	headers.Set("Authorization", "Bearer "+token)
 	return headers, nil
+}
+
+func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
+		socketPath, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env)
+		if err != nil {
+			return websocket.Dialer{}, err
+		}
+		return appserver.LocalDaemonWebSocketDialer(socketPath, timeout), nil
+	}
+	return websocket.Dialer{HandshakeTimeout: timeout}, nil
 }

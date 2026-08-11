@@ -385,7 +385,7 @@ struct SessionListView: View {
     var onOpenWorkspaces: (() -> Void)?
     var manageConnections: (() -> Void)?
     var prefersTableDensity = false
-    var hidesNavigationTitle = false
+    var usesCompactNavigation = false
     var bottomContentMargin: CGFloat = 16
     var newSessionPresentationNamespace: Namespace.ID?
 
@@ -398,6 +398,9 @@ struct SessionListView: View {
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
+        // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号使用 navigationBarDrawer
+        // 的完整原生搜索框，避免 toolbar 最小化搜索挤走操作和反复展开转场。
+        let showsToolbarSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
 
         List {
             if hasActiveFilters {
@@ -475,7 +478,18 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
         .workbenchSoftBottomScrollEdge()
+        // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
+        // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
+        .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
         .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // 原生 navigationBarDrawer 和宽屏顶栏搜索都位于 List 外；列表内任意点击
+                // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
+                dismissSessionSearchKeyboard()
+            }
+        )
         .focusable()
         .focused($hasListKeyboardFocus)
         .onKeyPress(keys: [.upArrow, .downArrow, .return]) { keyPress in
@@ -488,15 +502,39 @@ struct SessionListView: View {
             )
         }
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
-        .navigationTitle(hidesNavigationTitle ? "" : L10n.text("ui.session"))
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $sessionStore.sessionSearchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("ui.search_session"))
+        .sessionListNativeSearchable(
+            isEnabled: !showsToolbarSearchField,
+            text: $sessionStore.sessionSearchQuery,
+            prompt: Text(L10n.text("ui.search_session")),
+            tintColor: tokens.primaryText,
+            toolbarSurface: tokens.background,
+            colorScheme: colorScheme,
+            onSubmit: dismissSessionSearchKeyboard
+        )
         .toolbar {
+            if showsToolbarSearchField {
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .topBarLeading) {
+                        sessionSearchField(tokens: tokens)
+                    }
+                    // 自定义搜索框已经自带表面，隐藏系统共享玻璃，避免深色模式叠出白色底板。
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        sessionSearchField(tokens: tokens)
+                    }
+                }
+            }
             if let manageConnections {
                 ToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
                         manageConnections: manageConnections
+                    )
+                    .simultaneousGesture(
+                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
                     )
                 }
                 // iOS 26+ 用固定间隔拆分玻璃组；旧系统依靠普通工具栏布局即可。
@@ -507,6 +545,9 @@ struct SessionListView: View {
             // 筛选、刷新合入同一个菜单；加号保持独立，常驻圆形工具按钮固定为两个。
             ToolbarItem(placement: .topBarTrailing) {
                 filterMenu(tokens: tokens)
+                    .simultaneousGesture(
+                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                    )
             }
             newSessionToolbarItem(tokens: tokens)
         }
@@ -518,6 +559,46 @@ struct SessionListView: View {
         }
         .onChange(of: lifecycleInput) { _, newInput in
             synchronizeLifecycle(newInput)
+        }
+    }
+
+    private func sessionSearchField(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+
+            TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
+                .font(themeStore.uiFont(size: 14))
+                .foregroundStyle(tokens.primaryText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit { dismissSessionSearchKeyboard() }
+                .lineLimit(1)
+                .accessibilityIdentifier("sessions.search")
+
+            if sessionStore.isSessionSearchActive {
+                Button {
+                    sessionStore.sessionSearchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tokens.tertiaryText)
+                .accessibilityLabel(L10n.text("ui.clear_search"))
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+        .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tokens.border.opacity(0.52), lineWidth: 1)
         }
     }
 
@@ -823,6 +904,7 @@ struct SessionListView: View {
                 )
 
             Button {
+                dismissSessionSearchKeyboard()
                 keyboardSelectionID = nil
                 select(session)
             } label: {
@@ -1020,6 +1102,7 @@ struct SessionListView: View {
     }
 
     private func presentNewSession(source: NewSessionPresentationSource?) {
+        dismissSessionSearchKeyboard()
         if let onNewSession {
             onNewSession(source)
         } else {
@@ -1033,6 +1116,15 @@ struct SessionListView: View {
         } else {
             Task { await sessionStore.selectSession(session) }
         }
+    }
+
+    private func dismissSessionSearchKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }
 
@@ -1607,6 +1699,45 @@ struct SessionRenameSheet: View {
             if didRename {
                 dismiss()
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func sessionListNativeSearchTopMargin(isEnabled: Bool) -> some View {
+        if isEnabled {
+            contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func sessionListNativeSearchable(
+        isEnabled: Bool,
+        text: Binding<String>,
+        prompt: Text,
+        tintColor: Color,
+        toolbarSurface: Color,
+        colorScheme: ColorScheme,
+        onSubmit: @escaping () -> Void
+    ) -> some View {
+        if isEnabled {
+            searchable(
+                text: text,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: prompt
+            )
+            // 紧凑布局保留完整的系统搜索框，不再缩成会触发展开转场的第三个工具按钮。
+            .tint(tintColor)
+            // 明确给系统搜索栏传递主题的前景/底色，避免快照宿主把浅色模式
+            // 的放大镜和 prompt 渲染成白色；深色主题仍由系统自动反转。
+            .toolbarBackground(toolbarSurface, for: .navigationBar)
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
+            .onSubmit(of: .search, onSubmit)
+        } else {
+            self
         }
     }
 }

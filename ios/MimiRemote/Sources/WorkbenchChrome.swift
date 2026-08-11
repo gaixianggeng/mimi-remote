@@ -694,7 +694,8 @@ struct WorkbenchChromeIcon: View {
 struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     let shape: ChromeShape
     let tokens: ThemeTokens
-    var isTinted: Bool = false
+    /// 0 是普通磨砂，1 是完整选中提亮；中间值服务手势驱动的连续状态过渡。
+    var tintLevel: Double = 0
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -706,11 +707,15 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
                 shape.fill(.regularMaterial)
             }
 
-            if isTinted {
+            if tintLevel > 0 {
                 // 选中态用中性提亮而不是主题紫填充：这一屏已经有 Codex 和 Claude
                 // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
-                // 选中由亮度 + 字重 + 是否展开名称共同表达，不需要色相参与。
-                shape.fill(tokens.primaryText.opacity(reduceTransparency ? 0.14 : 0.10))
+                // tintLevel 让亮度与横滑进度 1:1 对应，不需要额外的主题色相。
+                shape.fill(
+                    tokens.primaryText.opacity(
+                        (reduceTransparency ? 0.14 : 0.10) * min(max(tintLevel, 0), 1)
+                    )
+                )
             }
         }
     }
@@ -729,8 +734,28 @@ extension View {
         .contentShape(Circle())
     }
 
-    /// 底部滚动边缘统一使用柔和渐隐：内容经过浮动 Tab Bar 或 Composer 后方时只有渐变模糊，
-    /// 不会像 `hard` 那样切出一条横贯全宽的边界线。iOS 26 之前没有该效果，保持原样。
+    /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer
+    /// 后方时都由系统提供渐进式虚化，不会像 `hard` 那样切出横贯全宽的边界线。
+    /// iOS 26 之前没有该效果，保持原样。
+    @ViewBuilder
+    func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            if allowsTopUnderlap {
+                // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
+                // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
+                // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
+                // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
+                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+            } else {
+                scrollEdgeEffectStyle(.soft, for: .bottom)
+            }
+        } else {
+            self
+        }
+    }
+
+    /// 非会话列表只需要底部浮动 Chrome 的柔和过渡；保留独立入口，避免普通列表
+    /// 因会话页的 top underlap 策略改变自身安全区布局。
     @ViewBuilder
     func workbenchSoftBottomScrollEdge() -> some View {
         if #available(iOS 26.0, *) {

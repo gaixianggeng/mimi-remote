@@ -1620,10 +1620,58 @@ extension SessionStore {
 
     /// 为单一全局侧栏加载跨工作区轻量索引。只取 thread/list 首屏，不读取任何消息历史。
     func refreshSessionLibraryIndex(authoritative: Bool = false) async {
+        let hostScope = appStore.activeHostScope
+        while !Task.isCancelled {
+            if let existing = sessionLibraryIndexRefreshJob {
+                guard existing.hostScope == hostScope else {
+                    existing.task.cancel()
+                    retireSessionLibraryIndexRefreshJob(id: existing.id)
+                    continue
+                }
+
+                await existing.task.value
+                retireSessionLibraryIndexRefreshJob(id: existing.id)
+                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                if authoritative, !existing.authoritative {
+                    // 手动权威刷新可以等待正在执行的弱刷新，但不能被它冒充完成。
+                    continue
+                }
+                return
+            }
+
+            let jobID = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performSessionLibraryIndexRefresh(
+                    authoritative: authoritative,
+                    hostScope: hostScope
+                )
+            }
+            sessionLibraryIndexRefreshJob = SessionLibraryIndexRefreshJob(
+                id: jobID,
+                hostScope: hostScope,
+                authoritative: authoritative,
+                task: task
+            )
+            await task.value
+            retireSessionLibraryIndexRefreshJob(id: jobID)
+            return
+        }
+    }
+
+    private func retireSessionLibraryIndexRefreshJob(id: UUID) {
+        guard sessionLibraryIndexRefreshJob?.id == id else { return }
+        sessionLibraryIndexRefreshJob = nil
+    }
+
+    private func performSessionLibraryIndexRefresh(
+        authoritative: Bool,
+        hostScope: HostScope
+    ) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
-        let hostScope = appStore.activeHostScope
+        guard appStore.activeHostScope == hostScope else { return }
         let generation = appStore.connectionGeneration
         defer {
             if appStore.activeHostScope == hostScope {

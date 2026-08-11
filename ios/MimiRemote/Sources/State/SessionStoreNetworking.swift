@@ -6,6 +6,20 @@ enum AgentSessionForkReason: String, Hashable, Sendable {
     case duplicate = "duplicate"
 }
 
+extension SessionStore {
+    func releaseThreadWriterWhenIdleInBackground(_ threadID: SessionID) {
+        // 必须在进入后台清空 AppStore 凭据前抓住 client/runtime；否则异步 Task
+        // 才调用 clientFactory 时会看到空 Token，handoff 请求根本无法发出。
+        guard let client = try? clientFactory() else { return }
+        Task {
+            // 旧 WS agentd 需要 handoff 才能释放 writer。共享 Unix daemon 也安全复用
+            // 这条 best-effort 链路：服务端会返回 already_released 并跳过 terminal
+            // auto-handoff，因此客户端无需按后端类型分叉，更不会触发 archive/unarchive。
+            _ = try? await client.releaseThreadWriterWhenIdle(threadID: threadID)
+        }
+    }
+}
+
 // API 外观、网络状态源与事件批处理从 SessionStore 生命周期实现中解耦。
 enum NetworkReachabilityStatus: Equatable, Sendable {
     case unknown
@@ -155,6 +169,7 @@ protocol SessionStoreAPIClient {
     func setThreadName(threadID: String, name: String) async throws
     func compactThread(threadID: String) async throws
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage
@@ -164,6 +179,9 @@ protocol SessionStoreAPIClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
+    /// 仅在底层支持原生 turn 分页时返回最新完整 turn；旧 thread/read 实现返回 nil，
+    /// 调用方必须回退完整历史，不能把一条 message 误当成一个 turn。
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage?
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
@@ -260,6 +278,12 @@ extension SessionStoreAPIClient {
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         throw AgentAPIError.invalidResponse
+    }
+
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        // 旧测试替身/非 app-server 客户端没有 writer handoff 能力；返回幂等结果，
+        // 让导航清理保持 best-effort，同时避免为每个替身引入无意义的 mock 改动。
+        ThreadHandoffResponse(threadID: threadID, status: .alreadyReleased)
     }
 
     func startReview(
@@ -452,6 +476,10 @@ extension SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
         try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        nil
     }
 
 }

@@ -182,6 +182,47 @@ func TestManagedWebSocketProcessFailsWhenProcessExitsEarly(t *testing.T) {
 	}
 }
 
+func TestBuildManagedEnvFiltersDesktopTransportAndOverlaysConfiguredValues(t *testing.T) {
+	t.Setenv(LocalDaemonEnvironmentKey, "1")
+	t.Setenv("CODEX_APP_SERVER_WS_URL", "ws://desktop-only.invalid")
+	t.Setenv("MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH", "desktop-owner-token")
+	t.Setenv("MIMI_MANAGED_ENV_TEST", "inherited")
+	t.Setenv("CODEX_HOME", "/inherited/codex")
+
+	env := buildManagedEnv(map[string]string{
+		LocalDaemonEnvironmentKey:                   "1",
+		"CODEX_APP_SERVER_WS_URL":                   "ws://still-blocked.invalid",
+		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": "still-blocked-owner-token",
+		"MIMI_MANAGED_ENV_TEST":                     "configured",
+		"CODEX_HOME":                                "/configured/codex",
+	})
+	values := map[string]string{}
+	counts := map[string]int{}
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		values[key] = value
+		counts[key]++
+	}
+	if _, exists := values[LocalDaemonEnvironmentKey]; exists {
+		t.Fatal("Desktop local-daemon 开关不能泄漏到 agentd 管理的 Codex 子进程")
+	}
+	if _, exists := values["CODEX_APP_SERVER_WS_URL"]; exists {
+		t.Fatal("Desktop 外部 WS URL 不能泄漏到 agentd 管理的 Codex 子进程")
+	}
+	if _, exists := values["MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH"]; exists {
+		t.Fatal("Desktop 环境 ownership token 不能泄漏到 agentd 管理的 Codex 子进程")
+	}
+	if values["MIMI_MANAGED_ENV_TEST"] != "configured" || counts["MIMI_MANAGED_ENV_TEST"] != 1 {
+		t.Fatalf("显式配置应唯一覆盖继承值：value=%q count=%d", values["MIMI_MANAGED_ENV_TEST"], counts["MIMI_MANAGED_ENV_TEST"])
+	}
+	if values["CODEX_HOME"] != "/configured/codex" || counts["CODEX_HOME"] != 1 {
+		t.Fatalf("CODEX_HOME 必须沿用显式配置且不重复：value=%q count=%d", values["CODEX_HOME"], counts["CODEX_HOME"])
+	}
+}
+
 func writeFakeCodexAppServer(t *testing.T, dir, body string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {

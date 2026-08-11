@@ -80,8 +80,8 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen != "ws://127.0.0.1:4222" {
-		t.Fatalf("setup 应默认启用 managed ws gateway：%+v", cfg.AppServer)
+	if cfg.AppServer.Transport != config.DefaultAppServerTransport() || !cfg.AppServer.Managed || cfg.AppServer.Listen != config.DefaultAppServerListen() {
+		t.Fatalf("setup 应默认启用兼容的 managed WS app-server：%+v", cfg.AppServer)
 	}
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)

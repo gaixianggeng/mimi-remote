@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 )
 
 func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
@@ -941,7 +943,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		t.Fatalf("plugin/installed 不应开放安装建议：%+v", errFrame)
 	}
 
-	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"unknownFlag":true},` + dangerousTail + `}}`)
+	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"mimiThreadHandoff":true,"unknownFlag":true},` + dangerousTail + `}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
 	}
@@ -2033,6 +2035,47 @@ func TestAppServerGatewayRegistersOnlyValidatedCodexTurnStarts(t *testing.T) {
 	}
 	if len(recorder.registrations) != 1 {
 		t.Fatalf("Claude turn/start 不属于 Codex rollout 跟踪，不应登记：%+v", recorder.registrations)
+	}
+}
+
+func TestAppServerGatewayRejectsWritesWhileCodexDesktopTurnIsActive(t *testing.T) {
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
+		ThreadID: "thread-1",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}}
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目目录应命中 gateway scope")
+	}
+	policy := &appServerGatewayPolicy{
+		router:    router,
+		runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {
+				id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
+			},
+		},
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"id":41,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"clientUserMessageId":"client-ipad","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, payload)
+	if len(forwarded) != 0 || policyErr == nil {
+		t.Fatalf("Desktop active turn 必须在转发前拒绝：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	if got := policyErr.data["reason"]; got != "external_thread_active" {
+		t.Fatalf("错误必须携带稳定 reason：got=%v data=%v", got, policyErr.data)
+	}
+	if accepted, ok := policyErr.data["accepted"].(bool); !ok || accepted {
+		t.Fatalf("转发前拒绝必须声明 accepted=false：data=%v", policyErr.data)
+	}
+	if !gatewayMethodRequiresExternalIdle("turn/start") || gatewayMethodRequiresExternalIdle("thread/resume") {
+		t.Fatal("active turn 只阻止写操作，thread/resume 仍须可用于只读观察")
 	}
 }
 

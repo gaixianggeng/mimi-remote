@@ -96,6 +96,8 @@ final class SessionStore: ObservableObject {
     /// 避免两台 Mac 上碰巧相同的 Session ID 互相禁用操作。
     @Published private(set) var pendingSessionArchiveMutationKeys: Set<ScopedSessionID> = []
     @Published private(set) var unreadHistorySessionIDs: Set<SessionID> = []
+    /// 真实观察到 running → terminal 的本地时间，独立于已读水位，供侧边栏展示短时完成结果。
+    @Published private(set) var historyCompletionObservedAtBySessionID: [SessionID: Date] = [:]
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
@@ -221,6 +223,13 @@ final class SessionStore: ObservableObject {
         unreadHistorySessionIDs = value
     }
 
+    func setHistoryCompletionObservedAtBySessionID(_ value: [SessionID: Date]) {
+        guard historyCompletionObservedAtBySessionID != value else {
+            return
+        }
+        historyCompletionObservedAtBySessionID = value
+    }
+
     func insertPendingSessionArchiveMutationKey(_ key: ScopedSessionID) {
         pendingSessionArchiveMutationKeys.insert(key)
     }
@@ -306,6 +315,8 @@ final class SessionStore: ObservableObject {
     var relatedSessionSocketGeneration = 0
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
+    /// 单调递增的重连租约。attempt 会在 reset 后从 1 重新开始，不能单独作为异步任务身份。
+    var webSocketReconnectGeneration: UInt64 = 0
     var webSocketReconnectTask: Task<Void, Never>?
     var webSocketReconnectAttemptBySessionID: [SessionID: Int] = [:]
     var lastAppliedNetworkPathSequence: UInt64 = 0
@@ -321,6 +332,14 @@ final class SessionStore: ObservableObject {
     // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
     // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
     var externalReadOnlySessionIDs: Set<SessionID> = []
+    // 记录外部活动 revision 已被哪一轮历史快照覆盖。不能只比较轮询快照的前后 revision：
+    // 历史请求失败时也会更新 externalActivityBySessionID，若没有独立水位，同一 revision 将永久漏补。
+    var externalActivityHistoryRevisionBySessionID: [SessionID: String] = [:]
+    // full 不可用后，economy 成功处理到哪一版 revision；同 revision 不重复，失败则可重试。
+    var externalActivityHistoryAttemptBySessionID: [SessionID: ExternalActivityHistoryAttempt] = [:]
+    // fallback 以 turn 为作用域：rollout revision 会随每次写入变化，不能拿 revision 作为
+    // “full 已确定超限/无安全分页边界”的抑制键；新 turn 与 terminal 会清理它。
+    var externalActivityHistoryFallbackBySessionID: [SessionID: ExternalActivityHistoryFallback] = [:]
     // 只记录当前 Host 生命周期内由 iPad 的 turn/start 明确返回的 turnID。不能用持久化的
     // `.takenOver` / `.ipadOwned` 代替：同一 thread 后续可能真的在 Mac 启动新 turn。
     // 精确到 session + turn 后，既能过滤 Desktop-origin 历史线程的 rollout 镜像，
@@ -414,6 +433,7 @@ final class SessionStore: ObservableObject {
     var missingRunningSessionStateByID: [SessionID: MissingRunningSessionState] = [:]
     var missingRunningSessionReconciliationTasksByID: [SessionID: Task<Void, Never>] = [:]
     var lastSessionLibraryIndexRefreshAt: Date?
+    var sessionLibraryIndexRefreshJob: SessionLibraryIndexRefreshJob?
     var sessionSearchTask: Task<Void, Never>?
     var sessionSearchLoadMoreTask: Task<Void, Never>?
     var sessionSearchGeneration = 0

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -213,6 +214,9 @@ type runtimeAccountStatus struct {
 	Title      string                 `json:"title"`
 	Enabled    bool                   `json:"enabled"`
 	State      runtimeConnectionState `json:"state"`
+	Transport  string                 `json:"transport,omitempty"`
+	Shared     bool                   `json:"shared,omitempty"`
+	CodexHome  string                 `json:"codex_home,omitempty"`
 	Version    string                 `json:"version,omitempty"`
 	StartedAt  *time.Time             `json:"started_at,omitempty"`
 	AuthMode   string                 `json:"auth_mode,omitempty"`
@@ -354,6 +358,8 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 				Title:     "Codex",
 				Enabled:   true,
 				State:     runtimeStateUnavailable,
+				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+				Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
 				StartedAt: r.codexRuntimeStartTime(),
 				Reason:    "refresh_in_progress",
 			},
@@ -378,8 +384,15 @@ func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
 		Title:     "Codex",
 		Enabled:   true,
 		State:     runtimeStateUnavailable,
+		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
 		StartedAt: r.codexRuntimeStartTime(),
 		Reason:    "upstream_unavailable",
+	}
+	if status.Shared {
+		if socketPath, pathErr := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); pathErr == nil {
+			status.CodexHome = filepath.Dir(filepath.Dir(socketPath))
+		}
 	}
 	upstreamURL, err := r.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -389,7 +402,10 @@ func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
 	if err != nil {
 		return status
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: codexRuntimeProbeTimeout}
+	dialer, err := r.appServerUpstreamDialer(codexRuntimeProbeTimeout)
+	if err != nil {
+		return status
+	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -750,6 +766,9 @@ type runtimeWebSocketRPC struct {
 	conn          *websocket.Conn
 	nextID        int64
 	notifications []runtimeWebSocketNotification
+	// 状态探针需要保留通知供后续消费；handoff 只轮询单个 thread，丢弃其他
+	// thread 的广播可避免长时间等待用户输入时无界积累内存。
+	dropNotifications bool
 }
 
 type runtimeWebSocketFrame struct {
@@ -828,7 +847,7 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 				}); err != nil {
 					return err
 				}
-			} else {
+			} else if !c.dropNotifications {
 				c.notifications = append(c.notifications, runtimeWebSocketNotification{
 					Method: frame.Method,
 					Params: append(json.RawMessage(nil), frame.Params...),

@@ -10,6 +10,7 @@ enum TurnSendOutcome: Equatable {
     )
     case acceptedThreadClosed(turnID: TurnID?)
     case activeTurnConflict(activeTurnID: TurnID, message: String)
+    case retryableExternalThreadActive(message: String, retryAfterMilliseconds: Int)
     case rejected(message: String)
     case uncertain(message: String)
 }
@@ -215,12 +216,35 @@ private struct PendingCodexAppServerResponse {
     let timeoutTask: Task<Void, Never>
 }
 
+/// JSON-RPC 请求 id 的全进程分配器：每条连接都从上一条连接用完的地方继续，
+/// 绝不从 1 重来。
+///
+/// Claude 常驻 bridge 的回放环里可能还留着上一条连接未被消费的响应帧。id 一旦
+/// 被复用，那条陈旧响应就会兑现新连接里编号相同的请求——而 `model/list` 与
+/// `thread/list` 的结果都是 `{data, nextCursor}`，模型目录会被原样投影成最近
+/// 会话列表（MIM-120）。响应帧里没有 method，客户端事后无从分辨，只能靠 id 不
+/// 复用来根除。
+///
+/// 起点按进程随机：App 重启后 bridge 那边仍是同一个常驻会话，固定起点同样会撞。
+private enum CodexAppServerRequestIDAllocator {
+    private static let lock = NSLock()
+    // 上界留足余量，保证 id 始终落在 JSON number 的精确整数区间内。
+    nonisolated(unsafe) private static var next: Int64 = .random(in: 1...(1 << 40))
+
+    static func allocate() -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = next
+        next &+= 1
+        return id
+    }
+}
+
 actor CodexAppServerConnection {
     private let transport: CodexAppServerTransport
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let requestTimeoutNanoseconds: UInt64
-    private var nextRequestNumber: Int64 = 1
     private var pendingResponses: [CodexAppServerRequestID: PendingCodexAppServerResponse] = [:]
     private var receiveTask: Task<Void, Never>?
     private var isConnected = false
@@ -304,7 +328,10 @@ actor CodexAppServerConnection {
             // app-server 要求客户端声明能力；这里保持最小能力集，避免移动端误触实验外的鉴权路径。
             "capabilities": .object([
                 "experimentalApi": .bool(true),
-                "requestAttestation": .bool(false)
+                "requestAttestation": .bool(false),
+                // gateway 会在转发给 Codex 前剥离该私有字段。它只用于让新版
+                // agentd 确认客户端能处理 auto-handoff 产生的 notLoaded。
+                "mimiThreadHandoff": .bool(true)
             ])
         ])
         do {
@@ -519,9 +546,6 @@ actor CodexAppServerConnection {
     }
 
     private func nextRequestID() -> CodexAppServerRequestID {
-        defer {
-            nextRequestNumber += 1
-        }
-        return .int(nextRequestNumber)
+        .int(CodexAppServerRequestIDAllocator.allocate())
     }
 }

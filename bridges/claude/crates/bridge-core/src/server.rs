@@ -11,13 +11,9 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::net::{TcpListener, TcpStream};
-#[cfg(unix)]
-use tracing::debug;
-use tracing::warn;
+use tracing::{debug, warn};
 
-use crate::envelope::{
-    InboundMessage, JsonRpcError, JsonRpcMessage, JsonRpcResponse, JsonRpcVersion, error_codes,
-};
+use crate::envelope::{InboundMessage, JsonRpcError, JsonRpcResponse, JsonRpcVersion, error_codes};
 use crate::framing::{read_json_line, write_json_line};
 use crate::notify::NotificationSender;
 use crate::session::{
@@ -517,9 +513,9 @@ where
     let writer_task = tokio::spawn(drain_attachment(writer, attach, Arc::clone(&session)));
 
     if let Some(value) = pending {
-        dispatch_inbound(&bridge, &conn, value).await;
+        dispatch_inbound(&bridge, &conn, value, generation).await;
     }
-    let result = run_reader(bridge, &conn, &mut reader).await;
+    let result = run_reader(bridge, &conn, &mut reader, generation).await;
     session.drop_attachment(generation);
     let _ = writer_task.await;
     result
@@ -573,18 +569,21 @@ async fn run_reader<B, R>(
     bridge: Arc<B>,
     conn: &Conn,
     reader: &mut BufReader<R>,
+    generation: u64,
 ) -> anyhow::Result<()>
 where
     B: Bridge + ?Sized,
     R: AsyncRead + Unpin + Send,
 {
     while let Some(value) = read_json_line::<Value, _>(reader).await? {
-        dispatch_inbound(&bridge, conn, value).await;
+        dispatch_inbound(&bridge, conn, value, generation).await;
     }
     Ok(())
 }
 
-async fn dispatch_inbound<B>(bridge: &Arc<B>, conn: &Conn, value: Value)
+/// `generation` is the attachment the frame arrived on. A response is only
+/// ever written back while that attachment is still the installed one.
+async fn dispatch_inbound<B>(bridge: &Arc<B>, conn: &Conn, value: Value, generation: u64)
 where
     B: Bridge + ?Sized,
 {
@@ -624,9 +623,20 @@ where
                         error: Some(error),
                     },
                 };
-                let _ = conn
-                    .notifier()
-                    .send_message(JsonRpcMessage::Response(response));
+                // The client that asked is gone once its attachment has been
+                // replaced, and the successor numbers its requests from
+                // scratch: handing it this response answers whatever request
+                // happens to reuse the id. `model/list` and `thread/list` both
+                // return `{data, nextCursor}`, so the model catalogue lands in
+                // the recent-thread list looking like real sessions (MIM-120).
+                // Nothing downstream can tell the frames apart, so a response
+                // that outlived its stream is dropped instead.
+                if matches!(
+                    conn.notifier().send_response(response, generation),
+                    Ok(false)
+                ) {
+                    debug!(method = %method, "dropped response whose client stream was replaced");
+                }
             });
         }
         InboundMessage::Notification(notification) => {

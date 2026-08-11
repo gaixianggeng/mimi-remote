@@ -20,6 +20,8 @@ struct ConversationMessageContent: View {
                 userImageBubbleSurface
             } else if isAssistantDocument {
                 assistantDocumentSurface
+            } else if isPlainUserMessage {
+                plainUserBubbleSurface
             } else {
                 bubbleSurface
             }
@@ -64,6 +66,39 @@ struct ConversationMessageContent: View {
             )
     }
 
+    private var plainUserBubbleSurface: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            renderContent
+                // 纯文本用户消息只把正文放进气泡；时间单独落在下方，避免正文右下角
+                // 被时间占位挤出不必要的空白。context menu 仍锚定真实气泡边界。
+                .foregroundStyle(foreground)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(background, in: shape)
+                .overlay {
+                    shape.strokeBorder(bubbleBorder, lineWidth: 1)
+                }
+                .shadow(color: bubbleShadowColor, radius: 2, y: 1)
+                .contentShape(.interaction, shape)
+                .contentShape(.contextMenuPreview, shape)
+                .messageContextMenu(
+                    for: message,
+                    retry: {
+                        retry(message)
+                    },
+                    stop: stop
+                )
+
+            MessageTimestampCaption(
+                text: message.timestampCaptionText,
+                isFallback: message.isTimestampFallback,
+                foreground: timestampForeground
+            )
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var assistantDocumentSurface: some View {
         let shape = Rectangle()
         let tokens = themeStore.tokens(for: colorScheme)
@@ -81,7 +116,7 @@ struct ConversationMessageContent: View {
                 )
             }
         }
-        .foregroundStyle(tokens.primaryText)
+        .foregroundStyle(tokens.conversationPrimaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.interaction, shape)
         .contentShape(.contextMenuPreview, shape)
@@ -89,6 +124,9 @@ struct ConversationMessageContent: View {
             for: message,
             stop: stop
         )
+        // 真机 smoke 需要区分助手正文和用户 prompt；identifier 不携带正文或 UUID，
+        // 只增加稳定的测试定位信息，不改变 VoiceOver 的 label/value。
+        .accessibilityIdentifier("conversation.message.assistant")
     }
 
     private var bubbleChrome: some View {
@@ -249,6 +287,13 @@ struct ConversationMessageContent: View {
 
     private var isAssistantDocument: Bool {
         message.role == .assistant && message.kind == .message
+    }
+
+    private var isPlainUserMessage: Bool {
+        message.role == .user
+            && message.kind == .message
+            && !shouldRenderUserImages
+            && !shouldRenderStructuredUserPayload
     }
 
     private var shouldRenderMarkdownMessage: Bool {
@@ -541,7 +586,7 @@ struct ConversationMessageContent: View {
 
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        return message.role == .user ? userBubbleForeground : tokens.primaryText
+        return message.role == .user ? userBubbleForeground : tokens.conversationPrimaryText
     }
 
     private var timestampForeground: Color? {

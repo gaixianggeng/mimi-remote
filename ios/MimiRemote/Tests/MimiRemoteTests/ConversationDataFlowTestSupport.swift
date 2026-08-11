@@ -408,6 +408,46 @@ final class ThreadSearchResponseGate {
     }
 }
 
+final class SessionResponseGate {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<SessionResponse, Error>?
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func response() async throws -> SessionResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            let waiters = lock.withLock {
+                self.continuation = continuation
+                let waiters = requestWaiters
+                requestWaiters.removeAll()
+                return waiters
+            }
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilRequested() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock {
+                guard self.continuation == nil else { return true }
+                requestWaiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    func resolve(_ response: SessionResponse) {
+        let continuation = lock.withLock {
+            let continuation = self.continuation
+            self.continuation = nil
+            return continuation
+        }
+        continuation?.resume(returning: response)
+    }
+}
+
 final class MockSessionStoreClient: SessionStoreAPIClient {
     private let requestLogLock = NSLock()
     private var requestedProjectIDsStorage: [String?] = []
@@ -416,6 +456,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let projectsHandler: (() async throws -> [AgentProject])?
     let sessionsResult: [AgentSession]
+    let sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)?
     let projectSessions: [String: [AgentSession]]
     let workspaceSessions: [String: [AgentSession]]
     let projectPages: [String: SessionsPage]
@@ -468,6 +509,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let externalActivityResponses: [ExternalActivityResponse?]
+    let supportsLatestTurnHistoryPage: Bool
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -517,10 +559,12 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedSessionArchivesStorage: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
+    private(set) var requestedThreadHandoffs: [SessionID] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
     var requestedMessageCursors: [String?] = []
+    var requestedMessageLimits: [Int?] = []
     var createPayloads: [CreateSessionRequest] = []
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
@@ -543,6 +587,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         sessionForkResults: [String: Result<AgentSession, Error>] = [:],
         threadGoalSetResults: [String: Result<ThreadGoal, Error>] = [:],
         sessionResponses: [String: SessionResponse] = [:],
+        sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)? = nil,
         messagesResult: [CodexHistoryMessage]? = nil,
         historyPages: [String: HistoryMessagesPage] = [:],
         historyCursorPages: [String: HistoryMessagesPage] = [:],
@@ -581,7 +626,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
-        externalActivityResponses: [ExternalActivityResponse?] = []
+        externalActivityResponses: [ExternalActivityResponse?] = [],
+        supportsLatestTurnHistoryPage: Bool = true
     ) {
         self.projectsResult = projects
         self.projectsHandler = projectsHandler
@@ -598,6 +644,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.sessionForkResults = sessionForkResults
         self.threadGoalSetResults = threadGoalSetResults
         self.sessionResponses = sessionResponses
+        self.sessionHandler = sessionHandler
         self.messagesResult = messagesResult ?? [
             CodexHistoryMessage(role: "user", content: "历史问题", createdAt: Date(timeIntervalSince1970: 1)),
             CodexHistoryMessage(role: "assistant", content: "历史回答", createdAt: Date(timeIntervalSince1970: 2))
@@ -640,6 +687,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
         self.externalActivityResponses = externalActivityResponses
+        self.supportsLatestTurnHistoryPage = supportsLatestTurnHistoryPage
     }
 
     func projects() async throws -> [AgentProject] {
@@ -1030,6 +1078,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         requestedSessionIDs.append(id)
         requestedSessionAfterSeqs.append(afterSeq)
+        if let sessionHandler {
+            return try await sessionHandler(id, afterSeq)
+        }
         guard let response = sessionResponses[id] else {
             throw MockError.unimplemented
         }
@@ -1100,6 +1151,11 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
     }
 
+    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
+        requestedThreadHandoffs.append(threadID)
+        return ThreadHandoffResponse(threadID: threadID, status: .scheduled)
+    }
+
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -1134,6 +1190,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
         requestedMessageSessionIDs.append(sessionID)
         requestedMessageCursors.append(before)
+        requestedMessageLimits.append(limit)
         if let before, let page = historyCursorPages[before] {
             return page.messages
         }
@@ -1149,9 +1206,26 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         requestedMessageSessionIDs.append(sessionID)
         requestedMessageCursors.append(before)
+        requestedMessageLimits.append(limit)
         if let before, let page = historyCursorPages[before] {
             return page
         }
+        if let page = historyPages[sessionID] {
+            return page
+        }
+        if let messagesError {
+            throw messagesError
+        }
+        return HistoryMessagesPage(messages: messagesResult)
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        guard supportsLatestTurnHistoryPage else {
+            return nil
+        }
+        requestedMessageSessionIDs.append(sessionID)
+        requestedMessageCursors.append(nil)
+        requestedMessageLimits.append(1)
         if let page = historyPages[sessionID] {
             return page
         }
@@ -1519,6 +1593,7 @@ final class DelayedCommandActionClient: SessionStoreAPIClient {
 final class OrderedHistoryPageClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let page: SessionsPage
+    let supportsLatestTurnHistoryPage: Bool
     private let lock = NSLock()
     private var requestedMessageCursorsStorage: [String?] = []
     private var requestedMessageLimitsStorage: [Int?] = []
@@ -1526,9 +1601,14 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
     private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Error>?] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
-    init(projects: [AgentProject], page: SessionsPage) {
+    init(
+        projects: [AgentProject],
+        page: SessionsPage,
+        supportsLatestTurnHistoryPage: Bool = true
+    ) {
         self.projectsResult = projects
         self.page = page
+        self.supportsLatestTurnHistoryPage = supportsLatestTurnHistoryPage
     }
 
     var requestedMessageCursors: [String?] {
@@ -1598,6 +1678,13 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             let waiters = appendHistoryRequest(before: before, limit: limit, loadMode: loadMode, continuation: continuation)
             waiters.forEach { $0.resume() }
         }
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        guard supportsLatestTurnHistoryPage else {
+            return nil
+        }
+        return try await messagesPage(sessionID: sessionID, before: nil, limit: 1, loadMode: .full)
     }
 
     func waitForHistoryRequestCount(_ count: Int) async {

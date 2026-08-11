@@ -200,6 +200,12 @@ final class ThemeStoreTests: XCTestCase {
         let lightSidebarSurfaceBackground = rgba(lightTokens.sidebarSurfaceBackground)
         let lightSidebarHoverFill = rgba(lightTokens.sidebarHoverFill)
         let lightInputBackground = rgba(lightTokens.inputBackground)
+        let lightConversationCanvasBackground = rgba(lightTokens.conversationCanvasBackground)
+        let lightConversationPrimaryText = rgba(lightTokens.conversationPrimaryText)
+        let lightConversationSecondaryText = rgba(lightTokens.conversationSecondaryText)
+        let lightConversationTertiaryText = rgba(lightTokens.conversationTertiaryText)
+        let lightComposerControlSurface = rgba(lightTokens.composerControlSurface)
+        let lightComposerInactiveActionSurface = rgba(lightTokens.composerInactiveActionSurface)
         let lightPlanCardBackground = rgba(lightTokens.planCardBackground)
         let lightPlanCardBorder = rgba(lightTokens.planCardBorder)
         let lightBorder = rgba(lightTokens.border)
@@ -217,6 +223,9 @@ final class ThemeStoreTests: XCTestCase {
         let darkSidebarSurfaceBackground = rgba(darkTokens.sidebarSurfaceBackground)
         let darkSidebarHoverFill = rgba(darkTokens.sidebarHoverFill)
         let darkInputBackground = rgba(darkTokens.inputBackground)
+        let darkConversationCanvasBackground = rgba(darkTokens.conversationCanvasBackground)
+        let darkComposerControlSurface = rgba(darkTokens.composerControlSurface)
+        let darkComposerInactiveActionSurface = rgba(darkTokens.composerInactiveActionSurface)
         let darkPlanCardBackground = rgba(darkTokens.planCardBackground)
         let darkPlanCardBorder = rgba(darkTokens.planCardBorder)
         let darkBorder = rgba(darkTokens.border)
@@ -236,6 +245,12 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
         assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)
+        assertRGB(lightConversationCanvasBackground, red: 250, green: 250, blue: 248)
+        assertRGB(lightConversationPrimaryText, red: 16, green: 16, blue: 16)
+        assertRGB(lightConversationSecondaryText, red: 112, green: 112, blue: 110)
+        assertRGB(lightConversationTertiaryText, red: 142, green: 142, blue: 139)
+        assertRGB(lightComposerControlSurface, red: 242, green: 241, blue: 238)
+        assertRGB(lightComposerInactiveActionSurface, red: 234, green: 218, blue: 210)
         assertRGB(lightPlanCardBackground, red: 255, green: 255, blue: 255)
         assertRGB(lightPlanCardBorder, red: 230, green: 227, blue: 224)
         assertRGB(lightBorder, red: 229, green: 226, blue: 223)
@@ -275,6 +290,9 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(darkSidebarSurfaceBackground, red: 25, green: 23, blue: 25)
         assertRGB(darkSidebarHoverFill, red: 42, green: 39, blue: 41)
         assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
+        assertRGB(darkConversationCanvasBackground, red: 18, green: 17, blue: 18)
+        assertRGB(darkComposerControlSurface, red: 45, green: 42, blue: 45)
+        assertRGB(darkComposerInactiveActionSurface, red: 79, green: 65, blue: 72)
         assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkPlanCardBorder, red: 75, green: 69, blue: 73)
         assertRGB(darkBorder, red: 64, green: 59, blue: 63)
@@ -426,6 +444,47 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.accent, tokens.workspaceCardSelectionFill), 3.0)
     }
 
+    /// 空草稿是进入会话的默认状态，禁用态发送按钮必须仍然看得清箭头。
+    /// 之前浅色下用 primaryActionForeground（纯白）压在 composerInactiveActionSurface
+    /// 上只有约 1.3:1，图标会整个消失在色块里。
+    func testComposerInactiveSendGlyphStaysVisibleInEveryPreset() {
+        let store = ThemeStore(defaults: defaults)
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for scheme in [ColorScheme.light, ColorScheme.dark] {
+                store.mode = scheme == .light ? .light : .dark
+                let tokens = store.tokens(for: scheme)
+                // 两个 token 都可能带 alpha，必须先合成到真实底色再比对比度。
+                let fill = flatten(tokens.composerInactiveActionSurface, over: tokens.conversationCanvasBackground)
+                let glyph = flatten(tokens.composerInactiveActionForeground, over: fill)
+
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(glyph, fill),
+                    3.0,
+                    "\(preset.title) \(scheme) 禁用发送图标与底色对比度不足"
+                )
+            }
+        }
+    }
+
+    func testCodexLightInactiveSendGlyphMeetsTextContrast() {
+        let store = ThemeStore(defaults: defaults)
+        store.preset = .codex
+        store.mode = .light
+        let tokens = store.tokens(for: .light)
+        let fill = flatten(tokens.composerInactiveActionSurface, over: tokens.conversationCanvasBackground)
+
+        XCTAssertGreaterThanOrEqual(
+            contrastRatio(flatten(tokens.composerInactiveActionForeground, over: fill), fill),
+            4.5
+        )
+        // 禁用态必须明显弱于启用态，否则两种状态在底栏上分不出来。
+        XCTAssertLessThan(
+            contrastRatio(flatten(tokens.composerInactiveActionForeground, over: fill), fill),
+            contrastRatio(tokens.primaryActionForeground, tokens.primaryAction)
+        )
+    }
+
     func testThemeVersionIncrementsWhenVisualStateChanges() {
         let store = ThemeStore(defaults: defaults)
         let originalVersion = store.themeVersion
@@ -465,6 +524,19 @@ final class ThemeStoreTests: XCTestCase {
         let green = lhs.green - rhs.green
         let blue = lhs.blue - rhs.blue
         return sqrt(red * red + green * green + blue * blue)
+    }
+
+    /// 把带 alpha 的颜色合成到不透明底色上。对比度公式只对不透明色成立，
+    /// 直接拿半透明 token 去算会得出偏乐观的结果。
+    private func flatten(_ color: Color, over base: Color) -> Color {
+        let top = rgba(color)
+        let bottom = rgba(base)
+        let alpha = top.alpha
+        return Color(
+            red: Double(top.red * alpha + bottom.red * (1 - alpha)),
+            green: Double(top.green * alpha + bottom.green * (1 - alpha)),
+            blue: Double(top.blue * alpha + bottom.blue * (1 - alpha))
+        )
     }
 
     private func contrastRatio(_ foreground: Color, _ background: Color) -> CGFloat {
@@ -622,7 +694,8 @@ final class ResponsiveLayoutTests: XCTestCase {
         let layout = ConversationLayout(containerWidth: 390, horizontalSizeClass: .compact)
 
         XCTAssertEqual(layout.horizontalInset, 16)
-        XCTAssertEqual(layout.composerAvailableWidth, 358)
+        XCTAssertEqual(layout.composerHorizontalInset, 8)
+        XCTAssertEqual(layout.composerAvailableWidth, 374)
         XCTAssertEqual(layout.composerMaxWidth, .infinity)
         XCTAssertEqual(layout.composerBottomPadding, 0)
         XCTAssertLessThanOrEqual(layout.userBubbleMaxWidth, 354)
@@ -633,7 +706,8 @@ final class ResponsiveLayoutTests: XCTestCase {
     func testConversationLayoutCapsPhoneLandscapeComposerWidth() {
         let layout = ConversationLayout(containerWidth: 844, horizontalSizeClass: .compact)
 
-        XCTAssertEqual(layout.composerAvailableWidth, 812)
+        XCTAssertEqual(layout.composerHorizontalInset, 8)
+        XCTAssertEqual(layout.composerAvailableWidth, 828)
         XCTAssertEqual(layout.composerMaxWidth, 680)
         XCTAssertEqual(layout.assistantBubbleMaxWidth, 660)
         XCTAssertLessThan(layout.composerMaxWidth, layout.composerAvailableWidth)
@@ -642,6 +716,7 @@ final class ResponsiveLayoutTests: XCTestCase {
     func testConversationLayoutKeepsPadComposerCloseToBottomSafeArea() {
         let layout = ConversationLayout(containerWidth: 716, horizontalSizeClass: .regular)
 
+        XCTAssertEqual(layout.composerHorizontalInset, layout.horizontalInset)
         XCTAssertEqual(layout.composerTopPadding, 12)
         XCTAssertEqual(layout.composerBottomPadding, 8)
     }

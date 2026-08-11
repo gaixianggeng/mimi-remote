@@ -54,6 +54,11 @@ func run(args []string) error {
 		cmd = args[1]
 		args = append([]string{args[0]}, args[2:]...)
 	}
+	if cmd != "version" {
+		if err := ensureProcessUserEnvironment(); err != nil {
+			return err
+		}
+	}
 
 	switch cmd {
 	case "version":
@@ -98,7 +103,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
+	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server 地址；默认使用独立 loopback WS，共享 daemon 需显式启用")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
@@ -827,6 +832,9 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		if err := ensureCodexCLIAvailable(*configPath); err != nil {
 			return config.Config{}, nil, nil, err
 		}
+		if err := ensureManagedWSTokenAvailable(*configPath); err != nil {
+			return config.Config{}, nil, nil, err
+		}
 	}
 	var (
 		cfg config.Config
@@ -987,21 +995,58 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
-	if cfg.AppServer.Transport != "ws" {
-		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
-	}
-	if strings.TrimSpace(cfg.AppServer.Listen) == "" {
-		return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
-	}
-	if cfg.AppServer.Managed {
-		process, err := startManagedAppServerWebSocket(cfg)
-		if err != nil {
-			return err
+	var sharedDaemonStatus appserver.LocalDaemonStatus
+	switch strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport)) {
+	case "unix":
+		if cfg.AppServer.Managed {
+			// 官方 daemon 冷启动自身最多等待约 10 秒；外层留出进程创建与握手余量。
+			ensureCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, appserver.LocalDaemonOptions{
+				CodexBin: cfg.Codex.Bin,
+				Env:      cfg.Codex.Env,
+			})
+			cancel()
+			if ensureErr != nil {
+				return fmt.Errorf("准备共享 Codex local daemon 失败：%w", ensureErr)
+			}
+			// live socket 可连接不代表重启后还能恢复。共享模式只接受官方 daemon
+			// 管理且 standalone 完整的生命周期，避免下次登录后 LaunchAgent 持续失败。
+			lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), 5*time.Second)
+			lifecycle, lifecycleErr := appserver.InspectLocalDaemonLifecycle(lifecycleCtx, appserver.LocalDaemonOptions{
+				CodexBin: cfg.Codex.Bin,
+				Env:      cfg.Codex.Env,
+			})
+			cancelLifecycle()
+			if lifecycleErr != nil {
+				return fmt.Errorf("确认共享 Codex local daemon 生命周期失败：%w", lifecycleErr)
+			}
+			if lifecycleErr := appserver.ValidateLocalDaemonLifecycle(lifecycle, status.SocketPath); lifecycleErr != nil {
+				return fmt.Errorf("共享 Codex local daemon 无法冷启动恢复：%w", lifecycleErr)
+			}
+			if identityErr := appserver.ValidateLocalDaemonProbeVersion(lifecycle, status.Version); identityErr != nil {
+				return fmt.Errorf("共享 Codex local daemon 身份校验失败：%w", identityErr)
+			}
+			sharedDaemonStatus = status
+			log.Printf("agentd shared Codex local daemon ready started=%t", status.Started)
+		} else {
+			log.Printf("agentd external Codex local daemon upstream configured")
 		}
-		appServerWSProcess = process
-		log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
-	} else {
-		log.Printf("agentd app-server ws upstream=%s", cfg.AppServer.Listen)
+	case "ws":
+		if strings.TrimSpace(cfg.AppServer.Listen) == "" {
+			return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
+		}
+		if cfg.AppServer.Managed {
+			process, err := startManagedAppServerWebSocket(cfg)
+			if err != nil {
+				return err
+			}
+			appServerWSProcess = process
+			log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
+		} else {
+			log.Printf("agentd app-server ws upstream=%s", cfg.AppServer.Listen)
+		}
+	default:
+		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=unix 或 ws")
 	}
 	manager := session.NewManager(session.Options{
 		CodexBin:     cfg.Codex.Bin,
@@ -1021,6 +1066,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		return fmt.Errorf("解析 agentd 私有状态目录失败：%w", err)
 	}
 	gatewayTurnClaimStorePath := filepath.Join(configDir, "state", "gateway-turn-claims.json")
+	threadHandoffRecoveryStorePath := filepath.Join(configDir, "state", "thread-handoff-recovery.json")
 	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg,
 		registry,
@@ -1030,12 +1076,15 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		nil,
 		httpapi.RouterOptions{
-			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
+			GatewayTurnClaimStorePath:      gatewayTurnClaimStorePath,
+			ThreadHandoffRecoveryStorePath: threadHandoffRecoveryStorePath,
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()
 	if appServerWSProcess != nil {
 		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
+	} else if !sharedDaemonStatus.StartedAt.IsZero() {
+		apiRouter.SetCodexRuntimeStartedAt(sharedDaemonStatus.StartedAt)
 	}
 	server := &http.Server{
 		Addr:              cfg.Listen,

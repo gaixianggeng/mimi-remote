@@ -4179,13 +4179,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On the Mac running Mimi Remote, open Terminal and run claude to sign in again. Then return here and try again."
+            "value": "On the Mac running Mimi Remote, open Terminal and run claude auth login to sign in again. Then return here and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude 并按提示重新登录，然后回到这里重试。"
+            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude auth login 重新登录，然后回到这里重试。"
           }
         }
       }
@@ -4231,13 +4231,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copied claude. Run it in Terminal on your Mac."
+            "value": "Copied claude auth login. Run it in Terminal on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已复制 claude，请在 Mac 的终端运行。"
+            "value": "已复制 claude auth login，请在 Mac 的终端运行。"
           }
         }
       }
@@ -6704,6 +6704,23 @@
         }
       }
     },
+    "ui.copy_login_command_hint": {
+      "comment": "VoiceOver hint for the Claude Code login command copy button.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copies claude auth login to the clipboard; it does not run the command."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将 claude auth login 复制到剪贴板，不会执行命令。"
+          }
+        }
+      }
+    },
     "ui.copy_original_json": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -6717,6 +6734,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "复制原始 JSON"
+          }
+        }
+      }
+    },
+    "ui.copy_path": {
+      "comment": "Session menu action that copies the session directory path.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制路径"
           }
         }
       }
@@ -13404,7 +13439,7 @@
       }
     },
     "ui.just_completed": {
-      "comment": "Sidebar section for unread sessions that have just reached a terminal state.",
+      "comment": "Sidebar section for sessions whose terminal transition was observed inside the short just-completed window.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -34557,6 +34592,186 @@
         }
       }
     },
+    "ui.workspace_album_21": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adele — 21"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adele —《21》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_abbey_road": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Beatles — Abbey Road"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Beatles —《Abbey Road》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_atom_heart_mother": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — Atom Heart Mother"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 原子心之母"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_cities": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deserts Chang — City"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "张悬 —《城市》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_dark_side_of_the_moon": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — The Dark Side of the Moon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 月之暗面"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_morning_glory": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oasis — (What's the Story) Morning Glory?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oasis —《(What's the Story) Morning Glory?》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_norman_fucking_rockwell": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lana Del Rey — Norman Fucking Rockwell!"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lana Del Rey —《Norman Fucking Rockwell!》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_sos": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SZA — SOS"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SZA —《SOS》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_velvet_underground_nico": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Velvet Underground & Nico — The Velvet Underground & Nico"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Velvet Underground & Nico —《The Velvet Underground & Nico》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_wish_you_were_here": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — Wish You Were Here"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 愿你在此"
+          }
+        }
+      }
+    },
     "ui.workspace_character_alice_alice": {
       "comment": "Built-in Alice in Wonderland workspace character.",
       "extractionState": "manual",
@@ -36623,6 +36838,24 @@
         }
       }
     },
+    "ui.workspace_icon_style_classic_albums": {
+      "comment": "Workspace icon style based on classic albums and original music imagery.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Classic Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经典专辑"
+          }
+        }
+      }
+    },
     "ui.workspace_icon_style_compact_alice_wonderland": {
       "comment": "Full source label for Alice in Wonderland in the workspace icon style grid.",
       "extractionState": "manual",
@@ -36637,6 +36870,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "爱丽丝梦游仙境"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon_style_compact_classic_albums": {
+      "comment": "Compact source label for Classic Albums in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Classic Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经典专辑"
           }
         }
       }

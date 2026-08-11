@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -26,6 +27,64 @@ import (
 func TestVersionDoesNotRequireConfig(t *testing.T) {
 	if err := run([]string{"agentd", "version"}); err != nil {
 		t.Fatalf("version 不应依赖配置：%v", err)
+	}
+}
+
+func TestEnsureProcessUserEnvironmentRestoresLaunchdHome(t *testing.T) {
+	current, err := user.Current()
+	if err != nil || strings.TrimSpace(current.HomeDir) == "" {
+		t.Skip("当前测试环境无法解析系统用户 Home")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("USER", "")
+	t.Setenv("LOGNAME", "")
+
+	if err := ensureProcessUserEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("HOME") != current.HomeDir {
+		t.Fatalf("应从系统用户恢复 HOME：want=%q got=%q", current.HomeDir, os.Getenv("HOME"))
+	}
+	if strings.TrimSpace(current.Username) != "" {
+		if os.Getenv("USER") != current.Username || os.Getenv("LOGNAME") != current.Username {
+			t.Fatalf("应补齐 USER/LOGNAME：user=%q logname=%q", os.Getenv("USER"), os.Getenv("LOGNAME"))
+		}
+	}
+}
+
+func TestEnsureManagedWSTokenAvailableRepairsLegacyConfig(t *testing.T) {
+	clearAgentdEnvForMainTest(t)
+	projectDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth":       map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"runtime":    map[string]any{"type": "pty"},
+		"app_server": map[string]any{"transport": "stdio", "managed": true},
+		"projects":   []map[string]any{{"id": "demo", "name": "Demo", "path": projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureManagedWSTokenAvailable(configPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppServer.Transport != "ws" || strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
+		t.Fatalf("legacy managed WS 应获得可启动的 token：%+v", cfg.AppServer)
+	}
+	info, err := os.Lstat(cfg.AppServer.WSTokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+		t.Fatalf("迁移生成的 token 必须是私有 regular file：%v", info.Mode())
 	}
 }
 
@@ -1558,7 +1617,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 		t.Fatal(err)
 	}
 	if migrated.Runtime.Type != "codex_app_server" || migrated.AppServer.Transport != "ws" || migrated.AppServer.Listen != "ws://127.0.0.1:4222" {
-		t.Fatalf("修复后 legacy runtime 应继续平滑归一到 managed WS：%+v %+v", migrated.Runtime, migrated.AppServer)
+		t.Fatalf("显式 managed WS 配置必须继续保留：%+v %+v", migrated.Runtime, migrated.AppServer)
 	}
 	if migrated.Auth.Token != authToken || migrated.AppServer.WSTokenFile != tokenPath || len(migrated.Actions) != 1 || len(migrated.BrowseRoots) != 1 {
 		t.Fatalf("修复后业务配置必须保留：%+v", migrated)

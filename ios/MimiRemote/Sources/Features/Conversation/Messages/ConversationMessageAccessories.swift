@@ -226,6 +226,12 @@ struct RuntimeSummaryCard: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
+        // 不依赖页面或系统的默认 tint：深色外观的浅色 accent 会让白色
+        // doc.on.doc 图标和按钮底色融在一起，主操作色才是可读的实色背景。
+        .tint(tokens.primaryAction)
+        .foregroundStyle(tokens.primaryActionForeground)
+        .accessibilityHint(L10n.text("ui.copy_login_command_hint"))
+        .accessibilityIdentifier("conversation.claudeAuthentication.copyLoginCommand")
     }
 
     private var retryClaudeRequestButton: some View {
@@ -562,9 +568,11 @@ struct MessageTimestampCaption: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        Text(text)
+        // 估算时间不使用 warning 色，改用 tertiaryText，并在可见文字前加“~ ”；
+        // VoiceOver 仍通过完整本地化文案明确朗读“估算”，不依赖颜色或符号猜测。
+        Text(isFallback ? "~ \(text)" : text)
             .font(themeStore.uiFont(.caption2, weight: .medium))
-            .foregroundStyle(isFallback ? tokens.warning : (foreground ?? tokens.tertiaryText))
+            .foregroundStyle(isFallback ? tokens.tertiaryText : (foreground ?? tokens.tertiaryText))
             .lineLimit(1)
             .minimumScaleFactor(0.88)
             .accessibilityLabel(isFallback ? L10n.format("ui.message_time_full_estimate_value", text) : L10n.format("ui.message_time_value", text))

@@ -12,7 +12,7 @@ import (
 func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan string, 3)
+	done := make(chan string, 4)
 	var clientWriteMu sync.Mutex
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
@@ -31,13 +31,17 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	defer policy.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
 	go func() {
 		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
 	}()
+	// 两端各自保活，避免 client 与 upstream 的慢速大帧锁等待在同一个 ping loop 中串联。
 	go func() {
-		done <- pingGatewayConnections(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu)
+		done <- pingGatewayConnection(ctx, client, &clientWriteMu, "client_ping_write")
+	}()
+	go func() {
+		done <- pingGatewayConnection(ctx, upstream, &upstreamWriteMu, "upstream_ping_write")
 	}()
 
 	reason := <-done
@@ -55,7 +59,7 @@ func configureGatewayReadConn(conn *websocket.Conn) {
 	})
 }
 
-func pingGatewayConnections(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex) string {
+func pingGatewayConnection(ctx context.Context, conn *websocket.Conn, writeMu *sync.Mutex, failureStage string) string {
 	ticker := time.NewTicker(appServerGatewayPingPeriod)
 	defer ticker.Stop()
 	for {
@@ -63,25 +67,21 @@ func pingGatewayConnections(ctx context.Context, client *websocket.Conn, upstrea
 		case <-ctx.Done():
 			return "context_done"
 		case <-ticker.C:
-			deadline := time.Now().Add(appServerGatewayWriteWindow)
-			if err := writeWebSocketControl(client, clientWriteMu, websocket.PingMessage, nil, deadline); err != nil {
-				return gatewayCloseReason("client_ping_write", err)
-			}
-			if err := writeWebSocketControl(upstream, upstreamWriteMu, websocket.PingMessage, nil, deadline); err != nil {
-				return gatewayCloseReason("upstream_ping_write", err)
+			if err := writeWebSocketControl(conn, writeMu, websocket.PingMessage, nil, appServerGatewayWriteWindow); err != nil {
+				return gatewayCloseReason(failureStage, err)
 			}
 		}
 	}
 }
 
-func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
 			return gatewayCloseReason("client_read", err)
 		}
 		policyStart := time.Now()
-		forwardPayload, policyErr := policy.validateClientFrame(messageType, payload)
+		forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
@@ -172,14 +172,32 @@ func writeWebSocketFrame(conn *websocket.Conn, mu *sync.Mutex, messageType int, 
 		mu.Lock()
 		defer mu.Unlock()
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(appServerGatewayWriteWindow))
+	_ = conn.SetWriteDeadline(time.Now().Add(appServerGatewayFrameWriteWindow(len(payload))))
 	return conn.WriteMessage(messageType, payload)
 }
 
-func writeWebSocketControl(conn *websocket.Conn, mu *sync.Mutex, messageType int, payload []byte, deadline time.Time) error {
+func appServerGatewayFrameWriteWindow(payloadBytes int) time.Duration {
+	if payloadBytes <= appServerGatewayLargeFrameThreshold {
+		return appServerGatewayWriteWindow
+	}
+
+	// 向上取整，确保不足一秒的尾部数据也拥有完整的一秒写入余量。
+	remainingBytes := payloadBytes - appServerGatewayLargeFrameThreshold
+	extraSeconds := (remainingBytes + appServerGatewayLargeFrameBytesPerSecond - 1) /
+		appServerGatewayLargeFrameBytesPerSecond
+	maxExtraSeconds := int((appServerGatewayLargeFrameMaxWriteWindow - appServerGatewayWriteWindow) / time.Second)
+	if extraSeconds >= maxExtraSeconds {
+		return appServerGatewayLargeFrameMaxWriteWindow
+	}
+	return appServerGatewayWriteWindow + time.Duration(extraSeconds)*time.Second
+}
+
+func writeWebSocketControl(conn *websocket.Conn, mu *sync.Mutex, messageType int, payload []byte, writeWindow time.Duration) error {
 	if mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
 	}
-	return conn.WriteControl(messageType, payload, deadline)
+	// 大帧可能长时间持有同一把写锁。deadline 必须在拿到锁后生成；若在等待锁前生成，
+	// 取锁时它可能早已过期，健康连接会被 ping 误判失败并整页重传。
+	return conn.WriteControl(messageType, payload, time.Now().Add(writeWindow))
 }
