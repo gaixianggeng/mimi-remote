@@ -499,7 +499,7 @@ struct WorkbenchSidebarFooter: View {
         Group {
             if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 Button(action: onNewSession) {
-                    WorkbenchChromeIcon(systemName: "plus")
+                    newSessionIcon
                 }
                 // 只让系统 ButtonStyle 绘制一层主题色玻璃，不再在 label 内叠材质和白色描边。
                 .buttonStyle(.glassProminent)
@@ -515,7 +515,7 @@ struct WorkbenchSidebarFooter: View {
             } else {
                 // iOS 18–25 与 Reduce Transparency 共用清晰的实色主操作按钮。
                 Button(action: onNewSession) {
-                    WorkbenchChromeIcon(systemName: "plus")
+                    newSessionIcon
                         .frame(width: 36, height: 36)
                         .background(tokens.primaryAction, in: Circle())
                         .overlay {
@@ -531,6 +531,15 @@ struct WorkbenchSidebarFooter: View {
         }
         .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         .accessibilityIdentifier("sidebar.newSession")
+    }
+
+    private var newSessionIcon: some View {
+        // 加号在通用 15pt 规格下实际墨迹偏小且略向下；主创建动作单独做光学校正，避免误伤其他图标。
+        Image(systemName: "plus")
+            .font(.system(size: 17, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .frame(width: 20, height: 20)
+            .offset(y: -0.5)
     }
 }
 

@@ -1694,16 +1694,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     }
 
     /// 筛选器固定在列表左侧，紧接结果区域；新建会话保留在右侧。
-    /// 按容器真实宽度选择文字版或图标版，iPad mini 竖屏和窄分屏不再被 regular Size Class 误判为宽布局。
+    /// 所有尺寸统一使用图标入口；空间不足时只调整筛选器与按钮的排布，不改变按钮语义和外观。
     /// 页面已经通过筛选器说明 Runtime，卡片不再重复渲染品牌或 Runtime 文案。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         ViewThatFits(in: .horizontal) {
-            // 760pt 是文字操作的内容宽度档位：iPad mini 竖屏会自然落到图标版，
-            // 宽 iPad 仍保留明确标签；旋转和窗口缩放时由 SwiftUI 自动重新选择。
-            recentSessionsHeaderLine(tokens: tokens, showsNewSessionTitle: true)
-                .frame(minWidth: 760)
-
-            recentSessionsHeaderLine(tokens: tokens, showsNewSessionTitle: false)
+            recentSessionsHeaderLine(tokens: tokens)
 
             // 窄屏或大字体时自然改为两行，筛选器仍排在结果前，新建操作靠右。
             VStack(alignment: .leading, spacing: 8) {
@@ -1711,22 +1706,19 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
 
                 HStack {
                     Spacer(minLength: 0)
-                    newSessionButton(tokens: tokens, showsTitle: false)
+                    newSessionButton(tokens: tokens)
                 }
             }
         }
     }
 
-    private func recentSessionsHeaderLine(
-        tokens: ThemeTokens,
-        showsNewSessionTitle: Bool
-    ) -> some View {
+    private func recentSessionsHeaderLine(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
             runtimePicker
 
             Spacer(minLength: 8)
 
-            newSessionButton(tokens: tokens, showsTitle: showsNewSessionTitle)
+            newSessionButton(tokens: tokens)
         }
     }
 
@@ -1736,25 +1728,19 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             claudeChannelAvailable: claudeChannelAvailable
         )
     }
-    private func newSessionButton(tokens: ThemeTokens, showsTitle: Bool) -> some View {
+    private func newSessionButton(tokens: ThemeTokens) -> some View {
         Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
             Group {
-                if showsTitle {
-                    Label(L10n.text("ui.new_session_3da224c4"), systemImage: "square.and.pencil")
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 36)
-                } else {
-                    Image(systemName: "square.and.pencil")
-                        .frame(
-                            width: 36,
-                            height: 36
-                        )
-                }
+                // iPhone 与 iPad 统一只显示纯加号，文字语义由无障碍标签完整保留。
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 36, height: 36)
+                    .offset(y: -0.5)
             }
-            .font(themeStore.uiFont(.subheadline, weight: .semibold)).imageScale(.small)
             .foregroundStyle(tokens.primaryActionForeground)
             .background(tokens.primaryAction, in: Capsule())
             .frame(minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
