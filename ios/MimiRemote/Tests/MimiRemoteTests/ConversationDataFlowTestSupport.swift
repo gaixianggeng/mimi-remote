@@ -560,7 +560,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
     private(set) var requestedThreadHandoffs: [SessionID] = []
-    private(set) var requestedThreadUnsubscribes: [SessionID] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
@@ -1150,11 +1149,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func setThreadName(threadID: String, name: String) async throws {
         requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
-    }
-
-    func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
-        requestedThreadUnsubscribes.append(threadID)
-        return nil
     }
 
     func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {

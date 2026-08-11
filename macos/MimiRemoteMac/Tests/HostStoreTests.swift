@@ -852,6 +852,47 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
+    func testRefreshReinspectsCodexDesktopInsteadOfReclassifyingCachedSnapshot() async {
+        var appInstalled = true
+        var inspectCalls = 0
+        let currentSnapshot: () -> CodexDesktopEnvironmentSnapshot = {
+            CodexDesktopEnvironmentSnapshot(
+                hasLocalPreference: true,
+                enabled: true,
+                environmentValue: "1",
+                codexHome: "/tmp/codex",
+                appInstalled: appInstalled,
+                appRunning: false
+            )
+        }
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                inspectCalls += 1
+                return currentSnapshot()
+            },
+            bootstrap: { currentSnapshot() },
+            setEnabled: { _, _ in currentSnapshot() },
+            restartAndApply: { currentSnapshot() }
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { Self.statusWithCodex(shared: true) },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(store.codexDesktopStatus.state, .ready)
+        XCTAssertEqual(inspectCalls, 1)
+
+        appInstalled = false
+        await store.refresh()
+
+        XCTAssertEqual(inspectCalls, 2)
+        XCTAssertEqual(store.codexDesktopStatus.state, .notInstalled)
+        XCTAssertFalse(store.codexDesktopStatus.appInstalled)
+    }
+
     func testCodexEnableConfiguresBackendBeforeWritingDesktopEnvironment() async {
         let events = EventRecorder()
         let sharing = SharingFlag()

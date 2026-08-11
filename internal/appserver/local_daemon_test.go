@@ -98,6 +98,9 @@ func TestProbeLocalDaemonRejectsUnsupportedVersion(t *testing.T) {
 }
 
 func TestEnsureLocalDaemonAttachesBeforeStarting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
 	codexHome := shortCodexHome(t)
 	var starts atomic.Int32
 	status, err := ensureLocalDaemon(context.Background(), LocalDaemonOptions{
@@ -124,6 +127,9 @@ func TestEnsureLocalDaemonAttachesBeforeStarting(t *testing.T) {
 }
 
 func TestEnsureLocalDaemonStartsOnceThenProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
 	codexHome := shortCodexHome(t)
 	var starts atomic.Int32
 	var probes atomic.Int32
@@ -151,6 +157,9 @@ func TestEnsureLocalDaemonStartsOnceThenProbes(t *testing.T) {
 }
 
 func TestEnsureLocalDaemonDoesNotStartOverInvalidSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
 	codexHome := shortCodexHome(t)
 	socketDir := filepath.Join(codexHome, localDaemonSocketDir)
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {

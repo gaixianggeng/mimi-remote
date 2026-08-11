@@ -88,8 +88,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(send.isEnabled, "输入消息后发送按钮应可用")
         send.tap()
 
-        let reply = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS %@", expectedReply))
+        let reply = app.descendants(matching: .any)
+            .matching(
+                NSPredicate(
+                    format: "identifier == %@ AND label CONTAINS %@",
+                    "conversation.message.assistant",
+                    expectedReply
+                )
+            )
             .firstMatch
         XCTAssertTrue(
             reply.waitForExistence(timeout: 120),

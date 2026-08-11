@@ -350,6 +350,7 @@ final class HostStore {
                 await startMacAgentIfNeeded()
             }
         }
+        await refreshCodexDesktopStatus()
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             scheduleRuntimeStatusFollowUp()
         }
@@ -1294,6 +1295,20 @@ final class HostStore {
 
     private func refreshCodexDesktopPresentation() {
         applyCodexDesktopSnapshot(codexDesktopStatus.environment)
+    }
+
+    private func refreshCodexDesktopStatus() async {
+        do {
+            let snapshot = try await codexDesktop.inspect()
+            codexDesktopError = nil
+            applyCodexDesktopSnapshot(snapshot)
+        } catch is CancellationError {
+            return
+        } catch {
+            // 显式刷新必须暴露读取失败，不能继续把旧的进程/环境快照显示成实时状态。
+            codexDesktopError = error.localizedDescription
+            applyCodexDesktopSnapshot(codexDesktopStatus.environment)
+        }
     }
 
     private func codexDesktopState(

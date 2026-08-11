@@ -91,8 +91,10 @@ func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	valid := fixture.writeRollout("valid", "Codex Desktop", fixture.projectDir,
 		externalEventLine("task_started", "turn-valid"))
-	legacyOrigin := fixture.writeRollout("cli", "codex_cli_rs", fixture.projectDir,
-		externalEventLine("task_started", "turn-cli"))
+	// mimi_remote 是 thread 的创建端，不代表这个 active turn 已由 gateway 发起；
+	// 没有精确 claim 时仍必须返回 external。
+	mimiOrigin := fixture.writeRollout("mimi-remote", "mimi_remote", fixture.projectDir,
+		externalEventLine("task_started", "turn-mimi-remote"))
 	alternateOrigin := fixture.writeRollout("work-desktop", "codex_work_desktop", fixture.projectDir,
 		externalEventLine("task_started", "turn-work"))
 	outsideDir := t.TempDir()
@@ -101,7 +103,7 @@ func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 
 	fixture.rows = []externalActivityTestRow{
 		{ID: "valid", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: valid},
-		{ID: "cli", CWD: fixture.projectDir, Source: "cli", ThreadSource: "user", RolloutPath: legacyOrigin},
+		{ID: "mimi-remote", CWD: fixture.projectDir, Source: "cli", ThreadSource: "user", RolloutPath: mimiOrigin},
 		{ID: "work-desktop", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: alternateOrigin},
 		{ID: "outside", CWD: outsideDir, Source: "vscode", ThreadSource: "user", RolloutPath: outside},
 		{ID: "subagent", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "subagent", RolloutPath: valid},
@@ -112,8 +114,8 @@ func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(activities) != 2 || activities[0].ProjectID != "demo" || activities[1].ProjectID != "demo" {
-		t.Fatalf("只应返回白名单项目的 Codex Desktop 顶层线程：%+v", activities)
+	if len(activities) != 3 || activities[0].ProjectID != "demo" || activities[1].ProjectID != "demo" || activities[2].ProjectID != "demo" {
+		t.Fatalf("只应返回白名单项目的交互式顶层活动：%+v", activities)
 	}
 	ids := map[string]bool{}
 	for _, activity := range activities {
@@ -122,8 +124,8 @@ func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 			t.Fatalf("外部活动字段异常：%+v", activity)
 		}
 	}
-	if !ids["valid"] || !ids["work-desktop"] {
-		t.Fatalf("缺少合法 Desktop 来源：%+v", activities)
+	if !ids["valid"] || !ids["mimi-remote"] || !ids["work-desktop"] {
+		t.Fatalf("缺少合法的非 gateway-owned 顶层活动：%+v", activities)
 	}
 }
 
@@ -187,7 +189,7 @@ func TestExternalActivitySkipsMalformedJSONLAndReusesCache(t *testing.T) {
 	}
 }
 
-func TestExternalActivityExpiresAndLaterWritesReactivate(t *testing.T) {
+func TestExternalActivitySilentTurnRemainsActiveUntilTerminal(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 28, 15, 0, 0, 0, time.UTC)
 	fixture.tracker.now = func() time.Time { return now }
@@ -200,16 +202,26 @@ func TestExternalActivityExpiresAndLaterWritesReactivate(t *testing.T) {
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if got := fixture.snapshot(t); len(got) != 0 {
-		t.Fatalf("30 分钟无更新应降为非活动：%+v", got)
+	// rollout 文件静默不等于 turn 结束：正常等待和 abrupt crash 都可能没有新写入。
+	// 这里选择保守地继续只读展示，避免误把仍运行的 turn 判为空闲。
+	if got := fixture.snapshot(t); len(got) != 1 || got[0].TurnID != "turn-1" {
+		t.Fatalf("超过 31 分钟但没有 terminal 的 active turn 仍应保持 external：%+v", got)
 	}
 
-	fixture.appendLine(path, `{"timestamp":"2026-07-28T14:30:01Z","type":"event_msg","payload":{"type":"agent_message"}}`)
+	fixture.appendLine(path, externalEventLineAt(now, "task_complete", "turn-1"))
 	if err := os.Chtimes(path, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if got := fixture.snapshot(t); len(got) != 1 || got[0].TurnID != "turn-1" {
-		t.Fatalf("仍在运行的旧 turn 后续写入应重新激活：%+v", got)
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("匹配 task_complete 后应移除 external 活动：%+v", got)
+	}
+
+	fixture.appendLine(path, externalEventLineAt(now.Add(time.Second), "task_started", "turn-2"))
+	if err := os.Chtimes(path, now.Add(time.Second), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.snapshot(t); len(got) != 1 || got[0].TurnID != "turn-2" {
+		t.Fatalf("terminal 后的新 active turn 应重新识别为 external：%+v", got)
 	}
 }
 
@@ -233,7 +245,8 @@ func TestExternalActivityExcludesExactGatewayOwnedTurn(t *testing.T) {
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	fixture.tracker.now = func() time.Time { return now }
 	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
-	path := fixture.writeRollout("thread-ipad", "Codex Desktop", fixture.projectDir,
+	// 即使 originator 是 mimi_remote，精确 Thread+Turn gateway claim 仍应排除该 turn。
+	path := fixture.writeRollout("thread-ipad", "mimi_remote", fixture.projectDir,
 		externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
 		externalUserMessageLine(now.Add(500*time.Millisecond), "client-ipad"))
 	if err := os.Chtimes(path, now, now); err != nil {
@@ -631,13 +644,15 @@ func TestExternalActivityPersistentClaimSurvivesTrackerRestartAndCandidateGap(t 
 	}
 }
 
-func TestExternalActivityPersistentClaimClearsOnTerminalAndTTL(t *testing.T) {
+func TestExternalActivityPersistentClaimClearsOnTerminalAndExpiresToExternal(t *testing.T) {
 	tests := []struct {
-		name       string
-		finishTurn func(*externalActivityTrackerFixture, string, *time.Time)
+		name             string
+		finishTurn       func(*externalActivityTrackerFixture, string, *time.Time)
+		wantExternalTurn bool
 	}{
 		{
-			name: "matching terminal",
+			name:             "matching terminal",
+			wantExternalTurn: false,
 			finishTurn: func(fixture *externalActivityTrackerFixture, path string, now *time.Time) {
 				*now = now.Add(time.Second)
 				fixture.appendLine(path, externalEventLineAt(*now, "turn_aborted", "turn-ipad"))
@@ -647,7 +662,8 @@ func TestExternalActivityPersistentClaimClearsOnTerminalAndTTL(t *testing.T) {
 			},
 		},
 		{
-			name: "ttl after rollout stale",
+			name:             "claim ttl expires while turn stays active",
+			wantExternalTurn: true,
 			finishTurn: func(_ *externalActivityTrackerFixture, _ string, now *time.Time) {
 				*now = now.Add(gatewayOwnedTurnClaimTTL + time.Second)
 			},
@@ -679,8 +695,13 @@ func TestExternalActivityPersistentClaimClearsOnTerminalAndTTL(t *testing.T) {
 			}
 
 			tc.finishTurn(fixture, path, &now)
-			if got := fixture.snapshot(t); len(got) != 0 {
-				t.Fatalf("terminal/TTL 后不应返回 external：%+v", got)
+			got := fixture.snapshot(t)
+			if tc.wantExternalTurn {
+				if len(got) != 1 || got[0].TurnID != "turn-ipad" {
+					t.Fatalf("claim TTL 过期但没有 terminal 时应安全降级为 external：%+v", got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("匹配 terminal 后不应返回 external：%+v", got)
 			}
 			if len(fixture.tracker.ownedGatewayTurns) != 0 {
 				t.Fatalf("terminal/TTL 后必须清理内存 claim：%+v", fixture.tracker.ownedGatewayTurns)

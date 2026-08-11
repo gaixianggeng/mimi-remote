@@ -3,6 +3,27 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testExternalThreadActiveTurnSendOutcomeRemainsRetryable() {
+        let error = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32600,
+            message: "thread is active in Codex Desktop",
+            data: .object([
+                "accepted": .bool(false),
+                "retryable": .bool(true),
+                "reason": .string("external_thread_active"),
+                "retry_after_ms": .int(1_500)
+            ])
+        ))
+
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: error),
+            .retryableExternalThreadActive(
+                message: error.localizedDescription,
+                retryAfterMilliseconds: 1_500
+            )
+        )
+    }
+
     func testExternalActivityResponseDecodesOnlyReadOnlyIdentityAndRevisionFields() throws {
         let data = Data(#"""
         {
@@ -1467,7 +1488,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
         XCTAssertNil(store.connectedSessionID)
         XCTAssertGreaterThanOrEqual(socket.disconnectCallCount, 1)
-        XCTAssertTrue(store.canReconcileAcceptedTurnFromRetiredSocket(
+        XCTAssertTrue(store.canReconcileTurnOutcomeFromRetiredSocket(
             sessionID: threadID,
             outcome: .accepted(turnID: "turn-local-race"),
             hostScope: store.appStore.activeHostScope
@@ -1547,6 +1568,94 @@ extension ConversationDataFlowTests {
                 .first(where: { $0.clientMessageID == clientMessageID })?
                 .sendStatus,
             .sent
+        )
+    }
+
+    func testRetryableExternalThreadActiveKeepsMessageQueuedUntilDesktopTurnEnds() async throws {
+        let project = makeProject(id: "proj_external_retryable_send")
+        let threadID = "thread-external-retryable-send"
+        let clientMessageID = "client-external-retryable-send"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "外部占用后续发",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-desktop-live",
+            revision: "rev-desktop-live"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            workspacePages: [project.id: SessionsPage(sessions: [session])],
+            historyPages: [threadID: HistoryMessagesPage(messages: [])],
+            externalActivityResponses: [
+                ExternalActivityResponse(activities: [activity], scannedAt: Date()),
+                ExternalActivityResponse(activities: [], scannedAt: Date())
+            ]
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: session,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.sessionControlStateByID[threadID] = .takenOver
+        let payload = CodexAppServerTurnPayload(prompt: "Desktop 完成后继续发送")
+        store.conversationStore.appendLocalUser(
+            payload.previewText,
+            sessionID: threadID,
+            clientMessageID: clientMessageID,
+            sendStatus: .sending,
+            turnPayload: payload
+        )
+
+        store.handleTurnSendOutcome(
+            clientMessageID: clientMessageID,
+            sessionID: threadID,
+            outcome: .retryableExternalThreadActive(
+                message: "Desktop 正在执行这个会话",
+                retryAfterMilliseconds: 0
+            )
+        )
+
+        for _ in 0..<80 where client.externalActivityCallCount < 1 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(client.externalActivityCallCount, 1)
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .waiting
+        )
+        XCTAssertEqual(
+            store.conversationStore.messages(for: threadID)
+                .first(where: { $0.clientMessageID == clientMessageID })?
+                .sendStatus,
+            .local
+        )
+        XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertTrue(socket.sentTurns.isEmpty)
+
+        let terminalRefresh = await store.refreshExternalActivities(client: client)
+        XCTAssertTrue(terminalRefresh)
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+
+        socket.emitStatus(.connected)
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, payload.textPrompt)
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .dispatching
         )
     }
 
