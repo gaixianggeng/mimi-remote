@@ -37,6 +37,16 @@ enum SessionIndexRowDensity: Equatable {
         }
     }
 
+    var statusFontSize: CGFloat {
+        switch self {
+        case .table:
+            // iPad 表格行的状态位于标题下方，降低 1pt，明确它是二级信息。
+            return 10.5
+        case .compact, .rail:
+            return metadataFontSize
+        }
+    }
+
     var runtimeIconSize: CGFloat {
         switch self {
         case .compact: 9
@@ -1439,7 +1449,7 @@ struct SessionIndexRow: View {
             Text(status.title)
                 .lineLimit(1)
         }
-        .font(themeStore.uiFont(size: density.metadataFontSize, weight: .semibold))
+        .font(themeStore.uiFont(size: density.statusFontSize, weight: .semibold))
         .foregroundStyle(statusColor(tokens: tokens))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(status.title)

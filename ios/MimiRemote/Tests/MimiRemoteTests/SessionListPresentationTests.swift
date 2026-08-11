@@ -451,6 +451,12 @@ final class SessionListPresentationTests: XCTestCase {
         )
     }
 
+    func testTableStatusUsesSmallerTypeThanSiblingMetadata() {
+        XCTAssertEqual(SessionIndexRowDensity.table.metadataFontSize, 11.5)
+        XCTAssertEqual(SessionIndexRowDensity.table.statusFontSize, 10.5)
+        XCTAssertEqual(SessionIndexRowDensity.compact.statusFontSize, 10)
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",
