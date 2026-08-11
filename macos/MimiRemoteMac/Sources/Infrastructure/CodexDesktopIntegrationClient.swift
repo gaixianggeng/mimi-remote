@@ -14,8 +14,20 @@ struct CodexDesktopLaunchctlClient {
         let environment = ProcessEnvironment.userTooling
 
         @MainActor
-        func run(_ arguments: [String]) async throws -> CommandResult {
+        func read(_ arguments: [String]) async throws -> CommandResult {
             try await executor.run(
+                executable: launchctl,
+                arguments: arguments,
+                timeout: .seconds(10),
+                environment: environment
+            )
+        }
+
+        @MainActor
+        func mutate(_ arguments: [String]) async throws -> CommandResult {
+            // launchctl 可能已经写入 GUI launchd 环境后才观察到调用方取消。
+            // 必须等到命令真实结束，事务层才能继续完成三键写入或可靠回滚。
+            try await executor.runToCompletion(
                 executable: launchctl,
                 arguments: arguments,
                 timeout: .seconds(10),
@@ -25,7 +37,7 @@ struct CodexDesktopLaunchctlClient {
 
         return CodexDesktopLaunchctlClient(
             getenv: { key in
-                let result = try await run(["getenv", key])
+                let result = try await read(["getenv", key])
                 if result.status == 0 {
                     let value = result.stdoutText
                         .trimmingCharacters(in: .newlines)
@@ -42,7 +54,7 @@ struct CodexDesktopLaunchctlClient {
                 )
             },
             setenv: { key, value in
-                let result = try await run([
+                let result = try await mutate([
                     "setenv",
                     key,
                     value,
@@ -55,7 +67,7 @@ struct CodexDesktopLaunchctlClient {
                 }
             },
             unsetenv: { key in
-                let result = try await run([
+                let result = try await mutate([
                     "unsetenv",
                     key,
                 ])

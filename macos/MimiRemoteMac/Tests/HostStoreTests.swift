@@ -1084,6 +1084,113 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
     }
 
+    func testBootstrapWaitsForSharedRuntimeBeforeRestoringLoginEnvironment() async {
+        let events = EventRecorder()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            setEnabled: { enabled, codexHome in
+                events.append("desktop-\(enabled)-\(codexHome ?? "nil")")
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: enabled,
+                    environmentValue: enabled ? "1" : nil,
+                    codexHome: enabled ? codexHome : nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(enabled: true, appInstalled: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                events.append("status")
+                return events.values.filter { $0 == "status" }.count == 1
+                    ? Self.readyStatus
+                    : Self.statusWithCodex(shared: true)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "status",
+            "status",
+            "desktop-true-/tmp/codex",
+        ])
+        XCTAssertNil(store.codexDesktopError)
+        XCTAssertTrue(store.codexDesktopEnabled)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+    }
+
+    func testBootstrapDoesNotRestoreEnvironmentForExplicitNonSharedRuntime() async {
+        let events = EventRecorder()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            bootstrap: {
+                CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: nil,
+                    codexHome: nil,
+                    appInstalled: true,
+                    appRunning: false
+                )
+            },
+            setEnabled: { enabled, _ in
+                events.append("desktop-\(enabled)")
+                return CodexDesktopEnvironmentSnapshot(enabled: enabled, appInstalled: true)
+            },
+            restartAndApply: {
+                CodexDesktopEnvironmentSnapshot(enabled: true, appInstalled: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                events.append("status")
+                return Self.statusWithCodex(shared: false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["status"])
+        XCTAssertEqual(store.codexDesktopStatusTitle, "后端未确认共享")
+    }
+
     func testDisabledCodexIntegrationDoesNotRequireRestartJustBecauseDesktopIsRunning() async {
         let desktop = CodexDesktopIntegrationClient(
             inspect: {

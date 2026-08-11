@@ -26,6 +26,28 @@ enum ProcessExecutorError: LocalizedError {
 actor ProcessExecutor {
     static let shared = ProcessExecutor()
 
+    /// 用于 launchctl setenv/unsetenv 这类很短、但可能已经提交系统状态的命令。
+    /// 调用方取消后仍等待独立任务返回，确保上层能够看到真实执行结果并完成
+    /// 后续写入或回滚；普通命令继续使用 `run`，保持及时取消能力。
+    func runToCompletion(
+        executable: URL,
+        arguments: [String],
+        timeout: Duration = .seconds(15),
+        outputLimit: Int = 1_048_576,
+        environment: [String: String]? = nil
+    ) async throws -> CommandResult {
+        let execution = Task.detached {
+            try await self.run(
+                executable: executable,
+                arguments: arguments,
+                timeout: timeout,
+                outputLimit: outputLimit,
+                environment: environment
+            )
+        }
+        return try await execution.value
+    }
+
     func run(
         executable: URL,
         arguments: [String],

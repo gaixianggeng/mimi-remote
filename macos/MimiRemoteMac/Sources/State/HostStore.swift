@@ -893,13 +893,30 @@ final class HostStore {
     private func reconcileCodexDesktopAtLaunch() async {
         do {
             var inspected = try await codexDesktop.inspect()
-            if inspected.hasLocalPreference,
-               inspected.enabled,
-               codexBackendIsShared,
-               let runtimeCodexHome = codexRuntime?.codexHome,
-               inspected.environmentValue != "1" || inspected.codexHome != runtimeCodexHome
-            {
-                inspected = try await codexDesktop.setEnabled(true, runtimeCodexHome)
+            if inspected.hasLocalPreference, inspected.enabled {
+                var runtimeCodexHome = codexBackendIsShared
+                    ? codexRuntime?.codexHome
+                    : nil
+                let environmentNeedsRestore = inspected.environmentValue != "1"
+                    || inspected.codexHome == nil
+
+                if environmentNeedsRestore,
+                   runtimeCodexHome == nil,
+                   shouldWaitForCodexSharedRuntimeAtLaunch
+                {
+                    // 登录后 launchd 会清空 setenv 写入的三项环境，而 agentd 的
+                    // runtime snapshot 可能比 HTTP readiness 晚几秒返回。用户已经
+                    // 显式启用共享时必须在这里有界等待，否则这次启动会永久跳过
+                    // 恢复，随后 Desktop 又会抢先拉起独立 stdio app-server。
+                    runtimeCodexHome = try await waitForCodexRuntimeShared(true)
+                }
+
+                if let runtimeCodexHome,
+                   inspected.environmentValue != "1"
+                    || inspected.codexHome != runtimeCodexHome
+                {
+                    inspected = try await codexDesktop.setEnabled(true, runtimeCodexHome)
+                }
             }
             codexDesktopError = nil
             applyCodexDesktopSnapshot(inspected)
@@ -907,6 +924,14 @@ final class HostStore {
             codexDesktopError = error.localizedDescription
             await preserveCodexDesktopErrorState()
         }
+    }
+
+    /// nil 表示 agentd 尚未返回 Codex runtime；shared=true 但未 ready 也需要继续等。
+    /// 明确的 websocket/non-shared runtime 则立即停止，不能为了恢复 Desktop 环境
+    /// 擅自改变用户已经选择的后端配置。
+    private var shouldWaitForCodexSharedRuntimeAtLaunch: Bool {
+        guard let runtime = codexRuntime else { return true }
+        return runtime.shared == true
     }
 
     private func configureCodexSharingAndReloadIfNeeded(
