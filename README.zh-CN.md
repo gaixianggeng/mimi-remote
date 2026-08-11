@@ -5,12 +5,12 @@
 <h1 align="center">Mimi Remote</h1>
 
 <p align="center">
-  <strong>让 Mac 继续干活，你不必一直守在 Mac 前。</strong>
+  <strong>Mac 上的 Agent 会话，接着在 iPhone 和 iPad 上用。</strong>
 </p>
 
 <p align="center">
-  开源、原生、本地优先的 Codex 移动工作台。<br />
-  iPhone 看进度，iPad 补方向，iPad Pro 做 Review 和 Git 收尾。
+  面向 Codex 与 Claude Code 的开源原生移动工作台。<br />
+  直连你的 Mac，让会话在设备间无缝接力，实时跟进任务、继续对话和处理审批。
 </p>
 
 <p align="center">
@@ -30,12 +30,19 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
 </p>
 
-<p align="center">
-  <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote 在 iPad 上同时展示项目、最近会话与 Runtime 选择的工作区" width="100%" />
-</p>
+<table>
+  <tr>
+    <td width="33%" valign="middle" align="center">
+      <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote 在 iPhone 上以紧凑单列展示项目、最近会话与 Runtime 选择" width="88%" />
+    </td>
+    <td width="67%" valign="middle" align="center">
+      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote 在 iPad 上同时展示项目、最近会话与 Runtime 选择的工作区" width="96%" />
+    </td>
+  </tr>
+</table>
 
 <p align="center">
-  <sub>当前 Mimi Remote iPad 工作区，与官网使用同一张产品截图。</sub>
+  <sub>当前 Mimi Remote iPhone 与 iPad 工作区：能力一致，布局分别适配。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项目不运营中转服务、云账号或会话托管服务，Mac 始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
@@ -47,12 +54,12 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>iPhone · 单列呈现，单手操作</strong><br />
-      <sub>在紧凑的触屏列表中搜索和浏览所有会话。</sub>
+      <strong>iPhone · 完整能力，紧凑布局</strong><br />
+      <sub>在单列界面中继续会话、跟进进度、处理审批和控制任务。</sub>
     </td>
     <td width="50%" align="center">
-      <strong>iPad · 侧栏与列表同时可见</strong><br />
-      <sub>当前 Mac、导航、最近任务与完整会话历史保持在同一视野。</sub>
+      <strong>iPad · 完整能力，展开布局</strong><br />
+      <sub>同样的会话与控制在多栏工作台中展开，保留更多上下文。</sub>
     </td>
   </tr>
   <tr>
@@ -65,25 +72,25 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
   </tr>
 </table>
 
-这些图片直接复用 [`web/assets`](web/assets) 中的当前官网截图，覆盖 iPhone 与 iPad 的工作区和会话层级。全部图片都来自 Debug 专用种子界面，其中的主机、项目、会话、路径和用量均为演示数据，不使用维护者的真实工作区或凭据。截图展示简体中文界面，App 同时支持英文。官网与 README 共用一套仓库内图片，避免后续再次出现版本漂移。
+两端共用完整的会话、审批与任务控制能力，区别只在布局、信息密度和输入方式。原生 SwiftUI 界面分别打磨了紧凑导航、宽屏分栏、触控反馈与过渡动画；开启 Reduce Motion 后，动态效果会降级为克制的淡化或静态反馈。这些图片直接复用 [`web/assets`](web/assets) 中的当前官网截图，全部来自 Debug 专用种子界面，其中的主机、项目、会话、路径和用量均为演示数据，不使用维护者的真实工作区或凭据。截图展示简体中文界面，App 同时支持英文。
 
-## 离开工位，不离开任务
+## 从 Mac 到移动端，会话继续
 
-真正高频的需求通常不是“在手机上开一个终端”，而是“Agent 趁我离开时做完了——我想看懂它改了什么，再决定下一步”。
+真正高频的需求通常不是“在手机上开一个终端”，而是离开 Mac 后仍能接着同一段 Agent 会话，不必重新解释上下文。
 
-- **看一眼：**任务是在思考、等待、失败，还是已经完成，不用重新打开 Mac。
-- **补一句：**追加上下文、排队下一条指令、切换模型或推理强度、回答问题、批准操作或中断当前 Turn。
-- **收个尾：**检查状态和 Diff、管理 Worktree、按文件或 Hunk 暂存、Commit、Push，并创建 Draft PR。
+- **接着做：**在 Mac、iPhone 与 iPad 之间继续已有会话，离开工位也不用重新开始。
+- **实时跟进：**查看任务正在思考、等待、失败还是已经完成，并持续读取结构化回复和执行过程。
+- **随时控制：**追加上下文、排队下一条指令、切换模型或推理强度、回答问题、批准操作或中断当前 Turn。
 
-iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界面会展开成项目、会话、正文与 Inspector 工作台，而不是简单把手机页面拉宽。
+需要完成更深入的开发收尾时，进阶工具还支持检查 Diff、管理 Worktree、按文件或 Hunk 暂存、Commit、Push 和创建 Draft PR；这些能力不是使用 Mimi Remote 的前提。
 
 ## 它不是口袋里的终端
 
-- Codex 的消息、推理、命令、Tool 调用、审批和执行过程会组成结构化时间线，不是一整屏终端日志。
+- Codex 与 Claude Code 的消息、推理、命令、Tool 调用、审批和执行过程会组成结构化时间线，不是一整屏终端日志。
 - 新建 Codex 会话由 Mac 端异步生成简短标题；生成失败不会阻塞对话，可通过 `app_server.auto_title` 关闭。
 - 模型、推理强度、Skill、速度、权限模式和待发送队列都留在 Composer 附近。
 - Markdown、图片、文件引用、语音输入和安全的 Quick Look 读取都按移动端内容呈现。
-- Worktree 与 Git 操作带预览、确认、超时和输出上限，不向手机暴露不受控的任意 Shell。
+- iPhone 与 iPad 的间距、层级、触控反馈和转场动画分别调校；Reduce Motion 下仍保留清晰的静态状态反馈。
 - 多个 Mac Profile 使用独立 Keychain Token；同一时间只保持一个活动连接，心智模型更简单。
 - 就绪检查、断线恢复、Doctor 和有上限的日志导出，让多数故障不必回到电脑前处理。
 
@@ -91,7 +98,7 @@ iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界�
 
 ## 设计围绕上下文，不围绕屏幕尺寸
 
-Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPad 是保留上下文的工作台，Mac 是紧凑的运行控制面，不会把同一张页面机械复制到所有端。
+Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPhone 用紧凑层级保持单手操作，iPad 展开为保留上下文的多栏工作台，Mac 则继续运行 Agent 并提供宿主控制面。设备改变的是呈现方式，不是可用能力。
 
 <table>
   <tr>
@@ -124,7 +131,7 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 
 这套层级有几个明确原则：
 
-- **保留上下文：**iPad 侧栏持续展示项目和会话，右侧内容按任务变化；设置使用 Sheet，工作台不会突然消失。
+- **保留上下文：**iPhone 用紧凑层级把当前任务放在手边；iPad 侧栏持续展示项目和会话，右侧内容按任务变化；两端切换布局但不削减会话能力。
 - **渐进披露复杂度：**高频状态和动作靠近任务，首次设置、配对、诊断和深层偏好进入独立界面。
 - **先看状态，再做动作：**连接健康度、Runtime 就绪状态、剩余额度和权限模式会先于可能改变或中断任务的控制项出现。
 - **遵循各平台习惯：**iPhone 是紧凑触屏层级，iPad 是多栏工作台，Mac 是高密度菜单栏工具，而不是把一套布局拉伸到三块屏幕。
@@ -135,60 +142,24 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 
 ```mermaid
 flowchart LR
-    subgraph Mobile["移动设备"]
-        App["Mimi Remote<br/>SwiftUI 工作台"]
-        Keychain["Keychain<br/>每个 Mac Profile 一份访问 Token"]
-        Keychain -.-> App
-    end
+    Mobile["iPhone / iPad<br/>Mimi Remote"]
+    Gateway["你的 Mac<br/>agentd 安全网关"]
+    Codex["Codex<br/>共享 daemon 或受管 app-server"]
+    Claude["Claude Code<br/>实验 bridge"]
 
-    subgraph Mac["你的 Mac — 唯一控制面"]
-        Host["Mimi Remote Mac<br/>安装 · 配对 · Doctor · 服务生命周期"]
-        Agent["agentd<br/>认证 · REST API · WebSocket 网关 · 权限策略"]
-        Local["受限本地操作<br/>项目 · 文件 · Git · Worktree · Action"]
-        Codex["Codex app-server<br/>受管 loopback 进程"]
-        Bridge["alleycat-claude-bridge<br/>常驻 · 实验通道"]
-        Claude["Claude Code headless<br/>每个 thread 一个 stdio 进程"]
-        State["本机状态<br/>工作区 · 凭证 · 历史"]
-
-        Host -->|"启动与监控"| Agent
-        Agent -->|"校验后的本机 API"| Local
-        Agent -->|"过滤后的 JSON-RPC"| Codex
-        Agent -->|"稳定 session + cursor"| Bridge
-        Bridge -->|"stdio JSONL"| Claude
-        Local --> State
-        Codex --> State
-        Claude --> State
-    end
-
-    App -->|"Tailscale 或同一局域网<br/>Bearer Token · REST + WebSocket"| Agent
+    Mobile <-->|"局域网或 Tailscale<br/>实时会话与审批"| Gateway
+    Gateway <--> Codex
+    Gateway <--> Claude
 ```
 
-Mimi Remote 是原生客户端，不是另一台运行 Agent 的主机。所有远程请求都终止在你 Mac 上的 `agentd`；iOS 不会直接连接 Codex app-server、Claude Code、本机文件系统或项目维护者提供的云服务。
+这个仓库包含完整链路：iPhone / iPad 原生 App、Mac 菜单栏宿主、Go `agentd` 网关，以及 Claude Code 兼容 bridge。移动端只连接你自己的 Mac，项目文件、会话历史和 Runtime 凭证都留在宿主机。
 
-系统有三条清晰的调用路径：
+- **直连、响应快：**通过私有网络上的 REST 与 WebSocket 实时传递输出、追问、任务控制和审批，不经过 Mimi 运营的应用层中转。
+- **真正的会话接力：**Codex 可选择与 Codex Desktop 共用官方 local daemon，让 Mac 上空闲的原会话无需 fork 就能在移动端继续；默认和回滚链路仍使用独立受管 app-server。
+- **双 Runtime、统一体验：**Codex 是主 Runtime；可选的 Claude Code bridge 把会话与审批适配到同一套结构化移动界面。
+- **边界小而明确：**`agentd` 在 Mac 上完成认证、工作区授权和 Runtime 路由。Mac 需要保持唤醒并能从私有网络访问。
 
-1. **宿主生命周期：**Mimi Remote Mac 负责安装、配对、诊断、启动和监控 `agentd`，不经过每一条业务请求。命令行和 Linux 场景可以由 Homebrew 或 user-systemd 运行同一个 Go 服务。
-2. **受限本机能力：**项目发现、安全文件读取、Git、受管 Worktree、诊断、语音代理和配置 Action 都通过 `agentd` 的认证 REST API 完成，不需要绕经 Codex。
-3. **Agent 会话：**移动端只连接一个对外的 Codex-compatible JSON-RPC / WebSocket 网关。`agentd` 校验 runtime、method、由项目映射得到的工作目录、Payload 大小和连接预算，再把请求路由到主通道 Codex app-server 或实验通道 Claude bridge。
-
-Codex app-server 是由 `agentd` 管理的 loopback 进程，也是默认运行时。可选的常驻 Claude bridge 使用稳定 session key 和 replay cursor 承接移动端重连，并为每个活动 thread 管理一个 Claude Code headless stdio 进程。Provider 差异被限制在适配层内；移动端共用界面不代表两条通道功能完全一致。
-
-安全边界集中在 Mac：
-
-- 二维码只携带签名配对票据，不包含长期凭据；同一票据可在生成后的 10 分钟内重复兑换，换取到的长期 `agentd` Token 按 Mac Profile 保存到 Keychain。
-- app-server capability token 与 Provider 凭证不会离开 Mac；受管 app-server 只监听 loopback。
-- 客户端提交的项目 ID 必须通过配置中的项目 allowlist 解析；文件访问限制在项目根目录、`browse_roots` 和受管 Worktree。
-- Git 与 Worktree API 只暴露固定、经过参数校验的操作；通用命令必须预先配置为 Action，并受确认、超时、请求大小和输出上限约束。
-- 正常断线后通过 sequence / cursor 回放实时事件；超出回放窗口时读取本机权威历史，不会重新提交同一个 Turn。
-- 跨网络默认推荐 Tailscale；未安装时可在同一局域网直连。两种方式都不应把 `agentd` 暴露到公网。
-
-这套架构部署简单、边界可审计，但代价也很明确：Mac 必须保持唤醒并能从私有网络访问，`agentd` 与所选 Runtime 也必须健康。当前没有维护者运营的中继、云端状态同步或 APNs 后台执行链路。
-
-### Claude Code 为什么需要单独 bridge
-
-Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `agentd` 共用版本、CI 和发布入口。`agentd` 监督一个常驻 bridge，通过稳定 session key 把多次移动端 WebSocket 连接附着到同一运行时；每个 Claude thread 对应一个 Claude Code headless stdio JSONL 进程。
-
-该通道默认关闭并标记为实验功能。普通断线不会重新提交 `turn/start`，重连优先回放缺失事件，超出窗口时读取本机 Claude 历史；bridge 或 Mac 重启前尚未落盘的极短窗口仍可能丢失。`goal`、`archive` 和 `fork` 尚未开放，详细生命周期、权限和失败模式见 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
+协议细节与准确能力边界见[项目现状](docs/project-status.md)、[Codex 共享 daemon](docs/codex-shared-daemon.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
 ## 开始前检查
 
