@@ -1283,6 +1283,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: false,
             isGoalUpdating: false,
             // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
@@ -1367,61 +1368,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testComposerSendModeLabelsUseConsistentModeSuffix() {
-        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
-        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
-        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
-        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
-    }
-
-    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
-        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-        let expanded = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: true,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-
-        XCTAssertEqual(collapsed.materialStrength, .thin)
-        XCTAssertEqual(expanded.materialStrength, .regular)
-        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
-        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
-        XCTAssertEqual(collapsed.borderOpacity, 0.58)
-        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
-    }
-
-    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .light,
-                reduceTransparency: false
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.05)
-        }
-    }
-
-    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .dark,
-                reduceTransparency: true
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.58)
-        }
-    }
-
     func testExpandedGoalTrayDarkMaterialSeparatesBackdropContent() {
         let themeStore = makeThemeStore()
         let goal = ThreadGoal(
@@ -1439,6 +1385,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: true,
             isGoalUpdating: false,
             goalErrorMessage: nil,

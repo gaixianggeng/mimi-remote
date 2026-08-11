@@ -116,7 +116,7 @@ struct ConversationMessageContent: View {
                 )
             }
         }
-        .foregroundStyle(tokens.primaryText)
+        .foregroundStyle(tokens.conversationPrimaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.interaction, shape)
         .contentShape(.contextMenuPreview, shape)
@@ -583,7 +583,7 @@ struct ConversationMessageContent: View {
 
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        return message.role == .user ? userBubbleForeground : tokens.primaryText
+        return message.role == .user ? userBubbleForeground : tokens.conversationPrimaryText
     }
 
     private var timestampForeground: Color? {
