@@ -33,11 +33,11 @@
 
 <table>
   <tr>
-    <td width="33%" valign="top" align="center">
+    <td width="33%" valign="middle" align="center">
       <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote workspace on iPhone with projects, recent conversations, and runtime selection in a compact column" width="88%" />
     </td>
-    <td width="67%" valign="top" align="center">
-      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote workspace on iPad with projects, recent conversations, and runtime selection visible together" width="100%" />
+    <td width="67%" valign="middle" align="center">
+      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote workspace on iPad with projects, recent conversations, and runtime selection visible together" width="96%" />
     </td>
   </tr>
 </table>
@@ -141,53 +141,24 @@ The mobile images above are the same current assets used by the Mimi Remote webs
 
 ```mermaid
 flowchart LR
-    subgraph Mobile["Mobile device"]
-        App["Mimi Remote<br/>SwiftUI workbench"]
-        Keychain["Keychain<br/>one access token per Mac profile"]
-        Keychain -.-> App
-    end
+    Mobile["iPhone / iPad<br/>Mimi Remote"]
+    Gateway["Your Mac<br/>agentd secure gateway"]
+    Codex["Codex<br/>shared daemon or managed app-server"]
+    Claude["Claude Code<br/>experimental bridge"]
 
-    subgraph Mac["Your Mac — the only control plane"]
-        Host["Mimi Remote Mac<br/>install · pair · Doctor · service lifecycle"]
-        Agent["agentd<br/>auth · REST API · WebSocket gateway · policy"]
-        Local["Scoped host operations<br/>projects · files · Git · Worktrees · actions"]
-        Codex["Codex app-server<br/>shared local daemon or loopback fallback"]
-        Bridge["alleycat-claude-bridge<br/>resident · experimental"]
-        Claude["Claude Code headless<br/>one stdio process per thread"]
-        State["Local state<br/>workspaces · credentials · histories"]
-
-        Host -->|"starts and monitors"| Agent
-        Agent -->|"validated host API"| Local
-        Agent -->|"filtered JSON-RPC"| Codex
-        Agent -->|"stable session + cursor"| Bridge
-        Bridge -->|"stdio JSONL"| Claude
-        Local --> State
-        Codex --> State
-        Claude --> State
-    end
-
-    App -->|"Tailscale or local network<br/>Bearer token · REST + WebSocket"| Agent
+    Mobile <-->|"LAN or Tailscale<br/>live sessions and approvals"| Gateway
+    Gateway <--> Codex
+    Gateway <--> Claude
 ```
 
-Mimi Remote is a native client, not a second place where the agent runs. Every remote request terminates at `agentd` on your Mac; the iOS app never connects directly to Codex app-server, Claude Code, the local filesystem, or a hosted Mimi service.
+This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own Mac, so project files, session history, and runtime credentials stay on the host.
 
-There are three paths through the system:
+- **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
+- **A real session handoff:** Codex can opt into the official local daemon shared with Codex Desktop, so an idle Mac thread can continue on mobile without a fork; the managed app-server remains the default and fallback.
+- **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
+- **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the Mac. The Mac must remain awake and privately reachable.
 
-1. **Host lifecycle:** Mimi Remote Mac installs, pairs, diagnoses, starts, and monitors `agentd`. It is not in the per-request data path. Homebrew or user-systemd can run the same Go service for command-line and Linux setups.
-2. **Bounded host capabilities:** project discovery, safe file reads, Git, managed Worktrees, diagnostics, voice proxying, and configured actions use authenticated REST endpoints implemented by `agentd`. They do not pass through Codex.
-3. **Agent sessions:** the mobile app uses one external Codex-compatible JSON-RPC/WebSocket gateway. `agentd` validates the runtime, method, project-derived working directory, payload size, and connection budget before routing the request to the primary Codex app-server or the experimental Claude bridge.
-
-Codex app-server remains the primary runtime. On macOS, users can explicitly enable the official local daemon so Codex Desktop and Mimi Remote share one writer process; the compatible managed loopback WebSocket remains the rollback/default path. This lets the phone continue an idle Desktop-opened thread without forking, while an actively running Desktop turn stays read-only. The optional resident Claude bridge keeps a stable session key and replay cursor across mobile reconnects, then owns one headless Claude Code stdio process per active thread. Provider-specific differences stay behind this adapter boundary; the shared mobile UI does not imply feature parity.
-
-The security boundary is deliberately concentrated on the Mac:
-
-- A QR code carries a signed pairing ticket that can be reused only during its 10-minute lifetime; it never carries the long-lived credential. The resulting `agentd` token is stored in Keychain per Mac profile.
-- The app-server capability token and provider credentials never leave the Mac. The managed app-server endpoint listens on loopback.
-- Client-supplied project IDs are resolved through the configured project allowlist. File access is limited to project roots, `browse_roots`, and managed Worktrees.
-- Git and Worktree APIs expose fixed, validated operations. General commands must be configured as actions and use confirmation, timeouts, request limits, and bounded output.
-- Live events use sequence/cursor replay after normal reconnects; when a replay window is insufficient, the client reloads authoritative local history instead of resubmitting the turn.
-
-This shape keeps deployment small and auditable, but the tradeoff is explicit: the Mac must be awake and privately reachable, and `agentd` plus the selected runtime must be healthy. There is no maintainer-operated relay, cloud state sync, or APNs background execution path.
+For protocol details and exact capability boundaries, see [project status](docs/project-status.md), [Codex shared daemon](docs/codex-shared-daemon.md), and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
 
 ## Prerequisites
 
