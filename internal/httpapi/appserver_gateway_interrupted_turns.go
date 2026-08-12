@@ -40,7 +40,7 @@ func (r *Router) rewriteInterruptedGatewayHistoryResponse(
 
 	changed := false
 	switch request.method {
-	case "thread/list", "thread/search":
+	case "thread/list":
 		threads, ok := result["data"].([]any)
 		if !ok {
 			break
@@ -51,6 +51,34 @@ func (r *Router) rewriteInterruptedGatewayHistoryResponse(
 				continue
 			}
 			listedThreadID := gatewayHistoryObjectID(thread)
+			if listedThreadID == "" {
+				continue
+			}
+			listedInterrupted := source.GatewayInterruptedTurns(listedThreadID)
+			if len(listedInterrupted) > 0 && rewriteInterruptedGatewayThread(thread, listedInterrupted) {
+				changed = true
+			}
+		}
+	case "thread/search":
+		rows, ok := result["data"].([]any)
+		if !ok {
+			break
+		}
+		for _, rawRow := range rows {
+			row, ok := rawRow.(map[string]any)
+			if !ok {
+				continue
+			}
+			thread, ok := row["thread"].(map[string]any)
+			if !ok {
+				continue
+			}
+			// thread/search 的 data 行自身只有 snippet + thread，没有 thread id；
+			// 必须从嵌套 Thread 取 tombstone 对应的 turns，避免把搜索行误当成 Thread。
+			listedThreadID := gatewayHistoryObjectID(thread)
+			if listedThreadID == "" {
+				continue
+			}
 			listedInterrupted := source.GatewayInterruptedTurns(listedThreadID)
 			if len(listedInterrupted) > 0 && rewriteInterruptedGatewayThread(thread, listedInterrupted) {
 				changed = true

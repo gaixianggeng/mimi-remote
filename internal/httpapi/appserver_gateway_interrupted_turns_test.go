@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 )
 
@@ -161,6 +163,79 @@ func TestGatewayPolicyRewritesInterruptedTurnHistoryResponse(t *testing.T) {
 	}
 	if len(response.Result.Data) != 1 || response.Result.Data[0].Status != "interrupted" {
 		t.Fatalf("gateway 输出未收敛为 interrupted：%s", forwarded)
+	}
+}
+
+func TestGatewayPolicyRewritesInterruptedSearchThreadThroughSanitize(t *testing.T) {
+	interruptedAt := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	policy, projectDir, _ := newThreadSearchPolicy(t)
+	policy.router.externalActivity = &interruptedTurnTestSource{turns: map[string]map[string]time.Time{
+		"thread-search": {"turn-search-old": interruptedAt},
+	}}
+	request := []byte(`{"id":92,"method":"thread/search","params":{"searchTerm":"reconcile","limit":1}}`)
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, request); policyErr != nil {
+		t.Fatalf("合法 thread/search 请求不应被拒绝：%+v", policyErr)
+	}
+	response, err := json.Marshal(map[string]any{
+		"id": 92,
+		"result": map[string]any{
+			"data": []any{
+				map[string]any{
+					"snippet": "search hit",
+					"thread": map[string]any{
+						"id":      "thread-search",
+						"cwd":     projectDir,
+						"status":  map[string]any{"type": "active"},
+						"preview": "keep-me",
+						"turns": []any{
+							map[string]any{"id": "turn-search-old", "status": "inProgress"},
+							map[string]any{"id": "turn-search-new", "status": "inProgress"},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, response)
+	if policyErr != nil || !forward {
+		t.Fatalf("thread/search 响应应经过 gateway policy 后透传：forward=%t err=%+v", forward, policyErr)
+	}
+	var decoded struct {
+		Result struct {
+			Data []struct {
+				Snippet string `json:"snippet"`
+				Thread  struct {
+					ID      string `json:"id"`
+					Preview string `json:"preview"`
+					Status  struct {
+						Type string `json:"type"`
+					} `json:"status"`
+					Turns []struct {
+						ID     string `json:"id"`
+						Status string `json:"status"`
+					} `json:"turns"`
+				} `json:"thread"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(forwarded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Result.Data) != 1 {
+		t.Fatalf("sanitize 后应保留一个合法搜索条目：%s", forwarded)
+	}
+	item := decoded.Result.Data[0]
+	if item.Snippet != "search hit" || item.Thread.ID != "thread-search" || item.Thread.Preview != "keep-me" {
+		t.Fatalf("sanitize 后应保留搜索行和嵌套 Thread 原始字段：%s", forwarded)
+	}
+	if len(item.Thread.Turns) != 2 || item.Thread.Turns[0].Status != "interrupted" {
+		t.Fatalf("嵌套 Thread 中精确命中的旧 Turn 应为 interrupted：%s", forwarded)
+	}
+	if item.Thread.Turns[1].Status != "inProgress" {
+		t.Fatalf("同 Thread 的新 active Turn 不得被旧 tombstone 改写：%s", forwarded)
 	}
 }
 
