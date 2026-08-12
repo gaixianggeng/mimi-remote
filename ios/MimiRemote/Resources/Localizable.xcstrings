@@ -34772,6 +34772,190 @@
         }
       }
     },
+    "ui.workspace_abstract_blocks": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Blocks" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "积木" } }
+      }
+    },
+    "ui.workspace_abstract_bloom": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Bloom" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "绽放" } }
+      }
+    },
+    "ui.workspace_abstract_crossing": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Crossing" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交汇" } }
+      }
+    },
+    "ui.workspace_abstract_grid": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Grid" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网格" } }
+      }
+    },
+    "ui.workspace_abstract_mosaic": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mosaic" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "马赛克" } }
+      }
+    },
+    "ui.workspace_abstract_orbit": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Orbit" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "轨道" } }
+      }
+    },
+    "ui.workspace_abstract_prism": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Prism" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "棱镜" } }
+      }
+    },
+    "ui.workspace_abstract_rings": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "环形" } }
+      }
+    },
+    "ui.workspace_abstract_spiral": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Spiral" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旋涡" } }
+      }
+    },
+    "ui.workspace_abstract_waves": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waves" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "波纹" } }
+      }
+    },
+    "ui.workspace_icon_style_abstract_geometry": {
+      "comment": "Workspace icon style made from original geometric artwork.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Geometry" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "几何" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_abstract_geometry": {
+      "comment": "Compact label for Abstract Geometry in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Geometry" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "几何" } }
+      }
+    },
+    "ui.workspace_icon_style_solar_system": {
+      "comment": "Workspace icon style containing the Sun and eight planets.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Planets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "星球" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_solar_system": {
+      "comment": "Compact label for the Solar System workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Planets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "星球" } }
+      }
+    },
+    "ui.workspace_solar_earth": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Earth" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "地球" } }
+      }
+    },
+    "ui.workspace_solar_jupiter": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Jupiter" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "木星" } }
+      }
+    },
+    "ui.workspace_solar_mars": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mars" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "火星" } }
+      }
+    },
+    "ui.workspace_solar_mercury": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mercury" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "水星" } }
+      }
+    },
+    "ui.workspace_solar_neptune": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Neptune" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "海王星" } }
+      }
+    },
+    "ui.workspace_solar_saturn": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Saturn" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "土星" } }
+      }
+    },
+    "ui.workspace_solar_sun": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sun" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "太阳" } }
+      }
+    },
+    "ui.workspace_solar_uranus": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Uranus" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "天王星" } }
+      }
+    },
+    "ui.workspace_solar_venus": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Venus" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "金星" } }
+      }
+    },
     "ui.workspace_art_death_of_socrates": {
       "comment": "Public-domain artwork used by the World Art workspace icon style.",
       "extractionState": "manual",
@@ -37259,13 +37443,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "World Art"
+            "value": "Artworks"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "世界名画"
+            "value": "画作"
           }
         }
       }
@@ -37421,13 +37605,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "World Art"
+            "value": "Artworks"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "世界名画"
+            "value": "画作"
           }
         }
       }

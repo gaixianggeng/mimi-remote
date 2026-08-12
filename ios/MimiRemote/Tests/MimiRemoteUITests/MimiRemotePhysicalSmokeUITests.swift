@@ -954,11 +954,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let expectedStyleIdentifiers = [
             "journey",
             "threeKingdoms",
-            "waterMargin",
+            "abstractGeometry",
             "redChamber",
             "onePiece",
             "naruto",
-            "digimon",
+            "solarSystem",
             "worldArt",
             "emoji"
         ]
@@ -983,11 +983,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
 
         guard let worldArt = scrollToWorkspaceStyleOption("worldArt", in: picker) else {
-            XCTFail("工作区图标风格应提供世界名画")
+            XCTFail("工作区图标风格应提供画作")
             return
         }
         worldArt.tap()
-        XCTAssertTrue(waitUntilSelected(worldArt), "选择世界名画后应立即保存")
+        XCTAssertTrue(waitUntilSelected(worldArt), "选择画作后应立即保存")
         try relaunchDirectlyIntoWorkspaces()
 
         let artChips = app.descendants(matching: .any)
@@ -997,11 +997,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let artIconEntry = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
             .firstMatch
-        XCTAssertTrue(artIconEntry.waitForExistence(timeout: 8), "世界名画主题仍应提供更换作品入口")
+        XCTAssertTrue(artIconEntry.waitForExistence(timeout: 8), "画作主题仍应提供更换作品入口")
         artIconEntry.tap()
 
         let artPicker = app.descendant(identifier: "workspace.characterPicker")
-        XCTAssertTrue(artPicker.waitForExistence(timeout: 10), "世界名画主题应打开作品选择器")
+        XCTAssertTrue(artPicker.waitForExistence(timeout: 10), "画作主题应打开作品选择器")
         let expectedArtworkIDs = [
             "art-van-gogh-self-portrait",
             "art-great-wave",
@@ -1018,12 +1018,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(
                 app.descendant(identifier: "workspace.character.\(artworkID)")
                     .waitForExistence(timeout: 5),
-                "世界名画选择器应展示 \(artworkID)"
+                "画作选择器应展示 \(artworkID)"
             )
         }
         let artworkButtons = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.character.art-"))
-        XCTAssertEqual(artworkButtons.count, 10, "世界名画选择器应完整展示 10 幅作品")
+        XCTAssertEqual(artworkButtons.count, 10, "画作选择器应完整展示 10 幅作品")
 
         let artPickerScreenshot = XCTAttachment(screenshot: app.screenshot())
         artPickerScreenshot.name = "workspace-world-art-picker"

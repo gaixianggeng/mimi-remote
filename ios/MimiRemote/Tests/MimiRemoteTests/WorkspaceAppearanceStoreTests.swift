@@ -49,40 +49,77 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         }
     }
 
-    func testEveryNewCharacterStyleContainsTenUniqueCharacters() {
-        let newStyles: [WorkspaceIconStyle] = [
+    func testCuratedIconStylesKeepExpectedCountsAndUniqueAssets() {
+        let tenIconStyles: [WorkspaceIconStyle] = [
             .threeKingdoms,
-            .waterMargin,
+            .abstractGeometry,
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
             .aliceWonderland,
             .onePiece,
             .naruto,
-            .digimon,
             .worldArt
         ]
-        let newCharacters = newStyles.flatMap {
+        let curatedIcons = (tenIconStyles + [.solarSystem]).flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
         }
 
-        for style in newStyles {
+        for style in tenIconStyles {
             XCTAssertEqual(
                 WorkspaceAppearanceStore.characters(for: style).count,
                 10,
-                "\(style.rawValue) 应提供 10 个角色"
+                "\(style.rawValue) 应提供 10 个图标"
             )
         }
-        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 100)
-        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 100)
+        XCTAssertEqual(WorkspaceAppearanceStore.characters(for: .solarSystem).count, 9)
+        XCTAssertEqual(Set(curatedIcons.map(\.id)).count, 99)
+        XCTAssertEqual(Set(curatedIcons.map(\.assetName)).count, 99)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
-    func testRetiredClassicAlbumStyleKeepsOnlyItsPersistenceIdentifier() {
+    func testRetiredStylesKeepOnlyPersistenceIdentifiersAndMigrate() {
+        XCTAssertEqual(WorkspaceIconStyle.waterMargin.availableStyle, .abstractGeometry)
+        XCTAssertEqual(WorkspaceIconStyle.digimon.availableStyle, .solarSystem)
         XCTAssertEqual(WorkspaceIconStyle.classicAlbums.availableStyle, .worldArt)
+        XCTAssertFalse(WorkspaceIconStyle.visibleStyles.contains(.waterMargin))
+        XCTAssertFalse(WorkspaceIconStyle.visibleStyles.contains(.digimon))
         XCTAssertFalse(WorkspaceIconStyle.visibleStyles.contains(.classicAlbums))
+        XCTAssertNil(WorkspaceIconStyle.waterMargin.representativeAssetName)
+        XCTAssertNil(WorkspaceIconStyle.digimon.representativeAssetName)
         XCTAssertNil(WorkspaceIconStyle.classicAlbums.representativeAssetName)
+        XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .waterMargin).isEmpty)
+        XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .digimon).isEmpty)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .classicAlbums).isEmpty)
+    }
+
+    func testOriginalThemePoolsKeepProductOrderAndRepresentatives() {
+        let abstractIcons = WorkspaceAppearanceStore.characters(for: .abstractGeometry)
+        let solarIcons = WorkspaceAppearanceStore.characters(for: .solarSystem)
+
+        XCTAssertEqual(
+            abstractIcons.map(\.id),
+            [
+                "abstract-orbit", "abstract-prism", "abstract-waves", "abstract-grid",
+                "abstract-bloom", "abstract-rings", "abstract-blocks", "abstract-spiral",
+                "abstract-crossing", "abstract-mosaic"
+            ]
+        )
+        XCTAssertEqual(
+            solarIcons.map(\.id),
+            [
+                "solar-sun", "solar-mercury", "solar-venus", "solar-earth", "solar-mars",
+                "solar-jupiter", "solar-saturn", "solar-uranus", "solar-neptune"
+            ]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.abstractGeometry.representativeAssetName,
+            "WorkspaceAbstractOrbit"
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.solarSystem.representativeAssetName,
+            "WorkspaceSolarSun"
+        )
     }
 
     func testWorldArtPoolKeepsCuratedOrderAndRepresentativeAsset() {
@@ -111,31 +148,32 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(Set(artworks.map(\.assetName)).count, 10)
     }
 
-    func testEveryNewCharacterStyleAssignsTenProjectsUniquelyAndStably() {
+    func testEveryCuratedStyleAssignsOneProjectPerAvailableIconStably() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
-        let projectIDs = (0..<10).map { "project-\($0)" }
-        let newStyles: [WorkspaceIconStyle] = [
+        let curatedStyles: [WorkspaceIconStyle] = [
             .threeKingdoms,
-            .waterMargin,
+            .abstractGeometry,
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
             .aliceWonderland,
             .onePiece,
             .naruto,
-            .digimon,
+            .solarSystem,
             .worldArt
         ]
 
-        for style in newStyles {
+        for style in curatedStyles {
+            let iconCount = WorkspaceAppearanceStore.characters(for: style).count
+            let projectIDs = (0..<iconCount).map { "project-\($0)" }
             let assignments = store.characterAssignments(
                 style: style,
                 profileID: "mac-a",
                 projectIDs: projectIDs
             )
 
-            XCTAssertEqual(assignments.count, 10)
-            XCTAssertEqual(Set(assignments.values.map(\.id)).count, 10)
+            XCTAssertEqual(assignments.count, iconCount)
+            XCTAssertEqual(Set(assignments.values.map(\.id)).count, iconCount)
             XCTAssertEqual(
                 store.characterAssignments(
                     style: style,
@@ -173,11 +211,11 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             [
                 .journey,
                 .threeKingdoms,
-                .waterMargin,
+                .abstractGeometry,
                 .redChamber,
                 .onePiece,
                 .naruto,
-                .digimon,
+                .solarSystem,
                 .worldArt,
                 .emoji
             ]
@@ -201,6 +239,14 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             WorkspaceIconStyle.selectableStyles(currentStyle: .classicAlbums),
+            WorkspaceIconStyle.visibleStyles
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .waterMargin),
+            WorkspaceIconStyle.visibleStyles
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .digimon),
             WorkspaceIconStyle.visibleStyles
         )
     }
@@ -305,8 +351,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             projectID: "project-1"
         )
         store.setCustomCharacterID(
-            "water-wu-song",
-            style: .waterMargin,
+            "abstract-waves",
+            style: .abstractGeometry,
             profileID: "mac-a",
             projectID: "project-1"
         )
@@ -322,11 +368,11 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             restored.customCharacterID(
-                style: .waterMargin,
+                style: .abstractGeometry,
                 profileID: "mac-a",
                 projectID: "project-1"
             ),
-            "water-wu-song"
+            "abstract-waves"
         )
         XCTAssertNil(
             restored.customCharacterID(
@@ -468,6 +514,48 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             store.characterAssignments(profileID: "mac-a", projectIDs: Array(projectIDs.reversed())),
             assignments,
             "项目输入顺序变化不应导致头像重新洗牌"
+        )
+    }
+
+    func testRetiredWaterMarginAndDigimonPreferencesMigrateToOriginalThemes() throws {
+        let legacyPreferences: [String: Any] = [
+            "byProfileID": [
+                "mac-water": [
+                    "style": "waterMargin",
+                    "characterIDsByStyleAndProject": [
+                        "waterMargin": ["project-1": "water-wu-song"]
+                    ]
+                ],
+                "mac-digimon": [
+                    "style": "digimon",
+                    "characterIDsByStyleAndProject": [
+                        "digimon": ["project-1": "digimon-agumon"]
+                    ]
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: legacyPreferences),
+            forKey: "agentd.workspaceAppearancePreferences.v2"
+        )
+
+        let restored = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(restored.style(profileID: "mac-water"), .abstractGeometry)
+        XCTAssertEqual(restored.style(profileID: "mac-digimon"), .solarSystem)
+        XCTAssertTrue(
+            restored.defaultCharacterID(
+                style: .abstractGeometry,
+                profileID: "mac-water",
+                projectID: "project-1"
+            ).hasPrefix("abstract-")
+        )
+        XCTAssertTrue(
+            restored.defaultCharacterID(
+                style: .solarSystem,
+                profileID: "mac-digimon",
+                projectID: "project-1"
+            ).hasPrefix("solar-")
         )
     }
 

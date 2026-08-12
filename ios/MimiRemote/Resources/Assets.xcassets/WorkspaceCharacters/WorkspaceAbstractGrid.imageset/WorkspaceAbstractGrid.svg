@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#FFF7ED"/><path d="M0 85h256M0 171h256M85 0v256M171 0v256" stroke="#1F2937" stroke-width="14"/><rect x="0" y="0" width="85" height="85" fill="#FB7185"/><rect x="171" y="0" width="85" height="85" fill="#FACC15"/><rect x="85" y="85" width="86" height="86" fill="#60A5FA"/><rect x="0" y="171" width="85" height="85" fill="#34D399"/><circle cx="213" cy="213" r="28" fill="#7C3AED"/>
+</svg>
