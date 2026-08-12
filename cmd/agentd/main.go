@@ -1081,11 +1081,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()
-	if appServerWSProcess != nil {
-		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
-	} else if !sharedDaemonStatus.StartedAt.IsZero() {
-		apiRouter.SetCodexRuntimeStartedAt(sharedDaemonStatus.StartedAt)
-	}
+	configureServeCodexRuntimeIdentity(apiRouter, appServerWSProcess, sharedDaemonStatus)
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           apiHandler,

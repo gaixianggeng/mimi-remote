@@ -174,6 +174,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 					payload = redacted
 				}
+				if reconciled, changed := p.router.rewriteInterruptedGatewayHistoryResponse(payload, pending); changed {
+					payload = reconciled
+				}
 				if !pending.redactOnly &&
 					appServerGatewayHistoryResponseCapBytes > 0 &&
 					len(payload) > appServerGatewayHistoryResponseCapBytes {

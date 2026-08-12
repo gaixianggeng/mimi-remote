@@ -244,6 +244,7 @@ func TestExternalActivityExcludesExactGatewayOwnedTurn(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now.Add(-10*time.Minute))
 	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
 	// 即使 originator 是 mimi_remote，精确 Thread+Turn gateway claim 仍应排除该 turn。
 	path := fixture.writeRollout("thread-ipad", "mimi_remote", fixture.projectDir,
@@ -336,6 +337,7 @@ func TestExternalActivityAlsoSupportsUserMessageBeforeTaskStarted(t *testing.T) 
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now.Add(-10*time.Minute))
 	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
 	path := fixture.writeRollout("thread-ipad", "Codex Desktop", fixture.projectDir,
 		externalUserMessageLine(now.Add(100*time.Millisecond), "client-ipad"),
@@ -353,6 +355,10 @@ func TestExternalActivityAlsoSupportsUserMessageBeforeTaskStarted(t *testing.T) 
 	entry := fixture.tracker.files[path]
 	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
 		t.Fatalf("反向落盘顺序也应保留 gateway 归属：%+v", entry)
+	}
+	claim := fixture.tracker.ownedGatewayTurns[gatewayOwnedTurnClaimKey("thread-ipad", "turn-ipad")]
+	if claim.runtimeKind != "managed_websocket" || !claim.runtimeStartedAt.Equal(now.Add(-10*time.Minute)) {
+		t.Fatalf("反向落盘顺序必须保留 runtime identity：%+v", claim)
 	}
 }
 
@@ -641,6 +647,302 @@ func TestExternalActivityPersistentClaimSurvivesTrackerRestartAndCandidateGap(t 
 	}
 	if len(storedAfterMacTurn.Owned) != 0 {
 		t.Fatalf("不同的新 turn 必须清理旧 owned claim：%+v", storedAfterMacTurn.Owned)
+	}
+}
+
+func TestExternalActivityManagedRuntimeRestartProjectsOwnedTurnAsInterrupted(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	registeredAt := now.Add(-2 * time.Minute)
+	lastEvidenceAt := now.Add(-time.Minute)
+	oldRuntimeStartedAt := now.Add(-10 * time.Minute)
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Owned: []gatewayTurnOwnedClaimStoreEntry{{
+			ThreadID:         "thread-restarted",
+			TurnID:           "turn-restarted",
+			RegisteredAt:     registeredAt,
+			LastEvidenceAt:   lastEvidenceAt,
+			RuntimeKind:      "managed_websocket",
+			RuntimeStartedAt: oldRuntimeStartedAt,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	path := fixture.writeRollout(
+		"thread-restarted",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(lastEvidenceAt, "task_started", "turn-restarted"),
+	)
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-restarted", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now)
+	interrupted := fixture.tracker.GatewayInterruptedTurns("thread-restarted")
+	if got := interrupted["turn-restarted"]; !got.Equal(now) {
+		t.Fatalf("managed runtime 重启后应记录精确中断 Turn：%+v", interrupted)
+	}
+	if len(fixture.tracker.ownedGatewayTurns) != 0 {
+		t.Fatalf("已被上一代进程终止的 owned claim 不应继续 active：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("精确中断 Turn 不得继续投影为 external running：%+v", got)
+	}
+
+	nextTurnAt := now.Add(time.Second)
+	fixture.appendLine(path, externalEventLineAt(nextTurnAt, "task_started", "turn-mac-next"))
+	if err := os.Chtimes(path, nextTurnAt, nextTurnAt); err != nil {
+		t.Fatal(err)
+	}
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-mac-next" {
+		t.Fatalf("同 Thread 后续真正的 Mac Turn 必须恢复 external 只读：%+v", got)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Version != gatewayTurnClaimStoreVersion || len(stored.Owned) != 0 || len(stored.Interrupted) != 1 {
+		t.Fatalf("重启中断账本应原子持久化为 v2：%+v", stored)
+	}
+}
+
+func TestExternalActivityGatewayOwnedClaimPersistsRuntimeIdentity(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	runtimeStartedAt := now.Add(-10 * time.Minute)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", runtimeStartedAt)
+	fixture.tracker.RegisterGatewayTurnStart("thread-runtime-identity", "client-runtime-identity")
+	path := fixture.writeRollout(
+		"thread-runtime-identity",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-runtime-identity"),
+		externalUserMessageLine(now.Add(500*time.Millisecond), "client-runtime-identity"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-runtime-identity", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("当前 runtime 的 gateway Turn 不应成为 external：%+v", got)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Owned) != 1 ||
+		stored.Owned[0].RuntimeKind != "managed_websocket" ||
+		!stored.Owned[0].RuntimeStartedAt.Equal(runtimeStartedAt) {
+		t.Fatalf("精确 claim 必须绑定产生它的 runtime 类型与代际：%+v", stored.Owned)
+	}
+}
+
+func TestExternalActivitySharedRuntimeDoesNotInterruptNewerOwnedTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	sharedRuntimeStartedAt := now.Add(-time.Hour)
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Owned: []gatewayTurnOwnedClaimStoreEntry{{
+			ThreadID:         "thread-shared",
+			TurnID:           "turn-shared",
+			RegisteredAt:     now.Add(-2 * time.Minute),
+			LastEvidenceAt:   now.Add(-time.Minute),
+			RuntimeKind:      "local_daemon",
+			RuntimeStartedAt: sharedRuntimeStartedAt,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+
+	// shared daemon 比 Turn 更早启动；agentd 自身重启不代表 runtime 里的 Turn 消失。
+	fixture.tracker.SetCodexRuntimeIdentity("local_daemon", sharedRuntimeStartedAt)
+	if got := fixture.tracker.GatewayInterruptedTurns("thread-shared"); len(got) != 0 {
+		t.Fatalf("仍存活的 shared runtime Turn 不得被误标中断：%+v", got)
+	}
+	if len(fixture.tracker.ownedGatewayTurns) != 1 {
+		t.Fatalf("shared runtime 的精确 owned claim 应保留：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+}
+
+func TestExternalActivityVersionOneClaimDoesNotGuessRestartInterruption(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	if err := os.MkdirAll(filepath.Dir(claimPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	v1 := fmt.Sprintf(
+		`{"version":1,"owned":[{"thread_id":"thread-v1","turn_id":"turn-v1","last_evidence_at":%q}]}`,
+		now.Add(-time.Hour).Format(time.RFC3339Nano),
+	)
+	if err := os.WriteFile(claimPath, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now)
+	if got := fixture.tracker.GatewayInterruptedTurns("thread-v1"); len(got) != 0 {
+		t.Fatalf("v1 claim 来源未知，不得猜测为重启中断：%+v", got)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Version != 2 || len(stored.Owned) != 0 || len(stored.Interrupted) != 0 {
+		t.Fatalf("v1 claim 应升级并安全撤销未知写归属：%+v", stored)
+	}
+}
+
+func TestExternalActivityRuntimeKindChangeDoesNotGuessInterruption(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Owned: []gatewayTurnOwnedClaimStoreEntry{{
+			ThreadID: "thread-kind-change", TurnID: "turn-kind-change",
+			RegisteredAt: now.Add(-2 * time.Minute), LastEvidenceAt: now.Add(-time.Minute),
+			RuntimeKind: "local_daemon", RuntimeStartedAt: now.Add(-time.Hour),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+
+	fixture.tracker.SetCodexRuntimeIdentity("managed_websocket", now)
+	if got := fixture.tracker.GatewayInterruptedTurns("thread-kind-change"); len(got) != 0 {
+		t.Fatalf("runtime 类型变化时旧进程可能仍存活，不得伪造中断：%+v", got)
+	}
+	if len(fixture.tracker.ownedGatewayTurns) != 0 {
+		t.Fatalf("当前 gateway 也不能沿用其他 runtime 的写归属：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+}
+
+func TestExternalActivityConflictingOwnedAndInterruptedTurnFailsClosed(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	runtimeStartedAt := now.Add(-time.Hour)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Owned: []gatewayTurnOwnedClaimStoreEntry{{
+			ThreadID: "thread-conflict", TurnID: "turn-conflict",
+			RegisteredAt: now.Add(-2 * time.Minute), LastEvidenceAt: now.Add(-time.Minute),
+			RuntimeKind: "local_daemon", RuntimeStartedAt: runtimeStartedAt,
+		}},
+		Interrupted: []gatewayTurnInterruptedStoreEntry{{
+			ThreadID: "thread-conflict", TurnID: "turn-conflict", InterruptedAt: now.Add(-30 * time.Second),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+
+	fixture.tracker.SetCodexRuntimeIdentity("local_daemon", runtimeStartedAt)
+	if len(fixture.tracker.ownedGatewayTurns) != 0 {
+		t.Fatalf("矛盾状态不得保留写归属：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+	if got := fixture.tracker.GatewayInterruptedTurns("thread-conflict"); len(got) != 0 {
+		t.Fatalf("矛盾状态不得伪造中断投影：%+v", got)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Owned) != 0 || len(stored.Interrupted) != 0 {
+		t.Fatalf("矛盾状态应从私有账本清除：%+v", stored)
+	}
+}
+
+func TestExternalActivityLateTerminalClearsRestartInterruption(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Interrupted: []gatewayTurnInterruptedStoreEntry{{
+			ThreadID: "thread-late-terminal", TurnID: "turn-late-terminal", InterruptedAt: now.Add(-time.Minute),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	path := fixture.writeRollout(
+		"thread-late-terminal",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(-2*time.Minute), "task_started", "turn-late-terminal"),
+		externalEventLineAt(now.Add(-30*time.Second), "task_complete", "turn-late-terminal"),
+	)
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-late-terminal", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("迟到 terminal 后不应残留 external activity：%+v", got)
+	}
+	if got := fixture.tracker.GatewayInterruptedTurns("thread-late-terminal"); len(got) != 0 {
+		t.Fatalf("上游已有真实 terminal 时应清理中断投影：%+v", got)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Interrupted) != 0 {
+		t.Fatalf("迟到 terminal 应同步清理落盘账本：%+v", stored.Interrupted)
+	}
+}
+
+func TestGatewayTurnClaimStoreMaximumValidEntriesFitSizeLimit(t *testing.T) {
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	stored := gatewayTurnClaimStoreFile{
+		Owned:       make([]gatewayTurnOwnedClaimStoreEntry, 0, gatewayTurnClaimStoreLimit),
+		Interrupted: make([]gatewayTurnInterruptedStoreEntry, 0, gatewayInterruptedTurnStoreLimit),
+	}
+	for index := 0; index < gatewayTurnClaimStoreLimit; index++ {
+		threadID := strings.Repeat("t", gatewayTurnRegistrationIDMax-6) + fmt.Sprintf("%06d", index)
+		turnID := strings.Repeat("u", gatewayTurnRegistrationIDMax-6) + fmt.Sprintf("%06d", index)
+		stored.Owned = append(stored.Owned, gatewayTurnOwnedClaimStoreEntry{
+			ThreadID: threadID, TurnID: turnID, RegisteredAt: now, LastEvidenceAt: now,
+			RuntimeKind: "managed_websocket", RuntimeStartedAt: now.Add(-time.Hour),
+		})
+	}
+	for index := 0; index < gatewayInterruptedTurnStoreLimit; index++ {
+		threadID := strings.Repeat("i", gatewayTurnRegistrationIDMax-6) + fmt.Sprintf("%06d", index)
+		turnID := strings.Repeat("v", gatewayTurnRegistrationIDMax-6) + fmt.Sprintf("%06d", index)
+		stored.Interrupted = append(stored.Interrupted, gatewayTurnInterruptedStoreEntry{
+			ThreadID: threadID, TurnID: turnID, InterruptedAt: now,
+		})
+	}
+	claimPath := filepath.Join(t.TempDir(), "state", "gateway-turn-claims.json")
+	if err := newGatewayTurnClaimStore(claimPath).save(stored); err != nil {
+		t.Fatalf("全部合法容量不应超过文件大小上限：%v", err)
+	}
+	info, err := os.Stat(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > gatewayTurnClaimStoreMaxBytes {
+		t.Fatalf("claim store 超过大小上限：%d", info.Size())
+	}
+	loaded, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Owned) != gatewayTurnClaimStoreLimit ||
+		len(loaded.Interrupted) != gatewayInterruptedTurnStoreLimit {
+		t.Fatalf("最大合法条目未完整保存：owned=%d interrupted=%d", len(loaded.Owned), len(loaded.Interrupted))
 	}
 }
 
