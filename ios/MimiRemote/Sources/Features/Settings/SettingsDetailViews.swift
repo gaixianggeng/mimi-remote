@@ -562,6 +562,7 @@ struct AppearanceView: View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
         let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
         let tokens = themeStore.tokens(for: systemColorScheme)
+        let selectedWorkspaceIconStyle = workspaceAppearanceStore.style(profileID: profileID)
 
         Form {
             Section {
@@ -580,37 +581,54 @@ struct AppearanceView: View {
             .listRowBackground(tokens.elevatedSurface)
 
             Section {
-                LazyVGrid(
-                    columns: workspaceIconStyleColumns,
-                    alignment: .center,
-                    spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
-                ) {
-                    ForEach(selectableWorkspaceIconStyles) { style in
-                        let isSelected =
-                            workspaceAppearanceStore.style(profileID: profileID) == style
-                        Button {
-                            workspaceIconStyleBinding.wrappedValue = style
-                        } label: {
-                            WorkspaceIconStyleOptionLabel(
-                                style: style,
-                                isSelected: isSelected,
-                                tokens: tokens
-                            )
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.horizontal) {
+                        LazyHGrid(
+                            rows: workspaceIconStyleRows,
+                            alignment: .center,
+                            spacing: workspaceIconStyleColumnSpacing
+                        ) {
+                            ForEach(selectableWorkspaceIconStyles) { style in
+                                let isSelected = selectedWorkspaceIconStyle == style
+                                Button {
+                                    workspaceIconStyleBinding.wrappedValue = style
+                                } label: {
+                                    WorkspaceIconStyleOptionLabel(
+                                        style: style,
+                                        isSelected: isSelected,
+                                        tokens: tokens
+                                    )
+                                }
+                                .buttonStyle(
+                                    WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
+                                )
+                                .frame(width: workspaceIconStyleItemWidth)
+                                .accessibilityLabel(style.title)
+                                .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                                .accessibilityIdentifier(
+                                    "settings.workspaceIconStyle.option.\(style.rawValue)"
+                                )
+                                .id(style.id)
+                            }
                         }
-                        .buttonStyle(
-                            WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
-                        )
-                        .accessibilityLabel(style.title)
-                        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
-                        .accessibilityAddTraits(isSelected ? .isSelected : [])
-                        .accessibilityIdentifier(
-                            "settings.workspaceIconStyle.option.\(style.rawValue)"
-                        )
+                        // 固定两行，末端留白让最后一列可以完整停靠。
+                        .padding(.vertical, 6)
+                        .padding(.trailing, 12)
+                    }
+                    .scrollIndicators(.hidden)
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .accessibilityIdentifier("settings.workspaceIconStyle")
+                    .onAppear {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            // 只在进入页面时定位一次；避免双向 scrollPosition 在拖动期间
+                            // 持续写回状态并让整个 Form 重绘，保持手指与内容 1:1 跟随。
+                            scrollProxy.scrollTo(selectedWorkspaceIconStyle.id, anchor: .center)
+                        }
                     }
                 }
-                // 常规字号固定四列快速扫读；新增风格自然换行，辅助功能字号减少列数。
-                .padding(.vertical, 6)
-                .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
             } footer: {
@@ -714,13 +732,23 @@ struct AppearanceView: View {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
     }
 
-    private var workspaceIconStyleColumns: [GridItem] {
-        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
-        let spacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 12 : 6
-        return Array(
-            repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
-            count: columnCount
-        )
+    private var workspaceIconStyleRows: [GridItem] {
+        let rowHeight: CGFloat = dynamicTypeSize.isAccessibilitySize ? 142 : 96
+        let rowSpacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 14 : 10
+        return [
+            GridItem(.fixed(rowHeight), spacing: rowSpacing),
+            GridItem(.fixed(rowHeight), spacing: 0)
+        ]
+    }
+
+    private var workspaceIconStyleColumnSpacing: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 12 : 8
+    }
+
+    private var workspaceIconStyleItemWidth: CGFloat {
+        // 普通字号压缩到接近头像实际宽度，在 iPhone 上展示四列并露出下一列；
+        // 辅助功能字号仍保留两行标题所需空间和充足触控区域。
+        dynamicTypeSize.isAccessibilitySize ? 132 : 88
     }
 
     private var selectableWorkspaceIconStyles: [WorkspaceIconStyle] {

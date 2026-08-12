@@ -60,7 +60,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .onePiece,
             .naruto,
             .digimon,
-            .classicAlbums
+            .worldArt
         ]
         let newCharacters = newStyles.flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
@@ -78,45 +78,37 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
-    func testClassicAlbumPoolKeepsStableOrderAndRepresentativeAsset() {
-        let albums = WorkspaceAppearanceStore.characters(for: .classicAlbums)
+    func testRetiredClassicAlbumStyleKeepsOnlyItsPersistenceIdentifier() {
+        XCTAssertEqual(WorkspaceIconStyle.classicAlbums.availableStyle, .worldArt)
+        XCTAssertFalse(WorkspaceIconStyle.visibleStyles.contains(.classicAlbums))
+        XCTAssertNil(WorkspaceIconStyle.classicAlbums.representativeAssetName)
+        XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .classicAlbums).isEmpty)
+    }
+
+    func testWorldArtPoolKeepsCuratedOrderAndRepresentativeAsset() {
+        let artworks = WorkspaceAppearanceStore.characters(for: .worldArt)
 
         XCTAssertEqual(
-            albums.map(\.id),
+            artworks.map(\.id),
             [
-                "album-dark-side-of-the-moon",
-                "album-wish-you-were-here",
-                "album-atom-heart-mother",
-                "album-sos",
-                "album-abbey-road",
-                "album-21",
-                "album-morning-glory",
-                "album-velvet-underground-nico",
-                "album-norman-fucking-rockwell",
-                "album-cities"
+                "art-van-gogh-self-portrait",
+                "art-great-wave",
+                "art-manet-boating",
+                "art-degas-dancing-class",
+                "art-view-of-toledo",
+                "art-death-of-socrates",
+                "art-vermeer-water-pitcher",
+                "art-madame-x",
+                "art-washington-crossing-delaware",
+                "art-springtime"
             ]
         )
         XCTAssertEqual(
-            albums.map(\.assetName),
-            [
-                "WorkspaceAlbumDarkSideOfTheMoon",
-                "WorkspaceAlbumWishYouWereHere",
-                "WorkspaceAlbumAtomHeartMother",
-                "WorkspaceAlbumSOS",
-                "WorkspaceAlbumAbbeyRoad",
-                "WorkspaceAlbum21",
-                "WorkspaceAlbumMorningGlory",
-                "WorkspaceAlbumVelvetUndergroundNico",
-                "WorkspaceAlbumNormanFuckingRockwell",
-                "WorkspaceAlbumCities"
-            ]
+            WorkspaceIconStyle.worldArt.representativeAssetName,
+            "WorkspaceArtVanGoghSelfPortrait"
         )
-        XCTAssertEqual(
-            WorkspaceIconStyle.classicAlbums.representativeAssetName,
-            "WorkspaceAlbumDarkSideOfTheMoon"
-        )
-        XCTAssertEqual(Set(albums.map(\.id)).count, 10)
-        XCTAssertEqual(Set(albums.map(\.assetName)).count, 10)
+        XCTAssertEqual(Set(artworks.map(\.id)).count, 10)
+        XCTAssertEqual(Set(artworks.map(\.assetName)).count, 10)
     }
 
     func testEveryNewCharacterStyleAssignsTenProjectsUniquelyAndStably() {
@@ -132,7 +124,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .onePiece,
             .naruto,
             .digimon,
-            .classicAlbums
+            .worldArt
         ]
 
         for style in newStyles {
@@ -186,7 +178,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 .onePiece,
                 .naruto,
                 .digimon,
-                .classicAlbums,
+                .worldArt,
                 .emoji
             ]
         )
@@ -345,31 +337,34 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
-    func testClassicAlbumStyleAndChoicePersistAcrossStoreRebuild() {
-        let store = WorkspaceAppearanceStore(defaults: defaults)
-        store.setStyle(.classicAlbums, profileID: "mac-a")
-        store.setCustomCharacterID(
-            "album-sos",
-            style: .classicAlbums,
-            profileID: "mac-a",
-            projectID: "project-1"
+    func testLegacyClassicAlbumPreferenceMigratesToWorldArt() throws {
+        let legacyPreferences: [String: Any] = [
+            "byProfileID": [
+                "mac-a": [
+                    "style": "classicAlbums",
+                    "characterIDsByStyleAndProject": [
+                        "classicAlbums": ["project-1": "album-sos"]
+                    ]
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: legacyPreferences),
+            forKey: "agentd.workspaceAppearancePreferences.v2"
         )
 
         let restored = WorkspaceAppearanceStore(defaults: defaults)
 
-        XCTAssertEqual(restored.style(profileID: "mac-a"), .classicAlbums)
-        XCTAssertEqual(
-            restored.customCharacterID(
-                style: .classicAlbums,
-                profileID: "mac-a",
-                projectID: "project-1"
-            ),
-            "album-sos"
+        XCTAssertEqual(restored.style(profileID: "mac-a"), .worldArt)
+        XCTAssertTrue(
+            WorkspaceAppearanceStore.worldArtCharacters.contains(
+                restored.character(profileID: "mac-a", projectID: "project-1")
+            )
         )
-        XCTAssertEqual(
-            restored.character(profileID: "mac-a", projectID: "project-1").id,
-            "album-sos"
-        )
+
+        // 即使旧调用方继续传入已下架 raw value，也只会持久化可用替代项。
+        restored.setStyle(.classicAlbums, profileID: "mac-a")
+        XCTAssertEqual(restored.style(profileID: "mac-a"), .worldArt)
     }
 
     func testPreviouslyPersistedV2PreferencesDecodeWithoutNewStyleMap() throws {

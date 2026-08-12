@@ -34772,6 +34772,186 @@
         }
       }
     },
+    "ui.workspace_art_death_of_socrates": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jacques Louis David — The Death of Socrates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雅克-路易·大卫 —《苏格拉底之死》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_degas_dancing_class": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edgar Degas — The Dancing Class"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃德加·德加 —《舞蹈课》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_great_wave": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Katsushika Hokusai — The Great Wave"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "葛饰北斋 —《神奈川冲浪里》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_madame_x": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "John Singer Sargent — Madame X"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约翰·辛格·萨金特 —《X夫人》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_manet_boating": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edouard Manet — Boating"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爱德华·马奈 —《泛舟》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_springtime": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pierre-Auguste Cot — Springtime"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "皮埃尔-奥古斯特·科特 —《春日》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_van_gogh_self_portrait": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vincent van Gogh — Self-Portrait with a Straw Hat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文森特·梵高 —《戴草帽的自画像》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_vermeer_water_pitcher": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Johannes Vermeer — Young Woman with a Water Pitcher"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约翰内斯·维米尔 —《持水壶的年轻女子》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_view_of_toledo": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El Greco — View of Toledo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃尔·格列柯 —《托莱多风景》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_washington_crossing_delaware": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Emanuel Leutze — Washington Crossing the Delaware"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃马纽埃尔·洛伊茨 —《华盛顿横渡特拉华河》"
+          }
+        }
+      }
+    },
     "ui.workspace_character_alice_alice": {
       "comment": "Built-in Alice in Wonderland workspace character.",
       "extractionState": "manual",
@@ -37072,6 +37252,24 @@
         }
       }
     },
+    "ui.workspace_icon_style_compact_world_art": {
+      "comment": "Compact source label for World Art in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "World Art"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "世界名画"
+          }
+        }
+      }
+    },
     "ui.workspace_icon_style_digimon": {
       "comment": "Workspace icon style based on Digimon.",
       "extractionState": "manual",
@@ -37212,6 +37410,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "水浒传"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon_style_world_art": {
+      "comment": "Workspace icon style based on public-domain masterpieces.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "World Art"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "世界名画"
           }
         }
       }
