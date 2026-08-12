@@ -39,10 +39,12 @@ struct UnifiedWorkbenchShell: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         GeometryReader { proxy in
+            let interfaceIdiom = UIDevice.current.userInterfaceIdiom
             let layout = WorkbenchLayout(
                 containerWidth: proxy.size.width,
                 horizontalSizeClass: horizontalSizeClass,
-                isPad: UIDevice.current.userInterfaceIdiom == .pad
+                isPad: interfaceIdiom == .pad,
+                isPhone: interfaceIdiom == .phone
             )
 
             Group {
@@ -1643,12 +1645,7 @@ struct UnifiedWorkbenchShell: View {
                         .accessibilityHidden(true)
                 }
                 Text(sessionTitleSubtitle(now: now))
-                    // 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
-                    .font(
-                        layout.usesCompactNavigation
-                            ? themeStore.uiFont(.caption2, weight: .medium)
-                            : .caption2.weight(.medium)
-                    )
+                    .font(sessionDetailNavigationSubtitleFont(layout: layout))
                     .foregroundStyle(sessionTitleSubtitleColor(tokens: tokens, now: now))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1660,6 +1657,17 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityLabel(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
         .accessibilityValue(sessionTitleAccessibilityValue(now: now))
         .accessibilityIdentifier("sessionDetail.title")
+    }
+
+    private func sessionDetailNavigationSubtitleFont(layout: WorkbenchLayout) -> Font {
+        if layout.usesCompactPhoneNavigationTypography {
+            // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
+            return themeStore.uiFont(.caption2, weight: .medium)
+        }
+        // 紧凑 iPad 继续使用原有 subheadline；宽屏布局继续使用 caption2。
+        return layout.usesCompactNavigation
+            ? .subheadline.weight(.regular)
+            : .caption2.weight(.medium)
     }
 
     private func sessionTitleSubtitle(now: Date) -> String {

@@ -566,10 +566,12 @@ final class ResponsiveLayoutTests: XCTestCase {
         let layout = WorkbenchLayout(
             containerWidth: 390,
             horizontalSizeClass: .compact,
-            isPad: false
+            isPad: false,
+            isPhone: true
         )
 
         XCTAssertTrue(layout.usesCompactNavigation)
+        XCTAssertTrue(layout.usesCompactPhoneNavigationTypography)
         XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
             usesCompactNavigation: layout.usesCompactNavigation
         ))
@@ -591,6 +593,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         )
 
         XCTAssertTrue(layout.usesCompactNavigation)
+        XCTAssertFalse(layout.usesCompactPhoneNavigationTypography)
         XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
             usesCompactNavigation: layout.usesCompactNavigation
         ))

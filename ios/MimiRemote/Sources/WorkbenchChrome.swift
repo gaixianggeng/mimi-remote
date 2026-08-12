@@ -606,16 +606,23 @@ struct WorkbenchLayout: Equatable {
     let usesAttachedInspector: Bool
     let usesFloatingSidebarSurface: Bool
     let prefersSessionTableDensity: Bool
+    let isPhone: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
     }
 
+    var usesCompactPhoneNavigationTypography: Bool {
+        usesCompactNavigation && isPhone
+    }
+
     init(
         containerWidth: CGFloat,
         horizontalSizeClass: UserInterfaceSizeClass?,
-        isPad: Bool
+        isPad: Bool,
+        isPhone: Bool = false
     ) {
+        self.isPhone = isPhone
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
         // 这类宽度也必须使用真正的 push 导航，否则系统不会提供返回按钮和左缘返回手势。
