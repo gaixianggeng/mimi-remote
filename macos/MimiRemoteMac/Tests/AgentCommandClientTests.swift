@@ -49,6 +49,14 @@ final class AgentCommandClientTests: XCTestCase {
             AgentCommandClient.codexSharingConfigurationArguments(enabled: false),
             ["runtime", "--codex-sharing=disabled", "--json"]
         )
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingRestartArguments(),
+            [
+                "runtime",
+                "--codex-sharing-restart",
+                "--codex-sharing-restart-confirmed",
+            ]
+        )
     }
 
     func testProcessCancellationIsReportedAsCancellation() async {

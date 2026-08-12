@@ -84,7 +84,7 @@ struct MacSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Button("重启并应用设置") {
+                Button("应用待处理设置") {
                     confirmsCodexRestart = true
                 }
                 .disabled(!store.canRestartCodexDesktop)
@@ -111,13 +111,13 @@ struct MacSettingsView: View {
         } message: {
             Text("切换期间移动设备会短暂断开；Homebrew 启动失败时会自动恢复 App 服务。")
         }
-        .alert("重启 Codex Desktop 并应用设置？", isPresented: $confirmsCodexRestart) {
+        .alert("应用 Codex 共享设置？", isPresented: $confirmsCodexRestart) {
             Button("取消", role: .cancel) {}
-            Button("重启并应用") {
+            Button("确认应用") {
                 Task { await store.restartCodexDesktop() }
             }
         } message: {
-            Text("Mimi Remote 会先请求 Codex Desktop 正常退出，等待进程完全结束后再启动同一个 App。请先保存进行中的工作；不会强制终止，也不会并存启动第二个实例。")
+            Text("如果 Codex Desktop 正在运行，会先请求它正常退出，迁移共享 daemon 并验证成功后再重新打开；如果 Desktop 已退出，只迁移 daemon，不会擅自打开 App。该操作会短暂中断当前连接到 daemon 的手机、SSH 或 CLI，请先保存进行中的工作。")
         }
     }
 

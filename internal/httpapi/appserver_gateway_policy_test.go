@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http/httptest"
@@ -2076,6 +2077,47 @@ func TestAppServerGatewayRejectsWritesWhileCodexDesktopTurnIsActive(t *testing.T
 	}
 	if !gatewayMethodRequiresExternalIdle("turn/start") || gatewayMethodRequiresExternalIdle("thread/resume") {
 		t.Fatal("active turn 只阻止写操作，thread/resume 仍须可用于只读观察")
+	}
+}
+
+func TestAppServerGatewaySharedModeFailsClosedWhenDesktopActivityIsUnavailable(t *testing.T) {
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	router.externalActivity = stubExternalActivitySource{err: errors.New("state database locked")}
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目目录应命中 gateway scope")
+	}
+	policy := &appServerGatewayPolicy{
+		router:    router,
+		runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {
+				id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
+			},
+		},
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"id":42,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"clientUserMessageId":"client-ipad","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, payload)
+	if len(forwarded) != 0 || policyErr == nil {
+		t.Fatalf("共享 runtime 无法判断 Desktop 活动时必须在转发前拒绝：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	if got := policyErr.data["reason"]; got != "external_activity_unavailable" {
+		t.Fatalf("应返回可区分的观测失败 reason：got=%v data=%v", got, policyErr.data)
+	}
+	if accepted, ok := policyErr.data["accepted"].(bool); !ok || accepted {
+		t.Fatalf("观测失败发生在转发前，必须声明 accepted=false：data=%v", policyErr.data)
+	}
+
+	// 独立 WS 后端不存在共享 writer，SQLite 观测失败不能阻断原有发送路径。
+	router.cfg.AppServer.Transport = "ws"
+	if err := policy.guardExternalDesktopThread("turn/start", map[string]any{"threadId": "thread-1"}); err != nil {
+		t.Fatalf("独立 WS 模式应继续 fail-open：%v", err)
 	}
 }
 

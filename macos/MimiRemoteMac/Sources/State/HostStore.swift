@@ -56,7 +56,7 @@ final class HostStore {
 
     var canRestartCodexDesktop: Bool {
         codexDesktopStatus.appInstalled
-            && codexDesktopStatus.appRunning
+            && (codexDesktopStatus.appRunning || codexDaemonMigrationRequired)
             && owner == .macApp
             && !isBusy
             && !isUpdatingCodexDesktop
@@ -87,7 +87,10 @@ final class HostStore {
         case .backendNotShared:
             return "agentd 尚未确认 Unix socket 共享；确认后才会显示已就绪，不会提前声称已共享。"
         case .pendingRestart:
-            return "Codex Desktop 当前正在运行，需完全重启后应用设置。仅 Desktop 没有进行中的任务时手机可继续；正在运行的任务仍只读。"
+            if codexDaemonMigrationRequired, !codexDesktopStatus.appRunning {
+                return "共享 daemon 等待你确认迁移。应用时不会打开 Codex Desktop，但会短暂中断当前连接到该 daemon 的手机、SSH 或 CLI。"
+            }
+            return "Codex Desktop 当前正在运行，需正常退出后应用设置。迁移会短暂中断当前连接到共享 daemon 的客户端。"
         case .ready:
             return "agentd 已连接共享会话服务，Codex Desktop 已按共享环境配置。请用同一空闲会话完成一次跨端续写验证；正在运行的任务仍只读。"
         case .failed:
@@ -140,6 +143,10 @@ final class HostStore {
 
     private var codexRuntime: AgentRuntimeStatus? {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
+    }
+
+    private var codexDaemonMigrationRequired: Bool {
+        codexRuntime?.daemonRestartRequired == true
     }
 
     private let agent: AgentCommandClient
@@ -572,8 +579,12 @@ final class HostStore {
             codexDesktopError = "请先等待 Mimi Remote Mac 服务操作完成，再重启 Codex Desktop。"
             return
         }
-        guard codexDesktopStatus.appInstalled, codexDesktopStatus.appRunning else {
-            codexDesktopError = "Codex Desktop 当前未运行，无需重启；下次从 Dock/Finder 启动会读取设置。"
+        guard codexDesktopStatus.appInstalled else {
+            codexDesktopError = "未检测到 Codex Desktop。"
+            return
+        }
+        guard codexDesktopStatus.appRunning || codexDaemonMigrationRequired else {
+            codexDesktopError = "Codex Desktop 当前未运行，也没有待迁移的共享 daemon。"
             return
         }
 
@@ -585,7 +596,27 @@ final class HostStore {
             isBusy = false
         }
         do {
-            let snapshot = try await codexDesktop.restartAndApply()
+            // 确认弹窗与真正执行之间，用户可能从 Dock 重新打开 Desktop。不能
+            // 使用设置页缓存决定是否可以直接 stop daemon；必须在破坏性迁移前
+            // 重新读取真实进程状态，运行中就回到正常 terminate 流程。
+            let currentDesktop = try await codexDesktop.inspect()
+            if !currentDesktop.appRunning {
+                // 用户已经在设置页确认。Desktop 已退出时只迁移 daemon，不擅自
+                // 重开 Desktop；其他 SSH/CLI/手机连接仍会短暂断开。
+                try await agent.restartCodexSharing()
+                _ = try await waitForCodexRuntimeShared(true)
+                let inspected = try await codexDesktop.inspect()
+                applyCodexDesktopSnapshot(inspected)
+                return
+            }
+            let snapshot = try await codexDesktop.restartAndApply(afterTermination: {
+                // 开启共享时，用户的确认同时授权迁移共享 daemon。Desktop 已经
+                // 正常退出后才 stop 旧 daemon，再由 launchd 拉起；失败时不重新打开。
+                if self.codexDesktopEnabled, self.codexDaemonMigrationRequired {
+                    try await self.agent.restartCodexSharing()
+                    _ = try await self.waitForCodexRuntimeShared(true)
+                }
+            })
             applyCodexDesktopSnapshot(snapshot)
         } catch {
             codexDesktopError = error.localizedDescription
@@ -1319,13 +1350,16 @@ final class HostStore {
             if codexDesktopError.contains("外部") || codexDesktopError.contains("已被其他程序") {
                 return .externalConflict
             }
-            if forcePending, snapshot.appRunning {
+            if forcePending, snapshot.appRunning || codexDaemonMigrationRequired {
                 return .pendingRestart
             }
             return .failed
         }
         if snapshot.appInstalled == false {
             return .notInstalled
+        }
+        if snapshot.enabled, codexDaemonMigrationRequired {
+            return .pendingRestart
         }
         if snapshot.restartRequired, snapshot.appRunning {
             return .pendingRestart
@@ -1380,7 +1414,7 @@ final class HostStore {
             applyCodexDesktopSnapshot(snapshot, forcePending: forcePending)
         } else {
             let current = codexDesktopStatus
-            let state: CodexDesktopStatusState = forcePending && current.appRunning
+            let state: CodexDesktopStatusState = forcePending && (current.appRunning || codexDaemonMigrationRequired)
                 ? .pendingRestart
                 : .failed
             codexDesktopStatus = CodexDesktopStatus(

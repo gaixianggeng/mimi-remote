@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1249,7 +1251,12 @@ func TestAppServerGatewayDialFailureDoesNotExposeUpstreamURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	upstreamURL := "ws://" + closedAddress + "/private-upstream-url?access_token=secret-query"
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, router, _ := buildAppServerGatewayFixture(t, upstreamURL, nil)
+	var recoveryCalls atomic.Int64
+	router.recoverSharedCodexDaemon = func(context.Context) error {
+		recoveryCalls.Add(1)
+		return fmt.Errorf("recovery unavailable")
+	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -1274,6 +1281,138 @@ func TestAppServerGatewayDialFailureDoesNotExposeUpstreamURL(t *testing.T) {
 		if bytes.Contains(payload, []byte(secret)) {
 			t.Fatalf("移动端 WebSocket 错误不能泄漏 upstream URL，secret=%q payload=%s", secret, payload)
 		}
+	}
+	if recoveryCalls.Load() != 1 {
+		t.Fatalf("共享 daemon 首次拨号失败应只触发一次稳定 owner 恢复：%d", recoveryCalls.Load())
+	}
+}
+
+func TestSharedDaemonRecoverySerializesAndCachesRecentResult(t *testing.T) {
+	var calls atomic.Int32
+	var nowMu sync.Mutex
+	nowValue := time.Unix(1_700_000_000, 0)
+	now := func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return nowValue
+	}
+	recovery := newSharedDaemonRecovery(now, 30*time.Second, func(context.Context) error {
+		calls.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		return fmt.Errorf("daemon unavailable")
+	})
+
+	var wg sync.WaitGroup
+	errorsSeen := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errorsSeen <- recovery(context.Background())
+		}()
+	}
+	wg.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err == nil || !strings.Contains(err.Error(), "unavailable") {
+			t.Fatalf("并发调用必须复用同一次失败：%v", err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("冷却期内只能实际恢复一次：calls=%d", calls.Load())
+	}
+
+	nowMu.Lock()
+	nowValue = nowValue.Add(31 * time.Second)
+	nowMu.Unlock()
+	_ = recovery(context.Background())
+	if calls.Load() != 2 {
+		t.Fatalf("冷却期后应允许再次尝试：calls=%d", calls.Load())
+	}
+}
+
+func TestSharedDaemonRecoveryWaiterHonorsCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- recovery(context.Background()) }()
+	<-entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	startedAt := time.Now()
+	if err := recovery(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("等待中的 gateway 连接必须响应取消：%v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("取消的 waiter 不应等待完整恢复：%s", elapsed)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedDaemonRecoveryStarterCancellationDoesNotPoisonCooldown(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(ctx context.Context) error {
+		calls.Add(1)
+		close(entered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- recovery(ctx) }()
+	<-entered
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("发起请求取消后应立即返回，但不能取消共享恢复：%v", err)
+	}
+	close(release)
+	if err := recovery(context.Background()); err != nil {
+		t.Fatalf("后续请求应复用后台恢复成功结果：%v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("首个请求取消不能触发第二次恢复或污染冷却：calls=%d", calls.Load())
+	}
+}
+
+func TestSharedDaemonRecoveryPanicStillReleasesWaiters(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(context.Context) error {
+		calls.Add(1)
+		close(entered)
+		<-release
+		panic("test recovery panic")
+	})
+
+	results := make(chan error, 2)
+	go func() { results <- recovery(context.Background()) }()
+	<-entered
+	go func() { results <- recovery(context.Background()) }()
+	close(release)
+	for range 2 {
+		if err := <-results; err == nil || !strings.Contains(err.Error(), "恢复异常") {
+			t.Fatalf("panic 必须转换成可缓存错误并唤醒等待者：%v", err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("panic 时并发 waiter 仍只能共享一次尝试：calls=%d", calls.Load())
 	}
 }
 

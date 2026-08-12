@@ -210,19 +210,20 @@ func (r *Router) storeClaudeRuntimeQuota(limits *runtimeRateLimits) {
 // runtimeAccountStatus 只包含菜单栏需要的脱敏状态。账号邮箱、Token、Keychain
 // 内容和上游原始错误都不能进入这个结构，避免 status CLI 或日志扩大凭据暴露面。
 type runtimeAccountStatus struct {
-	ID         string                 `json:"id"`
-	Title      string                 `json:"title"`
-	Enabled    bool                   `json:"enabled"`
-	State      runtimeConnectionState `json:"state"`
-	Transport  string                 `json:"transport,omitempty"`
-	Shared     bool                   `json:"shared,omitempty"`
-	CodexHome  string                 `json:"codex_home,omitempty"`
-	Version    string                 `json:"version,omitempty"`
-	StartedAt  *time.Time             `json:"started_at,omitempty"`
-	AuthMode   string                 `json:"auth_mode,omitempty"`
-	PlanType   string                 `json:"plan_type,omitempty"`
-	Reason     string                 `json:"reason,omitempty"`
-	RateLimits *runtimeRateLimits     `json:"rate_limits,omitempty"`
+	ID                    string                 `json:"id"`
+	Title                 string                 `json:"title"`
+	Enabled               bool                   `json:"enabled"`
+	State                 runtimeConnectionState `json:"state"`
+	Transport             string                 `json:"transport,omitempty"`
+	Shared                bool                   `json:"shared,omitempty"`
+	DaemonRestartRequired *bool                  `json:"daemon_restart_required,omitempty"`
+	CodexHome             string                 `json:"codex_home,omitempty"`
+	Version               string                 `json:"version,omitempty"`
+	StartedAt             *time.Time             `json:"started_at,omitempty"`
+	AuthMode              string                 `json:"auth_mode,omitempty"`
+	PlanType              string                 `json:"plan_type,omitempty"`
+	Reason                string                 `json:"reason,omitempty"`
+	RateLimits            *runtimeRateLimits     `json:"rate_limits,omitempty"`
 }
 
 type runtimeRateLimits struct {
@@ -289,7 +290,27 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.runtimeStatus.Snapshot())
+	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(r.runtimeStatus.Snapshot()))
+}
+
+func (r *Router) withLiveSharedDaemonMigrationStatus(response runtimeStatusResponse) runtimeStatusResponse {
+	if r.sharedDaemonMigrationRequired == nil {
+		return response
+	}
+	required, err := r.sharedDaemonMigrationRequired()
+	if err != nil {
+		// 读取失败时保持 nil（未知），不能错误授权一次会中断客户端的迁移。
+		return response
+	}
+	response.Runtimes = append([]runtimeAccountStatus(nil), response.Runtimes...)
+	for index := range response.Runtimes {
+		if strings.EqualFold(response.Runtimes[index].ID, "codex") {
+			value := required
+			response.Runtimes[index].DaemonRestartRequired = &value
+			break
+		}
+	}
+	return response
 }
 
 // SetCodexRuntimeStartedAt 连接 serve 层托管的 resident Codex 进程与本机状态接口。

@@ -999,35 +999,22 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	switch strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport)) {
 	case "unix":
 		if cfg.AppServer.Managed {
-			// 官方 daemon 冷启动自身最多等待约 10 秒；外层留出进程创建与握手余量。
-			ensureCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, appserver.LocalDaemonOptions{
-				CodexBin: cfg.Codex.Bin,
-				Env:      cfg.Codex.Env,
-			})
+			// launchd 启动和官方 daemon 初始化都是异步的；外层覆盖最慢的冷启动。
+			ensureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			mimiOwned := cfg.AppServer.SharedFallback != nil
+			options := appserver.LocalDaemonOptions{
+				CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env, StableOwner: mimiOwned, AttachOnly: !mimiOwned,
+			}
+			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, options)
 			cancel()
 			if ensureErr != nil {
 				return fmt.Errorf("准备共享 Codex local daemon 失败：%w", ensureErr)
 			}
-			// live socket 可连接不代表重启后还能恢复。共享模式只接受官方 daemon
-			// 管理且 standalone 完整的生命周期，避免下次登录后 LaunchAgent 持续失败。
-			lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), 5*time.Second)
-			lifecycle, lifecycleErr := appserver.InspectLocalDaemonLifecycle(lifecycleCtx, appserver.LocalDaemonOptions{
-				CodexBin: cfg.Codex.Bin,
-				Env:      cfg.Codex.Env,
-			})
-			cancelLifecycle()
-			if lifecycleErr != nil {
-				return fmt.Errorf("确认共享 Codex local daemon 生命周期失败：%w", lifecycleErr)
-			}
-			if lifecycleErr := appserver.ValidateLocalDaemonLifecycle(lifecycle, status.SocketPath); lifecycleErr != nil {
-				return fmt.Errorf("共享 Codex local daemon 无法冷启动恢复：%w", lifecycleErr)
-			}
-			if identityErr := appserver.ValidateLocalDaemonProbeVersion(lifecycle, status.Version); identityErr != nil {
-				return fmt.Errorf("共享 Codex local daemon 身份校验失败：%w", identityErr)
+			if mimiOwned && !status.LifecycleValidated {
+				return fmt.Errorf("共享 Codex local daemon 未完成稳定 owner 生命周期校验")
 			}
 			sharedDaemonStatus = status
-			log.Printf("agentd shared Codex local daemon ready started=%t", status.Started)
+			log.Printf("agentd Codex local daemon ready started=%t mimi_owned=%t", status.Started, mimiOwned)
 		} else {
 			log.Printf("agentd external Codex local daemon upstream configured")
 		}

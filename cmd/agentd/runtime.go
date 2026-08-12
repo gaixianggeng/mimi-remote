@@ -22,6 +22,12 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
 	codexSharing := fs.String("codex-sharing", "", "Codex Desktop 共享 app-server：enabled 或 disabled")
+	codexSharingRestart := fs.Bool("codex-sharing-restart", false, "Mac App 内部：应用待处理的共享 Codex daemon 迁移")
+	codexSharingRestartConfirmed := fs.Bool(
+		"codex-sharing-restart-confirmed",
+		false,
+		"Mac App 内部：确认设置页已授权且 Desktop 已正常退出或本来未运行",
+	)
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -29,8 +35,21 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
 	hasCodexSharing := strings.TrimSpace(*codexSharing) != ""
-	if hasClaude == hasCodexSharing {
-		return fmt.Errorf("必须且只能传入 --claude 或 --codex-sharing 其中一项")
+	hasCodexSharingRestart := *codexSharingRestart
+	operationCount := 0
+	for _, selected := range []bool{hasClaude, hasCodexSharing, hasCodexSharingRestart} {
+		if selected {
+			operationCount++
+		}
+	}
+	if operationCount != 1 {
+		return fmt.Errorf("必须且只能传入 --claude、--codex-sharing 或 --codex-sharing-restart 其中一项")
+	}
+	if *codexSharingRestartConfirmed && !hasCodexSharingRestart {
+		return fmt.Errorf("--codex-sharing-restart-confirmed 只能与内部迁移入口一起使用")
+	}
+	if hasCodexSharingRestart && !*codexSharingRestartConfirmed {
+		return fmt.Errorf("共享 daemon 迁移仅供 Mac App 在确认并正常退出 Codex Desktop 后调用")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
@@ -40,8 +59,21 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		configureCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		configureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		result, err := agentsetup.ConfigureCodexSharing(configureCtx, *configPath, enabled)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, result.Message)
+		return nil
+	}
+	if hasCodexSharingRestart {
+		restartCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		result, err := agentsetup.RestartCodexSharingDaemon(restartCtx, *configPath)
 		cancel()
 		if err != nil {
 			return err

@@ -21,7 +21,10 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
 
-var errAppServerExternalThreadActive = errors.New("Codex Desktop 正在运行此会话")
+var (
+	errAppServerExternalThreadActive        = errors.New("Codex Desktop 正在运行此会话")
+	errAppServerExternalActivityUnavailable = errors.New("无法确认 Codex Desktop 会话是否空闲")
+)
 
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
 	return p.validateClientFrameContext(context.Background(), messageType, payload)
@@ -70,11 +73,15 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err := p.guardExternalDesktopThread(method, params); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		p.forgetPending(frame.ID)
+		reason := "external_thread_active"
+		if errors.Is(err, errAppServerExternalActivityUnavailable) {
+			reason = "external_activity_unavailable"
+		}
 		return nil, &appServerGatewayPolicyError{
 			id:      frame.ID,
 			message: err.Error(),
 			data: map[string]any{
-				"reason":         "external_thread_active",
+				"reason":         reason,
 				"accepted":       false,
 				"retryable":      true,
 				"retry_after_ms": int64(1000),
@@ -172,11 +179,19 @@ func (p *appServerGatewayPolicy) guardExternalDesktopThread(method string, param
 	if !ok {
 		return nil
 	}
+	sharedBackend := strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix")
+	if sharedBackend && p.router.externalActivity == nil {
+		return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝写入：%w", method, errAppServerExternalActivityUnavailable)
+	}
 	active, err := p.router.codexDesktopThreadActive(threadID)
 	if err != nil {
-		// 外部活动是同机 rollout 的辅助证据，不是鉴权边界。读取失败时保留现有
-		// same-thread 发送能力，避免 SQLite 短暂锁定把空闲会话误判为只读。
 		log.Printf("external activity guard unavailable: %v", err)
+		if sharedBackend {
+			// shared unix 下 Desktop 与手机写入同一个 runtime。观测失效时继续写
+			// 会重新制造双 writer；宁可短暂只读，也不能影响 Codex 原生任务。
+			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝写入：%w", method, errAppServerExternalActivityUnavailable)
+		}
+		// 独立 WS 没有共同 writer，继续保留历史可用性策略。
 		return nil
 	}
 	if active {

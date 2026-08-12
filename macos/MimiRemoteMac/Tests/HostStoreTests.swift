@@ -1269,6 +1269,169 @@ final class HostStoreTests: XCTestCase {
         XCTAssertFalse(store.canRestartCodexDesktop)
     }
 
+    func testConfirmedDesktopRestartMigratesSharedDaemonBeforeReopeningDesktop() async {
+        let events = EventRecorder()
+        let migrationRequired = SharingFlag()
+        migrationRequired.set(true)
+        let pending = CodexDesktopEnvironmentSnapshot(
+            hasLocalPreference: true,
+            enabled: true,
+            environmentValue: "1",
+            codexHome: "/tmp/codex",
+            appInstalled: true,
+            appRunning: true,
+            restartRequired: true
+        )
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: { pending },
+            bootstrap: { pending },
+            setEnabled: { _, _ in pending },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: "1",
+                    codexHome: "/tmp/codex",
+                    appInstalled: true,
+                    appRunning: true
+                )
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
+        XCTAssertNil(store.codexDesktopError)
+    }
+
+    func testEnableWithDesktopStoppedKeepsDaemonMigrationPendingUntilUserConfirms() async {
+        let events = EventRecorder()
+        let sharing = SharingFlag()
+        let migrationRequired = SharingFlag()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(enabled: sharing.value, appInstalled: true, appRunning: false)
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(enabled: false, appInstalled: true, appRunning: false)
+            },
+            setEnabled: { enabled, _ in
+                events.append("desktop-\(enabled)")
+                return Self.codexDesktopSnapshot(enabled: enabled, appInstalled: true, appRunning: false)
+            },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: sharing.value,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            configureCodexSharing: { enabled in
+                sharing.set(enabled)
+                migrationRequired.set(enabled)
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    changed: true,
+                    daemonRestartRequired: enabled,
+                    transport: enabled ? "unix" : "ws",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertEqual(events.values, ["desktop-true"])
+        XCTAssertEqual(store.codexDesktopStatusTitle, "需要重启")
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["desktop-true", "daemon-restart"])
+        XCTAssertFalse(events.values.contains("desktop-restart"))
+        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertNil(store.codexDesktopError)
+    }
+
+    func testPendingMigrationRechecksDesktopBeforeStoppingDaemon() async {
+        let events = EventRecorder()
+        let desktopRunning = SharingFlag()
+        let migrationRequired = SharingFlag()
+        migrationRequired.set(true)
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(
+                    enabled: true,
+                    appInstalled: true,
+                    appRunning: desktopRunning.value
+                )
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            setEnabled: { _, _ in
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        // 设置页仍缓存为 stopped，但用户已从 Dock 重新打开 Desktop。
+        desktopRunning.set(true)
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
+        XCTAssertNil(store.codexDesktopError)
+    }
+
     func testEnableDesktopFailureRollsBackBackendChangedBySameOperation() async {
         let events = EventRecorder()
         let sharing = SharingFlag()
@@ -1497,6 +1660,7 @@ final class HostStoreTests: XCTestCase {
         configureCodexSharing: @escaping @Sendable (Bool) async throws -> CodexSharingConfigurationResult = { enabled in
             CodexSharingConfigurationResult(enabled: enabled)
         },
+        restartCodexSharing: @escaping @Sendable () async throws -> Void = {},
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -1515,6 +1679,7 @@ final class HostStoreTests: XCTestCase {
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
             configureClaude: configureClaude,
             configureCodexSharing: configureCodexSharing,
+            restartCodexSharing: restartCodexSharing,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             version: { readyStatus.version }
@@ -1629,7 +1794,10 @@ final class HostStoreTests: XCTestCase {
         )
     }
 
-    private nonisolated static func statusWithCodex(shared: Bool) -> AgentStatus {
+    private nonisolated static func statusWithCodex(
+        shared: Bool,
+        daemonRestartRequired: Bool = false
+    ) -> AgentStatus {
         AgentStatus(
             processOK: readyStatus.processOK,
             serviceOK: readyStatus.serviceOK,
@@ -1656,6 +1824,7 @@ final class HostStoreTests: XCTestCase {
                         rateLimits: nil,
                         transport: shared ? "unix" : "websocket",
                         shared: shared,
+                        daemonRestartRequired: shared ? daemonRestartRequired : nil,
                         codexHome: shared ? "/tmp/codex" : nil
                     ),
                 ]

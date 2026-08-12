@@ -97,6 +97,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.localDaemonLifecycleCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.sharedDaemonOwnerCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
@@ -414,6 +417,44 @@ func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {
 	}
 	check.OK = true
 	check.Message = "官方 Codex daemon 生命周期可恢复（" + status.AppServerVersion + "）"
+	return check
+}
+
+func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
+	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") ||
+		c.cfg.AppServer.SharedFallback == nil {
+		return Check{}
+	}
+	status, err := appserver.InspectSharedDaemonOwner(ctx)
+	if err != nil {
+		return Check{
+			Name:    "codex-daemon-owner",
+			OK:      false,
+			Message: "无法检查共享 Codex daemon 的 launchd owner",
+			Fix:     err.Error(),
+		}
+	}
+	if !status.Supported {
+		return Check{}
+	}
+	check := Check{
+		Name: "codex-daemon-owner",
+		Fix:  "在 Mimi Remote Mac 中关闭后重新开启共享；若提示需要迁移，请保存任务后点击“应用待处理设置”并确认",
+	}
+	switch {
+	case !status.Installed:
+		check.Message = "共享 Codex daemon 缺少稳定 LaunchAgent owner"
+	case !status.Secure:
+		check.Message = "共享 Codex daemon LaunchAgent 权限过宽，可能暴露运行环境"
+	case !status.Loaded:
+		check.Message = "共享 Codex daemon LaunchAgent 已安装但未加载"
+	case status.MigrationRequired:
+		check.Message = "共享 Codex daemon 的稳定 owner 迁移尚未完成，等待显式应用"
+	default:
+		check.OK = true
+		check.Message = "共享 Codex daemon 的稳定 LaunchAgent owner 已安装；TCC 归因仍需签名 App 运行态验收"
+		check.Fix = ""
+	}
 	return check
 }
 

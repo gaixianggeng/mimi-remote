@@ -152,6 +152,7 @@ final class AgentModelsTests: XCTestCase {
         let decodedLegacy = try JSONDecoder().decode(AgentRuntimeStatus.self, from: legacyData)
         XCTAssertNil(decodedLegacy.transport)
         XCTAssertNil(decodedLegacy.shared)
+        XCTAssertNil(decodedLegacy.daemonRestartRequired)
 
         let shared = AgentRuntimeStatus(
             id: "codex",
@@ -163,7 +164,8 @@ final class AgentModelsTests: XCTestCase {
             reason: nil,
             rateLimits: nil,
             transport: "unix",
-            shared: true
+            shared: true,
+            daemonRestartRequired: true
         )
         let decodedShared = try JSONDecoder().decode(
             AgentRuntimeStatus.self,
@@ -171,6 +173,7 @@ final class AgentModelsTests: XCTestCase {
         )
         XCTAssertEqual(decodedShared.transport, "unix")
         XCTAssertEqual(decodedShared.shared, true)
+        XCTAssertEqual(decodedShared.daemonRestartRequired, true)
 
         let sharing = try JSONDecoder().decode(
             CodexSharingConfigurationResult.self,

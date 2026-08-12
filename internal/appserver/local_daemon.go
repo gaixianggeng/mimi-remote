@@ -39,15 +39,31 @@ var localDaemonVersionPattern = regexp.MustCompile(`^[^/\r\n]+/([0-9]+\.[0-9]+\.
 var ErrLocalDaemonStandaloneMissing = errors.New("Codex standalone 安装缺失")
 
 type LocalDaemonOptions struct {
-	CodexBin string
-	Env      map[string]string
+	CodexBin    string
+	Env         map[string]string
+	StableOwner bool
+	// AttachOnly 用于用户或其他工具管理的 Unix backend。Mimi 只验证现有
+	// socket，不启动、不安装 owner，也不改变它的生命周期。
+	AttachOnly bool
 }
 
 type LocalDaemonStatus struct {
-	SocketPath string
-	StartedAt  time.Time
-	Started    bool
-	Version    string
+	SocketPath             string
+	StartedAt              time.Time
+	Started                bool
+	Version                string
+	OwnerInstalled         bool
+	OwnerCreated           bool
+	OwnerChanged           bool
+	OwnerMigrationRequired bool
+	OwnerRollback          *SharedDaemonOwnerRollback
+	LifecycleValidated     bool
+}
+
+// SharedDaemonOwnerRollback 是配置提交前可使用的一次性回滚能力。令牌只驻留
+// 当前进程内存，不序列化 plist 内容或其中可能存在的 MCP 环境变量。
+type SharedDaemonOwnerRollback struct {
+	rollbackUnlocked func(context.Context) error
 }
 
 type localDaemonHooks struct {
@@ -64,7 +80,11 @@ type LocalDaemonProbe struct {
 // LocalDaemonLifecycleStatus 来自官方 `daemon version`，用于区分“当前 socket
 // 可连接”和“冷启动也有 standalone 安装可恢复”两个不同健康层级。
 type LocalDaemonLifecycleStatus struct {
-	Status              string  `json:"status"`
+	Status string `json:"status"`
+	// Backend/PID 由新版官方 daemon version 在自身持有 pid backend 时返回。
+	// 旧的 SSH 直启 socket 没有这两个字段，必须走显式、严格校验的接管流程。
+	Backend             *string `json:"backend,omitempty"`
+	PID                 *uint32 `json:"pid,omitempty"`
 	ManagedCodexPath    string  `json:"managedCodexPath"`
 	ManagedCodexVersion *string `json:"managedCodexVersion"`
 	SocketPath          string  `json:"socketPath"`
@@ -141,11 +161,183 @@ func LocalDaemonHandshakeURL() string {
 // 已运行并连接，不在退出时停止它；否则重启 Mimi 会把正在使用共享 daemon 的
 // Codex Desktop 一并打断，违背共享服务的生命周期边界。
 func EnsureLocalDaemon(ctx context.Context, options LocalDaemonOptions) (LocalDaemonStatus, error) {
-	return ensureLocalDaemon(ctx, options, localDaemonHooks{
-		probe: ProbeLocalDaemonInfo,
-		start: startLocalDaemon,
-		stat:  os.Stat,
+	if options.AttachOnly {
+		return attachLocalDaemon(ctx, options)
+	}
+	if !options.StableOwner {
+		return ensureLocalDaemon(ctx, options, localDaemonHooks{
+			probe: ProbeLocalDaemonInfo,
+			start: startLocalDaemon,
+			stat:  os.Stat,
+		})
+	}
+	return withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
+		return ensureLocalDaemonWithStableOwner(ctx, options)
 	})
+}
+
+func ensureLocalDaemonWithStableOwner(
+	ctx context.Context,
+	options LocalDaemonOptions,
+) (LocalDaemonStatus, error) {
+	// 先判断 socket 是否已经由旧链路拉起。只有“owner 本次发生变化，且 daemon
+	// 早已存在”时才需要一次显式迁移；全新冷启动由 launchd 直接创建，不应误报。
+	socketPath, pathErr := LocalDaemonSocketPath(options.Env)
+	if pathErr != nil {
+		return LocalDaemonStatus{}, pathErr
+	}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
+	_, preexistingErr := ProbeLocalDaemonInfo(probeCtx, socketPath)
+	cancelProbe()
+	// 完整协议探测可能因为旧 daemon 正忙而超时；只要 Unix socket 仍真实监听，
+	// 就必须按“已有 daemon”保守处理并留下显式迁移标记。否则一次瞬时超时会把
+	// 旧责任链误判成全新冷启动，静默跳过用户确认。
+	daemonPreexisting := localDaemonWasPreexisting(
+		preexistingErr,
+		sharedDaemonSocketAcceptsConnectionMust(options),
+	)
+
+	owner, err := EnsureSharedDaemonOwner(ctx, options, daemonPreexisting)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	startedByStableOwner := false
+	status, err := ensureLocalDaemon(ctx, options, localDaemonHooks{
+		probe: ProbeLocalDaemonInfo,
+		start: func(startCtx context.Context, startOptions LocalDaemonOptions) error {
+			var startErr error
+			startedByStableOwner, startErr = startLocalDaemonWithStableOwnerTracked(startCtx, startOptions)
+			return startErr
+		},
+		stat: os.Stat,
+	})
+	if err != nil {
+		if rollbackErr := rollbackSharedDaemonOwnerChangeUnlocked(context.Background(), owner.Rollback); rollbackErr != nil {
+			return LocalDaemonStatus{}, fmt.Errorf("%w；恢复原 daemon owner 也失败：%v", err, rollbackErr)
+		}
+		return LocalDaemonStatus{}, err
+	}
+	lifecycle, err := InspectLocalDaemonLifecycle(ctx, options)
+	if err == nil {
+		err = reconcileStableOwnerLifecycle(
+			lifecycle,
+			status,
+			&owner,
+			startedByStableOwner,
+			markSharedDaemonMigrationRequired,
+		)
+	}
+	if err != nil {
+		if rollbackErr := rollbackSharedDaemonOwnerChangeUnlocked(context.Background(), owner.Rollback); rollbackErr != nil {
+			return LocalDaemonStatus{}, fmt.Errorf("%w；恢复原 daemon owner 也失败：%v", err, rollbackErr)
+		}
+		return LocalDaemonStatus{}, err
+	}
+	// owner 已经稳定安装、旧 marker 仍存在且本次确实由稳定启动链创建了
+	// daemon 时，完整握手/生命周期/版本校验就是可清理 marker 的充分证据。
+	// owner 本次也发生变化时仍保留 marker，避免破坏配置事务的回滚令牌。
+	if err := finalizeRecoveredSharedDaemonMigration(&status, &owner, startedByStableOwner); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	status.OwnerInstalled = owner.Installed
+	status.OwnerCreated = owner.Created
+	status.OwnerChanged = owner.Changed
+	status.OwnerMigrationRequired = owner.MigrationRequired
+	status.OwnerRollback = owner.Rollback
+	status.LifecycleValidated = true
+	return status, nil
+}
+
+// reconcileStableOwnerLifecycle 区分“当前可连接”与“已由稳定 owner
+// 管理”。已安装的 LaunchAgent 不代表它一定赢得了本次 socket
+// 竞争：Codex 原生 SSH bootstrap 仍可能先启动直接 listener。这时
+// agentd 应保持 attach 与移动端可用，同时重建待迁移标记；绝不在
+// 日常启动路径终止该进程。
+func reconcileStableOwnerLifecycle(
+	lifecycle LocalDaemonLifecycleStatus,
+	status LocalDaemonStatus,
+	owner *SharedDaemonOwnerStatus,
+	startedByStableOwner bool,
+	markMigrationRequired func() error,
+) error {
+	if err := ValidateLocalDaemonLifecycle(lifecycle, status.SocketPath); err != nil {
+		return err
+	}
+	if err := ValidateLocalDaemonProbeVersion(lifecycle, status.Version); err != nil {
+		return err
+	}
+
+	// 任何已声明的 backend 都必须是官方 pid。未知的未来 backend
+	// 不能借旧 marker 绕过校验。
+	if lifecycle.Backend != nil {
+		return ValidateManagedLocalDaemonLifecycle(lifecycle, status.SocketPath)
+	}
+	// 本次明确执行了稳定 owner kickstart，却仍看不到 backend，说明
+	// 启动结果不能归因给该 owner，必须 fail closed。
+	if startedByStableOwner {
+		return ValidateManagedLocalDaemonLifecycle(lifecycle, status.SocketPath)
+	}
+	if owner == nil || !owner.Installed || !owner.Loaded || !owner.Secure {
+		return fmt.Errorf("非 daemon 管理的 Codex app-server 缺少安全稳定 owner")
+	}
+	if owner.MigrationRequired {
+		return nil
+	}
+	if markMigrationRequired == nil {
+		return fmt.Errorf("检测到非 daemon 管理的 Codex app-server，但无法记录待迁移状态")
+	}
+	if err := markMigrationRequired(); err != nil {
+		return fmt.Errorf("检测到非 daemon 管理的 Codex app-server，但记录待迁移状态失败：%w", err)
+	}
+	owner.MigrationRequired = true
+	return nil
+}
+
+func localDaemonWasPreexisting(probeErr error, socketAcceptsConnection bool) bool {
+	return probeErr == nil || socketAcceptsConnection
+}
+
+func finalizeRecoveredSharedDaemonMigration(
+	status *LocalDaemonStatus,
+	owner *SharedDaemonOwnerStatus,
+	startedByStableOwner bool,
+) error {
+	if status == nil || owner == nil || !status.Started || !startedByStableOwner ||
+		!owner.MigrationRequired || owner.Changed {
+		return nil
+	}
+	if err := clearSharedDaemonMigrationFlag(); err != nil {
+		return fmt.Errorf("共享 daemon 已恢复，但清除旧迁移状态失败：%w", err)
+	}
+	owner.MigrationRequired = false
+	return nil
+}
+
+func rollbackSharedDaemonOwnerChangeUnlocked(
+	ctx context.Context,
+	rollback *SharedDaemonOwnerRollback,
+) error {
+	if rollback == nil || rollback.rollbackUnlocked == nil {
+		return nil
+	}
+	return rollback.rollbackUnlocked(ctx)
+}
+
+func attachLocalDaemon(ctx context.Context, options LocalDaemonOptions) (LocalDaemonStatus, error) {
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, localDaemonProbeTimeout)
+	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
+	cancel()
+	if err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf(
+			"外部管理的 Codex Unix backend 未就绪；Mimi 不会启动或接管它：%w",
+			err,
+		)
+	}
+	return localDaemonStatus(socketPath, false, probe.Version, os.Stat), nil
 }
 
 func ensureLocalDaemon(
@@ -167,7 +359,11 @@ func ensureLocalDaemon(
 		return LocalDaemonStatus{}, err
 	}
 
-	startCtx, cancelStart := context.WithTimeout(ctx, localDaemonStartTimeout)
+	startTimeout := localDaemonStartTimeout
+	if options.StableOwner && sharedDaemonStartTimeoutForLocalEnsure > startTimeout {
+		startTimeout = sharedDaemonStartTimeoutForLocalEnsure
+	}
+	startCtx, cancelStart := context.WithTimeout(ctx, startTimeout)
 	err = hooks.start(startCtx, options)
 	cancelStart()
 	if err != nil {
@@ -207,7 +403,19 @@ func localDaemonStatus(
 	return status
 }
 
+// startLocalDaemon 不再由 agentd 直接创建 daemon 进程。macOS 的 TCC responsible
+// process 在进程创建时从父进程继承：agentd 一旦成为共享 daemon 的父进程，Desktop
+// 后续经由该 daemon 发起的文件访问就会被归因到 Mimi，且 Mimi 升级或移动后还会留下
+// 指向旧 App 路径的 stale responsibility（MIM-157）。因此启动动作交给平台上稳定的
+// 服务管理器；非 macOS 平台没有 TCC，继续沿用直接 exec。
 func startLocalDaemon(ctx context.Context, options LocalDaemonOptions) error {
+	if options.StableOwner {
+		return startLocalDaemonWithStableOwner(ctx, options)
+	}
+	return startLocalDaemonDirect(ctx, options)
+}
+
+func startLocalDaemonDirect(ctx context.Context, options LocalDaemonOptions) error {
 	bin := strings.TrimSpace(options.CodexBin)
 	if bin == "" {
 		bin = "codex"
@@ -296,6 +504,22 @@ func ValidateLocalDaemonLifecycle(status LocalDaemonLifecycleStatus, expectedSoc
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return fmt.Errorf("%w；managed Codex 不是可执行的普通文件", ErrLocalDaemonStandaloneMissing)
+	}
+	return nil
+}
+
+// ValidateManagedLocalDaemonLifecycle 在通用冷启动校验上进一步证明当前 socket
+// 已由官方 pid backend 管理。旧 SSH 直启进程的 version 输出没有 backend；它只
+// 能在 migration marker 存在时短暂 attach，不能被当成稳定迁移已经完成。
+func ValidateManagedLocalDaemonLifecycle(
+	status LocalDaemonLifecycleStatus,
+	expectedSocket string,
+) error {
+	if err := ValidateLocalDaemonLifecycle(status, expectedSocket); err != nil {
+		return err
+	}
+	if status.Backend == nil || !strings.EqualFold(strings.TrimSpace(*status.Backend), "pid") {
+		return fmt.Errorf("Codex app-server 尚未由官方 pid daemon 管理")
 	}
 	return nil
 }

@@ -16,6 +16,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestLocalDaemonPreexistingFallsBackToLiveSocket(t *testing.T) {
+	probeTimeout := errors.New("initialize timeout")
+	if !localDaemonWasPreexisting(probeTimeout, true) {
+		t.Fatal("协议探测超时时，仍在监听的 socket 必须按旧 daemon 处理")
+	}
+	if localDaemonWasPreexisting(probeTimeout, false) {
+		t.Fatal("协议和轻量连接都失败时才允许按全新冷启动处理")
+	}
+	if !localDaemonWasPreexisting(nil, false) {
+		t.Fatal("完整协议探测成功必须视为已有 daemon")
+	}
+}
+
 func TestLocalDaemonSocketPathUsesCanonicalCodexHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 不支持 Codex Unix daemon")
@@ -126,6 +139,22 @@ func TestEnsureLocalDaemonAttachesBeforeStarting(t *testing.T) {
 	}
 }
 
+func TestAttachOnlyLocalDaemonNeverStartsBackend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := EnsureLocalDaemon(ctx, LocalDaemonOptions{
+		Env:        map[string]string{"CODEX_HOME": codexHome},
+		AttachOnly: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "不会启动或接管") {
+		t.Fatalf("外部 Unix backend 缺失时必须 attach-only 失败：%v", err)
+	}
+}
+
 func TestEnsureLocalDaemonStartsOnceThenProbes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 不支持 Codex Unix daemon")
@@ -225,7 +254,7 @@ func TestInspectLocalDaemonLifecycleParsesOfficialJSON(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
 	script := `#!/bin/sh
-printf '%s\n' '{"status":"running","managedCodexPath":"/tmp/codex","managedCodexVersion":"0.147.0","socketPath":"/tmp/app-server-control.sock","cliVersion":"0.147.0","appServerVersion":"0.147.0"}'
+printf '%s\n' '{"status":"running","backend":"pid","managedCodexPath":"/tmp/codex","managedCodexVersion":"0.147.0","socketPath":"/tmp/app-server-control.sock","cliVersion":"0.147.0","appServerVersion":"0.147.0"}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -235,6 +264,7 @@ printf '%s\n' '{"status":"running","managedCodexPath":"/tmp/codex","managedCodex
 		t.Fatal(err)
 	}
 	if status.Status != "running" || status.AppServerVersion != "0.147.0" ||
+		status.Backend == nil || *status.Backend != "pid" ||
 		status.ManagedCodexVersion == nil || *status.ManagedCodexVersion != "0.147.0" {
 		t.Fatalf("daemon version JSON 解析错误：%+v", status)
 	}
@@ -273,6 +303,180 @@ func TestValidateLocalDaemonLifecycleRequiresOfficialManagedPath(t *testing.T) {
 	status.ManagedCodexPath = official
 	if err := ValidateLocalDaemonLifecycle(status, socketPath); err != nil {
 		t.Fatalf("同一 CODEX_HOME 的官方 standalone 应通过：%v", err)
+	}
+	if err := ValidateManagedLocalDaemonLifecycle(status, socketPath); err == nil {
+		t.Fatal("缺少 backend 的旧 SSH 直启 socket 不能冒充 managed daemon")
+	}
+	backend := "pid"
+	status.Backend = &backend
+	if err := ValidateManagedLocalDaemonLifecycle(status, socketPath); err != nil {
+		t.Fatalf("官方 pid backend 应通过 managed 校验：%v", err)
+	}
+}
+
+func TestReconcileStableOwnerLifecycleMarksDetectedUnmanagedBackend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	socketPath := filepath.Join(codexHome, localDaemonSocketDir, localDaemonSocketName)
+	official := filepath.Join(codexHome, "packages", "standalone", "current", "codex")
+	if err := os.MkdirAll(filepath.Dir(official), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(official, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version := "0.147.0"
+	lifecycle := LocalDaemonLifecycleStatus{
+		Status:              "running",
+		ManagedCodexPath:    official,
+		ManagedCodexVersion: &version,
+		SocketPath:          socketPath,
+		CLIVersion:          version,
+		AppServerVersion:    version,
+	}
+	status := LocalDaemonStatus{SocketPath: socketPath, Version: version}
+	owner := SharedDaemonOwnerStatus{Installed: true, Loaded: true, Secure: true}
+	markCalls := 0
+	if err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+		markCalls++
+		return nil
+	}); err != nil {
+		t.Fatalf("稳定 owner 下检测到 SSH unmanaged backend 应保持 attach：%v", err)
+	}
+	if !owner.MigrationRequired || markCalls != 1 {
+		t.Fatalf("必须重建待迁移标记：owner=%+v markCalls=%d", owner, markCalls)
+	}
+	if err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+		markCalls++
+		return nil
+	}); err != nil || markCalls != 1 {
+		t.Fatalf("已有 marker 时必须幂等：err=%v markCalls=%d", err, markCalls)
+	}
+}
+
+func TestReconcileStableOwnerLifecycleRejectsUnmanagedAfterStableKickstart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	socketPath := filepath.Join(codexHome, localDaemonSocketDir, localDaemonSocketName)
+	official := filepath.Join(codexHome, "packages", "standalone", "current", "codex")
+	if err := os.MkdirAll(filepath.Dir(official), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(official, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version := "0.147.0"
+	lifecycle := LocalDaemonLifecycleStatus{
+		Status:              "running",
+		ManagedCodexPath:    official,
+		ManagedCodexVersion: &version,
+		SocketPath:          socketPath,
+		CLIVersion:          version,
+		AppServerVersion:    version,
+	}
+	status := LocalDaemonStatus{SocketPath: socketPath, Version: version}
+	owner := SharedDaemonOwnerStatus{Installed: true, Loaded: true, Secure: true, MigrationRequired: true}
+	markCalls := 0
+	err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, true, func() error {
+		markCalls++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "pid daemon") || markCalls != 0 {
+		t.Fatalf("稳定 owner kickstart 后仍无 backend 必须 fail closed：err=%v mark=%d", err, markCalls)
+	}
+}
+
+func TestReconcileStableOwnerLifecycleRejectsUnknownBackend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	socketPath := filepath.Join(codexHome, localDaemonSocketDir, localDaemonSocketName)
+	official := filepath.Join(codexHome, "packages", "standalone", "current", "codex")
+	if err := os.MkdirAll(filepath.Dir(official), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(official, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version := "0.147.0"
+	backend := "future"
+	lifecycle := LocalDaemonLifecycleStatus{
+		Status:              "running",
+		Backend:             &backend,
+		ManagedCodexPath:    official,
+		ManagedCodexVersion: &version,
+		SocketPath:          socketPath,
+		CLIVersion:          version,
+		AppServerVersion:    version,
+	}
+	owner := SharedDaemonOwnerStatus{Installed: true, Loaded: true, Secure: true, MigrationRequired: true}
+	markCalls := 0
+	err := reconcileStableOwnerLifecycle(
+		lifecycle,
+		LocalDaemonStatus{SocketPath: socketPath, Version: version},
+		&owner,
+		false,
+		func() error { markCalls++; return nil },
+	)
+	if err == nil || markCalls != 0 {
+		t.Fatalf("未知 backend 不能借 marker 绕过 managed 校验：err=%v mark=%d", err, markCalls)
+	}
+}
+
+func TestReconcileStableOwnerLifecycleRequiresSecureOwnerAndWritableMarker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	socketPath := filepath.Join(codexHome, localDaemonSocketDir, localDaemonSocketName)
+	official := filepath.Join(codexHome, "packages", "standalone", "current", "codex")
+	if err := os.MkdirAll(filepath.Dir(official), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(official, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version := "0.147.0"
+	lifecycle := LocalDaemonLifecycleStatus{
+		Status:              "running",
+		ManagedCodexPath:    official,
+		ManagedCodexVersion: &version,
+		SocketPath:          socketPath,
+		CLIVersion:          version,
+		AppServerVersion:    version,
+	}
+	status := LocalDaemonStatus{SocketPath: socketPath, Version: version}
+
+	unsafeOwners := map[string]SharedDaemonOwnerStatus{
+		"not installed": {Loaded: true, Secure: true},
+		"not loaded":    {Installed: true, Secure: true},
+		"not secure":    {Installed: true, Loaded: true},
+	}
+	for name, owner := range unsafeOwners {
+		t.Run(name, func(t *testing.T) {
+			markCalls := 0
+			err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+				markCalls++
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "缺少安全稳定 owner") || markCalls != 0 {
+				t.Fatalf("不安全 owner 必须在写 marker 前拒绝：err=%v mark=%d", err, markCalls)
+			}
+		})
+	}
+
+	markerErr := errors.New("磁盘只读")
+	owner := SharedDaemonOwnerStatus{Installed: true, Loaded: true, Secure: true}
+	err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+		return markerErr
+	})
+	if err == nil || !errors.Is(err, markerErr) || owner.MigrationRequired {
+		t.Fatalf("marker 写入失败必须 fail closed 且不得伪报待迁移：err=%v owner=%+v", err, owner)
 	}
 }
 

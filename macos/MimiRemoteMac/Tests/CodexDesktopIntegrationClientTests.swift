@@ -264,6 +264,80 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
         XCTAssertEqual(events, ["terminate", "open"])
     }
 
+    func testLiveRestartRunsMigrationStrictlyBetweenTerminateAndOpen() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var appRunning = true
+        var events: [String] = []
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: appRunning)
+                },
+                terminateAndWait: { _ in
+                    events.append("terminate")
+                    appRunning = false
+                },
+                open: { _, _ in
+                    XCTAssertFalse(appRunning, "旧 Desktop 未完全退出前不能打开新实例")
+                    events.append("open")
+                    appRunning = true
+                }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        _ = try await client.restartAndApply(afterTermination: {
+            XCTAssertFalse(appRunning)
+            events.append("migrate")
+        })
+
+        XCTAssertEqual(events, ["terminate", "migrate", "open"])
+        XCTAssertTrue(appRunning)
+    }
+
+    func testLiveRestartMigrationFailureKeepsDesktopClosedAndNeverOpens() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var appRunning = true
+        var events: [String] = []
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: appRunning)
+                },
+                terminateAndWait: { _ in
+                    events.append("terminate")
+                    appRunning = false
+                },
+                open: { _, _ in
+                    events.append("open")
+                    appRunning = true
+                }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        do {
+            _ = try await client.restartAndApply(afterTermination: {
+                events.append("migrate")
+                throw NSError(domain: "CodexDesktopTests", code: 157)
+            })
+            XCTFail("迁移失败必须向上抛出")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 157)
+        }
+
+        XCTAssertEqual(events, ["terminate", "migrate"])
+        XCTAssertFalse(appRunning)
+    }
+
     func testExplicitEnableReacquiresOwnershipAfterLoginSessionReset() async throws {
         let defaults = makeDefaults()
         let launchctl = FakeLaunchctlState()
