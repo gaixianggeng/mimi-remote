@@ -34700,24 +34700,6 @@
         }
       }
     },
-    "ui.workspace_album_nevermind": {
-      "comment": "Built-in Classic Albums workspace icon.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nirvana — Nevermind"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nirvana —《Nevermind》"
-          }
-        }
-      }
-    },
     "ui.workspace_album_norman_fucking_rockwell": {
       "comment": "Built-in Classic Albums workspace icon.",
       "extractionState": "manual",
@@ -34736,42 +34718,6 @@
         }
       }
     },
-    "ui.workspace_album_ok_computer": {
-      "comment": "Built-in Classic Albums workspace icon.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Radiohead — OK Computer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Radiohead —《OK Computer》"
-          }
-        }
-      }
-    },
-    "ui.workspace_album_rumours": {
-      "comment": "Built-in Classic Albums workspace icon.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fleetwood Mac — Rumours"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fleetwood Mac —《Rumours》"
-          }
-        }
-      }
-    },
     "ui.workspace_album_sos": {
       "comment": "Built-in Classic Albums workspace icon.",
       "extractionState": "manual",
@@ -34786,24 +34732,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "SZA —《SOS》"
-          }
-        }
-      }
-    },
-    "ui.workspace_album_thriller": {
-      "comment": "Built-in Classic Albums workspace icon.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Michael Jackson — Thriller"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Michael Jackson —《Thriller》"
           }
         }
       }
@@ -34840,24 +34768,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pink Floyd — 愿你在此"
-          }
-        }
-      }
-    },
-    "ui.workspace_album_ziggy_stardust": {
-      "comment": "Built-in Classic Albums workspace icon.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "David Bowie — The Rise and Fall of Ziggy Stardust and the Spiders from Mars"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "David Bowie —《The Rise and Fall of Ziggy Stardust and the Spiders from Mars》"
           }
         }
       }

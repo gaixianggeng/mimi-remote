@@ -934,7 +934,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    func testWorkspaceIconStyleSwitchesAcrossClassicAlbumsWorldArtEmojiAndJourney() throws {
+    func testWorkspaceIconStyleSwitchesAcrossWorldArtEmojiAndJourney() throws {
         // 直接进入工作区，避免恢复到会话详情时底部设置入口不在可访问性树中。
         app.terminate()
         app.launchArguments.append("--debug-open-workspaces")
@@ -959,7 +959,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "onePiece",
             "naruto",
             "digimon",
-            "classicAlbums",
             "worldArt",
             "emoji"
         ]
@@ -983,59 +982,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             return
         }
 
-        guard let classicAlbums = scrollToWorkspaceStyleOption("classicAlbums", in: picker) else {
-            XCTFail("工作区图标风格应提供经典专辑")
-            return
-        }
-        classicAlbums.tap()
-        XCTAssertTrue(waitUntilSelected(classicAlbums), "选择经典专辑后应立即保存")
-        try relaunchDirectlyIntoWorkspaces()
-
-        let chips = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
-        XCTAssertTrue(chips.firstMatch.waitForExistence(timeout: 15), "工作区应展示专辑封面胶囊")
-        chips.firstMatch.press(forDuration: 1.0)
-        let iconEntry = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
-            .firstMatch
-        XCTAssertTrue(iconEntry.waitForExistence(timeout: 8), "专辑主题仍应提供更换封面入口")
-        iconEntry.tap()
-
-        let albumPicker = app.descendant(identifier: "workspace.characterPicker")
-        XCTAssertTrue(albumPicker.waitForExistence(timeout: 10), "专辑主题应打开封面选择器")
-        let expectedAlbumIDs = [
-            "album-dark-side-of-the-moon",
-            "album-rumours",
-            "album-atom-heart-mother",
-            "album-ziggy-stardust",
-            "album-abbey-road",
-            "album-thriller",
-            "album-morning-glory",
-            "album-velvet-underground-nico",
-            "album-nevermind",
-            "album-ok-computer"
-        ]
-        for albumID in expectedAlbumIDs {
-            XCTAssertTrue(
-                app.descendant(identifier: "workspace.character.\(albumID)")
-                    .waitForExistence(timeout: 5),
-                "经典专辑选择器应展示 \(albumID)"
-            )
-        }
-        let albumButtons = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.character.album-"))
-        XCTAssertEqual(albumButtons.count, 10, "经典专辑选择器应完整展示 10 张原版封面")
-
-        let albumPickerScreenshot = XCTAttachment(screenshot: app.screenshot())
-        albumPickerScreenshot.name = "workspace-classic-album-picker"
-        albumPickerScreenshot.lifetime = .keepAlways
-        add(albumPickerScreenshot)
-        // iPad 为 popover、iPhone 会适配成 sheet；重启同时关闭两种容器，并验证主题已持久化。
-        try relaunchDirectlyIntoWorkspaces()
-        try openWorkspaceAppearanceSettings()
-
-        let reopenedPicker = app.descendant(identifier: "settings.workspaceIconStyle")
-        guard let worldArt = scrollToWorkspaceStyleOption("worldArt", in: reopenedPicker) else {
+        guard let worldArt = scrollToWorkspaceStyleOption("worldArt", in: picker) else {
             XCTFail("工作区图标风格应提供世界名画")
             return
         }
@@ -1131,8 +1078,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private func assertWorkspaceStylePickerUsesExactlyTwoRows(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 10)
-        guard frames.count == 10 else { return }
+        XCTAssertEqual(frames.count, 9)
+        guard frames.count == 9 else { return }
 
         var rowCenters: [CGFloat] = []
         for frame in frames where !rowCenters.contains(where: { abs($0 - frame.midY) <= 2 }) {

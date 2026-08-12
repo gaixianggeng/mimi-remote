@@ -28,17 +28,23 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         .onePiece,
         .naruto,
         .digimon,
-        .classicAlbums,
         .worldArt,
         .emoji
     ]
 
     static func selectableStyles(currentStyle: WorkspaceIconStyle) -> [WorkspaceIconStyle] {
+        let currentStyle = currentStyle.availableStyle
         guard !visibleStyles.contains(currentStyle) else {
             return visibleStyles
         }
         // 历史用户仍能看到当前已选风格；切换后，下架风格自然从选择器消失。
         return visibleStyles + [currentStyle]
+    }
+
+    /// 已下架的专辑资源不能继续随 App 分发；保留 raw value 只为解码旧偏好，
+    /// 读取或写入时统一落到版权边界清晰、同为图片内容的“世界名画”。
+    var availableStyle: WorkspaceIconStyle {
+        self == .classicAlbums ? .worldArt : self
     }
 
     var usesCharacters: Bool {
@@ -139,7 +145,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         case .digimon:
             return "WorkspaceCharacterDigimonAgumon"
         case .classicAlbums:
-            return "WorkspaceAlbumAtomHeartMother"
+            return nil
         case .worldArt:
             return "WorkspaceArtVanGoghSelfPortrait"
         case .emoji:
@@ -193,7 +199,7 @@ private struct WorkspaceAppearancePreferences: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        style = try container.decodeIfPresent(WorkspaceIconStyle.self, forKey: .style)
+        style = try container.decodeIfPresent(WorkspaceIconStyle.self, forKey: .style)?.availableStyle
         characterIDsByProject = try container.decodeIfPresent(
             [String: String].self,
             forKey: .characterIDsByProject
@@ -229,7 +235,7 @@ private struct WorkspaceAppearancePreferences: Codable {
 
     mutating func mergeMissingValues(from legacy: Self) {
         if style == nil {
-            style = legacy.style
+            style = legacy.style?.availableStyle
         }
         for (projectID, characterID) in legacy.characterIDsByProject
             where characterIDsByProject[projectID] == nil {
@@ -393,20 +399,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "digimon-guilmon", assetName: "WorkspaceCharacterDigimonGuilmon", nameKey: "ui.workspace_character_digimon_guilmon")
     ]
 
-    /// 经典专辑复用角色图标链路，以保持现有按 style 分桶的持久化和跨页面展示一致。
-    static let classicAlbumsCharacters = [
-        WorkspaceCharacterIcon(id: "album-dark-side-of-the-moon", assetName: "WorkspaceAlbumDarkSideOfTheMoon", nameKey: "ui.workspace_album_dark_side_of_the_moon"),
-        WorkspaceCharacterIcon(id: "album-rumours", assetName: "WorkspaceAlbumRumours", nameKey: "ui.workspace_album_rumours"),
-        WorkspaceCharacterIcon(id: "album-atom-heart-mother", assetName: "WorkspaceAlbumAtomHeartMother", nameKey: "ui.workspace_album_atom_heart_mother"),
-        WorkspaceCharacterIcon(id: "album-ziggy-stardust", assetName: "WorkspaceAlbumZiggyStardust", nameKey: "ui.workspace_album_ziggy_stardust"),
-        WorkspaceCharacterIcon(id: "album-abbey-road", assetName: "WorkspaceAlbumAbbeyRoad", nameKey: "ui.workspace_album_abbey_road"),
-        WorkspaceCharacterIcon(id: "album-thriller", assetName: "WorkspaceAlbumThriller", nameKey: "ui.workspace_album_thriller"),
-        WorkspaceCharacterIcon(id: "album-morning-glory", assetName: "WorkspaceAlbumMorningGlory", nameKey: "ui.workspace_album_morning_glory"),
-        WorkspaceCharacterIcon(id: "album-velvet-underground-nico", assetName: "WorkspaceAlbumVelvetUndergroundNico", nameKey: "ui.workspace_album_velvet_underground_nico"),
-        WorkspaceCharacterIcon(id: "album-nevermind", assetName: "WorkspaceAlbumNevermind", nameKey: "ui.workspace_album_nevermind"),
-        WorkspaceCharacterIcon(id: "album-ok-computer", assetName: "WorkspaceAlbumOKComputer", nameKey: "ui.workspace_album_ok_computer")
-    ]
-
     /// 世界名画优先使用公共领域馆藏，并预裁成稳定的方形构图，避免圆形与 MeeGo 蒙版
     /// 再次截掉主体；作品来源和公共领域状态记录在 THIRD_PARTY_NOTICES.md。
     static let worldArtCharacters = [
@@ -433,20 +425,7 @@ final class WorkspaceAppearanceStore: ObservableObject {
         .onePiece: onePieceCharacters,
         .naruto: narutoCharacters,
         .digimon: digimonCharacters,
-        .classicAlbums: classicAlbumsCharacters,
         .worldArt: worldArtCharacters
-    ]
-
-    /// 已发布的专辑 ID 不直接删除：显式选择过旧封面的用户升级后落到同位置的新专辑，
-    /// 避免偏好静默失效；下一次主动选择时会自然写入新的规范 ID。
-    private static let legacyCharacterIDAliasesByStyle: [WorkspaceIconStyle: [String: String]] = [
-        .classicAlbums: [
-            "album-wish-you-were-here": "album-rumours",
-            "album-sos": "album-ziggy-stardust",
-            "album-21": "album-thriller",
-            "album-norman-fucking-rockwell": "album-nevermind",
-            "album-cities": "album-ok-computer"
-        ]
     ]
 
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
@@ -521,7 +500,7 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     func style(profileID: String) -> WorkspaceIconStyle {
-        preferences(profileID: profileID)?.style ?? .journey
+        (preferences(profileID: profileID)?.style ?? .journey).availableStyle
     }
 
     func projectIconContent(profileID: String, projectID: String) -> WorkspaceProjectIconContent {
@@ -562,6 +541,7 @@ final class WorkspaceAppearanceStore: ObservableObject {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
+        let style = style.availableStyle
         var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
         guard preferences.style != style else { return }
         preferences.style = style
@@ -944,8 +924,7 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     static func character(id: String, style: WorkspaceIconStyle) -> WorkspaceCharacterIcon? {
-        let canonicalID = legacyCharacterIDAliasesByStyle[style]?[id] ?? id
-        return characters(for: style).first { $0.id == canonicalID }
+        characters(for: style).first { $0.id == id }
     }
 
     static func character(id: String) -> WorkspaceCharacterIcon? {
