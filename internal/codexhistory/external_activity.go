@@ -18,9 +18,8 @@ import (
 )
 
 const (
-	defaultExternalActivityStaleAfter = 30 * time.Minute
-	externalActivityCandidateLimit    = 500
-	maxExternalActivityLineBytes      = 1 << 20
+	externalActivityCandidateLimit = 500
+	maxExternalActivityLineBytes   = 1 << 20
 	// Gateway 登记只需要覆盖 turn/start 到 rollout 写入 user_message 的短窗口。
 	// 有界 TTL 可以避免断线或 upstream 写失败后留下永久“本机发起”证据。
 	gatewayTurnRegistrationTTL   = 2 * time.Minute
@@ -69,7 +68,6 @@ type externalRolloutCacheEntry struct {
 	offset       int64
 	size         int64
 	modTime      time.Time
-	originator   string
 	metaThreadID string
 	metaCWD      string
 	threadSource string
@@ -100,7 +98,6 @@ type externalRolloutRecord struct {
 	Payload   struct {
 		ID           string `json:"id"`
 		CWD          string `json:"cwd"`
-		Originator   string `json:"originator"`
 		ThreadSource string `json:"thread_source"`
 		Type         string `json:"type"`
 		TurnID       string `json:"turn_id"`
@@ -111,14 +108,13 @@ type externalRolloutRecord struct {
 // ExternalActivityTracker 按请求增量读取 rollout 尾部。它没有后台 goroutine，
 // agentd 空闲时不会持续扫盘；同一个文件未变化时只做一次 stat 并复用解析状态。
 type ExternalActivityTracker struct {
-	mu         sync.Mutex
-	store      ThreadStore
-	registry   *projects.Registry
-	staleAfter time.Duration
-	now        func() time.Time
-	stat       func(string) (os.FileInfo, error)
-	open       func(string) (*os.File, error)
-	query      func(string, string) ([]byte, error)
+	mu       sync.Mutex
+	store    ThreadStore
+	registry *projects.Registry
+	now      func() time.Time
+	stat     func(string) (os.FileInfo, error)
+	open     func(string) (*os.File, error)
+	query    func(string, string) ([]byte, error)
 
 	dbSignature  dbSignature
 	dbCached     bool
@@ -139,7 +135,6 @@ func NewExternalActivityTracker(db string, registry *projects.Registry) *Externa
 	return &ExternalActivityTracker{
 		store:               NewThreadStore(db),
 		registry:            registry,
-		staleAfter:          defaultExternalActivityStaleAfter,
 		now:                 time.Now,
 		stat:                os.Stat,
 		open:                os.Open,
@@ -212,7 +207,7 @@ func (t *ExternalActivityTracker) RegisterGatewayTurnStart(threadID string, clie
 }
 
 // Snapshot 只返回仍有外部 turn 运行证据的白名单项目线程。
-// terminal lifecycle 到达或文件超过 staleAfter 未更新后，该线程会从结果中消失。
+// rollout 文件静默不等于 turn 结束；只有明确 terminal lifecycle 才会清除活动态。
 func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -254,7 +249,7 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 		if entry.gatewayOwned &&
 			!t.hasGatewayOwnedTurnClaim(entry.metaThreadID, entry.turnID) {
 			// claim TTL/容量裁剪已经失效时，不能让内存 rollout cache 继续隐藏 turn。
-			// 此时若文件仍新鲜，安全降级为 external；若文件也已 stale，则自然不返回。
+			// 安全降级为 external；文件是否静默不改变 active turn 的生命周期判断。
 			entry.gatewayOwned = false
 			t.files[path] = entry
 		}
@@ -269,12 +264,16 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 				now,
 			)
 		}
-		if !isCodexDesktopOriginator(entry.originator) ||
-			entry.metaThreadID != candidate.ThreadID ||
+		// session_meta.originator 只表示 thread 的创建端，不是当前 turn 的所有者；
+		// resume 后它可能仍是 mimi_remote、CLI 或其他创建端。只有 gateway 精确
+		// Thread+Turn claim 才能证明这是 Mimi/iPad 自己的 turn，其他 active turn
+		// 都必须按 external 只读活动处理。文件静默也不能证明 turn 已结束：长时间
+		// 没有 rollout 写入可能只是正常等待，异常崩溃残留则保守地继续只读展示，
+		// 以避免把仍在运行的 Desktop turn 误判为空闲。
+		if entry.metaThreadID != candidate.ThreadID ||
 			!isTopLevelExternalThreadSource(entry.threadSource) ||
 			!entry.active ||
-			entry.gatewayOwned ||
-			now.Sub(info.ModTime()) > t.staleAfter {
+			entry.gatewayOwned {
 			continue
 		}
 		// SQLite cwd 和 session_meta cwd 都必须落在同一个白名单项目中。
@@ -508,7 +507,6 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 	}
 	switch record.Type {
 	case "session_meta":
-		entry.originator = strings.TrimSpace(record.Payload.Originator)
 		entry.metaThreadID = strings.TrimSpace(record.Payload.ID)
 		entry.metaCWD = strings.TrimSpace(record.Payload.CWD)
 		entry.threadSource = strings.TrimSpace(record.Payload.ThreadSource)
@@ -680,15 +678,6 @@ func gatewayTurnRegistrationKey(threadID string, clientUserMessageID string) str
 
 func externalActivityRevision(info os.FileInfo) string {
 	return strconv.FormatInt(info.Size(), 36) + "-" + strconv.FormatInt(info.ModTime().UnixNano(), 36)
-}
-
-func isCodexDesktopOriginator(originator string) bool {
-	switch strings.ToLower(strings.TrimSpace(originator)) {
-	case "codex desktop", "codex_work_desktop":
-		return true
-	default:
-		return false
-	}
 }
 
 func isTopLevelExternalThreadSource(source string) bool {

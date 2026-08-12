@@ -21,6 +21,8 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
 
+var errAppServerExternalThreadActive = errors.New("Codex Desktop 正在运行此会话")
+
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
 	return p.validateClientFrameContext(context.Background(), messageType, payload)
 }
@@ -64,6 +66,20 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+	}
+	if err := p.guardExternalDesktopThread(method, params); err != nil {
+		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
+		p.forgetPending(frame.ID)
+		return nil, &appServerGatewayPolicyError{
+			id:      frame.ID,
+			message: err.Error(),
+			data: map[string]any{
+				"reason":         "external_thread_active",
+				"accepted":       false,
+				"retryable":      true,
+				"retry_after_ms": int64(1000),
+			},
+		}
 	}
 	p.rememberThreadHandoffCapability(method, params)
 	if err := p.guardThreadHandoffContext(ctx, method, params); err != nil {
@@ -139,6 +155,39 @@ func (p *appServerGatewayPolicy) guardThreadHandoffContext(ctx context.Context, 
 func gatewayMethodReclaimsThread(method string) bool {
 	switch method {
 	case "thread/resume", "thread/fork", "thread/name/set", "thread/compact/start",
+		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
+		"review/start", "turn/start", "turn/steer", "turn/interrupt":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *appServerGatewayPolicy) guardExternalDesktopThread(method string, params map[string]any) error {
+	if p == nil || p.router == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
+		!gatewayMethodRequiresExternalIdle(method) {
+		return nil
+	}
+	threadID, ok := gatewayStringParam(params, "threadId")
+	if !ok {
+		return nil
+	}
+	active, err := p.router.codexDesktopThreadActive(threadID)
+	if err != nil {
+		// 外部活动是同机 rollout 的辅助证据，不是鉴权边界。读取失败时保留现有
+		// same-thread 发送能力，避免 SQLite 短暂锁定把空闲会话误判为只读。
+		log.Printf("external activity guard unavailable: %v", err)
+		return nil
+	}
+	if active {
+		return fmt.Errorf("%s.threadId 当前由 Codex Desktop 运行，请等待本轮结束后重试：%w", method, errAppServerExternalThreadActive)
+	}
+	return nil
+}
+
+func gatewayMethodRequiresExternalIdle(method string) bool {
+	switch method {
+	case "thread/fork", "thread/name/set", "thread/compact/start",
 		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
 		"review/start", "turn/start", "turn/steer", "turn/interrupt":
 		return true

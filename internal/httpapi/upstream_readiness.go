@@ -3,10 +3,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 )
@@ -103,10 +102,14 @@ func (r *Router) probeAppServerUpstream(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if headers == nil || headers.Get("Authorization") == "" {
+	if !strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") &&
+		(headers == nil || headers.Get("Authorization") == "") {
 		return errors.New("app-server upstream 未配置独立 capability token")
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: appServerReadinessProbeTimeout}
+	dialer, err := r.appServerUpstreamDialer(appServerReadinessProbeTimeout)
+	if err != nil {
+		return err
+	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		// 鉴权失败等响应正文不进入 readyz 或日志。

@@ -924,6 +924,15 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             )
         }
         if case CodexAppServerConnectionError.appServer(let appError) = error {
+            if let data = appError.data?.objectValue,
+               data["accepted"]?.boolValue == false,
+               data["retryable"]?.boolValue == true,
+               data["reason"]?.stringValue == "external_thread_active" {
+                return .retryableExternalThreadActive(
+                    message: error.localizedDescription,
+                    retryAfterMilliseconds: max(0, data["retry_after_ms"]?.intValue ?? 1_000)
+                )
+            }
             if let activeTurnID = CodexAppServerSessionRuntime.activeTurnIDFromConflict(error) {
                 return .activeTurnConflict(
                     activeTurnID: activeTurnID,

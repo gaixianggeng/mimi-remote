@@ -12,7 +12,9 @@ extension SessionStore {
         // 才调用 clientFactory 时会看到空 Token，handoff 请求根本无法发出。
         guard let client = try? clientFactory() else { return }
         Task {
-            // 单独 unsubscribe 不会释放 writer；失败不应阻塞导航或后台挂起。
+            // 旧 WS agentd 需要 handoff 才能释放 writer。共享 Unix daemon 也安全复用
+            // 这条 best-effort 链路：服务端会返回 already_released 并跳过 terminal
+            // auto-handoff，因此客户端无需按后端类型分叉，更不会触发 archive/unarchive。
             _ = try? await client.releaseThreadWriterWhenIdle(threadID: threadID)
         }
     }

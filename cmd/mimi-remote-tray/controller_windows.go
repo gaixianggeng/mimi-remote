@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -76,12 +77,20 @@ func (p *terminalProcess) Wait() error {
 }
 
 type agentController struct {
-	agentPath           string
-	statusMu            sync.Mutex
-	cachedNetwork       *networkStatus
-	networkLastChecked  time.Time
-	pairingMu           sync.Mutex
-	pairingTerminalOpen bool
+	agentPath          string
+	statusMu           sync.Mutex
+	cachedNetwork      *networkStatus
+	networkLastChecked time.Time
+}
+
+type pairingInfo struct {
+	Endpoint            string   `json:"endpoint"`
+	Network             string   `json:"network,omitempty"`
+	TailscaleDNSName    string   `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName string   `json:"tailscale_device_name,omitempty"`
+	PairURL             string   `json:"pair_url"`
+	PairExpiresAt       string   `json:"pair_expires_at"`
+	Warnings            []string `json:"warnings,omitempty"`
 }
 
 const networkPolicyRefreshInterval = 2 * time.Minute
@@ -138,17 +147,44 @@ func (c *agentController) status(ctx context.Context) (agentStatus, error) {
 }
 
 func (c *agentController) action(ctx context.Context, action string) error {
-	args := []string{action}
-	if action == "start" || action == "restart" {
-		args = append(args, "--no-pair")
-	}
-	_, err := c.runHidden(ctx, args...)
+	_, err := c.runHidden(ctx, actionArguments(action)...)
 	return err
+}
+
+func actionArguments(action string) []string {
+	arguments := []string{action}
+	if action == "start" || action == "restart" {
+		arguments = append(arguments, "--wait", "20s", "--no-pair")
+	}
+	return arguments
 }
 
 func (c *agentController) doctor(ctx context.Context, fix bool) (string, error) {
 	payload, err := c.runHidden(ctx, doctorArguments(fix)...)
 	return strings.TrimSpace(string(payload)), err
+}
+
+func (c *agentController) pairing(ctx context.Context) (pairingInfo, error) {
+	payload, err := c.runHidden(ctx, pairingArguments()...)
+	if err != nil {
+		return pairingInfo{}, err
+	}
+	return parsePairingInfo(payload)
+}
+
+func pairingArguments() []string {
+	return []string{"pair", "--qr-only", "--json"}
+}
+
+func parsePairingInfo(payload []byte) (pairingInfo, error) {
+	var result pairingInfo
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
+	}
+	if strings.TrimSpace(result.PairURL) == "" {
+		return pairingInfo{}, errors.New("短期配对信息缺少二维码链接")
+	}
+	return result, nil
 }
 
 func doctorArguments(fix bool) []string {
@@ -181,30 +217,6 @@ func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte
 	return stdout.Bytes(), nil
 }
 
-func (c *agentController) openPairingTerminal() (bool, error) {
-	if !c.reservePairingTerminal() {
-		trayLogf("pairing terminal request ignored because one is already open")
-		return false, nil
-	}
-	cmd, err := c.openTerminal("配对设备", "pair", "--qr-only")
-	if err != nil {
-		c.releasePairingTerminal()
-		trayLogf("pairing terminal failed to start: %v", err)
-		return false, err
-	}
-	trayLogf("pairing terminal started")
-	go func() {
-		err := cmd.Wait()
-		c.releasePairingTerminal()
-		if err != nil {
-			trayLogf("pairing terminal exited with an error: %v", err)
-			return
-		}
-		trayLogf("pairing terminal exited normally")
-	}()
-	return true, nil
-}
-
 func (c *agentController) openLogsTerminal() error {
 	cmd, err := c.openTerminal("服务日志", "logs", "-n", "200")
 	if err != nil {
@@ -220,7 +232,7 @@ func (c *agentController) openTerminal(title string, args ...string) (*terminalP
 	// A console process started with os/exec by a windowless tray inherits
 	// unusable standard handles and exits immediately. ShellExecuteEx gives
 	// cmd.exe an independent interactive console; SEE_MASK_NOCLOSEPROCESS lets
-	// us wait for it and keep the pairing action single-instance.
+	// us wait for the terminal used by interactive log viewing.
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return nil, fmt.Errorf("定位终端临时目录失败：%w", err)
@@ -306,28 +318,6 @@ func trayLogf(format string, args ...any) {
 	}
 	defer file.Close()
 	_, _ = fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
-}
-
-func (c *agentController) reservePairingTerminal() bool {
-	c.pairingMu.Lock()
-	defer c.pairingMu.Unlock()
-	if c.pairingTerminalOpen {
-		return false
-	}
-	c.pairingTerminalOpen = true
-	return true
-}
-
-func (c *agentController) releasePairingTerminal() {
-	c.pairingMu.Lock()
-	c.pairingTerminalOpen = false
-	c.pairingMu.Unlock()
-}
-
-func (c *agentController) pairingTerminalIsOpen() bool {
-	c.pairingMu.Lock()
-	defer c.pairingMu.Unlock()
-	return c.pairingTerminalOpen
 }
 
 func statusContext() (context.Context, context.CancelFunc) {

@@ -40,6 +40,17 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testCodexSharingConfigurationArgumentsUseOfficialSwitchOnly() {
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingConfigurationArguments(enabled: true),
+            ["runtime", "--codex-sharing=enabled", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingConfigurationArguments(enabled: false),
+            ["runtime", "--codex-sharing=disabled", "--json"]
+        )
+    }
+
     func testProcessCancellationIsReportedAsCancellation() async {
         let executor = ProcessExecutor()
         let task = Task {
@@ -60,5 +71,39 @@ final class AgentCommandClientTests: XCTestCase {
         } catch {
             XCTFail("取消应保留 CancellationError 语义，实际为 \(error)")
         }
+    }
+
+    func testRunToCompletionObservesCommittedSideEffectAfterCallerCancellation() async throws {
+        let executor = ProcessExecutor()
+        let directory = FileManager.default.temporaryDirectory
+            .appending(component: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appending(component: "committed")
+
+        let task = Task {
+            try await executor.runToCompletion(
+                executable: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "sleep 0.1; printf committed > \"$1\"",
+                    "mimi-process-test",
+                    marker.path(),
+                ],
+                timeout: .seconds(2)
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+
+        let result = try await task.value
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(
+            try String(contentsOf: marker, encoding: .utf8),
+            "committed"
+        )
     }
 }

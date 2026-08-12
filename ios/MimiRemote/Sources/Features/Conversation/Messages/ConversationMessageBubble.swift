@@ -116,7 +116,7 @@ struct ConversationMessageContent: View {
                 )
             }
         }
-        .foregroundStyle(tokens.primaryText)
+        .foregroundStyle(tokens.conversationPrimaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.interaction, shape)
         .contentShape(.contextMenuPreview, shape)
@@ -124,6 +124,9 @@ struct ConversationMessageContent: View {
             for: message,
             stop: stop
         )
+        // 真机 smoke 需要区分助手正文和用户 prompt；identifier 不携带正文或 UUID，
+        // 只增加稳定的测试定位信息，不改变 VoiceOver 的 label/value。
+        .accessibilityIdentifier("conversation.message.assistant")
     }
 
     private var bubbleChrome: some View {
@@ -583,7 +586,7 @@ struct ConversationMessageContent: View {
 
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        return message.role == .user ? userBubbleForeground : tokens.primaryText
+        return message.role == .user ? userBubbleForeground : tokens.conversationPrimaryText
     }
 
     private var timestampForeground: Color? {

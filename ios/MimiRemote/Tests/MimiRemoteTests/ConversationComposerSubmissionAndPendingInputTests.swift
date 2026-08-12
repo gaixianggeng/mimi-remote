@@ -10,6 +10,88 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 379))
         XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 380))
         XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 520))
+        XCTAssertFalse(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: nil))
+        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 296))
+        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 320))
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 296), 36)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 320), 48)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 350), 64)
+        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 380), 88)
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: true,
+                availableWidth: 390,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 320,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 439,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertTrue(
+            ConversationLayout.compactComposerShowsInlineDeliveryControl(
+                isPhone: false,
+                availableWidth: 440,
+                canChooseDelivery: true
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.compactComposerShowsFastModeIndicator(
+                usesCompactMetrics: true,
+                isFastModeSelected: true
+            )
+        )
+        XCTAssertTrue(
+            ConversationLayout.compactComposerShowsFastModeIndicator(
+                usesCompactMetrics: false,
+                isFastModeSelected: true
+            )
+        )
+
+        // 320pt 小屏：Fast 状态不另占图标，运行态投递方式收进设置；+、受控模型名、
+        // 设置、语音和发送都保留 44pt 命中区，
+        // 组间/组内 6pt 后仍不能超过卡片 8pt 内边距以内的可用宽度。
+        let narrowLayout = ConversationLayout(containerWidth: 320, horizontalSizeClass: .compact)
+        let modelControlWidth: CGFloat = max(44, 48 + 24)
+        let leadingControlsWidth = 44 + 6 + modelControlWidth
+        let toolControlsWidth: CGFloat = 44 + 6 + 44
+        let requiredToolbarWidth = leadingControlsWidth + toolControlsWidth + 44 + 18
+        XCTAssertLessThanOrEqual(requiredToolbarWidth, narrowLayout.composerAvailableWidth - 16)
+    }
+
+    func testPhoneComposerTextStartsAtOneLineAndGrowsToBoundedHeight() {
+        let minimum = ComposerTextLayoutPolicy.minimumHeight(
+            isPhone: true,
+            usesCompactMetrics: true,
+            fontLineHeight: 20
+        )
+        let maximum = ComposerTextLayoutPolicy.maximumHeight(
+            isPhone: true,
+            usesCompactMetrics: true,
+            fontLineHeight: 20
+        )
+
+        XCTAssertEqual(minimum, 36)
+        XCTAssertGreaterThan(maximum, minimum)
+        XCTAssertLessThanOrEqual(maximum, 180)
+        XCTAssertEqual(
+            ComposerTextLayoutPolicy.minimumHeight(
+                isPhone: false,
+                usesCompactMetrics: true,
+                fontLineHeight: 20
+            ),
+            72
+        )
     }
 
     func testCompactComposerToolbarRendersWithoutGenericMetadataStackOverflow() throws {
@@ -648,6 +730,167 @@ extension ConversationDataFlowTests {
             onSkillAutocompleteMove: { _ in },
             onSkillAutocompleteCommit: {},
             onSkillAutocompleteDismiss: {}
+        )
+    }
+}
+
+@MainActor
+final class ComposerStatusTrayBehaviorTests: XCTestCase {
+    /// 「仅观察」展开前后没有更多内容时，不应该展示无效的 disclosure。
+    func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
+        XCTAssertFalse(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。").hasExpandableDetail,
+            "只有观察状态时不应该提供展开入口"
+        )
+
+        let messageDate = Date(timeIntervalSince1970: 1_782_879_660)
+        let goal = ThreadGoal(
+            threadID: "thread-disclosure",
+            objective: "继续推进海报编辑体验。",
+            status: .active,
+            tokenBudget: 2_000_000,
+            tokensUsed: 120_000,
+            timeUsedSeconds: 240,
+            createdAt: messageDate,
+            updatedAt: messageDate
+        )
+        XCTAssertTrue(makeTray(goal: goal).hasExpandableDetail)
+        XCTAssertTrue(
+            makeTray(sessionControlNotice: "当前由 Mac 端控制，仅观察。", goal: goal).hasExpandableDetail,
+            "观察态叠加目标时仍要能展开目标详情"
+        )
+    }
+
+    func testEmbeddedGoalTrayUsesComposerSurfaceAndAlignedPadding() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+        XCTAssertTrue(ComposerStatusTrayPlacement.embedded.usesEmbeddedStatusChip)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
+
+        XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
+        XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
+    }
+
+    func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
+        let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: true
+        )
+        let increasedContrast = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .light,
+            reduceTransparency: false,
+            increasedContrast: true
+        )
+
+        XCTAssertEqual(reducedTransparency.materialStrength, .opaque)
+        XCTAssertEqual(reducedTransparency.borderOpacity, 0.08)
+        XCTAssertEqual(increasedContrast.materialStrength, .opaque)
+        XCTAssertEqual(increasedContrast.borderOpacity, 0.5)
+    }
+
+    /// iPhone 恒定使用 `.embedded`，这条路径不绘制独立的 `traySurface`。
+    func testEmbeddedGoalTrayNeverDrawsIndependentTraySurface() {
+        XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
+
+        for isExpanded in [false, true] {
+            for reduceTransparency in [false, true] {
+                for increasedContrast in [false, true] {
+                    let style = ComposerStatusTraySurfaceStyle.resolve(
+                        isExpanded: isExpanded,
+                        scheme: .light,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    )
+                    XCTAssertEqual(style.materialStrength, .opaque)
+                    XCTAssertEqual(style.surfaceTintOpacity, 1)
+                }
+            }
+        }
+    }
+
+    func testComposerSendModeLabelsUseConsistentModeSuffix() {
+        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
+        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
+        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
+        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
+    }
+
+    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
+        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+        let expanded = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: true,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+
+        XCTAssertEqual(collapsed.materialStrength, .thin)
+        XCTAssertEqual(expanded.materialStrength, .regular)
+        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
+        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
+        XCTAssertEqual(collapsed.borderOpacity, 0.58)
+        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+    }
+
+    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.05)
+        }
+    }
+
+    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .dark,
+                reduceTransparency: true
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.58)
+        }
+    }
+
+    private func makeTray(
+        sessionControlNotice: String? = nil,
+        quotaNotice: CodexQuotaNotice? = nil,
+        usage: CodexUsageDisplaySummary? = nil,
+        goal: ThreadGoal? = nil
+    ) -> ComposerStatusTray {
+        ComposerStatusTray(
+            sessionControlNotice: sessionControlNotice,
+            quotaNotice: quotaNotice,
+            usage: usage,
+            goal: goal,
+            placement: .embedded,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            goalErrorMessage: nil,
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
         )
     }
 }

@@ -2,7 +2,7 @@
 
 ## Build from source (English)
 
-Mimi Remote is a native iPhone/iPad client for coding agents running on your own Mac. It supports iOS/iPadOS 18 or later. Building from source still requires Xcode 26 or later with the iOS 26 SDK plus XcodeGen so the same binary can keep iOS 26+ Liquid Glass and Apple Speech features behind availability checks. There is no public App Store release. From the repository root, install XcodeGen, then generate and open the project:
+Mimi Remote is a native iPhone/iPad client for coding agents running on your own Mac. The current source tree supports iOS/iPadOS 18 or later; App Store availability and minimum OS requirements follow the current listing for each region. The public release is available from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) in supported regions, while [TestFlight](https://testflight.apple.com/join/jhGPbSk6) provides beta builds. Building from source still requires Xcode 26 or later with the iOS 26 SDK plus XcodeGen so the same binary can keep iOS 26+ Liquid Glass and Apple Speech features behind availability checks. From the repository root, install XcodeGen, then generate and open the project:
 
 ```bash
 brew install xcodegen

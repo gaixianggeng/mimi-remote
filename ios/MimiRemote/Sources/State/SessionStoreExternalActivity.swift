@@ -68,14 +68,25 @@ extension SessionStore {
         return true
     }
 
-    func canReconcileAcceptedTurnFromRetiredSocket(
+    func canReconcileTurnOutcomeFromRetiredSocket(
         sessionID: SessionID,
         outcome: TurnSendOutcome,
         hostScope: HostScope
     ) -> Bool {
         guard appStore.activeHostScope == hostScope,
-              sessionsByID[sessionID] != nil,
-              let acceptedTurnID = acceptedTurnID(from: outcome) else {
+              sessionsByID[sessionID] != nil else {
+            return false
+        }
+        if case .retryableExternalThreadActive = outcome {
+            let hasDispatchingQueueItem = queuedRunningTurnsBySessionID[sessionID]?.contains(where: {
+                $0.dispatchState == .dispatching
+            }) == true
+            let hasPendingLocalMessage = conversationStore.messages(for: sessionID).contains(where: {
+                $0.role == .user && $0.sendStatus == .sending && $0.clientMessageID != nil
+            })
+            return hasDispatchingQueueItem || hasPendingLocalMessage
+        }
+        guard let acceptedTurnID = acceptedTurnID(from: outcome) else {
             return false
         }
         let normalizedTurnID = acceptedTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,6 +111,7 @@ extension SessionStore {
             return turnID
         case .guidanceAccepted,
              .activeTurnConflict,
+             .retryableExternalThreadActive,
              .rejected,
              .uncertain:
             return nil
@@ -267,6 +279,104 @@ extension SessionStore {
         }
     }
 
+    func scheduleExternalActivityRetryRefresh(
+        sessionID: SessionID,
+        retryAfterMilliseconds: Int
+    ) {
+        let hostScope = appStore.activeHostScope
+        let boundedMilliseconds = min(max(retryAfterMilliseconds, 0), 60_000)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if boundedMilliseconds > 0 {
+                await self.externalActivitySleep(UInt64(boundedMilliseconds) * 1_000_000)
+            }
+            guard self.appStore.activeHostScope == hostScope,
+                  self.queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false else {
+                return
+            }
+            let refreshed = await self.refreshExternalActivities()
+            guard refreshed,
+                  self.externalActivityBySessionID[sessionID] == nil,
+                  !self.externalReadOnlySessionIDs.contains(sessionID) else {
+                return
+            }
+            self.ensureQueuedSessionMonitoring(sessionID: sessionID)
+            self.dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
+    }
+
+    /// Desktop turn 在 iOS 下一次活动轮询前启动时，gateway 会明确返回
+    /// accepted=false/retryable=true。请求尚未进入上游，因此可以把原 payload 原样
+    /// 放回持久队列；不能按普通 rejected 删除，否则 Desktop 完成后只能让用户手工重发。
+    @discardableResult
+    func preserveTurnBlockedByExternalActivity(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        message: String
+    ) -> Bool {
+        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+
+        if let location = queuedTurnLocation(clientMessageID: clientMessageID),
+           location.sessionID == sessionID,
+           let item = queuedRunningTurnsBySessionID[sessionID]?[location.index] {
+            guard mutateAndPersistQueuedTurns({
+                guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                      queue.indices.contains(location.index) else { return }
+                queue[location.index].dispatchState = .waiting
+                queue[location.index].expectedTurnID = nil
+                queue[location.index].lastError = message
+                queuedRunningTurnsBySessionID[sessionID] = queue
+            }) else {
+                return false
+            }
+            conversationStore.appendLocalUser(
+                item.previewText,
+                sessionID: sessionID,
+                clientMessageID: clientMessageID,
+                sendStatus: .local,
+                turnPayload: item.payload,
+                userDelivery: .queued
+            )
+        } else {
+            guard let session = sessionsByID[sessionID],
+                  let localMessage = conversationStore.messages(for: sessionID).first(where: {
+                      $0.role == .user && $0.clientMessageID == clientMessageID
+                  }),
+                  let payload = localMessage.turnPayload,
+                  (queuedRunningTurnsBySessionID[sessionID]?.count ?? 0) < Self.queuedTurnLimitPerSession else {
+                return false
+            }
+            let intent: QueuedTurnIntent = payload.options.collaborationMode == .plan ? .plan : .standard
+            let item = QueuedTurnEntry(
+                sessionID: sessionID,
+                projectID: session.projectID,
+                payload: payload,
+                clientMessageID: clientMessageID,
+                intent: intent,
+                lastError: message
+            )
+            guard mutateAndPersistQueuedTurns({
+                queuedRunningTurnsBySessionID[sessionID, default: []].append(item)
+            }) else {
+                return false
+            }
+            conversationStore.appendLocalUser(
+                item.previewText,
+                sessionID: sessionID,
+                clientMessageID: clientMessageID,
+                sendStatus: .local,
+                turnPayload: item.payload,
+                userDelivery: .queued
+            )
+        }
+
+        clearForegroundActivity(sessionID: sessionID)
+        setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+        return true
+    }
+
     func applyExternalActivitySnapshot(
         _ activities: [ExternalSessionActivity],
         client: any SessionStoreAPIClient,
@@ -327,7 +437,7 @@ extension SessionStore {
             disconnectWebSocket()
         }
 
-        // 先本地降级，确保 terminal/过期快照一到就从“进行中”移回“历史”；
+        // 先本地降级，确保 terminal 快照一到就从“进行中”移回“历史”；
         // 随后的权威列表与最终历史读取负责补齐标题、消息和最新时间。
         for sessionID in removedIDs {
             updateSession(sessionID) { session in
@@ -372,7 +482,7 @@ extension SessionStore {
             }
         }
 
-        // terminal/过期必须做最后一次强制历史补拉。只读集合在所有 await 完成前保留，
+        // terminal 必须做最后一次强制历史补拉。只读集合在所有 await 完成前保留，
         // 即使磁盘里遗留 `.takenOver`，这段时间也不能触发 resume 或发送。
         for sessionID in removedIDs {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
@@ -395,6 +505,12 @@ extension SessionStore {
         }
         guard appStore.activeHostScope == hostScope else { return }
         externalReadOnlySessionIDs.subtract(removedIDs)
+        for sessionID in removedIDs where queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
+            // 外部 turn 已明确结束后恢复持久队列；连接建立回调会在 socket ready 时
+            // 再调用 dispatch，因此这里不会因尚未连上而丢失派发机会。
+            ensureQueuedSessionMonitoring(sessionID: sessionID)
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
     }
 
     /// 外部运行中的 turn 会让 rollout revision 高频变化。已加载完整首屏后只补最新一个 turn，
@@ -740,7 +856,8 @@ extension SessionStore {
                 shouldRestoreSelectedConnection = true
             case .guidanceAccepted,
                  .acceptedTerminal, .acceptedThreadClosed,
-                 .activeTurnConflict, .rejected, .uncertain:
+                 .activeTurnConflict, .retryableExternalThreadActive,
+                 .rejected, .uncertain:
                 // 已终态或已关闭时不先复活旧连接；若仍有队列，finishAccepted 会按需建链。
                 shouldRestoreSelectedConnection = false
             }
@@ -876,6 +993,25 @@ extension SessionStore {
                 status: .failed
             )
             setStatusMessage(message)
+        case .retryableExternalThreadActive(let message, let retryAfterMilliseconds):
+            guard preserveTurnBlockedByExternalActivity(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) else {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .failed
+                )
+                clearForegroundActivity(sessionID: sessionID)
+                setErrorMessage(L10n.format("ui.sending_failed_value", message))
+                return
+            }
+            scheduleExternalActivityRetryRefresh(
+                sessionID: sessionID,
+                retryAfterMilliseconds: retryAfterMilliseconds
+            )
         case .rejected(let message):
             if handleQueuedSendRejected(
                 clientMessageID: clientMessageID,

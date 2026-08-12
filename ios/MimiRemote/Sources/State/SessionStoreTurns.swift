@@ -1089,7 +1089,7 @@ extension SessionStore {
                     generation: generation
                 )
                 guard isCurrentConnection ||
-                        self.canReconcileAcceptedTurnFromRetiredSocket(
+                        self.canReconcileTurnOutcomeFromRetiredSocket(
                             sessionID: sessionID,
                             outcome: outcome,
                             hostScope: eventLease.hostScope

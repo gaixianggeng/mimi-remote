@@ -84,6 +84,7 @@ const (
 	menuLogs
 	menuExitAndStop
 	menuDoctorFix
+	menuControlPanel
 )
 
 var (
@@ -114,6 +115,8 @@ var (
 	procRegisterWindowMessage = user32.NewProc("RegisterWindowMessageW")
 	procEnumWindows           = user32.NewProc("EnumWindows")
 	procGetClassNameW         = user32.NewProc("GetClassNameW")
+	procSetProcessDPIContext  = user32.NewProc("SetProcessDpiAwarenessContext")
+	procSetProcessDPIAware    = user32.NewProc("SetProcessDPIAware")
 
 	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
@@ -183,15 +186,20 @@ type trayApplication struct {
 	status         agentStatus
 	statusErr      error
 	busy           bool
+	pairingBusy    bool
 	quitting       bool
 	initialPairing bool
+	initialShow    bool
 	refreshStop    chan struct{}
+	panel          *controlPanel
 }
 
 var currentTray *trayApplication
 
 func main() {
+	enablePerMonitorDPIAwareness()
 	pairAfterInstall := flag.Bool("pair", false, "启动后打开本机配对窗口")
+	showAfterStart := flag.Bool("show", false, "启动后打开 Windows 控制面板")
 	flag.Parse()
 
 	runtime.LockOSThread()
@@ -205,10 +213,24 @@ func main() {
 	app := &trayApplication{
 		controller:     controller,
 		initialPairing: *pairAfterInstall,
+		initialShow:    *showAfterStart,
 		refreshStop:    make(chan struct{}),
 	}
 	if err := app.run(); err != nil {
 		showMessage(0, "Mimi Remote", err.Error(), mbOK|mbIconError)
+	}
+}
+
+func enablePerMonitorDPIAwareness() {
+	// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is the signed handle value -4.
+	// Find first so the tray can still start on older Windows versions.
+	if procSetProcessDPIContext.Find() == nil {
+		if result, _, _ := procSetProcessDPIContext.Call(^uintptr(3)); result != 0 {
+			return
+		}
+	}
+	if procSetProcessDPIAware.Find() == nil {
+		procSetProcessDPIAware.Call()
 	}
 }
 
@@ -243,6 +265,9 @@ func (a *trayApplication) run() error {
 
 	go a.bootstrap()
 	go a.refreshLoop()
+	if a.initialShow {
+		a.showControlPanel()
+	}
 
 	var msg message
 	for {
@@ -257,6 +282,9 @@ func (a *trayApplication) run() error {
 		}
 		if result == 0 {
 			return nil
+		}
+		if translateControlPanelMessage(a.panel, &msg) {
+			continue
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
@@ -391,17 +419,18 @@ func trayWindowProc(window uintptr, msg uint32, wParam uintptr, lParam uintptr) 
 		case wmContextMenu, wmRButtonUp:
 			app.showMenu()
 		case wmLButtonDblCl:
-			app.showStatus()
+			app.showControlPanel()
 		}
 		return 0
 	case wmTrayRefresh:
 		app.modifyIcon()
+		app.syncControlPanel()
 		return 0
 	case wmTrayShow:
-		app.showStatus()
+		app.showControlPanel()
 		return 0
 	case wmTrayPair:
-		app.openPairing()
+		app.showPairingPanel()
 		return 0
 	case wmCommand:
 		app.dispatchMenu(uint32(wParam) & 0xffff)
@@ -410,6 +439,7 @@ func trayWindowProc(window uintptr, msg uint32, wParam uintptr, lParam uintptr) 
 		procDestroyWindow.Call(window)
 		return 0
 	case wmDestroy:
+		app.destroyControlPanel()
 		app.removeIcon()
 		if app.ownsIcon && app.icon != 0 {
 			procDestroyIcon.Call(app.icon)
@@ -503,7 +533,7 @@ func (a *trayApplication) bootstrap() {
 		}
 	}
 	if a.initialPairing {
-		trayLogf("startup requested an initial pairing terminal")
+		trayLogf("startup requested the in-app pairing view")
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			a.mu.RLock()
@@ -515,10 +545,9 @@ func (a *trayApplication) bootstrap() {
 			time.Sleep(time.Second)
 			a.refreshStatus()
 		}
-		// This is already running on the tray's startup goroutine after the
-		// readiness wait. Calling the shared action directly avoids depending on
-		// a cross-window custom message for the post-install pairing terminal.
-		a.openPairing()
+		// Startup readiness runs on a worker. Post the request through the hidden
+		// tray window so all native control creation stays on the UI thread.
+		a.requestPairing()
 	}
 }
 
@@ -557,8 +586,8 @@ func (a *trayApplication) showMenu() {
 	status := a.status
 	statusErr := a.statusErr
 	busy := a.busy
+	pairingBusy := a.pairingBusy
 	a.mu.RUnlock()
-	pairingTerminalOpen := a.controller.pairingTerminalIsOpen()
 
 	header := "状态：" + status.lifecycleTitle()
 	if status.Version == "" {
@@ -567,6 +596,8 @@ func (a *trayApplication) showMenu() {
 	if statusErr != nil {
 		header = "状态：服务不可用"
 	}
+	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
+	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGray, menuStatus, header)
 	appendMenu(menu, mfString, menuRefresh, "刷新状态")
 	appendMenu(menu, mfSeparator, 0, "")
@@ -574,7 +605,7 @@ func (a *trayApplication) showMenu() {
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuRestart, "重新启动服务")
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingTerminalOpen), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
 	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
 	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
@@ -617,8 +648,10 @@ func menuFlags(disabled bool) uint32 {
 
 func (a *trayApplication) dispatchMenu(command uint32) {
 	switch command {
+	case menuControlPanel:
+		a.showControlPanel()
 	case menuRefresh:
-		go a.refreshStatus()
+		a.refreshStatusInteractive()
 	case menuStart:
 		a.runAction("启动", "start")
 	case menuRestart:
@@ -626,7 +659,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuStop:
 		a.runAction("停止", "stop")
 	case menuPair:
-		a.openPairing()
+		a.requestPairing()
 	case menuDoctor:
 		a.runDoctor(false)
 	case menuDoctorFix:
@@ -638,6 +671,16 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuExitAndStop:
 		a.exitAndStop()
 	}
+}
+
+func (a *trayApplication) refreshStatusInteractive() {
+	if !a.beginBusy() {
+		return
+	}
+	go func() {
+		defer a.endBusy()
+		a.refreshStatus()
+	}()
 }
 
 func (a *trayApplication) runAction(label string, action string) {
@@ -682,7 +725,7 @@ func (a *trayApplication) runDoctor(fix bool) {
 	}()
 }
 
-func (a *trayApplication) openPairing() {
+func (a *trayApplication) requestPairing() {
 	a.mu.RLock()
 	ready := a.status.ServiceOK
 	a.mu.RUnlock()
@@ -691,15 +734,13 @@ func (a *trayApplication) openPairing() {
 		a.showError(errors.New("服务尚未就绪，请先启动服务并等待状态变为“运行正常”"))
 		return
 	}
-	opened, err := a.controller.openPairingTerminal()
-	if err != nil {
-		trayLogf("pairing request failed: %v", err)
-		a.showError(err)
-		return
-	}
-	if !opened {
-		trayLogf("pairing request found an existing terminal")
-		a.showBalloon("Mimi Remote", "配对终端已经打开", niifInfo)
+	procPostMessageW.Call(a.window, wmTrayPair, 0, 0)
+}
+
+func (a *trayApplication) showPairingPanel() {
+	a.showControlPanel()
+	if a.panel != nil {
+		a.panel.showPairingView()
 	}
 }
 

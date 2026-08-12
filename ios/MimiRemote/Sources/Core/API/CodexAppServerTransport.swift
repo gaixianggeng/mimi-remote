@@ -10,6 +10,7 @@ enum TurnSendOutcome: Equatable {
     )
     case acceptedThreadClosed(turnID: TurnID?)
     case activeTurnConflict(activeTurnID: TurnID, message: String)
+    case retryableExternalThreadActive(message: String, retryAfterMilliseconds: Int)
     case rejected(message: String)
     case uncertain(message: String)
 }

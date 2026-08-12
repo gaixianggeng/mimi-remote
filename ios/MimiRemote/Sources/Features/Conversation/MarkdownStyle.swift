@@ -28,11 +28,11 @@ struct MarkdownStyle: Equatable {
             : Color(red: 0.38, green: 0.12, blue: 0.41)
         let textColor = isUser
             ? (tokens?.userBubbleForeground ?? .primary)
-            : (tokens?.primaryText ?? .primary)
+            : (tokens?.conversationPrimaryText ?? .primary)
         return MarkdownStyle(
             role: role,
             textColor: textColor,
-            secondaryColor: isUser ? textColor.opacity(0.68) : (tokens?.secondaryText ?? .secondary),
+            secondaryColor: isUser ? textColor.opacity(0.68) : (tokens?.conversationSecondaryText ?? .secondary),
             linkColor: tokens?.accent ?? fallbackAccent,
             codeForeground: tokens?.codeText ?? .primary,
             codeBackground: tokens?.codeBlock ?? Color(.tertiarySystemBackground),

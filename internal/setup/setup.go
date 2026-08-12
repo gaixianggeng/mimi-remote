@@ -128,8 +128,13 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		allowLAN = ip != nil && (ip.IsUnspecified() || isPrivateLANIPv4(ip))
 	}
 	appServerListen := strings.TrimSpace(options.AppServerListen)
+	appServerTransport := config.DefaultAppServerTransport()
 	if appServerListen == "" {
-		appServerListen = "ws://127.0.0.1:4222"
+		appServerListen = config.DefaultAppServerListen()
+	} else if strings.HasPrefix(strings.ToLower(appServerListen), "unix://") {
+		appServerTransport = "unix"
+	} else {
+		appServerTransport = "ws"
 	}
 
 	cfg := config.Config{
@@ -142,7 +147,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Type: "codex_app_server",
 		},
 		AppServer: config.AppServerConfig{
-			Transport:   "ws",
+			Transport:   appServerTransport,
 			Managed:     true,
 			Listen:      appServerListen,
 			WSTokenFile: tokenFile,
