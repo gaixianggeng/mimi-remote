@@ -7,13 +7,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
+
+func TestResolveCodexSharingTargetTreatsEmptyPathAsPlatformDefault(t *testing.T) {
+	clearSetupEnv(t)
+	resolved, platformDefault, err := resolveCodexSharingTarget("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !platformDefault || !config.SameConfigPath(resolved, config.PlatformDefaultPath()) {
+		t.Fatalf("空路径必须解析到平台默认配置并使用默认 owner 事务：path=%q default=%t", resolved, platformDefault)
+	}
+}
+
+func TestStableSharedDaemonTargetAllowsLegacyCustomDisable(t *testing.T) {
+	customPath := filepath.Join(t.TempDir(), "legacy-custom.json")
+	if err := validateStableSharedDaemonTarget(customPath, false); err != nil {
+		t.Fatalf("升级后必须允许 custom/非 macOS 旧 shared 配置回退：%v", err)
+	}
+	if err := validateStableSharedDaemonTarget(customPath, true); err == nil {
+		t.Fatal("完整 stable-owner 共享不能继续从 custom profile 启用")
+	}
+}
 
 func TestConfigureCodexSharingRoundTripsLegacyFallback(t *testing.T) {
 	clearSetupEnv(t)
@@ -24,8 +47,8 @@ func TestConfigureCodexSharingRoundTripsLegacyFallback(t *testing.T) {
 		if options.CodexBin != "/test/codex" || options.Env["CODEX_HOME"] != codexHome {
 			t.Fatalf("daemon options 未沿用 Codex 配置：%+v", options)
 		}
-		if !options.StableOwner || options.AttachOnly {
-			t.Fatalf("Mimi 从 WS 切换时必须使用稳定 owner：%+v", options)
+		if !options.StableOwner || !options.PrepareOwnerForConfigCommit || options.RollbackOwnerOnFailure || options.AttachOnly {
+			t.Fatalf("Mimi 从 WS 切换时必须使用 manual owner 两阶段事务：%+v", options)
 		}
 		return appserver.LocalDaemonStatus{
 			SocketPath:             filepath.Join(codexHome, "app-server-control", "app-server-control.sock"),
@@ -162,6 +185,32 @@ func TestConfigureCodexSharingOwnerRemovalFailureRestoresSharedConfig(t *testing
 	}
 }
 
+func TestConfigureCodexSharingDisabledRetryCleansResidualOwner(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, _ := writeCodexSharingTestConfig(t)
+	removeCalls := 0
+	result, err := configureCodexSharing(
+		context.Background(),
+		configPath,
+		false,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			t.Fatal("已是 WS 配置时不能启动或探测 daemon")
+			return appserver.LocalDaemonStatus{}, nil
+		},
+		unexpectedLifecycleInspector(t),
+		func(context.Context) error {
+			removeCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Enabled || result.Changed || result.RestartRequired || result.Transport != "ws" || removeCalls != 1 {
+		t.Fatalf("禁用重试必须幂等清理残留 owner：calls=%d result=%+v", removeCalls, result)
+	}
+}
+
 func TestRestartCodexSharingDaemonRequiresMimiOwnedSharedConfig(t *testing.T) {
 	clearSetupEnv(t)
 	configPath, _, _ := writeCodexSharingTestConfig(t)
@@ -204,6 +253,9 @@ func TestRestartCodexSharingDaemonReturnsAtomicRestartResult(t *testing.T) {
 			if options.CodexBin != "/test/codex" || options.Env["CODEX_HOME"] != codexHome {
 				t.Fatalf("重启必须沿用现有 Codex 配置：%+v", options)
 			}
+			if options.ValidateStableOwner == nil {
+				t.Fatal("显式重启必须在 appserver 跨进程锁内重新验证磁盘配置")
+			}
 			return appserver.LocalDaemonStatus{SocketPath: socketPath, Version: "0.147.0", Started: true}, nil
 		},
 	)
@@ -245,6 +297,59 @@ func TestConfigureCodexSharingDaemonFailureDoesNotWriteConfig(t *testing.T) {
 	}
 }
 
+func TestConfigureCodexSharingReturnsCommittedPendingResultAfterPostCommitStartFailure(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, codexHome, _ := writeCodexSharingTestConfig(t)
+	socketPath := filepath.Join(codexHome, "app-server-control", "app-server-control.sock")
+	wantErr := errors.New("launchctl kickstart failed")
+	result, err := configureCodexSharingWithTransactions(
+		context.Background(),
+		configPath,
+		true,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			t.Fatal("production commit helper should own fresh enable")
+			return appserver.LocalDaemonStatus{}, nil
+		},
+		unexpectedLifecycleInspector(t),
+		noopRemoveSharedDaemonOwner,
+		func(
+			_ context.Context,
+			_ appserver.LocalDaemonOptions,
+			validate func() error,
+			commit func() error,
+		) (appserver.LocalDaemonStatus, error) {
+			if err := validate(); err != nil {
+				return appserver.LocalDaemonStatus{}, err
+			}
+			if err := commit(); err != nil {
+				return appserver.LocalDaemonStatus{}, err
+			}
+			return appserver.LocalDaemonStatus{
+				SocketPath:             socketPath,
+				OwnerMigrationRequired: true,
+				ConfigCommitted:        true,
+			}, wantErr
+		},
+		func(context.Context, func() error, func() error) error {
+			t.Fatal("enable path must not call disable transaction")
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("提交后的启动失败不能丢失机器可读结果：%v", err)
+	}
+	if !result.Enabled || !result.Changed || !result.RestartRequired ||
+		!result.DaemonRestartRequired || result.Transport != "unix" ||
+		result.CodexHome != codexHome || !strings.Contains(result.Warning, wantErr.Error()) {
+		t.Fatalf("已提交失败必须返回 pending+warning：%+v", result)
+	}
+	document := readCodexSharingTestDocument(t, configPath)
+	appServer := document["app_server"].(map[string]any)
+	if appServer["transport"] != "unix" || appServer["shared_fallback"] == nil {
+		t.Fatalf("机器结果必须匹配已经提交的 shared 配置：%+v", appServer)
+	}
+}
+
 func TestConfigureCodexSharingAlreadyEnabledStillVerifiesDaemon(t *testing.T) {
 	clearSetupEnv(t)
 	configPath, codexHome, _ := writeCodexSharingTestConfig(t)
@@ -278,6 +383,130 @@ func TestConfigureCodexSharingAlreadyEnabledStillVerifiesDaemon(t *testing.T) {
 	}
 	if !verified || result.Changed || result.RestartRequired || !result.Enabled || result.CodexHome != codexHome {
 		t.Fatalf("已启用时仍应验证 daemon，但无需重写配置：verified=%t result=%+v", verified, result)
+	}
+}
+
+func TestConcurrentStaleEnableCannotRecreateOwnerAfterDisable(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, codexHome, _ := writeCodexSharingTestConfig(t)
+	socketPath := filepath.Join(codexHome, "app-server-control", "app-server-control.sock")
+	lifecycle := recoverableLifecycleInspector(t, codexHome)
+	if _, err := configureCodexSharing(
+		context.Background(),
+		configPath,
+		true,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			return appserver.LocalDaemonStatus{SocketPath: socketPath, Version: "0.147.0"}, nil
+		},
+		lifecycle,
+		noopRemoveSharedDaemonOwner,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	staleRead := make(chan struct{})
+	releaseEnsure := make(chan struct{})
+	enableDone := make(chan error, 1)
+	go func() {
+		_, err := configureCodexSharing(
+			context.Background(),
+			configPath,
+			true,
+			func(_ context.Context, options appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+				if options.ValidateStableOwner == nil {
+					return appserver.LocalDaemonStatus{}, fmt.Errorf("已 shared 的幂等 enable 缺少锁内配置复核")
+				}
+				close(staleRead)
+				<-releaseEnsure
+				if err := options.ValidateStableOwner(); err != nil {
+					return appserver.LocalDaemonStatus{}, err
+				}
+				return appserver.LocalDaemonStatus{}, fmt.Errorf("stale enable 不应通过复核")
+			},
+			unexpectedLifecycleInspector(t),
+			noopRemoveSharedDaemonOwner,
+		)
+		enableDone <- err
+	}()
+	<-staleRead
+
+	if _, err := configureCodexSharing(
+		context.Background(),
+		configPath,
+		false,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			t.Fatal("disable 不能 ensure daemon")
+			return appserver.LocalDaemonStatus{}, nil
+		},
+		unexpectedLifecycleInspector(t),
+		noopRemoveSharedDaemonOwner,
+	); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseEnsure)
+	if err := <-enableDone; err == nil || !strings.Contains(err.Error(), "已取消 Mimi 共享 daemon") {
+		t.Fatalf("旧 enable 必须看到 disable 后的新磁盘配置并拒绝：%v", err)
+	}
+}
+
+func TestConfigureCodexSharingUsesOneRawSnapshotForConfigDocumentAndCAS(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, documentA := writeCodexSharingTestConfig(t)
+	documentB := readCodexSharingTestDocument(t, configPath)
+	codexHomeB := t.TempDir()
+	documentB["codex"].(map[string]any)["bin"] = "/new/codex"
+	documentB["codex"].(map[string]any)["env"] = map[string]string{
+		"CODEX_HOME": codexHomeB,
+		"TERM":       "xterm-256color",
+	}
+	documentB["future_root"] = "new-generation"
+	rawA, err := json.MarshalIndent(documentA, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := json.MarshalIndent(documentB, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawA = append(rawA, '\n')
+	rawB = append(rawB, '\n')
+
+	originalRead := readCodexSharingConfigFile
+	reads := 0
+	readCodexSharingConfigFile = func(path string) ([]byte, error) {
+		reads++
+		if reads == 1 {
+			return append([]byte(nil), rawA...), nil
+		}
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readCodexSharingConfigFile = originalRead })
+	// 第一份快照读完后，模拟另一配置命令提交 B。旧请求的 validator 必须
+	// 在任何 owner/daemon 变更前看到 bytes 已变化并拒绝。
+	if err := os.WriteFile(configPath, rawB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ensureCalls := 0
+	_, err = configureCodexSharing(
+		context.Background(),
+		configPath,
+		true,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			ensureCalls++
+			return appserver.LocalDaemonStatus{}, nil
+		},
+		unexpectedLifecycleInspector(t),
+		noopRemoveSharedDaemonOwner,
+	)
+	if err == nil || !strings.Contains(err.Error(), "配置已被其他进程修改") {
+		t.Fatalf("过期快照必须在 owner mutation 前失败：%v", err)
+	}
+	if ensureCalls != 0 {
+		t.Fatalf("过期快照不能进入 daemon/owner 路径：%d", ensureCalls)
+	}
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil || !bytes.Equal(after, rawB) {
+		t.Fatalf("过期操作不能覆盖新配置：read=%v got=%s", readErr, after)
 	}
 }
 
@@ -323,7 +552,7 @@ func TestConfigureCodexSharingAlreadyEnabledReportsPendingOwnerMigration(t *test
 	}
 }
 
-func TestConfigureCodexSharingDoesNotOverwriteExternalUnixBackendOnDisable(t *testing.T) {
+func TestConfigureCodexSharingKeepsExternalUnixBackendAndCleansOnlyMimiOwner(t *testing.T) {
 	clearSetupEnv(t)
 	configPath, _, _ := writeCodexSharingTestConfig(t)
 	document := readCodexSharingTestDocument(t, configPath)
@@ -343,6 +572,7 @@ func TestConfigureCodexSharingDoesNotOverwriteExternalUnixBackendOnDisable(t *te
 		t.Fatal(err)
 	}
 
+	removeCalls := 0
 	result, err := configureCodexSharing(
 		context.Background(),
 		configPath,
@@ -353,7 +583,7 @@ func TestConfigureCodexSharingDoesNotOverwriteExternalUnixBackendOnDisable(t *te
 		},
 		unexpectedLifecycleInspector(t),
 		func(context.Context) error {
-			t.Fatal("外部 Unix backend 不能卸载 Mimi owner")
+			removeCalls++
 			return nil
 		},
 	)
@@ -362,6 +592,9 @@ func TestConfigureCodexSharingDoesNotOverwriteExternalUnixBackendOnDisable(t *te
 	}
 	if result.Enabled || result.Changed || result.RestartRequired || result.Transport != "unix" {
 		t.Fatalf("外部 Unix backend 应保持原样：%+v", result)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("禁用外部 Unix 时只应幂等清理一次 Mimi 专属 owner：%d", removeCalls)
 	}
 	after, err := os.ReadFile(configPath)
 	if err != nil {

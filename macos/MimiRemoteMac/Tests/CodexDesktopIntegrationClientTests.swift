@@ -338,6 +338,32 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
         XCTAssertFalse(appRunning)
     }
 
+    func testLiveRestartDoesNotOpenDesktopThatWasAlreadyStoppedAtExecutionTime() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var events: [String] = []
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: false)
+                },
+                terminateAndWait: { _ in events.append("terminate") },
+                open: { _, _ in events.append("open") }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        let snapshot = try await client.restartAndApply(afterTermination: {
+            events.append("migrate")
+        })
+
+        XCTAssertEqual(events, ["migrate"])
+        XCTAssertFalse(snapshot.appRunning)
+    }
+
     func testExplicitEnableReacquiresOwnershipAfterLoginSessionReset() async throws {
         let defaults = makeDefaults()
         let launchctl = FakeLaunchctlState()

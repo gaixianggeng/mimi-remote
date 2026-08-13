@@ -387,8 +387,9 @@ private final class CodexDesktopIntegrationRuntime {
         guard let bundleURL = snapshot.bundleURL else {
             throw CodexDesktopIntegrationError.appNotInstalled
         }
+        let shouldReopen = snapshot.appRunning
 
-        if snapshot.appRunning {
+        if shouldReopen {
             // terminateAndWait 内部只调用普通 NSRunningApplication.terminate，并等待
             // terminated；没有 forceTerminate，也不会在旧进程存活时开第二个实例。
             try await application.terminateAndWait(bundleURL)
@@ -398,6 +399,17 @@ private final class CodexDesktopIntegrationRuntime {
         // 这样 Desktop 不会在 socket 短暂消失时自行重连或拉起另一条启动链；准备
         // 失败则保持关闭，不把 Desktop 打开到已知不可用的共享后端。
         try await preparation()
+
+        // 确认弹窗与真正执行之间，用户可能已经自行退出 Desktop。实际快照为
+        // stopped 时只提交 daemon 迁移，绝不把用户主动关闭的 App 擅自打开。
+        if !shouldReopen {
+            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            return try await makeSnapshot(
+                environmentValue: snapshot.environmentValue,
+                codexHome: snapshot.codexHome,
+                sessionEpoch: snapshot.sessionEpoch
+            )
+        }
 
         // launchd 环境是 Dock/Finder 的长期保险；OpenConfiguration.environment
         // 是本次新实例的短期保险。禁用时传空字典，绝不注入官方开关。

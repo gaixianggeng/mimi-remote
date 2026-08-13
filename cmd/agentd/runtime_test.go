@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRuntimeRejectsUnconfirmedSharedDaemonRestart(t *testing.T) {
+func TestRuntimeRestartInterlockRejectsMissingConfirmationFlag(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	err := runRuntimeWithWriters(
@@ -14,7 +14,7 @@ func TestRuntimeRejectsUnconfirmedSharedDaemonRestart(t *testing.T) {
 		&stdout,
 		&stderr,
 	)
-	if err == nil || !strings.Contains(err.Error(), "仅供 Mac App") {
-		t.Fatalf("普通 CLI 不能绕过 Desktop 正常退出与设置页确认：%v", err)
+	if err == nil || !strings.Contains(err.Error(), "防误触") {
+		t.Fatalf("缺少双 flag 时必须阻止误触破坏性迁移：%v", err)
 	}
 }

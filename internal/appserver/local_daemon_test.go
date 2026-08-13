@@ -29,6 +29,44 @@ func TestLocalDaemonPreexistingFallsBackToLiveSocket(t *testing.T) {
 	}
 }
 
+func TestStableOwnerEnsureFailureOnlyRollsBackConfigurationTransaction(t *testing.T) {
+	cause := errors.New("lifecycle unavailable")
+	tests := []struct {
+		name          string
+		options       LocalDaemonOptions
+		wantRollbacks int
+	}{
+		{
+			name:          "ordinary runtime preserves pending owner",
+			options:       LocalDaemonOptions{StableOwner: true},
+			wantRollbacks: 0,
+		},
+		{
+			name: "uncommitted configuration may restore previous owner",
+			options: LocalDaemonOptions{
+				StableOwner:            true,
+				RollbackOwnerOnFailure: true,
+			},
+			wantRollbacks: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rollbacks := 0
+			owner := SharedDaemonOwnerStatus{Rollback: &SharedDaemonOwnerRollback{
+				rollbackUnlocked: func(context.Context) error {
+					rollbacks++
+					return nil
+				},
+			}}
+			err := stableOwnerEnsureFailure(test.options, owner, cause)
+			if !errors.Is(err, cause) || rollbacks != test.wantRollbacks {
+				t.Fatalf("owner rollback 边界错误：err=%v rollbacks=%d", err, rollbacks)
+			}
+		})
+	}
+}
+
 func TestLocalDaemonSocketPathUsesCanonicalCodexHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 不支持 Codex Unix daemon")
@@ -79,7 +117,7 @@ func TestProbeLocalDaemonPerformsInitializeHandshake(t *testing.T) {
 		t.Skip("Windows 不支持 Unix socket")
 	}
 	codexHome := shortCodexHome(t)
-	socketPath, initialized := startLocalDaemonTestServer(t, codexHome, "mimi_remote_daemon_probe/0.147.0-alpha.6.5 (Mac OS; arm64)")
+	socketPath, initialized, _ := startLocalDaemonTestServer(t, codexHome, "mimi_remote_daemon_probe/0.147.0-alpha.6.5 (Mac OS; arm64)")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -102,7 +140,7 @@ func TestProbeLocalDaemonRejectsUnsupportedVersion(t *testing.T) {
 		t.Skip("Windows 不支持 Unix socket")
 	}
 	codexHome := shortCodexHome(t)
-	socketPath, _ := startLocalDaemonTestServer(t, codexHome, "Codex Desktop/0.140.9 (Mac OS; arm64)")
+	socketPath, _, _ := startLocalDaemonTestServer(t, codexHome, "Codex Desktop/0.140.9 (Mac OS; arm64)")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := ProbeLocalDaemonInfo(ctx, socketPath); err == nil {
@@ -494,7 +532,7 @@ func startLocalDaemonTestServer(
 	t *testing.T,
 	codexHome string,
 	userAgent string,
-) (string, <-chan struct{}) {
+) (string, <-chan struct{}, func()) {
 	t.Helper()
 	socketDir := filepath.Join(codexHome, localDaemonSocketDir)
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {
@@ -537,11 +575,12 @@ func startLocalDaemonTestServer(
 		}
 	})}
 	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() {
+	stop := func() {
 		_ = server.Close()
 		_ = listener.Close()
-	})
-	return socketPath, initialized
+	}
+	t.Cleanup(stop)
+	return socketPath, initialized, stop
 }
 
 func shortCodexHome(t *testing.T) string {

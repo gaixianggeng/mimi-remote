@@ -57,6 +57,15 @@ func NewChecker(version string, cfg config.Config, registry *projects.Registry, 
 	return checker
 }
 
+// ConfigPath 返回启动时已解析的真实配置路径，供同一进程中的长期恢复任务
+// 在执行持久化动作前重新验证配置所有权。空值表示调用方未注入路径。
+func (c *Checker) ConfigPath() string {
+	if c == nil {
+		return ""
+	}
+	return c.configPath
+}
+
 func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	projectsCount := len(c.registry.List())
 	tokenOK := c.cfg.DevInsecure || c.cfg.Auth.Token != ""

@@ -73,6 +73,23 @@ func TestSetupWriteFailuresLeaveNoFreshInstallArtifacts(t *testing.T) {
 	}
 }
 
+func TestSetupRejectsConfigAndTokenPathAliases(t *testing.T) {
+	dir := t.TempDir()
+	exact := filepath.Join(dir, "app-server-ws-token")
+	if err := writeSetupFilesAtomically(exact, exact, []byte("config"), []byte("token"), defaultSetupFileTransactionOps()); err == nil {
+		t.Fatal("配置与 token 的完全相同路径必须拒绝")
+	}
+
+	caseAlias := filepath.Join(dir, "App-Server-WS-Token")
+	if !config.SameConfigPath(caseAlias, exact) {
+		t.Skip("当前测试卷区分大小写，不存在大小写别名")
+	}
+	if err := writeSetupFilesAtomically(caseAlias, exact, []byte("config"), []byte("token"), defaultSetupFileTransactionOps()); err == nil {
+		t.Fatal("大小写不敏感卷上的同一目录项别名必须在写入前拒绝")
+	}
+	assertSetupDirectoryEntries(t, dir)
+}
+
 func TestFreshSetupFailureRemovesNewEmptyConfigDirectory(t *testing.T) {
 	clearSetupEnv(t)
 	parent := t.TempDir()

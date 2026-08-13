@@ -128,6 +128,7 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
     let daemonRestartRequired: Bool?
     let transport: String?
     let codexHome: String?
+    let warning: String?
     let message: String
 
     enum CodingKeys: String, CodingKey {
@@ -137,6 +138,7 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
         case daemonRestartRequired = "daemon_restart_required"
         case transport
         case codexHome = "codex_home"
+        case warning
         case message
     }
 
@@ -147,6 +149,7 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
         daemonRestartRequired: Bool? = nil,
         transport: String? = nil,
         codexHome: String? = nil,
+        warning: String? = nil,
         message: String = ""
     ) {
         self.enabled = enabled
@@ -155,6 +158,7 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
         self.daemonRestartRequired = daemonRestartRequired
         self.transport = transport
         self.codexHome = codexHome
+        self.warning = warning
         self.message = message
     }
 }
@@ -180,6 +184,23 @@ struct AgentDoctorResults: Codable, Equatable, Sendable {
 struct DoctorFixResults: Codable, Equatable, Sendable {
     let fixes: [String]
     let results: AgentDoctorResults
+    let restartRequired: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case fixes
+        case results
+        case restartRequired = "restart_required"
+    }
+
+    init(
+        fixes: [String],
+        results: AgentDoctorResults,
+        restartRequired: Bool? = nil
+    ) {
+        self.fixes = fixes
+        self.results = results
+        self.restartRequired = restartRequired
+    }
 }
 
 struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {

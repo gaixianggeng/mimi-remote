@@ -846,11 +846,16 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	if err != nil {
 		return "", "", ""
 	}
-	threadID, _ := gatewayStringParam(params, "threadId")
-	if threadID == "" {
-		threadID, _ = gatewayStringParam(params, "sessionId")
+	threadID := ""
+	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
+		if threadID, _ = gatewayStringParam(params, key); threadID != "" {
+			break
+		}
 	}
 	turnID, _ := gatewayStringParam(params, "turnId")
+	if turnID == "" {
+		turnID, _ = gatewayStringParam(params, "turn_id")
+	}
 	if turnID == "" {
 		if turn, ok := params["turn"].(map[string]any); ok {
 			turnID, _ = gatewayStringParam(turn, "id")
@@ -858,7 +863,10 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	}
 	itemID, _ := gatewayStringParam(params, "itemId")
 	if itemID == "" {
-		for _, key := range []string{"requestId", "approvalId", "callId"} {
+		itemID, _ = gatewayStringParam(params, "item_id")
+	}
+	if itemID == "" {
+		for _, key := range []string{"requestId", "request_id", "approvalId", "approval_id", "callId", "call_id"} {
 			if itemID, _ = gatewayStringParam(params, key); itemID != "" {
 				break
 			}
@@ -942,6 +950,18 @@ func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage
 	if ok {
 		delete(p.pendingServerRequests, key)
 	}
+	return request, ok
+}
+
+func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return appServerGatewayPendingServerRequest{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prunePendingServerRequestsLocked(time.Now())
+	request, ok := p.pendingServerRequests[key]
 	return request, ok
 }
 

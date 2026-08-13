@@ -1,12 +1,15 @@
 package setup
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type configWriter func(path string, raw []byte) error
@@ -21,7 +24,7 @@ type privateFileStageOps struct {
 // 调用方应先通过 Doctor 确认当前配置确实是 managed WS；这里保留原 JSON 中的
 // auth、projects、actions 及未来新增字段，只更新 app_server.ws_token_file。
 func RepairManagedWSTokenFile(configPath string) (string, bool, error) {
-	return repairManagedWSTokenFile(configPath, writePrivateFileAtomically)
+	return repairManagedWSTokenFile(configPath, nil)
 }
 
 func repairManagedWSTokenFile(configPath string, writeConfig configWriter) (string, bool, error) {
@@ -90,8 +93,14 @@ func repairManagedWSTokenFile(configPath string, writeConfig configWriter) (stri
 	updated = append(updated, '\n')
 
 	// token 先以 O_EXCL 安全落盘，配置再以 rename 作为唯一提交点；提交失败会删除新 token，旧配置保持原样。
-	if err := writeConfig(cfgPath, updated); err != nil {
-		return "", false, fmt.Errorf("原子更新配置文件失败：%w", err)
+	var writeErr error
+	if writeConfig == nil {
+		writeErr = writePrivateFileAtomicallyCAS(cfgPath, original, updated)
+	} else {
+		writeErr = writeConfig(cfgPath, updated)
+	}
+	if writeErr != nil {
+		return "", false, fmt.Errorf("原子更新配置文件失败：%w", writeErr)
 	}
 	committed = true
 	return tokenPath, true, nil
@@ -136,6 +145,21 @@ func createPrivateTokenFile(dir string, token string) (string, error) {
 
 func writePrivateFileAtomically(path string, raw []byte) error {
 	return writePrivateFileAtomicallyWithRename(path, raw, os.Rename)
+}
+
+func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return withConfigCommitLock(ctx, path, func() error {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("重新读取配置失败：%w", err)
+		}
+		if !bytes.Equal(current, expected) {
+			return fmt.Errorf("配置已被其他进程修改，请重新执行")
+		}
+		return writePrivateFileAtomically(path, raw)
+	})
 }
 
 func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename renameFile) error {

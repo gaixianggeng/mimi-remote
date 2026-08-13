@@ -3024,6 +3024,10 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
+        if notification.method == "_mimi/serverRequestResponse/rejected" {
+            restoreRejectedServerRequestResponse(notification)
+            return
+        }
         if notification.method == "_mimi/claudeReplayCursor/reset",
            runtimeProvider == "claude",
            let rawSequence = notification.params?.objectValue?["sequence"]?.intValue,
@@ -3134,6 +3138,53 @@ actor CodexAppServerSessionRuntime {
         for sessionID in resolved.userInputSessionIDs where sessionID != emittedSessionID {
             emitUserInputResolved(sessionID: sessionID, skipped: false)
         }
+    }
+
+    func restoreRejectedServerRequestResponse(_ notification: CodexAppServerNotification) {
+        let params = notification.params?.objectValue ?? [:]
+        guard let requestID = replayedServerRequestID(params["requestId"]) else {
+            return
+        }
+        let message = params["message"]?.stringValue
+            ?? L10n.text("ui.this_session_is_running_on_another_client_please_aacfc6a6")
+        let reason = params["reason"]?.stringValue ?? "external_thread_active"
+        if let request = pendingApprovalRequestsByID.values.first(where: { $0.id == requestID }),
+           let sessionID = approvalSessionID(for: request) {
+            emitApprovalResolved(sessionID: sessionID)
+            if let event = projector.project(request) {
+                emit(event)
+            }
+            emitServerResponseRejectionWarning(message, code: reason, sessionID: sessionID)
+            return
+        }
+        if let request = pendingUserInputRequestsByID.values.first(where: { $0.id == requestID }),
+           let sessionID = approvalSessionID(for: request) {
+            emitUserInputResolved(sessionID: sessionID, skipped: false)
+            if let event = projector.project(request) {
+                emit(event)
+            }
+            emitServerResponseRejectionWarning(message, code: reason, sessionID: sessionID)
+        }
+    }
+
+    func emitServerResponseRejectionWarning(_ message: String, code: String, sessionID: SessionID) {
+        emit(.warning(
+            AgentErrorPayload(
+                message: message,
+                code: code,
+                retryable: true
+            ),
+            AgentEventMetadata(
+                seq: nil,
+                sessionID: sessionID,
+                turnID: nil,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: Date()
+            )
+        ))
     }
 
     /// 由 MainActor 在 Conversation/Session 投影全部落地后调用。单调提交避免并行订阅

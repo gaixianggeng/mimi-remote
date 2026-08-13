@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -145,6 +146,43 @@ func PlatformDefaultPath() string {
 	return filepath.Join(dir, "config.json")
 }
 
+// IsPlatformDefaultPath 判断目标是否就是后台服务唯一使用的平台默认配置。
+// Mimi 的 launchd owner 是当前用户全局资源，不能因为操作另一个 --config
+// profile 就把默认配置的 owner 删除或重建，因此所有 owner 写操作都必须先过
+// 这道路径边界。
+func IsPlatformDefaultPath(path string) bool {
+	return SameConfigPath(path, PlatformDefaultPath())
+}
+
+// ConfigPathIdentity 返回用于跨进程配置锁的稳定路径身份。它按所在卷的
+// 大小写语义规范化路径；同一默认文件的 `/Config.json` 与 `/config.json`
+// 在普通 APFS 上必须取得同一把锁，而 case-sensitive APFS 上仍保持独立。
+func ConfigPathIdentity(path string) (string, error) {
+	absolute, err := absoluteExpandedPath(path)
+	if err != nil {
+		return "", err
+	}
+	// 配置文件本身可能尚未创建；目录存在时仍解析目录 symlink，避免同一个
+	// 默认文件经不同路径写法绕过全局 owner 的归属检查。
+	if canonicalDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absolute)); evalErr == nil {
+		absolute = filepath.Join(canonicalDir, filepath.Base(absolute))
+	}
+	caseSensitive, err := configPathCaseSensitive(filepath.Dir(absolute))
+	if err == nil && !caseSensitive {
+		absolute = strings.ToLower(absolute)
+	}
+	return filepath.Clean(absolute), nil
+}
+
+// SameConfigPath 比较两个配置目标的目录项身份。不能直接用 os.SameFile：两个
+// 不同路径的 hard link 虽指向同一 inode，但原子 rename 只替换其中一个目录项；
+// 若把它们当成默认配置，会先误删全局 owner、再只改写另一个路径。
+func SameConfigPath(left, right string) bool {
+	leftIdentity, leftErr := ConfigPathIdentity(left)
+	rightIdentity, rightErr := ConfigPathIdentity(right)
+	return leftErr == nil && rightErr == nil && leftIdentity == rightIdentity
+}
+
 func UserConfigDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -164,33 +202,85 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadSnapshot 从调用方已经原子读取的一份配置快照解析完整 Config。共享
+// daemon 的配置事务必须让 typed cfg、未知 JSON 字段与 CAS baseline 全部来自
+// 同一组 bytes；不能先 Load(path) 后再 ReadFile(path)，否则并发写入会把两代
+// 配置拼成一个事务。它保留普通 Load 的默认值、环境覆盖、项目发现和校验语义。
+func LoadSnapshot(raw []byte) (Config, error) {
+	cfg, err := loadSnapshot(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func LoadForDoctor(path string) (Config, error) {
 	return load(path)
 }
 
 func load(path string) (Config, error) {
-	cfg := defaults()
+	cfg, err := loadWithoutProjectDiscovery(path)
+	if err != nil {
+		return Config{}, err
+	}
+	scanned, err := discoverProjects(cfg.ScanRoots)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Projects = mergeProjects(cfg.Projects, scanned)
+	return cfg, nil
+}
+
+func loadSnapshot(raw []byte) (Config, error) {
+	cfg, err := loadRawWithoutProjectDiscovery(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	scanned, err := discoverProjects(cfg.ScanRoots)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Projects = mergeProjects(cfg.Projects, scanned)
+	return cfg, nil
+}
+
+// loadWithoutProjectDiscovery 只解析配置文件、默认值与进程级覆盖，不访问
+// scan_roots。共享 daemon 的锁内所有权复核必须保持快速且只依赖相关配置，
+// 不能因为无关网络盘或受保护目录暂时不可读而长期占住生命周期锁。
+func loadWithoutProjectDiscovery(path string) (Config, error) {
 	path = expandPath(path)
+	var raw []byte
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil {
-			listenConfigured := false
-			var document map[string]json.RawMessage
-			if json.Unmarshal(b, &document) == nil {
-				var appServer map[string]json.RawMessage
-				if raw, ok := document["app_server"]; ok && json.Unmarshal(raw, &appServer) == nil {
-					_, listenConfigured = appServer["listen"]
-				}
-			}
-			if err := json.Unmarshal(b, &cfg); err != nil {
-				return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
-			}
-			if normalizeTransport(cfg.AppServer.Transport) == "unix" && !listenConfigured {
-				// defaults() 必须自身可 Validate，因此带 WS 默认 listen；但 JSON
-				// 显式选 Unix 且省略 listen 时，不能把这个结构体默认误当成用户配置。
-				cfg.AppServer.Listen = ""
-			}
+			raw = b
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return Config{}, fmt.Errorf("读取配置文件失败：%w", err)
+		}
+	}
+	return loadRawWithoutProjectDiscovery(raw)
+}
+
+func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
+	cfg := defaults()
+	if raw != nil {
+		listenConfigured := false
+		var document map[string]json.RawMessage
+		if json.Unmarshal(raw, &document) == nil {
+			var appServer map[string]json.RawMessage
+			if encoded, ok := document["app_server"]; ok && json.Unmarshal(encoded, &appServer) == nil {
+				_, listenConfigured = appServer["listen"]
+			}
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
+		}
+		if normalizeTransport(cfg.AppServer.Transport) == "unix" && !listenConfigured {
+			// defaults() 必须自身可 Validate，因此带 WS 默认 listen；但 JSON
+			// 显式选 Unix 且省略 listen 时，不能把这个结构体默认误当成用户配置。
+			cfg.AppServer.Listen = ""
 		}
 	}
 
@@ -205,12 +295,53 @@ func load(path string) (Config, error) {
 	if strings.EqualFold(cfg.AppServer.Transport, "unix") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
 		cfg.AppServer.Listen = defaultAppServerUnixListen
 	}
-	scanned, err := discoverProjects(cfg.ScanRoots)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.Projects = mergeProjects(cfg.Projects, scanned)
 	return cfg, nil
+}
+
+// ValidateSharedDaemonRecoveryOwnership 在长期存活的旧进程尝试恢复 owner 前，
+// 只复核磁盘上的共享模式与 Codex 启动身份。它故意跳过 project discovery 和
+// 全量 Validate；错误只会让恢复 fail closed，不影响用户修复其他配置项。
+func ValidateSharedDaemonRecoveryOwnership(
+	path string,
+	expectedBin string,
+	expectedEnv map[string]string,
+) error {
+	cfg, err := loadWithoutProjectDiscovery(path)
+	if err != nil {
+		return fmt.Errorf("重新读取 agentd 配置失败：%w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") ||
+		!cfg.AppServer.Managed || cfg.AppServer.SharedFallback == nil {
+		return fmt.Errorf("当前配置已取消 Mimi 共享 daemon")
+	}
+	if strings.TrimSpace(cfg.Codex.Bin) != strings.TrimSpace(expectedBin) ||
+		!maps.Equal(cfg.Codex.Env, expectedEnv) {
+		return fmt.Errorf("当前 Codex 配置已变化，旧进程不得恢复 shared daemon")
+	}
+	return nil
+}
+
+// ValidateSharedDaemonDisabledOwnership 是非 shared agentd 清理 Mimi 残留 owner
+// 前的锁内复核。它与 recovery validator 互为相反条件：一旦另一个进程已经
+// 提交新的 shared 配置，旧 WS 进程必须停止清理，不能删除刚创建的 owner。
+func ValidateSharedDaemonDisabledOwnership(
+	path string,
+	expectedBin string,
+	expectedEnv map[string]string,
+) error {
+	cfg, err := loadWithoutProjectDiscovery(path)
+	if err != nil {
+		return fmt.Errorf("重新读取 agentd 配置失败：%w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") &&
+		cfg.AppServer.Managed && cfg.AppServer.SharedFallback != nil {
+		return fmt.Errorf("当前配置已经启用 Mimi 共享 daemon")
+	}
+	if strings.TrimSpace(cfg.Codex.Bin) != strings.TrimSpace(expectedBin) ||
+		!maps.Equal(cfg.Codex.Env, expectedEnv) {
+		return fmt.Errorf("当前 Codex 配置已变化，旧进程不得清理 shared daemon owner")
+	}
+	return nil
 }
 
 func expandPath(path string) string {

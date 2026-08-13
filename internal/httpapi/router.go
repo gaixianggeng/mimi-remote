@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -127,8 +128,9 @@ type Router struct {
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
-// 必须同时注入两条绝对路径。
+// 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
+	ConfigPath                     string
 	GatewayTurnClaimStorePath      string
 	ThreadHandoffRecoveryStorePath string
 }
@@ -223,16 +225,24 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") &&
 		cfg.AppServer.SharedFallback != nil {
+		recoveryOptions := appserver.LocalDaemonOptions{
+			CodexBin:    cfg.Codex.Bin,
+			Env:         cfg.Codex.Env,
+			StableOwner: true,
+		}
+		if configPath := strings.TrimSpace(options.ConfigPath); configPath != "" {
+			expectedBin := strings.TrimSpace(cfg.Codex.Bin)
+			expectedEnv := maps.Clone(cfg.Codex.Env)
+			recoveryOptions.ValidateStableOwner = func() error {
+				return validateSharedDaemonRecoveryConfig(configPath, expectedBin, expectedEnv)
+			}
+		}
 		r.sharedDaemonMigrationRequired = appserver.SharedDaemonMigrationRequired
 		r.recoverSharedCodexDaemon = newSharedDaemonRecovery(
 			time.Now,
 			sharedDaemonRecoveryCooldown,
 			func(ctx context.Context) error {
-				_, err := appserver.EnsureLocalDaemon(ctx, appserver.LocalDaemonOptions{
-					CodexBin:    cfg.Codex.Bin,
-					Env:         cfg.Codex.Env,
-					StableOwner: true,
-				})
+				_, err := appserver.EnsureLocalDaemon(ctx, recoveryOptions)
 				return err
 			},
 		)
@@ -310,6 +320,14 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
+}
+
+func validateSharedDaemonRecoveryConfig(
+	configPath string,
+	expectedBin string,
+	expectedEnv map[string]string,
+) error {
+	return config.ValidateSharedDaemonRecoveryOwnership(configPath, expectedBin, expectedEnv)
 }
 
 // newSharedDaemonRecovery 把跨连接恢复做成串行且带冷却的 single-flight。永久故障时

@@ -105,7 +105,10 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: arguments,
                     allowFailure: true,
-                    timeout: .seconds(20)
+                    // Doctor --fix 可能等待 daemon/config 两把跨进程锁，并在提交后
+                    // 重新跑完整检查；给它覆盖事务上界的时间，避免配置已提交却因
+                    // 客户端过早终止而漏掉 restart_required。
+                    timeout: .seconds(90)
                 )
                 if fix {
                     return try decode(DoctorFixResults.self, from: result)

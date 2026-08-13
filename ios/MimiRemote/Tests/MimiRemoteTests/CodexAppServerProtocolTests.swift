@@ -1882,6 +1882,37 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertTrue(approval.body?.contains("验证改动") == true)
     }
 
+    func testProjectorMapsSnakeCaseApprovalSessionAliases() throws {
+        var projector = CodexAppServerEventProjector()
+        let legacyRequest = CodexAppServerServerRequest(
+            id: .string("legacy-approval"),
+            method: "execCommandApproval",
+            params: .object([
+                "conversation_id": .string("legacy-conversation"),
+                "itemId": .string("legacy-command"),
+                "command": .string("pwd")
+            ])
+        )
+        guard case .approvalRequest(_, let legacyMetadata) = projector.project(legacyRequest) else {
+            return XCTFail("expected legacy approval request")
+        }
+        XCTAssertEqual(legacyMetadata.sessionID, "legacy-conversation")
+
+        let modernRequest = CodexAppServerServerRequest(
+            id: .string("modern-approval"),
+            method: "item/commandExecution/requestApproval",
+            params: .object([
+                "thread_id": .string("modern-thread"),
+                "itemId": .string("modern-command"),
+                "command": .string("go test ./...")
+            ])
+        )
+        guard case .approvalRequest(_, let modernMetadata) = projector.project(modernRequest) else {
+            return XCTFail("expected modern approval request")
+        }
+        XCTAssertEqual(modernMetadata.sessionID, "modern-thread")
+    }
+
     func testProjectorMapsClaudeFileApprovalAndPersistentLocalRule() throws {
         let request = CodexAppServerServerRequest(
             id: .string("claude-approval-1"),

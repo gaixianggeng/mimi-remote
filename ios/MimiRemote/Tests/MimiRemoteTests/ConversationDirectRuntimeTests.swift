@@ -385,6 +385,81 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(request?.params?["command"]?.stringValue, "go test ./...")
     }
 
+    func testCodexAppServerConnectionRoutesRejectedReverseResponseAsPrivateNotification() async {
+        let connection = CodexAppServerConnection(
+            transport: FakeCodexAppServerTransport(),
+            requestTimeout: 2
+        )
+        let notificationStream = await connection.notifications()
+        var iterator = notificationStream.makeAsyncIterator()
+
+        await connection.ingestTextForTesting(
+            #"{"id":"approval-rpc","error":{"code":-32600,"message":"Desktop 正在运行此会话","data":{"reason":"external_thread_active","accepted":false,"retryable":true,"response_to_server_request":true,"thread_id":"thr_reverse"}}}"#
+        )
+
+        let notification = await iterator.next()
+        XCTAssertEqual(notification?.method, "_mimi/serverRequestResponse/rejected")
+        XCTAssertEqual(notification?.params?["requestId"]?.stringValue, "approval-rpc")
+        XCTAssertEqual(notification?.params?["reason"]?.stringValue, "external_thread_active")
+        XCTAssertEqual(notification?.params?["thread_id"]?.stringValue, "thr_reverse")
+    }
+
+    func testDirectRuntimeRestoresApprovalCardAfterGatewayRejectsReverseResponse() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "reverse-response-rejection"
+        )
+        let request = CodexAppServerServerRequest(
+            id: .string("approval-rpc"),
+            method: "item/commandExecution/requestApproval",
+            params: .object([
+                "conversation_id": .string("thr_reverse"),
+                "turnId": .string("turn_reverse"),
+                "itemId": .string("cmd_reverse"),
+                "command": .string("go test ./...")
+            ])
+        )
+        await runtime.handle(request)
+        _ = await runtime.bufferedEvents(sessionID: "thr_reverse", replayPolicy: .all)
+
+        await runtime.handle(CodexAppServerNotification(
+            method: "_mimi/serverRequestResponse/rejected",
+            params: .object([
+                "requestId": .string("approval-rpc"),
+                "reason": .string("external_thread_active"),
+                "message": .string("Desktop 正在运行此会话")
+            ])
+        ))
+
+        let events = await runtime.bufferedEvents(sessionID: "thr_reverse", replayPolicy: .all)
+        XCTAssertTrue(events.contains {
+            if case .approvalResolved(let metadata) = $0 {
+                return metadata.sessionID == "thr_reverse"
+            }
+            return false
+        })
+        XCTAssertTrue(events.contains {
+            if case .approvalRequest(let approval, let metadata) = $0 {
+                return approval.id == "cmd_reverse" && metadata.sessionID == "thr_reverse"
+            }
+            return false
+        })
+        XCTAssertTrue(events.contains {
+            if case .warning(let warning, let metadata) = $0 {
+                return warning.code == "external_thread_active"
+                    && metadata.sessionID == "thr_reverse"
+            }
+            return false
+        })
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_reverse")
+        XCTAssertTrue(pending.contains {
+            if case .approvalRequest(let approval, _) = $0 {
+                return approval.id == "cmd_reverse"
+            }
+            return false
+        })
+    }
+
     func testCodexAppServerConnectionBuffersInboundStreamsWithoutDroppingOldEvents() async throws {
         let connection = CodexAppServerConnection(transport: FakeCodexAppServerTransport(), requestTimeout: 2)
         let notificationStream = await connection.notifications()

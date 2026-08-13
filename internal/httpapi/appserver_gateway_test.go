@@ -1331,6 +1331,70 @@ func TestSharedDaemonRecoverySerializesAndCachesRecentResult(t *testing.T) {
 	}
 }
 
+func TestSharedDaemonRecoveryRechecksDiskConfigAfterDisable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg, registry, manager, checker, _ := appServerGatewayBaseFixture(t)
+	cfg.Runtime.Type = "codex_app_server"
+	cfg.Codex.Env = map[string]string{"CODEX_HOME": codexHome, "TERM": "xterm-256color"}
+	cfg.ScanRoots = []string{filepath.Join(home, "missing-network-volume")}
+	fallback := &config.AppServerFallbackConfig{
+		Transport: "ws",
+		Managed:   true,
+		Listen:    "ws://127.0.0.1:4555",
+	}
+	cfg.AppServer = config.AppServerConfig{
+		Transport:      "unix",
+		Managed:        true,
+		Listen:         appserver.LocalDaemonListen,
+		SharedFallback: fallback,
+	}
+	configPath := filepath.Join(home, "config.json")
+	writeConfig := func(value config.Config) {
+		raw, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig(cfg)
+	if err := config.ValidateSharedDaemonRecoveryOwnership(configPath, cfg.Codex.Bin, cfg.Codex.Env); err != nil {
+		t.Fatalf("无关 scan_root 不可读不能阻断 shared owner 复核：%v", err)
+	}
+
+	_, router := NewRouterWithRuntimeInstallationIDAndOptions(
+		cfg,
+		registry,
+		manager,
+		checker,
+		"test",
+		"",
+		nil,
+		RouterOptions{ConfigPath: configPath},
+	)
+	t.Cleanup(router.claudeBridge.shutdown)
+	if router.recoverSharedCodexDaemon == nil {
+		t.Fatal("Mimi shared unix Router 必须安装恢复器")
+	}
+
+	cfg.AppServer = config.AppServerConfig{
+		Transport: "ws",
+		Managed:   fallback.Managed,
+		Listen:    fallback.Listen,
+	}
+	writeConfig(cfg)
+	err := router.recoverSharedCodexDaemon(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "当前配置已取消 Mimi 共享 daemon") {
+		t.Fatalf("旧 Router 在 disable 后必须被磁盘配置撤销恢复权：%v", err)
+	}
+}
+
 func TestSharedDaemonRecoveryWaiterHonorsCancellation(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})

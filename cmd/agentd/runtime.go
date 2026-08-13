@@ -22,11 +22,11 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
 	codexSharing := fs.String("codex-sharing", "", "Codex Desktop 共享 app-server：enabled 或 disabled")
-	codexSharingRestart := fs.Bool("codex-sharing-restart", false, "Mac App 内部：应用待处理的共享 Codex daemon 迁移")
+	codexSharingRestart := fs.Bool("codex-sharing-restart", false, "防误触 interlock：应用待处理的共享 Codex daemon 迁移")
 	codexSharingRestartConfirmed := fs.Bool(
 		"codex-sharing-restart-confirmed",
 		false,
-		"Mac App 内部：确认设置页已授权且 Desktop 已正常退出或本来未运行",
+		"防误触 interlock：调用方确认 Desktop 已正常退出或本来未运行（不是身份鉴权）",
 	)
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -49,7 +49,7 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("--codex-sharing-restart-confirmed 只能与内部迁移入口一起使用")
 	}
 	if hasCodexSharingRestart && !*codexSharingRestartConfirmed {
-		return fmt.Errorf("共享 daemon 迁移仅供 Mac App 在确认并正常退出 Codex Desktop 后调用")
+		return fmt.Errorf("共享 daemon 迁移必须同时传入确认防误触开关；该开关不构成调用方鉴权")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
