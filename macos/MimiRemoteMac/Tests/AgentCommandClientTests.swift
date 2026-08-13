@@ -114,4 +114,26 @@ final class AgentCommandClientTests: XCTestCase {
             "committed"
         )
     }
+
+    func testProcessTimeoutReapsControlCommandThatIgnoresTerminate() async {
+        let executor = ProcessExecutor()
+        let startedAt = ContinuousClock.now
+        do {
+            _ = try await executor.run(
+                executable: URL(filePath: "/bin/sh"),
+                arguments: ["-c", "trap '' TERM; while :; do sleep 1; done"],
+                timeout: .milliseconds(100),
+                forceKillAfterTimeout: true
+            )
+            XCTFail("忽略 SIGTERM 的 control command 必须超时")
+        } catch ProcessExecutorError.timedOut {
+            XCTAssertLessThan(
+                startedAt.duration(to: .now),
+                .seconds(4),
+                "timeout 后必须在 grace period 内回收 control command，不能让 UI 永久 busy"
+            )
+        } catch {
+            XCTFail("超时应保留 timedOut 语义，实际为 \(error)")
+        }
+    }
 }

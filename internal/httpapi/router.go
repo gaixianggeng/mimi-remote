@@ -60,6 +60,9 @@ type Router struct {
 	// sharedDaemonMigrationRequired 只读取 Mimi owner 的持久迁移标记。单独注入
 	// 让 runtime cache 保持昂贵账号探测缓存，同时每次请求仍返回实时迁移状态。
 	sharedDaemonMigrationRequired func() (bool, error)
+	// sharedDaemonDiagnostics 以 Unix socket 的真实 peer PID 为起点读取资源水位。
+	// 它只进入低频 runtime 快照，不参与 readiness，也不会触发迁移或重启。
+	sharedDaemonDiagnostics func(context.Context) (appserver.SharedDaemonDiagnostics, error)
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -222,6 +225,16 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") {
+		diagnosticOptions := appserver.LocalDaemonOptions{
+			CodexBin:    cfg.Codex.Bin,
+			Env:         cfg.Codex.Env,
+			StableOwner: cfg.AppServer.SharedFallback != nil,
+		}
+		r.sharedDaemonDiagnostics = func(ctx context.Context) (appserver.SharedDaemonDiagnostics, error) {
+			return appserver.InspectSharedDaemonDiagnostics(ctx, diagnosticOptions)
+		}
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") &&
 		cfg.AppServer.SharedFallback != nil {
