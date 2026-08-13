@@ -476,12 +476,14 @@ func restartCodexSharingDaemon(
 	if err != nil {
 		return CodexSharingDaemonRestartResult{}, err
 	}
-	cfg, err := config.Load(resolvedPath)
+	// Desktop 此时可能已经按用户确认正常退出。控制面只读取 daemon 身份，
+	// 不能让无关的 scan_roots I/O 再把迁移挡在生命周期操作之前。
+	cfg, err := config.LoadSharedDaemonControlConfig(resolvedPath)
 	if err != nil {
 		return CodexSharingDaemonRestartResult{}, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") ||
-		cfg.AppServer.SharedFallback == nil {
+		!cfg.AppServer.Managed || cfg.AppServer.SharedFallback == nil {
 		return CodexSharingDaemonRestartResult{}, fmt.Errorf("当前 Codex backend 不是 Mimi 管理的共享 daemon")
 	}
 	options := appserver.LocalDaemonOptions{

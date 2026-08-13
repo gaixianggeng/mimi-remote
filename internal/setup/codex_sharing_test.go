@@ -267,6 +267,55 @@ func TestRestartCodexSharingDaemonReturnsAtomicRestartResult(t *testing.T) {
 	}
 }
 
+func TestRestartCodexSharingDaemonIgnoresUnavailableScanRoot(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, codexHome, _ := writeCodexSharingTestConfig(t)
+	socketPath := filepath.Join(codexHome, "app-server-control", "app-server-control.sock")
+	if _, err := configureCodexSharing(
+		context.Background(),
+		configPath,
+		true,
+		func(context.Context, appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			return appserver.LocalDaemonStatus{SocketPath: socketPath, Version: "0.147.0", Started: true}, nil
+		},
+		recoverableLifecycleInspector(t, codexHome),
+		noopRemoveSharedDaemonOwner,
+	); err != nil {
+		t.Fatal(err)
+	}
+	document := readCodexSharingTestDocument(t, configPath)
+	document["scan_roots"] = []string{filepath.Join(t.TempDir(), "offline-volume")}
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restartCalls := 0
+	result, err := restartCodexSharingDaemon(
+		context.Background(),
+		configPath,
+		func(_ context.Context, options appserver.LocalDaemonOptions) (appserver.LocalDaemonStatus, error) {
+			restartCalls++
+			if options.ValidateStableOwner == nil {
+				t.Fatal("迁移仍必须在 daemon 锁内复核配置所有权")
+			}
+			if err := options.ValidateStableOwner(); err != nil {
+				t.Fatalf("离线 scan_root 不能阻断锁内 owner 复核：%v", err)
+			}
+			return appserver.LocalDaemonStatus{SocketPath: socketPath, Version: "0.147.0", Started: true}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartCalls != 1 || !result.Restarted {
+		t.Fatalf("离线 scan_root 不应阻止显式迁移：calls=%d result=%+v", restartCalls, result)
+	}
+}
+
 func TestConfigureCodexSharingDaemonFailureDoesNotWriteConfig(t *testing.T) {
 	clearSetupEnv(t)
 	configPath, _, _ := writeCodexSharingTestConfig(t)

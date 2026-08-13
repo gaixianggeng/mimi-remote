@@ -298,6 +298,21 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 	return cfg, nil
 }
 
+// LoadSharedDaemonControlConfig 只加载 stable-owner 控制面所需配置，不访问
+// scan_roots。显式迁移发生在 Desktop 已退出之后，不能因为无关的网络盘、
+// 移动磁盘或项目目录临时不可读而阻止 daemon 生命周期操作。
+func LoadSharedDaemonControlConfig(path string) (Config, error) {
+	cfg, err := loadWithoutProjectDiscovery(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") ||
+		!cfg.AppServer.Managed || cfg.AppServer.SharedFallback == nil {
+		return Config{}, fmt.Errorf("当前配置不是 Mimi 管理的共享 daemon")
+	}
+	return cfg, nil
+}
+
 // ValidateSharedDaemonRecoveryOwnership 在长期存活的旧进程尝试恢复 owner 前，
 // 只复核磁盘上的共享模式与 Codex 启动身份。它故意跳过 project discovery 和
 // 全量 Validate；错误只会让恢复 fail closed，不影响用户修复其他配置项。
