@@ -49,6 +49,8 @@ Mac App 执行迁移的短命 `agentd` 控制命令有明确超时。超时后�
 
 `runtime status` 与 Doctor 会从 Unix socket 的真实 peer PID 取证，不信任缓存 PID 或进程名；Darwin 上直接读取内核的打开 FD 数、启动时间和进程表中的直接子进程数，不额外启动 `lsof`、`ps` 或 `pgrep`。stable owner 的 `8192` 只标记为下一次启动的目标值，不冒充当前 listener 的实际 `RLIMIT_NOFILE`；macOS 无法可靠读取另一进程的实际 soft limit 时，百分比与资源等级保持 unknown，只展示绝对 FD 数和“当前进程未验证”。将来只有取得实际生效上限后才按 70%/90% 阈值判断。AttachOnly / 外部 owner 同样不套用 Mimi 的上限，也不阻断转发。状态接口只返回 PID、计数、时间和枚举，不暴露命令行、环境、原始错误或 owner/socket 路径。
 
+官方 `daemon start` 完成 detached listener 交接后，部分版本仍报告 `pid` backend，但不会继续返回 listener PID。只有 stable owner 已提交、socket 路径一致且 backend 仍为 `pid` 时，才标记为 `owner_claimed_unverified` warning；缺少 backend 的旧 SSH/CLI listener 仍视为 unmanaged。该 warning 既不把当前 listener 误报为已验证 stable，也不把 owner 的目标上限当成 listener 已实际继承。
+
 移动端写入前，gateway 还会复用现有 external activity 的精确 Thread / Turn ownership 证据：同一 thread 确认由 Codex Desktop 运行时，`turn/start`、`turn/steer`、中断和其他写操作会在转发前返回 `accepted=false`；对 app-server 发给客户端的审批、补充输入和 MCP elicitation，移动端返回的反向 JSON-RPC response 也执行相同 guard，拒绝时保留 pending request 并恢复移动端卡片。`thread/resume` 与读取接口仍可用于只读观察。Desktop 仅打开空闲 thread 不会被当成占用。共享 Unix 模式下状态库不可读、观测器缺失或反向 request 缺少 thread scope 时会 fail-closed，暂时拒绝写入但继续允许读取；默认独立 WS 没有共同 writer，仍保持原有可用性策略。
 
 命令行等价操作：
