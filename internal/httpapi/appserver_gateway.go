@@ -271,11 +271,12 @@ type appServerGatewayPendingClientRequest struct {
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method    string
-	threadID  string
-	turnID    string
-	itemID    string
-	createdAt time.Time
+	method           string
+	threadID         string
+	turnID           string
+	itemID           string
+	gatewayOwnedTurn bool
+	createdAt        time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {

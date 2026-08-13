@@ -536,6 +536,31 @@ func (p *appServerGatewayPolicy) guardExternalDesktopServerResponse(
 	if threadID == "" {
 		return fmt.Errorf("%s.threadId 缺失，无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
 	}
+	if request.gatewayOwnedTurn && strings.TrimSpace(request.turnID) != "" {
+		if p.router.externalActivity == nil {
+			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
+		}
+		activities, err := p.router.externalActivity.Snapshot()
+		if err != nil {
+			log.Printf("external activity guard unavailable: %v", err)
+			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
+		}
+		for _, activity := range activities {
+			if strings.TrimSpace(activity.ThreadID) != threadID ||
+				!strings.EqualFold(strings.TrimSpace(activity.Source), "codex_desktop") ||
+				!strings.EqualFold(strings.TrimSpace(activity.State), "running") {
+				continue
+			}
+			if strings.TrimSpace(activity.TurnID) == strings.TrimSpace(request.turnID) {
+				// claim TTL 到期只会让同一个长时间等待审批的 iPad turn 被
+				// tracker 保守重分类为 Desktop；pending 上捕获的原始归属仍然
+				// 允许完成这一个 response。不同或缺失 TurnID 继续 fail-closed。
+				continue
+			}
+			return fmt.Errorf("%s.threadId 当前由 Codex Desktop 运行，请等待本轮结束后重试：%w", request.method, errAppServerExternalThreadActive)
+		}
+		return nil
+	}
 	return p.guardExternalDesktopThreadID(request.method, threadID, true)
 }
 

@@ -2165,6 +2165,79 @@ func TestAppServerGatewayRejectsReverseResponseWhileCodexDesktopTurnIsActive(t *
 	}
 }
 
+func TestAppServerGatewayAllowsOwnedReverseResponseAfterClaimTTLReclassification(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	activity := &gatewayOwnedExternalActivitySource{
+		threadID: "thread-ipad",
+		turnID:   "turn-ipad",
+	}
+	router.externalActivity = activity
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"approval-long","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
+	}
+	id := json.RawMessage(`"approval-long"`)
+	pending, ok := policy.pendingServerRequest(&id)
+	if !ok || !pending.gatewayOwnedTurn {
+		t.Fatalf("pending 必须捕获 request 创建时的精确 gateway turn 归属：pending=%+v ok=%t", pending, ok)
+	}
+
+	// 模拟 40 分钟 claim TTL 到期：tracker 会把仍在等待审批的同一 turn
+	// 保守重分类为 codex_desktop，但它不是一个新的 Mac writer。
+	activity.activities = []codexhistory.ExternalActivity{{
+		ThreadID: "thread-ipad",
+		TurnID:   "turn-ipad",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}
+	response := []byte(`{"id":"approval-long","result":{"decision":"accept"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if policyErr != nil || !bytes.Equal(forwarded, response) {
+		t.Fatalf("原 gateway turn 的长时间 pending response 不应被 TTL 永久锁死：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+}
+
+func TestAppServerGatewayOwnedReverseResponseStillRejectsDifferentDesktopTurn(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	activity := &gatewayOwnedExternalActivitySource{
+		threadID: "thread-ipad",
+		turnID:   "turn-ipad",
+	}
+	router.externalActivity = activity
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"approval-stale","method":"item/fileChange/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
+	}
+
+	activity.activities = []codexhistory.ExternalActivity{{
+		ThreadID: "thread-ipad",
+		TurnID:   "turn-mac-new",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}
+	response := []byte(`{"id":"approval-stale","result":{"decision":"accept"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != "external_thread_active" {
+		t.Fatalf("新的 Mac turn 必须继续阻止旧 gateway response：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	id := json.RawMessage(`"approval-stale"`)
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("被新的 Mac turn 拒绝后必须保留 pending，不能丢失上游请求")
+	}
+}
+
 func TestAppServerGatewayLegacyApprovalUsesConversationIDForExternalWriterGuard(t *testing.T) {
 	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
 	router.cfg.AppServer.Transport = "unix"

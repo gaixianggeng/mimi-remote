@@ -821,6 +821,20 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("app-server request 缺少 id")
 	}
 	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
+	gatewayOwnedTurn := false
+	if p != nil && p.router != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" &&
+		strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") &&
+		threadID != "" && turnID != "" {
+		owned, err := p.router.codexGatewayOwnsTurn(threadID, turnID)
+		if err != nil {
+			// request 本身是只读投影，可以继续展示；归属不可确认时不放宽后续
+			// response，仍由 external guard fail-closed。
+			log.Printf("gateway server request ownership unavailable method=%s err=%v",
+				sanitizeGatewayDiagnostic(method), err)
+		} else {
+			gatewayOwnedTurn = owned
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -832,11 +846,12 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("gateway pending server request 过多")
 	}
 	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
-		method:    method,
-		threadID:  threadID,
-		turnID:    turnID,
-		itemID:    itemID,
-		createdAt: now,
+		method:           method,
+		threadID:         threadID,
+		turnID:           turnID,
+		itemID:           itemID,
+		gatewayOwnedTurn: gatewayOwnedTurn,
+		createdAt:        now,
 	}
 	return nil
 }
