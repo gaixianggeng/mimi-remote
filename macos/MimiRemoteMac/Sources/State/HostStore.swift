@@ -56,7 +56,7 @@ final class HostStore {
 
     var canRestartCodexDesktop: Bool {
         codexDesktopStatus.appInstalled
-            && codexDesktopStatus.appRunning
+            && (codexDesktopStatus.appRunning || codexDaemonMigrationRequired)
             && owner == .macApp
             && !isBusy
             && !isUpdatingCodexDesktop
@@ -87,7 +87,10 @@ final class HostStore {
         case .backendNotShared:
             return "agentd 尚未确认 Unix socket 共享；确认后才会显示已就绪，不会提前声称已共享。"
         case .pendingRestart:
-            return "Codex Desktop 当前正在运行，需完全重启后应用设置。仅 Desktop 没有进行中的任务时手机可继续；正在运行的任务仍只读。"
+            if codexDaemonMigrationRequired, !codexDesktopStatus.appRunning {
+                return "共享 daemon 等待你确认迁移。应用时不会打开 Codex Desktop，但会短暂中断当前连接到该 daemon 的手机、SSH 或 CLI。"
+            }
+            return "Codex Desktop 当前正在运行，需正常退出后应用设置。迁移会短暂中断当前连接到共享 daemon 的客户端。"
         case .ready:
             return "agentd 已连接共享会话服务，Codex Desktop 已按共享环境配置。请用同一空闲会话完成一次跨端续写验证；正在运行的任务仍只读。"
         case .failed:
@@ -142,6 +145,10 @@ final class HostStore {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
     }
 
+    private var codexDaemonMigrationRequired: Bool {
+        codexRuntime?.daemonRestartRequired == true && !codexDaemonMigrationCommittedLocally
+    }
+
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let homebrew: HomebrewServiceClient
@@ -154,6 +161,12 @@ final class HostStore {
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
     private var lastStatusRefreshAt: Date?
+    // 每次开始 agent.status() 都先分配单调序号。只允许最新请求落地，避免
+    // 迁移前已发出的 marker=true 在提交后的 fresh false 之后迟到并覆盖 UI。
+    private var statusRequestSequence: UInt64 = 0
+    // Go runtime 命令成功返回就是迁移提交点。其后的 status/inspect 可能仍读到
+    // 瞬时旧值或失败，不能反向把已清 marker 的操作显示成失败或再次执行。
+    private var codexDaemonMigrationCommittedLocally = false
 
     init(
         agent: AgentCommandClient,
@@ -446,16 +459,23 @@ final class HostStore {
         guard !isBusy else { return }
         isBusy = true
         lastError = nil
-        defer { isBusy = false }
+        var restartMacAgent = false
+        var restartHomebrewAgent = false
         do {
             let result = try await agent.doctor(fix)
             doctor = result.results
             appliedFixes = result.fixes
+            restartMacAgent = fix && result.restartRequired == true && owner == .macApp
+            restartHomebrewAgent = fix && result.restartRequired == true && owner == .homebrew
             switch owner {
             case .macApp:
-                await refreshMacAgentStatus()
+                if !restartMacAgent {
+                    await refreshMacAgentStatus()
+                }
             case .homebrew:
-                await refreshHomebrewStatus()
+                if !restartHomebrewAgent {
+                    await refreshHomebrewStatus()
+                }
             case .none:
                 if !result.results.ok {
                     lifecycle = .degraded(firstBlockingIssue(in: result.results))
@@ -463,6 +483,38 @@ final class HostStore {
             }
         } catch {
             lastError = error.localizedDescription
+        }
+        isBusy = false
+        if restartMacAgent {
+            // Doctor 改写 codex.bin、token 路径或整份配置后，resident agentd
+            // 仍持有旧快照。正常注销/注册一次，让 shared owner 以新身份在锁内
+            // 重建；不会停止当前 Codex daemon，也不会退出 Desktop。
+            await restartService()
+        } else if restartHomebrewAgent {
+            await restartHomebrewAfterDoctorRepair()
+        }
+    }
+
+    private func restartHomebrewAfterDoctorRepair() async {
+        guard !isBusy, owner == .homebrew else { return }
+        guard let binary = homebrew.installedAgentBinary() else {
+            fail(HomebrewServiceError.commandFailed("Doctor 已提交配置，但找不到 Homebrew agentd，无法重载。"))
+            return
+        }
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        defer { isBusy = false }
+        do {
+            try await homebrew.stop()
+            homebrewLoaded = false
+            try await homebrew.start()
+            try await waitForHomebrewReady(binary: binary)
+            homebrewLoaded = true
+            owner = .homebrew
+            lifecycle = .migrationRequired
+        } catch {
+            fail(error)
         }
     }
 
@@ -572,8 +624,12 @@ final class HostStore {
             codexDesktopError = "请先等待 Mimi Remote Mac 服务操作完成，再重启 Codex Desktop。"
             return
         }
-        guard codexDesktopStatus.appInstalled, codexDesktopStatus.appRunning else {
-            codexDesktopError = "Codex Desktop 当前未运行，无需重启；下次从 Dock/Finder 启动会读取设置。"
+        guard codexDesktopStatus.appInstalled else {
+            codexDesktopError = "未检测到 Codex Desktop。"
+            return
+        }
+        guard codexDesktopStatus.appRunning || codexDaemonMigrationRequired else {
+            codexDesktopError = "Codex Desktop 当前未运行，也没有待迁移的共享 daemon。"
             return
         }
 
@@ -584,9 +640,34 @@ final class HostStore {
             isUpdatingCodexDesktop = false
             isBusy = false
         }
+        var didCommitDaemonMigration = false
         do {
-            let snapshot = try await codexDesktop.restartAndApply()
+            // 先读取一次真实状态，避免只凭设置页缓存决定是否需要 terminate。
+            // 即便这里看到 running，live runtime 仍会在实际执行时再取快照，
+            // 覆盖用户在两次读取之间自行退出 Desktop 的竞态。
+            let currentDesktop = try await codexDesktop.inspect()
+            if !currentDesktop.appRunning, codexDaemonMigrationRequired {
+                // Desktop 本来已退出时只迁移 daemon，不擅自打开 App；命令成功
+                // 就已提交，后续状态刷新失败也不能把它重新解释为迁移失败。
+                try await agent.restartCodexSharing()
+                didCommitDaemonMigration = true
+                recordCommittedCodexMigration()
+                await refreshAfterCommittedCodexMigration()
+                return
+            }
+            let snapshot = try await codexDesktop.restartAndApply(afterTermination: {
+                // 开启共享时，用户的确认同时授权迁移共享 daemon。Desktop 已经
+                // 正常退出后才 stop 旧 daemon，再由 launchd 拉起；失败时不重新打开。
+                if self.codexDesktopEnabled, self.codexDaemonMigrationRequired {
+                    try await self.agent.restartCodexSharing()
+                    didCommitDaemonMigration = true
+                    self.recordCommittedCodexMigration()
+                }
+            })
             applyCodexDesktopSnapshot(snapshot)
+            if didCommitDaemonMigration {
+                await refreshAfterCommittedCodexMigration()
+            }
         } catch {
             codexDesktopError = error.localizedDescription
             // 不强制终止也不再并发启动第二个实例；terminate/open 超时或拒绝
@@ -774,7 +855,8 @@ final class HostStore {
 
             let current: AgentStatus
             do {
-                current = try await agent.status()
+                guard let latest = try await fetchAndApplyLatestStatus() else { return }
+                current = latest
             } catch is CancellationError {
                 return
             } catch {
@@ -783,9 +865,6 @@ final class HostStore {
                 await repairEnabledMacAgent(after: error)
                 return
             }
-
-            status = current
-            doctor = current.doctor
             if !current.processOK {
                 // status 命令本身可以成功，但它可能明确报告 resident agentd 未运行。
                 // 首次打开必须把这种状态当作启动失败，自动做一次有界换代，而不是
@@ -803,7 +882,7 @@ final class HostStore {
                     fail(error)
                 }
             } else {
-                apply(current)
+                // fetchAndApplyLatestStatus 已经落地最新状态。
             }
         case .notRegistered:
             await registerAvailableMacAgent(recoveringMissingRecord: false)
@@ -979,8 +1058,7 @@ final class HostStore {
         var lastRuntime: AgentRuntimeStatus?
         for attempt in 0..<12 {
             try Task.checkCancellation()
-            if let current = try? await agent.status() {
-                apply(current)
+            if let current = try? await fetchAndApplyLatestStatus() {
                 lastRuntime = current.runtimeStatus?.runtimes.first(where: {
                     $0.id.caseInsensitiveCompare("codex") == .orderedSame
                 })
@@ -1035,8 +1113,7 @@ final class HostStore {
     private func waitForClaudeRuntime(enabled: Bool) async throws {
         for attempt in 0..<12 {
             try Task.checkCancellation()
-            if let current = try? await agent.status() {
-                apply(current)
+            if let current = try? await fetchAndApplyLatestStatus() {
                 if let runtime = current.runtimeStatus?.runtimes.first(where: {
                     $0.id.caseInsensitiveCompare("claude") == .orderedSame
                 }) {
@@ -1085,9 +1162,8 @@ final class HostStore {
         var lastStatus: AgentStatus?
         for _ in 0..<15 {
             try Task.checkCancellation()
-            if let current = try? await agent.status() {
+            if let current = try? await fetchAndApplyLatestStatus() {
                 lastStatus = current
-                apply(current)
                 if current.serviceOK { return }
             }
             try await Task.sleep(for: .seconds(1))
@@ -1190,7 +1266,7 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             do {
-                apply(try await agent.status())
+                _ = try await fetchAndApplyLatestStatus()
             } catch is CancellationError {
                 return
             } catch {
@@ -1262,6 +1338,16 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
+        // 本地提交标记只遮蔽命令成功前留在内存里的旧 pending 快照。下一份
+        // 真正携带 daemonRestartRequired 的服务端状态无论 true/false 都是新事实：
+        // false 确认提交，true 则表示服务端又检测到新的 unmanaged owner。
+        if codexDaemonMigrationCommittedLocally,
+           let runtime = current.runtimeStatus?.runtimes.first(where: {
+               $0.id.caseInsensitiveCompare("codex") == .orderedSame
+           }),
+           runtime.daemonRestartRequired != nil {
+            codexDaemonMigrationCommittedLocally = false
+        }
         let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
         status = resolved
         doctor = resolved.doctor
@@ -1275,6 +1361,48 @@ final class HostStore {
             )
         } else {
             lifecycle = .stopped
+        }
+    }
+
+    private func nextStatusRequestSequence() -> UInt64 {
+        statusRequestSequence &+= 1
+        return statusRequestSequence
+    }
+
+    private func invalidateInFlightStatusRequests() {
+        statusRequestSequence &+= 1
+    }
+
+    private func recordCommittedCodexMigration() {
+        codexDaemonMigrationCommittedLocally = true
+        // Go 命令返回就是提交点。必须在重新打开 Desktop 的 await 之前立刻
+        // 作废迁移前请求，不能等 application.open 完成后再处理迟到旧状态。
+        invalidateInFlightStatusRequests()
+    }
+
+    @discardableResult
+    private func applyStatusResponse(_ current: AgentStatus, sequence: UInt64) -> Bool {
+        guard sequence == statusRequestSequence else { return false }
+        apply(current)
+        return true
+    }
+
+    private func fetchAndApplyLatestStatus() async throws -> AgentStatus? {
+        let sequence = nextStatusRequestSequence()
+        let current = try await agent.status()
+        return applyStatusResponse(current, sequence: sequence) ? current : nil
+    }
+
+    private func refreshAfterCommittedCodexMigration() async {
+        // 这些读取只刷新展示，不是第二个提交门。任一瞬时失败都保留 Go 已提交
+        // 的成功事实，Desktop 重开顺序也不受 12 秒轮询影响。
+        // recordCommittedCodexMigration 已在 Go 成功的同一同步段作废旧请求；
+        // 这里再发出新的权威刷新，失败也不反向改变提交事实。
+        _ = try? await fetchAndApplyLatestStatus()
+        if let snapshot = try? await codexDesktop.inspect() {
+            applyCodexDesktopSnapshot(snapshot)
+        } else {
+            refreshCodexDesktopPresentation()
         }
     }
 
@@ -1319,13 +1447,16 @@ final class HostStore {
             if codexDesktopError.contains("外部") || codexDesktopError.contains("已被其他程序") {
                 return .externalConflict
             }
-            if forcePending, snapshot.appRunning {
+            if forcePending, snapshot.appRunning || codexDaemonMigrationRequired {
                 return .pendingRestart
             }
             return .failed
         }
         if snapshot.appInstalled == false {
             return .notInstalled
+        }
+        if snapshot.enabled, codexDaemonMigrationRequired {
+            return .pendingRestart
         }
         if snapshot.restartRequired, snapshot.appRunning {
             return .pendingRestart
@@ -1380,7 +1511,7 @@ final class HostStore {
             applyCodexDesktopSnapshot(snapshot, forcePending: forcePending)
         } else {
             let current = codexDesktopStatus
-            let state: CodexDesktopStatusState = forcePending && current.appRunning
+            let state: CodexDesktopStatusState = forcePending && (current.appRunning || codexDaemonMigrationRequired)
                 ? .pendingRestart
                 : .failed
             codexDesktopStatus = CodexDesktopStatus(

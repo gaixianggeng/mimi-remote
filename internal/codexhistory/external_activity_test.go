@@ -717,6 +717,45 @@ func TestExternalActivityPersistentClaimClearsOnTerminalAndExpiresToExternal(t *
 	}
 }
 
+func TestExternalActivityGatewayOwnsTurnCapturesExactClaimBeforeTTL(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	fixture.replaceTrackerWithClaimStore(
+		filepath.Join(t.TempDir(), "state", "claims.json"),
+		func() time.Time { return now },
+	)
+	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-ipad",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
+		externalUserMessageLine(now.Add(500*time.Millisecond), "client-ipad"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	owned, err := fixture.tracker.GatewayOwnsTurn("thread-ipad", "turn-ipad")
+	if err != nil || !owned {
+		t.Fatalf("精确 Thread+Turn 应在 server request 到达时被捕获：owned=%t err=%v", owned, err)
+	}
+	owned, err = fixture.tracker.GatewayOwnsTurn("thread-ipad", "turn-other")
+	if err != nil || owned {
+		t.Fatalf("不同 TurnID 不得继承 gateway 归属：owned=%t err=%v", owned, err)
+	}
+
+	now = now.Add(gatewayOwnedTurnClaimTTL + time.Second)
+	owned, err = fixture.tracker.GatewayOwnsTurn("thread-ipad", "turn-ipad")
+	if err != nil || owned {
+		t.Fatalf("没有 pending 捕获时，过期 claim 仍须安全降级：owned=%t err=%v", owned, err)
+	}
+}
+
 func TestExternalActivityExpiredClaimWithFreshRolloutFailsClosedAsExternal(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)

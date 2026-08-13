@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -26,6 +28,11 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
+)
+
+const (
+	sharedDaemonRecoveryCooldown       = 30 * time.Second
+	sharedDaemonRecoveryAttemptTimeout = 35 * time.Second
 )
 
 type Router struct {
@@ -46,6 +53,13 @@ type Router struct {
 	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
 	// 它与本进程 app-server runtime 分离，不能被用于 resume、审批或中断外部 turn。
 	externalActivity externalActivitySource
+	// recoverSharedCodexDaemon 仅在 Mimi 管理的 shared unix 配置下启用。daemon
+	// 异常退出后，下一次真实 gateway 连接通过稳定 owner 恢复一次；独立 WS 和
+	// 外部 Unix backend 都不会被 Mimi 接管。
+	recoverSharedCodexDaemon func(context.Context) error
+	// sharedDaemonMigrationRequired 只读取 Mimi owner 的持久迁移标记。单独注入
+	// 让 runtime cache 保持昂贵账号探测缓存，同时每次请求仍返回实时迁移状态。
+	sharedDaemonMigrationRequired func() (bool, error)
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -114,8 +128,9 @@ type Router struct {
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
-// 必须同时注入两条绝对路径。
+// 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
+	ConfigPath                     string
 	GatewayTurnClaimStorePath      string
 	ThreadHandoffRecoveryStorePath string
 }
@@ -208,6 +223,30 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "unix") &&
+		cfg.AppServer.SharedFallback != nil {
+		recoveryOptions := appserver.LocalDaemonOptions{
+			CodexBin:    cfg.Codex.Bin,
+			Env:         cfg.Codex.Env,
+			StableOwner: true,
+		}
+		if configPath := strings.TrimSpace(options.ConfigPath); configPath != "" {
+			expectedBin := strings.TrimSpace(cfg.Codex.Bin)
+			expectedEnv := maps.Clone(cfg.Codex.Env)
+			recoveryOptions.ValidateStableOwner = func() error {
+				return validateSharedDaemonRecoveryConfig(configPath, expectedBin, expectedEnv)
+			}
+		}
+		r.sharedDaemonMigrationRequired = appserver.SharedDaemonMigrationRequired
+		r.recoverSharedCodexDaemon = newSharedDaemonRecovery(
+			time.Now,
+			sharedDaemonRecoveryCooldown,
+			func(ctx context.Context) error {
+				_, err := appserver.EnsureLocalDaemon(ctx, recoveryOptions)
+				return err
+			},
+		)
+	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
@@ -281,6 +320,82 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
+}
+
+func validateSharedDaemonRecoveryConfig(
+	configPath string,
+	expectedBin string,
+	expectedEnv map[string]string,
+) error {
+	return config.ValidateSharedDaemonRecoveryOwnership(configPath, expectedBin, expectedEnv)
+}
+
+// newSharedDaemonRecovery 把跨连接恢复做成串行且带冷却的 single-flight。永久故障时
+// 新连接会复用最近一次失败，不会排队形成 N × 启动超时；冷却后才允许再次尝试。
+func newSharedDaemonRecovery(
+	now func() time.Time,
+	cooldown time.Duration,
+	recoverDaemon func(context.Context) error,
+) func(context.Context) error {
+	var mu sync.Mutex
+	var hasResult bool
+	var completedAt time.Time
+	var lastErr error
+	var inFlight chan struct{}
+	return func(ctx context.Context) error {
+		for {
+			mu.Lock()
+			current := now()
+			if hasResult && current.Sub(completedAt) >= 0 && current.Sub(completedAt) < cooldown {
+				result := lastErr
+				mu.Unlock()
+				return result
+			}
+			wait := inFlight
+			if wait == nil {
+				wait = make(chan struct{})
+				inFlight = wait
+				// 恢复属于共享进程生命周期，不能继承首个手机请求的取消。所有
+				// 请求（包括发起者）只作为可取消 waiter；后台尝试有独立硬上限。
+				go func(attemptDone chan struct{}) {
+					result := func() (resultErr error) {
+						defer func() {
+							if recovered := recover(); recovered != nil {
+								resultErr = fmt.Errorf("共享 Codex daemon 恢复异常：%v", recovered)
+							}
+						}()
+						recoveryCtx, cancel := context.WithTimeout(
+							context.Background(),
+							sharedDaemonRecoveryAttemptTimeout,
+						)
+						defer cancel()
+						return recoverDaemon(recoveryCtx)
+					}()
+
+					mu.Lock()
+					lastErr = result
+					completedAt = now()
+					hasResult = true
+					if inFlight == attemptDone {
+						inFlight = nil
+					}
+					close(attemptDone)
+					mu.Unlock()
+				}(wait)
+			}
+			mu.Unlock()
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-wait:
+				mu.Lock()
+				result := lastErr
+				mu.Unlock()
+				return result
+			}
+		}
+	}
 }
 
 // EnableTailscaleHostMetadata 只由生产 serve 入口启用。测试构造器默认不启动外部 CLI，

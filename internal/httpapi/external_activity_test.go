@@ -85,6 +85,24 @@ type recordingExternalActivitySource struct {
 	registrations []gatewayTurnStartRegistration
 }
 
+type gatewayOwnedExternalActivitySource struct {
+	activities []codexhistory.ExternalActivity
+	err        error
+	threadID   string
+	turnID     string
+}
+
+func (s *gatewayOwnedExternalActivitySource) Snapshot() ([]codexhistory.ExternalActivity, error) {
+	return s.activities, s.err
+}
+
+func (s *gatewayOwnedExternalActivitySource) GatewayOwnsTurn(threadID string, turnID string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return threadID == s.threadID && turnID == s.turnID, nil
+}
+
 type gatewayTurnStartRegistration struct {
 	threadID            string
 	clientUserMessageID string

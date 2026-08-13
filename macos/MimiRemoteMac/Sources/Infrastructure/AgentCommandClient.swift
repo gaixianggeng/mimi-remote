@@ -15,6 +15,7 @@ struct AgentCommandClient: Sendable {
     ) async throws -> CodexSharingConfigurationResult = { enabled in
         CodexSharingConfigurationResult(enabled: enabled)
     }
+    var restartCodexSharing: @Sendable () async throws -> Void = {}
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
@@ -104,7 +105,10 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: arguments,
                     allowFailure: true,
-                    timeout: .seconds(20)
+                    // Doctor --fix 可能等待 daemon/config 两把跨进程锁，并在提交后
+                    // 重新跑完整检查；给它覆盖事务上界的时间，避免配置已提交却因
+                    // 客户端过早终止而漏掉 restart_required。
+                    timeout: .seconds(90)
                 )
                 if fix {
                     return try decode(DoctorFixResults.self, from: result)
@@ -130,8 +134,18 @@ extension AgentCommandClient {
                     from: try await execute(
                         binary: binary,
                         arguments: codexSharingConfigurationArguments(enabled: enabled),
-                        timeout: .seconds(25)
+                        // 后端为 owner 安装、daemon 就绪和失败回滚预留 45 秒；
+                        // 调用端必须更长，不能在事务清理完成前强杀子进程。
+                        timeout: .seconds(50)
                     )
+                )
+            },
+            restartCodexSharing: {
+                let binary = try requireEmbeddedBinary()
+                _ = try await execute(
+                    binary: binary,
+                    arguments: codexSharingRestartArguments(),
+                    timeout: .seconds(50)
                 )
             },
             setLANAccess: { enabled in
@@ -203,6 +217,16 @@ extension AgentCommandClient {
             "runtime",
             "--codex-sharing=\(enabled ? "enabled" : "disabled")",
             "--json",
+        ]
+    }
+
+    static func codexSharingRestartArguments() -> [String] {
+        [
+            "runtime",
+            "--codex-sharing-restart",
+            // 该 client 只会在设置页确认后的 HostStore 迁移闭包中调用；后端
+            // 拒绝缺少此显式确认的普通 CLI，避免脚本误绕过 Desktop 退出顺序。
+            "--codex-sharing-restart-confirmed",
         ]
     }
 }

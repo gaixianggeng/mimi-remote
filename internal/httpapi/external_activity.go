@@ -18,6 +18,10 @@ type gatewayTurnStartRegistrar interface {
 	RegisterGatewayTurnStart(threadID string, clientUserMessageID string)
 }
 
+type gatewayTurnOwnershipSource interface {
+	GatewayOwnsTurn(threadID string, turnID string) (bool, error)
+}
+
 type externalActivityResponse struct {
 	Activities []codexhistory.ExternalActivity `json:"activities"`
 	ScannedAt  time.Time                       `json:"scanned_at"`
@@ -75,6 +79,20 @@ func (r *Router) codexDesktopThreadActive(threadID string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// codexGatewayOwnsTurn 只接受 tracker 给出的精确 Thread+Turn 证据。
+// 其他 external activity 实现没有这项能力时按未归属处理，不能由“当前没有
+// Desktop activity”反推为 gateway 所有。
+func (r *Router) codexGatewayOwnsTurn(threadID string, turnID string) (bool, error) {
+	if r == nil || r.externalActivity == nil {
+		return false, nil
+	}
+	source, ok := r.externalActivity.(gatewayTurnOwnershipSource)
+	if !ok {
+		return false, nil
+	}
+	return source.GatewayOwnsTurn(threadID, turnID)
 }
 
 func (r *Router) externalActivityHandler(w http.ResponseWriter, req *http.Request) {

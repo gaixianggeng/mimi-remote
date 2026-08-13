@@ -149,3 +149,76 @@ func TestPlatformDefaultPathIgnoresAgentdConfig(t *testing.T) {
 		t.Fatalf("平台默认配置路径异常：got=%q want=%q", platformDefault, filepath.Join(wantDir, "config.json"))
 	}
 }
+
+func TestIsPlatformDefaultPathResolvesEquivalentDirectorySymlink(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	platformDefault := PlatformDefaultPath()
+	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(t.TempDir(), "config-alias")
+	if err := os.Symlink(filepath.Dir(platformDefault), aliasRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsPlatformDefaultPath(filepath.Join(aliasRoot, filepath.Base(platformDefault))) {
+		t.Fatal("同一默认配置目录的 symlink 路径应视为平台默认配置")
+	}
+	if IsPlatformDefaultPath(filepath.Join(t.TempDir(), "custom.json")) {
+		t.Fatal("自定义配置不能取得用户全局 shared-daemon owner")
+	}
+}
+
+func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	platformDefault := PlatformDefaultPath()
+	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(platformDefault, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	caseVariant := filepath.Join(filepath.Dir(platformDefault), "Config.json")
+	_, variantErr := os.Stat(caseVariant)
+	if variantErr == nil {
+		if !IsPlatformDefaultPath(caseVariant) {
+			t.Fatal("大小写不敏感卷上的同一默认文件必须取得全局 owner 权限")
+		}
+		left, err := ConfigPathIdentity(platformDefault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		right, err := ConfigPathIdentity(caseVariant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if left != right {
+			t.Fatalf("大小写别名必须取得同一配置锁：left=%q right=%q", left, right)
+		}
+		return
+	}
+	if !os.IsNotExist(variantErr) {
+		t.Fatal(variantErr)
+	}
+	if IsPlatformDefaultPath(caseVariant) {
+		t.Fatal("大小写敏感卷上的不同文件不能共享 owner")
+	}
+}
+
+func TestIsPlatformDefaultPathRejectsDifferentHardLinkEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	platformDefault := PlatformDefaultPath()
+	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(platformDefault, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hardLink := filepath.Join(t.TempDir(), "config-hardlink.json")
+	if err := os.Link(platformDefault, hardLink); err != nil {
+		t.Fatal(err)
+	}
+	if IsPlatformDefaultPath(hardLink) {
+		t.Fatal("不同 hard-link 目录项不能取得平台默认配置的全局 owner 权限")
+	}
+}

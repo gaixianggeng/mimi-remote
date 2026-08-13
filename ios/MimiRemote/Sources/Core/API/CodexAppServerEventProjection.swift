@@ -1762,10 +1762,7 @@ extension CodexAppServerSessionRuntime {
     }
 
     func approvalSessionID(from params: [String: CodexAppServerJSONValue]) -> SessionID? {
-        params["threadId"]?.stringValue
-            ?? params["conversationId"]?.stringValue
-            ?? params["sessionId"]?.stringValue
-            ?? params["session_id"]?.stringValue
+        CodexAppServerRequestScope.sessionID(in: params)
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {

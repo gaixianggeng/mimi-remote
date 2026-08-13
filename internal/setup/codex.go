@@ -1,12 +1,15 @@
 package setup
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type codexBinResolver func(configured string) (string, error)
@@ -81,7 +84,7 @@ func platformCodexCandidates() []string {
 // RepairCodexBin 只更新 codex.bin，并保留 auth、projects 及未来新增字段。
 // 写入复用私有文件的原子替换逻辑，避免修复中断后留下半份配置或放宽权限。
 func RepairCodexBin(configPath string) (string, bool, error) {
-	return repairCodexBin(configPath, ResolveCodexBin, writePrivateFileAtomically)
+	return repairCodexBin(configPath, ResolveCodexBin, nil)
 }
 
 func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig configWriter) (string, bool, error) {
@@ -152,8 +155,37 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 		return "", false, fmt.Errorf("编码配置文件失败：%w", err)
 	}
 	updated = append(updated, '\n')
-	if err := writeConfig(cfgPath, updated); err != nil {
-		return "", false, fmt.Errorf("原子更新配置文件失败：%w", err)
+	var writeErr error
+	if writeConfig == nil {
+		validateOriginal := func() error {
+			current, readErr := os.ReadFile(cfgPath)
+			if readErr != nil {
+				return fmt.Errorf("重新读取配置失败：%w", readErr)
+			}
+			if !bytes.Equal(current, original) {
+				return fmt.Errorf("配置已被其他进程修改，请重新执行")
+			}
+			return nil
+		}
+		// codex.bin 是 stable-owner 身份的一部分。先取得 daemon operation
+		// lock，再以同一 raw snapshot CAS 提交。auto owner 可由新 agentd
+		// 按新路径重建；manual pending 必须保留，Doctor 不能替用户确认迁移。
+		// 当前 daemon 不会被停止，原生 Codex 流程不受影响。
+		commitCtx, cancelCommit := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancelCommit()
+		writeErr = commitConfigRepairingOwnedSharedDaemonIdentity(
+			commitCtx,
+			cfgPath,
+			validateOriginal,
+			func() error {
+				return writePrivateFileAtomicallyCAS(cfgPath, original, updated)
+			},
+		)
+	} else {
+		writeErr = writeConfig(cfgPath, updated)
+	}
+	if writeErr != nil {
+		return "", false, fmt.Errorf("原子更新配置文件失败：%w", writeErr)
 	}
 	return resolved, true, nil
 }

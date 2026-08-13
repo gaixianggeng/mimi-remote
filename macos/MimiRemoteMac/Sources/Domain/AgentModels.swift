@@ -125,16 +125,20 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
     let enabled: Bool
     let changed: Bool
     let restartRequired: Bool
+    let daemonRestartRequired: Bool?
     let transport: String?
     let codexHome: String?
+    let warning: String?
     let message: String
 
     enum CodingKeys: String, CodingKey {
         case enabled
         case changed
         case restartRequired = "restart_required"
+        case daemonRestartRequired = "daemon_restart_required"
         case transport
         case codexHome = "codex_home"
+        case warning
         case message
     }
 
@@ -142,15 +146,19 @@ struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
         enabled: Bool,
         changed: Bool = false,
         restartRequired: Bool = false,
+        daemonRestartRequired: Bool? = nil,
         transport: String? = nil,
         codexHome: String? = nil,
+        warning: String? = nil,
         message: String = ""
     ) {
         self.enabled = enabled
         self.changed = changed
         self.restartRequired = restartRequired
+        self.daemonRestartRequired = daemonRestartRequired
         self.transport = transport
         self.codexHome = codexHome
+        self.warning = warning
         self.message = message
     }
 }
@@ -176,6 +184,23 @@ struct AgentDoctorResults: Codable, Equatable, Sendable {
 struct DoctorFixResults: Codable, Equatable, Sendable {
     let fixes: [String]
     let results: AgentDoctorResults
+    let restartRequired: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case fixes
+        case results
+        case restartRequired = "restart_required"
+    }
+
+    init(
+        fixes: [String],
+        results: AgentDoctorResults,
+        restartRequired: Bool? = nil
+    ) {
+        self.fixes = fixes
+        self.results = results
+        self.restartRequired = restartRequired
+    }
 }
 
 struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
@@ -265,6 +290,8 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     /// 旧 agentd 不返回这些字段，因此必须保持可选并按未确认处理。
     let transport: String?
     let shared: Bool?
+    /// Mimi-owned launchd owner 已安装，但现有 daemon 尚未在用户确认后迁移。
+    let daemonRestartRequired: Bool?
     let codexHome: String?
 
     enum CodingKeys: String, CodingKey {
@@ -280,6 +307,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case rateLimits = "rate_limits"
         case transport
         case shared
+        case daemonRestartRequired = "daemon_restart_required"
         case codexHome = "codex_home"
     }
 
@@ -296,6 +324,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         rateLimits: AgentRuntimeRateLimits?,
         transport: String? = nil,
         shared: Bool? = nil,
+        daemonRestartRequired: Bool? = nil,
         codexHome: String? = nil
     ) {
         self.id = id
@@ -310,6 +339,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.rateLimits = rateLimits
         self.transport = transport
         self.shared = shared
+        self.daemonRestartRequired = daemonRestartRequired
         self.codexHome = codexHome
     }
 

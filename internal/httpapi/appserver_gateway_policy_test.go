@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http/httptest"
@@ -2076,6 +2077,297 @@ func TestAppServerGatewayRejectsWritesWhileCodexDesktopTurnIsActive(t *testing.T
 	}
 	if !gatewayMethodRequiresExternalIdle("turn/start") || gatewayMethodRequiresExternalIdle("thread/resume") {
 		t.Fatal("active turn 只阻止写操作，thread/resume 仍须可用于只读观察")
+	}
+}
+
+func TestAppServerGatewaySharedModeFailsClosedWhenDesktopActivityIsUnavailable(t *testing.T) {
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	router.externalActivity = stubExternalActivitySource{err: errors.New("state database locked")}
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目目录应命中 gateway scope")
+	}
+	policy := &appServerGatewayPolicy{
+		router:    router,
+		runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {
+				id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
+			},
+		},
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"id":42,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"clientUserMessageId":"client-ipad","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, payload)
+	if len(forwarded) != 0 || policyErr == nil {
+		t.Fatalf("共享 runtime 无法判断 Desktop 活动时必须在转发前拒绝：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	if got := policyErr.data["reason"]; got != "external_activity_unavailable" {
+		t.Fatalf("应返回可区分的观测失败 reason：got=%v data=%v", got, policyErr.data)
+	}
+	if accepted, ok := policyErr.data["accepted"].(bool); !ok || accepted {
+		t.Fatalf("观测失败发生在转发前，必须声明 accepted=false：data=%v", policyErr.data)
+	}
+
+	// 独立 WS 后端不存在共享 writer，SQLite 观测失败不能阻断原有发送路径。
+	router.cfg.AppServer.Transport = "ws"
+	if err := policy.guardExternalDesktopThread("turn/start", map[string]any{"threadId": "thread-1"}); err != nil {
+		t.Fatalf("独立 WS 模式应继续 fail-open：%v", err)
+	}
+}
+
+func TestAppServerGatewayRejectsReverseResponseWhileCodexDesktopTurnIsActive(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
+		ThreadID: "thread-1",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}}
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"approval-active","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("反向审批 request 应先以只读卡片转发：forward=%t err=%+v", forward, policyErr)
+	}
+
+	response := []byte(`{"id":"approval-active","result":{"decision":"accept"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if len(forwarded) != 0 || policyErr == nil {
+		t.Fatalf("Desktop active turn 的反向 response 必须拒绝：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	if policyErr.data["reason"] != "external_thread_active" ||
+		policyErr.data["response_to_server_request"] != true ||
+		policyErr.data["thread_id"] != "thread-1" {
+		t.Fatalf("反向拒绝必须携带移动端恢复卡片所需字段：%v", policyErr.data)
+	}
+	id := json.RawMessage(`"approval-active"`)
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("策略拒绝后必须保留 pending，等待 Desktop 空闲后重试")
+	}
+
+	// 同一个 outstanding request 在 Desktop turn 完成后可以重试；成功后才消费。
+	router.externalActivity = stubExternalActivitySource{}
+	forwarded, policyErr = policy.validateClientFrame(websocket.TextMessage, response)
+	if policyErr != nil || !bytes.Equal(forwarded, response) {
+		t.Fatalf("Desktop 空闲后应允许原 response 重试：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	if _, ok := policy.pendingServerRequest(&id); ok {
+		t.Fatal("成功转发后必须消费 pending")
+	}
+}
+
+func TestAppServerGatewayAllowsOwnedReverseResponseAfterClaimTTLReclassification(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	activity := &gatewayOwnedExternalActivitySource{
+		threadID: "thread-ipad",
+		turnID:   "turn-ipad",
+	}
+	router.externalActivity = activity
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"approval-long","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
+	}
+	id := json.RawMessage(`"approval-long"`)
+	pending, ok := policy.pendingServerRequest(&id)
+	if !ok || !pending.gatewayOwnedTurn {
+		t.Fatalf("pending 必须捕获 request 创建时的精确 gateway turn 归属：pending=%+v ok=%t", pending, ok)
+	}
+
+	// 模拟 40 分钟 claim TTL 到期：tracker 会把仍在等待审批的同一 turn
+	// 保守重分类为 codex_desktop，但它不是一个新的 Mac writer。
+	activity.activities = []codexhistory.ExternalActivity{{
+		ThreadID: "thread-ipad",
+		TurnID:   "turn-ipad",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}
+	response := []byte(`{"id":"approval-long","result":{"decision":"accept"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if policyErr != nil || !bytes.Equal(forwarded, response) {
+		t.Fatalf("原 gateway turn 的长时间 pending response 不应被 TTL 永久锁死：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+}
+
+func TestAppServerGatewayOwnedReverseResponseStillRejectsDifferentDesktopTurn(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	activity := &gatewayOwnedExternalActivitySource{
+		threadID: "thread-ipad",
+		turnID:   "turn-ipad",
+	}
+	router.externalActivity = activity
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"approval-stale","method":"item/fileChange/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
+	}
+
+	activity.activities = []codexhistory.ExternalActivity{{
+		ThreadID: "thread-ipad",
+		TurnID:   "turn-mac-new",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}
+	response := []byte(`{"id":"approval-stale","result":{"decision":"accept"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != "external_thread_active" {
+		t.Fatalf("新的 Mac turn 必须继续阻止旧 gateway response：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	id := json.RawMessage(`"approval-stale"`)
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("被新的 Mac turn 拒绝后必须保留 pending，不能丢失上游请求")
+	}
+}
+
+func TestAppServerGatewayLegacyApprovalUsesConversationIDForExternalWriterGuard(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "unix"
+	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
+		ThreadID: "thread-legacy",
+		Source:   "codex_desktop",
+		State:    "running",
+	}}}
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"legacy-approval","method":"execCommandApproval","params":{"conversationId":"thread-legacy","callId":"call-1","command":["rm","tmp"]}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("legacy 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
+	}
+
+	response := []byte(`{"id":"legacy-approval","result":{"decision":"denied"}}`)
+	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
+	if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != "external_thread_active" ||
+		policyErr.data["thread_id"] != "thread-legacy" {
+		t.Fatalf("conversationId 必须映射到共享 writer guard：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	id := json.RawMessage(`"legacy-approval"`)
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("legacy 审批被 guard 拒绝后必须保留 pending")
+	}
+
+	router.externalActivity = stubExternalActivitySource{}
+	forwarded, policyErr = policy.validateClientFrame(websocket.TextMessage, response)
+	if policyErr != nil || !bytes.Equal(forwarded, response) {
+		t.Fatalf("Desktop 空闲后 legacy 审批应可重试：forwarded=%s err=%+v", forwarded, policyErr)
+	}
+}
+
+func TestAppServerGatewaySharedReverseResponseFailsClosedWithoutReliableThreadActivity(t *testing.T) {
+	tests := []struct {
+		name          string
+		transport     string
+		threadParams  string
+		activity      externalActivitySource
+		response      string
+		wantReason    string
+		wantForwarded bool
+	}{
+		{
+			name:         "observer missing",
+			transport:    "unix",
+			threadParams: `"threadId":"thread-1",`,
+			response:     `{"id":"reverse-1","result":{"decision":"accept"}}`,
+			wantReason:   "external_activity_unavailable",
+		},
+		{
+			name:         "observer error",
+			transport:    "unix",
+			threadParams: `"threadId":"thread-1",`,
+			activity:     stubExternalActivitySource{err: errors.New("state database locked")},
+			response:     `{"id":"reverse-1","result":{"decision":"accept"}}`,
+			wantReason:   "external_activity_unavailable",
+		},
+		{
+			name:       "missing thread scope",
+			transport:  "unix",
+			activity:   stubExternalActivitySource{},
+			response:   `{"id":"reverse-1","result":{"decision":"accept"}}`,
+			wantReason: "external_activity_unavailable",
+		},
+		{
+			name:          "idle shared thread",
+			transport:     "unix",
+			threadParams:  `"threadId":"thread-1",`,
+			activity:      stubExternalActivitySource{},
+			response:      `{"id":"reverse-1","result":{"decision":"accept"}}`,
+			wantForwarded: true,
+		},
+		{
+			name:          "independent websocket keeps old behavior",
+			transport:     "ws",
+			threadParams:  `"threadId":"thread-1",`,
+			response:      `{"id":"reverse-1","result":{"decision":"accept"}}`,
+			wantForwarded: true,
+		},
+		{
+			name:         "error response is also a write",
+			transport:    "unix",
+			threadParams: `"threadId":"thread-1",`,
+			activity: stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
+				ThreadID: "thread-1",
+				Source:   "codex_desktop",
+				State:    "running",
+			}}},
+			response:   `{"id":"reverse-1","error":{"code":-1,"message":"declined"}}`,
+			wantReason: "external_thread_active",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+			router.cfg.AppServer.Transport = test.transport
+			router.externalActivity = test.activity
+			policy := &appServerGatewayPolicy{
+				router:                router,
+				runtimeID:             "codex",
+				pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+			}
+			request := []byte(`{"id":"reverse-1","method":"item/fileChange/requestApproval","params":{` + test.threadParams + `"turnId":"turn-1","itemId":"item-1"}}`)
+			if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+				t.Fatalf("登记反向 request 失败：forward=%t err=%+v", forward, policyErr)
+			}
+
+			forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, []byte(test.response))
+			id := json.RawMessage(`"reverse-1"`)
+			if test.wantForwarded {
+				if policyErr != nil || !bytes.Equal(forwarded, []byte(test.response)) {
+					t.Fatalf("response 应保持原行为：forwarded=%s err=%+v", forwarded, policyErr)
+				}
+				if _, ok := policy.pendingServerRequest(&id); ok {
+					t.Fatal("成功 response 应消费 pending")
+				}
+				return
+			}
+			if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != test.wantReason {
+				t.Fatalf("shared response 应 fail closed：forwarded=%s err=%+v", forwarded, policyErr)
+			}
+			if _, ok := policy.pendingServerRequest(&id); !ok {
+				t.Fatal("拒绝 response 不得消费 pending")
+			}
+		})
 	}
 }
 

@@ -821,6 +821,20 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("app-server request 缺少 id")
 	}
 	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
+	gatewayOwnedTurn := false
+	if p != nil && p.router != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" &&
+		strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") &&
+		threadID != "" && turnID != "" {
+		owned, err := p.router.codexGatewayOwnsTurn(threadID, turnID)
+		if err != nil {
+			// request 本身是只读投影，可以继续展示；归属不可确认时不放宽后续
+			// response，仍由 external guard fail-closed。
+			log.Printf("gateway server request ownership unavailable method=%s err=%v",
+				sanitizeGatewayDiagnostic(method), err)
+		} else {
+			gatewayOwnedTurn = owned
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -832,11 +846,12 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("gateway pending server request 过多")
 	}
 	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
-		method:    method,
-		threadID:  threadID,
-		turnID:    turnID,
-		itemID:    itemID,
-		createdAt: now,
+		method:           method,
+		threadID:         threadID,
+		turnID:           turnID,
+		itemID:           itemID,
+		gatewayOwnedTurn: gatewayOwnedTurn,
+		createdAt:        now,
 	}
 	return nil
 }
@@ -846,11 +861,16 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	if err != nil {
 		return "", "", ""
 	}
-	threadID, _ := gatewayStringParam(params, "threadId")
-	if threadID == "" {
-		threadID, _ = gatewayStringParam(params, "sessionId")
+	threadID := ""
+	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
+		if threadID, _ = gatewayStringParam(params, key); threadID != "" {
+			break
+		}
 	}
 	turnID, _ := gatewayStringParam(params, "turnId")
+	if turnID == "" {
+		turnID, _ = gatewayStringParam(params, "turn_id")
+	}
 	if turnID == "" {
 		if turn, ok := params["turn"].(map[string]any); ok {
 			turnID, _ = gatewayStringParam(turn, "id")
@@ -858,7 +878,10 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	}
 	itemID, _ := gatewayStringParam(params, "itemId")
 	if itemID == "" {
-		for _, key := range []string{"requestId", "approvalId", "callId"} {
+		itemID, _ = gatewayStringParam(params, "item_id")
+	}
+	if itemID == "" {
+		for _, key := range []string{"requestId", "request_id", "approvalId", "approval_id", "callId", "call_id"} {
 			if itemID, _ = gatewayStringParam(params, key); itemID != "" {
 				break
 			}
@@ -942,6 +965,18 @@ func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage
 	if ok {
 		delete(p.pendingServerRequests, key)
 	}
+	return request, ok
+}
+
+func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return appServerGatewayPendingServerRequest{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prunePendingServerRequestsLocked(time.Now())
+	request, ok := p.pendingServerRequests[key]
 	return request, ok
 }
 

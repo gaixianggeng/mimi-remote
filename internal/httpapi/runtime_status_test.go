@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +62,38 @@ func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T)
 	claude := response.Runtimes[1]
 	if claude.ID != "claude" || claude.Enabled || claude.State != runtimeStateDisabled {
 		t.Fatalf("未启用 Claude 应保留灰态行：%+v", claude)
+	}
+}
+
+func TestRuntimeStatusOverlaysLiveSharedDaemonMigrationMarker(t *testing.T) {
+	required := true
+	router := &Router{
+		sharedDaemonMigrationRequired: func() (bool, error) { return required, nil },
+	}
+	cached := runtimeStatusResponse{Runtimes: []runtimeAccountStatus{
+		{ID: "codex", Title: "Codex"},
+		{ID: "claude", Title: "Claude"},
+	}}
+
+	first := router.withLiveSharedDaemonMigrationStatus(cached)
+	if first.Runtimes[0].DaemonRestartRequired == nil || !*first.Runtimes[0].DaemonRestartRequired {
+		t.Fatalf("必须覆盖实时待迁移状态：%+v", first.Runtimes[0])
+	}
+	if cached.Runtimes[0].DaemonRestartRequired != nil {
+		t.Fatal("实时覆盖不能污染五分钟缓存")
+	}
+	required = false
+	second := router.withLiveSharedDaemonMigrationStatus(cached)
+	if second.Runtimes[0].DaemonRestartRequired == nil || *second.Runtimes[0].DaemonRestartRequired {
+		t.Fatalf("清除标记后下一次请求必须立即变为 false：%+v", second.Runtimes[0])
+	}
+
+	router.sharedDaemonMigrationRequired = func() (bool, error) {
+		return false, fmt.Errorf("permission denied")
+	}
+	unknown := router.withLiveSharedDaemonMigrationStatus(cached)
+	if unknown.Runtimes[0].DaemonRestartRequired != nil {
+		t.Fatal("标记读取失败必须保持未知，不能授权迁移")
 	}
 }
 

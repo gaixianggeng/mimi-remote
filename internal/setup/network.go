@@ -379,7 +379,7 @@ func SetLANAccess(configPath string, enabled bool) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("编码配置文件失败：%w", err)
 	}
-	if err := writePrivateFileAtomically(cfgPath, append(updated, '\n')); err != nil {
+	if err := writePrivateFileAtomicallyCAS(cfgPath, original, append(updated, '\n')); err != nil {
 		return false, fmt.Errorf("原子更新配置文件失败：%w", err)
 	}
 	return true, nil

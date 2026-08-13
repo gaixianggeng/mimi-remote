@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type setupFileTransactionOps struct {
@@ -29,7 +31,7 @@ func defaultSetupFileTransactionOps() setupFileTransactionOps {
 func writeSetupFilesAtomically(configPath string, tokenPath string, configRaw []byte, tokenRaw []byte, ops setupFileTransactionOps) error {
 	configPath = filepath.Clean(configPath)
 	tokenPath = filepath.Clean(tokenPath)
-	if configPath == tokenPath {
+	if config.SameConfigPath(configPath, tokenPath) {
 		return fmt.Errorf("配置文件与 app-server token file 不能使用同一路径")
 	}
 	configExisted, err := regularFileOrMissing(configPath, "配置文件")
