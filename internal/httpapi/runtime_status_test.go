@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -94,6 +95,49 @@ func TestRuntimeStatusOverlaysLiveSharedDaemonMigrationMarker(t *testing.T) {
 	unknown := router.withLiveSharedDaemonMigrationStatus(cached)
 	if unknown.Runtimes[0].DaemonRestartRequired != nil {
 		t.Fatal("标记读取失败必须保持未知，不能授权迁移")
+	}
+}
+
+func TestRuntimeSharedDaemonDiagnosticsAreSanitized(t *testing.T) {
+	limit := 8192
+	effectiveLimit := 4096
+	usage := 12.5
+	startedAt := time.Date(2026, time.August, 14, 0, 20, 20, 0, time.UTC)
+	diagnostic := newRuntimeSharedDaemonStatus(appserver.SharedDaemonDiagnostics{
+		Supported:              true,
+		ListenerPID:            10306,
+		ListenerStartedAt:      startedAt,
+		OpenFileDescriptors:    1024,
+		DirectChildProcesses:   3,
+		OwnerTargetFDSoftLimit: &limit,
+		EffectiveFDSoftLimit:   &effectiveLimit,
+		FDUsagePercent:         &usage,
+		OwnerState:             appserver.SharedDaemonOwnerStateStable,
+		ResourceState:          appserver.SharedDaemonResourceStateHealthy,
+	})
+	if diagnostic.ListenerPID != 10306 || diagnostic.OpenFileDescriptors != 1024 ||
+		diagnostic.OwnerTargetFDSoftLimit == nil || *diagnostic.OwnerTargetFDSoftLimit != 8192 ||
+		diagnostic.EffectiveFDSoftLimit == nil || *diagnostic.EffectiveFDSoftLimit != 4096 ||
+		diagnostic.OwnerState != "stable" || diagnostic.ResourceState != "healthy" {
+		t.Fatalf("共享 daemon 诊断映射错误：%+v", diagnostic)
+	}
+	raw, err := json.Marshal(diagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(raw)
+	for _, sensitive := range []string{"socket", "command", "environment", "/Users/tester"} {
+		if strings.Contains(strings.ToLower(serialized), strings.ToLower(sensitive)) {
+			t.Fatalf("runtime daemon 诊断不能泄露 %q：%s", sensitive, serialized)
+		}
+	}
+}
+
+func TestRuntimeSharedDaemonDiagnosticsFailureIsOmitted(t *testing.T) {
+	results := make(chan sharedDaemonDiagnosticsResult, 1)
+	results <- sharedDaemonDiagnosticsResult{err: fmt.Errorf("permission denied")}
+	if status := awaitRuntimeSharedDaemonDiagnostics(context.Background(), results); status != nil {
+		t.Fatalf("可选资源诊断失败时必须省略字段：%+v", status)
 	}
 }
 

@@ -1,4 +1,5 @@
 @preconcurrency import Foundation
+import Darwin
 
 struct CommandResult: Equatable, Sendable {
     let status: Int32
@@ -53,7 +54,8 @@ actor ProcessExecutor {
         arguments: [String],
         timeout: Duration = .seconds(15),
         outputLimit: Int = 1_048_576,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        forceKillAfterTimeout: Bool = false
     ) async throws -> CommandResult {
         let process = Process()
         process.executableURL = executable
@@ -79,7 +81,15 @@ actor ProcessExecutor {
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled, process.isRunning else { return }
             timeoutState.set()
+            // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
+            // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
+            // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰共享
+            // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
             process.terminate()
+            guard forceKillAfterTimeout else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard process.isRunning else { return }
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
         }
 
         let status = await withTaskCancellationHandler {
