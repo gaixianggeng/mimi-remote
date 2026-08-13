@@ -538,6 +538,10 @@ func sharedDaemonRuntimeDiagnosticCheck(
 	case appserver.SharedDaemonOwnerStateUnavailable:
 		check.Message = "共享 daemon listener 可用，但稳定 LaunchAgent owner 不可用；" + summary
 		check.Fix = "在 Mimi Remote Mac 中关闭后重新开启共享，恢复稳定 owner"
+	case appserver.SharedDaemonOwnerStateClaimedUnverified:
+		check.Level = "warning"
+		check.Message = "共享 daemon 的稳定 owner 已提交，但官方 lifecycle 未返回 listener PID；" + summary
+		check.Fix = "继续观察真实 FD 与子进程水位；不要仅凭 owner 配置推测当前进程上限"
 	case appserver.SharedDaemonOwnerStateUnmanagedListener:
 		check.Message = "共享 daemon listener 尚未由官方 pid daemon 管理；" + summary
 		check.Fix = "保存任务并退出 Codex Desktop 后，在 Mimi Remote Mac 中应用待处理设置"

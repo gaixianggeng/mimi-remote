@@ -85,6 +85,14 @@ func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *t
 			wantLevel: "warning", wantText: "当前进程未验证",
 		},
 		{
+			name: "claimed owner without lifecycle pid is warning",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 107, OpenFileDescriptors: 82,
+				OwnerState: appserver.SharedDaemonOwnerStateClaimedUnverified,
+			},
+			wantLevel: "warning", wantText: "未返回 listener PID",
+		},
+		{
 			name: "observation failure is warning",
 			err:  errors.New("dial unix /Users/secret/.codex/app-server.sock: permission denied"), wantLevel: "warning", wantText: "无法读取",
 		},

@@ -117,12 +117,19 @@ func inspectSharedDaemonOwnerState(
 	if err != nil || !strings.EqualFold(strings.TrimSpace(lifecycle.Status), "running") {
 		return SharedDaemonOwnerStateUnknown
 	}
-	if lifecycle.Backend == nil || lifecycle.PID == nil {
+	// 没有 backend 仍是旧 SSH/CLI 直启进程，不能因为 owner 已安装就冒充官方托管。
+	if lifecycle.Backend == nil {
 		return SharedDaemonOwnerStateUnmanagedListener
 	}
-	if !strings.EqualFold(strings.TrimSpace(*lifecycle.Backend), "pid") ||
-		!sameCanonicalPath(lifecycle.SocketPath, socketPath) ||
-		int(*lifecycle.PID) != listenerPID {
+	backendIsPID := strings.EqualFold(strings.TrimSpace(*lifecycle.Backend), "pid")
+	socketMatches := sameCanonicalPath(lifecycle.SocketPath, socketPath)
+	// 官方 0.147.0 的 daemon start 在完成 detached listener 交接后，会保留 pid
+	// backend 但不再返回 PID。此时 stable owner 已提交且 socket 路径一致，仍不能
+	// 证明 listener 的启动来源；保留只读 warning，不误报 unmanaged 或 healthy。
+	if backendIsPID && socketMatches && lifecycle.PID == nil {
+		return SharedDaemonOwnerStateClaimedUnverified
+	}
+	if lifecycle.PID == nil || !backendIsPID || !socketMatches || int(*lifecycle.PID) != listenerPID {
 		return SharedDaemonOwnerStateListenerMismatch
 	}
 	return SharedDaemonOwnerStateStable

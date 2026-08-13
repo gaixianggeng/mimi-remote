@@ -12,6 +12,7 @@ const (
 	SharedDaemonOwnerStateStable            SharedDaemonOwnerState = "stable"
 	SharedDaemonOwnerStateMigrationPending  SharedDaemonOwnerState = "migration_pending"
 	SharedDaemonOwnerStateUnavailable       SharedDaemonOwnerState = "owner_unavailable"
+	SharedDaemonOwnerStateClaimedUnverified SharedDaemonOwnerState = "owner_claimed_unverified"
 	SharedDaemonOwnerStateUnmanagedListener SharedDaemonOwnerState = "unmanaged_listener"
 	SharedDaemonOwnerStateListenerMismatch  SharedDaemonOwnerState = "listener_mismatch"
 )
