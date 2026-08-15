@@ -139,3 +139,9 @@ func startPreparedSharedDaemonWithStableOwnerTracked(
 }
 
 func sharedDaemonSocketAcceptsConnectionMust(LocalDaemonOptions) bool { return false }
+
+func sharedDaemonLaunchAgentLogSize() int64 { return 0 }
+
+func waitForSharedDaemonSocket(context.Context, LocalDaemonOptions, int64) error {
+	return fmt.Errorf("稳定共享 daemon owner 仅支持 macOS")
+}

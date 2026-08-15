@@ -113,6 +113,11 @@ func inspectSharedDaemonOwnerState(
 	if owner.MigrationRequired || !owner.RunAtLoad {
 		return SharedDaemonOwnerStateMigrationPending
 	}
+	// foreground app-server 的官方 daemon JSON 没有 pid backend。先从真实 socket
+	// peer 沿 PPID 验证 OpenAI node supervisor；只有完整链成立才是新的 stable。
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err == nil {
+		return SharedDaemonOwnerStateStable
+	}
 	lifecycle, err := InspectLocalDaemonLifecycle(ctx, options)
 	if err != nil || !strings.EqualFold(strings.TrimSpace(lifecycle.Status), "running") {
 		return SharedDaemonOwnerStateUnknown
@@ -123,16 +128,14 @@ func inspectSharedDaemonOwnerState(
 	}
 	backendIsPID := strings.EqualFold(strings.TrimSpace(*lifecycle.Backend), "pid")
 	socketMatches := sameCanonicalPath(lifecycle.SocketPath, socketPath)
-	// 官方 0.147.0 的 daemon start 在完成 detached listener 交接后，会保留 pid
-	// backend 但不再返回 PID。此时 stable owner 已提交且 socket 路径一致，仍不能
-	// 证明 listener 的启动来源；保留只读 warning，不误报 unmanaged 或 healthy。
-	if backendIsPID && socketMatches && lifecycle.PID == nil {
+	// 旧 daemon start 即使返回了精确 PID，也只能证明官方 pid backend 管理着
+	// listener，不能证明它来自新的签名 node supervisor，更不能断言继承了 8192。
+	// 保留 warning，等待普通 ensure 收敛为 pending 后由用户显式迁移。
+	if backendIsPID && socketMatches &&
+		(lifecycle.PID == nil || int(*lifecycle.PID) == listenerPID) {
 		return SharedDaemonOwnerStateClaimedUnverified
 	}
-	if lifecycle.PID == nil || !backendIsPID || !socketMatches || int(*lifecycle.PID) != listenerPID {
-		return SharedDaemonOwnerStateListenerMismatch
-	}
-	return SharedDaemonOwnerStateStable
+	return SharedDaemonOwnerStateListenerMismatch
 }
 
 func sharedDaemonProcessOpenFileCount(pid int) (int, error) {

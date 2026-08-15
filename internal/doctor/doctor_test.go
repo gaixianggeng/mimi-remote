@@ -123,6 +123,26 @@ func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *t
 	}
 }
 
+func TestSharedDaemonOwnerInspectionFailureDoesNotLeakRawError(t *testing.T) {
+	rawErr := errors.New("读取 /Users/secret/Library/LaunchAgents/com.example.codex.plist 失败：permission denied")
+	check := sharedDaemonOwnerInspectionFailureCheck(rawErr)
+
+	if check.OK || check.Name != "codex-daemon-owner" {
+		t.Fatalf("owner 检查失败应保留阻断检查语义：%+v", check)
+	}
+	for field, value := range map[string]string{
+		"message": check.Message,
+		"fix":     check.Fix,
+	} {
+		if strings.Contains(value, "/Users/secret") || strings.Contains(value, rawErr.Error()) {
+			t.Fatalf("owner 检查不应把底层错误写入 %s：%q", field, value)
+		}
+	}
+	if !strings.Contains(check.Fix, "共享 Codex daemon") || !strings.Contains(check.Fix, "权限") {
+		t.Fatalf("owner 检查失败应给出共享功能和权限方向的固定修复建议：%+v", check)
+	}
+}
+
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
