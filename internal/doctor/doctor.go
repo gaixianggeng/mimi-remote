@@ -444,12 +444,7 @@ func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
 	}
 	status, err := appserver.InspectSharedDaemonOwner(ctx)
 	if err != nil {
-		return Check{
-			Name:    "codex-daemon-owner",
-			OK:      false,
-			Message: "无法检查共享 Codex daemon 的 launchd owner",
-			Fix:     err.Error(),
-		}
+		return sharedDaemonOwnerInspectionFailureCheck(err)
 	}
 	if !status.Supported {
 		return Check{}
@@ -473,6 +468,17 @@ func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
 		check.Fix = ""
 	}
 	return check
+}
+
+// 共享 owner 检查的底层错误可能包含 LaunchAgent 或 socket 绝对路径；Doctor
+// 结果会进入状态接口和远端 UI，因此只返回固定的可执行提示，不传播原始错误。
+func sharedDaemonOwnerInspectionFailureCheck(_ error) Check {
+	return Check{
+		Name:    "codex-daemon-owner",
+		OK:      false,
+		Message: "无法检查共享 Codex daemon 的 launchd owner",
+		Fix:     "确认共享 Codex daemon 已启用，并检查当前用户对 LaunchAgent 和进程信息的读取权限后重试",
+	}
 }
 
 func (c *Checker) sharedDaemonRuntimeCheck(ctx context.Context) Check {

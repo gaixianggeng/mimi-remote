@@ -5,6 +5,7 @@ package appserver
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"net"
@@ -29,10 +30,27 @@ func writeFakeCodexBin(t *testing.T, dir string, name string) string {
 // CODEX_HOME 要满足生产代码的“目录已存在”约束。
 func sharedDaemonTestHome(t *testing.T) string {
 	t.Helper()
+	previousResolver := sharedDaemonResolveSupervisorNode
+	previousValidator := sharedDaemonValidateSupervisor
+	previousRuntimeValidator := sharedDaemonValidateSignedRuntime
 	home, err := os.MkdirTemp("/tmp", "mimi-owner-")
 	if err != nil {
 		t.Fatalf("创建短测试 Home 失败：%v", err)
 	}
+	// 测试只注入路径解析和签名校验 seam，不依赖真实 ChatGPT.app 或真实
+	// codesign 输出；owner 的两阶段/文件权限测试仍走完整生产流程。
+	nodePath := filepath.Join(home, "node")
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("写入假 node supervisor 失败：%v", err)
+	}
+	sharedDaemonResolveSupervisorNode = func(string) (string, error) { return nodePath, nil }
+	sharedDaemonValidateSupervisor = func(string, string) error { return nil }
+	sharedDaemonValidateSignedRuntime = func(context.Context, LocalDaemonOptions, string) error {
+		return fmt.Errorf("test listener lacks signed supervisor evidence")
+	}
+	t.Cleanup(func() { sharedDaemonResolveSupervisorNode = previousResolver })
+	t.Cleanup(func() { sharedDaemonValidateSupervisor = previousValidator })
+	t.Cleanup(func() { sharedDaemonValidateSignedRuntime = previousRuntimeValidator })
 	t.Cleanup(func() { os.RemoveAll(home) })
 	for _, name := range []string{".codex", "other-codex"} {
 		if err := os.MkdirAll(filepath.Join(home, name), 0o700); err != nil {
@@ -42,9 +60,57 @@ func sharedDaemonTestHome(t *testing.T) string {
 	return home
 }
 
-func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
+func allowTestSignedSharedDaemonRuntime(t *testing.T) {
+	t.Helper()
+	previous := sharedDaemonValidateSignedRuntime
+	sharedDaemonValidateSignedRuntime = func(context.Context, LocalDaemonOptions, string) error { return nil }
+	t.Cleanup(func() { sharedDaemonValidateSignedRuntime = previous })
+}
+
+func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) {
+	metadataFor := func(identifier string) string {
+		return strings.Join([]string{
+			"Executable=/Applications/ChatGPT.app/Contents/Resources/" + identifier,
+			"Identifier=" + identifier,
+			"CodeDirectory v=20500 flags=0x10000(runtime)",
+			"TeamIdentifier=2DC432GLL2",
+		}, "\n")
+	}
+	for _, identifier := range []string{"node", "codex"} {
+		t.Run(identifier, func(t *testing.T) {
+			valid := metadataFor(identifier)
+			if err := validateSharedDaemonCodeSignatureMetadata(valid, identifier); err != nil {
+				t.Fatalf("OpenAI 签名的 hardened %s 应通过：%v", identifier, err)
+			}
+			tests := map[string]string{
+				"wrong identifier": strings.Replace(valid, "Identifier="+identifier, "Identifier=foreign", 1),
+				"wrong team":       strings.Replace(valid, "TeamIdentifier=2DC432GLL2", "TeamIdentifier=OTHER", 1),
+				"no runtime":       strings.Replace(valid, "(runtime)", "", 1),
+			}
+			for name, candidate := range tests {
+				t.Run(name, func(t *testing.T) {
+					if err := validateSharedDaemonCodeSignatureMetadata(candidate, identifier); err == nil {
+						t.Fatal("不可信 supervisor metadata 必须 fail closed")
+					}
+				})
+			}
+			otherIdentifier := "node"
+			if identifier == "node" {
+				otherIdentifier = "codex"
+			}
+			if err := validateSharedDaemonCodeSignatureMetadata(valid, otherIdentifier); err == nil {
+				t.Fatalf("%s metadata 不能冒充 %s 签名", identifier, otherIdentifier)
+			}
+		})
+	}
+}
+
+func TestRenderSharedDaemonLaunchAgentUsesSignedNodeLauncher(t *testing.T) {
+	nodeBin := "/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+	codexBin := "/opt/codex bin/codex"
 	rendered, err := renderSharedDaemonLaunchAgent(
-		"/opt/codex bin/codex",
+		nodeBin,
+		codexBin,
 		map[string]string{"CODEX_HOME": "/Users/tester/.codex"},
 		"/Users/tester/Library/Logs/mimi-remote/codex-shared-daemon.log",
 	)
@@ -53,15 +119,21 @@ func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
 	}
 	content := string(rendered)
 
-	if strings.Contains(content, "<string>/bin/sh</string>") || strings.Contains(content, "exec &#34;") {
-		t.Fatalf("plist 不能引入 shell 责任主体：\n%s", content)
+	if strings.Contains(content, "<string>/bin/sh</string>") || strings.Contains(content, "exec &#34;") ||
+		strings.Contains(content, "<string>daemon</string>") || strings.Contains(content, "<string>start</string>") {
+		t.Fatalf("plist 不能引入 shell 或旧 daemon start 责任主体：\n%s", content)
 	}
-	if !strings.Contains(content, "<string>/opt/codex bin/codex</string>") {
+	if !strings.Contains(content, "<string>"+nodeBin+"</string>") ||
+		!strings.Contains(content, "<string>"+codexBin+"</string>") {
 		t.Fatalf("plist 必须使用绝对 codex 路径：\n%s", content)
 	}
-	for _, argument := range []string{"app-server", "daemon", "start"} {
-		if !strings.Contains(content, "<string>"+argument+"</string>") {
-			t.Fatalf("plist 缺少官方 daemon 参数 %s：\n%s", argument, content)
+	for _, argument := range sharedDaemonSupervisorProgramArguments(nodeBin, codexBin) {
+		var escaped bytes.Buffer
+		if err := xml.EscapeText(&escaped, []byte(argument)); err != nil {
+			t.Fatalf("转义 launcher 参数失败：%v", err)
+		}
+		if !strings.Contains(content, "<string>"+escaped.String()+"</string>") {
+			t.Fatalf("plist 缺少 signed node launcher 参数 %q：\n%s", argument, content)
 		}
 	}
 	if !strings.Contains(content, "<key>RunAtLoad</key>\n\t<true/>") {
@@ -69,6 +141,9 @@ func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
 	}
 	if !strings.Contains(content, "<key>KeepAlive</key>\n\t<false/>") {
 		t.Fatalf("一次性控制命令不能被 launchd 反复重启：\n%s", content)
+	}
+	if !strings.Contains(content, "<key>AbandonProcessGroup</key>\n\t<true/>") {
+		t.Fatalf("one-shot launcher 必须显式放弃已 detached 的 process group：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>Umask</key>\n\t<integer>63</integer>") {
 		t.Fatalf("LaunchAgent 日志必须只允许当前用户读取：\n%s", content)
@@ -83,10 +158,14 @@ func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
 			t.Fatalf("plist 必须以空值覆盖 Desktop 专属变量 %s：\n%s", key, content)
 		}
 	}
+	if value := sharedDaemonPlistStringValue(rendered, "NODE_OPTIONS"); value != "" {
+		t.Fatalf("launcher 必须清空继承的 NODE_OPTIONS，实际=%q", value)
+	}
 }
 
 func TestRenderSharedDaemonLaunchAgentPendingDisablesRunAtLoad(t *testing.T) {
 	rendered, err := renderSharedDaemonLaunchAgent(
+		"/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node",
 		"/opt/codex/bin/codex",
 		map[string]string{"CODEX_HOME": "/Users/tester/.codex"},
 		"",
@@ -104,6 +183,7 @@ func TestRenderSharedDaemonLaunchAgentPendingDisablesRunAtLoad(t *testing.T) {
 
 func TestRenderSharedDaemonLaunchAgentEscapesXML(t *testing.T) {
 	rendered, err := renderSharedDaemonLaunchAgent(
+		"/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node",
 		"/tmp/a&b/codex",
 		map[string]string{"CODEX_HOME": "/tmp/<home>"},
 		"",
@@ -121,8 +201,37 @@ func TestRenderSharedDaemonLaunchAgentEscapesXML(t *testing.T) {
 }
 
 func TestRenderSharedDaemonLaunchAgentRejectsEmptyBin(t *testing.T) {
-	if _, err := renderSharedDaemonLaunchAgent("  ", nil, ""); err == nil {
+	if _, err := renderSharedDaemonLaunchAgent("  ", "/opt/codex/bin/codex", nil, ""); err == nil {
+		t.Fatal("空 node supervisor 路径必须报错")
+	}
+	if _, err := renderSharedDaemonLaunchAgent("/opt/node", "  ", nil, ""); err == nil {
 		t.Fatal("空 codex 路径必须报错")
+	}
+}
+
+func TestEnsureSharedDaemonLaunchAgentRejectsUntrustedSupervisorBeforeWrite(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexBin := writeFakeCodexBin(t, t.TempDir(), "codex")
+	previousValidator := sharedDaemonValidateSupervisor
+	sharedDaemonValidateSupervisor = func(string, string) error {
+		return fmt.Errorf("共享 daemon supervisor 不是受支持的 OpenAI 签名 codex")
+	}
+	t.Cleanup(func() { sharedDaemonValidateSupervisor = previousValidator })
+
+	_, err := EnsureSharedDaemonLaunchAgent(LocalDaemonOptions{
+		CodexBin: codexBin,
+		Env:      map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "OpenAI 签名") {
+		t.Fatalf("不可信 supervisor 必须在写 plist 前拒绝：%v", err)
+	}
+	path, pathErr := SharedDaemonLaunchAgentPath()
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("签名失败不能落盘 LaunchAgent：%v", statErr)
 	}
 }
 
@@ -332,6 +441,76 @@ func TestEnsureSharedDaemonOwnerMarksPreexistingDaemonForExplicitMigration(t *te
 	}
 	if _, err := os.Stat(flagPath); !os.IsNotExist(err) {
 		t.Fatalf("迁移标记应被删除：%v", err)
+	}
+}
+
+func TestEnsureSharedDaemonOwnerRechecksListenerBeforeBootout(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	loaded := false
+	bootstrapCalls := 0
+	bootoutCalls := 0
+	originalLaunchctl := sharedDaemonLaunchctl
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = { state = exited }", nil
+			}
+			return "", fmt.Errorf("not loaded")
+		case "bootstrap":
+			bootstrapCalls++
+			loaded = true
+			return "", nil
+		case "bootout":
+			bootoutCalls++
+			loaded = false
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
+
+	oldOptions := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex-old"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}
+	if _, err := EnsureSharedDaemonOwner(context.Background(), oldOptions, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// 入口快照仍是“无 listener”，但在新 plan 的签名校验期间模拟另一条
+	// Codex 启动链赢得 socket。bootout 前的二次取证必须把 owner 改成 manual。
+	originalValidator := sharedDaemonValidateSupervisor
+	var stopServer func()
+	sharedDaemonValidateSupervisor = func(string, string) error {
+		if stopServer == nil {
+			_, _, stopServer = startLocalDaemonTestServer(
+				t,
+				codexHome,
+				"Codex Desktop/0.147.0 (Mac OS; arm64)",
+			)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		sharedDaemonValidateSupervisor = originalValidator
+		if stopServer != nil {
+			stopServer()
+		}
+	})
+
+	status, err := EnsureSharedDaemonOwner(context.Background(), LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex-new"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}, false)
+	if err != nil {
+		t.Fatalf("bootout 前出现 listener 应安全收敛为 pending：%v", err)
+	}
+	if !status.MigrationRequired || status.RunAtLoad || !loaded || bootoutCalls != 0 || bootstrapCalls != 1 {
+		t.Fatalf("活跃 listener 不能被 bootout/rebootstrap：status=%+v loaded=%t bootout=%d bootstrap=%d", status, loaded, bootoutCalls, bootstrapCalls)
 	}
 }
 
@@ -706,6 +885,72 @@ func TestPreparedIntentCreatesManualOwnerBeforeFirstBootstrap(t *testing.T) {
 	}
 }
 
+func TestRunAtLoadGraceAvoidsDuplicateKickstartWhileSocketStarts(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	options := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}
+	if _, err := ensureSharedDaemonLaunchAgent(options, true); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := true
+	kickstartCalls := 0
+	originalLaunchctl := sharedDaemonLaunchctl
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = { state = exited }", nil
+			}
+			return "", fmt.Errorf("not loaded")
+		case "kickstart":
+			kickstartCalls++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
+
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type listenResult struct {
+		listener net.Listener
+		err      error
+	}
+	result := make(chan listenResult, 1)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		listener, listenErr := net.Listen("unix", socketPath)
+		result <- listenResult{listener: listener, err: listenErr}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started, err := startLocalDaemonWithStableOwnerTracked(ctx, options)
+	listenerResult := <-result
+	if listenerResult.listener != nil {
+		t.Cleanup(func() { _ = listenerResult.listener.Close() })
+	}
+	if listenerResult.err != nil {
+		t.Fatal(listenerResult.err)
+	}
+	if err != nil {
+		t.Fatalf("RunAtLoad supervisor 在 grace 内建立 socket 应直接复用：%v", err)
+	}
+	if started || kickstartCalls != 0 {
+		t.Fatalf("launcher 已退出但 supervisor 正启动时不能创建第二套：started=%t kickstart=%d", started, kickstartCalls)
+	}
+}
+
 func TestFailedExplicitMigrationCannotReuseFreshEnableIntent(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
@@ -761,6 +1006,81 @@ func TestFailedExplicitMigrationCannotReuseFreshEnableIntent(t *testing.T) {
 	}
 	if kickstartCalls != beforeEnsure {
 		t.Fatalf("普通 Ensure 不能复用旧 intent 静默启动：before=%d after=%d", beforeEnsure, kickstartCalls)
+	}
+}
+
+func TestReloadSharedDaemonLaunchAgentForMigrationReloadsManualOwner(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex"),
+		Env:      map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")},
+	}
+	if _, err := ensureSharedDaemonLaunchAgent(options, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSharedDaemonMigrationFlag(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := true
+	commands := make([][]string, 0, 4)
+	originalLaunchctl := sharedDaemonLaunchctl
+	originalDesktop := sharedDaemonDesktopRunning
+	sharedDaemonDesktopRunning = func(context.Context) (bool, error) { return false, nil }
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		commands = append(commands, append([]string(nil), arguments...))
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = {\n\tstate = exited\n}", nil
+			}
+			return "", errors.New("not loaded")
+		case "bootout":
+			if !loaded {
+				return "", errors.New("not loaded")
+			}
+			loaded = false
+			return "", nil
+		case "bootstrap":
+			loaded = true
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() {
+		sharedDaemonLaunchctl = originalLaunchctl
+		sharedDaemonDesktopRunning = originalDesktop
+	})
+
+	if err := reloadSharedDaemonLaunchAgentForMigration(context.Background()); err != nil {
+		t.Fatalf("manual owner 应先 reload 再允许 kickstart：%v", err)
+	}
+	if !loaded {
+		t.Fatal("reload 后 owner 必须重新 loaded")
+	}
+	if len(commands) != 4 || commands[0][0] != "print" || commands[1][0] != "bootout" ||
+		commands[2][0] != "bootstrap" || commands[3][0] != "print" {
+		t.Fatalf("迁移 reload 必须执行 print→bootout→bootstrap→print：%v", commands)
+	}
+	path, err := SharedDaemonLaunchAgentPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runAtLoad, ok := sharedDaemonPlistBoolValue(content, "RunAtLoad"); !ok || runAtLoad {
+		t.Fatalf("reload 期间 owner 必须保持 manual：ok=%t runAtLoad=%t", ok, runAtLoad)
+	}
+	owner, err := InspectSharedDaemonOwner(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owner.Installed || !owner.Loaded || owner.Running || !owner.Secure || owner.RunAtLoad || !owner.MigrationRequired {
+		t.Fatalf("reload 后必须复核 loaded/manual/pending owner：%+v", owner)
 	}
 }
 
@@ -1112,6 +1432,7 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 
 	loaded := true
 	bootstrapCalls := 0
+	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
 	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
 		switch arguments[0] {
@@ -1121,6 +1442,7 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 			}
 			return "", fmt.Errorf("not loaded")
 		case "bootout":
+			bootoutCalls++
 			loaded = false
 			return "", nil
 		case "bootstrap":
@@ -1150,8 +1472,8 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("配置失权后不能恢复旧 auto owner：%v", statErr)
 	}
-	if loaded || bootstrapCalls != 0 {
-		t.Fatalf("配置冲突后不能重新加载旧 job：loaded=%t bootstrap=%d", loaded, bootstrapCalls)
+	if !loaded || bootstrapCalls != 0 || bootoutCalls != 0 {
+		t.Fatalf("配置冲突后不能重新加载或 bootout 旧 job：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
 	}
 }
 
@@ -1230,6 +1552,7 @@ func TestCommitSharedDaemonEnableKeepsOwnerManualUntilConfigCommit(t *testing.T)
 
 func TestCommittedFreshEnableRecoversAfterCrashBeforeKickstart(t *testing.T) {
 	home := sharedDaemonTestHome(t)
+	allowTestSignedSharedDaemonRuntime(t)
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, ".codex")
 	options := LocalDaemonOptions{
@@ -1359,6 +1682,7 @@ func TestPrepareSharedDaemonOwnerRejectsConnectableListenerWithoutHandshake(t *t
 
 func TestCommitSharedDaemonEnableKeepsManualUntilExplicitMigration(t *testing.T) {
 	home := sharedDaemonTestHome(t)
+	allowTestSignedSharedDaemonRuntime(t)
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, ".codex")
 	options := LocalDaemonOptions{
@@ -1570,11 +1894,19 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 	loaded := false
 	bootstrapCalls := 0
 	bootoutCalls := 0
+	printCalls := 0
 	var stopSocket func()
 	originalLaunchctl := sharedDaemonLaunchctl
 	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
 		switch arguments[0] {
 		case "print":
+			printCalls++
+			// live listener 下的新 plist 只 stage 到磁盘，不发生 bootout/bootstrap。
+			// 第四次 print 是新 owner 的 post-stage 复核；在它返回后模拟 socket
+			// 竞态退出，外层应走 files-only rollback。
+			if printCalls == 4 && stopSocket != nil {
+				stopSocket()
+			}
 			if loaded {
 				return "service = { state = exited }", nil
 			}
@@ -1582,11 +1914,6 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 		case "bootstrap":
 			bootstrapCalls++
 			loaded = true
-			// 第二次 bootstrap 已经写入 manual owner；模拟旧 SSH socket
-			// 正好在此时退出，覆盖 owner 安装与二次检查之间的竞态。
-			if bootstrapCalls == 2 && stopSocket != nil {
-				stopSocket()
-			}
 			return "", nil
 		case "bootout":
 			bootoutCalls++
@@ -1625,8 +1952,8 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 	if readErr != nil || !bytes.Equal(before, after) {
 		t.Fatalf("设置未提交时必须逐字恢复原 plist：read=%v", readErr)
 	}
-	if !loaded || bootstrapCalls != 3 || bootoutCalls != 2 {
-		t.Fatalf("设置未提交时必须恢复原 loaded owner：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
+	if !loaded || bootstrapCalls != 1 || bootoutCalls != 0 {
+		t.Fatalf("live listener 的 stage/rollback 只能恢复磁盘 owner：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
 	}
 	if required, markerErr := SharedDaemonMigrationRequired(); markerErr != nil || required {
 		t.Fatalf("设置未提交时必须恢复原 marker：required=%t err=%v", required, markerErr)
@@ -1696,6 +2023,7 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 	path, _ := SharedDaemonLaunchAgentPath()
 
 	loaded := true
+	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
 	originalRemove := sharedDaemonRemoveLaunchAgentFile
 	originalClear := sharedDaemonClearMigrationForRemoval
@@ -1707,6 +2035,7 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 			}
 			return "", fmt.Errorf("not loaded")
 		case "bootout":
+			bootoutCalls++
 			loaded = false
 			return "", nil
 		case "bootstrap":
@@ -1738,17 +2067,23 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 	} else if !os.IsNotExist(readErr) {
 		t.Fatalf("marker clear 失败时 auto 入口必须已删除：%v", readErr)
 	}
-	if loaded {
-		t.Fatalf("%s 失败后 job 不能重新 bootstrap", stage)
+	if !loaded || bootoutCalls != 0 {
+		t.Fatalf("%s 失败后当前 loaded job 不应被 bootout：loaded=%t bootout=%d", stage, loaded, bootoutCalls)
 	}
 	if required, markerErr := SharedDaemonMigrationRequired(); markerErr != nil || !required {
 		t.Fatalf("%s 失败后 marker 必须保持 fail-closed：required=%t err=%v", stage, required, markerErr)
 	}
 }
 
-func TestRemoveSharedDaemonOwnerRejectsLoadedJobWithoutRecoverablePlist(t *testing.T) {
+func TestRemoveSharedDaemonOwnerRecoversLoadedJobWithoutPlist(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
+	if err := writeSharedDaemonMigrationFlag(); err != nil {
+		t.Fatal(err)
+	}
+	if err := markSharedDaemonEnablePrepared(); err != nil {
+		t.Fatal(err)
+	}
 	loaded := true
 	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
@@ -1769,9 +2104,17 @@ func TestRemoveSharedDaemonOwnerRejectsLoadedJobWithoutRecoverablePlist(t *testi
 	}
 	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
 
-	err := removeSharedDaemonOwnerUnlocked(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "plist 缺失") || bootoutCalls != 0 || !loaded {
-		t.Fatalf("无法回滚的孤立 loaded job 必须在 bootout 前拒绝：err=%v bootout=%d loaded=%t", err, bootoutCalls, loaded)
+	if err := removeSharedDaemonOwnerUnlocked(context.Background()); err != nil {
+		t.Fatalf("plist 已删后的禁用重试应幂等完成：%v", err)
+	}
+	if bootoutCalls != 0 || !loaded {
+		t.Fatalf("孤立 loaded job 必须保留到注销：bootout=%d loaded=%t", bootoutCalls, loaded)
+	}
+	if required, err := SharedDaemonMigrationRequired(); err != nil || required {
+		t.Fatalf("幂等禁用必须清理 marker：required=%t err=%v", required, err)
+	}
+	if prepared, err := sharedDaemonEnablePrepared(); err != nil || prepared {
+		t.Fatalf("幂等禁用必须清理 fresh-enable intent：prepared=%t err=%v", prepared, err)
 	}
 }
 
@@ -1866,7 +2209,7 @@ func TestInspectLaunchAgentStateDistinguishesLoadedFromRunning(t *testing.T) {
 	}
 }
 
-func TestRemoveSharedDaemonLaunchAgentBootsOutLoadedJobWithoutPlist(t *testing.T) {
+func TestRemoveSharedDaemonLaunchAgentKeepsLoadedJobWithoutPlist(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
 	loaded := true
@@ -1892,8 +2235,8 @@ func TestRemoveSharedDaemonLaunchAgentBootsOutLoadedJobWithoutPlist(t *testing.T
 	if err := RemoveSharedDaemonLaunchAgent(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if loaded || bootoutCalls != 1 {
-		t.Fatalf("磁盘 plist 缺失也必须清理已加载 job：loaded=%t bootoutCalls=%d", loaded, bootoutCalls)
+	if !loaded || bootoutCalls != 0 {
+		t.Fatalf("磁盘 plist 缺失时只删除未来入口，不能 bootout 当前 job：loaded=%t bootoutCalls=%d", loaded, bootoutCalls)
 	}
 }
 
@@ -1915,8 +2258,12 @@ func TestResolveSharedDaemonCodexBinRequiresExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析可执行 codex 失败：%v", err)
 	}
-	if resolved != executable {
-		t.Fatalf("解析结果不一致：%s", resolved)
+	expected, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("解析测试 codex 真实路径失败：%v", err)
+	}
+	if resolved != expected {
+		t.Fatalf("解析结果不一致：got=%s want=%s", resolved, expected)
 	}
 }
 
