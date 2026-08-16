@@ -88,8 +88,37 @@ func TestSharedDaemonProcessIdentityStillAliveHandlesDarwinExitEIO(t *testing.T)
 	}
 
 	sharedDaemonSignalZero = func(int) error { return nil }
-	if alive, err := sharedDaemonProcessIdentityStillAlive(identity); err == nil || alive {
-		t.Fatalf("kinfo=EIO 但 PID 仍存在时必须 fail closed：alive=%t err=%v", alive, err)
+	if alive, err := sharedDaemonProcessIdentityStillAlive(identity); err != nil || !alive {
+		t.Fatalf("kinfo=EIO 但 PID 仍存在时应继续等待：alive=%t err=%v", alive, err)
+	}
+}
+
+func TestWaitForSharedDaemonStoppedRetriesTransientDarwinExitEIO(t *testing.T) {
+	previousKinfo := sharedDaemonStoppedKinfoProc
+	previousSignalZero := sharedDaemonSignalZero
+	t.Cleanup(func() {
+		sharedDaemonStoppedKinfoProc = previousKinfo
+		sharedDaemonSignalZero = previousSignalZero
+	})
+
+	kinfoCalls := 0
+	sharedDaemonStoppedKinfoProc = func(string, ...int) (*unix.KinfoProc, error) {
+		kinfoCalls++
+		if kinfoCalls == 1 {
+			return nil, unix.EIO
+		}
+		return nil, unix.ESRCH
+	}
+	sharedDaemonSignalZero = func(int) error { return nil }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	identity := sharedDaemonListenerProcess{PID: 4242, UID: os.Getuid()}
+	if err := waitForSharedDaemonStopped(ctx, filepath.Join(t.TempDir(), "missing.sock"), identity); err != nil {
+		t.Fatalf("瞬时 EIO 后应继续轮询直到确认旧 PID 退出：%v", err)
+	}
+	if kinfoCalls < 2 {
+		t.Fatalf("瞬时 EIO 后没有继续复核进程身份：calls=%d", kinfoCalls)
 	}
 }
 

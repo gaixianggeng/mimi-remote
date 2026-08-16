@@ -1679,14 +1679,14 @@ func sharedDaemonProcessIdentityStillAlive(identity sharedDaemonListenerProcess)
 		}
 		if errors.Is(err, unix.EIO) {
 			// Darwin 可能在进程退出但 kinfo 尚未稳定的瞬间返回 EIO。只有
-			// kill(pid, 0)=ESRCH 才足以证明旧 PID 已消失；PID 仍存在或
-			// 无法判断时继续 fail closed，避免把 PID reuse 当成已退出。
+			// kill(pid, 0)=ESRCH 才足以证明旧 PID 已消失；PID 仍存在时
+			// 返回 alive 让外层继续轮询，无法判断时仍 fail closed。
 			signalErr := sharedDaemonSignalZero(identity.PID)
 			if errors.Is(signalErr, unix.ESRCH) {
 				return false, nil
 			}
 			if signalErr == nil {
-				return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w（PID 仍存在）", err)
+				return true, nil
 			}
 			return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w（signal 0：%v）", err, signalErr)
 		}

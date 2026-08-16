@@ -91,6 +91,35 @@ func TestRetrySharedDaemonCodeSignatureFailsClosedAfterBound(t *testing.T) {
 	}
 }
 
+func TestRetrySharedDaemonCodeSignaturePreservesLastFailureWhenWaitStops(t *testing.T) {
+	verifyErr := errors.New("invalid signature")
+	waitErr := context.DeadlineExceeded
+	err := retrySharedDaemonCodeSignature(
+		context.Background(),
+		3,
+		time.Second,
+		func() error { return verifyErr },
+		func(context.Context, time.Duration) error { return waitErr },
+	)
+	if !errors.Is(err, verifyErr) || !errors.Is(err, waitErr) {
+		t.Fatalf("等待中止时必须同时保留截止时间和最后一次验签错误：%v", err)
+	}
+	if !strings.Contains(err.Error(), "最后一次代码签名验证失败") {
+		t.Fatalf("错误信息缺少最后一次验签上下文：%v", err)
+	}
+}
+
+func TestSharedDaemonCodeSignatureResultPreservesTimeoutAndVerificationFailure(t *testing.T) {
+	verifyErr := errors.New("invalid signature")
+	err := sharedDaemonCodeSignatureResult(verifyErr, context.DeadlineExceeded)
+	if !errors.Is(err, verifyErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("超时不能覆盖真实验签错误：%v", err)
+	}
+	if !strings.Contains(err.Error(), "代码签名校验超时") || !strings.Contains(err.Error(), "invalid signature") {
+		t.Fatalf("超时错误缺少可操作的验签上下文：%v", err)
+	}
+}
+
 func TestValidateSignedSharedDaemonProcessChainRequiresExactSignedParent(t *testing.T) {
 	nodePath := "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 	codexPath := "/Applications/ChatGPT.app/Contents/Resources/codex"

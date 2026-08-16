@@ -76,13 +76,13 @@ func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *t
 			wantLevel: "error", wantText: "尚未作用",
 		},
 		{
-			name: "configured owner limit is not effective limit",
+			name: "stable unknown effective limit stays informational",
 			status: appserver.SharedDaemonDiagnostics{
 				Supported: true, ListenerPID: 106, OpenFileDescriptors: 7800,
 				OwnerTargetFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
 				ResourceState: appserver.SharedDaemonResourceStateUnknown,
 			},
-			wantLevel: "warning", wantText: "当前进程未验证",
+			wantOK: true, wantText: "当前进程未验证",
 		},
 		{
 			name: "claimed owner without lifecycle pid is warning",
