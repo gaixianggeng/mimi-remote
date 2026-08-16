@@ -80,6 +80,9 @@ actor ProcessExecutor {
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
+        // 启动成功后立即固定 PID。部分 hosted runner 在 terminate() 后会提前
+        // 清空 Process 的运行态，届时再读取 processIdentifier 可能已不是原 PID。
+        let processIdentifier = process.processIdentifier
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
@@ -93,11 +96,11 @@ actor ProcessExecutor {
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
             // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰共享
             // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
-            process.terminate()
+            _ = Darwin.kill(processIdentifier, SIGTERM)
             guard forceKillAfterTimeout else { return }
             try? await Task.sleep(for: .seconds(2))
             guard !processExited.value else { return }
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            _ = Darwin.kill(processIdentifier, SIGKILL)
         }
 
         let status = await withTaskCancellationHandler {
