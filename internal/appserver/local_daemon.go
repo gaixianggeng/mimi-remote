@@ -245,9 +245,9 @@ func ensureLocalDaemonWithStableOwner(
 	if err != nil {
 		return LocalDaemonStatus{}, err
 	}
-	// RunAtLoad=true 的新/重载 owner 已由 bootstrap 异步触发 launcher。launcher
-	// 会在 app-server ready 前很快退出，因此不能再以 owner.Running=false 为由
-	// kickstart 第二套 supervisor；这里记住第一次 ensure 的启动事实并只等待。
+	// RunAtLoad=true 的新/重载 owner 已由 bootstrap 异步触发 supervisor。launchd
+	// 状态与 socket 建立之间仍有短窗口，不能再 kickstart 第二套 supervisor；
+	// 这里记住第一次 ensure 的启动事实并只等待。
 	ownerBootstrapped := owner.Changed && owner.RunAtLoad && !daemonPreexisting
 	if owner.MigrationRequired && !sharedDaemonSocketAcceptsConnectionMust(options) {
 		if prepared && options.ValidateStableOwner != nil && !options.PrepareOwnerForConfigCommit {

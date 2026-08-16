@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	// SharedDaemonLaunchAgentLabel 是 Mimi 安装的 LaunchAgent 标签。job 只执行
-	// OpenAI 签名的 node launcher；launcher 创建 detached node supervisor 后退出，
-	// Mimi/agentd 不进入 Browser 原生 peer 校验所读取的三级父链。
+	// SharedDaemonLaunchAgentLabel 是 Mimi 安装的 LaunchAgent 标签。job 直接执行
+	// OpenAI 签名的 node supervisor；Mimi/agentd 不进入 Browser 原生 peer 校验
+	// 所读取的三级父链。
 	SharedDaemonLaunchAgentLabel = "com.gaixianggeng.mimi.codex-shared-daemon"
 
 	sharedDaemonLaunchAgentLogName         = "codex-shared-daemon.log"
@@ -65,6 +65,14 @@ type unmanagedSharedDaemonHooks struct {
 	signalTERM     func(int) error
 	currentUID     func() int
 }
+
+// SysctlKinfoProc 在进程刚退出的极窄窗口里可能返回 EIO，而不是 ESRCH。
+// 这里保留 seam 让退出复核能够覆盖该真实 Darwin 行为；signal 0 只用于确认
+// PID 是否已经消失，不能替代启动时间与 UID 的完整身份校验。
+var (
+	sharedDaemonStoppedKinfoProc = unix.SysctlKinfoProc
+	sharedDaemonSignalZero       = func(pid int) error { return unix.Kill(pid, 0) }
+)
 
 // SharedDaemonOwnerStatus 描述 Mimi 为共享 app-server 安装的稳定启动入口。它只
 // 证明 launchd job 的安装状态；Browser/TCC 仍需对真实 socket peer 父链验收。
@@ -247,8 +255,8 @@ func resolveSharedDaemonCodexBin(configured string) (string, error) {
 }
 
 // renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行 Codex
-// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node launcher 只负责
-// 创建 detached node supervisor；最终仍需以 socket peer 父链做运行态验收。
+// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node 作为持久
+// supervisor 直接拉起 app-server；最终仍需以 socket peer 父链做运行态验收。
 func renderSharedDaemonLaunchAgent(
 	nodeBin string,
 	codexBin string,
@@ -310,13 +318,9 @@ func renderSharedDaemonLaunchAgent(
 	} else {
 		buf.WriteString("\t<false/>\n")
 	}
-	// launcher 是一次性控制命令。真正的 supervisor 已进入独立 session；launcher
-	// 退出属于成功，不能让 launchd 因其退出反复创建 socket 竞争者。
+	// supervisor 随 app-server 一并退出；KeepAlive=false 禁止 launchd 在 socket
+	// 冲突或 child 崩溃时形成无界重启风暴，恢复仍由现有 gateway 路径触发。
 	buf.WriteString("\t<key>KeepAlive</key>\n\t<false/>\n")
-	// 明确告诉 launchd 不要在 one-shot launcher 退出时按进程组清理已 detached
-	// 的 supervisor。bootout 的 coalition 行为仍不作安全假设，活跃 socket 路径
-	// 会完全避开 bootout。
-	buf.WriteString("\t<key>AbandonProcessGroup</key>\n\t<true/>\n")
 	buf.WriteString("\t<key>ThrottleInterval</key>\n\t<integer>1</integer>\n")
 	buf.WriteString("\t<key>ExitTimeOut</key>\n\t<integer>20</integer>\n")
 	// 077 的十进制是 63；确保 launchd 创建的 stdout/stderr 日志仅当前用户可读。
@@ -342,7 +346,7 @@ func sharedDaemonLaunchAgentEnv(env map[string]string) map[string]string {
 	}
 	values["PATH"] = normalizedSharedDaemonToolingPath(values["PATH"], os.Getenv("PATH"))
 	// EnvironmentVariables 会覆盖 launchctl setenv 的用户域值。直接 ProgramArguments
-	// 因此无需借 shell 执行 unset，启动链固定为 launchd -> node launcher。
+	// 因此无需借 shell 执行 unset，启动链固定为 launchd -> node supervisor。
 	for _, key := range sharedDaemonStrippedEnvKeys {
 		values[key] = ""
 	}
@@ -1176,9 +1180,9 @@ func clearSharedDaemonMigrationFlag() error {
 	return nil
 }
 
-// RemoveSharedDaemonLaunchAgent 关闭共享时只删除未来登录的启动入口。one-shot job
-// 可能仍通过 launchd coalition 关联着当前 listener；即使 job 自己已经 exited，
-// bootout 也没有“不影响后代”的系统契约，因此本会话保留已加载但不可自启的定义。
+// RemoveSharedDaemonLaunchAgent 关闭共享时只删除未来登录的启动入口。当前 job
+// 可能仍通过 launchd coalition 关联着 listener；bootout 没有“不影响服务进程”
+// 的系统契约，因此本会话保留已加载且 KeepAlive=false 的定义。
 func RemoveSharedDaemonLaunchAgent(ctx context.Context) error {
 	path, err := SharedDaemonLaunchAgentPath()
 	if err != nil {
@@ -1209,7 +1213,7 @@ func removeSharedDaemonOwnerUnlocked(ctx context.Context) error {
 
 // removeSharedDaemonOwnerForTransactionUnlocked 在调用方持有 operation lock 时
 // 移除 owner。先把磁盘 plist 降为 manual，再删除未来登录入口；当前会话里已
-// 加载的 one-shot 定义保留到注销，避免 bootout 误伤 coalition 中的 listener。
+// 加载的定义保留到注销，避免 bootout 误伤 coalition 中的 listener。
 // 返回值保留兼容签名，但禁用事务不再恢复 auto owner：配置可能已被锁外编辑器
 // 改成 WS，恢复会越权。
 func removeSharedDaemonOwnerForTransactionUnlocked(
@@ -1299,9 +1303,9 @@ func startLocalDaemonWithStableOwnerTracked(
 		return false, waitForSharedDaemonSocket(ctx, options, logOffset)
 	}
 	if owner.RunAtLoad {
-		// 登录时 RunAtLoad launcher 可能已经退出，但 detached supervisor 仍在
-		// 启动 app-server。先给这条既有链一个短窗口，避免立即 kickstart 第二套
-		// supervisor；真正崩溃的恢复最多只增加这一秒。
+		// 登录时 launchd 的 running 状态与 app-server socket 建立并非原子更新。
+		// 先给既有 supervisor 一个短窗口，避免立即 kickstart 第二套；真正崩溃
+		// 的恢复最多只增加这一秒。
 		graceCtx, cancelGrace := context.WithTimeout(ctx, sharedDaemonRunAtLoadGrace)
 		graceErr := waitForSharedDaemonSocket(graceCtx, options, logOffset)
 		cancelGrace()
@@ -1668,10 +1672,23 @@ func sharedDaemonProcessIdentityStillAlive(identity sharedDaemonListenerProcess)
 	if identity.PID <= 1 {
 		return false, fmt.Errorf("旧共享 daemon PID 无效")
 	}
-	kinfo, err := unix.SysctlKinfoProc("kern.proc.pid", identity.PID)
+	kinfo, err := sharedDaemonStoppedKinfoProc("kern.proc.pid", identity.PID)
 	if err != nil {
 		if errors.Is(err, unix.ESRCH) || errors.Is(err, unix.ENOENT) {
 			return false, nil
+		}
+		if errors.Is(err, unix.EIO) {
+			// Darwin 可能在进程退出但 kinfo 尚未稳定的瞬间返回 EIO。只有
+			// kill(pid, 0)=ESRCH 才足以证明旧 PID 已消失；PID 仍存在或
+			// 无法判断时继续 fail closed，避免把 PID reuse 当成已退出。
+			signalErr := sharedDaemonSignalZero(identity.PID)
+			if errors.Is(signalErr, unix.ESRCH) {
+				return false, nil
+			}
+			if signalErr == nil {
+				return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w（PID 仍存在）", err)
+			}
+			return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w（signal 0：%v）", err, signalErr)
 		}
 		return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w", err)
 	}
