@@ -20,29 +20,11 @@ const (
 	sharedDaemonCodeSignRetryInterval  = time.Second
 	sharedDaemonCodeSignTimeout        = 20 * time.Second
 
-	// launcher 只负责把真正的 node supervisor 放进独立 session 后退出。这样
-	// LaunchAgent 仍是一条 one-shot job，普通 launcher 退出不会按同一进程组清理
-	// supervisor；bootout 的 coalition 行为不作假设，活跃 socket 路径会避开它。
-	// Browser 读取到的三级保持为 node_repl -> codex -> node。
-	sharedDaemonNodeLauncherScript = `'use strict';
-const { spawn } = require('node:child_process');
-const argv = process.argv.slice(1);
-if (argv.length < 5) process.exit(64);
-const node = argv.shift();
-const supervisor = spawn(node, ['-e', argv.shift(), '--', ...argv], {
-  detached: true,
-  env: process.env,
-  stdio: ['ignore', 'inherit', 'inherit']
-});
-supervisor.once('error', () => process.exit(70));
-supervisor.once('spawn', () => {
-  supervisor.unref();
-  process.exit(0);
-});`
-
-	// supervisor 必须保持为 app-server 的直接父进程。它不做自动重启或强杀；
-	// child 退出后 supervisor 一并退出，由现有 gateway recovery 再次 kickstart
-	// one-shot LaunchAgent，避免 socket 冲突时形成隐藏重启风暴。
+	// LaunchAgent 本身就是 OpenAI 签名的 node supervisor，并始终保持为
+	// app-server 的直接父进程。这样不依赖 detached 后代能否逃离 launchd 的
+	// service coalition，Browser 读取到的三级仍是 node_repl -> codex -> node。
+	// supervisor 不做自动重启或强杀；child 退出后它一并退出，KeepAlive=false
+	// 保证 socket 冲突不会形成隐藏重启风暴，由现有 gateway recovery 再 kickstart。
 	sharedDaemonNodeSupervisorScript = `'use strict';
 const { spawn } = require('node:child_process');
 const argv = process.argv.slice(1);
@@ -292,10 +274,8 @@ func sharedDaemonSupervisorProgramArguments(nodePath string, codexPath string) [
 	return []string{
 		nodePath,
 		"-e",
-		sharedDaemonNodeLauncherScript,
-		"--",
-		nodePath,
 		sharedDaemonNodeSupervisorScript,
+		"--",
 		codexPath,
 		"app-server",
 		"--listen",

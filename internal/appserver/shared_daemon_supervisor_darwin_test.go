@@ -201,6 +201,20 @@ func TestValidateSharedDaemonNodeSupervisorProcessAcceptsSignedSupervisorArgv(t 
 	}
 }
 
+func TestGeneratedSharedDaemonProgramArgumentsMatchRuntimeValidator(t *testing.T) {
+	nodePath := "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+	codexPath := "/Applications/ChatGPT.app/Contents/Resources/codex"
+	process := sharedDaemonListenerProcess{
+		PID:        4242,
+		UID:        os.Getuid(),
+		Executable: nodePath,
+		Command:    strings.Join(sharedDaemonSupervisorProgramArguments(nodePath, codexPath), "\x00"),
+	}
+	if err := validateSharedDaemonNodeSupervisorProcess(process, nodePath, codexPath); err != nil {
+		t.Fatalf("LaunchAgent 生成的 supervisor argv 必须通过同一份运行态校验：%v", err)
+	}
+}
+
 func TestValidateSharedDaemonNodeSupervisorProcessRejectsUnsafeArgv(t *testing.T) {
 	nodePath := "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 	codexPath := "/Applications/ChatGPT.app/Contents/Resources/codex"

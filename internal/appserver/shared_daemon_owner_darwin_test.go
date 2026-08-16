@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func writeFakeCodexBin(t *testing.T, dir string, name string) string {
@@ -67,6 +69,30 @@ func allowTestSignedSharedDaemonRuntime(t *testing.T) {
 	t.Cleanup(func() { sharedDaemonValidateSignedRuntime = previous })
 }
 
+func TestSharedDaemonProcessIdentityStillAliveHandlesDarwinExitEIO(t *testing.T) {
+	previousKinfo := sharedDaemonStoppedKinfoProc
+	previousSignalZero := sharedDaemonSignalZero
+	t.Cleanup(func() {
+		sharedDaemonStoppedKinfoProc = previousKinfo
+		sharedDaemonSignalZero = previousSignalZero
+	})
+	sharedDaemonStoppedKinfoProc = func(string, ...int) (*unix.KinfoProc, error) {
+		return nil, unix.EIO
+	}
+	identity := sharedDaemonListenerProcess{PID: 4242, UID: os.Getuid()}
+
+	sharedDaemonSignalZero = func(int) error { return unix.ESRCH }
+	alive, err := sharedDaemonProcessIdentityStillAlive(identity)
+	if err != nil || alive {
+		t.Fatalf("kinfo=EIO 且 signal0=ESRCH 应确认旧 PID 已退出：alive=%t err=%v", alive, err)
+	}
+
+	sharedDaemonSignalZero = func(int) error { return nil }
+	if alive, err := sharedDaemonProcessIdentityStillAlive(identity); err == nil || alive {
+		t.Fatalf("kinfo=EIO 但 PID 仍存在时必须 fail closed：alive=%t err=%v", alive, err)
+	}
+}
+
 func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) {
 	metadataFor := func(identifier string) string {
 		return strings.Join([]string{
@@ -105,7 +131,7 @@ func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) 
 	}
 }
 
-func TestRenderSharedDaemonLaunchAgentUsesSignedNodeLauncher(t *testing.T) {
+func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 	nodeBin := "/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 	codexBin := "/opt/codex bin/codex"
 	rendered, err := renderSharedDaemonLaunchAgent(
@@ -130,20 +156,23 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeLauncher(t *testing.T) {
 	for _, argument := range sharedDaemonSupervisorProgramArguments(nodeBin, codexBin) {
 		var escaped bytes.Buffer
 		if err := xml.EscapeText(&escaped, []byte(argument)); err != nil {
-			t.Fatalf("转义 launcher 参数失败：%v", err)
+			t.Fatalf("转义 supervisor 参数失败：%v", err)
 		}
 		if !strings.Contains(content, "<string>"+escaped.String()+"</string>") {
-			t.Fatalf("plist 缺少 signed node launcher 参数 %q：\n%s", argument, content)
+			t.Fatalf("plist 缺少 signed node supervisor 参数 %q：\n%s", argument, content)
 		}
 	}
 	if !strings.Contains(content, "<key>RunAtLoad</key>\n\t<true/>") {
 		t.Fatalf("plist 必须覆盖登录冷启动：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>KeepAlive</key>\n\t<false/>") {
-		t.Fatalf("一次性控制命令不能被 launchd 反复重启：\n%s", content)
+		t.Fatalf("supervisor 退出后不能被 launchd 反复重启：\n%s", content)
 	}
-	if !strings.Contains(content, "<key>AbandonProcessGroup</key>\n\t<true/>") {
-		t.Fatalf("one-shot launcher 必须显式放弃已 detached 的 process group：\n%s", content)
+	if strings.Contains(content, "<key>AbandonProcessGroup</key>") {
+		t.Fatalf("持久 supervisor 不应放弃 app-server 所在进程组：\n%s", content)
+	}
+	if strings.Contains(content, "detached: true") || strings.Contains(content, ".unref()") {
+		t.Fatalf("plist 不能再包含不可观测的 detached launcher：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>Umask</key>\n\t<integer>63</integer>") {
 		t.Fatalf("LaunchAgent 日志必须只允许当前用户读取：\n%s", content)
@@ -159,7 +188,7 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeLauncher(t *testing.T) {
 		}
 	}
 	if value := sharedDaemonPlistStringValue(rendered, "NODE_OPTIONS"); value != "" {
-		t.Fatalf("launcher 必须清空继承的 NODE_OPTIONS，实际=%q", value)
+		t.Fatalf("supervisor 必须清空继承的 NODE_OPTIONS，实际=%q", value)
 	}
 }
 
@@ -967,7 +996,7 @@ func TestRunAtLoadGraceAvoidsDuplicateKickstartWhileSocketStarts(t *testing.T) {
 		t.Fatalf("RunAtLoad supervisor 在 grace 内建立 socket 应直接复用：%v", err)
 	}
 	if started || kickstartCalls != 0 {
-		t.Fatalf("launcher 已退出但 supervisor 正启动时不能创建第二套：started=%t kickstart=%d", started, kickstartCalls)
+		t.Fatalf("RunAtLoad supervisor 正启动时不能创建第二套：started=%t kickstart=%d", started, kickstartCalls)
 	}
 }
 
