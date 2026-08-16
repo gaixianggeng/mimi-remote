@@ -67,24 +67,15 @@ actor ProcessExecutor {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        // hosted runner 上 Process.isRunning 会在发送 terminate 后提前变为 false，
-        // 即使目标仍忽略 SIGTERM 运行。用真实退出回调记录子进程是否已被回收，
-        // 避免跳过 grace period 后的 SIGKILL。
-        let processExited = LockedFlag()
-
         do {
             try process.run()
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
-        // Foundation 的运行态失效后 processIdentifier 也不再可靠，因此在启动
-        // 成功时固定本次短命 control command 的 PID。
+        // hosted runner 上 Process.isRunning 可能在子进程仍存活时返回 false；
+        // 启动成功后固定 PID，并以 waitUntilExit 返回后取消 timeout task 作为
+        // 唯一退出门控，避免依赖 Foundation 的运行态缓存。
         let processIdentifier = process.processIdentifier
-        // 必须在 run() 成功后安装；部分 Foundation 版本会把尚未启动的 Process
-        // 当作已终止并提前触发 handler，导致超时任务被错误跳过。
-        process.terminationHandler = { _ in
-            processExited.set()
-        }
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
@@ -92,7 +83,7 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let timeoutTask = Task.detached {
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, process.isRunning else { return }
+            guard !Task.isCancelled else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
@@ -101,7 +92,9 @@ actor ProcessExecutor {
             _ = Darwin.kill(processIdentifier, SIGTERM)
             guard forceKillAfterTimeout else { return }
             try? await Task.sleep(for: .seconds(2))
-            guard !processExited.value else { return }
+            // waitUntilExit 已返回时外层会 cancel；必须在 try? 吞掉
+            // CancellationError 后再次检查，避免误伤复用同一 PID 的新进程。
+            guard !Task.isCancelled else { return }
             _ = Darwin.kill(processIdentifier, SIGKILL)
         }
 
