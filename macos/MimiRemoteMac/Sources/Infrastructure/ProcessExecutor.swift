@@ -67,6 +67,14 @@ actor ProcessExecutor {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // Foundation 在部分 hosted macOS runner 上会在 terminate() 返回后把
+        // isRunning 提前变为 false，即使目标进程忽略了 SIGTERM。用真实退出回调
+        // 记录内核已回收的事实，避免因此跳过两秒后的 SIGKILL。
+        let processExited = LockedFlag()
+        process.terminationHandler = { _ in
+            processExited.set()
+        }
+
         do {
             try process.run()
         } catch {
@@ -79,7 +87,7 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let timeoutTask = Task.detached {
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, process.isRunning else { return }
+            guard !Task.isCancelled, !processExited.value else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
@@ -88,7 +96,7 @@ actor ProcessExecutor {
             process.terminate()
             guard forceKillAfterTimeout else { return }
             try? await Task.sleep(for: .seconds(2))
-            guard process.isRunning else { return }
+            guard !processExited.value else { return }
             _ = Darwin.kill(process.processIdentifier, SIGKILL)
         }
 
