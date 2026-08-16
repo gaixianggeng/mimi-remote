@@ -162,6 +162,9 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 			t.Fatalf("plist 缺少 signed node supervisor 参数 %q：\n%s", argument, content)
 		}
 	}
+	if strings.Contains(content, "&#xA;") {
+		t.Fatalf("ProgramArguments 不能包含会被 launchctl 截断的换行实体：\n%s", content)
+	}
 	if !strings.Contains(content, "<key>RunAtLoad</key>\n\t<true/>") {
 		t.Fatalf("plist 必须覆盖登录冷启动：\n%s", content)
 	}

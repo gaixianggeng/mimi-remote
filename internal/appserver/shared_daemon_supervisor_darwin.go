@@ -25,26 +25,19 @@ const (
 	// service coalition，Browser 读取到的三级仍是 node_repl -> codex -> node。
 	// supervisor 不做自动重启或强杀；child 退出后它一并退出，KeepAlive=false
 	// 保证 socket 冲突不会形成隐藏重启风暴，由现有 gateway recovery 再 kickstart。
-	sharedDaemonNodeSupervisorScript = `'use strict';
-const { spawn } = require('node:child_process');
-const argv = process.argv.slice(1);
-if (argv.length < 4) process.exit(64);
-const child = spawn(argv[0], argv.slice(1), {
-  detached: false,
-  env: process.env,
-  stdio: 'inherit'
-});
-for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-  process.on(signal, () => {
-    // ChildProcess.killed 只表示“曾成功发送过信号”，不表示进程已经退出。
-    // 以 exitCode/signalCode 判断，允许 SIGHUP 后仍继续转发真正的 stop。
-    if (child.exitCode === null && child.signalCode === null) child.kill(signal);
-  });
-}
-child.once('error', () => process.exit(70));
-child.once('exit', (code, signal) => {
-  process.exitCode = Number.isInteger(code) ? code : (signal ? 1 : 70);
-});`
+	// 必须保持为单行：encoding/xml 会把换行编码为 &#xA;，而 launchctl
+	// bootstrap 会把这种 ProgramArguments 字符串截断在第一处换行实体。中文解释
+	// 留在 Go 注释中，运行时脚本只保留最小、可逐字校验的责任边界。
+	sharedDaemonNodeSupervisorScript = `'use strict';` +
+		`const{spawn}=require('node:child_process');` +
+		`const argv=process.argv.slice(1);` +
+		`if(argv.length<4)process.exit(64);` +
+		`const child=spawn(argv[0],argv.slice(1),{detached:false,env:process.env,stdio:'inherit'});` +
+		`for(const signal of['SIGTERM','SIGINT','SIGHUP'])process.on(signal,()=>{` +
+		`if(child.exitCode===null&&child.signalCode===null)child.kill(signal);` +
+		`});` +
+		`child.once('error',()=>process.exit(70));` +
+		`child.once('exit',(code,signal)=>{process.exitCode=Number.isInteger(code)?code:(signal?1:70);});`
 )
 
 var (

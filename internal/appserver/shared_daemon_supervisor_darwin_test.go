@@ -286,3 +286,14 @@ func TestSharedDaemonNodeSupervisorForwardsSignalsWithoutChildKilledState(t *tes
 		t.Fatal("supervisor 必须把 SIGTERM/SIGINT/SIGHUP 转发给 app-server child")
 	}
 }
+
+func TestSharedDaemonNodeSupervisorScriptHasNoPlistLineBreaks(t *testing.T) {
+	// encoding/xml 会把换行编码为 &#xA;；launchctl bootstrap 对
+	// ProgramArguments 的这种实体会只保留第一行，最终让 node 正常退出但不拉起 child。
+	if strings.ContainsAny(sharedDaemonNodeSupervisorScript, "\r\n") {
+		t.Fatal("node supervisor inline script 必须保持为单行")
+	}
+	if !strings.HasSuffix(sharedDaemonNodeSupervisorScript, "});") {
+		t.Fatal("node supervisor inline script 缺少 child exit 尾部哨兵")
+	}
+}
