@@ -121,7 +121,10 @@ final class AgentCommandClientTests: XCTestCase {
         do {
             _ = try await executor.run(
                 executable: URL(filePath: "/bin/sh"),
-                arguments: ["-c", "trap '' TERM; while :; do sleep 1; done"],
+                // 用 exec 保持同一个 PID 忽略 SIGTERM，避免循环派生的 sleep 子进程
+                // 在父 shell 被杀后继续持有 stdout/stderr pipe，让 CI 错把 pipe EOF
+                // 等待当成 ProcessExecutor 没有回收目标进程。
+                arguments: ["-c", "trap '' TERM; exec /bin/sleep 60"],
                 timeout: .milliseconds(100),
                 forceKillAfterTimeout: true
             )
