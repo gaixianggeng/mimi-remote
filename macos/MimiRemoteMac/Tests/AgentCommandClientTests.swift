@@ -121,10 +121,9 @@ final class AgentCommandClientTests: XCTestCase {
         do {
             _ = try await executor.run(
                 executable: URL(filePath: "/bin/sh"),
-                // 用 exec 保持同一个 PID 忽略 SIGTERM，避免循环派生的 sleep 子进程
-                // 在父 shell 被杀后继续持有 stdout/stderr pipe，让 CI 错把 pipe EOF
-                // 等待当成 ProcessExecutor 没有回收目标进程。
-                arguments: ["-c", "trap '' TERM; exec /bin/sleep 60"],
+                // 让 shell 本身忽略 SIGTERM，且不派生会继承 stdout/stderr pipe 的
+                // 子进程；否则测试测到的是后代等待 pipe EOF，而不是目标是否回收。
+                arguments: ["-c", "trap '' TERM; while :; do :; done"],
                 timeout: .milliseconds(100),
                 forceKillAfterTimeout: true
             )

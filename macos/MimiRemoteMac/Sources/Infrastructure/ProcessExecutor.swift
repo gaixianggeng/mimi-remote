@@ -67,22 +67,11 @@ actor ProcessExecutor {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        // Foundation 在部分 hosted macOS runner 上会在 terminate() 返回后把
-        // isRunning 提前变为 false，即使目标进程忽略了 SIGTERM。用真实退出回调
-        // 记录内核已回收的事实，避免因此跳过两秒后的 SIGKILL。
-        let processExited = LockedFlag()
-        process.terminationHandler = { _ in
-            processExited.set()
-        }
-
         do {
             try process.run()
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
-        // 启动成功后立即固定 PID。部分 hosted runner 在 terminate() 后会提前
-        // 清空 Process 的运行态，届时再读取 processIdentifier 可能已不是原 PID。
-        let processIdentifier = process.processIdentifier
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
@@ -90,17 +79,17 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let timeoutTask = Task.detached {
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, !processExited.value else { return }
+            guard !Task.isCancelled, process.isRunning else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
             // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰共享
             // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
-            _ = Darwin.kill(processIdentifier, SIGTERM)
+            process.terminate()
             guard forceKillAfterTimeout else { return }
             try? await Task.sleep(for: .seconds(2))
-            guard !processExited.value else { return }
-            _ = Darwin.kill(processIdentifier, SIGKILL)
+            guard process.isRunning else { return }
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
         }
 
         let status = await withTaskCancellationHandler {
