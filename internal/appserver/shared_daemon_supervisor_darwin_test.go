@@ -3,11 +3,66 @@
 package appserver
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRetrySharedDaemonCodeSignatureWaitsForTransientShutdownWindow(t *testing.T) {
+	verifyCalls := 0
+	waitCalls := 0
+	err := retrySharedDaemonCodeSignature(
+		context.Background(),
+		4,
+		time.Second,
+		func() error {
+			verifyCalls++
+			if verifyCalls < 3 {
+				return errors.New("temporary codesign failure")
+			}
+			return nil
+		},
+		func(context.Context, time.Duration) error {
+			waitCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("退出阶段的瞬时签名失败应在稳定后恢复：%v", err)
+	}
+	if verifyCalls != 3 || waitCalls != 2 {
+		t.Fatalf("签名退避次数错误：verify=%d wait=%d", verifyCalls, waitCalls)
+	}
+}
+
+func TestRetrySharedDaemonCodeSignatureFailsClosedAfterBound(t *testing.T) {
+	wantErr := errors.New("invalid signature")
+	verifyCalls := 0
+	waitCalls := 0
+	err := retrySharedDaemonCodeSignature(
+		context.Background(),
+		3,
+		0,
+		func() error {
+			verifyCalls++
+			return wantErr
+		},
+		func(context.Context, time.Duration) error {
+			waitCalls++
+			return nil
+		},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("持续无效签名必须 fail closed：%v", err)
+	}
+	if verifyCalls != 3 || waitCalls != 2 {
+		t.Fatalf("必须严格遵守重试上限：verify=%d wait=%d", verifyCalls, waitCalls)
+	}
+}
 
 func TestValidateSignedSharedDaemonProcessChainRequiresExactSignedParent(t *testing.T) {
 	nodePath := "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
