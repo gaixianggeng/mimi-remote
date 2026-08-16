@@ -71,9 +71,6 @@ actor ProcessExecutor {
         // 即使目标仍忽略 SIGTERM 运行。用真实退出回调记录子进程是否已被回收，
         // 避免跳过 grace period 后的 SIGKILL。
         let processExited = LockedFlag()
-        process.terminationHandler = { _ in
-            processExited.set()
-        }
 
         do {
             try process.run()
@@ -83,6 +80,11 @@ actor ProcessExecutor {
         // Foundation 的运行态失效后 processIdentifier 也不再可靠，因此在启动
         // 成功时固定本次短命 control command 的 PID。
         let processIdentifier = process.processIdentifier
+        // 必须在 run() 成功后安装；部分 Foundation 版本会把尚未启动的 Process
+        // 当作已终止并提前触发 handler，导致超时任务被错误跳过。
+        process.terminationHandler = { _ in
+            processExited.set()
+        }
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
@@ -90,7 +92,7 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let timeoutTask = Task.detached {
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, !processExited.value else { return }
+            guard !Task.isCancelled, process.isRunning else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
