@@ -394,6 +394,59 @@ func TestReconcileStableOwnerLifecycleMarksDetectedUnmanagedBackend(t *testing.T
 	}
 }
 
+func TestReconcileStableOwnerLifecycleMarksLegacyPIDBackendForMigration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Codex Unix daemon")
+	}
+	codexHome := shortCodexHome(t)
+	socketPath := filepath.Join(codexHome, localDaemonSocketDir, localDaemonSocketName)
+	official := filepath.Join(codexHome, "packages", "standalone", "current", "codex")
+	if err := os.MkdirAll(filepath.Dir(official), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(official, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version := "0.147.0"
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{
+		Status:              "running",
+		Backend:             &backend,
+		ManagedCodexPath:    official,
+		ManagedCodexVersion: &version,
+		SocketPath:          socketPath,
+		CLIVersion:          version,
+		AppServerVersion:    version,
+	}
+	status := LocalDaemonStatus{SocketPath: socketPath, Version: version}
+	owner := SharedDaemonOwnerStatus{Installed: true, Loaded: true, Secure: true}
+	markCalls := 0
+	if err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+		markCalls++
+		return nil
+	}); err != nil {
+		t.Fatalf("旧官方 pid backend 应保持 attach 并等待显式迁移：%v", err)
+	}
+	if !owner.MigrationRequired || markCalls != 1 {
+		t.Fatalf("旧 pid backend 不能冒充签名 supervisor：owner=%+v mark=%d", owner, markCalls)
+	}
+	if err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, false, func() error {
+		markCalls++
+		return nil
+	}); err != nil || markCalls != 1 {
+		t.Fatalf("已有 legacy marker 时必须幂等：err=%v mark=%d", err, markCalls)
+	}
+
+	owner.MigrationRequired = true
+	err := reconcileStableOwnerLifecycle(lifecycle, status, &owner, true, func() error {
+		markCalls++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "旧 pid backend") || markCalls != 1 {
+		t.Fatalf("本次新 owner kickstart 得到 pid backend 必须 fail closed：err=%v mark=%d", err, markCalls)
+	}
+}
+
 func TestReconcileStableOwnerLifecycleRejectsUnmanagedAfterStableKickstart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 不支持 Codex Unix daemon")

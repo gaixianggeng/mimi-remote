@@ -5,8 +5,8 @@ package appserver
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	// SharedDaemonLaunchAgentLabel 是 Mimi 安装的 LaunchAgent 标签。它只负责“请
-	// launchd 以官方 codex 身份创建共享 daemon”，不代表 Mimi 拥有该 daemon 的
-	// 生命周期：job 本身执行完 `daemon start` 就退出，daemon 继续独立运行。
+	// SharedDaemonLaunchAgentLabel 是 Mimi 安装的 LaunchAgent 标签。job 直接执行
+	// OpenAI 签名的 node supervisor；Mimi/agentd 不进入 Browser 原生 peer 校验
+	// 所读取的三级父链。
 	SharedDaemonLaunchAgentLabel = "com.gaixianggeng.mimi.codex-shared-daemon"
 
 	sharedDaemonLaunchAgentLogName         = "codex-shared-daemon.log"
@@ -35,6 +35,7 @@ const (
 	sharedDaemonStartTimeoutForLocalEnsure = sharedDaemonStartTimeout
 	sharedDaemonStopTimeout                = 15 * time.Second
 	sharedDaemonStoppedConfirmationWindow  = 500 * time.Millisecond
+	sharedDaemonRunAtLoadGrace             = time.Second
 	sharedDaemonSocketPollInterval         = 100 * time.Millisecond
 	launchctlTimeout                       = 10 * time.Second
 	sharedDaemonMaxLogBytes                = 1 << 20
@@ -49,6 +50,7 @@ func SupportsStableSharedDaemonOwner() bool { return true }
 
 type sharedDaemonListenerProcess struct {
 	PID        int
+	ParentPID  int
 	UID        int
 	StartSec   int64
 	StartUsec  int32
@@ -63,8 +65,16 @@ type unmanagedSharedDaemonHooks struct {
 	currentUID     func() int
 }
 
-// SharedDaemonOwnerStatus 描述 Mimi 为官方 daemon 安装的稳定启动入口。它只证明
-// launchd job 的安装状态；TCC 的最终责任主体仍需在真实签名 App 上做运行态验收。
+// SysctlKinfoProc 在进程刚退出的极窄窗口里可能返回 EIO，而不是 ESRCH。
+// 这里保留 seam 让退出复核能够覆盖该真实 Darwin 行为；signal 0 只用于确认
+// PID 是否已经消失，不能替代启动时间与 UID 的完整身份校验。
+var (
+	sharedDaemonStoppedKinfoProc = unix.SysctlKinfoProc
+	sharedDaemonSignalZero       = func(pid int) error { return unix.Kill(pid, 0) }
+)
+
+// SharedDaemonOwnerStatus 描述 Mimi 为共享 app-server 安装的稳定启动入口。它只
+// 证明 launchd job 的安装状态；Browser/TCC 仍需对真实 socket peer 父链验收。
 type SharedDaemonOwnerStatus struct {
 	Supported         bool
 	Installed         bool
@@ -88,6 +98,13 @@ var sharedDaemonStrippedEnvKeys = []string{
 	LocalDaemonEnvironmentKey,
 	"CODEX_APP_SERVER_WS_URL",
 	"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH",
+	// supervisor 通过 node -e 执行固定内联脚本。继承 NODE_OPTIONS/require
+	// 等控制面会允许用户环境在脚本前加载额外代码，必须以空值覆盖。
+	"NODE_OPTIONS",
+	"NODE_PATH",
+	"NODE_REPL_EXTERNAL_MODULE",
+	"NODE_REDIRECT_WARNINGS",
+	"NODE_V8_COVERAGE",
 }
 
 var sharedDaemonRequiredToolPaths = []string{
@@ -219,34 +236,37 @@ func resolveSharedDaemonCodexBin(configured string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("解析 codex 路径失败：%w", err)
 	}
-	info, err := os.Stat(absolute)
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("解析 codex 真实路径失败：%w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	info, err := os.Stat(canonical)
 	if err != nil {
 		return "", fmt.Errorf("检查 codex 可执行文件失败：%w", err)
 	}
 	if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("codex 路径不是可执行文件：%s", absolute)
+		return "", fmt.Errorf("codex 路径不是可执行文件：%s", canonical)
 	}
-	return absolute, nil
+	// plist 固定到已验证版本的真实路径，避免 `current`/用户 bin symlink 在
+	// codesign 检查与 launchd 执行之间被换到另一份未验证程序。
+	return canonical, nil
 }
 
-// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行官方 codex，
-// 不引入 shell 责任主体；Desktop 专属变量由 job 环境中的空值覆盖。TCC 最终归因
-// 仍必须由签名 App 做运行态验收，不能由 plist 结构或单元测试代替。
+// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行 Codex
+// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node 作为持久
+// supervisor 直接拉起 app-server；最终仍需以 socket peer 父链做运行态验收。
 func renderSharedDaemonLaunchAgent(
+	nodeBin string,
 	codexBin string,
 	env map[string]string,
 	logPath string,
 	runAtLoadOption ...bool,
 ) ([]byte, error) {
-	if strings.TrimSpace(codexBin) == "" {
-		return nil, fmt.Errorf("codex 路径不能为空")
+	if strings.TrimSpace(nodeBin) == "" || strings.TrimSpace(codexBin) == "" {
+		return nil, fmt.Errorf("node supervisor 与 codex 路径不能为空")
 	}
-	arguments := []string{
-		codexBin,
-		"app-server",
-		"daemon",
-		"start",
-	}
+	arguments := sharedDaemonSupervisorProgramArguments(nodeBin, codexBin)
 	runAtLoad := true
 	if len(runAtLoadOption) > 0 {
 		runAtLoad = runAtLoadOption[0]
@@ -297,9 +317,11 @@ func renderSharedDaemonLaunchAgent(
 	} else {
 		buf.WriteString("\t<false/>\n")
 	}
-	// job 是一次性控制命令，退出属于正常结束，不能让 launchd 反复重启。
+	// supervisor 随 app-server 一并退出；KeepAlive=false 禁止 launchd 在 socket
+	// 冲突或 child 崩溃时形成无界重启风暴，恢复仍由现有 gateway 路径触发。
 	buf.WriteString("\t<key>KeepAlive</key>\n\t<false/>\n")
 	buf.WriteString("\t<key>ThrottleInterval</key>\n\t<integer>1</integer>\n")
+	buf.WriteString("\t<key>ExitTimeOut</key>\n\t<integer>20</integer>\n")
 	// 077 的十进制是 63；确保 launchd 创建的 stdout/stderr 日志仅当前用户可读。
 	buf.WriteString("\t<key>Umask</key>\n\t<integer>63</integer>\n")
 	if strings.TrimSpace(logPath) != "" {
@@ -323,7 +345,7 @@ func sharedDaemonLaunchAgentEnv(env map[string]string) map[string]string {
 	}
 	values["PATH"] = normalizedSharedDaemonToolingPath(values["PATH"], os.Getenv("PATH"))
 	// EnvironmentVariables 会覆盖 launchctl setenv 的用户域值。直接 ProgramArguments
-	// 因此无需借 shell 执行 unset，进程树固定为 launchd -> codex。
+	// 因此无需借 shell 执行 unset，启动链固定为 launchd -> node supervisor。
 	for _, key := range sharedDaemonStrippedEnvKeys {
 		values[key] = ""
 	}
@@ -463,6 +485,13 @@ func planSharedDaemonLaunchAgent(
 	if err != nil {
 		return sharedDaemonLaunchAgentPlan{}, err
 	}
+	nodeBin, err := sharedDaemonResolveSupervisorNode(codexBin)
+	if err != nil {
+		return sharedDaemonLaunchAgentPlan{}, err
+	}
+	if err := sharedDaemonValidateSupervisor(nodeBin, codexBin); err != nil {
+		return sharedDaemonLaunchAgentPlan{}, err
+	}
 	logPath, err := sharedDaemonLaunchAgentLogPath()
 	if err != nil {
 		return sharedDaemonLaunchAgentPlan{}, err
@@ -516,7 +545,7 @@ func planSharedDaemonLaunchAgent(
 	} else if !os.IsNotExist(statErr) {
 		return sharedDaemonLaunchAgentPlan{}, fmt.Errorf("检查共享 daemon LaunchAgent 失败：%w", statErr)
 	}
-	desired, err := renderSharedDaemonLaunchAgent(codexBin, effectiveEnv, logPath, runAtLoad)
+	desired, err := renderSharedDaemonLaunchAgent(nodeBin, codexBin, effectiveEnv, logPath, runAtLoad)
 	if err != nil {
 		return sharedDaemonLaunchAgentPlan{}, err
 	}
@@ -790,42 +819,107 @@ func ensureSharedDaemonOwner(
 		return SharedDaemonOwnerStatus{}, err
 	}
 	autoChanged := !autoPlan.existingPresent || !bytes.Equal(autoPlan.existing, autoPlan.desired)
+	manualDesired, err := sharedDaemonManualPlist(autoPlan.desired)
+	if err != nil {
+		return SharedDaemonOwnerStatus{}, err
+	}
 	pending := before.MigrationRequired || forcePending ||
 		(daemonPreexisting && (autoChanged || !before.Loaded))
 	plan := autoPlan
 	if pending {
-		plan, err = planSharedDaemonLaunchAgent(options, false)
-		if err != nil {
-			return SharedDaemonOwnerStatus{}, err
-		}
+		// node/codex 的完整 Developer ID 校验最昂贵，也会 fork codesign。manual
+		// 与 auto 只差 RunAtLoad，直接从同一份已验证 plan 派生，避免同次 ensure
+		// 重复 6 个签名/metadata 子进程并扩大 socket 竞态窗口。
+		plan.desired = manualDesired
 	}
 	fileChanged, err := applySharedDaemonLaunchAgentPlan(plan)
 	if err != nil {
 		return SharedDaemonOwnerStatus{}, err
 	}
 	created := !before.Installed
+	launchctlChanged := false
 	rollback := func(cause error) (SharedDaemonOwnerStatus, error) {
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*launchctlTimeout)
 		defer cancel()
-		if rollbackErr := restoreSharedDaemonOwner(rollbackCtx, before, previousPlist); rollbackErr != nil {
+		var rollbackErr error
+		if launchctlChanged && !sharedDaemonSocketAcceptsConnectionMust(options) {
+			rollbackErr = restoreSharedDaemonOwner(rollbackCtx, before, previousPlist)
+		} else {
+			rollbackErr = restoreSharedDaemonOwnerFilesOnly(before, previousPlist)
+		}
+		if rollbackErr != nil {
 			return SharedDaemonOwnerStatus{}, fmt.Errorf("%w；恢复原 daemon owner 也失败：%v", cause, rollbackErr)
 		}
 		return SharedDaemonOwnerStatus{}, fmt.Errorf("%w；已恢复原 daemon owner", cause)
 	}
-	if pending && !before.MigrationRequired {
-		if err := writeSharedDaemonMigrationFlag(); err != nil {
-			return rollback(err)
+	markerPresent := before.MigrationRequired
+	ensurePendingMarker := func() error {
+		if !pending || markerPresent {
+			return nil
 		}
+		if err := writeSharedDaemonMigrationFlag(); err != nil {
+			return err
+		}
+		markerPresent = true
+		return nil
+	}
+	// 入口探测到“无 listener”不构成跨越 codesign/落盘窗口的租约。每个
+	// launchctl 副作用前重新探测；一旦 socket 已出现，就把刚写的 auto plist
+	// 收敛为 manual+marker，并保留当前 loaded job，绝不 bootout 活跃 coalition。
+	stagePendingIfListenerAppeared := func() (bool, error) {
+		if !sharedDaemonSocketAcceptsConnectionMust(options) {
+			return false, nil
+		}
+		if !pending {
+			manualPlan := autoPlan
+			manualPlan.desired = manualDesired
+			changed, applyErr := applySharedDaemonLaunchAgentPlan(manualPlan)
+			if applyErr != nil {
+				return true, applyErr
+			}
+			fileChanged = fileChanged || changed
+			pending = true
+		}
+		if err := ensurePendingMarker(); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	if err := ensurePendingMarker(); err != nil {
+		return rollback(err)
 	}
 	loaded := before.Loaded
-	if fileChanged && loaded {
+	listenerActive := daemonPreexisting
+	if fileChanged || !loaded {
+		observedActive, stageErr := stagePendingIfListenerAppeared()
+		if stageErr != nil {
+			return rollback(stageErr)
+		}
+		listenerActive = listenerActive || observedActive
+	}
+	// 已有 listener 时只 stage 新的 manual plist + marker，不能在用户确认前
+	// bootout 当前 job。虽然旧官方 daemon 通常已经 detached，launchd 仍可能按
+	// service coalition 回收后代；显式迁移会在 socket 完全停止后再 reload。
+	deferReloadUntilMigration := fileChanged && loaded && (daemonPreexisting || listenerActive)
+	if fileChanged && loaded && !deferReloadUntilMigration {
+		listenerActive, err = stagePendingIfListenerAppeared()
+		if err != nil {
+			return rollback(err)
+		}
+		deferReloadUntilMigration = listenerActive
+	}
+	if fileChanged && loaded && !deferReloadUntilMigration {
 		if _, bootoutErr := sharedDaemonLaunchctl(ctx, "bootout", launchAgentServiceTarget()); bootoutErr != nil &&
 			!isLaunchctlNotLoaded(bootoutErr) {
 			return rollback(bootoutErr)
 		}
 		loaded = false
+		launchctlChanged = true
 	}
 	if !loaded {
+		if _, stageErr := stagePendingIfListenerAppeared(); stageErr != nil {
+			return rollback(stageErr)
+		}
 		path, pathErr := SharedDaemonLaunchAgentPath()
 		if pathErr != nil {
 			return rollback(pathErr)
@@ -835,6 +929,7 @@ func ensureSharedDaemonOwner(
 		if _, bootstrapErr := sharedDaemonLaunchctl(ctx, "bootstrap", launchAgentDomainTarget(), path); bootstrapErr != nil {
 			return rollback(bootstrapErr)
 		}
+		launchctlChanged = true
 	}
 	changed := fileChanged || !before.Loaded || markerRepaired
 	status, err := InspectSharedDaemonOwner(ctx)
@@ -873,7 +968,10 @@ func ensureSharedDaemonOwner(
 					currentStatus.MigrationRequired != appliedMigrationRequired {
 					return fmt.Errorf("共享 daemon owner 状态已被其他进程修改，拒绝覆盖")
 				}
-				return restoreSharedDaemonOwner(rollbackCtx, before, previousPlist)
+				if launchctlChanged && !sharedDaemonSocketAcceptsConnectionMust(options) {
+					return restoreSharedDaemonOwner(rollbackCtx, before, previousPlist)
+				}
+				return restoreSharedDaemonOwnerFilesOnly(before, previousPlist)
 			},
 		}
 	}
@@ -893,7 +991,8 @@ func RollbackSharedDaemonOwnerChange(ctx context.Context, rollback *SharedDaemon
 }
 
 // restoreSharedDaemonOwner 把 plist、launchd 加载状态和迁移标记一起恢复到调用前。
-// job 是一次性官方控制命令，回滚不会 stop 已运行的 app-server daemon。
+// 只允许用于本事务已在“无既有 listener”条件下修改过 launchctl 的路径；已有
+// listener 的 stage/rollback 必须走 files-only，不能依赖 bootout 的 coalition 行为。
 func restoreSharedDaemonOwner(
 	ctx context.Context,
 	before SharedDaemonOwnerStatus,
@@ -921,6 +1020,29 @@ func restoreSharedDaemonOwner(
 			if _, err := sharedDaemonLaunchctl(ctx, "bootstrap", launchAgentDomainTarget(), path); err != nil {
 				return err
 			}
+		}
+	} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除本次新建 LaunchAgent 失败：%w", err)
+	}
+	if before.MigrationRequired {
+		return writeSharedDaemonMigrationFlag()
+	}
+	return clearSharedDaemonMigrationFlag()
+}
+
+// restoreSharedDaemonOwnerFilesOnly 用于只 stage 了磁盘 plist/marker、尚未触碰
+// launchctl 的事务回滚。此路径绝不能为了恢复文件而 bootout 仍在服务的旧 job。
+func restoreSharedDaemonOwnerFilesOnly(
+	before SharedDaemonOwnerStatus,
+	previousPlist []byte,
+) error {
+	path, err := SharedDaemonLaunchAgentPath()
+	if err != nil {
+		return err
+	}
+	if before.Installed {
+		if err := writeSharedDaemonPrivateFileAtomically(path, previousPlist); err != nil {
+			return fmt.Errorf("恢复原 LaunchAgent 文件失败：%w", err)
 		}
 	} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("删除本次新建 LaunchAgent 失败：%w", err)
@@ -1057,22 +1179,13 @@ func clearSharedDaemonMigrationFlag() error {
 	return nil
 }
 
-// RemoveSharedDaemonLaunchAgent 关闭共享时卸载 job 并删除 plist。不停止已经在运行
-// 的 daemon：那会打断仍在使用它的 Desktop 或移动端任务。
+// RemoveSharedDaemonLaunchAgent 关闭共享时只删除未来登录的启动入口。当前 job
+// 可能仍通过 launchd coalition 关联着 listener；bootout 没有“不影响服务进程”
+// 的系统契约，因此本会话保留已加载且 KeepAlive=false 的定义。
 func RemoveSharedDaemonLaunchAgent(ctx context.Context) error {
 	path, err := SharedDaemonLaunchAgentPath()
 	if err != nil {
 		return err
-	}
-	loaded, _, inspectErr := inspectLaunchAgentState(ctx)
-	if inspectErr != nil {
-		return inspectErr
-	}
-	if loaded {
-		if _, bootoutErr := sharedDaemonLaunchctl(ctx, "bootout", launchAgentServiceTarget()); bootoutErr != nil &&
-			!isLaunchctlNotLoaded(bootoutErr) {
-			return bootoutErr
-		}
 	}
 	if err := sharedDaemonRemoveLaunchAgentFile(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("删除 LaunchAgent 失败：%w", err)
@@ -1098,20 +1211,16 @@ func removeSharedDaemonOwnerUnlocked(ctx context.Context) error {
 }
 
 // removeSharedDaemonOwnerForTransactionUnlocked 在调用方持有 operation lock 时
-// 移除 owner。先把磁盘 plist 降为 manual，再 bootout/delete；因此删除任一步
-// 失败也不会留下可在下次登录自动启动的 owner。返回值保留兼容签名，但禁用
-// 事务不再恢复 auto owner：配置可能已被锁外编辑器改成 WS，恢复会越权。
+// 移除 owner。先把磁盘 plist 降为 manual，再删除未来登录入口；当前会话里已
+// 加载的定义保留到注销，避免 bootout 误伤 coalition 中的 listener。
+// 返回值保留兼容签名，但禁用事务不再恢复 auto owner：配置可能已被锁外编辑器
+// 改成 WS，恢复会越权。
 func removeSharedDaemonOwnerForTransactionUnlocked(
 	ctx context.Context,
 ) (func(context.Context) error, error) {
 	before, err := InspectSharedDaemonOwner(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if before.Loaded && !before.Installed {
-		// 没有磁盘 plist 就无法在失败时重新 bootstrap 同一个 job。先于 bootout
-		// 拒绝这种外部/残缺状态，保证后面的删除事务始终可完整回滚。
-		return nil, fmt.Errorf("共享 daemon LaunchAgent 已加载但磁盘 plist 缺失，拒绝卸载")
 	}
 	var previousPlist []byte
 	if before.Installed {
@@ -1192,6 +1301,23 @@ func startLocalDaemonWithStableOwnerTracked(
 		// job 尚未退出时再 kickstart，直接等待本次启动完成。
 		return false, waitForSharedDaemonSocket(ctx, options, logOffset)
 	}
+	if owner.RunAtLoad {
+		// 登录时 launchd 的 running 状态与 app-server socket 建立并非原子更新。
+		// 先给既有 supervisor 一个短窗口，避免立即 kickstart 第二套；真正崩溃
+		// 的恢复最多只增加这一秒。
+		graceCtx, cancelGrace := context.WithTimeout(ctx, sharedDaemonRunAtLoadGrace)
+		graceErr := waitForSharedDaemonSocket(graceCtx, options, logOffset)
+		cancelGrace()
+		if graceErr == nil {
+			return false, nil
+		}
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if sharedDaemonSocketAcceptsConnectionMust(options) {
+			return false, nil
+		}
+	}
 	// job 已注册：显式 kickstart 一次，不依赖刚才 bootstrap 的异步 RunAtLoad。
 	if _, kickErr := sharedDaemonLaunchctl(ctx, "kickstart", launchAgentServiceTarget()); kickErr != nil {
 		return false, kickErr
@@ -1258,11 +1384,14 @@ func startPreparedSharedDaemonAfterConfigCommit(
 	if err != nil {
 		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon 启动后生命周期检查失败：%w", err)
 	}
-	if err := ValidateManagedLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
+	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
 		return LocalDaemonStatus{}, err
 	}
 	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
 		return LocalDaemonStatus{}, err
+	}
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon 启动后签名父链检查失败：%w", err)
 	}
 	status := localDaemonStatus(socketPath, startedByOwner, probe.Version, os.Stat)
 	status.StartedByStableOwner = startedByOwner
@@ -1326,6 +1455,29 @@ func restartSharedDaemonWithStableOwner(
 	if err := clearSharedDaemonEnablePrepared(); err != nil {
 		return LocalDaemonStatus{}, err
 	}
+	// 上一次显式迁移可能已经启动并完整验证了新 supervisor，却在清 marker 前
+	// 崩溃。若当前 socket 仍能从真实 peer 证明就是目标签名父链，直接提交 auto；
+	// 不为了修复持久状态再中断一次健康会话。
+	if owner.MigrationRequired && preexistingErr == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, localDaemonProbeTimeout)
+		probe, probeErr := ProbeLocalDaemonInfo(probeCtx, socketPath)
+		cancel()
+		if probeErr == nil {
+			lifecycle, lifecycleErr := InspectLocalDaemonLifecycle(ctx, options)
+			if lifecycleErr == nil &&
+				ValidateLocalDaemonLifecycle(lifecycle, socketPath) == nil &&
+				ValidateLocalDaemonProbeVersion(lifecycle, probe.Version) == nil &&
+				sharedDaemonValidateSignedRuntime(ctx, options, socketPath) == nil {
+				if err := commitSharedDaemonMigration(options); err != nil {
+					return LocalDaemonStatus{}, err
+				}
+				status := localDaemonStatus(socketPath, false, probe.Version, os.Stat)
+				status.OwnerInstalled = true
+				status.LifecycleValidated = true
+				return status, nil
+			}
+		}
+	}
 	if !owner.MigrationRequired {
 		probeCtx, cancel := context.WithTimeout(ctx, localDaemonProbeTimeout)
 		probe, probeErr := ProbeLocalDaemonInfo(probeCtx, socketPath)
@@ -1335,22 +1487,45 @@ func restartSharedDaemonWithStableOwner(
 			if lifecycleErr != nil {
 				return LocalDaemonStatus{}, fmt.Errorf("确认现有共享 daemon 生命周期失败：%w", lifecycleErr)
 			}
-			if lifecycleErr := ValidateManagedLocalDaemonLifecycle(lifecycle, socketPath); lifecycleErr != nil {
+			if lifecycleErr := ValidateLocalDaemonLifecycle(lifecycle, socketPath); lifecycleErr != nil {
 				return LocalDaemonStatus{}, lifecycleErr
 			}
 			if identityErr := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); identityErr != nil {
 				return LocalDaemonStatus{}, identityErr
+			}
+			if identityErr := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); identityErr != nil {
+				return LocalDaemonStatus{}, fmt.Errorf("现有共享 daemon 缺少签名 supervisor 父链：%w", identityErr)
 			}
 			status := localDaemonStatus(socketPath, false, probe.Version, os.Stat)
 			status.OwnerInstalled = true
 			return status, nil
 		}
 	}
+	var listenerBeforeStop *sharedDaemonListenerProcess
+	if sharedDaemonSocketAcceptsConnection(socketPath) {
+		identity, identityErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if identityErr != nil {
+			return LocalDaemonStatus{}, fmt.Errorf("记录旧共享 daemon 身份失败：%w", identityErr)
+		}
+		listenerBeforeStop = &identity
+	}
 	if err := stopSharedDaemon(ctx, options, owner); err != nil {
 		return LocalDaemonStatus{}, err
 	}
-	if err := waitForSharedDaemonStopped(ctx, socketPath); err != nil {
+	var stoppedIdentities []sharedDaemonListenerProcess
+	if listenerBeforeStop != nil {
+		stoppedIdentities = append(stoppedIdentities, *listenerBeforeStop)
+	}
+	if err := waitForSharedDaemonStopped(ctx, socketPath, stoppedIdentities...); err != nil {
 		return LocalDaemonStatus{}, err
+	}
+	// 已有 listener 时 Ensure 只把新 plist stage 到磁盘，launchd 内仍可能
+	// 注册着旧的 `daemon start` 定义。只有用户明确确认、旧 socket 已稳定断开
+	// 后，才把当前 manual plist 重新加载；否则随后 kickstart 仍会拉起旧拓扑。
+	if owner.MigrationRequired {
+		if err := reloadSharedDaemonLaunchAgentForMigration(ctx); err != nil {
+			return LocalDaemonStatus{}, err
+		}
 	}
 	logOffset := sharedDaemonLaunchAgentLogSize()
 	if err := kickstartSharedDaemon(ctx); err != nil {
@@ -1369,11 +1544,14 @@ func restartSharedDaemonWithStableOwner(
 	if err != nil {
 		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon 重启后生命周期检查失败：%w", err)
 	}
-	if err := ValidateManagedLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
+	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
 		return LocalDaemonStatus{}, err
 	}
 	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
 		return LocalDaemonStatus{}, err
+	}
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon 重启后签名父链检查失败：%w", err)
 	}
 	if err := commitSharedDaemonMigration(options); err != nil {
 		return LocalDaemonStatus{}, err
@@ -1381,6 +1559,41 @@ func restartSharedDaemonWithStableOwner(
 	status := localDaemonStatus(socketPath, true, probe.Version, os.Stat)
 	status.OwnerInstalled = true
 	return status, nil
+}
+
+func reloadSharedDaemonLaunchAgentForMigration(ctx context.Context) error {
+	if err := requireCodexDesktopStopped(ctx, "重新加载共享 daemon owner 前"); err != nil {
+		return err
+	}
+	owner, err := InspectSharedDaemonOwner(ctx)
+	if err != nil {
+		return fmt.Errorf("确认待迁移共享 daemon owner 失败：%w", err)
+	}
+	if !owner.Installed || !owner.Secure || owner.RunAtLoad || !owner.MigrationRequired {
+		return fmt.Errorf("待迁移共享 daemon owner 不是安全的 manual 状态")
+	}
+	if owner.Loaded {
+		if _, err := sharedDaemonLaunchctl(ctx, "bootout", launchAgentServiceTarget()); err != nil &&
+			!isLaunchctlNotLoaded(err) {
+			return fmt.Errorf("卸载旧共享 daemon owner 失败：%w", err)
+		}
+	}
+	path, err := SharedDaemonLaunchAgentPath()
+	if err != nil {
+		return err
+	}
+	if _, err := sharedDaemonLaunchctl(ctx, "bootstrap", launchAgentDomainTarget(), path); err != nil {
+		return fmt.Errorf("加载新共享 daemon owner 失败：%w", err)
+	}
+	confirmed, err := InspectSharedDaemonOwner(ctx)
+	if err != nil {
+		return fmt.Errorf("复核新共享 daemon owner 失败：%w", err)
+	}
+	if !confirmed.Installed || !confirmed.Loaded || confirmed.Running || !confirmed.Secure ||
+		confirmed.RunAtLoad || !confirmed.MigrationRequired {
+		return fmt.Errorf("新共享 daemon owner 未保持可显式启动的 manual 状态")
+	}
+	return nil
 }
 
 func kickstartSharedDaemon(ctx context.Context) error {
@@ -1412,7 +1625,11 @@ func commitSharedDaemonMigration(options LocalDaemonOptions) error {
 	return nil
 }
 
-func waitForSharedDaemonStopped(ctx context.Context, socketPath string) error {
+func waitForSharedDaemonStopped(
+	ctx context.Context,
+	socketPath string,
+	identities ...sharedDaemonListenerProcess,
+) error {
 	deadline := time.Now().Add(sharedDaemonStopTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
@@ -1425,7 +1642,20 @@ func waitForSharedDaemonStopped(ctx context.Context, socketPath string) error {
 		} else if disconnectedSince.IsZero() {
 			disconnectedSince = now
 		} else if now.Sub(disconnectedSince) >= sharedDaemonStoppedConfirmationWindow {
-			return nil
+			allExited := true
+			for _, identity := range identities {
+				alive, identityErr := sharedDaemonProcessIdentityStillAlive(identity)
+				if identityErr != nil {
+					return identityErr
+				}
+				if alive {
+					allExited = false
+					break
+				}
+			}
+			if allExited {
+				return nil
+			}
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -1435,6 +1665,37 @@ func waitForSharedDaemonStopped(ctx context.Context, socketPath string) error {
 		}
 		time.Sleep(sharedDaemonSocketPollInterval)
 	}
+}
+
+func sharedDaemonProcessIdentityStillAlive(identity sharedDaemonListenerProcess) (bool, error) {
+	if identity.PID <= 1 {
+		return false, fmt.Errorf("旧共享 daemon PID 无效")
+	}
+	kinfo, err := sharedDaemonStoppedKinfoProc("kern.proc.pid", identity.PID)
+	if err != nil {
+		if errors.Is(err, unix.ESRCH) || errors.Is(err, unix.ENOENT) {
+			return false, nil
+		}
+		if errors.Is(err, unix.EIO) {
+			// Darwin 可能在进程退出但 kinfo 尚未稳定的瞬间返回 EIO。只有
+			// kill(pid, 0)=ESRCH 才足以证明旧 PID 已消失；PID 仍存在时
+			// 返回 alive 让外层继续轮询，无法判断时仍 fail closed。
+			signalErr := sharedDaemonSignalZero(identity.PID)
+			if errors.Is(signalErr, unix.ESRCH) {
+				return false, nil
+			}
+			if signalErr == nil {
+				return true, nil
+			}
+			return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w（signal 0：%v）", err, signalErr)
+		}
+		return false, fmt.Errorf("复核旧共享 daemon 是否退出失败：%w", err)
+	}
+	if int(kinfo.Proc.P_pid) != identity.PID || int(kinfo.Eproc.Ucred.Uid) != identity.UID {
+		return false, nil
+	}
+	return kinfo.Proc.P_starttime.Sec == identity.StartSec &&
+		kinfo.Proc.P_starttime.Usec == identity.StartUsec, nil
 }
 
 func stopSharedDaemon(
@@ -1507,305 +1768,8 @@ func requireCodexDesktopStopped(ctx context.Context, stage string) error {
 	return nil
 }
 
-func stopUnmanagedSharedDaemon(
-	ctx context.Context,
-	options LocalDaemonOptions,
-	lifecycle LocalDaemonLifecycleStatus,
-) error {
-	socketPath, err := LocalDaemonSocketPath(options.Env)
-	if err != nil {
-		return err
-	}
-	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
-	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
-	cancelProbe()
-	if err != nil {
-		return fmt.Errorf("无法确认待接管的 Codex app-server：%w", err)
-	}
-	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
-		return err
-	}
-	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
-		return err
-	}
-	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err != nil {
-		return err
-	}
-
-	return stopUnmanagedSharedDaemonWithHooks(
-		ctx,
-		socketPath,
-		lifecycle.ManagedCodexPath,
-		unmanagedSharedDaemonHooks{
-			desktopRunning: sharedDaemonDesktopRunning,
-			inspect:        inspectSharedDaemonListenerProcess,
-			signalTERM:     signalSharedDaemonProcessTERM,
-			currentUID:     os.Getuid,
-		},
-	)
-}
-
-func stopUnmanagedSharedDaemonWithHooks(
-	ctx context.Context,
-	socketPath string,
-	managedCodexPath string,
-	hooks unmanagedSharedDaemonHooks,
-) error {
-	running, err := hooks.desktopRunning(ctx)
-	if err != nil {
-		return fmt.Errorf("确认 Codex Desktop 已退出失败：%w", err)
-	}
-	if running {
-		return fmt.Errorf("Codex Desktop 仍在运行，拒绝接管非 daemon 管理的 app-server")
-	}
-
-	listener, err := hooks.inspect(ctx, socketPath)
-	if err != nil {
-		return fmt.Errorf("识别非 daemon 管理的 Codex app-server 失败：%w", err)
-	}
-	if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), managedCodexPath); err != nil {
-		return err
-	}
-	// PID 可能在检查命令行期间退出并被复用。发送信号前再次从 socket
-	// 反查 owner；PID、UID、命令与可执行文件任一变化都停止迁移。
-	confirmed, err := hooks.inspect(ctx, socketPath)
-	if err != nil {
-		return fmt.Errorf("再次确认 Codex app-server owner 失败：%w", err)
-	}
-	if confirmed != listener {
-		return fmt.Errorf("Codex app-server owner 在接管前发生变化，已停止迁移")
-	}
-	// 用户可能在首次检查后从 Dock 重新打开 Desktop。信号前必须
-	// 再按 bundle id 查一次；读取失败也 fail closed，不能凭旧快照
-	// 终止已经被新 Desktop 重新使用的 backend。
-	running, err = hooks.desktopRunning(ctx)
-	if err != nil {
-		return fmt.Errorf("信号前再次确认 Codex Desktop 已退出失败：%w", err)
-	}
-	if running {
-		return fmt.Errorf("Codex Desktop 在迁移前被重新打开，已停止接管")
-	}
-	if err := hooks.signalTERM(listener.PID); err != nil {
-		return fmt.Errorf("正常终止旧 Codex app-server 失败：%w", err)
-	}
-	return nil
-}
-
-func validateSharedDaemonListenerProcess(
-	process sharedDaemonListenerProcess,
-	currentUID int,
-	managedCodexPath string,
-) error {
-	if process.PID <= 1 {
-		return fmt.Errorf("Codex app-server socket owner PID 无效")
-	}
-	if process.UID != currentUID {
-		return fmt.Errorf("Codex app-server socket owner 不属于当前用户，拒绝接管")
-	}
-	if strings.TrimSpace(process.Executable) == "" ||
-		!sameCanonicalPath(process.Executable, managedCodexPath) {
-		return fmt.Errorf("Codex app-server socket owner 不是官方 managed standalone，拒绝接管")
-	}
-	if !isDirectUnixAppServerCommand(process.Command) {
-		return fmt.Errorf("Codex app-server socket owner 命令行不符合原生 SSH 启动模式，拒绝接管")
-	}
-	return nil
-}
-
-func isDirectUnixAppServerCommand(command string) bool {
-	var fields []string
-	if strings.Contains(command, "\x00") {
-		for _, field := range strings.Split(command, "\x00") {
-			if field != "" {
-				fields = append(fields, field)
-			}
-		}
-	} else {
-		fields = strings.Fields(strings.TrimSpace(command))
-	}
-	if len(fields) < 3 {
-		return false
-	}
-	appServerIndex := -1
-	for index, field := range fields {
-		if field == "app-server" {
-			appServerIndex = index
-			break
-		}
-	}
-	if appServerIndex < 0 {
-		return false
-	}
-	// `app-server daemon ...` 与 `app-server proxy ...` 都是另一种官方
-	// 责任链，不能当成 SSH bootstrap 的直接 listener 接管。
-	for _, field := range fields[appServerIndex+1:] {
-		if field == "daemon" || field == "proxy" {
-			return false
-		}
-	}
-	for index := appServerIndex + 1; index < len(fields); index++ {
-		switch {
-		case fields[index] == "--listen" && index+1 < len(fields):
-			return fields[index+1] == "unix://"
-		case strings.HasPrefix(fields[index], "--listen="):
-			return strings.TrimPrefix(fields[index], "--listen=") == "unix://"
-		}
-	}
-	return false
-}
-
-func codexDesktopProcessRunning(ctx context.Context) (bool, error) {
-	// Desktop 的当前 App 名与可执行文件名是 ChatGPT，历史名称却是
-	// Codex。进程名不是稳定契约；LaunchServices bundle id 与 Swift 端
-	// NSWorkspace 的识别方式一致，也能覆盖同 bundle 的多个实例。
-	cmd := exec.CommandContext(ctx, "/usr/bin/lsappinfo", "find", "bundleid="+codexDesktopBundleID)
-	configureManagedCommand(cmd)
-	output, err := cmd.Output()
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(output)) != "", nil
-}
-
-func inspectSharedDaemonListenerProcess(
-	ctx context.Context,
-	socketPath string,
-) (sharedDaemonListenerProcess, error) {
-	pid, peerUID, err := sharedDaemonSocketPeer(ctx, socketPath)
-	if err != nil {
-		return sharedDaemonListenerProcess{}, err
-	}
-	kinfo, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil || int(kinfo.Proc.P_pid) != pid {
-		return sharedDaemonListenerProcess{}, fmt.Errorf("读取 socket owner 进程身份失败")
-	}
-	if int(kinfo.Eproc.Ucred.Uid) != peerUID {
-		return sharedDaemonListenerProcess{}, fmt.Errorf("socket peer UID 与进程 UID 不一致")
-	}
-	executable, arguments, err := sharedDaemonProcessArguments(pid)
-	if err != nil {
-		return sharedDaemonListenerProcess{}, err
-	}
-	return sharedDaemonListenerProcess{
-		PID:        pid,
-		UID:        peerUID,
-		StartSec:   kinfo.Proc.P_starttime.Sec,
-		StartUsec:  kinfo.Proc.P_starttime.Usec,
-		Command:    strings.Join(arguments, "\x00"),
-		Executable: executable,
-	}, nil
-}
-
-func sharedDaemonSocketPeer(ctx context.Context, socketPath string) (int, int, error) {
-	dialer := net.Dialer{Timeout: localDaemonProbeTimeout}
-	conn, err := dialer.DialContext(ctx, "unix", socketPath)
-	if err != nil {
-		return 0, 0, fmt.Errorf("连接 Codex app-server socket 失败：%w", err)
-	}
-	defer conn.Close()
-	unixConn, ok := conn.(*net.UnixConn)
-	if !ok {
-		return 0, 0, fmt.Errorf("Codex app-server socket 不是 UnixConn")
-	}
-	raw, err := unixConn.SyscallConn()
-	if err != nil {
-		return 0, 0, fmt.Errorf("读取 Codex app-server socket fd 失败：%w", err)
-	}
-	var peerPID int
-	var peerUID int
-	var controlErr error
-	if err := raw.Control(func(fd uintptr) {
-		peerPID, controlErr = unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID)
-		if controlErr != nil {
-			return
-		}
-		credentials, credentialsErr := unix.GetsockoptXucred(
-			int(fd),
-			unix.SOL_LOCAL,
-			unix.LOCAL_PEERCRED,
-		)
-		if credentialsErr != nil {
-			controlErr = credentialsErr
-			return
-		}
-		peerUID = int(credentials.Uid)
-	}); err != nil {
-		return 0, 0, fmt.Errorf("读取 Codex app-server socket peer 失败：%w", err)
-	}
-	if controlErr != nil {
-		return 0, 0, fmt.Errorf("读取 Codex app-server socket peer 身份失败：%w", controlErr)
-	}
-	if peerPID <= 1 || peerUID < 0 {
-		return 0, 0, fmt.Errorf("Codex app-server socket peer 身份无效")
-	}
-	return peerPID, peerUID, nil
-}
-
-func sharedDaemonProcessArguments(pid int) (string, []string, error) {
-	raw, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return "", nil, fmt.Errorf("读取 socket owner 进程参数失败：%w", err)
-	}
-	if len(raw) < 5 {
-		return "", nil, fmt.Errorf("socket owner 进程参数过短")
-	}
-	argc := int(binary.LittleEndian.Uint32(raw[:4]))
-	if argc <= 0 || argc > 4096 {
-		return "", nil, fmt.Errorf("socket owner argc 无效")
-	}
-	cursor := raw[4:]
-	executableEnd := bytes.IndexByte(cursor, 0)
-	if executableEnd <= 0 {
-		return "", nil, fmt.Errorf("socket owner 缺少 executable path")
-	}
-	executable := string(cursor[:executableEnd])
-	if !filepath.IsAbs(executable) {
-		return "", nil, fmt.Errorf("socket owner executable path 不是绝对路径")
-	}
-	cursor = cursor[executableEnd+1:]
-	for len(cursor) > 0 && cursor[0] == 0 {
-		cursor = cursor[1:]
-	}
-	arguments := make([]string, 0, argc)
-	for len(arguments) < argc {
-		argumentEnd := bytes.IndexByte(cursor, 0)
-		if argumentEnd < 0 {
-			return "", nil, fmt.Errorf("socket owner argv 未完整终止")
-		}
-		arguments = append(arguments, string(cursor[:argumentEnd]))
-		cursor = cursor[argumentEnd+1:]
-	}
-	return executable, arguments, nil
-}
-
-func validatePrivateSharedDaemonSocket(socketPath string, currentUID int) error {
-	info, err := os.Lstat(socketPath)
-	if err != nil {
-		return fmt.Errorf("检查 Codex app-server socket 失败：%w", err)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("Codex app-server 路径不是 Unix socket")
-	}
-	if info.Mode().Perm() != 0o600 {
-		return fmt.Errorf("Codex app-server socket 权限不是 0600，拒绝接管")
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != currentUID {
-		return fmt.Errorf("Codex app-server socket 不属于当前用户，拒绝接管")
-	}
-	return nil
-}
-
-func signalSharedDaemonProcessTERM(pid int) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return process.Signal(syscall.SIGTERM)
-}
-
-// waitForSharedDaemonSocket 把 launchd 的异步启动重新变成同步语义：官方
-// `daemon start` 原本是阻塞的，调用方依赖“返回即已就绪”。
+// waitForSharedDaemonSocket 把 launchd/node supervisor 的异步启动重新变成同步
+// 语义，调用方依赖“返回即已就绪”。
 func waitForSharedDaemonSocket(ctx context.Context, options LocalDaemonOptions, logOffset int64) error {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
 	if err != nil {

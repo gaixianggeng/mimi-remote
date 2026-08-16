@@ -235,6 +235,7 @@ func ensureLocalDaemonWithStableOwner(
 		return LocalDaemonStatus{}, preparedErr
 	}
 
+	bootstrapLogOffset := sharedDaemonLaunchAgentLogSize()
 	owner, err := ensureSharedDaemonOwner(
 		ctx,
 		options,
@@ -244,6 +245,10 @@ func ensureLocalDaemonWithStableOwner(
 	if err != nil {
 		return LocalDaemonStatus{}, err
 	}
+	// RunAtLoad=true 的新/重载 owner 已由 bootstrap 异步触发 supervisor。launchd
+	// 状态与 socket 建立之间仍有短窗口，不能再 kickstart 第二套 supervisor；
+	// 这里记住第一次 ensure 的启动事实并只等待。
+	ownerBootstrapped := owner.Changed && owner.RunAtLoad && !daemonPreexisting
 	if owner.MigrationRequired && !sharedDaemonSocketAcceptsConnectionMust(options) {
 		if prepared && options.ValidateStableOwner != nil && !options.PrepareOwnerForConfigCommit {
 			// 上一次 fresh enable 可能在“shared 配置已 rename、manual owner 已
@@ -265,6 +270,10 @@ func ensureLocalDaemonWithStableOwner(
 	status, err := ensureLocalDaemon(ctx, options, localDaemonHooks{
 		probe: ProbeLocalDaemonInfo,
 		start: func(startCtx context.Context, startOptions LocalDaemonOptions) error {
+			if ownerBootstrapped {
+				startedByStableOwner = true
+				return waitForSharedDaemonSocket(startCtx, startOptions, bootstrapLogOffset)
+			}
 			var startErr error
 			if startOptions.PrepareOwnerForConfigCommit {
 				startedByStableOwner, startErr = startPreparedSharedDaemonWithStableOwnerTracked(startCtx, startOptions)
@@ -279,12 +288,16 @@ func ensureLocalDaemonWithStableOwner(
 		return LocalDaemonStatus{}, stableOwnerEnsureFailure(options, owner, err)
 	}
 	lifecycle, err := InspectLocalDaemonLifecycle(ctx, options)
+	signedSupervisorValidated := false
 	if err == nil {
-		err = reconcileStableOwnerLifecycle(
+		signedRuntimeErr := sharedDaemonValidateSignedRuntime(ctx, options, status.SocketPath)
+		signedSupervisorValidated = signedRuntimeErr == nil
+		err = reconcileStableOwnerLifecycleWithSignedRuntime(
 			lifecycle,
 			status,
 			&owner,
 			startedByStableOwner,
+			signedSupervisorValidated,
 			func() error {
 				// 现有 SSH bootstrap 重新抢到 socket 时，不只写 marker；还要把
 				// 登录启动持久化为 manual，保证下次登录不会绕过用户确认。
@@ -306,7 +319,7 @@ func ensureLocalDaemonWithStableOwner(
 	status.OwnerRollback = owner.Rollback
 	status.StartedByStableOwner = startedByStableOwner
 	status.LifecycleValidated = true
-	if prepared && lifecycle.Backend != nil {
+	if prepared && (lifecycle.Backend != nil || signedSupervisorValidated) {
 		// 上次进程可能在 manual kickstart 已成功、但 post-commit helper 尚未
 		// 消费 intent 时崩溃。本次普通 Ensure 已在同一 operation lock 内完成
 		// managed lifecycle + probe 校验，必须在返回前消费这份“一次性恢复权”；
@@ -340,22 +353,60 @@ func reconcileStableOwnerLifecycle(
 	startedByStableOwner bool,
 	markMigrationRequired func() error,
 ) error {
+	return reconcileStableOwnerLifecycleWithSignedRuntime(
+		lifecycle,
+		status,
+		owner,
+		startedByStableOwner,
+		false,
+		markMigrationRequired,
+	)
+}
+
+func reconcileStableOwnerLifecycleWithSignedRuntime(
+	lifecycle LocalDaemonLifecycleStatus,
+	status LocalDaemonStatus,
+	owner *SharedDaemonOwnerStatus,
+	startedByStableOwner bool,
+	signedSupervisorValidated bool,
+	markMigrationRequired func() error,
+) error {
 	if err := ValidateLocalDaemonLifecycle(lifecycle, status.SocketPath); err != nil {
 		return err
 	}
 	if err := ValidateLocalDaemonProbeVersion(lifecycle, status.Version); err != nil {
 		return err
 	}
-	// 任何已声明的 backend 都必须是官方 pid。未知的未来 backend
-	// 不能借旧 marker 绕过校验。
+	// foreground app-server 不使用官方 pid backend。只有从真实 socket peer 反查
+	// 到 listener -> OpenAI node supervisor 的完整父链后，才把 Backend=nil 认作
+	// Mimi 的稳定 owner；单凭 plist 或本次 kickstart 都不够。
+	if signedSupervisorValidated {
+		return nil
+	}
+	// 任何已声明的 backend 都必须先通过官方 pid 校验。它仍属于旧 runtime：
+	// Browser 需要的签名 node 父链并不存在，所以日常路径只保持 attach 并恢复
+	// pending，不能把“官方 daemon”误当成新的 stable supervisor。
 	if lifecycle.Backend != nil {
-		return ValidateManagedLocalDaemonLifecycle(lifecycle, status.SocketPath)
+		if err := ValidateManagedLocalDaemonLifecycle(lifecycle, status.SocketPath); err != nil {
+			return err
+		}
+		if startedByStableOwner {
+			return fmt.Errorf("稳定 owner 启动后得到旧 pid backend，签名 supervisor 未生效")
+		}
+		return reconcileSharedDaemonMigrationMarker(owner, markMigrationRequired)
 	}
 	// 本次明确执行了稳定 owner kickstart，却仍看不到 backend，说明
 	// 启动结果不能归因给该 owner，必须 fail closed。
 	if startedByStableOwner {
 		return ValidateManagedLocalDaemonLifecycle(lifecycle, status.SocketPath)
 	}
+	return reconcileSharedDaemonMigrationMarker(owner, markMigrationRequired)
+}
+
+func reconcileSharedDaemonMigrationMarker(
+	owner *SharedDaemonOwnerStatus,
+	markMigrationRequired func() error,
+) error {
 	if owner == nil || !owner.Installed || !owner.Loaded || !owner.Secure {
 		return fmt.Errorf("非 daemon 管理的 Codex app-server 缺少安全稳定 owner")
 	}

@@ -9,9 +9,11 @@ import (
 
 func TestRenderSharedDaemonLaunchAgentSetsControlledSoftFileLimit(t *testing.T) {
 	rendered, err := renderSharedDaemonLaunchAgent(
+		"/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node",
 		"/opt/codex/bin/codex",
 		map[string]string{"CODEX_HOME": "/Users/tester/.codex"},
 		"",
+		true,
 	)
 	if err != nil {
 		t.Fatalf("渲染 plist 失败：%v", err)
