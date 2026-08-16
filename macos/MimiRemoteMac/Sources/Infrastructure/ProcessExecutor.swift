@@ -107,10 +107,7 @@ actor ProcessExecutor {
         )
 
         let status = await withTaskCancellationHandler {
-            await Task.detached {
-                process.waitUntilExit()
-                return process.terminationStatus
-            }.value
+            await Self.waitUntilExit(process)
         } onCancel: {
             _ = Darwin.kill(processIdentifier, SIGTERM)
         }
@@ -145,25 +142,46 @@ actor ProcessExecutor {
         return .now() + seconds
     }
 
+    private static func waitUntilExit(_ process: Process) async -> Int32 {
+        await withCheckedContinuation { continuation in
+            // Process.waitUntilExit 是同步阻塞 API。不能用 Task.detached 包装，
+            // 否则会占住 Swift cooperative executor 的 worker。
+            Thread.detachNewThread {
+                process.waitUntilExit()
+                continuation.resume(returning: process.terminationStatus)
+            }
+        }
+    }
+
     private static func readBounded(_ handle: FileHandle, limit: Int) async throws -> BoundedRead {
-        try await Task.detached {
-            var collected = Data()
-            var exceeded = false
-            var total = 0
-            while true {
-                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-                if chunk.isEmpty { break }
-                total += chunk.count
-                if collected.count < limit {
-                    let remaining = limit - collected.count
-                    collected.append(chunk.prefix(remaining))
-                }
-                if total > limit {
-                    exceeded = true
+        try await withCheckedThrowingContinuation { continuation in
+            // FileHandle.read(upToCount:) 同样是同步阻塞 API；每次命令最多使用
+            // stdout/stderr 两条短命专用线程，避免挤占 timeout 所需的异步 worker。
+            Thread.detachNewThread {
+                do {
+                    var collected = Data()
+                    var exceeded = false
+                    var total = 0
+                    while true {
+                        let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                        if chunk.isEmpty { break }
+                        total += chunk.count
+                        if collected.count < limit {
+                            let remaining = limit - collected.count
+                            collected.append(chunk.prefix(remaining))
+                        }
+                        if total > limit {
+                            exceeded = true
+                        }
+                    }
+                    continuation.resume(
+                        returning: BoundedRead(data: collected, exceededLimit: exceeded)
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
-            return BoundedRead(data: collected, exceededLimit: exceeded)
-        }.value
+        }
     }
 }
 
