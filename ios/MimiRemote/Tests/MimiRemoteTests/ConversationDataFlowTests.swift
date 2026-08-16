@@ -3045,7 +3045,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
         composerState.applyPermissionMode(.autoApprove)
         XCTAssertEqual(composerState.permissionMode, .autoApprove)
-        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onFailure)
+        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onRequest)
         XCTAssertEqual(composerState.turnOptions.approvalsReviewer, "auto_review")
         XCTAssertEqual(composerState.turnOptions.sandboxMode, .workspaceWrite)
         XCTAssertFalse(composerState.turnOptions.networkAccess)

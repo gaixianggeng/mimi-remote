@@ -806,6 +806,55 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.modelSelectionPolicy, .catalogOnly)
     }
 
+    func testTurnOptionsMigratesLegacyAutoApprovalAndWritesCurrentProtocolValue() throws {
+        let legacy = Data(#"{"approval_policy":"on-failure","approvals_reviewer":"auto_review","sandbox_mode":"workspaceWrite","network_access":false}"#.utf8)
+        let decoded = try JSONDecoder().decode(CodexAppServerTurnOptions.self, from: legacy)
+
+        XCTAssertEqual(decoded.approvalPolicy, .onRequest)
+        XCTAssertEqual(decoded.approvalsReviewer, "auto_review")
+        XCTAssertEqual(decoded.sandboxMode, .workspaceWrite)
+
+        let encoded = try JSONEncoder().encode(decoded)
+        let persisted = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        XCTAssertEqual(persisted["approval_policy"] as? String, "on-request")
+        XCTAssertEqual(persisted["approvals_reviewer"] as? String, "auto_review")
+        XCTAssertEqual(persisted["sandbox_mode"] as? String, "workspaceWrite")
+
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        let threadRequest = try builder.threadStart(projectID: project.id, options: decoded)
+        let threadParams = try XCTUnwrap(threadRequest.params?.objectValue)
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(threadParams["approvalsReviewer"]?.stringValue, "auto_review")
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "workspace-write")
+
+        let request = try builder.turnStart(
+            threadID: "thread-legacy",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "迁移后发送", options: decoded)
+        )
+        let params = try XCTUnwrap(request.params?.objectValue)
+        XCTAssertEqual(params["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(params["approvalsReviewer"]?.stringValue, "auto_review")
+        let sandbox = try XCTUnwrap(params["sandboxPolicy"]?.objectValue)
+        XCTAssertEqual(sandbox["type"]?.stringValue, "workspaceWrite")
+        XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
+    }
+
+    func testApprovalPolicyRejectsUnsupportedPersistedValues() {
+        for value in ["never", "granular", "unknown"] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    CodexAppServerApprovalPolicy.self,
+                    from: Data("\"\(value)\"".utf8)
+                ),
+                "Mimi 不应静默接受未开放的审批策略：\(value)"
+            )
+        }
+    }
+
     func testTurnStartBuilderUsesDefaultCollaborationModeForGoalTurns() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -860,7 +909,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         options.serviceTier = "priority"
         options.reasoningEffort = .high
         options.reasoningSummary = .detailed
-        options.approvalPolicy = .onFailure
+        options.approvalPolicy = .onRequest
         options.sandboxMode = .readOnly
         options.personality = .friendly
         options.config = .object(["feature": .bool(true)])
@@ -876,7 +925,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(threadParams["model"]?.stringValue, "gpt-5-codex")
         XCTAssertEqual(threadParams["modelProvider"]?.stringValue, "openai")
         XCTAssertEqual(threadParams["serviceTier"]?.stringValue, "priority")
-        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(threadParams["sandbox"]?.stringValue, "read-only")
         XCTAssertEqual(threadParams["config"]?.objectValue?["feature"]?.boolValue, true)
         XCTAssertEqual(threadParams["baseInstructions"]?.stringValue, "base")
@@ -898,7 +947,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(turnParams["serviceTier"]?.stringValue, "priority")
         XCTAssertEqual(turnParams["effort"]?.stringValue, "high")
         XCTAssertEqual(turnParams["summary"]?.stringValue, "detailed")
-        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client-rich")
         XCTAssertNil(turnParams["modelProvider"])
         XCTAssertNil(turnParams["runtimeProvider"])

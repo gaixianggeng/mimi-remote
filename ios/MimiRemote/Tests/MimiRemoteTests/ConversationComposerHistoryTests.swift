@@ -190,7 +190,7 @@ extension ConversationDataFlowTests {
         composerState.turnOptions.reasoningEffort = .high
         composerState.turnOptions.reasoningSummary = .detailed
         composerState.turnOptions.personality = .friendly
-        composerState.turnOptions.approvalPolicy = .onFailure
+        composerState.turnOptions.approvalPolicy = .onRequest
         composerState.turnOptions.approvalsReviewer = "auto_review"
         composerState.turnOptions.sandboxMode = .readOnly
         composerState.turnOptions.networkAccess = true
@@ -242,7 +242,7 @@ extension ConversationDataFlowTests {
         ))
         let options = submitted.payload.options
 
-        XCTAssertEqual(options.approvalPolicy, .onFailure)
+        XCTAssertEqual(options.approvalPolicy, .onRequest)
         XCTAssertEqual(options.approvalsReviewer, "auto_review")
         XCTAssertEqual(options.sandboxMode, .workspaceWrite)
         XCTAssertFalse(options.networkAccess)
@@ -362,7 +362,7 @@ extension ConversationDataFlowTests {
         let cases: [(mode: ComposerPermissionMode, policy: CodexAppServerApprovalPolicy, reviewer: String, sandbox: CodexAppServerSandboxMode)] = [
             (.readOnly, .onRequest, "user", .readOnly),
             (.requestApproval, .onRequest, "user", .workspaceWrite),
-            (.autoApprove, .onFailure, "auto_review", .workspaceWrite),
+            (.autoApprove, .onRequest, "auto_review", .workspaceWrite),
             (.fullAccess, .onRequest, "user", .dangerFullAccess)
         ]
 

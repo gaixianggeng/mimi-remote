@@ -466,7 +466,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			ExternalActivity: true,
 		},
 		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request", "on-failure"},
+			ApprovalPolicies: []string{"on-request"},
 			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",
@@ -510,7 +510,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				RateLimits:       claudeRateLimitsAvailable,
 			},
 			Policy: appServerChannelPolicy{
-				ApprovalPolicies: []string{"on-request", "on-failure"},
+				ApprovalPolicies: []string{"on-request"},
 				SandboxModes:     []string{"read-only", "workspace-write"},
 				NetworkAccess:    false,
 				CWDScope:         "agentd_allowlist",

@@ -1150,8 +1150,9 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
 		}
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params)
 	safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
+	workspaceWrite := normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	return safe
 }
 
@@ -1198,8 +1199,10 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
 		safe["collaborationMode"] = collaborationMode
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params)
 	safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
+	sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
+	workspaceWrite := normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort
@@ -1371,13 +1374,14 @@ func sanitizedGatewayCollaborationMode(raw any) (map[string]any, bool) {
 	}, true
 }
 
-func sanitizedGatewayApproval(params map[string]any) (string, string) {
+func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool) (string, string) {
 	policy, _ := gatewayStringParam(params, "approvalPolicy")
 	reviewer, _ := gatewayStringParam(params, "approvalsReviewer")
-	// 移动端只放行一个有限自动审批组合：失败时交给 auto_review。
+	// 自动审批只允许在归一化后的 workspace-write 沙盒中生效。审批与沙盒在这里强绑定，
+	// 防止已认证客户端拼出 auto_review + danger-full-access 绕过用户确认。
 	// never / networkAccess 仍由 validateGatewayPolicyParams 统一拦截。
-	if normalizePolicyValue(policy) == "onfailure" && reviewer == "auto_review" {
-		return "on-failure", reviewer
+	if workspaceWrite && normalizePolicyValue(policy) == "onrequest" && reviewer == "auto_review" {
+		return "on-request", reviewer
 	}
 	return "on-request", "user"
 }
