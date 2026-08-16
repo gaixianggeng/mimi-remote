@@ -13,13 +13,12 @@ import (
 )
 
 const (
-	sharedDaemonOpenAITeamIdentifier     = "2DC432GLL2"
-	sharedDaemonCodexSigningIdentifier   = "codex"
-	sharedDaemonNodeSigningIdentifier    = "node"
-	sharedDaemonDesktopSigningIdentifier = "com.openai.codex"
-	sharedDaemonCodeSignRetryAttempts    = 16
-	sharedDaemonCodeSignRetryInterval    = time.Second
-	sharedDaemonCodeSignTimeout          = 20 * time.Second
+	sharedDaemonOpenAITeamIdentifier   = "2DC432GLL2"
+	sharedDaemonCodexSigningIdentifier = "codex"
+	sharedDaemonNodeSigningIdentifier  = "node"
+	sharedDaemonCodeSignRetryAttempts  = 16
+	sharedDaemonCodeSignRetryInterval  = time.Second
+	sharedDaemonCodeSignTimeout        = 20 * time.Second
 
 	// launcher 只负责把真正的 node supervisor 放进独立 session 后退出。这样
 	// LaunchAgent 仍是一条 one-shot job，普通 launcher 退出不会按同一进程组清理
@@ -73,6 +72,12 @@ var (
 	sharedDaemonValidateSupervisor    = validateSharedDaemonSupervisorBinaries
 	sharedDaemonValidateSignedRuntime = validateSignedSharedDaemonRuntime
 )
+
+type sharedDaemonCodeSigningTarget struct {
+	path       string
+	identifier string
+	name       string
+}
 
 func resolveSharedDaemonSupervisorNode(codexBin string) (string, error) {
 	candidates := make([]string, 0, 5)
@@ -139,24 +144,16 @@ func sharedDaemonDesktopBundleForNode(nodePath string) (string, error) {
 }
 
 func validateSharedDaemonSupervisorBinaries(nodePath string, codexPath string) error {
-	bundlePath, err := sharedDaemonDesktopBundleForNode(nodePath)
+	targets, err := sharedDaemonSupervisorSigningTargets(nodePath, codexPath)
 	if err != nil {
 		return err
 	}
-	for _, target := range []struct {
-		path       string
-		identifier string
-		name       string
-	}{
-		{path: bundlePath, identifier: sharedDaemonDesktopSigningIdentifier, name: "Codex Desktop"},
-		{path: nodePath, identifier: sharedDaemonNodeSigningIdentifier, name: "node supervisor"},
-		{path: codexPath, identifier: sharedDaemonCodexSigningIdentifier, name: "Codex app-server"},
-	} {
+	for _, target := range targets {
 		// `codesign -d` 只会展示签名声明，即使页哈希已经损坏也可能输出看似
 		// 正确的 TeamIdentifier。必须先用指定 requirement 验证真实签名，再把
 		// metadata 作为 hardened-runtime 的补充约束。
 		if verifyErr := verifySharedDaemonCodeSignature(target.path, target.identifier); verifyErr != nil {
-			return fmt.Errorf("%s 代码签名验证失败", target.name)
+			return fmt.Errorf("%s 代码签名验证失败：%w", target.name, verifyErr)
 		}
 		metadata, metadataErr := sharedDaemonCodeSigningMetadata(target.path)
 		if metadataErr != nil {
@@ -169,6 +166,21 @@ func validateSharedDaemonSupervisorBinaries(nodePath string, codexPath string) e
 	return nil
 }
 
+func sharedDaemonSupervisorSigningTargets(nodePath string, codexPath string) ([]sharedDaemonCodeSigningTarget, error) {
+	if _, err := sharedDaemonDesktopBundleForNode(nodePath); err != nil {
+		return nil, err
+	}
+	// Browser 的 peer authorization 和 LaunchAgent 真正执行的只有 node 与
+	// codex 两个叶子程序。对 ChatGPT.app 整包执行 codesign 会递归扫描插件；
+	// Desktop 正常退出时该扫描可能长期阻塞，反而让显式迁移永远无法开始。
+	// 这里验证实际执行文件的 Developer ID、Team、identifier 与 hardened
+	// runtime，并继续用 bundle 边界、规范路径及运行态 csops 父链防止替换。
+	return []sharedDaemonCodeSigningTarget{
+		{path: nodePath, identifier: sharedDaemonNodeSigningIdentifier, name: "node supervisor"},
+		{path: codexPath, identifier: sharedDaemonCodexSigningIdentifier, name: "Codex app-server"},
+	}, nil
+}
+
 func verifySharedDaemonCodeSignature(path string, expectedIdentifier string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sharedDaemonCodeSignTimeout)
 	defer cancel()
@@ -177,7 +189,7 @@ func verifySharedDaemonCodeSignature(path string, expectedIdentifier string) err
 		expectedIdentifier,
 		sharedDaemonOpenAITeamIdentifier,
 	)
-	return retrySharedDaemonCodeSignature(
+	err := retrySharedDaemonCodeSignature(
 		ctx,
 		sharedDaemonCodeSignRetryAttempts,
 		sharedDaemonCodeSignRetryInterval,
@@ -196,6 +208,10 @@ func verifySharedDaemonCodeSignature(path string, expectedIdentifier string) err
 		},
 		waitForSharedDaemonCodeSignatureRetry,
 	)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("代码签名校验超时：%w", ctxErr)
+	}
+	return err
 }
 
 func retrySharedDaemonCodeSignature(
