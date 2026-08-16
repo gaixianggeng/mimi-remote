@@ -4,6 +4,7 @@ package appserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -183,10 +184,19 @@ func verifySharedDaemonCodeSignature(path string, expectedIdentifier string) err
 		},
 		waitForSharedDaemonCodeSignatureRetry,
 	)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	return sharedDaemonCodeSignatureResult(err, ctx.Err())
+}
+
+// 超时只描述重试为什么停止，不能覆盖最后一次真实的 codesign 失败；同时保留
+// 两条 error chain，排障时才能区分权限、签名损坏和单纯的截止时间耗尽。
+func sharedDaemonCodeSignatureResult(verifyErr error, ctxErr error) error {
+	if ctxErr == nil {
+		return verifyErr
+	}
+	if verifyErr == nil {
 		return fmt.Errorf("代码签名校验超时：%w", ctxErr)
 	}
-	return err
+	return fmt.Errorf("代码签名校验超时：%w", errors.Join(ctxErr, verifyErr))
 }
 
 func retrySharedDaemonCodeSignature(
@@ -210,7 +220,10 @@ func retrySharedDaemonCodeSignature(
 			break
 		}
 		if err := wait(ctx, interval); err != nil {
-			return fmt.Errorf("等待代码签名稳定失败：%w", err)
+			return fmt.Errorf(
+				"等待代码签名稳定失败：%w",
+				errors.Join(err, fmt.Errorf("最后一次代码签名验证失败：%w", lastErr)),
+			)
 		}
 	}
 	return lastErr
