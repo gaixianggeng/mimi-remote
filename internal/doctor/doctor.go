@@ -529,8 +529,12 @@ func sharedDaemonRuntimeDiagnosticCheck(
 		case appserver.SharedDaemonResourceStateCritical:
 			check.Message = "共享 daemon FD 接近耗尽；" + summary
 		default:
-			check.Level = "warning"
-			check.Message = "共享 daemon owner 正常，但 FD soft limit 尚不可确认；" + summary
+			// macOS 没有可靠的非特权接口读取另一个进程的 RLIMIT_NOFILE。
+			// 已验证稳定 owner 时保留事实提示，但不制造一条用户永远无法消除的 WARN；
+			// 真正的迁移、owner 不匹配和已取证的高水位仍由其他分支告警。
+			check.OK = true
+			check.Message = "共享 daemon owner 正常；FD soft limit 尚不可独立确认；" + summary
+			check.Fix = ""
 		}
 	case appserver.SharedDaemonOwnerStateMigrationPending:
 		check.Message = "共享 daemon 正在等待显式迁移，新 FD 上限尚未作用于当前 listener；" + summary

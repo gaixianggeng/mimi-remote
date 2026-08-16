@@ -47,7 +47,7 @@ Mac App 的“Codex Desktop → 共享本地 app-server 会话”会按以下顺
 
 Mac App 执行迁移的短命 `agentd` 控制命令有明确超时。超时后先发送普通 `SIGTERM`，两秒仍未退出才只回收该 control CLI；不会因此向共享 Codex daemon 发送 `SIGKILL`。manual plist 与迁移 marker 会继续保留，设置页退出“正在更新”并显示可重试错误，避免控制命令异常时无限卡住。
 
-`runtime status` 与 Doctor 会从 Unix socket 的真实 peer PID 取证，不信任缓存 PID 或进程名；Darwin 上直接读取内核的打开 FD 数、启动时间和进程表中的直接子进程数，不额外启动 `lsof`、`ps` 或 `pgrep`。stable owner 的 `8192` 只标记为下一次启动的目标值，不冒充当前 listener 的实际 `RLIMIT_NOFILE`；macOS 无法可靠读取另一进程的实际 soft limit 时，百分比与资源等级保持 unknown，只展示绝对 FD 数和“当前进程未验证”。将来只有取得实际生效上限后才按 70%/90% 阈值判断。AttachOnly / 外部 owner 同样不套用 Mimi 的上限，也不阻断转发。状态接口只返回 PID、计数、时间和枚举，不暴露命令行、环境、原始错误或 owner/socket 路径。
+`runtime status` 与 Doctor 会从 Unix socket 的真实 peer PID 取证，不信任缓存 PID 或进程名；Darwin 上直接读取内核的打开 FD 数、启动时间和进程表中的直接子进程数，不额外启动 `lsof`、`ps` 或 `pgrep`。stable owner 的 `8192` 只标记为下一次启动的目标值，不冒充当前 listener 的实际 `RLIMIT_NOFILE`；macOS 无法可靠读取另一进程的实际 soft limit 时，百分比与资源等级保持 unknown，只展示绝对 FD 数和“当前进程未验证”。稳定 owner 的这一未知项作为正常信息展示，不制造无法消除的 WARN；将来只有取得实际生效上限后才按 70%/90% 阈值判断。AttachOnly / 外部 owner 同样不套用 Mimi 的上限，也不阻断转发。状态接口只返回 PID、计数、时间和枚举，不暴露命令行、环境、原始错误或 owner/socket 路径。
 
 官方 `daemon start` 完成 detached listener 交接后，部分版本仍报告 `pid` backend，但不会继续返回 listener PID。只有 stable owner 已提交、socket 路径一致且 backend 仍为 `pid` 时，才标记为 `owner_claimed_unverified` warning；缺少 backend 的旧 SSH/CLI listener 仍视为 unmanaged。该 warning 既不把当前 listener 误报为已验证 stable，也不把 owner 的目标上限当成 listener 已实际继承。
 
