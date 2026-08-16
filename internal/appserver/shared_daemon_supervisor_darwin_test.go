@@ -7,10 +7,37 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSharedDaemonSupervisorSigningTargetsValidateOnlyExecutedBinaries(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "ChatGPT.app")
+	nodePath := filepath.Join(bundlePath, "Contents", "Resources", "cua_node", "bin", "node")
+	codexPath := filepath.Join(bundlePath, "Contents", "Resources", "codex")
+	if err := os.MkdirAll(filepath.Dir(nodePath), 0o700); err != nil {
+		t.Fatalf("创建 node 目录失败：%v", err)
+	}
+	for _, path := range []string{nodePath, codexPath} {
+		if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+			t.Fatalf("创建签名目标 fixture 失败：%v", err)
+		}
+	}
+
+	targets, err := sharedDaemonSupervisorSigningTargets(nodePath, codexPath)
+	if err != nil {
+		t.Fatalf("解析签名目标失败：%v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("只能验证实际执行的 node/codex，不能递归验证 Desktop bundle：%+v", targets)
+	}
+	if targets[0].path != nodePath || targets[0].identifier != sharedDaemonNodeSigningIdentifier ||
+		targets[1].path != codexPath || targets[1].identifier != sharedDaemonCodexSigningIdentifier {
+		t.Fatalf("签名目标错误：%+v", targets)
+	}
+}
 
 func TestRetrySharedDaemonCodeSignatureWaitsForTransientShutdownWindow(t *testing.T) {
 	verifyCalls := 0
