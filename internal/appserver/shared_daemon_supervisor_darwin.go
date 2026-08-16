@@ -17,6 +17,9 @@ const (
 	sharedDaemonCodexSigningIdentifier   = "codex"
 	sharedDaemonNodeSigningIdentifier    = "node"
 	sharedDaemonDesktopSigningIdentifier = "com.openai.codex"
+	sharedDaemonCodeSignRetryAttempts    = 16
+	sharedDaemonCodeSignRetryInterval    = time.Second
+	sharedDaemonCodeSignTimeout          = 20 * time.Second
 
 	// launcher 只负责把真正的 node supervisor 放进独立 session 后退出。这样
 	// LaunchAgent 仍是一条 one-shot job，普通 launcher 退出不会按同一进程组清理
@@ -167,24 +170,70 @@ func validateSharedDaemonSupervisorBinaries(nodePath string, codexPath string) e
 }
 
 func verifySharedDaemonCodeSignature(path string, expectedIdentifier string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sharedDaemonCodeSignTimeout)
 	defer cancel()
 	requirement := fmt.Sprintf(
 		`=identifier %q and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = %q`,
 		expectedIdentifier,
 		sharedDaemonOpenAITeamIdentifier,
 	)
-	cmd := exec.CommandContext(
+	return retrySharedDaemonCodeSignature(
 		ctx,
-		"/usr/bin/codesign",
-		"--verify",
-		"--strict",
-		"--test-requirement",
-		requirement,
-		path,
+		sharedDaemonCodeSignRetryAttempts,
+		sharedDaemonCodeSignRetryInterval,
+		func() error {
+			cmd := exec.CommandContext(
+				ctx,
+				"/usr/bin/codesign",
+				"--verify",
+				"--strict",
+				"--test-requirement",
+				requirement,
+				path,
+			)
+			configureManagedCommand(cmd)
+			return cmd.Run()
+		},
+		waitForSharedDaemonCodeSignatureRetry,
 	)
-	configureManagedCommand(cmd)
-	return cmd.Run()
+}
+
+func retrySharedDaemonCodeSignature(
+	ctx context.Context,
+	attempts int,
+	interval time.Duration,
+	verify func() error,
+	wait func(context.Context, time.Duration) error,
+) error {
+	if attempts < 1 {
+		return fmt.Errorf("代码签名校验重试次数必须大于零")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := verify(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == attempts {
+			break
+		}
+		if err := wait(ctx, interval); err != nil {
+			return fmt.Errorf("等待代码签名稳定失败：%w", err)
+		}
+	}
+	return lastErr
+}
+
+func waitForSharedDaemonCodeSignatureRetry(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func sharedDaemonCodeSigningMetadata(path string) (string, error) {
