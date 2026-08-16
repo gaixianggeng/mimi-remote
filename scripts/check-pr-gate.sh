@@ -25,7 +25,8 @@ for script_path in \
   scripts/check-pr-gate.sh \
   scripts/verify-change.sh \
   scripts/test-verify-change.sh \
-  scripts/test-macos-app.sh; do
+  scripts/test-macos-app.sh \
+  macos/MimiRemoteMac/Scripts/embed-agentd.sh; do
   bash -n -- "$script_path"
 done
 
@@ -190,17 +191,29 @@ unless macos_push_paths.include?("macos/MimiRemoteMac/**") &&
   abort("PR Gate 自检失败：Mac App CI 的 main push paths 与 PR scope 不一致。")
 end
 macos_job = macos_workflow.fetch("jobs").fetch("build-and-test")
-unless macos_job["runs-on"] == "macos-26" && macos_job["timeout-minutes"] == 35
-  abort("PR Gate 自检失败：Mac App CI 必须使用 macOS 26 runner 和 35 分钟超时。")
+unless macos_job["runs-on"] == "macos-26" && macos_job["timeout-minutes"] == 15
+  abort("PR Gate 自检失败：Mac App CI 必须使用 macOS 26 runner 和 15 分钟超时。")
 end
 unless macos_job.to_s.include?("bash ./scripts/test-macos-app.sh")
   abort("PR Gate 自检失败：Mac App CI 没有运行统一编译测试入口。")
 end
 macos_test_script = File.read("scripts/test-macos-app.sh")
-%w[xcodebuild CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test].each do |fragment|
+%w[xcodebuild -showBuildTimingSummary MACOS_EMBED_CACHE_DIR CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test].each do |fragment|
   unless macos_test_script.include?(fragment)
     abort("PR Gate 自检失败：Mac App 编译测试入口缺少 #{fragment}。")
   end
+end
+if macos_test_script.match?(/^\s*-quiet\s*$/)
+  abort("PR Gate 自检失败：Mac App 编译测试入口不得隐藏 Xcode 阶段日志。")
+end
+embed_script = File.read("macos/MimiRemoteMac/Scripts/embed-agentd.sh")
+%w[MACOS_EMBED_CACHE_DIR --target-dir --locked --release].each do |fragment|
+  unless embed_script.include?(fragment)
+    abort("PR Gate 自检失败：Mac App 内嵌构建脚本缺少 #{fragment}。")
+  end
+end
+unless macos_workflow.to_s.include?("MACOS_EMBED_CACHE_DIR")
+  abort("PR Gate 自检失败：Mac App CI 没有显式配置内嵌构建缓存目录。")
 end
 
 docs_path = ".github/workflows/docs-ci.yml"
