@@ -67,11 +67,22 @@ actor ProcessExecutor {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // hosted runner 上 Process.isRunning 会在发送 terminate 后提前变为 false，
+        // 即使目标仍忽略 SIGTERM 运行。用真实退出回调记录子进程是否已被回收，
+        // 避免跳过 grace period 后的 SIGKILL。
+        let processExited = LockedFlag()
+        process.terminationHandler = { _ in
+            processExited.set()
+        }
+
         do {
             try process.run()
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
+        // Foundation 的运行态失效后 processIdentifier 也不再可靠，因此在启动
+        // 成功时固定本次短命 control command 的 PID。
+        let processIdentifier = process.processIdentifier
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
@@ -79,17 +90,17 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let timeoutTask = Task.detached {
             try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, process.isRunning else { return }
+            guard !Task.isCancelled, !processExited.value else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
             // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰共享
             // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
-            process.terminate()
+            _ = Darwin.kill(processIdentifier, SIGTERM)
             guard forceKillAfterTimeout else { return }
             try? await Task.sleep(for: .seconds(2))
-            guard process.isRunning else { return }
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            guard !processExited.value else { return }
+            _ = Darwin.kill(processIdentifier, SIGKILL)
         }
 
         let status = await withTaskCancellationHandler {
