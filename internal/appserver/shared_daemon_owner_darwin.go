@@ -265,6 +265,13 @@ func renderSharedDaemonLaunchAgent(
 	}
 	buf.WriteString("\t</array>\n")
 
+	// launchd 用户域的默认 maxfiles 可能只有 256；daemon 需要为多路客户端和
+	// MCP 连接预留余量，因此只把 soft limit 受控提升到 8192。不设置 hard limit，
+	// 避免 plist 绕过系统策略获得无限制的文件描述符权限。
+	buf.WriteString("\t<key>SoftResourceLimits</key>\n\t<dict>\n")
+	fmt.Fprintf(&buf, "\t\t<key>NumberOfFiles</key>\n\t\t<integer>%d</integer>\n", sharedDaemonSoftFileLimit)
+	buf.WriteString("\t</dict>\n")
+
 	if values := sharedDaemonLaunchAgentEnv(env); len(values) > 0 {
 		buf.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
 		keys := make([]string, 0, len(values))

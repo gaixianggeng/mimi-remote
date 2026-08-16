@@ -37,13 +37,19 @@ Desktop 使用官方 `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` 开关连接 Unix Soc
 Mac App 的“Codex Desktop → 共享本地 app-server 会话”会按以下顺序执行：
 
 1. 使用配置中的同一 `CODEX_HOME` 探测官方 Unix Socket；已有 listener 必须完成 `initialize` / `initialized` 握手，stale socket 文件不算就绪；
-2. 先把 `com.gaixianggeng.mimi.codex-shared-daemon` 用户 LaunchAgent 准备成 `RunAtLoad=false` 的 manual owner。`ProgramArguments` 直接执行官方 `codex app-server daemon start`，不经过 shell，也不托管自定义 daemon；此时绝不启动新 Unix daemon；
+2. 先把 `com.gaixianggeng.mimi.codex-shared-daemon` 用户 LaunchAgent 准备成 `RunAtLoad=false` 的 manual owner。`ProgramArguments` 直接执行官方 `codex app-server daemon start`，不经过 shell，也不托管自定义 daemon；job 显式设置 `SoftResourceLimits/NumberOfFiles=8192`，避免用户域 launchd 常见的 256 soft limit 让长期共享 daemon 同时丢失 Browser、Skills、MCP、Shell 与网络能力；不覆盖 hard limit。此时绝不启动新 Unix daemon；
 3. 验证官方 standalone 可执行文件与 daemon lifecycle 冷启动能力。全新启用还会写入私有 durable intent；任一提交前条件不完整都直接失败并清理本次 owner，配置与 Desktop 环境均不修改；
 4. 在 shared-daemon 操作锁内再次复核同一份原始配置，并用所有 Mimi 配置写入者共用的跨进程 CAS 锁，原子保存当前 `app_server` transport 为 `shared_fallback`、再切换到 `unix://`。只有配置 rename 已成功且启用前没有旧 listener，manual job 才会显式 `kickstart` 并校验完整协议、官方 pid backend、`CODEX_HOME`、standalone 路径和版本；即使冷启动全部通过，也继续保留 marker 与 `RunAtLoad=false`，因为 kickstart 与 socket 建立之间不能原子证明是谁赢得 listener。durable intent 只用于恢复“rename 已完成但首次冷启动尚未完成”的崩溃窗口，第一次完整 managed 校验通过后立即消费，不能被后续普通 recovery 重用。首次启用和接管既有 listener 都必须经过第 7 步的用户确认，才清 marker 并提升为 `RunAtLoad=true`。配置提交后的启动失败会作为“已提交、待恢复”结果返回，Mac App 会重新加载状态；若进程在 rename 与 kickstart 之间退出，下一次 shared agentd 会在锁内复核配置身份后继续该 durable intent，但仍不会自动完成 owner 迁移；
 5. 重启并确认 agentd 的 runtime 状态为 `transport=unix`、`shared=true`、daemon 可连接；
 6. 经 ownership 检查后，为 GUI 用户会话写入官方 daemon 开关、相同的 canonical `CODEX_HOME` 和 Mimi 私有的随机会话 marker，确保从 Dock / Finder 启动也生效；三键按事务写入，任一失败都会按相反顺序恢复，外部已有值不会被覆盖；
 7. 首次启用或启用前已有 daemon 时，owner 都会持久标记为“待迁移”，并把磁盘 plist 固定为 `RunAtLoad=false`，不会静默中断既有进程，也不会在注销、登录或 Mac 重启后自动完成迁移。稳定 owner 已安装后，如果未来又由 Codex 原生 SSH bootstrap 先抢到 socket，agentd 仍会在完成协议、版本、`CODEX_HOME` 和 standalone 路径验证后保持 attach，并把 owner 收敛回同一 pending 状态；socket 仍可连接时普通启动只 attach；仅 durable fresh-enable intent 且 socket 尚未创建时允许 manual job 恢复一次冷启动，恢复后仍保持 pending。其他 socket 不可连接场景下普通启动和 gateway recovery 直接返回 pending，既不 `kickstart` 也不清 marker。该标记独立于五分钟 runtime 缓存，每次状态请求都实时读取，因此用户取消确认或先退出 Desktop 后入口仍保留。用户确认后，Desktop 正在运行时先请求它正常退出。旧 server 已由官方 pid backend 管理时执行官方 `daemon stop`；旧 server 是 Codex 原生 SSH bootstrap 直启链时，只有在同一私有 socket、当前用户、官方 standalone 真实路径、直接 `app-server --listen unix://` 命令行、PID 启动时间及 Desktop 最终退出状态全部两次匹配时，才向该唯一 PID 发送一次 `SIGTERM`。官方 stop 与新 daemon kickstart 各自在副作用前按固定 bundle ID 最终复核 Desktop，App 已重开或 LaunchServices 查询失败都立即停止迁移。不使用进程组信号、`SIGKILL`、模糊进程名或自动重试。等待最长 15 秒，且旧 socket 持续拒绝连接 500 ms 后，才由 LaunchAgent 拉起一次并完成协议/生命周期/版本验证；全部通过后才清 intent/marker、把 plist 恢复为 `RunAtLoad=true`，并按实际执行时的 Desktop 状态决定是否重新打开 App。任意检查或启动失败均保留 manual plist 与待迁移标记，不自动打开 Desktop；若旧进程在等待超时后才完成退出，用户稍后重试不会再发送第二次信号。两种情况都会短暂中断连接该 daemon 的手机、SSH 或 CLI；
 8. 在没有待迁移 marker 的正常已提交状态下，如果共享 daemon 后续异常退出，只有一次真实的移动端 gateway 连接失败后才会通过同一 LaunchAgent 恢复并重试；跨连接恢复串行且缓存最近 30 秒结果，恢复与显式迁移还共用用户级文件锁，避免在 `stop/start` 中间被另一进程插入。永久故障不会堆积成多倍启动超时，高频 readiness 也不会拉起进程。
+
+Mac App 执行迁移的短命 `agentd` 控制命令有明确超时。超时后先发送普通 `SIGTERM`，两秒仍未退出才只回收该 control CLI；不会因此向共享 Codex daemon 发送 `SIGKILL`。manual plist 与迁移 marker 会继续保留，设置页退出“正在更新”并显示可重试错误，避免控制命令异常时无限卡住。
+
+`runtime status` 与 Doctor 会从 Unix socket 的真实 peer PID 取证，不信任缓存 PID 或进程名；Darwin 上直接读取内核的打开 FD 数、启动时间和进程表中的直接子进程数，不额外启动 `lsof`、`ps` 或 `pgrep`。stable owner 的 `8192` 只标记为下一次启动的目标值，不冒充当前 listener 的实际 `RLIMIT_NOFILE`；macOS 无法可靠读取另一进程的实际 soft limit 时，百分比与资源等级保持 unknown，只展示绝对 FD 数和“当前进程未验证”。稳定 owner 的这一未知项作为正常信息展示，不制造无法消除的 WARN；将来只有取得实际生效上限后才按 70%/90% 阈值判断。AttachOnly / 外部 owner 同样不套用 Mimi 的上限，也不阻断转发。状态接口只返回 PID、计数、时间和枚举，不暴露命令行、环境、原始错误或 owner/socket 路径。
+
+官方 `daemon start` 完成 detached listener 交接后，部分版本仍报告 `pid` backend，但不会继续返回 listener PID。只有 stable owner 已提交、socket 路径一致且 backend 仍为 `pid` 时，才标记为 `owner_claimed_unverified` warning；缺少 backend 的旧 SSH/CLI listener 仍视为 unmanaged。该 warning 既不把当前 listener 误报为已验证 stable，也不把 owner 的目标上限当成 listener 已实际继承。
 
 移动端写入前，gateway 还会复用现有 external activity 的精确 Thread / Turn ownership 证据：同一 thread 确认由 Codex Desktop 运行时，`turn/start`、`turn/steer`、中断和其他写操作会在转发前返回 `accepted=false`；对 app-server 发给客户端的审批、补充输入和 MCP elicitation，移动端返回的反向 JSON-RPC response 也执行相同 guard，拒绝时保留 pending request 并恢复移动端卡片。`thread/resume` 与读取接口仍可用于只读观察。Desktop 仅打开空闲 thread 不会被当成占用。共享 Unix 模式下状态库不可读、观测器缺失或反向 request 缺少 thread scope 时会 fail-closed，暂时拒绝写入但继续允许读取；默认独立 WS 没有共同 writer，仍保持原有可用性策略。
 
@@ -77,6 +83,7 @@ agentd restart --no-pair
 
 - 官方 daemon 冷启动需要 `$CODEX_HOME/packages/standalone/current/codex`。已有健康 socket 但 standalone 缺失时，启用操作也会阻断，避免本次看似成功、Mac 重启后 agentd 持续拉起失败；Mimi Remote 不会静默执行 `curl | sh`，只给出官方安装指引。
 - 共享架构把两端的会话一致性放在同一个官方 app-server 上，因此该 server 自身崩溃时 Codex Desktop 与 Mimi 会同时短暂失去后端。稳定 owner 只在 server 已不可连时尝试恢复它，不会为了恢复而退出或重开 Codex Desktop。
+- 8192 是防止过低 launchd soft limit 把资源累积过早放大成全能力故障，不是对子进程或 FD 泄漏的掩盖。Doctor 同时展示真实 FD 与直接子进程水位；持续上涨仍需定位 Codex/MCP 上游的回收责任。本方案不基于不完整的 external activity 证据自动 recycle 健康 daemon。
 - Desktop 必须支持 local daemon，当前最低兼容 app-server 版本为 `0.141.0`。版本、socket 类型、目录权限、socket 权限和返回的 `codexHome` 都会在启用前校验。
 - Desktop 的自定义 CLI、强制 CLI 或资源覆盖可能让它回退到独立 stdio。Mac App 会确认 agentd 已连接共享 daemon，并明确要求完全重启 Desktop；Desktop 是否采用 daemon 仍要通过下面的跨端验收验证，不能只根据环境变量推断成功。
 - 稳定 LaunchAgent 的 `PATH` 会固定 Apple Silicon / Intel Homebrew 与系统工具目录，并在首次安装时追加调用进程可见的绝对用户工具目录；相对路径会被拒绝。之后 resident agentd 会复用已安装值，避免 MCP/plugin 路径随启动入口反复变化；需要完全自定义时可显式配置 `codex.env.PATH`。

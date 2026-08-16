@@ -3,6 +3,7 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -11,10 +12,149 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
+
+func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *testing.T) {
+	limit := 8192
+	usage := 75.0
+	tests := []struct {
+		name      string
+		status    appserver.SharedDaemonDiagnostics
+		err       error
+		wantOK    bool
+		wantLevel string
+		wantText  string
+	}{
+		{
+			name: "healthy stable owner",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 100, OpenFileDescriptors: 80,
+				DirectChildProcesses: 2, EffectiveFDSoftLimit: &limit,
+				OwnerState:    appserver.SharedDaemonOwnerStateStable,
+				ResourceState: appserver.SharedDaemonResourceStateHealthy,
+			},
+			wantOK: true, wantText: "80/8192",
+		},
+		{
+			name: "degraded is warning",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 101, OpenFileDescriptors: 6144,
+				DirectChildProcesses: 9, EffectiveFDSoftLimit: &limit,
+				FDUsagePercent: &usage, OwnerState: appserver.SharedDaemonOwnerStateStable,
+				ResourceState: appserver.SharedDaemonResourceStateDegraded,
+			},
+			wantLevel: "warning", wantText: "75.0%",
+		},
+		{
+			name: "critical blocks doctor",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 102, OpenFileDescriptors: 7800,
+				EffectiveFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
+				ResourceState: appserver.SharedDaemonResourceStateCritical,
+			},
+			wantLevel: "error", wantText: "接近耗尽",
+		},
+		{
+			name: "external owner stays informational",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 103, OpenFileDescriptors: 90,
+				OwnerState:    appserver.SharedDaemonOwnerStateExternal,
+				ResourceState: appserver.SharedDaemonResourceStateUnknown,
+			},
+			wantOK: true, wantText: "外部 owner",
+		},
+		{
+			name: "migration pending blocks doctor",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 104, OpenFileDescriptors: 200,
+				OwnerState: appserver.SharedDaemonOwnerStateMigrationPending,
+			},
+			wantLevel: "error", wantText: "尚未作用",
+		},
+		{
+			name: "stable unknown effective limit stays informational",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 106, OpenFileDescriptors: 7800,
+				OwnerTargetFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
+				ResourceState: appserver.SharedDaemonResourceStateUnknown,
+			},
+			wantOK: true, wantText: "当前进程未验证",
+		},
+		{
+			name: "claimed owner without lifecycle pid is warning",
+			status: appserver.SharedDaemonDiagnostics{
+				Supported: true, ListenerPID: 107, OpenFileDescriptors: 82,
+				OwnerState: appserver.SharedDaemonOwnerStateClaimedUnverified,
+			},
+			wantLevel: "warning", wantText: "未返回 listener PID",
+		},
+		{
+			name: "observation failure is warning",
+			err:  errors.New("dial unix /Users/secret/.codex/app-server.sock: permission denied"), wantLevel: "warning", wantText: "无法读取",
+		},
+	}
+
+	checker := &Checker{}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			check := sharedDaemonRuntimeDiagnosticCheck(testCase.status, testCase.err)
+			results := checker.results([]Check{check})
+			got := results.Checks[0]
+			if got.OK != testCase.wantOK || got.Level != testCase.wantLevel && testCase.wantLevel != "" {
+				t.Fatalf("诊断等级错误：%+v", got)
+			}
+			if !strings.Contains(got.Message, testCase.wantText) {
+				t.Fatalf("诊断文案缺少 %q：%+v", testCase.wantText, got)
+			}
+			if strings.Contains(got.Fix, "/Users/secret") {
+				t.Fatalf("Doctor 修复建议泄露了底层 socket 路径：%+v", got)
+			}
+			if testCase.wantLevel == "error" && results.OK {
+				t.Fatalf("阻断状态必须让 doctor 失败：%+v", results)
+			}
+			if testCase.wantLevel == "warning" && !results.OK {
+				t.Fatalf("warning 不应让 doctor 失败：%+v", results)
+			}
+		})
+	}
+}
+
+func TestSharedDaemonChecksTreatUnmanagedUnixFallbackAsExternal(t *testing.T) {
+	fallback := &config.AppServerFallbackConfig{Transport: "ws", Managed: true}
+	checker := &Checker{
+		cfg: config.Config{AppServer: config.AppServerConfig{
+			Transport:      "unix",
+			Managed:        false,
+			SharedFallback: fallback,
+		}},
+	}
+	if check := checker.sharedDaemonOwnerCheck(context.Background()); check.Name != "" {
+		t.Fatalf("外部 Unix listener 不应检查 Mimi LaunchAgent owner：%+v", check)
+	}
+
+	stableOwner := true
+	checker.sharedDaemonDiagnostics = func(
+		_ context.Context,
+		options appserver.LocalDaemonOptions,
+	) (appserver.SharedDaemonDiagnostics, error) {
+		stableOwner = options.StableOwner
+		return appserver.SharedDaemonDiagnostics{
+			Supported:  true,
+			OwnerState: appserver.SharedDaemonOwnerStateExternal,
+		}, nil
+	}
+	check := checker.sharedDaemonRuntimeCheck(context.Background())
+	if stableOwner {
+		t.Fatal("managed=false 时不能仅凭 shared_fallback 宣称 stable owner")
+	}
+	if !check.OK || !strings.Contains(check.Message, "外部 owner") {
+		t.Fatalf("外部 Unix listener 应保持只读信息诊断：%+v", check)
+	}
+}
 
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 	binDir := t.TempDir()

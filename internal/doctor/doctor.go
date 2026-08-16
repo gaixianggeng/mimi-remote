@@ -25,6 +25,7 @@ type Checker struct {
 	cfg                        config.Config
 	registry                   *projects.Registry
 	configPath                 string
+	sharedDaemonDiagnostics    func(context.Context, appserver.LocalDaemonOptions) (appserver.SharedDaemonDiagnostics, error)
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
@@ -49,7 +50,12 @@ type Check struct {
 }
 
 func NewChecker(version string, cfg config.Config, registry *projects.Registry, configPath ...string) *Checker {
-	checker := &Checker{version: version, cfg: cfg, registry: registry}
+	checker := &Checker{
+		version:                 version,
+		cfg:                     cfg,
+		registry:                registry,
+		sharedDaemonDiagnostics: appserver.InspectSharedDaemonDiagnostics,
+	}
 	// variadic 参数保持现有嵌入方兼容；CLI 传入真实路径后才启用配置文件权限检查。
 	if len(configPath) > 0 {
 		checker.configPath = expandConfigPath(configPath[0])
@@ -109,6 +115,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.sharedDaemonOwnerCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.sharedDaemonRuntimeCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
@@ -153,7 +162,7 @@ func (c *Checker) results(checks []Check) Results {
 			checks[i].Level = "ok"
 			continue
 		}
-		if isWarningOnlyCheck(checks[i].Name) {
+		if strings.EqualFold(strings.TrimSpace(checks[i].Level), "warning") || isWarningOnlyCheck(checks[i].Name) {
 			if checks[i].Name == "tailscale" {
 				checks[i].Message = "未检测到 Tailscale 命令，本机访问仍可使用"
 			}
@@ -430,8 +439,7 @@ func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {
 }
 
 func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
-	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") ||
-		c.cfg.AppServer.SharedFallback == nil {
+	if !usesStableSharedDaemonOwner(c.cfg.AppServer) {
 		return Check{}
 	}
 	status, err := appserver.InspectSharedDaemonOwner(ctx)
@@ -465,6 +473,116 @@ func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
 		check.Fix = ""
 	}
 	return check
+}
+
+func (c *Checker) sharedDaemonRuntimeCheck(ctx context.Context) Check {
+	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
+		return Check{}
+	}
+	inspect := c.sharedDaemonDiagnostics
+	if inspect == nil {
+		inspect = appserver.InspectSharedDaemonDiagnostics
+	}
+	status, err := inspect(ctx, appserver.LocalDaemonOptions{
+		CodexBin:    c.cfg.Codex.Bin,
+		Env:         c.cfg.Codex.Env,
+		StableOwner: usesStableSharedDaemonOwner(c.cfg.AppServer),
+	})
+	return sharedDaemonRuntimeDiagnosticCheck(status, err)
+}
+
+// shared_fallback 只记录 Mimi 曾保存过的旧 transport，不能单独证明当前
+// Unix listener 仍由 Mimi 托管。managed=false 明确表示生命周期归外部 owner；
+// 此时 Doctor 只能做外部 listener 的只读诊断，不能检查 Mimi LaunchAgent。
+func usesStableSharedDaemonOwner(cfg config.AppServerConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Transport), "unix") &&
+		cfg.Managed &&
+		cfg.SharedFallback != nil
+}
+
+func sharedDaemonRuntimeDiagnosticCheck(
+	status appserver.SharedDaemonDiagnostics,
+	err error,
+) Check {
+	check := Check{
+		Name: "codex-daemon-resources",
+		Fix:  "先保存所有活跃任务；若资源继续上涨，使用受控迁移恢复 owner，不要直接强杀进程",
+	}
+	if err != nil {
+		check.Level = "warning"
+		check.Message = "无法读取共享 Codex daemon 的 FD / 子进程水位"
+		// 底层 Unix dial 错误可能包含 CODEX_HOME/socket 绝对路径；Doctor
+		// 只返回固定操作建议，不把原始错误扩大到状态输出或日志。
+		check.Fix = "确认共享 Codex daemon 正在运行，并允许 Mimi 读取当前用户的进程信息"
+		return check
+	}
+	if !status.Supported {
+		return Check{}
+	}
+	summary := sharedDaemonResourceSummary(status)
+	switch status.OwnerState {
+	case appserver.SharedDaemonOwnerStateExternal:
+		check.OK = true
+		check.Message = "共享 daemon 由外部 owner 管理；" + summary + "；FD soft limit 由外部 owner 负责"
+		check.Fix = ""
+	case appserver.SharedDaemonOwnerStateStable:
+		switch status.ResourceState {
+		case appserver.SharedDaemonResourceStateHealthy:
+			check.OK = true
+			check.Message = "共享 daemon 资源水位正常；" + summary
+			check.Fix = ""
+		case appserver.SharedDaemonResourceStateDegraded:
+			check.Level = "warning"
+			check.Message = "共享 daemon FD 水位偏高；" + summary
+		case appserver.SharedDaemonResourceStateCritical:
+			check.Message = "共享 daemon FD 接近耗尽；" + summary
+		default:
+			// macOS 没有可靠的非特权接口读取另一个进程的 RLIMIT_NOFILE。
+			// 已验证稳定 owner 时保留事实提示，但不制造一条用户永远无法消除的 WARN；
+			// 真正的迁移、owner 不匹配和已取证的高水位仍由其他分支告警。
+			check.OK = true
+			check.Message = "共享 daemon owner 正常；FD soft limit 尚不可独立确认；" + summary
+			check.Fix = ""
+		}
+	case appserver.SharedDaemonOwnerStateMigrationPending:
+		check.Message = "共享 daemon 正在等待显式迁移，新 FD 上限尚未作用于当前 listener；" + summary
+		check.Fix = "保存任务后，在 Mimi Remote Mac 中点击“应用待处理设置”并确认"
+	case appserver.SharedDaemonOwnerStateUnavailable:
+		check.Message = "共享 daemon listener 可用，但稳定 LaunchAgent owner 不可用；" + summary
+		check.Fix = "在 Mimi Remote Mac 中关闭后重新开启共享，恢复稳定 owner"
+	case appserver.SharedDaemonOwnerStateClaimedUnverified:
+		check.Level = "warning"
+		check.Message = "共享 daemon 的稳定 owner 已提交，但官方 lifecycle 未返回 listener PID；" + summary
+		check.Fix = "继续观察真实 FD 与子进程水位；不要仅凭 owner 配置推测当前进程上限"
+	case appserver.SharedDaemonOwnerStateUnmanagedListener:
+		check.Message = "共享 daemon listener 尚未由官方 pid daemon 管理；" + summary
+		check.Fix = "保存任务并退出 Codex Desktop 后，在 Mimi Remote Mac 中应用待处理设置"
+	case appserver.SharedDaemonOwnerStateListenerMismatch:
+		check.Message = "共享 daemon lifecycle PID 与真实 socket listener 不一致；" + summary
+		check.Fix = "不要直接终止进程；保存任务后使用显式受控迁移重新对账 owner"
+	default:
+		check.Level = "warning"
+		check.Message = "共享 daemon owner 状态暂时无法确认；" + summary
+	}
+	return check
+}
+
+func sharedDaemonResourceSummary(status appserver.SharedDaemonDiagnostics) string {
+	fd := fmt.Sprintf("打开 FD %d", status.OpenFileDescriptors)
+	if status.EffectiveFDSoftLimit != nil {
+		fd = fmt.Sprintf("打开 FD %d/%d", status.OpenFileDescriptors, *status.EffectiveFDSoftLimit)
+		if status.FDUsagePercent != nil {
+			fd += fmt.Sprintf("（%.1f%%）", *status.FDUsagePercent)
+		}
+	} else if status.OwnerTargetFDSoftLimit != nil {
+		fd += fmt.Sprintf("；owner 目标上限 %d（当前进程未验证）", *status.OwnerTargetFDSoftLimit)
+	}
+	return fmt.Sprintf(
+		"listener PID %d，%s，直接子进程 %d",
+		status.ListenerPID,
+		fd,
+		status.DirectChildProcesses,
+	)
 }
 
 func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
