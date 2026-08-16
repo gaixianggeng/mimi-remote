@@ -190,8 +190,8 @@ unless macos_push_paths.include?("macos/MimiRemoteMac/**") &&
   abort("PR Gate 自检失败：Mac App CI 的 main push paths 与 PR scope 不一致。")
 end
 macos_job = macos_workflow.fetch("jobs").fetch("build-and-test")
-unless macos_job["runs-on"] == "macos-26" && macos_job["timeout-minutes"] == 20
-  abort("PR Gate 自检失败：Mac App CI 必须使用 macOS 26 runner 和 20 分钟超时。")
+unless macos_job["runs-on"] == "macos-26" && macos_job["timeout-minutes"] == 35
+  abort("PR Gate 自检失败：Mac App CI 必须使用 macOS 26 runner 和 35 分钟超时。")
 end
 unless macos_job.to_s.include?("bash ./scripts/test-macos-app.sh")
   abort("PR Gate 自检失败：Mac App CI 没有运行统一编译测试入口。")
