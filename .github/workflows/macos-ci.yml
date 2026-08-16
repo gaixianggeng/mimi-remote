@@ -21,7 +21,10 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: macos-26
-    timeout-minutes: 20
+    # GitHub 的全新 macOS runner 首次编译 Swift、Go 与 Rust bridge 已连续两次
+    # 超过 20 分钟；本地增量构建不能代表 CI 冷构建耗时。保留有限上限，同时
+    # 给完整 Scheme 测试足够的收尾时间。
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

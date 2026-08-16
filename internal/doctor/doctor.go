@@ -439,8 +439,7 @@ func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {
 }
 
 func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
-	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") ||
-		c.cfg.AppServer.SharedFallback == nil {
+	if !usesStableSharedDaemonOwner(c.cfg.AppServer) {
 		return Check{}
 	}
 	status, err := appserver.InspectSharedDaemonOwner(ctx)
@@ -487,9 +486,18 @@ func (c *Checker) sharedDaemonRuntimeCheck(ctx context.Context) Check {
 	status, err := inspect(ctx, appserver.LocalDaemonOptions{
 		CodexBin:    c.cfg.Codex.Bin,
 		Env:         c.cfg.Codex.Env,
-		StableOwner: c.cfg.AppServer.SharedFallback != nil,
+		StableOwner: usesStableSharedDaemonOwner(c.cfg.AppServer),
 	})
 	return sharedDaemonRuntimeDiagnosticCheck(status, err)
+}
+
+// shared_fallback 只记录 Mimi 曾保存过的旧 transport，不能单独证明当前
+// Unix listener 仍由 Mimi 托管。managed=false 明确表示生命周期归外部 owner；
+// 此时 Doctor 只能做外部 listener 的只读诊断，不能检查 Mimi LaunchAgent。
+func usesStableSharedDaemonOwner(cfg config.AppServerConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Transport), "unix") &&
+		cfg.Managed &&
+		cfg.SharedFallback != nil
 }
 
 func sharedDaemonRuntimeDiagnosticCheck(

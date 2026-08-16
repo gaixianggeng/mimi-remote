@@ -123,6 +123,39 @@ func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *t
 	}
 }
 
+func TestSharedDaemonChecksTreatUnmanagedUnixFallbackAsExternal(t *testing.T) {
+	fallback := &config.AppServerFallbackConfig{Transport: "ws", Managed: true}
+	checker := &Checker{
+		cfg: config.Config{AppServer: config.AppServerConfig{
+			Transport:      "unix",
+			Managed:        false,
+			SharedFallback: fallback,
+		}},
+	}
+	if check := checker.sharedDaemonOwnerCheck(context.Background()); check.Name != "" {
+		t.Fatalf("外部 Unix listener 不应检查 Mimi LaunchAgent owner：%+v", check)
+	}
+
+	stableOwner := true
+	checker.sharedDaemonDiagnostics = func(
+		_ context.Context,
+		options appserver.LocalDaemonOptions,
+	) (appserver.SharedDaemonDiagnostics, error) {
+		stableOwner = options.StableOwner
+		return appserver.SharedDaemonDiagnostics{
+			Supported:  true,
+			OwnerState: appserver.SharedDaemonOwnerStateExternal,
+		}, nil
+	}
+	check := checker.sharedDaemonRuntimeCheck(context.Background())
+	if stableOwner {
+		t.Fatal("managed=false 时不能仅凭 shared_fallback 宣称 stable owner")
+	}
+	if !check.OK || !strings.Contains(check.Message, "外部 owner") {
+		t.Fatalf("外部 Unix listener 应保持只读信息诊断：%+v", check)
+	}
+}
+
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
