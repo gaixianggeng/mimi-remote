@@ -81,9 +81,12 @@ actor ProcessExecutor {
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
 
         let timeoutState = LockedFlag()
-        let timeoutTask = Task.detached {
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled else { return }
+        let processFinished = LockedFlag()
+        // 不能把 timeout 也放进 Swift cooperative executor：stdout、stderr 和
+        // waitUntilExit 都可能同步阻塞，在小规格 CI/用户机器上会占满可用线程，
+        // 让本应唤醒并回收进程的 timeout task 永远得不到调度。
+        let timeoutWorkItem = DispatchWorkItem {
+            guard !processFinished.value else { return }
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
@@ -91,12 +94,17 @@ actor ProcessExecutor {
             // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
             _ = Darwin.kill(processIdentifier, SIGTERM)
             guard forceKillAfterTimeout else { return }
-            try? await Task.sleep(for: .seconds(2))
-            // waitUntilExit 已返回时外层会 cancel；必须在 try? 吞掉
-            // CancellationError 后再次检查，避免误伤复用同一 PID 的新进程。
-            guard !Task.isCancelled else { return }
-            _ = Darwin.kill(processIdentifier, SIGKILL)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                // waitUntilExit 已返回时会先标记 finished；二次检查避免误伤
+                // 已退出 control command 之后复用同一 PID 的新进程。
+                guard !processFinished.value else { return }
+                _ = Darwin.kill(processIdentifier, SIGKILL)
+            }
         }
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: Self.dispatchDeadline(after: timeout),
+            execute: timeoutWorkItem
+        )
 
         let status = await withTaskCancellationHandler {
             await Task.detached {
@@ -104,11 +112,10 @@ actor ProcessExecutor {
                 return process.terminationStatus
             }.value
         } onCancel: {
-            if process.isRunning {
-                process.terminate()
-            }
+            _ = Darwin.kill(processIdentifier, SIGTERM)
         }
-        timeoutTask.cancel()
+        processFinished.set()
+        timeoutWorkItem.cancel()
 
         let stdout = try await stdoutRead
         let stderr = try await stderrRead
@@ -127,6 +134,15 @@ actor ProcessExecutor {
     private struct BoundedRead {
         let data: Data
         let exceededLimit: Bool
+    }
+
+    private static func dispatchDeadline(after duration: Duration) -> DispatchTime {
+        let components = duration.components
+        let seconds = max(
+            0,
+            Double(components.seconds) + Double(components.attoseconds) / 1e18
+        )
+        return .now() + seconds
     }
 
     private static func readBounded(_ handle: FileHandle, limit: Int) async throws -> BoundedRead {
