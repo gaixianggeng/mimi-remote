@@ -89,6 +89,9 @@ final class LocalizationTests: XCTestCase {
             ("ui.token_activity", "Token Activity", "Token 活动"),
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
+            ("ui.experimental_features", "Experimental Features", "实验功能"),
+            ("ui.enable_on_mac", "Enable on Mac", "在 Mac 上开启"),
+            ("ui.how_to_enable_on_mac", "How to enable on Mac", "如何在 Mac 上开启"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
@@ -98,6 +101,37 @@ final class LocalizationTests: XCTestCase {
             XCTAssertEqual(L10n.text(key, language: .english), english)
             XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
         }
+    }
+
+    func testCodexDesktopExperimentGuideHasCompleteLocalizedSteps() {
+        let expectedEnglish = [
+            "Click the Mimi icon in the Mac menu bar.",
+            "Choose Experimental Features…",
+            "Turn on Share Codex Desktop sessions (experimental).",
+            "Save any running tasks, then quit Codex Desktop completely and reopen it.",
+            "When the status says Environment configured, continue the same idle session once to verify sharing.",
+        ]
+        let expectedChinese = [
+            "在 Mac 菜单栏中点按 Mimi 图标。",
+            "选择“实验功能…”。",
+            "开启“共享 Codex Desktop 会话（实验）”。",
+            "保存正在运行的任务，然后完全退出并重新打开 Codex Desktop。",
+            "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。",
+        ]
+
+        XCTAssertEqual(CodexDesktopExperimentGuide.stepKeys.count, 5)
+        XCTAssertEqual(
+            CodexDesktopExperimentGuide.stepKeys.map {
+                L10n.text($0, language: .english)
+            },
+            expectedEnglish
+        )
+        XCTAssertEqual(
+            CodexDesktopExperimentGuide.stepKeys.map {
+                L10n.text($0, language: .simplifiedChinese)
+            },
+            expectedChinese
+        )
     }
 
     func testSessionRowStatefulActionLabelsAreLocalized() {

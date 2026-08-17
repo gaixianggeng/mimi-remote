@@ -485,6 +485,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
         let diagnostics = app.descendant(identifier: "settings.diagnostics")
         let advanced = app.descendant(identifier: "settings.advancedDevelopment")
+        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
         let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
         XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
@@ -527,7 +528,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
         // “Mac 与设备”已在页面顶部验证；滚到底部后它可能被 List 懒加载卸载，
         // 这里只检查当前可见的“更多”入口，避免把视口状态误判为功能缺失。
-        let bottomRows = [diagnostics, advanced, aboutLegal]
+        let bottomRows = [experimentalFeatures, diagnostics, advanced, aboutLegal]
         for row in bottomRows {
             XCTAssertTrue(row.waitForExistence(timeout: 4), "“更多”分区入口应存在")
             XCTAssertEqual(
@@ -542,6 +543,34 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         bottomScreenshot.name = "me-preferences-and-more"
         bottomScreenshot.lifetime = .keepAlways
         add(bottomScreenshot)
+    }
+
+    func testExperimentalFeaturesGuideExplainsMacSetup() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
+        XCTAssertTrue(
+            scrollUntilHittable(experimentalFeatures, maximumSwipes: 8),
+            "我的页面应能滚动到实验功能入口"
+        )
+        XCTAssertEqual(
+            experimentalFeatures.frame.height,
+            52,
+            accuracy: 1,
+            "实验功能入口应保持设置页标准行高"
+        )
+        experimentalFeatures.tap()
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.experimentalFeatures.detail")
+                .waitForExistence(timeout: 5),
+            "实验功能入口应进入 Mac 端开启引导"
+        )
+        let finalStep = app.descendant(identifier: "settings.experimentalFeatures.step.5")
+        XCTAssertTrue(
+            scrollUntilHittable(finalStep, maximumSwipes: 4),
+            "实验功能引导应完整展示重启和跨端验证步骤"
+        )
     }
 
     func testComposerPlanGoalAndModelMenusSurviveRotationWithoutCrash() throws {
