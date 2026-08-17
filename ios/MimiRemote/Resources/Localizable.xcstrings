@@ -4944,6 +4944,23 @@
         }
       }
     },
+    "ui.codex_active_writer_conflict_requires_shared_service": {
+      "comment": "Shown when another Codex app-server owns the session writer. Explain the recovery path without exposing the raw JSON-RPC error.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session is held by another Codex app-server. Close it in Codex Desktop, or enable sharing in Experimental Features on the Mac, choose Apply Settings and Fully Restart Codex Desktop, and confirm before trying again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此会话正被另一个 Codex app-server 占用。请先在 Codex Desktop 中关闭它；如需跨端继续，请在 Mac 的“实验功能”中开启共享，点击“应用设置并完全重启 Codex Desktop”并确认，然后重试。"
+          }
+        }
+      }
+    },
     "ui.codex_currently_returns_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -38723,6 +38740,276 @@
           "stringUnit": {
             "state": "translated",
             "value": "可能已过期"
+          }
+        }
+      }
+    },
+    "ui.experimental_features": {
+      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental Features"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实验功能"
+          }
+        }
+      }
+    },
+    "ui.enable_on_mac": {
+      "comment": "Settings row value explaining that the experiment must be enabled on the paired Mac.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable on Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上开启"
+          }
+        }
+      }
+    },
+    "ui.share_codex_desktop_sessions_experimental": {
+      "comment": "Title of the experimental Codex Desktop shared-session capability.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share Codex Desktop sessions (experimental)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享 Codex Desktop 会话（实验）"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_summary": {
+      "comment": "Summary of what the Codex Desktop shared-session experiment does.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Let Mimi Remote and Codex Desktop use the same local session service, so you can continue an idle session across devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 Mimi Remote 与 Codex Desktop 共用同一个本地会话服务，以便在不同设备间继续空闲会话。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_warning": {
+      "comment": "Risk and concurrency note for the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This feature changes the Codex Desktop launch environment and may change with future Codex versions. A running task remains read-only on the other device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此功能会修改 Codex Desktop 的启动环境，并可能随 Codex 版本变化。正在运行的任务在另一端仍为只读。"
+          }
+        }
+      }
+    },
+    "ui.how_to_enable_on_mac": {
+      "comment": "Section heading for instructions that must be completed on the Mac.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to enable on Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何在 Mac 上开启"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_open_mimi_menu": {
+      "comment": "First step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click the Mimi icon in the Mac menu bar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 菜单栏中点按 Mimi 图标。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_choose_experiments": {
+      "comment": "Second step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Experimental Features…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择“实验功能…”。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_enable_sharing": {
+      "comment": "Third step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on Share Codex Desktop sessions (experimental)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启“共享 Codex Desktop 会话（实验）”。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_restart_desktop": {
+      "comment": "Fourth step for enabling the Codex Desktop shared-session experiment. The Mac in-app action is required to commit the daemon migration; manually reopening Codex Desktop is insufficient.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_verify_session": {
+      "comment": "Fifth step for verifying the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When the status says Environment configured, continue the same idle session once to verify sharing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_mac_only_note": {
+      "comment": "Explains why the iOS guide does not provide a remote toggle for the Mac experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This setting can only be changed on the Mac running Mimi Remote Mac. This iPhone or iPad cannot restart Codex Desktop for you."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此设置只能在运行 Mimi Remote Mac 的电脑上修改；iPhone 或 iPad 无法代替 Mac 重启 Codex Desktop。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_service_note": {
+      "comment": "Explains how stopping the Mac service affects mobile shared sessions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep the Mimi Remote Mac service running. Choosing Quit and Stop Service… disconnects mobile devices; reopen the Mac app or sign in to the Mac again to restart it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请保持 Mimi Remote Mac 服务运行。选择“退出并停止服务…”会断开移动设备；重新打开 Mac App 或再次登录 Mac 后会重启服务。"
+          }
+        }
+      }
+    },
+    "ui.before_you_use_it": {
+      "comment": "Section heading for important notes before using an experimental feature.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Before you use it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用须知"
+          }
+        }
+      }
+    },
+    "ui.step_value_value": {
+      "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step %1$@: %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %1$@ 步：%2$@"
           }
         }
       }

@@ -265,6 +265,53 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(appStore.requiresRePairing)
     }
 
+    func testActiveWriterConflictStopsReconnectAndShowsSharedSetupGuidance() async throws {
+        let project = makeProject(id: "proj_active_writer_conflict")
+        let running = makeSession(
+            id: "sess_active_writer_conflict",
+            projectID: project.id,
+            title: "Desktop 会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let rawFailure = "app-server 错误 -32600：already has an active writer"
+        socket.emitStatus(.failed(rawFailure))
+        try await waitForWebSocketStatus(.failed(rawFailure), store: store)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 1, "单 writer 冲突不能进入无意义的自动重连")
+        XCTAssertEqual(
+            store.errorMessage,
+            L10n.text("ui.codex_active_writer_conflict_requires_shared_service")
+        )
+        XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+    }
+
     func testLateOlderNetworkPathUpdateCannotOverwriteSatisfiedState() async throws {
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"

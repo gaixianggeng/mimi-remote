@@ -567,6 +567,24 @@ final class CodexAppServerProtocolTests: XCTestCase {
         ))
     }
 
+    func testActiveWriterConflictOnlyMatchesKnownSingleWriterRejections() {
+        XCTAssertTrue(SessionStore.isCodexActiveWriterConflict(
+            "app-server 错误 -32600：already has an active writer"
+        ))
+        XCTAssertTrue(SessionStore.isCodexActiveWriterConflict(
+            "app-server error -32600: thread is active in Codex Desktop"
+        ))
+        XCTAssertFalse(SessionStore.isCodexActiveWriterConflict(
+            "app-server 错误 -32600：no rollout found for thread id thr_empty"
+        ))
+        XCTAssertFalse(SessionStore.isCodexActiveWriterConflict(
+            "app-server 错误 -32600：Invalid request: collaborationMode.mode"
+        ))
+        XCTAssertFalse(SessionStore.isCodexActiveWriterConflict(
+            "app-server 错误 -32080：already has an active writer"
+        ))
+    }
+
     func testSanitizedForRuntimePolicyDowngradesClaudeFullAccess() {
         var options = CodexAppServerTurnOptions.default
         options.runtimeProvider = "claude"
