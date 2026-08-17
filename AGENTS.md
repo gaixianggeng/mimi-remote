@@ -78,7 +78,7 @@
 
 ### 默认链路
 
-- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机，其次是 available、paired、本地网络可达且未占用的真机，最后使用未占用的 `iPad Pro 13-inch (M5)` Simulator。
+- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机，其次是 available、paired、本地网络可达且未占用的真机；只有完全没有可达真机时才使用未占用的 `iPad Pro 13-inch (M5)` Simulator。已经检测到真机但全部忙时明确失败，不静默跨设备类型回退。
 - 同一连接类型下的多台真机先按名称 `iPad Pro`、再按设备名和 UDID 排序；不得依赖列表顺序或随机选择。
 - `build-for-testing`、`test`、视觉快照和 CI 精确固定 `iPad Pro 13-inch (M5)` Simulator；目标缺失或忙时等待或明确失败，禁止回退 iPad mini、其他 iPad 或 iPhone。
 - 所有入口固定使用 `MimiRemote` Scheme 和 `Debug` 配置。
@@ -89,22 +89,24 @@
   - 编译测试产物：`bash ./scripts/ios-dev.sh build-for-testing`
   - 运行单测：`bash ./scripts/ios-dev.sh test`
   - 构建、安装并启动：`bash ./scripts/ios-dev.sh run`
+- 日常编译、部署和运行只允许通过 `scripts/ios-dev.sh` 进入。`scripts/deploy-ipad.sh` 是统一入口持有租约后的内部真机执行器，不得直接调用；需要刷新覆盖安装时使用 `REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run`。
 - 所有 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离；不同 Runtime 下的同名 Simulator 也不得共用构建目录。
 - 显式设置 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID` 时，显式选择优先于自动规则。
 - 普通 `build` / `run` 必须先获取按 UDID 的跨 Worktree 原子租约；租约记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间，进程退出后释放，死 PID 租约在下次占用时清理。
 
 ### XcodeBuildMCP
 
-- 第一次构建、运行或测试前先执行 `bash ./scripts/ios-dev.sh target`、`bash ./scripts/ios-dev.sh leases` 并读取 session defaults。
-- 仓库的 `.xcodebuildmcp/config.yaml` 只固定 project、scheme、Debug 和 Simulator fallback，不保存静态 DerivedData。Simulator 构建前必须用 `bash ./scripts/ios-dev.sh destination` 与 `bash ./scripts/ios-dev.sh derived-data-path` 解析同一目标，并通过 session defaults 同时设置 `simulatorId` 和对应的 `derivedDataPath`。
-- 自动规则选中真机时，使用 device workflow 或统一脚本，不得继续沿用 Simulator defaults。
+- 第一次日常构建或运行前先执行 `bash ./scripts/ios-dev.sh target`、`bash ./scripts/ios-dev.sh leases` 并读取 session defaults；随后仍必须调用统一脚本的 `build` / `run`，不得根据 MCP 中已有的 `simulatorId` 直接调用 Simulator workflow。
+- 仓库的 `.xcodebuildmcp/config.yaml` 只固定 project、scheme、Debug 和 bundle ID，不保存 `deviceId`、`simulatorId`、`simulatorName` 或静态 DerivedData，避免会话默认值抢先决定日常部署目标。
+- XcodeBuildMCP 的 Simulator workflow 仅用于 `build-for-testing`、`test`、视觉快照、UI 调试和明确的兼容性验收。使用前必须用 `bash ./scripts/ios-dev.sh test-destination` 与 `bash ./scripts/ios-dev.sh test-derived-data-path` 解析同一固定 M5 目标，并通过 session defaults 同时设置 `simulatorId` 和对应的 `derivedDataPath`。
+- 当前会话未启用 device workflow 时，选中真机后直接使用统一脚本，不得改用 Simulator workflow。即使 session 中残留旧 `simulatorId`，也不能把它视为日常目标决策。
 - 不把本机真机或 Simulator UDID 写入仓库；每次从当前连接状态解析，显式覆盖只通过本机环境变量传入。
 - 绕过统一脚本的 `xcodebuild` 若命令行包含 destination UDID、名称或 generic platform，视为外部占用；不得把对应设备误判为空闲。
 
 ### 设备用途
 
 - available、paired、USB 连接的真机是日常 `build` / `run` 第一优先级；没有可用 wired 真机时，可使用 available、paired 且当前本地网络可达的真机。仅保留历史配对记录、当前不可达的设备不参与选择。
-- 没有可用 USB 或本地网络真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback。同一真机无论通过 wired 还是 localNetwork 连接，均按 UDID 共用租约和 DerivedData。
+- 完全没有可达 USB 或本地网络真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback；检测到真机但全部被租约或外部 `xcodebuild` 占用时明确失败。同一真机无论通过 wired 还是 localNetwork 连接，均按 UDID 共用租约和 DerivedData。
 - `iPhone 17 Pro` 只用于明确的 iPhone 布局验收，`iPhone 17e` 只用于小屏兼容验收。切换时显式设置 `IOS_SIMULATOR_NAME`，完成后恢复默认 iPad。
 - 相机、通知、Keychain、Tailscale/弱网、性能以及发布前验证仍必须使用真机；自动 fallback 到 Simulator 时不得把这些专项验证标记为完成。
 - Simulator 通过不代表真机专项验收完成，真机结果也不替代日常 Simulator 回归。

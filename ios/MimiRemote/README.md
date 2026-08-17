@@ -14,7 +14,7 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-Select the `MimiRemote` scheme in Xcode and configure your development team for physical-device builds. Daily `build` and `run` lease an available, paired USB iOS device, skip busy targets, and then fall back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never switch to iPad mini. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line test build check:
+Select the `MimiRemote` scheme in Xcode and configure your development team for physical-device builds. Command-line daily builds and deployments use only `bash ./scripts/ios-dev.sh build|run`: they lease an available, paired USB iOS device first, then a reachable local-network device. The fixed `iPad Pro 13-inch (M5)` Simulator is used only when no reachable physical device exists; a detected but busy device causes a clear failure. Tests, snapshots, and CI require that exact Simulator and never switch to iPad mini. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line test build check:
 
 ```bash
 bash ./scripts/ios-dev.sh build-for-testing
@@ -117,7 +117,7 @@ cd "$HOME/code/mimi-remote"
 xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote
 ```
 
-日常 `build` / `run` 会先检测 available、paired、USB 连接且未占用的真机：多台设备按 `iPad Pro`、设备名、UDID 的固定顺序选择；设备已有租约或被外部 `xcodebuild` 使用时跳过。没有空闲 USB 真机时才使用 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test`、视觉快照和 CI 始终精确固定这台 M5 iPad；设备缺失或忙时明确失败，不切换到 iPad mini。
+日常 `build` / `run` 只通过 `scripts/ios-dev.sh` 进入，并先检测 available、paired、USB 连接且未占用的真机：多台设备按 `iPad Pro`、设备名、UDID 的固定顺序选择；没有空闲 USB 真机时继续选择可达的本地网络真机。只有完全没有可达真机时才使用 `iPad Pro 13-inch (M5)` Simulator；已经检测到真机但全部被租约或外部 `xcodebuild` 占用时明确失败，不静默切换设备类型。`build-for-testing`、`test`、视觉快照和 CI 始终精确固定这台 M5 iPad；设备缺失或忙时明确失败，不切换到 iPad mini。
 
 先查看本次实际目标：
 
@@ -161,7 +161,7 @@ IOS_TARGET_MODE=simulator IOS_SIMULATOR_NAME="iPhone 17e" bash ./scripts/ios-dev
 
 所有 Simulator 和真机都在对应根目录下按 UDID 隔离 DerivedData；即使两个 Runtime 中存在同名 `iPad Pro 13-inch (M5)`，也会使用不同构建目录，避免不同设备并发写入同一构建数据库。显式设置 `IOS_DERIVED_DATA_PATH` 时，调用方必须保证该路径只供当前目标使用。
 
-XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取 project、scheme、Debug 和 Simulator fallback，但配置不保存静态 DerivedData。使用 Simulator workflow 前，先分别运行 `bash ./scripts/ios-dev.sh destination` 与 `bash ./scripts/ios-dev.sh derived-data-path`，再把同一目标的 `simulatorId` 和 `derivedDataPath` 一起写入本次 session defaults；不得把本机 UDID 持久化到仓库。如果日常 `build` / `run` 选中真机，应使用 device workflow 或统一脚本，不能继续沿用 Simulator defaults。
+XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取 project、scheme、Debug 和 bundle ID，但仓库配置不保存 `deviceId`、`simulatorId`、`simulatorName` 或静态 DerivedData。日常 `build` / `run` 必须调用统一脚本，不能直接使用 MCP session 中已有的 Simulator defaults。只有 `build-for-testing`、`test`、视觉快照、UI 调试和明确的兼容性验收可以使用 Simulator workflow；使用前先分别运行 `bash ./scripts/ios-dev.sh test-destination` 与 `bash ./scripts/ios-dev.sh test-derived-data-path`，再把同一固定 M5 目标的 `simulatorId` 和 `derivedDataPath` 一起写入本次 session defaults，不得把本机 UDID 持久化到仓库。
 
 Simulator 开关采用“开发时保持一台、结束后关闭”的标准：
 
@@ -194,7 +194,7 @@ Catalyst 产物使用独立的 Mac `Info.plist`、App Sandbox 权限和标准 Ma
 
 同机连接有一条轻量优化链路：当 `agentd` 配置为具体的 Tailscale 或局域网 IP 时，服务端会同时监听相同端口的 `127.0.0.1`，不会扩大到 `0.0.0.0`。Catalyst 冷启动先探测 `http://127.0.0.1:8787/healthz`，再用当前 Mac 档案已经保存的 Token 验证本机链路；验证成功后本次运行优先走 loopback，但档案身份和缓存仍使用原 Tailscale Endpoint。首次配对仍需扫描二维码或输入访问码，本机健康检查不会返回 Token。手动填写私网 HTTP 地址时省略端口会自动补为 `8787`。
 
-自动规则选中真机时，`bash ./scripts/ios-dev.sh run` 会完成构建、安装和启动。也可以显式使用真机部署入口：
+自动规则选中真机时，`bash ./scripts/ios-dev.sh run` 会完成构建、安装和启动。Xcode 的 Run 按钮始终使用工具栏里人工选中的 destination，不参与命令行自动选择；需要手动调试时必须显式核对真机目标：
 
 1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。
 2. 选择 `MimiRemote` scheme。
@@ -202,10 +202,10 @@ Catalyst 产物使用独立的 Mac `Info.plist`、App Sandbox 权限和标准 Ma
 4. 设置开发者 Team 和签名。
 5. Run。
 
-如果真机覆盖安装后主屏仍显示旧图标或空白图标，可以用仓库根目录的部署脚本刷新安装：
+如果真机覆盖安装后主屏仍显示旧图标或空白图标，仍通过统一入口刷新安装：
 
 ```bash
-REFRESH_INSTALL=1 ./scripts/deploy-ipad.sh
+REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run
 ```
 
 ## 验收

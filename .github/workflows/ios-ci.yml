@@ -119,7 +119,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          destination="$(bash ./scripts/ios-dev.sh destination)"
+          destination="$(bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
           echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
 

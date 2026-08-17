@@ -29,12 +29,12 @@ echo "==> 确认固定目标与设备占用"
 bash "$IOS_DEV" target
 bash "$IOS_DEV" leases
 
-SIMULATOR_ID="$(bash "$IOS_DEV" destination | sed -nE 's/.*id=([^,}]+).*/\1/p')"
+SIMULATOR_ID="$(bash "$IOS_DEV" test-destination | sed -nE 's/.*id=([^,}]+).*/\1/p')"
 if [[ -z "$SIMULATOR_ID" ]]; then
   echo "无法解析固定 Simulator UDID。" >&2
   exit 3
 fi
-DERIVED_DATA="$(bash "$IOS_DEV" derived-data-path)"
+DERIVED_DATA="$(bash "$IOS_DEV" test-derived-data-path)"
 
 echo "==> 通过统一脚本构建、安装并启动 Debug App"
 bash "$IOS_DEV" run

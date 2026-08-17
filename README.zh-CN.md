@@ -363,7 +363,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-日常 `build` / `run` 按 available、paired 且未占用的 USB 真机 → 当前本地网络可达的真机 → 固定 iPad Simulator 确定性回退。显式 `IOS_DEVICE_ID` / `IOS_DEVICE_NAME` 同时支持有线与无线真机，设备不可达时会明确失败；同一 UDID 切换连接方式时仍共用租约和 DerivedData。测试、视觉快照与 CI 精确固定 `iPad Pro 13-inch (M5)`，不会回退 iPad mini。设备连接方式和占用可通过 `bash ./scripts/ios-dev.sh leases` 查看。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
+日常编译与部署统一通过 `bash ./scripts/ios-dev.sh build|run`：按 available、paired 且未占用的 USB 真机 → 当前本地网络可达的真机选择；只有完全没有可达真机时才回退固定 iPad Simulator。检测到真机但全部忙时明确失败，不静默切换设备类型。显式 `IOS_DEVICE_ID` / `IOS_DEVICE_NAME` 同时支持有线与无线真机，设备不可达时会明确失败；同一 UDID 切换连接方式时仍共用租约和 DerivedData。测试、视觉快照与 CI 精确固定 `iPad Pro 13-inch (M5)`，不会回退 iPad mini。XcodeBuildMCP 仓库默认值不保存设备目标，其 Simulator workflow 只用于这些固定 Simulator 场景。目标原因、连接方式和占用可通过 `bash ./scripts/ios-dev.sh target` 与 `bash ./scripts/ios-dev.sh leases` 查看。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
 
 ### Claude bridge
 
