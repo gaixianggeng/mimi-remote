@@ -411,7 +411,12 @@ extension SessionStore {
                 return
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
-            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID) && !policyRejected
+            let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+            // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
+            // Mac 侧共享入口，避免把结构性冲突伪装成短暂网络波动。
+            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
+                && !policyRejected
+                && !activeWriterConflict
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
@@ -430,7 +435,11 @@ extension SessionStore {
                 scheduleWebSocketReconnect(sessionID: sessionID, reason: message)
             } else {
                 setWebSocketStatus(.failed(message))
-                setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
+                if activeWriterConflict {
+                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_shared_service"))
+                } else {
+                    setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
+                }
             }
         case .terminated(let reason):
             if reason == .credentialsInvalid,
@@ -478,6 +487,18 @@ extension SessionStore {
         case .connecting:
             setWebSocketStatus(.connecting)
         }
+    }
+
+    /// 只识别 app-server 已知的单 writer 拒绝；其他 -32600（例如 no rollout found、
+    /// 参数不兼容）仍沿原有错误与恢复路径处理，不能被这个 UX 映射吞掉。
+    nonisolated static func isCodexActiveWriterConflict(_ message: String) -> Bool {
+        guard message.contains("-32600") else {
+            return false
+        }
+        let lowerMessage = message.lowercased()
+        return lowerMessage.contains("already has an active writer")
+            || lowerMessage.contains("external_thread_active")
+            || (lowerMessage.contains("thread is active") && lowerMessage.contains("codex desktop"))
     }
 
     @discardableResult
