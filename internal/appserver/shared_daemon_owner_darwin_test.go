@@ -5,6 +5,7 @@ package appserver
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"net"
@@ -29,10 +30,27 @@ func writeFakeCodexBin(t *testing.T, dir string, name string) string {
 // CODEX_HOME 要满足生产代码的“目录已存在”约束。
 func sharedDaemonTestHome(t *testing.T) string {
 	t.Helper()
+	previousResolver := sharedDaemonResolveSupervisorNode
+	previousValidator := sharedDaemonValidateSupervisor
+	previousRuntimeValidator := sharedDaemonValidateSignedRuntime
 	home, err := os.MkdirTemp("/tmp", "mimi-owner-")
 	if err != nil {
 		t.Fatalf("创建短测试 Home 失败：%v", err)
 	}
+	// 测试只注入路径解析和签名校验 seam，不依赖真实 ChatGPT.app 或真实
+	// codesign 输出；owner 的两阶段/文件权限测试仍走完整生产流程。
+	nodePath := filepath.Join(home, "node")
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("写入假 node supervisor 失败：%v", err)
+	}
+	sharedDaemonResolveSupervisorNode = func(string) (string, error) { return nodePath, nil }
+	sharedDaemonValidateSupervisor = func(string, string) error { return nil }
+	sharedDaemonValidateSignedRuntime = func(context.Context, LocalDaemonOptions, string) error {
+		return fmt.Errorf("test listener lacks signed supervisor evidence")
+	}
+	t.Cleanup(func() { sharedDaemonResolveSupervisorNode = previousResolver })
+	t.Cleanup(func() { sharedDaemonValidateSupervisor = previousValidator })
+	t.Cleanup(func() { sharedDaemonValidateSignedRuntime = previousRuntimeValidator })
 	t.Cleanup(func() { os.RemoveAll(home) })
 	for _, name := range []string{".codex", "other-codex"} {
 		if err := os.MkdirAll(filepath.Join(home, name), 0o700); err != nil {
@@ -42,9 +60,57 @@ func sharedDaemonTestHome(t *testing.T) string {
 	return home
 }
 
-func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
+func allowTestSignedSharedDaemonRuntime(t *testing.T) {
+	t.Helper()
+	previous := sharedDaemonValidateSignedRuntime
+	sharedDaemonValidateSignedRuntime = func(context.Context, LocalDaemonOptions, string) error { return nil }
+	t.Cleanup(func() { sharedDaemonValidateSignedRuntime = previous })
+}
+
+func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) {
+	metadataFor := func(identifier string) string {
+		return strings.Join([]string{
+			"Executable=/Applications/ChatGPT.app/Contents/Resources/" + identifier,
+			"Identifier=" + identifier,
+			"CodeDirectory v=20500 flags=0x10000(runtime)",
+			"TeamIdentifier=2DC432GLL2",
+		}, "\n")
+	}
+	for _, identifier := range []string{"node", "codex"} {
+		t.Run(identifier, func(t *testing.T) {
+			valid := metadataFor(identifier)
+			if err := validateSharedDaemonCodeSignatureMetadata(valid, identifier); err != nil {
+				t.Fatalf("OpenAI 签名的 hardened %s 应通过：%v", identifier, err)
+			}
+			tests := map[string]string{
+				"wrong identifier": strings.Replace(valid, "Identifier="+identifier, "Identifier=foreign", 1),
+				"wrong team":       strings.Replace(valid, "TeamIdentifier=2DC432GLL2", "TeamIdentifier=OTHER", 1),
+				"no runtime":       strings.Replace(valid, "(runtime)", "", 1),
+			}
+			for name, candidate := range tests {
+				t.Run(name, func(t *testing.T) {
+					if err := validateSharedDaemonCodeSignatureMetadata(candidate, identifier); err == nil {
+						t.Fatal("不可信 supervisor metadata 必须 fail closed")
+					}
+				})
+			}
+			otherIdentifier := "node"
+			if identifier == "node" {
+				otherIdentifier = "codex"
+			}
+			if err := validateSharedDaemonCodeSignatureMetadata(valid, otherIdentifier); err == nil {
+				t.Fatalf("%s metadata 不能冒充 %s 签名", identifier, otherIdentifier)
+			}
+		})
+	}
+}
+
+func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
+	nodeBin := "/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+	codexBin := "/opt/codex bin/codex"
 	rendered, err := renderSharedDaemonLaunchAgent(
-		"/opt/codex bin/codex",
+		nodeBin,
+		codexBin,
 		map[string]string{"CODEX_HOME": "/Users/tester/.codex"},
 		"/Users/tester/Library/Logs/mimi-remote/codex-shared-daemon.log",
 	)
@@ -53,22 +119,37 @@ func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
 	}
 	content := string(rendered)
 
-	if strings.Contains(content, "<string>/bin/sh</string>") || strings.Contains(content, "exec &#34;") {
-		t.Fatalf("plist 不能引入 shell 责任主体：\n%s", content)
+	if strings.Contains(content, "<string>/bin/sh</string>") || strings.Contains(content, "exec &#34;") ||
+		strings.Contains(content, "<string>daemon</string>") || strings.Contains(content, "<string>start</string>") {
+		t.Fatalf("plist 不能引入 shell 或旧 daemon start 责任主体：\n%s", content)
 	}
-	if !strings.Contains(content, "<string>/opt/codex bin/codex</string>") {
+	if !strings.Contains(content, "<string>"+nodeBin+"</string>") ||
+		!strings.Contains(content, "<string>"+codexBin+"</string>") {
 		t.Fatalf("plist 必须使用绝对 codex 路径：\n%s", content)
 	}
-	for _, argument := range []string{"app-server", "daemon", "start"} {
-		if !strings.Contains(content, "<string>"+argument+"</string>") {
-			t.Fatalf("plist 缺少官方 daemon 参数 %s：\n%s", argument, content)
+	for _, argument := range sharedDaemonSupervisorProgramArguments(nodeBin, codexBin) {
+		var escaped bytes.Buffer
+		if err := xml.EscapeText(&escaped, []byte(argument)); err != nil {
+			t.Fatalf("转义 supervisor 参数失败：%v", err)
 		}
+		if !strings.Contains(content, "<string>"+escaped.String()+"</string>") {
+			t.Fatalf("plist 缺少 signed node supervisor 参数 %q：\n%s", argument, content)
+		}
+	}
+	if strings.Contains(content, "&#xA;") {
+		t.Fatalf("ProgramArguments 不能包含会被 launchctl 截断的换行实体：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>RunAtLoad</key>\n\t<true/>") {
 		t.Fatalf("plist 必须覆盖登录冷启动：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>KeepAlive</key>\n\t<false/>") {
-		t.Fatalf("一次性控制命令不能被 launchd 反复重启：\n%s", content)
+		t.Fatalf("supervisor 退出后不能被 launchd 反复重启：\n%s", content)
+	}
+	if strings.Contains(content, "<key>AbandonProcessGroup</key>") {
+		t.Fatalf("持久 supervisor 不应放弃 app-server 所在进程组：\n%s", content)
+	}
+	if strings.Contains(content, "detached: true") || strings.Contains(content, ".unref()") {
+		t.Fatalf("plist 不能再包含不可观测的 detached launcher：\n%s", content)
 	}
 	if !strings.Contains(content, "<key>Umask</key>\n\t<integer>63</integer>") {
 		t.Fatalf("LaunchAgent 日志必须只允许当前用户读取：\n%s", content)
@@ -83,10 +164,14 @@ func TestRenderSharedDaemonLaunchAgentExecsOfficialCodexDirectly(t *testing.T) {
 			t.Fatalf("plist 必须以空值覆盖 Desktop 专属变量 %s：\n%s", key, content)
 		}
 	}
+	if value := sharedDaemonPlistStringValue(rendered, "NODE_OPTIONS"); value != "" {
+		t.Fatalf("supervisor 必须清空继承的 NODE_OPTIONS，实际=%q", value)
+	}
 }
 
 func TestRenderSharedDaemonLaunchAgentPendingDisablesRunAtLoad(t *testing.T) {
 	rendered, err := renderSharedDaemonLaunchAgent(
+		"/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node",
 		"/opt/codex/bin/codex",
 		map[string]string{"CODEX_HOME": "/Users/tester/.codex"},
 		"",
@@ -104,6 +189,7 @@ func TestRenderSharedDaemonLaunchAgentPendingDisablesRunAtLoad(t *testing.T) {
 
 func TestRenderSharedDaemonLaunchAgentEscapesXML(t *testing.T) {
 	rendered, err := renderSharedDaemonLaunchAgent(
+		"/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node",
 		"/tmp/a&b/codex",
 		map[string]string{"CODEX_HOME": "/tmp/<home>"},
 		"",
@@ -121,8 +207,37 @@ func TestRenderSharedDaemonLaunchAgentEscapesXML(t *testing.T) {
 }
 
 func TestRenderSharedDaemonLaunchAgentRejectsEmptyBin(t *testing.T) {
-	if _, err := renderSharedDaemonLaunchAgent("  ", nil, ""); err == nil {
+	if _, err := renderSharedDaemonLaunchAgent("  ", "/opt/codex/bin/codex", nil, ""); err == nil {
+		t.Fatal("空 node supervisor 路径必须报错")
+	}
+	if _, err := renderSharedDaemonLaunchAgent("/opt/node", "  ", nil, ""); err == nil {
 		t.Fatal("空 codex 路径必须报错")
+	}
+}
+
+func TestEnsureSharedDaemonLaunchAgentRejectsUntrustedSupervisorBeforeWrite(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexBin := writeFakeCodexBin(t, t.TempDir(), "codex")
+	previousValidator := sharedDaemonValidateSupervisor
+	sharedDaemonValidateSupervisor = func(string, string) error {
+		return fmt.Errorf("共享 daemon supervisor 不是受支持的 OpenAI 签名 codex")
+	}
+	t.Cleanup(func() { sharedDaemonValidateSupervisor = previousValidator })
+
+	_, err := EnsureSharedDaemonLaunchAgent(LocalDaemonOptions{
+		CodexBin: codexBin,
+		Env:      map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "OpenAI 签名") {
+		t.Fatalf("不可信 supervisor 必须在写 plist 前拒绝：%v", err)
+	}
+	path, pathErr := SharedDaemonLaunchAgentPath()
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("签名失败不能落盘 LaunchAgent：%v", statErr)
 	}
 }
 
@@ -332,6 +447,76 @@ func TestEnsureSharedDaemonOwnerMarksPreexistingDaemonForExplicitMigration(t *te
 	}
 	if _, err := os.Stat(flagPath); !os.IsNotExist(err) {
 		t.Fatalf("迁移标记应被删除：%v", err)
+	}
+}
+
+func TestEnsureSharedDaemonOwnerRechecksListenerBeforeBootout(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	loaded := false
+	bootstrapCalls := 0
+	bootoutCalls := 0
+	originalLaunchctl := sharedDaemonLaunchctl
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = { state = exited }", nil
+			}
+			return "", fmt.Errorf("not loaded")
+		case "bootstrap":
+			bootstrapCalls++
+			loaded = true
+			return "", nil
+		case "bootout":
+			bootoutCalls++
+			loaded = false
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
+
+	oldOptions := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex-old"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}
+	if _, err := EnsureSharedDaemonOwner(context.Background(), oldOptions, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// 入口快照仍是“无 listener”，但在新 plan 的签名校验期间模拟另一条
+	// Codex 启动链赢得 socket。bootout 前的二次取证必须把 owner 改成 manual。
+	originalValidator := sharedDaemonValidateSupervisor
+	var stopServer func()
+	sharedDaemonValidateSupervisor = func(string, string) error {
+		if stopServer == nil {
+			_, _, stopServer = startLocalDaemonTestServer(
+				t,
+				codexHome,
+				"Codex Desktop/0.147.0 (Mac OS; arm64)",
+			)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		sharedDaemonValidateSupervisor = originalValidator
+		if stopServer != nil {
+			stopServer()
+		}
+	})
+
+	status, err := EnsureSharedDaemonOwner(context.Background(), LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex-new"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}, false)
+	if err != nil {
+		t.Fatalf("bootout 前出现 listener 应安全收敛为 pending：%v", err)
+	}
+	if !status.MigrationRequired || status.RunAtLoad || !loaded || bootoutCalls != 0 || bootstrapCalls != 1 {
+		t.Fatalf("活跃 listener 不能被 bootout/rebootstrap：status=%+v loaded=%t bootout=%d bootstrap=%d", status, loaded, bootoutCalls, bootstrapCalls)
 	}
 }
 
@@ -706,6 +891,72 @@ func TestPreparedIntentCreatesManualOwnerBeforeFirstBootstrap(t *testing.T) {
 	}
 }
 
+func TestRunAtLoadGraceAvoidsDuplicateKickstartWhileSocketStarts(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	options := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex"),
+		Env:      map[string]string{"CODEX_HOME": codexHome},
+	}
+	if _, err := ensureSharedDaemonLaunchAgent(options, true); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := true
+	kickstartCalls := 0
+	originalLaunchctl := sharedDaemonLaunchctl
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = { state = exited }", nil
+			}
+			return "", fmt.Errorf("not loaded")
+		case "kickstart":
+			kickstartCalls++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
+
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type listenResult struct {
+		listener net.Listener
+		err      error
+	}
+	result := make(chan listenResult, 1)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		listener, listenErr := net.Listen("unix", socketPath)
+		result <- listenResult{listener: listener, err: listenErr}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started, err := startLocalDaemonWithStableOwnerTracked(ctx, options)
+	listenerResult := <-result
+	if listenerResult.listener != nil {
+		t.Cleanup(func() { _ = listenerResult.listener.Close() })
+	}
+	if listenerResult.err != nil {
+		t.Fatal(listenerResult.err)
+	}
+	if err != nil {
+		t.Fatalf("RunAtLoad supervisor 在 grace 内建立 socket 应直接复用：%v", err)
+	}
+	if started || kickstartCalls != 0 {
+		t.Fatalf("RunAtLoad supervisor 正启动时不能创建第二套：started=%t kickstart=%d", started, kickstartCalls)
+	}
+}
+
 func TestFailedExplicitMigrationCannotReuseFreshEnableIntent(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
@@ -761,6 +1012,81 @@ func TestFailedExplicitMigrationCannotReuseFreshEnableIntent(t *testing.T) {
 	}
 	if kickstartCalls != beforeEnsure {
 		t.Fatalf("普通 Ensure 不能复用旧 intent 静默启动：before=%d after=%d", beforeEnsure, kickstartCalls)
+	}
+}
+
+func TestReloadSharedDaemonLaunchAgentForMigrationReloadsManualOwner(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{
+		CodexBin: writeFakeCodexBin(t, t.TempDir(), "codex"),
+		Env:      map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")},
+	}
+	if _, err := ensureSharedDaemonLaunchAgent(options, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSharedDaemonMigrationFlag(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := true
+	commands := make([][]string, 0, 4)
+	originalLaunchctl := sharedDaemonLaunchctl
+	originalDesktop := sharedDaemonDesktopRunning
+	sharedDaemonDesktopRunning = func(context.Context) (bool, error) { return false, nil }
+	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
+		commands = append(commands, append([]string(nil), arguments...))
+		switch arguments[0] {
+		case "print":
+			if loaded {
+				return "service = {\n\tstate = exited\n}", nil
+			}
+			return "", errors.New("not loaded")
+		case "bootout":
+			if !loaded {
+				return "", errors.New("not loaded")
+			}
+			loaded = false
+			return "", nil
+		case "bootstrap":
+			loaded = true
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+		}
+	}
+	t.Cleanup(func() {
+		sharedDaemonLaunchctl = originalLaunchctl
+		sharedDaemonDesktopRunning = originalDesktop
+	})
+
+	if err := reloadSharedDaemonLaunchAgentForMigration(context.Background()); err != nil {
+		t.Fatalf("manual owner 应先 reload 再允许 kickstart：%v", err)
+	}
+	if !loaded {
+		t.Fatal("reload 后 owner 必须重新 loaded")
+	}
+	if len(commands) != 4 || commands[0][0] != "print" || commands[1][0] != "bootout" ||
+		commands[2][0] != "bootstrap" || commands[3][0] != "print" {
+		t.Fatalf("迁移 reload 必须执行 print→bootout→bootstrap→print：%v", commands)
+	}
+	path, err := SharedDaemonLaunchAgentPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runAtLoad, ok := sharedDaemonPlistBoolValue(content, "RunAtLoad"); !ok || runAtLoad {
+		t.Fatalf("reload 期间 owner 必须保持 manual：ok=%t runAtLoad=%t", ok, runAtLoad)
+	}
+	owner, err := InspectSharedDaemonOwner(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owner.Installed || !owner.Loaded || owner.Running || !owner.Secure || owner.RunAtLoad || !owner.MigrationRequired {
+		t.Fatalf("reload 后必须复核 loaded/manual/pending owner：%+v", owner)
 	}
 }
 
@@ -1112,6 +1438,7 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 
 	loaded := true
 	bootstrapCalls := 0
+	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
 	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
 		switch arguments[0] {
@@ -1121,6 +1448,7 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 			}
 			return "", fmt.Errorf("not loaded")
 		case "bootout":
+			bootoutCalls++
 			loaded = false
 			return "", nil
 		case "bootstrap":
@@ -1150,8 +1478,8 @@ func TestCommitSharedDaemonDisableDoesNotRestoreAutoOwnerAfterConfigConflict(t *
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("配置失权后不能恢复旧 auto owner：%v", statErr)
 	}
-	if loaded || bootstrapCalls != 0 {
-		t.Fatalf("配置冲突后不能重新加载旧 job：loaded=%t bootstrap=%d", loaded, bootstrapCalls)
+	if !loaded || bootstrapCalls != 0 || bootoutCalls != 0 {
+		t.Fatalf("配置冲突后不能重新加载或 bootout 旧 job：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
 	}
 }
 
@@ -1230,6 +1558,7 @@ func TestCommitSharedDaemonEnableKeepsOwnerManualUntilConfigCommit(t *testing.T)
 
 func TestCommittedFreshEnableRecoversAfterCrashBeforeKickstart(t *testing.T) {
 	home := sharedDaemonTestHome(t)
+	allowTestSignedSharedDaemonRuntime(t)
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, ".codex")
 	options := LocalDaemonOptions{
@@ -1359,6 +1688,7 @@ func TestPrepareSharedDaemonOwnerRejectsConnectableListenerWithoutHandshake(t *t
 
 func TestCommitSharedDaemonEnableKeepsManualUntilExplicitMigration(t *testing.T) {
 	home := sharedDaemonTestHome(t)
+	allowTestSignedSharedDaemonRuntime(t)
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, ".codex")
 	options := LocalDaemonOptions{
@@ -1570,11 +1900,19 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 	loaded := false
 	bootstrapCalls := 0
 	bootoutCalls := 0
+	printCalls := 0
 	var stopSocket func()
 	originalLaunchctl := sharedDaemonLaunchctl
 	sharedDaemonLaunchctl = func(_ context.Context, arguments ...string) (string, error) {
 		switch arguments[0] {
 		case "print":
+			printCalls++
+			// live listener 下的新 plist 只 stage 到磁盘，不发生 bootout/bootstrap。
+			// 第四次 print 是新 owner 的 post-stage 复核；在它返回后模拟 socket
+			// 竞态退出，外层应走 files-only rollback。
+			if printCalls == 4 && stopSocket != nil {
+				stopSocket()
+			}
 			if loaded {
 				return "service = { state = exited }", nil
 			}
@@ -1582,11 +1920,6 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 		case "bootstrap":
 			bootstrapCalls++
 			loaded = true
-			// 第二次 bootstrap 已经写入 manual owner；模拟旧 SSH socket
-			// 正好在此时退出，覆盖 owner 安装与二次检查之间的竞态。
-			if bootstrapCalls == 2 && stopSocket != nil {
-				stopSocket()
-			}
 			return "", nil
 		case "bootout":
 			bootoutCalls++
@@ -1625,8 +1958,8 @@ func TestStableOwnerConfigurationRestoresPreviousOwnerWhenSocketDropsAfterInstal
 	if readErr != nil || !bytes.Equal(before, after) {
 		t.Fatalf("设置未提交时必须逐字恢复原 plist：read=%v", readErr)
 	}
-	if !loaded || bootstrapCalls != 3 || bootoutCalls != 2 {
-		t.Fatalf("设置未提交时必须恢复原 loaded owner：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
+	if !loaded || bootstrapCalls != 1 || bootoutCalls != 0 {
+		t.Fatalf("live listener 的 stage/rollback 只能恢复磁盘 owner：loaded=%t bootstrap=%d bootout=%d", loaded, bootstrapCalls, bootoutCalls)
 	}
 	if required, markerErr := SharedDaemonMigrationRequired(); markerErr != nil || required {
 		t.Fatalf("设置未提交时必须恢复原 marker：required=%t err=%v", required, markerErr)
@@ -1696,6 +2029,7 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 	path, _ := SharedDaemonLaunchAgentPath()
 
 	loaded := true
+	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
 	originalRemove := sharedDaemonRemoveLaunchAgentFile
 	originalClear := sharedDaemonClearMigrationForRemoval
@@ -1707,6 +2041,7 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 			}
 			return "", fmt.Errorf("not loaded")
 		case "bootout":
+			bootoutCalls++
 			loaded = false
 			return "", nil
 		case "bootstrap":
@@ -1738,17 +2073,23 @@ func testRemoveSharedDaemonOwnerFailureIsManual(t *testing.T, stage string, inje
 	} else if !os.IsNotExist(readErr) {
 		t.Fatalf("marker clear 失败时 auto 入口必须已删除：%v", readErr)
 	}
-	if loaded {
-		t.Fatalf("%s 失败后 job 不能重新 bootstrap", stage)
+	if !loaded || bootoutCalls != 0 {
+		t.Fatalf("%s 失败后当前 loaded job 不应被 bootout：loaded=%t bootout=%d", stage, loaded, bootoutCalls)
 	}
 	if required, markerErr := SharedDaemonMigrationRequired(); markerErr != nil || !required {
 		t.Fatalf("%s 失败后 marker 必须保持 fail-closed：required=%t err=%v", stage, required, markerErr)
 	}
 }
 
-func TestRemoveSharedDaemonOwnerRejectsLoadedJobWithoutRecoverablePlist(t *testing.T) {
+func TestRemoveSharedDaemonOwnerRecoversLoadedJobWithoutPlist(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
+	if err := writeSharedDaemonMigrationFlag(); err != nil {
+		t.Fatal(err)
+	}
+	if err := markSharedDaemonEnablePrepared(); err != nil {
+		t.Fatal(err)
+	}
 	loaded := true
 	bootoutCalls := 0
 	originalLaunchctl := sharedDaemonLaunchctl
@@ -1769,9 +2110,17 @@ func TestRemoveSharedDaemonOwnerRejectsLoadedJobWithoutRecoverablePlist(t *testi
 	}
 	t.Cleanup(func() { sharedDaemonLaunchctl = originalLaunchctl })
 
-	err := removeSharedDaemonOwnerUnlocked(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "plist 缺失") || bootoutCalls != 0 || !loaded {
-		t.Fatalf("无法回滚的孤立 loaded job 必须在 bootout 前拒绝：err=%v bootout=%d loaded=%t", err, bootoutCalls, loaded)
+	if err := removeSharedDaemonOwnerUnlocked(context.Background()); err != nil {
+		t.Fatalf("plist 已删后的禁用重试应幂等完成：%v", err)
+	}
+	if bootoutCalls != 0 || !loaded {
+		t.Fatalf("孤立 loaded job 必须保留到注销：bootout=%d loaded=%t", bootoutCalls, loaded)
+	}
+	if required, err := SharedDaemonMigrationRequired(); err != nil || required {
+		t.Fatalf("幂等禁用必须清理 marker：required=%t err=%v", required, err)
+	}
+	if prepared, err := sharedDaemonEnablePrepared(); err != nil || prepared {
+		t.Fatalf("幂等禁用必须清理 fresh-enable intent：prepared=%t err=%v", prepared, err)
 	}
 }
 
@@ -1866,7 +2215,7 @@ func TestInspectLaunchAgentStateDistinguishesLoadedFromRunning(t *testing.T) {
 	}
 }
 
-func TestRemoveSharedDaemonLaunchAgentBootsOutLoadedJobWithoutPlist(t *testing.T) {
+func TestRemoveSharedDaemonLaunchAgentKeepsLoadedJobWithoutPlist(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
 	loaded := true
@@ -1892,8 +2241,8 @@ func TestRemoveSharedDaemonLaunchAgentBootsOutLoadedJobWithoutPlist(t *testing.T
 	if err := RemoveSharedDaemonLaunchAgent(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if loaded || bootoutCalls != 1 {
-		t.Fatalf("磁盘 plist 缺失也必须清理已加载 job：loaded=%t bootoutCalls=%d", loaded, bootoutCalls)
+	if !loaded || bootoutCalls != 0 {
+		t.Fatalf("磁盘 plist 缺失时只删除未来入口，不能 bootout 当前 job：loaded=%t bootoutCalls=%d", loaded, bootoutCalls)
 	}
 }
 
@@ -1915,8 +2264,12 @@ func TestResolveSharedDaemonCodexBinRequiresExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析可执行 codex 失败：%v", err)
 	}
-	if resolved != executable {
-		t.Fatalf("解析结果不一致：%s", resolved)
+	expected, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("解析测试 codex 真实路径失败：%v", err)
+	}
+	if resolved != expected {
+		t.Fatalf("解析结果不一致：got=%s want=%s", resolved, expected)
 	}
 }
 
@@ -2055,429 +2408,5 @@ func TestKickstartSharedDaemonFailsClosedWhenDesktopIsRunningOrUnknown(t *testin
 				t.Fatalf("最终 Desktop guard 必须阻止 kickstart：err=%v calls=%d", err, launchctlCalls)
 			}
 		})
-	}
-}
-
-func TestStopSharedDaemonManagedBackendChecksDesktopBeforeOfficialStop(t *testing.T) {
-	home := sharedDaemonTestHome(t)
-	codexHome := filepath.Join(home, ".codex")
-	socketPath, err := LocalDaemonSocketPath(map[string]string{"CODEX_HOME": codexHome})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-
-	stopMarker := filepath.Join(t.TempDir(), "official-stop-called")
-	bin := filepath.Join(t.TempDir(), "codex")
-	lifecycleJSON := fmt.Sprintf(
-		`{"status":"running","backend":"pid","socketPath":%q,"appServerVersion":"0.147.0"}`,
-		socketPath,
-	)
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$3" = "version" ]; then
-  printf '%%s\n' '%s'
-  exit 0
-fi
-if [ "$3" = "stop" ]; then
-  touch '%s'
-  exit 0
-fi
-exit 2
-`, lifecycleJSON, stopMarker)
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	options := LocalDaemonOptions{
-		CodexBin: bin,
-		Env:      map[string]string{"CODEX_HOME": codexHome},
-	}
-	owner := SharedDaemonOwnerStatus{
-		Installed: true,
-		Loaded:    true,
-		Secure:    true,
-	}
-
-	tests := []struct {
-		name        string
-		desktop     func(context.Context) (bool, error)
-		wantMessage string
-	}{
-		{
-			name:        "desktop reopened",
-			desktop:     func(context.Context) (bool, error) { return true, nil },
-			wantMessage: "重新打开",
-		},
-		{
-			name:        "desktop query failed",
-			desktop:     func(context.Context) (bool, error) { return false, errors.New("query failed") },
-			wantMessage: "确认 Codex Desktop 已退出失败",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_ = os.Remove(stopMarker)
-			originalDesktop := sharedDaemonDesktopRunning
-			sharedDaemonDesktopRunning = test.desktop
-			t.Cleanup(func() { sharedDaemonDesktopRunning = originalDesktop })
-
-			err := stopSharedDaemon(context.Background(), options, owner)
-			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
-				t.Fatalf("官方 stop 前必须 fail closed：%v", err)
-			}
-			if _, statErr := os.Stat(stopMarker); !os.IsNotExist(statErr) {
-				t.Fatalf("Desktop guard 失败时不能执行官方 stop：%v", statErr)
-			}
-		})
-	}
-}
-
-func TestWaitForSharedDaemonStoppedResetsConfirmationAfterReconnect(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "mimi-stop-flap-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	socketPath := filepath.Join(dir, "app.sock")
-	ready := make(chan error, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// 先给 wait loop 一个短暂不可连窗口，但尚未达到
-		// 500 ms 的稳定确认条件。
-		time.Sleep(200 * time.Millisecond)
-		listener, listenErr := net.Listen("unix", socketPath)
-		ready <- listenErr
-		if listenErr != nil {
-			return
-		}
-		time.Sleep(300 * time.Millisecond)
-		_ = listener.Close()
-	}()
-
-	started := time.Now()
-	if err := waitForSharedDaemonStopped(context.Background(), socketPath); err != nil {
-		t.Fatalf("断开抖动确认失败：%v", err)
-	}
-	listenErr := <-ready
-	<-done
-	if listenErr != nil {
-		t.Fatalf("创建中途恢复 listener 失败：%v", listenErr)
-	}
-	// 200 ms 后重连、300 ms 后再断开，之后还必须重新
-	// 等满 500 ms。如果没有重置 disconnectedSince，会在约 500 ms 时错误返回。
-	if elapsed := time.Since(started); elapsed < 850*time.Millisecond {
-		t.Fatalf("中途重连后必须重新计算稳定断开窗口：elapsed=%s", elapsed)
-	}
-}
-
-func TestStopUnmanagedSharedDaemonRequiresDesktopStopped(t *testing.T) {
-	termCalls := 0
-	err := stopUnmanagedSharedDaemonWithHooks(
-		context.Background(),
-		"/tmp/app.sock",
-		"/tmp/codex",
-		unmanagedSharedDaemonHooks{
-			desktopRunning: func(context.Context) (bool, error) { return true, nil },
-			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
-				t.Fatal("Desktop 运行时不应读取或终止 socket owner")
-				return sharedDaemonListenerProcess{}, nil
-			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "仍在运行") || termCalls != 0 {
-		t.Fatalf("Desktop 未退出必须 fail closed：err=%v term=%d", err, termCalls)
-	}
-}
-
-func TestStopUnmanagedSharedDaemonSignalsOneStrictlyMatchedProcess(t *testing.T) {
-	process := sharedDaemonListenerProcess{
-		PID:        1234,
-		UID:        501,
-		StartSec:   1786522048,
-		StartUsec:  123,
-		Command:    "codex -c features.code_mode_host=true app-server --listen unix://",
-		Executable: "/tmp/codex-real",
-	}
-	inspectCalls := 0
-	desktopChecks := 0
-	var signaled []int
-	err := stopUnmanagedSharedDaemonWithHooks(
-		context.Background(),
-		"/tmp/app.sock",
-		"/tmp/codex-real",
-		unmanagedSharedDaemonHooks{
-			desktopRunning: func(context.Context) (bool, error) { desktopChecks++; return false, nil },
-			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
-				inspectCalls++
-				return process, nil
-			},
-			signalTERM: func(pid int) error { signaled = append(signaled, pid); return nil },
-			currentUID: func() int { return 501 },
-		},
-	)
-	if err != nil {
-		t.Fatalf("严格匹配的原生 SSH daemon 应允许一次 TERM：%v", err)
-	}
-	if desktopChecks != 2 || inspectCalls != 2 || len(signaled) != 1 || signaled[0] != process.PID {
-		t.Fatalf("接管必须两次确认 Desktop、双重确认 PID 且只 TERM 一次：desktop=%d inspect=%d signaled=%v", desktopChecks, inspectCalls, signaled)
-	}
-}
-
-func TestStopUnmanagedSharedDaemonRejectsDesktopReopenedBeforeSignal(t *testing.T) {
-	process := sharedDaemonListenerProcess{
-		PID:        1234,
-		UID:        501,
-		StartSec:   1786522048,
-		StartUsec:  123,
-		Command:    "codex app-server --listen unix://",
-		Executable: "/tmp/codex-real",
-	}
-	desktopChecks := 0
-	termCalls := 0
-	err := stopUnmanagedSharedDaemonWithHooks(
-		context.Background(),
-		"/tmp/app.sock",
-		"/tmp/codex-real",
-		unmanagedSharedDaemonHooks{
-			desktopRunning: func(context.Context) (bool, error) {
-				desktopChecks++
-				return desktopChecks == 2, nil
-			},
-			inspect:    func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "重新打开") || desktopChecks != 2 || termCalls != 0 {
-		t.Fatalf("Desktop 在信号前重开时必须 fail closed：err=%v checks=%d term=%d", err, desktopChecks, termCalls)
-	}
-}
-
-func TestStopUnmanagedSharedDaemonRejectsFinalDesktopCheckFailure(t *testing.T) {
-	process := sharedDaemonListenerProcess{
-		PID:        1234,
-		UID:        501,
-		StartSec:   1786522048,
-		StartUsec:  123,
-		Command:    "codex app-server --listen unix://",
-		Executable: "/tmp/codex-real",
-	}
-	desktopChecks := 0
-	termCalls := 0
-	err := stopUnmanagedSharedDaemonWithHooks(
-		context.Background(),
-		"/tmp/app.sock",
-		"/tmp/codex-real",
-		unmanagedSharedDaemonHooks{
-			desktopRunning: func(context.Context) (bool, error) {
-				desktopChecks++
-				if desktopChecks == 2 {
-					return false, fmt.Errorf("查询失败")
-				}
-				return false, nil
-			},
-			inspect:    func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "信号前再次确认") || termCalls != 0 {
-		t.Fatalf("Desktop 最终检查失败时必须 fail closed：err=%v term=%d", err, termCalls)
-	}
-}
-
-func TestStopUnmanagedSharedDaemonRejectsUnsafeListener(t *testing.T) {
-	base := sharedDaemonListenerProcess{
-		PID:        1234,
-		UID:        501,
-		StartSec:   1786522048,
-		StartUsec:  123,
-		Command:    "codex -c features.code_mode_host=true app-server --listen unix://",
-		Executable: "/tmp/codex-real",
-	}
-	tests := []struct {
-		name    string
-		mutate  func(*sharedDaemonListenerProcess)
-		message string
-	}{
-		{name: "wrong uid", mutate: func(p *sharedDaemonListenerProcess) { p.UID = 502 }, message: "不属于当前用户"},
-		{name: "wrong executable", mutate: func(p *sharedDaemonListenerProcess) { p.Executable = "/tmp/foreign" }, message: "不是官方 managed standalone"},
-		{name: "wrong argv", mutate: func(p *sharedDaemonListenerProcess) { p.Command = "codex app-server --listen ws://127.0.0.1:4222" }, message: "命令行不符合"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			process := base
-			test.mutate(&process)
-			termCalls := 0
-			err := stopUnmanagedSharedDaemonWithHooks(
-				context.Background(),
-				"/tmp/app.sock",
-				"/tmp/codex-real",
-				unmanagedSharedDaemonHooks{
-					desktopRunning: func(context.Context) (bool, error) { return false, nil },
-					inspect:        func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-					signalTERM:     func(int) error { termCalls++; return nil },
-					currentUID:     func() int { return 501 },
-				},
-			)
-			if err == nil || !strings.Contains(err.Error(), test.message) || termCalls != 0 {
-				t.Fatalf("不安全 listener 必须拒绝：err=%v term=%d", err, termCalls)
-			}
-		})
-	}
-}
-
-func TestStopUnmanagedSharedDaemonRejectsPIDReuseBeforeSignal(t *testing.T) {
-	first := sharedDaemonListenerProcess{
-		PID:        1234,
-		UID:        501,
-		StartSec:   1786522048,
-		StartUsec:  123,
-		Command:    "codex app-server --listen unix://",
-		Executable: "/tmp/codex-real",
-	}
-	second := first
-	second.StartSec++
-	inspectCalls := 0
-	termCalls := 0
-	err := stopUnmanagedSharedDaemonWithHooks(
-		context.Background(),
-		"/tmp/app.sock",
-		"/tmp/codex-real",
-		unmanagedSharedDaemonHooks{
-			desktopRunning: func(context.Context) (bool, error) { return false, nil },
-			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
-				inspectCalls++
-				if inspectCalls == 1 {
-					return first, nil
-				}
-				return second, nil
-			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "发生变化") || termCalls != 0 {
-		t.Fatalf("PID/start-time 复用必须在 TERM 前停止：err=%v term=%d", err, termCalls)
-	}
-}
-
-func TestDirectUnixAppServerCommandAcceptsNativeNULSeparatedArgv(t *testing.T) {
-	command := strings.Join([]string{
-		"codex",
-		"-c",
-		"features.code_mode_host=true",
-		"app-server",
-		"--listen",
-		"unix://",
-	}, "\x00")
-	if !isDirectUnixAppServerCommand(command) {
-		t.Fatal("原生 procargs2 argv 应识别为直接 Unix app-server")
-	}
-	if isDirectUnixAppServerCommand(strings.Replace(command, "unix://", "ws://127.0.0.1:4222", 1)) {
-		t.Fatal("非 Unix transport 必须拒绝")
-	}
-	if isDirectUnixAppServerCommand("codex app-server daemon start --listen unix://") {
-		t.Fatal("官方 daemon 控制命令不能当成 SSH 直接 listener 接管")
-	}
-	if isDirectUnixAppServerCommand("codex app-server proxy --listen unix://") {
-		t.Fatal("官方 proxy 不能当成 SSH 直接 listener 接管")
-	}
-}
-
-func TestSharedDaemonSocketPeerAndProcIdentityUseNativeDarwinMetadata(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "mimi-peer-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	socketPath := filepath.Join(dir, "app.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { listener.Close() })
-	accepted := make(chan net.Conn, 1)
-	acceptErr := make(chan error, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			acceptErr <- err
-			return
-		}
-		accepted <- conn
-	}()
-
-	pid, uid, err := sharedDaemonSocketPeer(context.Background(), socketPath)
-	if err != nil {
-		t.Fatalf("读取本机 Unix peer 失败：%v", err)
-	}
-	select {
-	case conn := <-accepted:
-		conn.Close()
-	case err := <-acceptErr:
-		t.Fatalf("接受测试连接失败：%v", err)
-	case <-time.After(time.Second):
-		t.Fatal("测试 listener 未收到连接")
-	}
-	if pid != os.Getpid() || uid != os.Getuid() {
-		t.Fatalf("peer 身份不匹配：pid=%d/%d uid=%d/%d", pid, os.Getpid(), uid, os.Getuid())
-	}
-	executable, arguments, err := sharedDaemonProcessArguments(pid)
-	if err != nil {
-		t.Fatalf("读取原生 procargs2 失败：%v", err)
-	}
-	if !filepath.IsAbs(executable) || len(arguments) == 0 {
-		t.Fatalf("进程身份缺少绝对 executable 或 argv：exe=%q argv=%v", executable, arguments)
-	}
-}
-
-func TestValidatePrivateSharedDaemonSocketRequiresModeAndOwner(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "mimi-private-sock-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	socketPath := filepath.Join(dir, "app.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	if err := os.Chmod(socketPath, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err != nil {
-		t.Fatalf("当前用户私有 socket 应通过：%v", err)
-	}
-	if err := os.Chmod(socketPath, 0o666); err != nil {
-		t.Fatal(err)
-	}
-	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err == nil {
-		t.Fatal("公开 socket 必须拒绝接管")
-	}
-}
-
-func TestLiveSharedDaemonListenerIdentity(t *testing.T) {
-	socketPath := strings.TrimSpace(os.Getenv("MIMI_LIVE_SHARED_DAEMON_SOCKET"))
-	if socketPath == "" {
-		t.Skip("仅在显式提供真实共享 socket 时运行")
-	}
-	process, err := inspectSharedDaemonListenerProcess(context.Background(), socketPath)
-	if err != nil {
-		t.Fatalf("读取真实共享 daemon 身份失败：%v", err)
-	}
-	if process.PID <= 1 || process.UID != os.Getuid() || process.StartSec <= 0 ||
-		!filepath.IsAbs(process.Executable) || !isDirectUnixAppServerCommand(process.Command) {
-		t.Fatalf("真实共享 daemon 身份不完整或不是直接 Unix app-server：%+v", process)
 	}
 }

@@ -43,13 +43,15 @@ extension AgentCommandClient {
             binary: URL,
             arguments: [String],
             allowFailure: Bool = false,
-            timeout: Duration = .seconds(15)
+            timeout: Duration = .seconds(15),
+            forceKillAfterTimeout: Bool = false
         ) async throws -> CommandResult {
             let result = try await executor.run(
                 executable: binary,
                 arguments: arguments,
                 timeout: timeout,
-                environment: environment
+                environment: environment,
+                forceKillAfterTimeout: forceKillAfterTimeout
             )
             if result.status != 0 && !allowFailure {
                 throw AgentClientError.commandFailed(
@@ -145,7 +147,10 @@ extension AgentCommandClient {
                 _ = try await execute(
                     binary: binary,
                     arguments: codexSharingRestartArguments(),
-                    timeout: .seconds(50)
+                    timeout: .seconds(50),
+                    // 迁移的 agentd 是短命 control CLI；超时后只回收它本身，
+                    // 不触碰共享 Codex daemon。其他通用命令保持普通 TERM 语义。
+                    forceKillAfterTimeout: true
                 )
             },
             setLANAccess: { enabled in
