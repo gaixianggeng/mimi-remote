@@ -64,40 +64,30 @@ final class HostStore {
     }
 
     var codexDesktopStatusTitle: String {
-        switch codexDesktopStatus.state {
-        case .disabled: "已关闭"
-        case .notInstalled: "未安装"
-        case .backendNotShared: "后端未确认共享"
-        case .pendingRestart: "需要重启"
-        case .ready: "已配置"
-        case .failed: "配置失败"
-        case .externalConflict: "外部配置冲突"
-        }
+        ExperimentPresentation.codexStatusTitle(for: codexDesktopStatus.state)
     }
 
     var codexDesktopStatusDetail: String {
-        if let codexDesktopError {
-            return codexDesktopError
-        }
-        switch codexDesktopStatus.state {
-        case .disabled:
-            return "Codex Desktop 共享开关已关闭；Mimi Remote 不会在新进程中注入该环境变量。"
-        case .notInstalled:
-            return "未检测到 bundle id 为 com.openai.codex 的 Codex Desktop。"
-        case .backendNotShared:
-            return "agentd 尚未确认 Unix socket 共享；确认后才会显示已就绪，不会提前声称已共享。"
-        case .pendingRestart:
-            if codexDaemonMigrationRequired, !codexDesktopStatus.appRunning {
-                return "共享 daemon 等待你确认迁移。应用时不会打开 Codex Desktop，但会短暂中断当前连接到该 daemon 的手机、SSH 或 CLI。"
-            }
-            return "Codex Desktop 当前正在运行，需正常退出后应用设置。迁移会短暂中断当前连接到共享 daemon 的客户端。"
-        case .ready:
-            return "agentd 已连接共享会话服务，Codex Desktop 已按共享环境配置。请用同一空闲会话完成一次跨端续写验证；正在运行的任务仍只读。"
-        case .failed:
-            return "无法配置 Codex Desktop 共享环境，请检查错误后重试。"
-        case .externalConflict:
-            return "环境变量已被其他程序修改；Mimi Remote 不会覆盖外部值。"
-        }
+        // 具体错误仍保留在 Store 供诊断和重试使用；展示层仅在待处理/失败边界附上
+        // 脱敏后的诊断摘要，避免把底层协议错误（例如裸 -32600）直接暴露给用户。
+        ExperimentPresentation.codexStatusDetail(
+            for: codexDesktopStatus.state,
+            error: codexDesktopError
+        )
+    }
+
+    var experimentMenuStatusText: String? {
+        ExperimentPresentation.menuStatusText(
+            owner: owner,
+            codexState: codexDesktopStatus.state
+        )
+    }
+
+    var experimentMenuAccessibilityLabel: String {
+        ExperimentPresentation.menuAccessibilityLabel(
+            owner: owner,
+            codexState: codexDesktopStatus.state
+        )
     }
 
     var claudeStatusTitle: String {

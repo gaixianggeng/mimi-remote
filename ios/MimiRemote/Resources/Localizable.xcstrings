@@ -4944,6 +4944,23 @@
         }
       }
     },
+    "ui.codex_active_writer_conflict_requires_shared_service": {
+      "comment": "Shown when another Codex app-server owns the session writer. Explain the recovery path without exposing the raw JSON-RPC error.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session is held by another Codex app-server. Close it in Codex Desktop, or enable sharing in Experimental Features on the Mac and fully restart Codex Desktop, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此会话正被另一个 Codex app-server 占用。请先在 Codex Desktop 中关闭它；如需跨端继续，请在 Mac 的“实验功能”中开启共享并完全重启 Codex Desktop，然后重试。"
+          }
+        }
+      }
+    },
     "ui.codex_currently_returns_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

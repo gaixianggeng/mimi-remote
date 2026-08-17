@@ -1191,7 +1191,7 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(writes.values, ["set-true-/tmp/codex"])
         XCTAssertTrue(store.codexDesktopEnabled)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
     }
 
     func testBootstrapWaitsForSharedRuntimeBeforeRestoringLoginEnvironment() async {
@@ -1252,7 +1252,7 @@ final class HostStoreTests: XCTestCase {
         ])
         XCTAssertNil(store.codexDesktopError)
         XCTAssertTrue(store.codexDesktopEnabled)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
     }
 
     func testBootstrapDoesNotRestoreEnvironmentForExplicitNonSharedRuntime() async {
@@ -1438,7 +1438,7 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
         XCTAssertNil(store.codexDesktopError)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
         XCTAssertFalse(store.canRestartCodexDesktop)
     }
 
@@ -1482,7 +1482,7 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(events.values, ["daemon-restart"])
         XCTAssertNil(store.codexDesktopError)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
         XCTAssertFalse(store.canRestartCodexDesktop)
     }
 
@@ -1578,7 +1578,7 @@ final class HostStoreTests: XCTestCase {
         gate.resume()
         await staleRefresh.value
 
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
         XCTAssertFalse(store.canRestartCodexDesktop)
     }
 
@@ -1640,7 +1640,7 @@ final class HostStoreTests: XCTestCase {
         await restart.value
 
         XCTAssertNil(store.codexDesktopError)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
         XCTAssertFalse(store.canRestartCodexDesktop)
     }
 
@@ -1701,7 +1701,7 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(events.values, ["desktop-true", "daemon-restart"])
         XCTAssertFalse(events.values.contains("desktop-restart"))
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
         XCTAssertNil(store.codexDesktopError)
     }
 
