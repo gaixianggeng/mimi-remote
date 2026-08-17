@@ -1222,9 +1222,20 @@ final class HostStore {
 
     private func unregisterMacAgentAndWait(endpoint: String?) async throws {
         try await services.unregisterAgent()
-        // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
-        // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
-        try await waitForMacAgentUnregistered()
+        do {
+            // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
+            // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
+            try await waitForMacAgentUnregistered()
+        } catch let error as ServiceLifecycleError {
+            guard case .unregisterTimedOut = error else { throw error }
+
+            // macOS 27 的 BTM 在覆盖安装后偶尔会留下半注销的 job：第一次
+            // unregister 已返回，但状态一直停在 enabled。再做一次有界注销可
+            // 清掉这个残留；只有确认状态进入未注册后，调用方才允许重新注册。
+            try Task.checkCancellation()
+            try await services.unregisterAgent()
+            try await waitForMacAgentUnregistered()
+        }
         if let endpoint {
             try await waitForMacAgentStopped(endpoint: endpoint)
         }
