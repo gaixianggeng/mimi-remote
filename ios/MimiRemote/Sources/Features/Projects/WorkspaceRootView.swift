@@ -111,66 +111,6 @@ struct WorkspaceProjectIconTile: View {
     }
 }
 
-enum WorkspaceStripLayout {
-    static let horizontalPadding: CGFloat = 24
-    /// 44pt 同时是 Apple 的最小命中尺寸和整条控件带的高度：选中项展开成带名称的胶囊，
-    /// 其余收缩成头像圆，因此一行就能放下全部工作区，不再需要 138pt 的卡片。
-    static let chipHeight: CGFloat = 44
-    static let chipSpacing: CGFloat = 8
-    /// 胶囊行 + 上下呼吸；工作区身份和状态改由下方状态行承担。
-    /// 顶部只收紧上下留白，保留 44pt 胶囊命中区。
-    static let stripHeight: CGFloat = 56
-    /// 头像在展开与收缩两种形态下保持同一光学尺寸，切换时只有胶囊在变宽。
-    static let chipIconSize: CGFloat = 28
-    /// 胶囊行、状态行与详情内容共用同一个最大宽度，宽屏下三者左右边界一致。
-    static let maxContentWidth: CGFloat = 920
-
-    static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
-        max(0, viewportWidth - horizontalPadding * 2)
-    }
-}
-
-/// 把分页 ScrollView 的像素偏移转换成项目索引空间。顶部胶囊只消费这个连续值，
-/// 因而 25% 的横滑就是 25% 的收缩/展开，不需要等 selection 在中点切换。
-enum WorkspacePagerTransition {
-    nonisolated static func pagePosition(
-        contentOffsetX: CGFloat,
-        leadingInset: CGFloat,
-        viewportWidth: CGFloat,
-        pageCount: Int
-    ) -> CGFloat? {
-        guard viewportWidth > 0, pageCount > 0 else { return nil }
-        let rawPosition = (contentOffsetX + leadingInset) / viewportWidth
-        guard rawPosition.isFinite else { return nil }
-        return min(max(rawPosition, 0), CGFloat(pageCount - 1))
-    }
-    nonisolated static func selectionProgress(
-        projectIndex: Int,
-        pagePosition: CGFloat
-    ) -> CGFloat {
-        min(max(1 - abs(CGFloat(projectIndex) - pagePosition), 0), 1)
-    }
-}
-/// 高频滚动几何只发布给胶囊自身，避免横滑每一帧都重算完整的工作区会话列表。
-@MainActor
-private final class WorkspacePagerTransitionState: ObservableObject {
-    @Published private(set) var pagePosition: CGFloat?
-
-    func update(pagePosition: CGFloat?) {
-        if let current = self.pagePosition, let pagePosition,
-           abs(current - pagePosition) < 0.0001 {
-            return
-        }
-        guard self.pagePosition != pagePosition else { return }
-        // 几何值已经是系统滚动的呈现帧；禁止再套动画，否则胶囊会落后于手指。
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            self.pagePosition = pagePosition
-        }
-    }
-}
-
 enum WorkspaceSessionAgeBoundary {
     static let staleInterval: TimeInterval = 12 * 60 * 60
 
@@ -339,6 +279,7 @@ struct WorkspaceRootView: View {
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
+    @State private var workspaceStripViewportWidth: CGFloat = 0
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -700,7 +641,19 @@ struct WorkspaceRootView: View {
                 // （视觉快照）里和真机行为不一致。onGeometryChange 只观测已经排好的
                 // 真实宽度，不参与布局协商。
                 ScrollView(.horizontal, showsIndicators: false) {
-                    projectChips(tokens: tokens)
+                    projectChips(
+                        tokens: tokens,
+                        restingNameDisclosure: WorkspaceStripLayout.restingNameDisclosure(
+                            viewportWidth: workspaceStripViewportWidth,
+                            projectCount: sessionStore.sidebarProjects.count
+                        )
+                    )
+                }
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { width in
+                    guard width > 0, workspaceStripViewportWidth != width else { return }
+                    workspaceStripViewportWidth = width
                 }
                 .onChange(of: selectedWorkspaceID) { previousID, selectedID in
                     guard let selectedID else { return }
@@ -730,7 +683,10 @@ struct WorkspaceRootView: View {
 
     /// 所有项目始终保留同一份 View 身份；名称不插入/移除，而是按分页进度裁切宽度，
     /// 这样反向横滑可以直接沿当前画面恢复，不会重建 HStack 或跳回逻辑选中态。
-    private func projectChips(tokens: ThemeTokens) -> some View {
+    private func projectChips(
+        tokens: ThemeTokens,
+        restingNameDisclosure: CGFloat
+    ) -> some View {
         let profileID = appStore.activeHostScope.profileID
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
@@ -772,6 +728,7 @@ struct WorkspaceRootView: View {
                         isSelected: index == 0,
                         projectIndex: index,
                         distanceFromSelection: index,
+                        restingNameDisclosure: restingNameDisclosure,
                         pagerTransitionState: pagerTransitionState,
                         allowsCustomization: false,
                         tokens: tokens,
@@ -825,6 +782,7 @@ struct WorkspaceRootView: View {
                         isSelected: selectedWorkspaceID == project.id,
                         projectIndex: projectIndex,
                         distanceFromSelection: selectedIndex.map { abs($0 - projectIndex) } ?? 0,
+                        restingNameDisclosure: restingNameDisclosure,
                         pagerTransitionState: pagerTransitionState,
                         allowsCustomization: true,
                         tokens: tokens
@@ -1228,6 +1186,8 @@ private struct WorkspaceProjectChip: View {
     /// 距选中项的档数。只用来做透明度和图标微缩的衰减，不改变行高——
     /// 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖动。
     let distanceFromSelection: Int
+    /// 宽屏信息密度底值。名称可半展开，但选中材质仍只读取分页进度。
+    let restingNameDisclosure: CGFloat
     @ObservedObject var pagerTransitionState: WorkspacePagerTransitionState
     let allowsCustomization: Bool
     let tokens: ThemeTokens
@@ -1241,6 +1201,14 @@ private struct WorkspaceProjectChip: View {
 
     var body: some View {
         let progress = selectionProgress
+        let restingNameWidth = min(
+            measuredNameWidth,
+            WorkspaceStripLayout.restingNameWidth
+        ) * restingNameDisclosure
+        let nameWidth = restingNameWidth + (measuredNameWidth - restingNameWidth) * progress
+        let restingNameOpacity = min(1, restingNameDisclosure * 1.6)
+        let nameOpacity = restingNameOpacity + (1 - restingNameOpacity) * progress
+        let distanceOpacityFloor = 0.42 + 0.26 * Double(restingNameDisclosure)
 
         Button(action: action) {
             HStack(spacing: 0) {
@@ -1257,15 +1225,25 @@ private struct WorkspaceProjectChip: View {
                     .lineLimit(1)
                     .fixedSize()
                     .padding(.leading, 8)
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.size.width
-                    } action: { width in
-                        guard width > 0, measuredNameWidth != width else { return }
-                        measuredNameWidth = width
-                    }
-                    .frame(width: measuredNameWidth * progress, alignment: .leading)
+                    .frame(width: nameWidth, alignment: .leading)
                     .clipped()
-                    .opacity(Double(progress))
+                    .opacity(Double(nameOpacity))
+                    .background {
+                        // 非选中项首帧的可见文字宽度可能为 0；若直接测裁切后的 Text，
+                        // 宽屏底值永远没有机会展开。背景副本固定按完整内容测量，但不参与布局。
+                        Text(project.name)
+                            .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.leading, 8)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self) { proxy in
+                                proxy.size.width
+                            } action: { width in
+                                guard width > 0, measuredNameWidth != width else { return }
+                                measuredNameWidth = width
+                            }
+                    }
             }
             .padding(.horizontal, 8 + 4 * progress)
             .frame(height: WorkspaceStripLayout.chipHeight)
@@ -1279,7 +1257,7 @@ private struct WorkspaceProjectChip: View {
             }
             // 波形衰减：越远离选中项越淡。只动透明度，不动行高——
             // 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖。
-            .opacity(max(0.42, 1 - Double(visualDistance) * 0.16))
+            .opacity(max(distanceOpacityFloor, 1 - Double(visualDistance) * 0.16))
             .contentShape(Capsule())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

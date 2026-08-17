@@ -548,6 +548,23 @@ struct CapabilityItemRow: View {
     }
 }
 
+enum WorkspaceIconStylePickerLayout {
+    /// iPhone 竖屏的 Form 内容区通常低于此宽度；iPad 详情区即使带侧栏，
+    /// 也会进入单行横滑，避免因为 8 项无法一次放下就退回两行并留下大片空白。
+    static let minimumSingleRowViewportWidth: CGFloat = 480
+
+    /// 按真实容器宽度决定信息密度，不按设备型号判断。单行不要求全部项目同时放下，
+    /// 超出的内容交给原生横向滚动；辅助功能字号继续两行，避免标题被过度压缩。
+    static func usesSingleRow(
+        viewportWidth: CGFloat,
+        itemCount: Int,
+        isAccessibilitySize: Bool
+    ) -> Bool {
+        guard viewportWidth > 0, itemCount > 0, !isAccessibilitySize else { return false }
+        return viewportWidth >= minimumSingleRowViewportWidth
+    }
+}
+
 struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -557,6 +574,7 @@ struct AppearanceView: View {
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
 
     let profileID: String
+    @State private var workspaceIconStyleViewportWidth: CGFloat = 0
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -589,36 +607,20 @@ struct AppearanceView: View {
                             spacing: workspaceIconStyleColumnSpacing
                         ) {
                             ForEach(selectableWorkspaceIconStyles) { style in
-                                let isSelected = selectedWorkspaceIconStyle == style
-                                Button {
-                                    workspaceIconStyleBinding.wrappedValue = style
-                                } label: {
-                                    WorkspaceIconStyleOptionLabel(
-                                        style: style,
-                                        isSelected: isSelected,
-                                        tokens: tokens
-                                    )
-                                }
-                                .buttonStyle(
-                                    WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
+                                workspaceIconStyleOption(
+                                    style: style,
+                                    selectedStyle: selectedWorkspaceIconStyle,
+                                    tokens: tokens,
+                                    fixedWidth: workspaceIconStyleItemWidth
                                 )
-                                .frame(width: workspaceIconStyleItemWidth)
-                                .accessibilityLabel(style.title)
-                                .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
-                                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                                .accessibilityIdentifier(
-                                    "settings.workspaceIconStyle.option.\(style.rawValue)"
-                                )
-                                .id(style.id)
                             }
                         }
-                        // 固定两行，末端留白让最后一列可以完整停靠。
+                        // 单行与双行都使用同一滚动容器；末端留白让最后一项完整停靠。
                         .padding(.vertical, 6)
                         .padding(.trailing, 12)
                     }
                     .scrollIndicators(.hidden)
                     .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    .accessibilityIdentifier("settings.workspaceIconStyle")
                     .onAppear {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -628,6 +630,13 @@ struct AppearanceView: View {
                             scrollProxy.scrollTo(selectedWorkspaceIconStyle.id, anchor: .center)
                         }
                     }
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        guard width > 0, workspaceIconStyleViewportWidth != width else { return }
+                        workspaceIconStyleViewportWidth = width
+                    }
+                    .accessibilityIdentifier("settings.workspaceIconStyle")
                 }
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
@@ -735,6 +744,13 @@ struct AppearanceView: View {
     private var workspaceIconStyleRows: [GridItem] {
         let rowHeight: CGFloat = dynamicTypeSize.isAccessibilitySize ? 142 : 96
         let rowSpacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 14 : 10
+        if WorkspaceIconStylePickerLayout.usesSingleRow(
+            viewportWidth: workspaceIconStyleViewportWidth,
+            itemCount: selectableWorkspaceIconStyles.count,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        ) {
+            return [GridItem(.fixed(rowHeight), spacing: 0)]
+        }
         return [
             GridItem(.fixed(rowHeight), spacing: rowSpacing),
             GridItem(.fixed(rowHeight), spacing: 0)
@@ -769,6 +785,31 @@ struct AppearanceView: View {
                 )
             }
         )
+    }
+
+    private func workspaceIconStyleOption(
+        style: WorkspaceIconStyle,
+        selectedStyle: WorkspaceIconStyle,
+        tokens: ThemeTokens,
+        fixedWidth: CGFloat?
+    ) -> some View {
+        let isSelected = selectedStyle == style
+        return Button {
+            workspaceIconStyleBinding.wrappedValue = style
+        } label: {
+            WorkspaceIconStyleOptionLabel(
+                style: style,
+                isSelected: isSelected,
+                tokens: tokens
+            )
+        }
+        .buttonStyle(WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion))
+        .frame(width: fixedWidth)
+        .accessibilityLabel(style.title)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
+        .id(style.id)
     }
 
     private func iconName(for mode: ThemeMode) -> String {
