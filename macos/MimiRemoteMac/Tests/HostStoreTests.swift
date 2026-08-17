@@ -95,6 +95,119 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testUnregisterTimeoutRetriesOnceThenRegistersAfterStateConverges() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusCalls.increment() == 1 ? Self.stoppedStatus : Self.readyStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+                if call == 2 {
+                    registrationState = .notRegistered
+                }
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-1", "unregister-2", "register-mac",
+        ])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testSecondUnregisterTimeoutFailsWithoutThirdUnregisterOrRegister() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1", "unregister-2"])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(registrationState, .enabled)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .failed(store.lastError ?? ""))
+        XCTAssertTrue(store.lastError?.contains("服务停止超时") == true)
+    }
+
+    func testUnregisterRequiresApprovalDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                registrationState = .requiresApproval
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+        XCTAssertTrue(store.lastError?.contains("登录项") == true)
+    }
+
+    func testUnregisterCancellationDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let firstUnregister = expectation(description: "first unregister called")
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                firstUnregister.fulfill()
+            }
+        )
+
+        let bootstrapTask = Task { await store.bootstrap() }
+        await fulfillment(of: [firstUnregister], timeout: 1)
+        bootstrapTask.cancel()
+        await bootstrapTask.value
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+    }
+
     func testEnabledAgentStatusFailureTriggersOneBoundedReregistration() async {
         let events = EventRecorder()
         let statusEvents = EventRecorder()
