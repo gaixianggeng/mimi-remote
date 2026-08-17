@@ -4950,13 +4950,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session is held by another Codex app-server. Close it in Codex Desktop, or enable sharing in Experimental Features on the Mac and fully restart Codex Desktop, then try again."
+            "value": "This session is held by another Codex app-server. Close it in Codex Desktop, or enable sharing in Experimental Features on the Mac, choose Apply Settings and Fully Restart Codex Desktop, and confirm before trying again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话正被另一个 Codex app-server 占用。请先在 Codex Desktop 中关闭它；如需跨端继续，请在 Mac 的“实验功能”中开启共享并完全重启 Codex Desktop，然后重试。"
+            "value": "此会话正被另一个 Codex app-server 占用。请先在 Codex Desktop 中关闭它；如需跨端继续，请在 Mac 的“实验功能”中开启共享，点击“应用设置并完全重启 Codex Desktop”并确认，然后重试。"
           }
         }
       }
@@ -38907,19 +38907,19 @@
       }
     },
     "ui.codex_experiment_step_restart_desktop": {
-      "comment": "Fourth step for enabling the Codex Desktop shared-session experiment.",
+      "comment": "Fourth step for enabling the Codex Desktop shared-session experiment. The Mac in-app action is required to commit the daemon migration; manually reopening Codex Desktop is insufficient.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Save any running tasks, then quit Codex Desktop completely and reopen it."
+            "value": "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "保存正在运行的任务，然后完全退出并重新打开 Codex Desktop。"
+            "value": "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。"
           }
         }
       }

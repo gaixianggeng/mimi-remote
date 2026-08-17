@@ -108,14 +108,14 @@ final class LocalizationTests: XCTestCase {
             "Click the Mimi icon in the Mac menu bar.",
             "Choose Experimental Features…",
             "Turn on Share Codex Desktop sessions (experimental).",
-            "Save any running tasks, then quit Codex Desktop completely and reopen it.",
+            "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm.",
             "When the status says Environment configured, continue the same idle session once to verify sharing.",
         ]
         let expectedChinese = [
             "在 Mac 菜单栏中点按 Mimi 图标。",
             "选择“实验功能…”。",
             "开启“共享 Codex Desktop 会话（实验）”。",
-            "保存正在运行的任务，然后完全退出并重新打开 Codex Desktop。",
+            "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。",
             "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。",
         ]
 
