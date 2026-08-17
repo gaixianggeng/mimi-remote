@@ -598,11 +598,11 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	}
 	gotTurnStart := readUpstreamFrame(t, received)
 	turnParams := decodeGatewayParamsForTest(t, gotTurnStart)
-	if turnParams["approvalPolicy"] != "on-failure" {
-		t.Fatalf("turn/start 应保留安全自动审批 approvalPolicy=on-failure：%s", gotTurnStart)
+	if turnParams["approvalPolicy"] != "on-request" {
+		t.Fatalf("turn/start 应把旧 approvalPolicy 安全降级为 on-request：%s", gotTurnStart)
 	}
-	if turnParams["approvalsReviewer"] != "auto_review" {
-		t.Fatalf("turn/start 应保留安全自动审批 approvalsReviewer=auto_review：%s", gotTurnStart)
+	if turnParams["approvalsReviewer"] != "user" {
+		t.Fatalf("turn/start 旧 approvalPolicy 不应继续携带 auto_review：%s", gotTurnStart)
 	}
 	if turnParams["effort"] != "xhigh" {
 		t.Fatalf("turn/start 应补默认推理强度：%s", gotTurnStart)
@@ -629,14 +629,33 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	if _, ok := sandbox["writableRoots"]; ok {
 		t.Fatalf("dangerFullAccess 默认不应携带 writableRoots：%v", sandbox)
 	}
+
+	autoTurnStart := []byte(fmt.Sprintf(
+		`{"id":52,"method":"turn/start","params":{"threadId":"thread-safe-default","cwd":%q,"input":[{"type":"text","text":"auto"}],"approvalPolicy":"on-request","approvalsReviewer":"auto_review","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, autoTurnStart); err != nil {
+		t.Fatal(err)
+	}
+	gotAutoTurnStart := readUpstreamFrame(t, received)
+	autoTurnParams := decodeGatewayParamsForTest(t, gotAutoTurnStart)
+	if autoTurnParams["approvalPolicy"] != "on-request" || autoTurnParams["approvalsReviewer"] != "auto_review" {
+		t.Fatalf("turn/start 应保留 workspaceWrite 内的安全自动审批组合：%s", gotAutoTurnStart)
+	}
+	autoSandbox, ok := autoTurnParams["sandboxPolicy"].(map[string]any)
+	if !ok || autoSandbox["type"] != "workspaceWrite" || autoSandbox["networkAccess"] != false {
+		t.Fatalf("自动审批必须保持 workspaceWrite 且禁用网络：%v", autoTurnParams["sandboxPolicy"])
+	}
 }
 
 func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 	tests := []struct {
-		name         string
-		params       map[string]any
-		wantPolicy   string
-		wantReviewer string
+		name           string
+		params         map[string]any
+		workspaceWrite bool
+		wantPolicy     string
+		wantReviewer   string
 	}{
 		{
 			name:         "default",
@@ -647,36 +666,116 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 		{
 			name: "safe auto review",
 			params: map[string]any{
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "auto_review",
+			},
+			workspaceWrite: true,
+			wantPolicy:     "on-request",
+			wantReviewer:   "auto_review",
+		},
+		{
+			name: "legacy auto review falls back",
+			params: map[string]any{
 				"approvalPolicy":    "on-failure",
 				"approvalsReviewer": "auto_review",
 			},
-			wantPolicy:   "on-failure",
-			wantReviewer: "auto_review",
+			workspaceWrite: true,
+			wantPolicy:     "on-request",
+			wantReviewer:   "user",
 		},
 		{
 			name: "reviewer alone is not enough",
 			params: map[string]any{
 				"approvalsReviewer": "auto_review",
 			},
-			wantPolicy:   "on-request",
-			wantReviewer: "user",
+			workspaceWrite: true,
+			wantPolicy:     "on-request",
+			wantReviewer:   "user",
 		},
 		{
 			name: "unknown reviewer falls back",
 			params: map[string]any{
-				"approvalPolicy":    "on-failure",
+				"approvalPolicy":    "on-request",
 				"approvalsReviewer": "somebody_else",
 			},
-			wantPolicy:   "on-request",
-			wantReviewer: "user",
+			workspaceWrite: true,
+			wantPolicy:     "on-request",
+			wantReviewer:   "user",
+		},
+		{
+			name: "auto review cannot escape workspace sandbox",
+			params: map[string]any{
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "auto_review",
+			},
+			workspaceWrite: false,
+			wantPolicy:     "on-request",
+			wantReviewer:   "user",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params)
+			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params, tt.workspaceWrite)
 			if gotPolicy != tt.wantPolicy || gotReviewer != tt.wantReviewer {
 				t.Fatalf("got %s/%s, want %s/%s", gotPolicy, gotReviewer, tt.wantPolicy, tt.wantReviewer)
+			}
+		})
+	}
+}
+
+func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
+	tests := []struct {
+		name          string
+		threadSandbox string
+		turnSandbox   string
+		wantReviewer  string
+	}{
+		{
+			name:          "workspace write keeps auto review",
+			threadSandbox: "workspace-write",
+			turnSandbox:   "workspaceWrite",
+			wantReviewer:  "auto_review",
+		},
+		{
+			name:          "read only requires user review",
+			threadSandbox: "read-only",
+			turnSandbox:   "readOnly",
+			wantReviewer:  "user",
+		},
+		{
+			name:          "full access requires user review",
+			threadSandbox: "danger-full-access",
+			turnSandbox:   "dangerFullAccess",
+			wantReviewer:  "user",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, method := range []string{"thread/start", "thread/resume", "thread/fork"} {
+				threadParams := sanitizedGatewayThreadParams("codex", method, map[string]any{
+					"threadId":          "thread-safe",
+					"approvalPolicy":    "on-request",
+					"approvalsReviewer": "auto_review",
+					"sandbox":           tt.threadSandbox,
+				})
+				if threadParams["approvalPolicy"] != "on-request" || threadParams["approvalsReviewer"] != tt.wantReviewer {
+					t.Fatalf("%s 审批组合异常：%v", method, threadParams)
+				}
+			}
+
+			turnParams := sanitizedGatewayTurnParams("codex", map[string]any{
+				"threadId":          "thread-safe",
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "auto_review",
+				"sandboxPolicy": map[string]any{
+					"type":          tt.turnSandbox,
+					"networkAccess": false,
+				},
+			}, "/tmp/project")
+			if turnParams["approvalPolicy"] != "on-request" || turnParams["approvalsReviewer"] != tt.wantReviewer {
+				t.Fatalf("turn/start 审批组合异常：%v", turnParams)
 			}
 		})
 	}
@@ -981,9 +1080,9 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		threadStartParams["serviceTier"] != "priority" ||
 		threadStartParams["personality"] != "friendly" ||
 		threadStartParams["approvalPolicy"] != "on-request" ||
-		threadStartParams["approvalsReviewer"] != "user" ||
+		threadStartParams["approvalsReviewer"] != "auto_review" ||
 		threadStartParams["sandbox"] != "workspace-write" {
-		t.Fatalf("thread/start 应过滤线程级模型并保留安全参数：%v", threadStartParams)
+		t.Fatalf("thread/start 应过滤线程级模型并保留安全自动审批参数：%v", threadStartParams)
 	}
 
 	threadList := []byte(fmt.Sprintf(

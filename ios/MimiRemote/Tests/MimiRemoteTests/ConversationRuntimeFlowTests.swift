@@ -1256,7 +1256,7 @@ extension ConversationDataFlowTests {
         var options = CodexAppServerTurnOptions.default
         options.model = "gpt-5-codex"
         options.serviceTier = "priority"
-        options.approvalPolicy = .onFailure
+        options.approvalPolicy = .onRequest
         let payload = CodexAppServerTurnPayload(input: [
             .text("分析截图"),
             .image(url: "data:image/png;base64,AA==", detail: .high),
@@ -1273,7 +1273,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sent.input, payload.input)
         XCTAssertEqual(sent.turnOptions.model, "gpt-5-codex")
         XCTAssertEqual(sent.turnOptions.serviceTier, "priority")
-        XCTAssertEqual(sent.turnOptions.approvalPolicy, .onFailure)
+        XCTAssertEqual(sent.turnOptions.approvalPolicy, .onRequest)
 
         client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
         let accepted = await sendTask.value

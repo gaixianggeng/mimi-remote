@@ -92,7 +92,7 @@ agentd restart --no-pair
 - 安全校验会把 `standalone/current/codex` 的符号链接固定到已验签的真实版本，避免验签与执行之间被替换。升级使 `current` 指向新版本且旧 listener 仍在运行时，新 plist 会进入 manual+marker，用户需要显式“应用待处理设置”；若当时没有 listener，则可安全自动 reload。使用 Desktop bundle 内稳定 codex 路径的安装不受该版本目录变化影响。
 - 共享架构把两端的会话一致性放在同一个官方 app-server 上，因此该 server 自身崩溃时 Codex Desktop 与 Mimi 会同时短暂失去后端。稳定 owner 只在 server 已不可连时尝试恢复它，不会为了恢复而退出或重开 Codex Desktop。
 - 8192 是防止过低 launchd soft limit 把资源累积过早放大成全能力故障，不是对子进程或 FD 泄漏的掩盖。Doctor 同时展示真实 FD 与直接子进程水位；持续上涨仍需定位 Codex/MCP 上游的回收责任。本方案不基于不完整的 external activity 证据自动 recycle 健康 daemon。
-- Desktop 必须支持 local daemon，当前最低兼容 app-server 版本为 `0.141.0`。版本、socket 类型、目录权限、socket 权限和返回的 `codexHome` 都会在启用前校验。
+- Desktop 必须支持 local daemon，当前最低启动基线仍为 app-server `0.141.0`。这个版本检查只证明共享 daemon transport 可用，不代表更高版本的每个协议枚举都向后兼容；客户端请求仍必须跟随当前 app-server schema。发布回归至少覆盖 `0.141.x` 基线和当前支持版本，自动审批固定使用 `approvalPolicy=on-request`、`approvalsReviewer=auto_review` 与 `workspaceWrite`，不再发送已删除的 `on-failure`。版本、socket 类型、目录权限、socket 权限和返回的 `codexHome` 都会在启用前校验。
 - Desktop 的自定义 CLI、强制 CLI 或资源覆盖可能让它回退到独立 stdio。Mac App 会确认 agentd 已连接共享 daemon，并明确要求完全重启 Desktop；Desktop 是否采用 daemon 仍要通过下面的跨端验收验证，不能只根据环境变量推断成功。
 - 稳定 LaunchAgent 的 `PATH` 会固定 Apple Silicon / Intel Homebrew 与系统工具目录，并在首次安装时追加调用进程可见的绝对用户工具目录；相对路径会被拒绝。之后 resident agentd 会复用已安装值，避免 MCP/plugin 路径随启动入口反复变化；需要完全自定义时可显式配置 `codex.env.PATH`。
 - 为了让 Dock / Finder 启动同样生效，Mac App 使用当前 GUI 用户的 `launchctl` 环境。它只管理自己写入的两个官方键，并用第三个随机 marker 区分当前登录会话的 ownership；禁用时仅在三者仍匹配时恢复原值。agentd 启动 Codex 子进程时会过滤 Desktop 专属 transport 开关与 marker，`CODEX_HOME` 则刻意保持一致。该设置不会默认开启。

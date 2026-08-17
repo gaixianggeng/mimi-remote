@@ -365,7 +365,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
             self = .readOnly
         } else if options.sandboxMode == .dangerFullAccess {
             self = .fullAccess
-        } else if options.approvalPolicy == .onFailure, reviewer == Self.autoReviewer {
+        } else if options.approvalPolicy == .onRequest, reviewer == Self.autoReviewer {
             self = .autoApprove
         } else {
             self = .requestApproval
@@ -426,10 +426,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 
     var approvalPolicy: CodexAppServerApprovalPolicy {
         switch self {
-        case .requestApproval, .readOnly, .fullAccess:
+        case .requestApproval, .readOnly, .autoApprove, .fullAccess:
             return .onRequest
-        case .autoApprove:
-            return .onFailure
         }
     }
 

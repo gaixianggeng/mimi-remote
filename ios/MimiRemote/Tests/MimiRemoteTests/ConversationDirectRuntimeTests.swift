@@ -2031,7 +2031,7 @@ extension ConversationDataFlowTests {
         options.modelProvider = "openai"
         options.serviceTier = "priority"
         options.reasoningEffort = .high
-        options.approvalPolicy = .onFailure
+        options.approvalPolicy = .onRequest
         options.sandboxMode = .readOnly
         options.baseInstructions = "base"
         options.developerInstructions = "dev"
@@ -2064,7 +2064,7 @@ extension ConversationDataFlowTests {
         XCTAssertNil(threadParams["model"]?.stringValue)
         XCTAssertNil(threadParams["modelProvider"])
         XCTAssertEqual(threadParams["serviceTier"]?.stringValue, "priority")
-        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(threadParams["sandbox"]?.stringValue, "read-only")
         XCTAssertEqual(threadParams["baseInstructions"]?.stringValue, "base")
         XCTAssertEqual(threadParams["developerInstructions"]?.stringValue, "dev")
@@ -2079,7 +2079,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(turnParams["model"]?.stringValue, "gpt-5.1-codex")
         XCTAssertEqual(turnParams["serviceTier"]?.stringValue, "priority")
         XCTAssertEqual(turnParams["effort"]?.stringValue, "high")
-        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertNil(turnParams["modelProvider"])
         XCTAssertNil(turnParams["baseInstructions"])
         let input = try XCTUnwrap(turnParams["input"]?.arrayValue)

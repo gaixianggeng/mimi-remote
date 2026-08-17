@@ -90,7 +90,9 @@ fn claude_permission_mode(params: &p::TurnStartParams) -> &'static str {
     if params.sandbox_policy.as_ref().is_some_and(is_read_only) {
         return "plan";
     }
-    if matches!(params.approval_policy, Some(p::AskForApproval::OnFailure))
+    // 新版客户端用 on-request + auto_review 表示自动审批；旧的 on-failure
+    // 已从 Codex 协议移除，不能再作为 Claude 自动权限模式的触发条件。
+    if matches!(params.approval_policy, Some(p::AskForApproval::OnRequest))
         && matches!(
             params.approvals_reviewer,
             Some(p::ApprovalsReviewer::AutoReview)
@@ -1549,9 +1551,12 @@ mod tests {
         assert_eq!(claude_permission_mode(&params), "plan");
 
         params.sandbox_policy = Some(serde_json::json!({"type": "workspaceWrite"}));
-        params.approval_policy = Some(p::AskForApproval::OnFailure);
+        params.approval_policy = Some(p::AskForApproval::OnRequest);
         params.approvals_reviewer = Some(p::ApprovalsReviewer::AutoReview);
         assert_eq!(claude_permission_mode(&params), "auto");
+
+        params.approval_policy = Some(p::AskForApproval::OnFailure);
+        assert_eq!(claude_permission_mode(&params), "default");
 
         params.approval_policy = Some(p::AskForApproval::Never);
         assert_eq!(claude_permission_mode(&params), "default");
