@@ -190,18 +190,12 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-让用户在 Xcode 中选择自己的 Development Team、已信任真机和 `MimiRemote` scheme。不要替用户选择未知 Team，不导出或上传签名证书，不关闭代码签名。
+测试构建始终使用统一脚本固定的 M5 Simulator。需要人工安装到真机时，让用户在 Xcode 中选择自己的 Development Team、已信任真机和 `MimiRemote` scheme；不要替用户选择未知 Team，不导出或上传签名证书，不关闭代码签名。日常命令行部署必须使用 `bash ./scripts/ios-dev.sh run`。
 
 ## 完成配对与验收
 

@@ -33,6 +33,13 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "${label}：缺少 '$needle'"
 }
 
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+  [[ "$haystack" != *"$needle"* ]] || fail "${label}：不应包含 '$needle'"
+}
+
 write_lease_metadata() {
   local device_id="$1"
   local owner_pid="$2"
@@ -53,9 +60,26 @@ write_lease_metadata() {
   } > "$lease_dir/metadata"
 }
 
-destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" destination)"
+if rg -n '^[[:space:]]+(simulator(Name|Id)|device(Name|Id)|derivedDataPath):' \
+  "$ROOT_DIR/.xcodebuildmcp/config.yaml" >"$TEMP_DIR/pinned-mcp-target.log"; then
+  fail "XcodeBuildMCP 仓库配置不得持久化设备目标或 DerivedData：$(cat "$TEMP_DIR/pinned-mcp-target.log")"
+fi
+
+direct_deploy_output="$TEMP_DIR/direct-deploy.log"
+set +e
+bash "$ROOT_DIR/scripts/deploy-ipad.sh" >"$direct_deploy_output" 2>&1
+direct_deploy_status=$?
+set -e
+assert_equal "64" "$direct_deploy_status" \
+  "内部真机执行器必须拒绝绕过统一入口"
+assert_contains "$(cat "$direct_deploy_output")" "bash ./scripts/ios-dev.sh run" \
+  "直接调用内部真机执行器时必须提示统一入口"
+
+destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" test-destination)"
 assert_equal "platform=iOS Simulator,id=M5-27-UDID" "$destination" \
   "固定测试目标必须选择最新 Runtime 上的精确 M5 iPad"
+assert_equal "$destination" "$(bash "$ROOT_DIR/scripts/ios-dev.sh" destination)" \
+  "旧 destination 命令必须保持兼容"
 
 m5_26_target="$(
   IOS_TARGET_MODE=simulator \
@@ -97,6 +121,8 @@ assert_contains "$target_output" "device: iPad Pro (PHYSICAL-PRO-UDID)" \
   "普通 build/run 默认优先 USB iPad Pro"
 assert_contains "$target_output" "Connection: wired" \
   "新版 devicectl 字段必须能识别 wired 真机"
+assert_contains "$target_output" "Reason: 检测到空闲 USB 真机" \
+  "日常目标必须解释选择 USB 真机的原因"
 assert_contains "$target_output" "dev-device-derived/PHYSICAL-PRO-UDID" \
   "真机 DerivedData 必须按 UDID 隔离"
 
@@ -207,11 +233,17 @@ assert_contains "$wireless_fallback_target" "Connection: localNetwork" \
   "本地网络回退必须可观测"
 write_lease_metadata "NETWORK-PRO-UDID" "$$" "$owner_start"
 write_lease_metadata "NETWORK-ONLY-UDID" "$$" "$owner_start"
-simulator_fallback_target="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target 2>"$TEMP_DIR/simulator-fallback.log")"
-assert_contains "$simulator_fallback_target" "simulator: iPad Pro 13-inch (M5) (M5-27-UDID)" \
-  "wired 和 localNetwork 真机都忙时必须回退固定 M5 Simulator"
-assert_contains "$simulator_fallback_target" "dev-simulator-derived/M5-27-UDID" \
-  "真机全部忙时 Simulator fallback 仍必须按 UDID 隔离 DerivedData"
+all_physical_busy_output="$TEMP_DIR/all-physical-busy.log"
+set +e
+bash "$ROOT_DIR/scripts/ios-dev.sh" target >"$all_physical_busy_output" 2>&1
+all_physical_busy_status=$?
+set -e
+assert_equal "75" "$all_physical_busy_status" \
+  "检测到的真机全部忙时日常部署必须失败"
+assert_contains "$(cat "$all_physical_busy_output")" "不会自动部署到 Simulator" \
+  "真机全部忙时必须解释不会跨设备类型回退"
+assert_not_contains "$(cat "$all_physical_busy_output")" "simulator:" \
+  "真机全部忙时不得返回 Simulator 目标"
 rm -f "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-PRO-UDID.lease/metadata"
 rmdir "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-PRO-UDID.lease"
 rm -f "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-MINI-UDID.lease/metadata"
@@ -249,6 +281,13 @@ assert_contains "$external_status" "external" "只读状态必须显示外部 xc
 assert_contains "$external_status" "pid:" "只读状态必须显示外部进程信息"
 
 export IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/no-physical-devices.json"
+simulator_fallback_target="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target)"
+assert_contains "$simulator_fallback_target" "simulator: iPad Pro 13-inch (M5) (M5-27-UDID)" \
+  "完全没有可达真机时才允许回退固定 M5 Simulator"
+assert_contains "$simulator_fallback_target" "Reason: 没有检测到可达的 USB 或本地网络真机" \
+  "Simulator fallback 必须输出跨设备类型回退原因"
+assert_contains "$simulator_fallback_target" "dev-simulator-derived/M5-27-UDID" \
+  "Simulator fallback 必须按 UDID 隔离 DerivedData"
 stale_dir="$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease"
 write_lease_metadata "M5-27-UDID" "999999" "Mon Jan  1 00:00:00 2001"
 stale_status="$(bash "$ROOT_DIR/scripts/ios-dev.sh" leases)"
@@ -344,4 +383,4 @@ simulator_target="$(
 assert_contains "$simulator_target" "dev-simulator-derived/IPHONE-27-UDID" \
   "不同 Simulator 必须使用独立 DerivedData"
 
-printf 'iOS 设备选择、固定测试目标、租约、过期恢复和外部 xcodebuild 检查通过。\n'
+printf 'iOS 统一入口、目标选择、固定测试设备、租约和外部 xcodebuild 检查通过。\n'
