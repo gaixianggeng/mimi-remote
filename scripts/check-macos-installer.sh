@@ -64,7 +64,7 @@ if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
 fi
 DMG_PATH="$(cd "$(dirname "$DMG_PATH")" && pwd)/$(basename "$DMG_PATH")"
 
-for command_name in arch codesign file find hdiutil lipo plutil shasum spctl sysctl xcrun; do
+for command_name in arch codesign file find hdiutil lipo plutil shasum sips spctl sysctl xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -104,6 +104,22 @@ if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -f "$LA
 fi
 if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
   echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
+  exit 1
+fi
+BACKGROUND_PATH="$MOUNT_DIR/.background/dmg-background.png"
+if [[ ! -f "$BACKGROUND_PATH" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 Finder 背景 PNG。" >&2
+  exit 1
+fi
+BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$BACKGROUND_PATH")"
+BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+if [[ "$BACKGROUND_WIDTH" != "660" || "$BACKGROUND_HEIGHT" != "400" ]]; then
+  echo "Mac 安装包校验失败：Finder 背景必须是 660x400，实际为 ${BACKGROUND_WIDTH}x${BACKGROUND_HEIGHT}。" >&2
+  exit 1
+fi
+if [[ ! -f "$MOUNT_DIR/.DS_Store" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 Finder 布局元数据 .DS_Store。" >&2
   exit 1
 fi
 
