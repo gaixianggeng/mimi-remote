@@ -1987,6 +1987,32 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 40), 0)
     }
 
+    func testWorkspaceStripOnlyHalfExpandsNamesWhenRealViewportHasRoom() {
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 744, projectCount: 5),
+            0
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 880, projectCount: 5),
+            0.5,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_032, projectCount: 5),
+            1,
+            accuracy: 0.0001
+        )
+        XCTAssertLessThan(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_032, projectCount: 10),
+            1,
+            "项目较多时还要受总宽度预算约束"
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_400, projectCount: 1),
+            0
+        )
+    }
+
     func testWorkspacePagerTransitionNormalizesScrollGeometry() {
         XCTAssertEqual(
             WorkspacePagerTransition.pagePosition(

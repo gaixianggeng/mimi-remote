@@ -34877,6 +34877,102 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "几何" } }
       }
     },
+    "ui.workspace_icon_style_classic_characters": {
+      "comment": "Workspace icon style containing Dragon Ball characters; the key remains stable for persisted preferences.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dragon Ball" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "七龙珠" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_classic_characters": {
+      "comment": "Compact label for the Dragon Ball workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dragon Ball" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "七龙珠" } }
+      }
+    },
+    "ui.workspace_character_classic_goku": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Goku" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "孙悟空" } }
+      }
+    },
+    "ui.workspace_character_classic_vegeta": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vegeta" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "贝吉塔" } }
+      }
+    },
+    "ui.workspace_character_classic_piccolo": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Piccolo" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "比克" } }
+      }
+    },
+    "ui.workspace_character_classic_master_roshi": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Master Roshi" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "龟仙人" } }
+      }
+    },
+    "ui.workspace_character_classic_krillin": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Krillin" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "克林" } }
+      }
+    },
+    "ui.workspace_character_classic_frieza": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Frieza" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "弗利萨" } }
+      }
+    },
+    "ui.workspace_character_classic_majin_buu": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Majin Buu" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "魔人布欧" } }
+      }
+    },
+    "ui.workspace_character_classic_future_trunks": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Future Trunks" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未来特兰克斯" } }
+      }
+    },
+    "ui.workspace_character_classic_android_18": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android 18" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "人造人18号" } }
+      }
+    },
+    "ui.workspace_character_classic_perfect_cell": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Perfect Cell" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完全体沙鲁" } }
+      }
+    },
     "ui.workspace_icon_style_compact_abstract_geometry": {
       "comment": "Compact label for Abstract Geometry in the workspace icon style grid.",
       "extractionState": "manual",

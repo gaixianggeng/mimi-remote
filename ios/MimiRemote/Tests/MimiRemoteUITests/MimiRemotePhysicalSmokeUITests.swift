@@ -983,11 +983,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let expectedStyleIdentifiers = [
             "journey",
             "threeKingdoms",
-            "abstractGeometry",
+            "classicCharacters",
             "redChamber",
             "onePiece",
             "naruto",
-            "solarSystem",
             "worldArt",
             "emoji"
         ]
@@ -1004,7 +1003,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 originalStyleID = styleID
             }
         }
-        assertWorkspaceStylePickerUsesExactlyTwoRows(optionFrames)
+        assertWorkspaceStylePickerUsesAdaptiveRows(optionFrames)
 
         guard let originalStyleID else {
             XCTFail("工作区图标风格应有且只有一个当前选项")
@@ -1106,18 +1105,19 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(waitUntilSelected(originalStyle), "测试结束时应恢复原图标风格")
     }
 
-    private func assertWorkspaceStylePickerUsesExactlyTwoRows(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 9)
-        guard frames.count == 9 else { return }
+    private func assertWorkspaceStylePickerUsesAdaptiveRows(_ frames: [CGRect]) {
+        XCTAssertEqual(frames.count, 8)
+        guard frames.count == 8 else { return }
 
         var rowCenters: [CGFloat] = []
         for frame in frames where !rowCenters.contains(where: { abs($0 - frame.midY) <= 2 }) {
             rowCenters.append(frame.midY)
         }
         rowCenters.sort()
-        XCTAssertEqual(rowCenters.count, 2, "全部风格应固定在两行内横向滑动")
-        guard rowCenters.count == 2 else { return }
-        XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
+        XCTAssertTrue((1...2).contains(rowCenters.count), "图标风格应按可用宽度排列为一行或两行")
+        if rowCenters.count == 2 {
+            XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
+        }
     }
 
     private func scrollToWorkspaceStyleOption(
