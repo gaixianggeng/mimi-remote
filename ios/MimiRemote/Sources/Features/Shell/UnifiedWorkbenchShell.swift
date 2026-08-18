@@ -347,7 +347,13 @@ struct UnifiedWorkbenchShell: View {
             )
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        // 浮层侧栏外围这条 gutter 和右侧阅读画布同处一屏且亮度相同（都是 250），
+        // 只有色温不同：工作区暖白 250,247,241 对纸白 250,250,248。没有明度台阶的
+        // 同亮度色差不会被读成层级，只会被读成"颜色没对上"，iPad 横屏 gutter 最宽时尤其明显。
+        // 这里跟随阅读画布，让 gutter 与正文连成一片；层级仍由 255 白的侧栏浮层卡片表达。
+        // conversationCanvasBackground 在深色和非 codex 主题下就等于 background，
+        // 所以这只影响出现该色差的浅色 codex 一种情况。
+        .background(tokens.conversationCanvasBackground.ignoresSafeArea())
         .overlay(alignment: .topLeading) {
             if showsClosedControls {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
