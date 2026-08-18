@@ -691,6 +691,24 @@ func CommitSharedDaemonDisable(
 	return commitConfigWithSharedDaemonLock(ctx, removeOwner, validate, commit)
 }
 
+// DisableSharedDaemonAfterDesktopExit 是用户明确确认 Codex Desktop 已退出后
+// 才允许使用的关闭事务。与 CommitSharedDaemonDisable 不同，它不会先提交 WS
+// 配置；调用方的 commit 只有在活动 listener 已正常停止、socket/PID 已稳定
+// 退出、Mimi 固定 LaunchAgent 已 bootout 且复核为未加载后才会执行。
+//
+// 事务仍通过 LocalDaemonOptions 复核 Codex 启动身份，并在同一把 shared-daemon
+// operation lock 内调用 validate/commit，避免旧配置进程在关闭过程中重新接管
+// socket。具体的 macOS owner 生命周期由各平台实现提供。
+func DisableSharedDaemonAfterDesktopExit(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	validate func() error,
+	commit func() error,
+) error {
+	options.StableOwner = true
+	return disableSharedDaemonAfterDesktopExit(ctx, options, validate, commit)
+}
+
 // ReconcileDisabledSharedDaemonOwner 供非 shared 的 agentd 启动路径清理上次
 // 两阶段启用在进程退出后留下的 manual owner。复核与清理同锁执行，不能误删
 // 已由另一个进程成功提交的新 shared owner。

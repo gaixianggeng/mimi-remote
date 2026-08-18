@@ -1205,6 +1205,307 @@ func RemoveSharedDaemonOwner(ctx context.Context) error {
 	return err
 }
 
+func disableSharedDaemonAfterDesktopExit(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	validate func() error,
+	commit func() error,
+) error {
+	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
+		return disableSharedDaemonAfterDesktopExitUnlocked(ctx, options, validate, commit)
+	})
+	return err
+}
+
+type confirmedSharedDaemonDisableHooks struct {
+	requireDesktopStopped func(context.Context, string) error
+	inspectOwner          func(context.Context) (SharedDaemonOwnerStatus, error)
+	socketAccepts         func(string) bool
+	stageOwner            func(SharedDaemonOwnerStatus) error
+	inspectListener       func(context.Context, string) (sharedDaemonListenerProcess, error)
+	stopDaemon            func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error
+	waitForStopped        func(context.Context, string, ...sharedDaemonListenerProcess) error
+	launchctl             func(context.Context, ...string) (string, error)
+	removeLaunchAgent     func(context.Context) error
+	clearEnablePrepared   func() error
+	clearMigration        func() error
+	enablePrepared        func() (bool, error)
+}
+
+func defaultConfirmedSharedDaemonDisableHooks() confirmedSharedDaemonDisableHooks {
+	return confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: requireCodexDesktopStopped,
+		inspectOwner:          InspectSharedDaemonOwner,
+		socketAccepts:         sharedDaemonSocketAcceptsConnection,
+		stageOwner:            stageSharedDaemonOwnerForConfirmedDisable,
+		inspectListener:       inspectSharedDaemonListenerProcess,
+		stopDaemon:            stopSharedDaemonForConfirmedDisable,
+		waitForStopped:        waitForSharedDaemonStopped,
+		launchctl:             sharedDaemonLaunchctl,
+		removeLaunchAgent:     RemoveSharedDaemonLaunchAgent,
+		clearEnablePrepared:   clearSharedDaemonEnablePrepared,
+		clearMigration:        clearSharedDaemonMigrationFlag,
+		enablePrepared:        sharedDaemonEnablePrepared,
+	}
+}
+
+func disableSharedDaemonAfterDesktopExitUnlocked(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	validate func() error,
+	commit func() error,
+) (LocalDaemonStatus, error) {
+	return disableSharedDaemonAfterDesktopExitWithHooks(
+		ctx,
+		options,
+		validate,
+		commit,
+		defaultConfirmedSharedDaemonDisableHooks(),
+	)
+}
+
+func disableSharedDaemonAfterDesktopExitWithHooks(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	validate func() error,
+	commit func() error,
+	hooks confirmedSharedDaemonDisableHooks,
+) (LocalDaemonStatus, error) {
+	if validate == nil {
+		return LocalDaemonStatus{}, fmt.Errorf("提交共享配置前的复核回调不能为空")
+	}
+	if commit == nil {
+		return LocalDaemonStatus{}, fmt.Errorf("提交共享配置的回调不能为空")
+	}
+	if err := validateStableOwnerLease(options); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if err := validate(); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("共享配置快照已变化：%w", err)
+	}
+	if err := hooks.requireDesktopStopped(ctx, "关闭共享 daemon 前"); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	owner, err := hooks.inspectOwner(ctx)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if owner.Installed && !owner.Secure {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon LaunchAgent 权限不安全，拒绝关闭")
+	}
+	if hooks.socketAccepts(socketPath) && !sharedDaemonLoadedOwnerEvidence(owner) {
+		return LocalDaemonStatus{}, fmt.Errorf("当前 Codex Unix backend 没有可确认的 Mimi stable owner，拒绝停止外部 daemon")
+	}
+	// 先把磁盘入口降为 manual 并保留 marker。后续任一停止、bootout、清理或
+	// 配置 CAS 失败，都不能留下会在下次登录自动启动的旧 owner。
+	if err := hooks.stageOwner(owner); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if err := validate(); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("共享配置快照已变化：%w", err)
+	}
+	if err := hooks.requireDesktopStopped(ctx, "停止共享 daemon 前"); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+
+	// stage 与停止之间 launchd 仍可能让已加载的旧 job 建立 socket，因此必须
+	// 重新读取 owner 与 listener，而不能复用入口快照。
+	owner, err = hooks.inspectOwner(ctx)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if owner.Installed && !owner.Secure {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon LaunchAgent 权限在关闭前发生变化")
+	}
+	var stoppedIdentities []sharedDaemonListenerProcess
+	if hooks.socketAccepts(socketPath) {
+		if !sharedDaemonLoadedOwnerEvidence(owner) {
+			return LocalDaemonStatus{}, fmt.Errorf("当前 Codex Unix backend 没有可确认的 Mimi stable owner，拒绝停止外部 daemon")
+		}
+		identity, inspectErr := hooks.inspectListener(ctx, socketPath)
+		if inspectErr != nil {
+			return LocalDaemonStatus{}, fmt.Errorf("记录待关闭共享 daemon 身份失败：%w", inspectErr)
+		}
+		stoppedIdentities = append(stoppedIdentities, identity)
+		if err := hooks.stopDaemon(ctx, options, owner); err != nil {
+			return LocalDaemonStatus{}, err
+		}
+	}
+	// 即使入口探测时没有 listener，也要经过稳定确认窗口。这样 loaded job 在
+	// 检查后才建立 socket 时不会被直接 bootout 或与新 WS 配置并存。
+	if err := hooks.waitForStopped(ctx, socketPath, stoppedIdentities...); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if err := hooks.requireDesktopStopped(ctx, "卸载共享 daemon owner 前"); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if hooks.socketAccepts(socketPath) {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon socket 在卸载 owner 前重新出现")
+	}
+	owner, err = hooks.inspectOwner(ctx)
+	if err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if owner.Loaded {
+		if !sharedDaemonLoadedOwnerEvidence(owner) {
+			return LocalDaemonStatus{}, fmt.Errorf("已加载的共享 daemon owner 身份无法确认，拒绝卸载")
+		}
+		if _, bootoutErr := hooks.launchctl(ctx, "bootout", launchAgentServiceTarget()); bootoutErr != nil &&
+			!isLaunchctlNotLoaded(bootoutErr) {
+			return LocalDaemonStatus{}, fmt.Errorf("卸载共享 daemon owner 失败：%w", bootoutErr)
+		}
+	}
+	confirmed, err := hooks.inspectOwner(ctx)
+	if err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("复核共享 daemon owner 卸载状态失败：%w", err)
+	}
+	if confirmed.Loaded {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon owner 在 bootout 后仍处于 loaded 状态")
+	}
+	if err := hooks.removeLaunchAgent(ctx); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if err := hooks.clearEnablePrepared(); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("清理共享 daemon 启用事务失败：%w", err)
+	}
+	if err := hooks.clearMigration(); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("清理共享 daemon 迁移状态失败：%w", err)
+	}
+
+	// 最后一跳同时复核配置恢复权、Desktop、socket 与 owner。只有这些状态仍
+	// 一致，才允许调用方把 shared Unix 原子替换为保存的独立 WS 配置。
+	if err := validateStableOwnerLease(options); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if err := validate(); err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("共享配置快照已变化：%w", err)
+	}
+	if err := hooks.requireDesktopStopped(ctx, "提交独立 App Server 配置前"); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	if hooks.socketAccepts(socketPath) {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon socket 在配置提交前重新出现")
+	}
+	confirmed, err = hooks.inspectOwner(ctx)
+	if err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("提交配置前复核共享 daemon owner 失败：%w", err)
+	}
+	prepared, err := hooks.enablePrepared()
+	if err != nil {
+		return LocalDaemonStatus{}, fmt.Errorf("提交配置前复核共享 daemon 启用事务失败：%w", err)
+	}
+	if confirmed.Installed || confirmed.Loaded || confirmed.MigrationRequired || prepared {
+		return LocalDaemonStatus{}, fmt.Errorf("共享 daemon owner 未完全清理，拒绝提交独立 App Server 配置")
+	}
+	if err := commit(); err != nil {
+		return LocalDaemonStatus{}, err
+	}
+	return LocalDaemonStatus{SocketPath: socketPath}, nil
+}
+
+func sharedDaemonLoadedOwnerEvidence(owner SharedDaemonOwnerStatus) bool {
+	if !owner.Loaded || owner.Label != SharedDaemonLaunchAgentLabel {
+		return false
+	}
+	// plist 缺失正是 orphan loaded job 的目标场景；精确 label 仍提供 owner
+	// 证据。若 plist 存在，则权限必须安全，不能把可被其他用户修改的定义
+	// 当成 Mimi stable owner。
+	return !owner.Installed || owner.Secure
+}
+
+func stageSharedDaemonOwnerForConfirmedDisable(owner SharedDaemonOwnerStatus) error {
+	if !owner.Installed {
+		return nil
+	}
+	content, err := os.ReadFile(owner.Path)
+	if err != nil {
+		return fmt.Errorf("读取共享 daemon LaunchAgent 失败：%w", err)
+	}
+	if owner.RunAtLoad {
+		manual, manualErr := sharedDaemonManualPlist(content)
+		if manualErr != nil {
+			return manualErr
+		}
+		if err := writeSharedDaemonPrivateFileAtomically(owner.Path, manual); err != nil {
+			return fmt.Errorf("把共享 daemon owner 降为 manual 失败：%w", err)
+		}
+	}
+	if !owner.MigrationRequired {
+		if err := writeSharedDaemonMigrationFlag(); err != nil {
+			return fmt.Errorf("记录共享 daemon manual 状态失败：%w", err)
+		}
+	}
+	return nil
+}
+
+func stopSharedDaemonForConfirmedDisable(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	owner SharedDaemonOwnerStatus,
+) error {
+	lifecycle, err := InspectLocalDaemonLifecycle(ctx, options)
+	if err != nil {
+		return err
+	}
+	if lifecycle.Backend != nil {
+		return stopSharedDaemon(ctx, options, owner)
+	}
+	if !sharedDaemonLoadedOwnerEvidence(owner) {
+		return fmt.Errorf("非 daemon 管理的 Codex app-server 没有已确认的 Mimi stable owner，拒绝停止")
+	}
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		return err
+	}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
+	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
+	cancelProbe()
+	if err != nil {
+		return fmt.Errorf("无法确认待关闭的 Codex app-server：%w", err)
+	}
+	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
+		return err
+	}
+	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
+		return err
+	}
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		return fmt.Errorf("共享 daemon listener 缺少签名 supervisor 父链：%w", err)
+	}
+	listener, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
+	if err != nil {
+		return fmt.Errorf("识别共享 daemon listener 失败：%w", err)
+	}
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		return fmt.Errorf("再次确认共享 daemon listener 身份失败：%w", err)
+	}
+	confirmed, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
+	if err != nil {
+		return fmt.Errorf("再次确认共享 daemon owner 失败：%w", err)
+	}
+	if confirmed != listener {
+		return fmt.Errorf("共享 daemon owner 在正常关闭前发生变化，已停止关闭")
+	}
+	if err := requireCodexDesktopStopped(ctx, "正常终止共享 daemon 前"); err != nil {
+		return err
+	}
+	return stopUnmanagedSharedDaemonWithHooks(
+		ctx,
+		socketPath,
+		lifecycle.ManagedCodexPath,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: sharedDaemonDesktopRunning,
+			inspect:        inspectSharedDaemonListenerProcess,
+			signalTERM:     signalSharedDaemonProcessTERM,
+			currentUID:     os.Getuid,
+		},
+	)
+}
+
 func removeSharedDaemonOwnerUnlocked(ctx context.Context) error {
 	_, err := removeSharedDaemonOwnerForTransactionUnlocked(ctx)
 	return err

@@ -78,6 +78,33 @@ func withSharedDaemonOperationLock(
 
 func RemoveSharedDaemonOwner(context.Context) error { return nil }
 
+// 非 macOS 没有 Mimi LaunchAgent 或 Desktop 进程边界。保留显式关闭事务的
+// validate/commit 顺序，让旧的跨平台 shared 配置可以安全回退到保存的 WS，
+// 同时不伪造一个不存在的 owner 生命周期。
+func disableSharedDaemonAfterDesktopExit(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	validate func() error,
+	commit func() error,
+) error {
+	if validate == nil {
+		return fmt.Errorf("提交共享配置前的复核回调不能为空")
+	}
+	if commit == nil {
+		return fmt.Errorf("提交共享配置的回调不能为空")
+	}
+	if err := validateStableOwnerLease(options); err != nil {
+		return err
+	}
+	if err := validate(); err != nil {
+		return fmt.Errorf("共享配置快照已变化：%w", err)
+	}
+	if err := commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func removeSharedDaemonOwnerUnlocked(context.Context) error { return nil }
 
 func removeSharedDaemonOwnerForTransactionUnlocked(

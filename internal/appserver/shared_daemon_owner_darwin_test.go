@@ -2124,6 +2124,237 @@ func TestRemoveSharedDaemonOwnerRecoversLoadedJobWithoutPlist(t *testing.T) {
 	}
 }
 
+func TestConfirmedSharedDaemonDisableStopsUnloadsCleansThenCommits(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{
+		Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")},
+	}
+	leaseChecks := 0
+	options.ValidateStableOwner = func() error {
+		leaseChecks++
+		return nil
+	}
+
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		RunAtLoad: true,
+		Path:      filepath.Join(home, "owner.plist"),
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	socketActive := true
+	prepared := true
+	validateCalls := 0
+	desktopChecks := 0
+	events := make([]string, 0, 8)
+	listener := sharedDaemonListenerProcess{PID: 123, UID: os.Getuid(), StartSec: 456}
+	hooks := confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: func(context.Context, string) error {
+			desktopChecks++
+			return nil
+		},
+		inspectOwner: func(context.Context) (SharedDaemonOwnerStatus, error) {
+			return owner, nil
+		},
+		socketAccepts: func(string) bool { return socketActive },
+		stageOwner: func(SharedDaemonOwnerStatus) error {
+			events = append(events, "stage")
+			owner.RunAtLoad = false
+			owner.MigrationRequired = true
+			return nil
+		},
+		inspectListener: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			return listener, nil
+		},
+		stopDaemon: func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error {
+			events = append(events, "stop")
+			socketActive = false
+			return nil
+		},
+		waitForStopped: func(_ context.Context, _ string, identities ...sharedDaemonListenerProcess) error {
+			events = append(events, "wait")
+			if len(identities) != 1 || identities[0] != listener {
+				t.Fatalf("停止确认必须绑定原 listener 身份：%+v", identities)
+			}
+			return nil
+		},
+		launchctl: func(_ context.Context, arguments ...string) (string, error) {
+			if len(arguments) == 0 || arguments[0] != "bootout" {
+				return "", fmt.Errorf("unexpected launchctl command: %v", arguments)
+			}
+			events = append(events, "bootout")
+			owner.Loaded = false
+			return "", nil
+		},
+		removeLaunchAgent: func(context.Context) error {
+			events = append(events, "remove")
+			owner.Installed = false
+			return nil
+		},
+		clearEnablePrepared: func() error {
+			events = append(events, "clear-enable")
+			prepared = false
+			return nil
+		},
+		clearMigration: func() error {
+			events = append(events, "clear-marker")
+			owner.MigrationRequired = false
+			return nil
+		},
+		enablePrepared: func() (bool, error) { return prepared, nil },
+	}
+
+	_, err := disableSharedDaemonAfterDesktopExitWithHooks(
+		context.Background(),
+		options,
+		func() error {
+			validateCalls++
+			return nil
+		},
+		func() error {
+			events = append(events, "commit")
+			return nil
+		},
+		hooks,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{"stage", "stop", "wait", "bootout", "remove", "clear-enable", "clear-marker", "commit"}
+	if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
+		t.Fatalf("确认禁用副作用顺序错误：got=%v want=%v", events, wantEvents)
+	}
+	if validateCalls != 3 || leaseChecks != 2 || desktopChecks != 4 {
+		t.Fatalf("确认禁用必须持续复核租约与 Desktop：validate=%d lease=%d desktop=%d", validateCalls, leaseChecks, desktopChecks)
+	}
+}
+
+func TestConfirmedSharedDaemonDisableRefusesMutationWhileDesktopRuns(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	wantErr := errors.New("desktop still running")
+	mutated := false
+	hooks := confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: func(context.Context, string) error { return wantErr },
+		inspectOwner: func(context.Context) (SharedDaemonOwnerStatus, error) {
+			mutated = true
+			return SharedDaemonOwnerStatus{}, nil
+		},
+		socketAccepts: func(string) bool { mutated = true; return false },
+		stageOwner:    func(SharedDaemonOwnerStatus) error { mutated = true; return nil },
+		inspectListener: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			mutated = true
+			return sharedDaemonListenerProcess{}, nil
+		},
+		stopDaemon:          func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error { mutated = true; return nil },
+		waitForStopped:      func(context.Context, string, ...sharedDaemonListenerProcess) error { mutated = true; return nil },
+		launchctl:           func(context.Context, ...string) (string, error) { mutated = true; return "", nil },
+		removeLaunchAgent:   func(context.Context) error { mutated = true; return nil },
+		clearEnablePrepared: func() error { mutated = true; return nil },
+		clearMigration:      func() error { mutated = true; return nil },
+		enablePrepared:      func() (bool, error) { mutated = true; return false, nil },
+	}
+	committed := false
+	_, err := disableSharedDaemonAfterDesktopExitWithHooks(
+		context.Background(),
+		LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}},
+		func() error { return nil },
+		func() error { committed = true; return nil },
+		hooks,
+	)
+	if !errors.Is(err, wantErr) || mutated || committed {
+		t.Fatalf("Desktop 运行时必须在任何 owner mutation 前失败：err=%v mutated=%t committed=%t", err, mutated, committed)
+	}
+}
+
+func TestConfirmedSharedDaemonDisableBootoutFailureDoesNotCommit(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	wantErr := errors.New("bootout denied")
+	owner := SharedDaemonOwnerStatus{
+		Installed:         true,
+		Loaded:            true,
+		Secure:            true,
+		MigrationRequired: true,
+		Label:             SharedDaemonLaunchAgentLabel,
+	}
+	removed := false
+	committed := false
+	hooks := confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: func(context.Context, string) error { return nil },
+		inspectOwner:          func(context.Context) (SharedDaemonOwnerStatus, error) { return owner, nil },
+		socketAccepts:         func(string) bool { return false },
+		stageOwner:            func(SharedDaemonOwnerStatus) error { return nil },
+		inspectListener: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			return sharedDaemonListenerProcess{}, nil
+		},
+		stopDaemon:          func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error { return nil },
+		waitForStopped:      func(context.Context, string, ...sharedDaemonListenerProcess) error { return nil },
+		launchctl:           func(context.Context, ...string) (string, error) { return "", wantErr },
+		removeLaunchAgent:   func(context.Context) error { removed = true; return nil },
+		clearEnablePrepared: func() error { return nil },
+		clearMigration:      func() error { return nil },
+		enablePrepared:      func() (bool, error) { return false, nil },
+	}
+	_, err := disableSharedDaemonAfterDesktopExitWithHooks(
+		context.Background(),
+		LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}},
+		func() error { return nil },
+		func() error { committed = true; return nil },
+		hooks,
+	)
+	if !errors.Is(err, wantErr) || removed || committed {
+		t.Fatalf("bootout 失败后必须保留 shared 配置与 owner 文件：err=%v removed=%t committed=%t", err, removed, committed)
+	}
+}
+
+func TestConfirmedSharedDaemonDisableCleansOrphanLoadedJobForExistingWS(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	owner := SharedDaemonOwnerStatus{
+		Loaded:            true,
+		MigrationRequired: true,
+		Label:             SharedDaemonLaunchAgentLabel,
+	}
+	bootoutCalls := 0
+	commitCalls := 0
+	hooks := confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: func(context.Context, string) error { return nil },
+		inspectOwner:          func(context.Context) (SharedDaemonOwnerStatus, error) { return owner, nil },
+		socketAccepts:         func(string) bool { return false },
+		stageOwner:            func(SharedDaemonOwnerStatus) error { return nil },
+		inspectListener: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			return sharedDaemonListenerProcess{}, nil
+		},
+		stopDaemon:     func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error { return nil },
+		waitForStopped: func(context.Context, string, ...sharedDaemonListenerProcess) error { return nil },
+		launchctl: func(context.Context, ...string) (string, error) {
+			bootoutCalls++
+			owner.Loaded = false
+			return "", nil
+		},
+		removeLaunchAgent:   func(context.Context) error { return nil },
+		clearEnablePrepared: func() error { return nil },
+		clearMigration: func() error {
+			owner.MigrationRequired = false
+			return nil
+		},
+		enablePrepared: func() (bool, error) { return false, nil },
+	}
+	_, err := disableSharedDaemonAfterDesktopExitWithHooks(
+		context.Background(),
+		LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}},
+		func() error { return nil },
+		func() error { commitCalls++; return nil },
+		hooks,
+	)
+	if err != nil || bootoutCalls != 1 || commitCalls != 1 {
+		t.Fatalf("WS 配置下的孤立 Mimi loaded job 应幂等清理：err=%v bootout=%d commit=%d", err, bootoutCalls, commitCalls)
+	}
+}
+
 func TestSharedDaemonOperationLockSerializesCallers(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	firstEntered := make(chan struct{})
