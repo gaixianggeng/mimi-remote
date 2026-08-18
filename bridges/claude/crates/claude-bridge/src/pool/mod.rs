@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use alleycat_bridge_core::pool::ProcessPool;
 pub use alleycat_bridge_core::pool::{
     DEFAULT_IDLE_TTL, DEFAULT_MAX_PROCESSES, PoolError, ThreadId,
 };
+use alleycat_bridge_core::pool::{ProcessAdmission, ProcessPool};
 use alleycat_bridge_core::{LocalLauncher, ProcessLauncher};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -177,19 +177,51 @@ impl ClaudePool {
             .await
     }
 
-    /// Get or spawn the process needed by a lazily-created thread. `resume`
-    /// selects `--resume` for an existing transcript and `--session-id` for
-    /// a brand-new thread.
-    pub async fn acquire_for_thread(
+    /// Reserved counterpart of [`Self::acquire_for_resume`], for callers that
+    /// resume a thread and then immediately await a control request on it.
+    ///
+    /// 预热型调用（拿到就丢弃 handle）应继续用不保留的版本，让进程正常参与
+    /// 回收；只有在取得进程后还要 await 的路径才需要 reservation。
+    pub async fn acquire_for_resume_with_admission(
+        &self,
+        thread_id: ThreadId,
+        cwd: impl AsRef<Path>,
+        model: Option<String>,
+        append_system_prompt: Option<String>,
+    ) -> Result<(Arc<ClaudeProcessHandle>, ProcessAdmission), PoolError> {
+        self.spawn_with_capacity_check_and_admission(
+            thread_id,
+            cwd.as_ref(),
+            true,
+            model,
+            append_system_prompt,
+        )
+        .await
+    }
+
+    /// Get or lazily spawn the process needed by a lazily-created thread,
+    /// atomically reserving it for turn admission. `resume` selects
+    /// `--resume` for an existing transcript and `--session-id` for a
+    /// brand-new thread.
+    ///
+    /// 只提供带 reservation 的版本：turn/start 是唯一调用方，不保留的变体
+    /// 会让准入窗口重新暴露给并发回收。
+    pub async fn acquire_for_thread_with_admission(
         &self,
         thread_id: ThreadId,
         cwd: impl AsRef<Path>,
         resume: bool,
         model: Option<String>,
         append_system_prompt: Option<String>,
-    ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
-        self.spawn_with_capacity_check(thread_id, cwd.as_ref(), resume, model, append_system_prompt)
-            .await
+    ) -> Result<(Arc<ClaudeProcessHandle>, ProcessAdmission), PoolError> {
+        self.spawn_with_capacity_check_and_admission(
+            thread_id,
+            cwd.as_ref(),
+            resume,
+            model,
+            append_system_prompt,
+        )
+        .await
     }
 
     /// Borrow a claude process for a one-shot, connection-scoped query
@@ -228,6 +260,21 @@ impl ClaudePool {
         if !handle.has_exited() {
             return Some(handle);
         }
+        self.inner.release_if_same(thread_id, &handle).await;
+        None
+    }
+
+    /// Lookup + admission reservation in one pool critical section. This is
+    /// the turn-start counterpart of [`Self::get`].
+    pub async fn get_with_admission(
+        &self,
+        thread_id: &str,
+    ) -> Option<(Arc<ClaudeProcessHandle>, ProcessAdmission)> {
+        let (handle, admission) = self.inner.get_with_admission(thread_id).await?;
+        if !handle.has_exited() {
+            return Some((handle, admission));
+        }
+        drop(admission);
         self.inner.release_if_same(thread_id, &handle).await;
         None
     }
@@ -292,6 +339,8 @@ impl ClaudePool {
     /// idle-reaping and at-cap LRU eviction first; bails with
     /// [`PoolError::Capacity`] only if every tracked thread is currently
     /// active.
+    ///
+    /// 非 turn 路径不需要准入窗口保护，拿到 handle 后立刻释放 reservation。
     async fn spawn_with_capacity_check(
         &self,
         thread_id: ThreadId,
@@ -300,9 +349,33 @@ impl ClaudePool {
         model: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
+        let (handle, admission) = self
+            .spawn_with_capacity_check_and_admission(
+                thread_id,
+                cwd,
+                resume,
+                model,
+                append_system_prompt,
+            )
+            .await?;
+        drop(admission);
+        Ok(handle)
+    }
+
+    /// Reserved variant used by `turn/start`. A freshly tracked handle enters
+    /// the table with its first reservation already held, so no idle window is
+    /// observable between spawn and runtime override.
+    async fn spawn_with_capacity_check_and_admission(
+        &self,
+        thread_id: ThreadId,
+        cwd: &Path,
+        resume: bool,
+        model: Option<String>,
+        append_system_prompt: Option<String>,
+    ) -> Result<(Arc<ClaudeProcessHandle>, ProcessAdmission), PoolError> {
         let _spawn_guard = self.spawn_lock.lock().await;
-        if let Some(handle) = self.get(&thread_id).await {
-            return Ok(handle);
+        if let Some(reserved) = self.get_with_admission(&thread_id).await {
+            return Ok(reserved);
         }
 
         self.inner.ensure_capacity_for(&thread_id).await?;
@@ -322,10 +395,10 @@ impl ClaudePool {
         let handle = Arc::new(handle);
         match self
             .inner
-            .track_new(thread_id, cwd.to_path_buf(), handle.clone())
+            .track_new_with_admission(thread_id, cwd.to_path_buf(), handle.clone())
             .await
         {
-            Ok(()) => Ok(handle),
+            Ok(admission) => Ok((handle, admission)),
             Err(err) => {
                 // Race: another acquire raced us. Drop the new handle.
                 handle.shutdown().await;

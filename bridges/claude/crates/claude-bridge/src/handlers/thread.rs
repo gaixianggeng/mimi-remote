@@ -542,19 +542,27 @@ pub async fn handle_thread_rollback(
 
     // Need a live process to send the control_request. Resume into the pool
     // if not already loaded — same pattern as `thread/resume`.
-    let handle = match state.claude_pool().get(&params.thread_id).await {
-        Some(h) => h,
+    //
+    // 与 turn/start 同理：rewind 的 control request 最长要等 30 秒，期间进程
+    // 仍是 active=false，池满时的 LRU 淘汰会把它关掉。用 reservation 覆盖到
+    // 请求返回为止。
+    let (handle, admission) = match state
+        .claude_pool()
+        .get_with_admission(&params.thread_id)
+        .await
+    {
+        Some(reserved) => reserved,
         None => {
             let cwd = std::path::PathBuf::from(&entry.cwd);
             state
                 .claude_pool()
-                .acquire_for_resume(params.thread_id.clone(), &cwd, None, None)
+                .acquire_for_resume_with_admission(params.thread_id.clone(), &cwd, None, None)
                 .await
                 .map_err(ThreadError::pool)?
         }
     };
 
-    handle
+    let rewind = handle
         .request_control(
             ControlRequestBody::RewindFiles {
                 user_message_id: target_id,
@@ -562,11 +570,12 @@ pub async fn handle_thread_rollback(
             },
             std::time::Duration::from_secs(30),
         )
-        .await
-        .map_err(|e: ClaudeProcessError| match e {
-            ClaudeProcessError::ControlError { message, .. } => ThreadError::ClaudeRpc(message),
-            other => ThreadError::ClaudeRpc(other.to_string()),
-        })?;
+        .await;
+    drop(admission);
+    rewind.map_err(|e: ClaudeProcessError| match e {
+        ClaudeProcessError::ControlError { message, .. } => ThreadError::ClaudeRpc(message),
+        other => ThreadError::ClaudeRpc(other.to_string()),
+    })?;
 
     // Rebuild the Thread snapshot from the (now-rewound) transcript so the
     // codex client sees the new state.

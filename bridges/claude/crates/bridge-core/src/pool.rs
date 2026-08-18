@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -69,6 +70,39 @@ struct PoolEntry<H> {
     /// True while a turn is being driven through this thread. The reaper
     /// never evicts threads with `active=true` regardless of TTL.
     active: bool,
+    /// 正在准入、但尚未正式进入 active turn 的调用数。runtime override 等 await
+    /// 必须由 reservation 覆盖；否则容量回收会把正在准入的子进程当成 idle 关闭。
+    admissions: Arc<AtomicUsize>,
+}
+
+impl<H> PoolEntry<H> {
+    /// 仅约束自动回收（idle reaping / LRU eviction）。显式的 `release` 与
+    /// `release_if_same` 有意不看这个标志：它们的调用方已经确认进程不可用
+    /// （例如 handle 已退出），此时保留 reservation 只会把坏进程留在池里。
+    ///
+    /// 副作用：池满且所有 idle 进程都处于准入期时，`ensure_capacity_for`
+    /// 会返回 `PoolError::Capacity` 而不是淘汰其中一个。reservation 只覆盖
+    /// turn 准入这一小段，正常情况极短；这是为了不误杀而接受的取舍。
+    fn is_evictable(&self) -> bool {
+        !self.active && self.admissions.load(Ordering::Acquire) == 0
+    }
+}
+
+/// Keeps a tracked process out of idle reaping/LRU eviction while a caller is
+/// still admitting work. The synchronous `Drop` is intentional: cancellation
+/// may drop a `turn/start` future at any await point, where async cleanup would
+/// otherwise be easy to miss.
+#[derive(Debug)]
+#[must_use = "dropping the admission immediately makes the process evictable again"]
+pub struct ProcessAdmission {
+    admissions: Arc<AtomicUsize>,
+}
+
+impl Drop for ProcessAdmission {
+    fn drop(&mut self) {
+        let previous = self.admissions.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "process admission counter underflow");
+    }
 }
 
 struct PoolInner<H> {
@@ -103,7 +137,7 @@ impl<H> PoolInner<H> {
     fn pick_lru_idle(&self) -> Option<ThreadId> {
         self.processes
             .iter()
-            .filter(|(_, e)| !e.active)
+            .filter(|(_, e)| e.is_evictable())
             .min_by_key(|(_, e)| e.last_active)
             .map(|(id, _)| id.clone())
     }
@@ -111,7 +145,7 @@ impl<H> PoolInner<H> {
     fn collect_expired(&self, now: Instant) -> Vec<ThreadId> {
         self.processes
             .iter()
-            .filter(|(_, e)| !e.active && now.duration_since(e.last_active) >= self.idle_ttl)
+            .filter(|(_, e)| e.is_evictable() && now.duration_since(e.last_active) >= self.idle_ttl)
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -152,6 +186,22 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
         Some(entry.handle.clone())
     }
 
+    /// Atomically look up a process and reserve it before releasing the pool
+    /// lock. Capacity eviction therefore cannot slip between lookup and the
+    /// caller's first awaited admission step.
+    pub async fn get_with_admission(&self, thread_id: &str) -> Option<(Arc<H>, ProcessAdmission)> {
+        let mut inner = self.inner.lock().await;
+        let entry = inner.processes.get_mut(thread_id)?;
+        entry.last_active = Instant::now();
+        entry.admissions.fetch_add(1, Ordering::AcqRel);
+        Some((
+            entry.handle.clone(),
+            ProcessAdmission {
+                admissions: Arc::clone(&entry.admissions),
+            },
+        ))
+    }
+
     /// Mark a thread as currently driving a turn. Active threads are not
     /// eligible for LRU eviction or idle reaping until [`Self::mark_idle`].
     pub async fn mark_active(&self, thread_id: &str) {
@@ -172,6 +222,9 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
     }
 
     /// Explicitly release a thread's handle. Sends shutdown and reaps.
+    ///
+    /// 与自动回收不同，这里不检查 admission reservation：调用方已经确认进程
+    /// 不可用，保留 reservation 只会把坏进程留在池里。
     pub async fn release(&self, thread_id: &str) {
         let entry = {
             let mut inner = self.inner.lock().await;
@@ -229,17 +282,20 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
     /// Returns the thread ids that were reaped.
     pub async fn reap_idle(&self) -> Vec<ThreadId> {
         let now = Instant::now();
-        let expired: Vec<ThreadId> = {
-            let inner = self.inner.lock().await;
-            inner.collect_expired(now)
+        let expired_entries: Vec<(ThreadId, PoolEntry<H>)> = {
+            let mut inner = self.inner.lock().await;
+            // 判定与 remove 必须在同一把锁内完成。若先收集 id 再重锁，期间新到的
+            // admission/active 标记仍会被旧快照无条件删除。
+            let expired = inner.collect_expired(now);
+            expired
+                .into_iter()
+                .filter_map(|id| inner.remove(&id).map(|entry| (id, entry)))
+                .collect()
         };
-        let mut reaped = Vec::with_capacity(expired.len());
-        for id in expired {
-            let entry = self.inner.lock().await.remove(&id);
-            if let Some(entry) = entry {
-                entry.handle.shutdown().await;
-                reaped.push(id);
-            }
+        let mut reaped = Vec::with_capacity(expired_entries.len());
+        for (id, entry) in expired_entries {
+            entry.handle.shutdown().await;
+            reaped.push(id);
         }
         reaped
     }
@@ -282,28 +338,19 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
         }
         self.reap_idle().await;
         loop {
-            let evict = {
-                let inner = self.inner.lock().await;
+            let evicted = {
+                let mut inner = self.inner.lock().await;
                 if inner.processes.len() < inner.max_processes {
-                    None
-                } else {
-                    inner.pick_lru_idle()
-                }
-            };
-            match evict {
-                Some(victim) => {
-                    let entry = self.inner.lock().await.remove(&victim);
-                    if let Some(entry) = entry {
-                        entry.handle.shutdown().await;
-                    }
-                }
-                None => {
-                    let inner = self.inner.lock().await;
-                    if inner.processes.len() >= inner.max_processes {
-                        return Err(PoolError::Capacity(inner.max_processes));
-                    }
                     return Ok(());
                 }
+                let Some(victim) = inner.pick_lru_idle() else {
+                    return Err(PoolError::Capacity(inner.max_processes));
+                };
+                // 与 reap_idle 相同，最后一次 eligibility 判定和 remove 不能跨锁。
+                inner.remove(&victim)
+            };
+            if let Some(entry) = evicted {
+                entry.handle.shutdown().await;
             }
         }
     }
@@ -328,9 +375,37 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
                 cwd,
                 last_active: Instant::now(),
                 active: false,
+                admissions: Arc::new(AtomicUsize::new(0)),
             },
         );
         Ok(())
+    }
+
+    /// Register a freshly spawned process and return its first admission as a
+    /// single atomic pool operation. The new entry is never observable as idle
+    /// between `track_new` and the caller receiving its handle.
+    pub async fn track_new_with_admission(
+        &self,
+        thread_id: ThreadId,
+        cwd: PathBuf,
+        handle: Arc<H>,
+    ) -> Result<ProcessAdmission, PoolError> {
+        let mut inner = self.inner.lock().await;
+        if inner.processes.contains_key(&thread_id) {
+            return Err(PoolError::DuplicateThread(thread_id));
+        }
+        let admissions = Arc::new(AtomicUsize::new(1));
+        inner.insert(
+            thread_id,
+            PoolEntry {
+                handle,
+                cwd,
+                last_active: Instant::now(),
+                active: false,
+                admissions: Arc::clone(&admissions),
+            },
+        );
+        Ok(ProcessAdmission { admissions })
     }
 }
 
@@ -376,6 +451,13 @@ mod tests {
             .await
             .expect("track_new");
         (handle, counter)
+    }
+
+    /// 把某个条目的 `last_active` 往前拨，用于跨过 idle TTL。
+    async fn backdate(pool: &ProcessPool<FakeHandle>, id: &str, by: Duration) {
+        let mut inner = pool.inner.lock().await;
+        let entry = inner.processes.get_mut(id).expect("tracked process");
+        entry.last_active = Instant::now() - by;
     }
 
     #[tokio::test]
@@ -434,6 +516,7 @@ mod tests {
                     cwd: PathBuf::from("/c"),
                     last_active: Instant::now() - Duration::from_secs(60),
                     active: false,
+                    admissions: Arc::new(AtomicUsize::new(0)),
                 },
             );
         }
@@ -527,6 +610,93 @@ mod tests {
         p.mark_idle("only").await;
         // Now the LRU pick is allowed.
         p.ensure_capacity_for("new").await.expect("ok");
+    }
+
+    #[tokio::test]
+    async fn process_admission_blocks_lru_eviction_until_drop() {
+        let p = pool(1, Duration::from_secs(60));
+        track(&p, "only", "/a").await;
+
+        let (_, admission) = p.get_with_admission("only").await.expect("tracked process");
+        let err = p.ensure_capacity_for("new").await.unwrap_err();
+        assert!(matches!(err, PoolError::Capacity(1)));
+        assert!(p.get("only").await.is_some());
+
+        drop(admission);
+        p.ensure_capacity_for("new")
+            .await
+            .expect("evict after drop");
+        assert!(p.get("only").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_admission_blocks_idle_reaping_until_drop() {
+        let p = pool(4, Duration::from_secs(30));
+        track(&p, "stale", "/a").await;
+
+        let (_, admission) = p
+            .get_with_admission("stale")
+            .await
+            .expect("tracked process");
+        // 准入会刷新 last_active，回填到 TTL 之外，才能验证是 reservation
+        // 而不是时间戳挡住了回收。
+        backdate(&p, "stale", Duration::from_secs(60)).await;
+
+        assert!(p.reap_idle().await.is_empty());
+        assert_eq!(p.len().await, 1);
+
+        drop(admission);
+        assert_eq!(p.reap_idle().await, vec!["stale".to_string()]);
+        assert!(p.is_empty().await);
+    }
+
+    /// 取消发生在 `turn/start` 的 await 点上：future 被丢弃时 `Drop` 必须
+    /// 归还 reservation，否则该进程会永久退出回收候选集。
+    #[tokio::test]
+    async fn cancelled_admission_future_does_not_leak_reservation() {
+        let p = Arc::new(pool(1, Duration::from_secs(60)));
+        track(&p, "only", "/a").await;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let pool_handle = Arc::clone(&p);
+        let admitting = tokio::spawn(async move {
+            let (_handle, _admission) = pool_handle
+                .get_with_admission("only")
+                .await
+                .expect("tracked process");
+            tx.send(()).expect("signal admission taken");
+            // 代表 apply_runtime_overrides：取消就发生在这里。
+            std::future::pending::<()>().await;
+        });
+        rx.await.expect("admission taken");
+
+        let err = p.ensure_capacity_for("new").await.unwrap_err();
+        assert!(matches!(err, PoolError::Capacity(1)));
+
+        admitting.abort();
+        assert!(admitting.await.unwrap_err().is_cancelled());
+
+        p.ensure_capacity_for("new")
+            .await
+            .expect("evictable again after cancellation");
+        assert!(p.get("only").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fresh_process_is_reserved_at_registration() {
+        let p = pool(1, Duration::from_secs(60));
+        let (handle, _) = FakeHandle::new();
+        let admission = p
+            .track_new_with_admission("only".into(), PathBuf::from("/a"), handle)
+            .await
+            .expect("track and reserve");
+
+        let err = p.ensure_capacity_for("new").await.unwrap_err();
+        assert!(matches!(err, PoolError::Capacity(1)));
+        drop(admission);
+        p.ensure_capacity_for("new")
+            .await
+            .expect("evict after drop");
     }
 
     #[tokio::test]
