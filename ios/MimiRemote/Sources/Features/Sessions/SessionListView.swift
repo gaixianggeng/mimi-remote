@@ -476,7 +476,8 @@ struct SessionListView: View {
         // 最新设计把日期恢复成轻量粘性标题，正文保持完全扁平；行距与分隔线由行组件统一控制。
         .listRowSpacing(0)
         .scrollContentBackground(.hidden)
-        .background(tokens.background.ignoresSafeArea())
+        // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .workbenchSoftBottomScrollEdge()
         // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
         // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
