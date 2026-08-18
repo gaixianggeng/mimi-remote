@@ -475,9 +475,12 @@ pub async fn handle_thread_compact_start(
     state: &Arc<ConnectionState>,
     params: p::ThreadCompactStartParams,
 ) -> Result<p::ThreadCompactStartResponse, ThreadError> {
-    let handle = state
+    // `send_serialized` 本身虽然不 await，但 Tokio 使用多线程 runtime；进程池锁
+    // 释放后，其他 worker 仍可并发执行 LRU 淘汰并关闭这个 inactive 进程。
+    // reservation 必须覆盖到命令完成入队，避免返回成功但 `/compact` 实际未发送。
+    let (handle, _admission) = state
         .claude_pool()
-        .get(&params.thread_id)
+        .get_with_admission(&params.thread_id)
         .await
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
 

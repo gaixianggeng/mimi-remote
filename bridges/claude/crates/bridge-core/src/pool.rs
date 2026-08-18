@@ -630,6 +630,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlapping_admissions_release_independently() {
+        let p = pool(1, Duration::from_secs(60));
+        track(&p, "only", "/a").await;
+
+        let (_, first) = p.get_with_admission("only").await.expect("first admission");
+        let (_, second) = p
+            .get_with_admission("only")
+            .await
+            .expect("second admission");
+
+        drop(first);
+        let err = p.ensure_capacity_for("new").await.unwrap_err();
+        assert!(matches!(err, PoolError::Capacity(1)));
+
+        drop(second);
+        p.ensure_capacity_for("new")
+            .await
+            .expect("evictable after final admission drops");
+        assert!(p.get("only").await.is_none());
+    }
+
+    #[tokio::test]
     async fn process_admission_blocks_idle_reaping_until_drop() {
         let p = pool(4, Duration::from_secs(30));
         track(&p, "stale", "/a").await;
