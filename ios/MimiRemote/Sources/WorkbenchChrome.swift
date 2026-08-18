@@ -1646,34 +1646,43 @@ private struct WorkbenchTopScrollEdgeBoost: View {
     /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
     private let fadeTail: CGFloat = 56
 
+    /// 收边采样点数。9 个点足以让 smoothstep 在 56pt 内看不出分段。
+    private static let falloffSampleCount: Int = 9
+
     /// 收边曲线。等距线性渐变在"满强度结束、斜坡开始"那一点存在斜率突变，人眼会把这种
     /// 一阶不连续读成一条横线（Mach band）——正是要避免的分界线。这里用 smoothstep
     /// `t²(3−2t)` 采样：两端斜率都为 0，接进满强度段和接进全透明处都没有折点，
     /// 整条收边不存在任何可定位的边界。
-    private static let falloff: [Double] = {
-        stride(from: 0.0, through: 1.0, by: 0.125).map { t in
-            1 - t * t * (3 - 2 * t)
+    ///
+    /// 每一步都写死类型并用普通循环展开：交给类型推导去解
+    /// `stops:` 里的 map + 混合字面量算术，Swift 类型检查器会在较慢的机器上超时
+    /// （CI 报 "unable to type-check this expression in reasonable time"）。
+    private static func falloffStops(holdStop: CGFloat) -> [Gradient.Stop] {
+        var stops: [Gradient.Stop] = []
+        stops.reserveCapacity(falloffSampleCount)
+        let lastIndex: CGFloat = CGFloat(falloffSampleCount - 1)
+        for index in 0..<falloffSampleCount {
+            let progress: CGFloat = CGFloat(index) / lastIndex
+            let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
+            let alpha: Double = Double(1.0 - eased)
+            let location: CGFloat = holdStop + (1.0 - holdStop) * progress
+            stops.append(Gradient.Stop(color: Color.black.opacity(alpha), location: location))
         }
-    }()
+        return stops
+    }
 
     var body: some View {
         GeometryReader { proxy in
             // 让出安全区后，proxy 汇报的正是被让出的顶部 inset（状态栏 + 导航控制层）。
-            let topInset = proxy.safeAreaInsets.top
-            let height = max(topInset + fadeTail, 1)
+            let topInset: CGFloat = proxy.safeAreaInsets.top
+            let height: CGFloat = max(topInset + fadeTail, 1)
             // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
-            let holdStop = min(0.9, max(0.05, (topInset - 4) / height))
+            let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
             Rectangle()
                 .fill(.ultraThinMaterial)
                 .mask(
                     LinearGradient(
-                        stops: Self.falloff.enumerated().map { index, alpha in
-                            let progress = Double(index) / Double(Self.falloff.count - 1)
-                            return Gradient.Stop(
-                                color: .black.opacity(alpha),
-                                location: holdStop + (1 - holdStop) * progress
-                            )
-                        },
+                        stops: Self.falloffStops(holdStop: holdStop),
                         startPoint: .top,
                         endPoint: .bottom
                     )
