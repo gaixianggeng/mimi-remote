@@ -17,19 +17,6 @@ extension SessionStore {
         await refreshUsage(runtimeProvider: runtimeProvider)
     }
 
-    func refreshSettingsAccountOverview() async {
-        // Token 活动在 agentd 已有 12 小时快照，必须先发请求才能立即命中。
-        // 模型目录和额度查询可能较慢，不能把低频活动快照排在它们之后。
-        async let tokenActivity: Void = refreshAccountTokenUsage()
-
-        await refreshAppServerModelOptions()
-        await refreshCodexUsage()
-        if hasClaudeRuntimeChannel {
-            await refreshClaudeUsage()
-        }
-        await tokenActivity
-    }
-
     func isRefreshingUsage(runtimeProvider: String) -> Bool {
         refreshingUsageRuntimeProviders.contains(Self.normalizedRuntimeProvider(runtimeProvider))
     }
