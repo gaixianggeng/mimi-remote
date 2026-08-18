@@ -13,6 +13,7 @@ export IOS_TEST_SIMULATORS_JSON="$FIXTURE_DIR/simulators.json"
 export IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/physical-devices.json"
 export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
 unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS_DEVICE_NAME IOS_TARGET_MODE
+unset DEVELOPER_DIR IOS_OPEN_BIN IOS_TEST_OPEN_LOG IOS_TEST_OPEN_FAIL
 
 fail() {
   echo "iOS 设备管理测试失败：$1" >&2
@@ -38,6 +39,46 @@ assert_not_contains() {
   local needle="$2"
   local label="$3"
   [[ "$haystack" != *"$needle"* ]] || fail "${label}：不应包含 '$needle'"
+}
+
+run_simulator_ui_case() {
+  local case_name="$1"
+  local developer_dir="$2"
+  local open_failure="${3:-0}"
+  local open_log="$TEMP_DIR/${case_name}-open.log"
+  local xcodebuild_log="$TEMP_DIR/${case_name}-xcodebuild.log"
+  local xcrun_log="$TEMP_DIR/${case_name}-xcrun.log"
+  local output_log="$TEMP_DIR/${case_name}-run.log"
+  : > "$open_log"
+  : > "$xcodebuild_log"
+  : > "$xcrun_log"
+
+  set +e
+  DEVELOPER_DIR="$developer_dir" \
+  IOS_OPEN_BIN="$FIXTURE_DIR/fake-open.sh" \
+  IOS_TEST_OPEN_LOG="$open_log" \
+  IOS_TEST_OPEN_FAIL="$open_failure" \
+  IOS_TEST_XCODEBUILD_LOG="$xcodebuild_log" \
+  IOS_TEST_XCRUN_LOG="$xcrun_log" \
+  IOS_TEST_CREATE_APP=1 \
+  IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/no-physical-devices.json" \
+  IOS_TARGET_MODE=simulator \
+  IOS_SIMULATOR_ID="M5-27-UDID" \
+  IOS_DERIVED_DATA_PATH="$TEMP_DIR/${case_name}-derived" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" run >"$output_log" 2>&1
+  local status=$?
+  set -e
+
+  assert_equal "0" "$status" "Simulator run（${case_name}）必须在界面辅助步骤失败时继续"
+  assert_contains "$(cat "$xcodebuild_log")" "build" \
+    "Simulator run（${case_name}）必须继续执行构建"
+  assert_contains "$(cat "$xcrun_log")" "simctl install M5-27-UDID" \
+    "Simulator run（${case_name}）必须继续安装 App"
+  assert_contains "$(cat "$xcrun_log")" \
+    "simctl launch --terminate-running-process M5-27-UDID com.gaixianggeng.mimi" \
+    "Simulator run（${case_name}）必须继续启动 App"
+  SIMULATOR_UI_OPEN_LOG="$open_log"
+  SIMULATOR_UI_OUTPUT_LOG="$output_log"
 }
 
 write_lease_metadata() {
@@ -382,5 +423,39 @@ simulator_target="$(
 )"
 assert_contains "$simulator_target" "dev-simulator-derived/IPHONE-27-UDID" \
   "不同 Simulator 必须使用独立 DerivedData"
+
+legacy_xcode_contents="$TEMP_DIR/xcode-legacy/Contents"
+legacy_developer_dir="$legacy_xcode_contents/Developer"
+mkdir -p "$legacy_developer_dir/Applications/Simulator.app" \
+  "$legacy_xcode_contents/Applications/DeviceHub.app"
+run_simulator_ui_case "legacy-simulator" "$legacy_developer_dir"
+legacy_simulator_app="$(cd "$legacy_developer_dir/Applications/Simulator.app" && pwd -P)"
+assert_equal "$legacy_simulator_app" \
+  "$(cat "$SIMULATOR_UI_OPEN_LOG")" \
+  "存在 legacy Simulator.app 时必须直接打开该路径并优先于 DeviceHub.app"
+
+devicehub_xcode_contents="$TEMP_DIR/xcode-devicehub/Contents"
+devicehub_developer_dir="$devicehub_xcode_contents/Developer"
+mkdir -p "$devicehub_developer_dir" "$devicehub_xcode_contents/Applications/DeviceHub.app"
+run_simulator_ui_case "devicehub" "$devicehub_developer_dir"
+devicehub_app="$(cd "$devicehub_xcode_contents/Applications/DeviceHub.app" && pwd -P)"
+assert_equal "$devicehub_app" \
+  "$(cat "$SIMULATOR_UI_OPEN_LOG")" \
+  "缺少 legacy Simulator.app 时必须直接打开同一 Xcode 包的 DeviceHub.app"
+
+empty_developer_dir="$TEMP_DIR/xcode-empty/Contents/Developer"
+mkdir -p "$empty_developer_dir"
+run_simulator_ui_case "missing-ui" "$empty_developer_dir"
+assert_contains "$(cat "$SIMULATOR_UI_OUTPUT_LOG")" "找不到 Simulator 或 DeviceHub 界面应用" \
+  "找不到界面应用时必须输出中文告警"
+assert_equal "" "$(cat "$SIMULATOR_UI_OPEN_LOG")" \
+  "找不到界面应用时不得调用 open"
+
+failed_open_xcode_contents="$TEMP_DIR/xcode-open-failure/Contents"
+failed_open_developer_dir="$failed_open_xcode_contents/Developer"
+mkdir -p "$failed_open_developer_dir" "$failed_open_xcode_contents/Applications/DeviceHub.app"
+run_simulator_ui_case "open-failure" "$failed_open_developer_dir" 1
+assert_contains "$(cat "$SIMULATOR_UI_OUTPUT_LOG")" "打开界面应用失败" \
+  "open 返回非零时必须输出中文告警"
 
 printf 'iOS 统一入口、目标选择、固定测试设备、租约和外部 xcodebuild 检查通过。\n'
