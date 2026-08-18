@@ -419,7 +419,6 @@ struct SettingsView: View {
                 return
             }
             let preflightSucceeded = await appStore.preflightConnection()
-            _ = await appStore.testConnectionOnFirstSettingsAppearanceIfNeeded()
             let hasConnectedStatus: Bool
             if case .connected = appStore.connectionStatus {
                 hasConnectedStatus = true
@@ -429,14 +428,11 @@ struct SettingsView: View {
             guard (preflightSucceeded || hasConnectedStatus), appStore.isConfigured else {
                 return
             }
-            // 用 channel/model 元数据判断 Claude 是否真正接入；设置页独立打开时也要刷新，
-            // 不能依赖用户先进入 Conversation 才出现 Claude 用量卡。
-            await sessionStore.refreshAppServerModelOptions()
-            await sessionStore.refreshCodexUsage()
-            if sessionStore.hasClaudeRuntimeChannel {
-                await sessionStore.refreshClaudeUsage()
-            }
-            await sessionStore.refreshAccountTokenUsage()
+            // 完整连接测速可能持续数秒。账号概览与它并行刷新，Token 活动才能及时命中
+            // agentd 的最近快照，不再长时间停留在“刷新后显示”的 idle 状态。
+            async let connectionTest: Bool = appStore.testConnectionOnFirstSettingsAppearanceIfNeeded()
+            async let accountOverview: Void = sessionStore.refreshSettingsAccountOverview()
+            _ = await (connectionTest, accountOverview)
             let hasNotLoadedInitialData = sessionStore.projects.isEmpty
                 && sessionStore.statusMessage == nil
             guard sessionStore.errorMessage != nil || hasNotLoadedInitialData else {
