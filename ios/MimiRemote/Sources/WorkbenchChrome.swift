@@ -753,6 +753,7 @@ extension View {
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
                 scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                    .overlay(alignment: .top) { WorkbenchTopScrollEdgeBoost() }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -1625,5 +1626,62 @@ struct CombinedUsageRingsGraphic: View {
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
+    }
+}
+
+/// 顶部滚动边缘的加深层。
+///
+/// 系统 `.soft` scroll edge 提供的正是我们要的整片玻璃质感，但强度固定且偏弱：正文滚到
+/// 标题后方时仍能逐字辨读，和标题、状态副标题抢视线。强度不可调，而且**一旦给
+/// navigationBar 设了可见的 `toolbarBackground`，系统就不再做这层渐进模糊**，只会铺一块
+/// 平底板——`.thinMaterial`、`.ultraThinMaterial` 乃至画布色渐变都一样，结果是「挡住了但
+/// 后面还看得清」，比原本更差。
+///
+/// 所以底板保持隐藏，改在滚动内容之上再叠一层同样是玻璃的 `.ultraThinMaterial`：它是
+/// 二次采样，真正加深模糊而不是把内容压淡；用渐变 mask 收边，材质自身的直角边界不可见，
+/// 下沿精确落到全透明，因此不会出现横贯全宽的硬边或明度断层。整体观感仍是"顶部一整片
+/// 玻璃"，只是比系统默认更实。
+@available(iOS 26.0, *)
+private struct WorkbenchTopScrollEdgeBoost: View {
+    /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
+    private let fadeTail: CGFloat = 56
+
+    /// 收边曲线。等距线性渐变在"满强度结束、斜坡开始"那一点存在斜率突变，人眼会把这种
+    /// 一阶不连续读成一条横线（Mach band）——正是要避免的分界线。这里用 smoothstep
+    /// `t²(3−2t)` 采样：两端斜率都为 0，接进满强度段和接进全透明处都没有折点，
+    /// 整条收边不存在任何可定位的边界。
+    private static let falloff: [Double] = {
+        stride(from: 0.0, through: 1.0, by: 0.125).map { t in
+            1 - t * t * (3 - 2 * t)
+        }
+    }()
+
+    var body: some View {
+        GeometryReader { proxy in
+            // 让出安全区后，proxy 汇报的正是被让出的顶部 inset（状态栏 + 导航控制层）。
+            let topInset = proxy.safeAreaInsets.top
+            let height = max(topInset + fadeTail, 1)
+            // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
+            let holdStop = min(0.9, max(0.05, (topInset - 4) / height))
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        stops: Self.falloff.enumerated().map { index, alpha in
+                            let progress = Double(index) / Double(Self.falloff.count - 1)
+                            return Gradient.Stop(
+                                color: .black.opacity(alpha),
+                                location: holdStop + (1 - holdStop) * progress
+                            )
+                        },
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
     }
 }
