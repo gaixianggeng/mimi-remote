@@ -51,10 +51,9 @@ struct ConversationView: View {
                     .zIndex(1)
                 ConversationTimelineView(
                     layout: layout,
-                    // 顶部 underlap 只由设备与辅助功能决定；WebSocket 错误、额度提示等
+                    // 顶部 underlap 只由辅助功能偏好决定；WebSocket 错误、额度提示等
                     // 瞬态业务状态不得切换 List 的 safe-area 几何，否则材质会消失并跳动。
                     allowsTopUnderlap: Self.shouldAllowTopUnderlap(
-                        isPhone: UIDevice.current.userInterfaceIdiom == .phone,
                         reduceTransparency: reduceTransparency
                     )
                 )
@@ -96,8 +95,11 @@ struct ConversationView: View {
         }
     }
 
-    static func shouldAllowTopUnderlap(isPhone: Bool, reduceTransparency: Bool) -> Bool {
-        isPhone && !reduceTransparency
+    /// 顶部滚动边缘是设备无关的材质语义：iPhone、iPad 竖屏和 iPad 横屏共用同一条
+    /// 规则，只有 Reduce Transparency 会退回实色。按 idiom 分叉会让 iPad 横屏永远
+    /// 拿不到顶部过渡，正文直接贴着标题滚过去。
+    static func shouldAllowTopUnderlap(reduceTransparency: Bool) -> Bool {
+        !reduceTransparency
     }
 
     /// 半透明底衬只有在系统自带 soft scroll edge 时才成立：它最深也只有 10–12%，

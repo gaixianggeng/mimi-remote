@@ -347,7 +347,8 @@ struct UnifiedWorkbenchShell: View {
             )
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        // gutter、主列表与会话画布共用宽屏基底，任何两块相邻面之间都不留同亮度色差。
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .overlay(alignment: .topLeading) {
             if showsClosedControls {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
@@ -1179,8 +1180,8 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
         .toolbar(.hidden, for: .tabBar)
         .modifier(
-            CompactSessionNavigationMaterialModifier(
-                isEnabled: layout.usesCompactNavigation,
+            SessionNavigationMaterialModifier(
+                usesCompactNavigation: layout.usesCompactNavigation,
                 tokens: tokens,
                 colorScheme: themeStore.resolvedColorScheme(for: colorScheme),
                 reduceTransparency: reduceTransparency
@@ -1778,37 +1779,41 @@ struct UnifiedWorkbenchShell: View {
     }
 }
 
-/// 只给紧凑会话页一条稳定的导航材质层；iPad 工作台继续沿用原有滚动边缘策略，
-/// 避免全局强制可见后重新出现整条实色导航栏。
-private struct CompactSessionNavigationMaterialModifier: ViewModifier {
-    let isEnabled: Bool
+/// 会话详情导航层的材质策略。紧凑与宽屏只在降级路径上不同，iOS 26 的正常透明度
+/// 路径共用同一条渐变底衬 + soft scroll edge 语义，让 iPhone、iPad 竖屏和 iPad 横屏
+/// 得到同等的顶部分离。
+private struct SessionNavigationMaterialModifier: ViewModifier {
+    let usesCompactNavigation: Bool
     let tokens: ThemeTokens
     let colorScheme: ColorScheme
     let reduceTransparency: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if isEnabled {
-            if reduceTransparency {
-                content
-                    .toolbarBackground(tokens.inputBackground, for: .navigationBar)
-                    .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-                    .toolbarColorScheme(colorScheme, for: .navigationBar)
-            } else {
-                if #available(iOS 26.0, *) {
-                    content
-                        // iOS 26 的返回与菜单已经自带 Liquid Glass；隐藏整条固定底板，
-                        // 由真正 underlap 的 List + soft edge 提供透明、渐进虚化。
-                        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-                        .toolbarColorScheme(colorScheme, for: .navigationBar)
-                } else {
-                    content
-                        // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
-                        .toolbarBackground(.regularMaterial, for: .navigationBar)
-                        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-                        .toolbarColorScheme(colorScheme, for: .navigationBar)
-                }
-            }
+        if reduceTransparency {
+            // 关闭透明度后不做任何采样：紧凑用输入层实色，宽屏继续贴合阅读画布。
+            content
+                .toolbarBackground(
+                    usesCompactNavigation ? tokens.inputBackground : tokens.conversationCanvasBackground,
+                    for: .navigationBar
+                )
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if #available(iOS 26.0, *) {
+            content
+                // 导航栏底板必须保持隐藏。只要给 navigationBar 设了可见 background，系统就不再
+                // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
+                // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
+                // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
+                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if usesCompactNavigation {
+            content
+                // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
+                .toolbarBackground(.regularMaterial, for: .navigationBar)
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
         } else {
             // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
             // 全局工作台暖底重新显形，把纸白阅读层切成两种色温。

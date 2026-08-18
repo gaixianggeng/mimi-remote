@@ -696,27 +696,13 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
     }
 
-    func testConversationTopUnderlapOnlyDependsOnDeviceAndTransparencyPreference() {
+    func testConversationTopUnderlapOnlyDependsOnTransparencyPreference() {
         // WebSocket error、history/quota notice 不进入这个策略：瞬态业务状态只能显示提示，
         // 不能切换导航栏与 List 的 safe-area 几何。
-        XCTAssertTrue(
-            ConversationView.shouldAllowTopUnderlap(
-                isPhone: true,
-                reduceTransparency: false
-            )
-        )
-        XCTAssertFalse(
-            ConversationView.shouldAllowTopUnderlap(
-                isPhone: true,
-                reduceTransparency: true
-            )
-        )
-        XCTAssertFalse(
-            ConversationView.shouldAllowTopUnderlap(
-                isPhone: false,
-                reduceTransparency: false
-            )
-        )
+        // 设备形态同样不参与：iPhone、iPad 竖屏、iPad 横屏共用同一条顶部材质语义，
+        // 否则 iPad 横屏会退回没有顶部过渡的旧行为。
+        XCTAssertTrue(ConversationView.shouldAllowTopUnderlap(reduceTransparency: false))
+        XCTAssertFalse(ConversationView.shouldAllowTopUnderlap(reduceTransparency: true))
     }
 
     func testTranslucentComposerBackdropRequiresSystemSoftScrollEdge() {

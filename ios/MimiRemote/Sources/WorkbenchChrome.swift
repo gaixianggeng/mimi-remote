@@ -753,6 +753,7 @@ extension View {
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
                 scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                    .overlay(alignment: .top) { WorkbenchTopScrollEdgeBoost() }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -1625,5 +1626,71 @@ struct CombinedUsageRingsGraphic: View {
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
+    }
+}
+
+/// 顶部滚动边缘的加深层。
+///
+/// 系统 `.soft` scroll edge 提供的正是我们要的整片玻璃质感，但强度固定且偏弱：正文滚到
+/// 标题后方时仍能逐字辨读，和标题、状态副标题抢视线。强度不可调，而且**一旦给
+/// navigationBar 设了可见的 `toolbarBackground`，系统就不再做这层渐进模糊**，只会铺一块
+/// 平底板——`.thinMaterial`、`.ultraThinMaterial` 乃至画布色渐变都一样，结果是「挡住了但
+/// 后面还看得清」，比原本更差。
+///
+/// 所以底板保持隐藏，改在滚动内容之上再叠一层同样是玻璃的 `.ultraThinMaterial`：它是
+/// 二次采样，真正加深模糊而不是把内容压淡；用渐变 mask 收边，材质自身的直角边界不可见，
+/// 下沿精确落到全透明，因此不会出现横贯全宽的硬边或明度断层。整体观感仍是"顶部一整片
+/// 玻璃"，只是比系统默认更实。
+@available(iOS 26.0, *)
+private struct WorkbenchTopScrollEdgeBoost: View {
+    /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
+    private let fadeTail: CGFloat = 56
+
+    /// 收边采样点数。9 个点足以让 smoothstep 在 56pt 内看不出分段。
+    private static let falloffSampleCount: Int = 9
+
+    /// 收边曲线。等距线性渐变在"满强度结束、斜坡开始"那一点存在斜率突变，人眼会把这种
+    /// 一阶不连续读成一条横线（Mach band）——正是要避免的分界线。这里用 smoothstep
+    /// `t²(3−2t)` 采样：两端斜率都为 0，接进满强度段和接进全透明处都没有折点，
+    /// 整条收边不存在任何可定位的边界。
+    ///
+    /// 每一步都写死类型并用普通循环展开：交给类型推导去解
+    /// `stops:` 里的 map + 混合字面量算术，Swift 类型检查器会在较慢的机器上超时
+    /// （CI 报 "unable to type-check this expression in reasonable time"）。
+    private static func falloffStops(holdStop: CGFloat) -> [Gradient.Stop] {
+        var stops: [Gradient.Stop] = []
+        stops.reserveCapacity(falloffSampleCount)
+        let lastIndex: CGFloat = CGFloat(falloffSampleCount - 1)
+        for index in 0..<falloffSampleCount {
+            let progress: CGFloat = CGFloat(index) / lastIndex
+            let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
+            let alpha: Double = Double(1.0 - eased)
+            let location: CGFloat = holdStop + (1.0 - holdStop) * progress
+            stops.append(Gradient.Stop(color: Color.black.opacity(alpha), location: location))
+        }
+        return stops
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            // 让出安全区后，proxy 汇报的正是被让出的顶部 inset（状态栏 + 导航控制层）。
+            let topInset: CGFloat = proxy.safeAreaInsets.top
+            let height: CGFloat = max(topInset + fadeTail, 1)
+            // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
+            let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        stops: Self.falloffStops(holdStop: holdStop),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
     }
 }

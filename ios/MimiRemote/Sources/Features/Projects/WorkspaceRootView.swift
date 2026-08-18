@@ -409,7 +409,8 @@ struct WorkspaceRootView: View {
             }
             .presentationDetents([.large])
         }
-        .background(tokens.background.ignoresSafeArea())
+        // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
     }
 
     private func migrateLegacyWorkspaceAppearance() {
@@ -483,7 +484,7 @@ struct WorkspaceRootView: View {
                 // 选中工作区的分支、Git 状态和活跃时间收进一行状态摘要。
                 projectPager(tokens: tokens)
             }
-            .background(tokens.background.ignoresSafeArea())
+            .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         }
     }
 
@@ -552,7 +553,7 @@ struct WorkspaceRootView: View {
                 .tint(tokens.primaryAction)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
     }
 
@@ -612,7 +613,7 @@ struct WorkspaceRootView: View {
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.emptyState")
     }
@@ -1460,7 +1461,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
     }
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {

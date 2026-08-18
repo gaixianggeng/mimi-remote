@@ -269,6 +269,16 @@ extension ThemeTokens {
         )
     }
 
+    /// 宽屏工作台的基底。侧栏浮层外围的 gutter、会话/工作区主列表与会话画布在同一屏上
+    /// 彼此相邻，必须共用同一张底色：暖白 background(250,247,241) 与纸白
+    /// conversationCanvasBackground(250,250,248) 亮度相同、只差色温，没有明度台阶的
+    /// 同亮度色差不会被读成层级，只会被读成"颜色没对上"。层级改由 255 白的浮层卡片表达。
+    /// 设置页、各类 sheet 等不与阅读层相邻的界面继续用 background，保留 Codex 暖白识别度。
+    /// 深色与非 codex 主题下本就等于 background，因此这条只作用在浅色 codex。
+    var workbenchCanvasBackground: Color {
+        conversationCanvasBackground
+    }
+
     /// 长文阅读层使用中性黑而不是全局暖棕文字；同一张 iPhone 截图中可与
     /// Claude 的 #181818 正文对齐，同时不改变侧栏和工作台的主题识别度。
     var conversationPrimaryText: Color {
