@@ -341,7 +341,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    .github/workflows/release.yml|.github/workflows/nightly.yml|scripts/check-nightly-release.sh|scripts/check-release-source.sh|scripts/verify-release.sh|scripts/ios_testflight_*|config/release/*|docs/nightly-release.md)
+    .github/workflows/release.yml|.github/workflows/nightly.yml|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb|scripts/check-release-source.sh|scripts/verify-release.sh|scripts/ios_testflight_*|config/release/*|docs/nightly-release.md)
       has_release_control=true
       ;;
   esac

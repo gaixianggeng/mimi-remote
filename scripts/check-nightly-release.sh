@@ -13,7 +13,8 @@ run_check() {
   ruby - "$CHECK_ROOT/.github/workflows/nightly.yml" \
     "$CHECK_ROOT/.github/workflows/ios-ci.yml" \
     "$CHECK_ROOT/.github/workflows/release.yml" \
-    "$CHECK_ROOT/scripts/distribute_internal_build.rb" <<'RUBY'
+    "$CHECK_ROOT/scripts/distribute_internal_build.rb" \
+    "$CHECK_ROOT/scripts/generate-nightly-what-to-test.rb" <<'RUBY'
 require "yaml"
 
 def fail_check(message)
@@ -60,10 +61,12 @@ def assert_pinned_actions(path, workflow)
   end
 end
 
-nightly_path, ios_path, release_path, distributor_path = ARGV
+nightly_path, ios_path, release_path, distributor_path, generator_path = ARGV
 nightly = load_yaml(nightly_path)
 ios = load_yaml(ios_path)
 release = load_yaml(release_path)
+fail_check("Nightly What to Test 生成器不存在") unless File.file?(generator_path)
+generator = File.read(generator_path)
 [nightly, ios, release].zip([nightly_path, ios_path, release_path]).each do |workflow, path|
   assert_pinned_actions(path, workflow)
 end
@@ -118,6 +121,23 @@ dedup_run = steps(plan).fetch(dedup_index).fetch("run")
   '%w[schedule workflow_dispatch].include?(value["event"])',
   'value["uploaded"] == true'
 ].each { |needle| fail_check("Nightly evidence 绑定缺少 #{needle}") unless dedup_run.include?(needle) }
+[
+  'run["conclusion"] == "success"', 'run["head_branch"] == "main"',
+  'run["head_sha"] != source_sha', 'per_page=100&page=${baseline_page}',
+  'if [[ "$should_publish" == "true" ]]; then',
+  'git cat-file -e "${candidate_sha}^{commit}"',
+  'git merge-base --is-ancestor "$candidate_sha" "$source_sha"',
+  'scripts/generate-nightly-what-to-test.rb', 'GITHUB_OUTPUT',
+  'what_to_test<<$delimiter', 'od -An -N16 -tx1 /dev/urandom',
+  'grep -Fqx -- "$delimiter"'
+].each { |needle| fail_check("Nightly What to Test 安全边界缺少 #{needle}") unless dedup_run.include?(needle) }
+[
+  'MAX_LENGTH = 4000', '--no-merges', 'diff-tree', 'changed_paths', 'base_sha != head_sha',
+  'noise_path?', 'testflight_payload_path?', 'ios/MimiRemote/WidgetExtension/',
+  'Info-Catalyst.plist', 'MimiRemotePhysicalUITests.xcscheme',
+  'FALLBACK_NO_BASELINE', 'FALLBACK_NO_USER_CHANGES',
+  'normalized_title', '其余 #{remaining} 项更新未展开'
+].each { |needle| fail_check("Nightly What to Test 生成器缺少 #{needle}") unless generator.include?(needle) }
 fail_check("Nightly plan 必须输出 source_sha/what_to_test/should_publish") unless
   %w[source_sha what_to_test should_publish].all? { |key| plan.dig("outputs", key).to_s.include?("steps.plan.outputs") }
 
@@ -299,7 +319,9 @@ self_test() {
   cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/"
   cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/"
   cp "$ROOT_DIR/scripts/distribute_internal_build.rb" "$test_root/scripts/"
+  cp "$ROOT_DIR/scripts/generate-nightly-what-to-test.rb" "$test_root/scripts/"
   MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null
+  ruby "$test_root/scripts/generate-nightly-what-to-test.rb" --self-test >/dev/null
 
   expect_failure() {
     if MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null 2>&1; then
@@ -328,6 +350,7 @@ self_test() {
     expect_failure
   }
   mutate_nightly 'artifact["name"] == "nightly-testflight-#{sha}"' 'artifact["name"]'
+  mutate_nightly 'if [[ "$should_publish" == "true" ]]; then' 'if true; then'
   mutate_nightly 'artifact["expired"] == false' 'artifact["expired"] != true'
   mutate_nightly 'workflow_run["id"].to_s == run_id' 'workflow_run["id"]'
   mutate_nightly 'workflow_run["head_sha"] == sha' 'workflow_run["head_sha"]'

@@ -42,6 +42,7 @@ on:
       - ".github/workflows/ios-ci.yml"
       - ".github/workflows/nightly.yml"
       - "scripts/check-nightly-release.sh"
+      - "scripts/generate-nightly-what-to-test.rb"
       - "scripts/check-pr-gate.sh"
       - "scripts/ci-pr-scope.sh"
       - "config/release/ios-asc-cli.env"
