@@ -30,6 +30,7 @@ on:
       - "scripts/restart-agentd-dev-handoff-macos.sh"
       - "scripts/verify-release.sh"
       - "scripts/check-nightly-release.sh"
+      - "scripts/generate-nightly-what-to-test.rb"
       - "scripts/check-pr-gate.sh"
       - "scripts/ci-pr-scope.sh"
       - ".github/workflows/go-ci.yml"

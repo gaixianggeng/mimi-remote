@@ -14,7 +14,7 @@
 
 ## 实现
 
-Nightly 的 What to Test 只包含北京时间日期、短 SHA 和清洗后的 commit title。App 的 marketing version 与 host 的 `v*` 版本线独立；build number 继续由 App Store Connect 预检分配。Windows 签名和真实 Runtime 不属于 Nightly 的阻塞链路。
+Nightly 的 What to Test 根据上一成功 Nightly 与当前 source SHA 之间的可达变更范围生成：包含北京时间日期、短 SHA 范围和去重后的非 merge commit 标题，只保留真正进入 iOS App 或 Widget 产物的更新，并过滤 Mac/agentd、Web、纯 CI、文档、测试与发布控制噪音。首次 Nightly、找不到祖先基线或没有 TestFlight 产物变更时会给出明确的完整验证/无新增功能兜底，内容最多 4000 个 Unicode 字符。App 的 marketing version 与 host 的 `v*` 版本线独立；build number 继续由 App Store Connect 预检分配。Windows 签名和真实 Runtime 不属于 Nightly 的阻塞链路。
 
 ## 风险与优化
 

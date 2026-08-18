@@ -159,20 +159,93 @@ jobs:
             skip_reason="force_publish=true，忽略同一 commit 的成功记录。"
           fi
 
-          commit_title="$(git log -1 --format=%s "$source_sha" \
-            | tr '\r\n' ' ' \
-            | tr -cd '[:print:]' \
-            | sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//' \
-            | cut -c1-120)"
-          [[ -n "$commit_title" ]] || commit_title="main commit"
-          what_to_test="Nightly $(TZ=Asia/Shanghai date +%F) ${source_sha:0:7}: ${commit_title}"
+          baseline_sha=""
+          nightly_date="$(TZ=Asia/Shanghai date +%F)"
+          if [[ "$should_publish" == "true" ]]; then
+            # 只从成功的 Nightly run 中选基线，并逐个用 Git 祖先关系校验；API
+            # 返回的 run/head SHA 不直接信任，找不到可达基线时交给生成器安全兜底。
+            baseline_page=1
+            while [[ -z "$baseline_sha" ]]; do
+              baseline_runs_file="$RUNNER_TEMP/nightly-successful-runs-${baseline_page}.json"
+              curl --fail --silent --show-error \
+                --header "Accept: application/vnd.github+json" \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?per_page=100&page=${baseline_page}" \
+                > "$baseline_runs_file"
+              baseline_candidates="$RUNNER_TEMP/nightly-baseline-candidates-${baseline_page}.txt"
+              SOURCE_SHA="$source_sha" CURRENT_RUN_ID="$GITHUB_RUN_ID" \
+                ruby -rjson -e '
+                  data = JSON.parse(File.read(ARGV.fetch(0)))
+                  source_sha = ENV.fetch("SOURCE_SHA")
+                  current_run_id = ENV.fetch("CURRENT_RUN_ID")
+                  runs = data.fetch("workflow_runs", []).select do |run|
+                    run["conclusion"] == "success" &&
+                      run["id"].to_s != current_run_id &&
+                      run["head_sha"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+                      run["head_sha"] != source_sha &&
+                      run["head_branch"] == "main" &&
+                      %w[schedule workflow_dispatch].include?(run["event"])
+                  end
+                  runs.sort_by { |run| [run["created_at"].to_s, run["id"].to_i] }.reverse_each do |run|
+                    puts run.fetch("head_sha")
+                  end
+                ' "$baseline_runs_file" > "$baseline_candidates"
+
+              while IFS= read -r candidate_sha; do
+                [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+                if git cat-file -e "${candidate_sha}^{commit}" 2>/dev/null &&
+                  git merge-base --is-ancestor "$candidate_sha" "$source_sha" 2>/dev/null; then
+                  baseline_sha="$candidate_sha"
+                  break
+                fi
+              done < "$baseline_candidates"
+
+              baseline_count="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("workflow_runs", []).length' "$baseline_runs_file")"
+              [[ "$baseline_count" -lt 100 ]] && break
+              baseline_page=$((baseline_page + 1))
+            done
+
+            generator_args=(
+              scripts/generate-nightly-what-to-test.rb
+              --date "$nightly_date"
+              --head-sha "$source_sha"
+            )
+            [[ -z "$baseline_sha" ]] || generator_args+=(--base-sha "$baseline_sha")
+            what_to_test="$(ruby "${generator_args[@]}")"
+          else
+            # 去重成功分支不能再访问 Actions API；该占位只用于 plan 输出，
+            # publish 已因 should_publish=false 跳过，避免改变既有 skip 语义。
+            what_to_test="Nightly ${nightly_date} ${source_sha:0:7}: 已有成功 Nightly，跳过本次发布。"
+          fi
           echo "$skip_reason"
+          echo "Nightly What to Test 基线：${baseline_sha:-无可达上一成功 SHA}"
+
+          # GITHUB_OUTPUT 的 delimiter 必须是随机且不出现在 payload 独立行中；
+          # 即使提交标题包含 Actions 命令样式文本，也不能提前闭合多行 output。
+          new_delimiter() {
+            local random_hex
+            random_hex="$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]')"
+            [[ "$random_hex" =~ ^[0-9a-f]{32}$ ]] || {
+              echo "无法生成安全的 Nightly output delimiter。" >&2
+              exit 1
+            }
+            printf 'MIMI_NIGHTLY_WHAT_TO_TEST_%s' "$random_hex"
+          }
+          delimiter="$(new_delimiter)"
+          while printf '%s\n' "$what_to_test" | grep -Fqx -- "$delimiter"; do
+            delimiter="$(new_delimiter)"
+          done
+          if printf '%s\n' "$what_to_test" | grep -Fqx -- "$delimiter"; then
+            echo "Nightly What to Test delimiter 出现在 payload 独立行。" >&2
+            exit 1
+          fi
           {
             echo "source_sha=$source_sha"
             echo "should_publish=$should_publish"
-            # commit title 已在上方去除换行，因此使用单行 output，避免固定
-            # heredoc delimiter 被恶意或意外的提交标题提前闭合。
-            echo "what_to_test=$what_to_test"
+            echo "what_to_test<<$delimiter"
+            printf '%s\n' "$what_to_test"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
   release-secrets-preflight:

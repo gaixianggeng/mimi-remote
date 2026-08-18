@@ -169,6 +169,11 @@ release_checker_output="$(assert_plan release_checker scripts/check-nightly-rele
 assert_contains "$release_checker_output" "check-nightly-release.sh --check"
 assert_contains "$release_checker_output" "check-nightly-release.sh --self-test"
 
+release_generator_output="$(assert_plan release_generator scripts/generate-nightly-what-to-test.rb)"
+assert_contains "$release_generator_output" "ruby -c -- scripts/generate-nightly-what-to-test.rb"
+assert_contains "$release_generator_output" "check-nightly-release.sh --check"
+assert_contains "$release_generator_output" "check-nightly-release.sh --self-test"
+
 release_config_output="$(assert_plan release_config config/release/ios-asc-cli.env)"
 assert_contains "$release_config_output" "check-nightly-release.sh --check"
 

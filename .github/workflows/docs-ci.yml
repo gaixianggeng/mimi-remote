@@ -14,6 +14,7 @@ on:
       - "scripts/check-packaging.sh"
       - "scripts/check-app-store-metadata.sh"
       - "scripts/check-nightly-release.sh"
+      - "scripts/generate-nightly-what-to-test.rb"
       - ".github/workflows/docs-ci.yml"
   workflow_dispatch:
 
