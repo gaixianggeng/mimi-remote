@@ -293,7 +293,11 @@ extension SessionStore {
             }
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
-                setErrorMessage(error.localizedDescription)
+                if Self.isCodexActiveWriterConflict(error.localizedDescription) {
+                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_shared_service"))
+                } else {
+                    setErrorMessage(error.localizedDescription)
+                }
             }
             return false
         }
@@ -2190,8 +2194,8 @@ extension SessionStore {
                 disconnectWebSocket()
             }
         } else if autoAttach {
-            // 非运行会话回前台也重新订阅：连接重建后 resume 的权威状态能纠正误判，
-            // 期间完成的输出走状态级回放 + 静默补拉，不再依赖手动刷新。
+            // 非运行会话回前台仍恢复页面连接。共享模式会 resume 纠正误判；独立模式只读
+            // 持久化历史，不提前取得 writer。期间完成的输出由静默补拉兜底。
             connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
             scheduleQuietHistoryRefresh(for: session)
         } else if connectedSessionID != nil {

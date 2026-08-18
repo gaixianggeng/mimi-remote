@@ -599,8 +599,8 @@ extension SessionStore {
     }
 
     func shouldAutoReconnectWebSocket(sessionID: SessionID) -> Bool {
-        // 不再要求 isRunning：状态可能刚被瞬时 idle 误读降级，订阅对历史会话同样有效；
-        // 只要还是当前选中的会话就继续自动重连。
+        // 不再要求 isRunning：状态可能刚被瞬时 idle 误读降级。共享模式会恢复订阅，
+        // 独立模式只恢复页面连接并保持持久化历史可读。
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
@@ -722,8 +722,7 @@ extension SessionStore {
             return
         }
         // 快照可能在上游刚恢复时把运行中的 turn 误读成 idle；不能据此一次性放弃重连。
-        // 订阅对历史会话同样有效：resume 后权威状态自行纠正，turn 真结束也会由
-        // turn/completed 事件如实呈现。
+        // 共享模式会 resume 并用权威状态纠正；独立模式保持只读，等待轮询或首次发送。
         connectWebSocket(refreshedSession, isReconnectAttempt: true, allowNonRunning: true)
     }
 

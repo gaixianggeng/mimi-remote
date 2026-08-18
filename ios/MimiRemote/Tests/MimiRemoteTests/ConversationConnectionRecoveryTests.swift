@@ -2067,6 +2067,7 @@ extension ConversationDataFlowTests {
         )
         let config = makeDirectAppServerConfig(
             project: project,
+            transport: "unix",
             allowedMethods: [
                 "initialize", "initialized", "thread/read", "thread/resume", "turn/start"
             ]
@@ -2157,6 +2158,7 @@ extension ConversationDataFlowTests {
         )
         let config = makeDirectAppServerConfig(
             project: project,
+            transport: "unix",
             allowedMethods: [
                 "initialize", "initialized", "thread/read", "thread/resume", "turn/start"
             ]

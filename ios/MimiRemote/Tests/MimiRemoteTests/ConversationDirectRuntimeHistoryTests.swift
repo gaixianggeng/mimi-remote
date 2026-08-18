@@ -570,7 +570,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -632,7 +634,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -922,7 +926,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transportPool.make() },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -1133,7 +1139,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -1357,7 +1365,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
 
         let pageTask = Task {
@@ -1664,32 +1674,20 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(historyRead.method, "thread/read")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: historyRead.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
         await selectTask.value
+        try await waitForWebSocketStatus(.connected, store: store)
 
-        // 选中历史会话现在也会立即建立事件订阅：先在当前连接补一次 thread/resume。
-        let subscriptionResumeMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let subscriptionResume = try decodeAppServerRequest(subscriptionResumeMessages[4])
-        XCTAssertEqual(subscriptionResume.method, "thread/resume")
-        XCTAssertEqual(subscriptionResume.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
-        XCTAssertEqual(
-            subscriptionResume.params?.objectValue?["initialTurnsPage"]?.objectValue?["itemsView"]?.stringValue,
-            "summary"
-        )
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: subscriptionResume.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
-
-        // 订阅建立后会异步刷新 thread 目标；回空结果即可。
-        let goalMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let goalGet = try decodeAppServerRequest(goalMessages[5])
-        XCTAssertEqual(goalGet.method, "thread/goal/get")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: goalGet.id)),"result":{}}"#)
+        // 独立 WS 模式打开空闲历史只读取持久化内容，不提前争抢 writer。
+        let requestsAfterOpen = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requestsAfterOpen.contains { $0.method == "thread/resume" })
 
         let sendTask = Task { await store.sendPrompt("继续排查") }
-        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 7)
-        let modelList = try decodeAppServerRequest(resumeMessages[6])
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let modelList = try decodeAppServerRequest(resumeMessages[4])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-history-default","name":"History Default","provider":"openai","isDefault":true}]}}"#)
 
-        let resumeRequestMessages = try await waitForFakeAppServerMessages(transport, count: 8)
-        let resumeRequest = try decodeAppServerRequest(resumeRequestMessages[7])
+        let resumeRequestMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let resumeRequest = try decodeAppServerRequest(resumeRequestMessages[5])
         XCTAssertEqual(resumeRequest.method, "thread/resume")
         XCTAssertEqual(resumeRequest.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertNil(resumeRequest.params?.objectValue?["model"]?.stringValue)
@@ -1700,15 +1698,15 @@ extension ConversationDataFlowTests {
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"error":{"code":-32080,"message":"thread/resume history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取","data":{"reason":"history_response_too_large","method":"thread/resume","itemsView":"summary"}}}"#)
 
-        let fallbackResumeMessages = try await waitForFakeAppServerMessages(transport, count: 9)
-        let fallbackResume = try decodeAppServerRequest(fallbackResumeMessages[8])
+        let fallbackResumeMessages = try await waitForFakeAppServerMessages(transport, count: 7)
+        let fallbackResume = try decodeAppServerRequest(fallbackResumeMessages[6])
         XCTAssertEqual(fallbackResume.method, "thread/resume")
         XCTAssertEqual(fallbackResume.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertNil(fallbackResume.params?.objectValue?["initialTurnsPage"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: fallbackResume.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"继续排查","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 10)
-        let turnStart = try decodeAppServerRequest(turnMessages[9])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 8)
+        let turnStart = try decodeAppServerRequest(turnMessages[7])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertEqual(turnStart.params?.objectValue?["clientUserMessageId"]?.stringValue?.isEmpty, false)
@@ -1759,6 +1757,20 @@ extension ConversationDataFlowTests {
         let page = try await pageTask.value
         XCTAssertEqual(page.sessions.map(\.id), ["thr_idle_guard"])
         XCTAssertFalse(try XCTUnwrap(page.sessions.first).isRunning, "idle 历史 thread 在列表语义上应保持 history，但 runtime startTurn 仍需要先 resume")
+
+        try await runtime.connectForEvents(sessionID: "thr_idle_guard")
+        let requestsAfterOpen = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(
+            requestsAfterOpen.contains { $0.method == "thread/resume" },
+            "独立模式查看 idle 历史不能提前取得 writer"
+        )
+        let release = try await runtime.releaseThreadWriterWhenIdle(threadID: "thr_idle_guard")
+        XCTAssertEqual(release.status, .alreadyReleased)
+        let requestsAfterRelease = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(
+            requestsAfterRelease.contains { $0.method == "thread/unsubscribe" },
+            "未 resume 的纯历史读取不应触发 unsubscribe 或 archive/unarchive handoff"
+        )
 
         // 第一次直连发送：startTurn 必须先 thread/resume，再 turn/start。
         let firstTurnTask = Task {
