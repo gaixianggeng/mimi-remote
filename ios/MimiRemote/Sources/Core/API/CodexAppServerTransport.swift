@@ -496,6 +496,26 @@ actor CodexAppServerConnection {
     }
 
     private func resolve(_ response: CodexAppServerResponse) {
+        if let error = response.error,
+           error.data?.objectValue?["response_to_server_request"]?.boolValue == true {
+            // server request 的 response 是 fire-and-forget，不在 pendingResponses
+            // 中。gateway 拒绝它时转成私有通知，让 runtime 恢复审批/输入卡片，
+            // 避免界面显示“已发送”而实际 shared daemon 没有收到。
+            let requestID: CodexAppServerJSONValue
+            switch response.id {
+            case .int(let value): requestID = .int(value)
+            case .string(let value): requestID = .string(value)
+            case .null: requestID = .null
+            }
+            var params = error.data?.objectValue ?? [:]
+            params["requestId"] = requestID
+            params["message"] = .string(error.message)
+            notificationContinuation?.yield(CodexAppServerNotification(
+                method: "_mimi/serverRequestResponse/rejected",
+                params: .object(params)
+            ))
+            return
+        }
         guard let pending = pendingResponses.removeValue(forKey: response.id) else {
             return
         }

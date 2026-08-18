@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -740,6 +741,8 @@ func runNetwork(args []string) error {
 }
 
 func runDoctor(args []string) error {
+	doctorCtx, cancelDoctor := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancelDoctor()
 	checkPort := false
 	asJSON := false
 	fix := false
@@ -760,12 +763,17 @@ func runDoctor(args []string) error {
 		if !fix {
 			return err
 		}
-		fixes, repairedChecker, repairedResults, repairErr := rebuildDoctorConfig(context.Background(), configPath, checkPort)
+		fixes, repairedChecker, repairedResults, repairErr := rebuildDoctorConfig(doctorCtx, configPath, checkPort)
 		if repairErr != nil {
 			return fmt.Errorf("%v；自动修复也失败：%w", err, repairErr)
 		}
+		restartRequired := len(fixes) > 0
 		if asJSON {
-			return printJSON(map[string]any{"fixes": fixes, "results": repairedResults})
+			return printJSON(map[string]any{
+				"fixes":            fixes,
+				"results":          repairedResults,
+				"restart_required": restartRequired,
+			})
 		}
 		fmt.Fprintf(os.Stdout, "配置加载失败，已尝试自动修复：%v\n\n", err)
 		if len(fixes) > 0 {
@@ -776,16 +784,20 @@ func runDoctor(args []string) error {
 			fmt.Fprintln(os.Stdout)
 		}
 		doctor.Print(os.Stdout, repairedResults)
+		if restartRequired {
+			fmt.Fprintln(os.Stdout, "\n配置已更新，需要重启 agentd 后生效。")
+		}
 		_ = repairedChecker
 		if !repairedResults.OK {
 			return fmt.Errorf("doctor 检查未通过")
 		}
 		return nil
 	}
-	results := checker.Run(context.Background(), checkPort)
+	results := checker.Run(doctorCtx, checkPort)
 	fixes := []string{}
+	restartRequired := false
 	if fix {
-		fixes, checker, results, err = runDoctorFix(context.Background(), configPath, checkPort, results)
+		fixes, restartRequired, checker, results, err = runDoctorFix(doctorCtx, configPath, checkPort, results)
 		if err != nil {
 			return err
 		}
@@ -793,7 +805,11 @@ func runDoctor(args []string) error {
 	if asJSON {
 		payload := any(results)
 		if fix {
-			payload = map[string]any{"fixes": fixes, "results": results}
+			payload = map[string]any{
+				"fixes":            fixes,
+				"results":          results,
+				"restart_required": restartRequired,
+			}
 		}
 		if err := printJSON(payload); err != nil {
 			return err
@@ -807,6 +823,9 @@ func runDoctor(args []string) error {
 			fmt.Fprintln(os.Stdout)
 		}
 		doctor.Print(os.Stdout, results)
+		if fix && restartRequired {
+			fmt.Fprintln(os.Stdout, "\n配置已更新，需要重启 agentd 后生效。")
+		}
 		_ = checker
 	}
 	if !results.OK {
@@ -877,15 +896,21 @@ func loadRuntimeConfigFromPath(configPath string, forDoctor bool) (config.Config
 	return cfg, registry, checker, nil
 }
 
-func runDoctorFix(ctx context.Context, configPath string, checkPort bool, current doctor.Results) ([]string, *doctor.Checker, doctor.Results, error) {
+func runDoctorFix(
+	ctx context.Context,
+	configPath string,
+	checkPort bool,
+	current doctor.Results,
+) ([]string, bool, *doctor.Checker, doctor.Results, error) {
 	configPath = expandUserPath(configPath)
 	fixes := []string{}
+	restartRequired := false
 	needsSetup := false
 	if _, err := os.Stat(configPath); err != nil {
 		if os.IsNotExist(err) {
 			needsSetup = true
 		} else {
-			return nil, nil, current, fmt.Errorf("读取配置状态失败：%w", err)
+			return nil, false, nil, current, fmt.Errorf("读取配置状态失败：%w", err)
 		}
 	}
 	if hasFailedCheck(current, "token") || hasFailedCheck(current, "projects") {
@@ -894,7 +919,7 @@ func runDoctorFix(ctx context.Context, configPath string, checkPort bool, curren
 	if hasFailedCheck(current, "config-file") {
 		fixed, err := tightenSensitiveFilePermissions(configPath)
 		if err != nil {
-			return nil, nil, current, fmt.Errorf("修复配置文件权限失败：%w", err)
+			return nil, false, nil, current, fmt.Errorf("修复配置文件权限失败：%w", err)
 		}
 		if fixed {
 			fixes = append(fixes, "已将配置文件权限收紧为 0600")
@@ -904,14 +929,15 @@ func runDoctorFix(ctx context.Context, configPath string, checkPort bool, curren
 		// legacy 配置没有独立 upstream token，或原文件已丢失时，只补 token 路径，不重建整份用户配置。
 		tokenPath, repaired, repairErr := agentsetup.RepairManagedWSTokenFile(configPath)
 		if repairErr != nil {
-			return nil, nil, current, fmt.Errorf("修复 app-server token file 失败：%w", repairErr)
+			return nil, false, nil, current, fmt.Errorf("修复 app-server token file 失败：%w", repairErr)
 		}
 		if repaired {
 			fixes = append(fixes, "已生成独立 app-server token file 并原子更新配置")
+			restartRequired = true
 		} else if strings.TrimSpace(tokenPath) != "" {
 			fixed, fixErr := tightenSensitiveFilePermissions(tokenPath)
 			if fixErr != nil {
-				return nil, nil, current, fmt.Errorf("修复 app-server token file 权限失败：%w", fixErr)
+				return nil, false, nil, current, fmt.Errorf("修复 app-server token file 权限失败：%w", fixErr)
 			}
 			if fixed {
 				fixes = append(fixes, "已将 app-server token file 权限收紧为 0600")
@@ -923,21 +949,23 @@ func runDoctorFix(ctx context.Context, configPath string, checkPort bool, curren
 		codexPath, repaired, repairErr := agentsetup.RepairCodexBin(configPath)
 		if repairErr == nil && repaired {
 			fixes = append(fixes, "已恢复 Codex CLI 路径："+codexPath)
+			restartRequired = true
 		}
 	}
 	if needsSetup {
 		setupFixes, err := forceSetupWithBackup(ctx, configPath)
 		if err != nil {
-			return nil, nil, current, err
+			return nil, false, nil, current, err
 		}
 		fixes = append(fixes, setupFixes...)
+		restartRequired = restartRequired || len(setupFixes) > 0
 	}
 	_, registry, checker, err := loadRuntimeConfigFromPath(configPath, true)
 	if err != nil {
-		return nil, nil, current, err
+		return nil, false, nil, current, err
 	}
 	_ = registry
-	return fixes, checker, checker.Run(ctx, checkPort), nil
+	return fixes, restartRequired, checker, checker.Run(ctx, checkPort), nil
 }
 
 func tightenSensitiveFilePermissions(path string) (bool, error) {
@@ -996,38 +1024,73 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	checker.StartFileAccessPreflight()
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
 	var sharedDaemonStatus appserver.LocalDaemonStatus
-	switch strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport)) {
+	appServerTransport := strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport))
+	mimiOwnedSharedDaemon := appServerTransport == "unix" &&
+		cfg.AppServer.Managed && cfg.AppServer.SharedFallback != nil
+	configPath := strings.TrimSpace(checker.ConfigPath())
+	if mimiOwnedSharedDaemon {
+		if !appserver.SupportsStableSharedDaemonOwner() {
+			return fmt.Errorf("Codex 完整共享 daemon owner 当前仅支持 macOS")
+		}
+		if !config.IsPlatformDefaultPath(configPath) {
+			return fmt.Errorf("Mimi 管理的共享 Codex daemon 只能由平台默认配置启动：%s", config.PlatformDefaultPath())
+		}
+	}
+	if !mimiOwnedSharedDaemon {
+		// 用户全局 LaunchAgent 只归平台默认配置所有。前台运行自定义 profile
+		// 时不得清理默认服务的 owner。
+		if config.IsPlatformDefaultPath(configPath) {
+			artifactsPresent, artifactsErr := appserver.SharedDaemonOwnerArtifactsPresent()
+			if artifactsErr != nil {
+				return fmt.Errorf("检查残留共享 daemon owner 失败：%w", artifactsErr)
+			}
+			if artifactsPresent {
+				if configPath == "" {
+					return fmt.Errorf("清理残留共享 daemon owner 缺少可复核的配置路径")
+				}
+				expectedBin := cfg.Codex.Bin
+				expectedEnv := maps.Clone(cfg.Codex.Env)
+				cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 15*time.Second)
+				cleanupErr := appserver.ReconcileDisabledSharedDaemonOwner(cleanupCtx, func() error {
+					return config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
+				})
+				cancelCleanup()
+				if cleanupErr != nil {
+					return fmt.Errorf("清理残留共享 daemon owner 失败：%w", cleanupErr)
+				}
+			}
+		}
+	}
+	switch appServerTransport {
 	case "unix":
 		if cfg.AppServer.Managed {
-			// 官方 daemon 冷启动自身最多等待约 10 秒；外层留出进程创建与握手余量。
-			ensureCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, appserver.LocalDaemonOptions{
-				CodexBin: cfg.Codex.Bin,
-				Env:      cfg.Codex.Env,
-			})
+			// launchd 启动和官方 daemon 初始化都是异步的；外层覆盖最慢的冷启动。
+			ensureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			mimiOwned := cfg.AppServer.SharedFallback != nil
+			options := appserver.LocalDaemonOptions{
+				CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env, StableOwner: mimiOwned, AttachOnly: !mimiOwned,
+			}
+			if mimiOwned {
+				if configPath == "" {
+					cancel()
+					return fmt.Errorf("共享 Codex daemon 缺少可复核的配置路径")
+				}
+				expectedBin := cfg.Codex.Bin
+				expectedEnv := maps.Clone(cfg.Codex.Env)
+				options.ValidateStableOwner = func() error {
+					return config.ValidateSharedDaemonRecoveryOwnership(configPath, expectedBin, expectedEnv)
+				}
+			}
+			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, options)
 			cancel()
 			if ensureErr != nil {
 				return fmt.Errorf("准备共享 Codex local daemon 失败：%w", ensureErr)
 			}
-			// live socket 可连接不代表重启后还能恢复。共享模式只接受官方 daemon
-			// 管理且 standalone 完整的生命周期，避免下次登录后 LaunchAgent 持续失败。
-			lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), 5*time.Second)
-			lifecycle, lifecycleErr := appserver.InspectLocalDaemonLifecycle(lifecycleCtx, appserver.LocalDaemonOptions{
-				CodexBin: cfg.Codex.Bin,
-				Env:      cfg.Codex.Env,
-			})
-			cancelLifecycle()
-			if lifecycleErr != nil {
-				return fmt.Errorf("确认共享 Codex local daemon 生命周期失败：%w", lifecycleErr)
-			}
-			if lifecycleErr := appserver.ValidateLocalDaemonLifecycle(lifecycle, status.SocketPath); lifecycleErr != nil {
-				return fmt.Errorf("共享 Codex local daemon 无法冷启动恢复：%w", lifecycleErr)
-			}
-			if identityErr := appserver.ValidateLocalDaemonProbeVersion(lifecycle, status.Version); identityErr != nil {
-				return fmt.Errorf("共享 Codex local daemon 身份校验失败：%w", identityErr)
+			if mimiOwned && !status.LifecycleValidated {
+				return fmt.Errorf("共享 Codex local daemon 未完成稳定 owner 生命周期校验")
 			}
 			sharedDaemonStatus = status
-			log.Printf("agentd shared Codex local daemon ready started=%t", status.Started)
+			log.Printf("agentd Codex local daemon ready started=%t mimi_owned=%t", status.Started, mimiOwned)
 		} else {
 			log.Printf("agentd external Codex local daemon upstream configured")
 		}
@@ -1076,6 +1139,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		nil,
 		httpapi.RouterOptions{
+			ConfigPath:                     checker.ConfigPath(),
 			GatewayTurnClaimStorePath:      gatewayTurnClaimStorePath,
 			ThreadHandoffRecoveryStorePath: threadHandoffRecoveryStorePath,
 		},

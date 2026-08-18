@@ -556,10 +556,32 @@ private enum CodexAppServerDefaults {
 
 enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
     case untrusted
-    case onFailure = "on-failure"
     case onRequest = "on-request"
 
     var id: String { rawValue }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        switch rawValue {
+        case Self.untrusted.rawValue:
+            self = .untrusted
+        case Self.onRequest.rawValue, "on-failure":
+            // 旧版 Mimi 会把自动审批持久化为 on-failure。新版 app-server 已删除该值，
+            // 因此只在本地解码时迁移，任何后续持久化和请求都统一写回 on-request。
+            self = .onRequest
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported approval policy: \(rawValue)"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 enum CodexAppServerSandboxMode: String, Codable, CaseIterable, Hashable, Identifiable {
@@ -761,7 +783,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         if sanitized.sandboxMode == .readOnly {
             sanitized.approvalPolicy = .onRequest
             sanitized.approvalsReviewer = "user"
-        } else if sanitized.approvalPolicy == .onFailure, reviewer == "auto_review" {
+        } else if sanitized.approvalPolicy == .onRequest, reviewer == "auto_review" {
             sanitized.sandboxMode = .workspaceWrite
             sanitized.approvalsReviewer = "auto_review"
         } else {
@@ -785,7 +807,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             approvalsReviewer = "user"
             return
         }
-        if approvalPolicy == .onFailure, reviewer == "auto_review" {
+        if approvalPolicy == .onRequest, reviewer == "auto_review" {
             approvalsReviewer = reviewer
             sandboxMode = .workspaceWrite
             return

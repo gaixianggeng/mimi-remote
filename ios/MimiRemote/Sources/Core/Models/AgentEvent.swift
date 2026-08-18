@@ -33,6 +33,28 @@ enum CodexMCPToolApprovalProtocol {
     }
 }
 
+/// app-server 的新旧协议曾使用过多组会话字段名。事件投影和交互状态必须共享同一份
+/// alias 列表，否则请求虽然能通过 gateway，iPad 端却可能因为找不到会话而丢失审批卡片。
+enum CodexAppServerRequestScope {
+    static let sessionIDKeys = [
+        "threadId",
+        "thread_id",
+        "sessionId",
+        "session_id",
+        "conversationId",
+        "conversation_id"
+    ]
+
+    static func sessionID(in params: [String: CodexAppServerJSONValue]) -> SessionID? {
+        for key in sessionIDKeys {
+            if let sessionID = params[key]?.stringValue, !sessionID.isEmpty {
+                return sessionID
+            }
+        }
+        return nil
+    }
+}
+
 enum AgentEvent {
     case session(AgentSession)
     case sessionRow(DataFlowSessionRow, AgentEventMetadata)
@@ -874,7 +896,7 @@ struct CodexAppServerEventProjector {
     }
 
     private mutating func makeMetadata(from params: [String: CodexAppServerJSONValue]) -> AgentEventMetadata {
-        let sessionID = firstString(in: params, keys: ["threadId", "conversationId", "sessionId", "session_id"])
+        let sessionID = CodexAppServerRequestScope.sessionID(in: params)
             ?? nestedString(in: params, key: "thread", nestedKey: "id")
         let turnID = firstString(in: params, keys: ["turnId", "turn_id"]) ?? nestedString(in: params, key: "turn", nestedKey: "id")
         let item = params["item"]?.objectValue

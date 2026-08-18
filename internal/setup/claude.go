@@ -182,7 +182,7 @@ func ConfigureClaude(
 	updated = append(updated, '\n')
 	changed := string(updated) != string(original)
 	if changed {
-		if err := writePrivateFileAtomically(cfgPath, updated); err != nil {
+		if err := writePrivateFileAtomicallyCAS(cfgPath, original, updated); err != nil {
 			return ClaudeConfigurationResult{}, fmt.Errorf("原子更新配置文件失败：%w", err)
 		}
 	}

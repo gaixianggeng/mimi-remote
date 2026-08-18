@@ -306,6 +306,24 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 	return activities, nil
 }
 
+// GatewayOwnsTurn 在 server request 到达时捕获精确的 Thread+Turn 归属。
+// 先刷新 rollout/claim，再返回当前证据；调用方可以把这个结果保存在对应的
+// pending request 上，避免用户长时间停留在审批页时仅因 claim TTL 到期而死锁。
+func (t *ExternalActivityTracker) GatewayOwnsTurn(threadID string, turnID string) (bool, error) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	if !validGatewayClaimID(threadID) || !validGatewayClaimID(turnID) {
+		return false, nil
+	}
+	if _, err := t.Snapshot(); err != nil {
+		return false, err
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hasGatewayOwnedTurnClaim(threadID, turnID), nil
+}
+
 func (t *ExternalActivityTracker) loadCandidates() ([]externalActivityCandidate, error) {
 	db := t.store.databasePath()
 	signature, err := t.readDBSignature(db)

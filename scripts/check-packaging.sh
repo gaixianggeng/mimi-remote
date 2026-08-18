@@ -40,6 +40,7 @@ for required_file in \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
   scripts/install-linux.sh \
+  scripts/ios-dev.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
@@ -79,6 +80,12 @@ bash ./scripts/test-install-linux.sh >/dev/null
 
 if [[ -f SKILL.md ]] && ! cmp -s SKILL.md packaging/skill/install-mimi-remote/SKILL.md; then
   fail "根 SKILL.md 与独立 Skill 包内容不一致。"
+fi
+grep -Fq 'bash ./scripts/ios-dev.sh build-for-testing' \
+  packaging/skill/install-mimi-remote/SKILL.md \
+  || fail "安装 Skill 的 iOS 测试构建没有使用统一 ios-dev.sh 入口。"
+if grep -Fq 'xcodebuild' packaging/skill/install-mimi-remote/SKILL.md; then
+  fail "安装 Skill 不得绕过 ios-dev.sh 直接调用 xcodebuild。"
 fi
 # BSD 与 GNU mktemp 对 -t 模板的语义不同；显式使用带 XXXXXX 的完整路径，
 # 保证 macOS 本地发布和 Linux GitHub Actions 使用同一实现。

@@ -95,6 +95,119 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testUnregisterTimeoutRetriesOnceThenRegistersAfterStateConverges() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusCalls.increment() == 1 ? Self.stoppedStatus : Self.readyStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+                if call == 2 {
+                    registrationState = .notRegistered
+                }
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-1", "unregister-2", "register-mac",
+        ])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testSecondUnregisterTimeoutFailsWithoutThirdUnregisterOrRegister() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1", "unregister-2"])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(registrationState, .enabled)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .failed(store.lastError ?? ""))
+        XCTAssertTrue(store.lastError?.contains("服务停止超时") == true)
+    }
+
+    func testUnregisterRequiresApprovalDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                registrationState = .requiresApproval
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+        XCTAssertTrue(store.lastError?.contains("登录项") == true)
+    }
+
+    func testUnregisterCancellationDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let firstUnregister = expectation(description: "first unregister called")
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                firstUnregister.fulfill()
+            }
+        )
+
+        let bootstrapTask = Task { await store.bootstrap() }
+        await fulfillment(of: [firstUnregister], timeout: 1)
+        bootstrapTask.cancel()
+        await bootstrapTask.value
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+    }
+
     func testEnabledAgentStatusFailureTriggersOneBoundedReregistration() async {
         let events = EventRecorder()
         let statusEvents = EventRecorder()
@@ -592,6 +705,75 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(store.owner, .homebrew)
         XCTAssertEqual(store.lifecycle, .migrationRequired)
+    }
+
+    func testDoctorRestartsMacAgentAfterConfigurationRepair() async {
+        let events = EventRecorder()
+        var registrationState = ServiceRegistrationState.notRegistered
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                events.append("status")
+                return Self.readyStatus
+            },
+            doctor: { fix in
+                events.append("doctor-\(fix)")
+                return DoctorFixResults(
+                    fixes: ["已恢复 Codex CLI 路径"],
+                    results: Self.readyStatus.doctor,
+                    restartRequired: true
+                )
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            healthCheck: { _ in false }
+        )
+        await store.bootstrap()
+
+        await store.runDoctor(fix: true)
+
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(events.values, [
+            "register-mac", "status",
+            "doctor-true", "unregister-mac", "register-mac", "status",
+        ])
+    }
+
+    func testDoctorRestartsHomebrewAfterConfigurationRepair() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            doctor: { fix in
+                events.append("doctor-\(fix)")
+                return DoctorFixResults(
+                    fixes: ["已恢复 Codex CLI 路径"],
+                    results: Self.readyStatus.doctor,
+                    restartRequired: true
+                )
+            },
+            homebrewStart: { events.append("start-homebrew") },
+            homebrewStop: { events.append("stop-homebrew") }
+        )
+        await store.bootstrap()
+
+        await store.runDoctor(fix: true)
+
+        XCTAssertEqual(store.owner, .homebrew)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(events.values, [
+            "doctor-true", "stop-homebrew", "start-homebrew",
+        ])
     }
 
     func testFailedHomebrewRestoreReturnsToMacAgent() async {
@@ -1122,7 +1304,7 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(writes.values, ["set-true-/tmp/codex"])
         XCTAssertTrue(store.codexDesktopEnabled)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
     }
 
     func testBootstrapWaitsForSharedRuntimeBeforeRestoringLoginEnvironment() async {
@@ -1183,7 +1365,7 @@ final class HostStoreTests: XCTestCase {
         ])
         XCTAssertNil(store.codexDesktopError)
         XCTAssertTrue(store.codexDesktopEnabled)
-        XCTAssertEqual(store.codexDesktopStatusTitle, "已配置")
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
     }
 
     func testBootstrapDoesNotRestoreEnvironmentForExplicitNonSharedRuntime() async {
@@ -1267,6 +1449,423 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(store.codexDesktopStatusTitle, "已关闭")
         XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testConfirmedDesktopRestartMigratesSharedDaemonBeforeReopeningDesktop() async {
+        let events = EventRecorder()
+        let migrationRequired = SharingFlag()
+        migrationRequired.set(true)
+        let pending = CodexDesktopEnvironmentSnapshot(
+            hasLocalPreference: true,
+            enabled: true,
+            environmentValue: "1",
+            codexHome: "/tmp/codex",
+            appInstalled: true,
+            appRunning: true,
+            restartRequired: true
+        )
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: { pending },
+            bootstrap: { pending },
+            setEnabled: { _, _ in pending },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return CodexDesktopEnvironmentSnapshot(
+                    hasLocalPreference: true,
+                    enabled: true,
+                    environmentValue: "1",
+                    codexHome: "/tmp/codex",
+                    appInstalled: true,
+                    appRunning: true
+                )
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
+        XCTAssertNil(store.codexDesktopError)
+    }
+
+    func testCommittedDaemonMigrationStillReopensDesktopWhenStatusRefreshFails() async {
+        let events = EventRecorder()
+        let migrationRequired = SharingFlag()
+        let failRefresh = SharingFlag()
+        migrationRequired.set(true)
+        let pending = CodexDesktopEnvironmentSnapshot(
+            hasLocalPreference: true,
+            enabled: true,
+            environmentValue: "1",
+            codexHome: "/tmp/codex",
+            appInstalled: true,
+            appRunning: true,
+            restartRequired: true
+        )
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                if failRefresh.value { throw TestError.expected }
+                return pending
+            },
+            bootstrap: { pending },
+            setEnabled: { _, _ in pending },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                if failRefresh.value { throw TestError.expected }
+                return Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+                failRefresh.set(true)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
+        XCTAssertNil(store.codexDesktopError)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testCommittedDaemonMigrationWithStoppedDesktopIgnoresPostCommitInspectFailure() async {
+        let events = EventRecorder()
+        let migrationRequired = SharingFlag()
+        let failRefresh = SharingFlag()
+        migrationRequired.set(true)
+        let stopped = Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                if failRefresh.value { throw TestError.expected }
+                return stopped
+            },
+            bootstrap: { stopped },
+            setEnabled: { _, _ in stopped },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return stopped
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                if failRefresh.value { throw TestError.expected }
+                return Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+                failRefresh.set(true)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart"])
+        XCTAssertNil(store.codexDesktopError)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testCommittedDaemonMigrationDoesNotHideNewAuthoritativePendingMarker() async {
+        let migrationRequired = SharingFlag()
+        let failRefresh = SharingFlag()
+        migrationRequired.set(true)
+        let pending = Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                if failRefresh.value { throw TestError.expected }
+                return pending
+            },
+            bootstrap: { pending },
+            setEnabled: { _, _ in pending },
+            restartAndApply: { pending }
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                if failRefresh.value { throw TestError.expected }
+                return Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                migrationRequired.set(false)
+                failRefresh.set(true)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.restartCodexDesktop()
+        XCTAssertFalse(store.canRestartCodexDesktop)
+
+        // 提交后的首次刷新失败，随后服务端重新检测到 unmanaged owner 并生成
+        // 新 marker。下一份权威 true 必须重新显示 pending，不能被本地成功标记遮蔽。
+        migrationRequired.set(true)
+        failRefresh.set(false)
+        await store.refresh()
+
+        XCTAssertEqual(store.codexDesktopStatusTitle, "需要重启")
+        XCTAssertTrue(store.canRestartCodexDesktop)
+    }
+
+    func testPreCommitStatusResponseCannotOverwritePostCommitMigrationState() async {
+        let gate = SuspendedStatusGate()
+        let statusCalls = CallCounter()
+        let pendingStatus = Self.statusWithCodex(shared: true, daemonRestartRequired: true)
+        let committedStatus = Self.statusWithCodex(shared: true, daemonRestartRequired: false)
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            setEnabled: { _, _ in
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            restartAndApply: {
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                switch statusCalls.increment() {
+                case 1:
+                    return pendingStatus
+                case 2:
+                    return await gate.suspendReturning(pendingStatus)
+                default:
+                    return committedStatus
+                }
+            },
+            restartCodexSharing: {},
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        let staleRefresh = Task { await store.refresh() }
+        await gate.waitUntilSuspended()
+        await store.restartCodexDesktop()
+        XCTAssertFalse(store.canRestartCodexDesktop)
+
+        gate.resume()
+        await staleRefresh.value
+
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testPreCommitStatusResponseCannotWinWhileDesktopReopens() async {
+        let statusGate = SuspendedStatusGate()
+        let reopenGate = SuspendedStatusGate()
+        let statusCalls = CallCounter()
+        let pendingStatus = Self.statusWithCodex(shared: true, daemonRestartRequired: true)
+        let committedStatus = Self.statusWithCodex(shared: true, daemonRestartRequired: false)
+        let running = Self.codexDesktopSnapshot(
+            enabled: true,
+            appInstalled: true,
+            appRunning: true
+        )
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: { running },
+            bootstrap: { running },
+            setEnabled: { _, _ in running },
+            restartAndApply: { running },
+            restartAndApplyWithPreparation: { preparation in
+                // 模拟 live client 已经退出旧 Desktop、提交 daemon 迁移，随后
+                // application.open 仍在等待。迁移前的 status=true 会在此时迟到。
+                try await preparation()
+                return await reopenGate.suspendReturning(running)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                switch statusCalls.increment() {
+                case 1:
+                    return pendingStatus
+                case 2:
+                    return await statusGate.suspendReturning(pendingStatus)
+                default:
+                    return committedStatus
+                }
+            },
+            restartCodexSharing: {},
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        let staleRefresh = Task { await store.refresh() }
+        await statusGate.waitUntilSuspended()
+        let restart = Task { await store.restartCodexDesktop() }
+        await reopenGate.waitUntilSuspended()
+
+        // daemon 已提交但 Desktop 仍在 open。旧的 pending=true 此时返回，
+        // 必须因提交点分配的新序号被丢弃，不能清掉本地 committed 状态。
+        statusGate.resume()
+        await staleRefresh.value
+        XCTAssertFalse(store.canRestartCodexDesktop)
+
+        reopenGate.resume()
+        await restart.value
+
+        XCTAssertNil(store.codexDesktopError)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+    }
+
+    func testEnableWithDesktopStoppedKeepsDaemonMigrationPendingUntilUserConfirms() async {
+        let events = EventRecorder()
+        let sharing = SharingFlag()
+        let migrationRequired = SharingFlag()
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(enabled: sharing.value, appInstalled: true, appRunning: false)
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(enabled: false, appInstalled: true, appRunning: false)
+            },
+            setEnabled: { enabled, _ in
+                events.append("desktop-\(enabled)")
+                return Self.codexDesktopSnapshot(enabled: enabled, appInstalled: true, appRunning: false)
+            },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: sharing.value,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            configureCodexSharing: { enabled in
+                sharing.set(enabled)
+                migrationRequired.set(enabled)
+                return CodexSharingConfigurationResult(
+                    enabled: enabled,
+                    changed: true,
+                    daemonRestartRequired: enabled,
+                    transport: enabled ? "unix" : "ws",
+                    codexHome: enabled ? "/tmp/codex" : nil
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        await store.setCodexDesktopEnabled(true)
+
+        XCTAssertEqual(events.values, ["desktop-true"])
+        XCTAssertEqual(store.codexDesktopStatusTitle, "需要重启")
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["desktop-true", "daemon-restart"])
+        XCTAssertFalse(events.values.contains("desktop-restart"))
+        XCTAssertEqual(store.codexDesktopStatusTitle, "环境已配置")
+        XCTAssertNil(store.codexDesktopError)
+    }
+
+    func testPendingMigrationRechecksDesktopBeforeStoppingDaemon() async {
+        let events = EventRecorder()
+        let desktopRunning = SharingFlag()
+        let migrationRequired = SharingFlag()
+        migrationRequired.set(true)
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: {
+                Self.codexDesktopSnapshot(
+                    enabled: true,
+                    appInstalled: true,
+                    appRunning: desktopRunning.value
+                )
+            },
+            bootstrap: {
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            setEnabled: { _, _ in
+                Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: false)
+            },
+            restartAndApply: {
+                events.append("desktop-restart")
+                return Self.codexDesktopSnapshot(enabled: true, appInstalled: true, appRunning: true)
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            status: {
+                Self.statusWithCodex(
+                    shared: true,
+                    daemonRestartRequired: migrationRequired.value
+                )
+            },
+            restartCodexSharing: {
+                events.append("daemon-restart")
+                migrationRequired.set(false)
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        XCTAssertTrue(store.canRestartCodexDesktop)
+
+        // 设置页仍缓存为 stopped，但用户已从 Dock 重新打开 Desktop。
+        desktopRunning.set(true)
+        await store.restartCodexDesktop()
+
+        XCTAssertEqual(events.values, ["daemon-restart", "desktop-restart"])
+        XCTAssertNil(store.codexDesktopError)
     }
 
     func testEnableDesktopFailureRollsBackBackendChangedBySameOperation() async {
@@ -1479,6 +2078,9 @@ final class HostStoreTests: XCTestCase {
         status: @escaping @Sendable () async throws -> AgentStatus = {
             HostStoreTests.readyStatus
         },
+        doctor: @escaping @Sendable (Bool) async throws -> DoctorFixResults = { _ in
+            DoctorFixResults(fixes: [], results: HostStoreTests.readyStatus.doctor)
+        },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
@@ -1497,6 +2099,7 @@ final class HostStoreTests: XCTestCase {
         configureCodexSharing: @escaping @Sendable (Bool) async throws -> CodexSharingConfigurationResult = { enabled in
             CodexSharingConfigurationResult(enabled: enabled)
         },
+        restartCodexSharing: @escaping @Sendable () async throws -> Void = {},
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -1506,15 +2109,15 @@ final class HostStoreTests: XCTestCase {
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
-        let doctor = readyStatus.doctor
         let agent = AgentCommandClient(
             configExists: { configExists },
             setup: { _ in Self.pairing },
             status: status,
             statusAt: { _ in readyStatus },
-            doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
+            doctor: doctor,
             configureClaude: configureClaude,
             configureCodexSharing: configureCodexSharing,
+            restartCodexSharing: restartCodexSharing,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             version: { readyStatus.version }
@@ -1629,7 +2232,10 @@ final class HostStoreTests: XCTestCase {
         )
     }
 
-    private nonisolated static func statusWithCodex(shared: Bool) -> AgentStatus {
+    private nonisolated static func statusWithCodex(
+        shared: Bool,
+        daemonRestartRequired: Bool = false
+    ) -> AgentStatus {
         AgentStatus(
             processOK: readyStatus.processOK,
             serviceOK: readyStatus.serviceOK,
@@ -1656,6 +2262,7 @@ final class HostStoreTests: XCTestCase {
                         rateLimits: nil,
                         transport: shared ? "unix" : "websocket",
                         shared: shared,
+                        daemonRestartRequired: shared ? daemonRestartRequired : nil,
                         codexHome: shared ? "/tmp/codex" : nil
                     ),
                 ]
@@ -1769,6 +2376,47 @@ private final class CallCounter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+}
+
+private final class SuspendedStatusGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var suspended = false
+    private var released = false
+
+    func suspendReturning<T: Sendable>(_ value: T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                suspended = true
+                condition.broadcast()
+                while !released {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume(returning: value)
+            }
+        }
+    }
+
+    func waitUntilSuspended() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                while !suspended {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func resume() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
     }
 }
 

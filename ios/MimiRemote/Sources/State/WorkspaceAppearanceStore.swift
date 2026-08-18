@@ -7,6 +7,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     case threeKingdoms
     case waterMargin
     case abstractGeometry
+    case classicCharacters
     case redChamber
     case greekMythology
     case sherlockHolmes
@@ -25,11 +26,10 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     static let visibleStyles: [WorkspaceIconStyle] = [
         .journey,
         .threeKingdoms,
-        .abstractGeometry,
+        .classicCharacters,
         .redChamber,
         .onePiece,
         .naruto,
-        .solarSystem,
         .worldArt,
         .emoji
     ]
@@ -47,10 +47,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     /// 避免升级后选中不存在的素材；旧角色 ID 不复用，新主题会稳定分配自己的默认图标。
     var availableStyle: WorkspaceIconStyle {
         switch self {
-        case .waterMargin:
-            return .abstractGeometry
-        case .digimon:
-            return .solarSystem
+        case .waterMargin, .abstractGeometry, .digimon, .solarSystem:
+            return .classicCharacters
         case .classicAlbums:
             return .worldArt
         default:
@@ -72,6 +70,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_water_margin"
         case .abstractGeometry:
             return "ui.workspace_icon_style_abstract_geometry"
+        case .classicCharacters:
+            return "ui.workspace_icon_style_classic_characters"
         case .redChamber:
             return "ui.workspace_icon_style_red_chamber"
         case .greekMythology:
@@ -111,6 +111,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_compact_water_margin"
         case .abstractGeometry:
             return "ui.workspace_icon_style_compact_abstract_geometry"
+        case .classicCharacters:
+            return "ui.workspace_icon_style_compact_classic_characters"
         case .redChamber:
             return "ui.workspace_icon_style_compact_red_chamber"
         case .greekMythology:
@@ -150,7 +152,9 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         case .waterMargin:
             return nil
         case .abstractGeometry:
-            return "WorkspaceAbstractOrbit"
+            return nil
+        case .classicCharacters:
+            return "WorkspaceCharacterClassicGoku"
         case .redChamber:
             return "WorkspaceCharacterRedLinDaiyu"
         case .greekMythology:
@@ -166,7 +170,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         case .digimon:
             return nil
         case .solarSystem:
-            return "WorkspaceSolarSun"
+            return nil
         case .classicAlbums:
             return nil
         case .worldArt:
@@ -318,19 +322,20 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi")
     ]
 
-    /// 抽象几何完全由仓库自有 SVG 构成；图形保持大轮廓和高色差，
-    /// 在 18pt 侧栏锚点、52pt 选择器和 MeeGo 裁切下都能快速区分。
-    static let abstractGeometryIcons = [
-        WorkspaceCharacterIcon(id: "abstract-orbit", assetName: "WorkspaceAbstractOrbit", nameKey: "ui.workspace_abstract_orbit"),
-        WorkspaceCharacterIcon(id: "abstract-prism", assetName: "WorkspaceAbstractPrism", nameKey: "ui.workspace_abstract_prism"),
-        WorkspaceCharacterIcon(id: "abstract-waves", assetName: "WorkspaceAbstractWaves", nameKey: "ui.workspace_abstract_waves"),
-        WorkspaceCharacterIcon(id: "abstract-grid", assetName: "WorkspaceAbstractGrid", nameKey: "ui.workspace_abstract_grid"),
-        WorkspaceCharacterIcon(id: "abstract-bloom", assetName: "WorkspaceAbstractBloom", nameKey: "ui.workspace_abstract_bloom"),
-        WorkspaceCharacterIcon(id: "abstract-rings", assetName: "WorkspaceAbstractRings", nameKey: "ui.workspace_abstract_rings"),
-        WorkspaceCharacterIcon(id: "abstract-blocks", assetName: "WorkspaceAbstractBlocks", nameKey: "ui.workspace_abstract_blocks"),
-        WorkspaceCharacterIcon(id: "abstract-spiral", assetName: "WorkspaceAbstractSpiral", nameKey: "ui.workspace_abstract_spiral"),
-        WorkspaceCharacterIcon(id: "abstract-crossing", assetName: "WorkspaceAbstractCrossing", nameKey: "ui.workspace_abstract_crossing"),
-        WorkspaceCharacterIcon(id: "abstract-mosaic", assetName: "WorkspaceAbstractMosaic", nameKey: "ui.workspace_abstract_mosaic")
+    /// 七龙珠人物使用统一的编辑插画语法：粗手绘线、暖灰底和胸像裁切；
+    /// 同时保留发型、服装与标志性配件，确保在工作区小头像里仍能一眼识别。
+    /// 保留 `classicCharacters` 持久化标识，避免已选择该主题的用户升级后丢失偏好。
+    static let classicCharacterIcons = [
+        WorkspaceCharacterIcon(id: "classic-goku", assetName: "WorkspaceCharacterClassicGoku", nameKey: "ui.workspace_character_classic_goku"),
+        WorkspaceCharacterIcon(id: "classic-vegeta", assetName: "WorkspaceCharacterClassicVegeta", nameKey: "ui.workspace_character_classic_vegeta"),
+        WorkspaceCharacterIcon(id: "classic-piccolo", assetName: "WorkspaceCharacterClassicPiccolo", nameKey: "ui.workspace_character_classic_piccolo"),
+        WorkspaceCharacterIcon(id: "classic-master-roshi", assetName: "WorkspaceCharacterClassicMasterRoshi", nameKey: "ui.workspace_character_classic_master_roshi"),
+        WorkspaceCharacterIcon(id: "classic-krillin", assetName: "WorkspaceCharacterClassicKrillin", nameKey: "ui.workspace_character_classic_krillin"),
+        WorkspaceCharacterIcon(id: "classic-frieza", assetName: "WorkspaceCharacterClassicFrieza", nameKey: "ui.workspace_character_classic_frieza"),
+        WorkspaceCharacterIcon(id: "classic-majin-buu", assetName: "WorkspaceCharacterClassicMajinBuu", nameKey: "ui.workspace_character_classic_majin_buu"),
+        WorkspaceCharacterIcon(id: "classic-future-trunks", assetName: "WorkspaceCharacterClassicFutureTrunks", nameKey: "ui.workspace_character_classic_future_trunks"),
+        WorkspaceCharacterIcon(id: "classic-android-18", assetName: "WorkspaceCharacterClassicAndroid18", nameKey: "ui.workspace_character_classic_android_18"),
+        WorkspaceCharacterIcon(id: "classic-perfect-cell", assetName: "WorkspaceCharacterClassicPerfectCell", nameKey: "ui.workspace_character_classic_perfect_cell")
     ]
 
     static let redChamberCharacters = [
@@ -411,20 +416,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "naruto-tsunade", assetName: "WorkspaceCharacterNarutoTsunade", nameKey: "ui.workspace_character_naruto_tsunade")
     ]
 
-    /// 太阳和八大行星按天体的典型颜色、云带、陆海或环系表达身份。
-    /// 图标不展示相对尺寸和轨道距离，避免把装饰性图标误读成科学比例图。
-    static let solarSystemIcons = [
-        WorkspaceCharacterIcon(id: "solar-sun", assetName: "WorkspaceSolarSun", nameKey: "ui.workspace_solar_sun"),
-        WorkspaceCharacterIcon(id: "solar-mercury", assetName: "WorkspaceSolarMercury", nameKey: "ui.workspace_solar_mercury"),
-        WorkspaceCharacterIcon(id: "solar-venus", assetName: "WorkspaceSolarVenus", nameKey: "ui.workspace_solar_venus"),
-        WorkspaceCharacterIcon(id: "solar-earth", assetName: "WorkspaceSolarEarth", nameKey: "ui.workspace_solar_earth"),
-        WorkspaceCharacterIcon(id: "solar-mars", assetName: "WorkspaceSolarMars", nameKey: "ui.workspace_solar_mars"),
-        WorkspaceCharacterIcon(id: "solar-jupiter", assetName: "WorkspaceSolarJupiter", nameKey: "ui.workspace_solar_jupiter"),
-        WorkspaceCharacterIcon(id: "solar-saturn", assetName: "WorkspaceSolarSaturn", nameKey: "ui.workspace_solar_saturn"),
-        WorkspaceCharacterIcon(id: "solar-uranus", assetName: "WorkspaceSolarUranus", nameKey: "ui.workspace_solar_uranus"),
-        WorkspaceCharacterIcon(id: "solar-neptune", assetName: "WorkspaceSolarNeptune", nameKey: "ui.workspace_solar_neptune")
-    ]
-
     /// “画作”主题优先使用公共领域馆藏，并预裁成稳定的方形构图，避免圆形与 MeeGo 蒙版
     /// 再次截掉主体；作品来源和公共领域状态记录在 THIRD_PARTY_NOTICES.md。
     static let worldArtCharacters = [
@@ -443,14 +434,13 @@ final class WorkspaceAppearanceStore: ObservableObject {
     static let builtInCharactersByStyle: [WorkspaceIconStyle: [WorkspaceCharacterIcon]] = [
         .journey: builtInCharacters,
         .threeKingdoms: threeKingdomsCharacters,
-        .abstractGeometry: abstractGeometryIcons,
+        .classicCharacters: classicCharacterIcons,
         .redChamber: redChamberCharacters,
         .greekMythology: greekMythologyCharacters,
         .sherlockHolmes: sherlockHolmesCharacters,
         .aliceWonderland: aliceWonderlandCharacters,
         .onePiece: onePieceCharacters,
         .naruto: narutoCharacters,
-        .solarSystem: solarSystemIcons,
         .worldArt: worldArtCharacters
     ]
 

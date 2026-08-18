@@ -49,6 +49,14 @@ final class AgentCommandClientTests: XCTestCase {
             AgentCommandClient.codexSharingConfigurationArguments(enabled: false),
             ["runtime", "--codex-sharing=disabled", "--json"]
         )
+        XCTAssertEqual(
+            AgentCommandClient.codexSharingRestartArguments(),
+            [
+                "runtime",
+                "--codex-sharing-restart",
+                "--codex-sharing-restart-confirmed",
+            ]
+        )
     }
 
     func testProcessCancellationIsReportedAsCancellation() async {
@@ -105,5 +113,29 @@ final class AgentCommandClientTests: XCTestCase {
             try String(contentsOf: marker, encoding: .utf8),
             "committed"
         )
+    }
+
+    func testProcessTimeoutReapsControlCommandThatIgnoresTerminate() async {
+        let executor = ProcessExecutor()
+        let startedAt = ContinuousClock.now
+        do {
+            _ = try await executor.run(
+                executable: URL(filePath: "/bin/sh"),
+                // 让 shell 本身忽略 SIGTERM，且不派生会继承 stdout/stderr pipe 的
+                // 子进程；否则测试测到的是后代等待 pipe EOF，而不是目标是否回收。
+                arguments: ["-c", "trap '' TERM; while :; do :; done"],
+                timeout: .milliseconds(100),
+                forceKillAfterTimeout: true
+            )
+            XCTFail("忽略 SIGTERM 的 control command 必须超时")
+        } catch ProcessExecutorError.timedOut {
+            XCTAssertLessThan(
+                startedAt.duration(to: .now),
+                .seconds(4),
+                "timeout 后必须在 grace period 内回收 control command，不能让 UI 永久 busy"
+            )
+        } catch {
+            XCTFail("超时应保留 timedOut 语义，实际为 \(error)")
+        }
     }
 }

@@ -548,6 +548,23 @@ struct CapabilityItemRow: View {
     }
 }
 
+enum WorkspaceIconStylePickerLayout {
+    /// iPhone 竖屏的 Form 内容区通常低于此宽度；iPad 详情区即使带侧栏，
+    /// 也会进入单行横滑，避免因为 8 项无法一次放下就退回两行并留下大片空白。
+    static let minimumSingleRowViewportWidth: CGFloat = 480
+
+    /// 按真实容器宽度决定信息密度，不按设备型号判断。单行不要求全部项目同时放下，
+    /// 超出的内容交给原生横向滚动；辅助功能字号继续两行，避免标题被过度压缩。
+    static func usesSingleRow(
+        viewportWidth: CGFloat,
+        itemCount: Int,
+        isAccessibilitySize: Bool
+    ) -> Bool {
+        guard viewportWidth > 0, itemCount > 0, !isAccessibilitySize else { return false }
+        return viewportWidth >= minimumSingleRowViewportWidth
+    }
+}
+
 struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -557,6 +574,7 @@ struct AppearanceView: View {
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
 
     let profileID: String
+    @State private var workspaceIconStyleViewportWidth: CGFloat = 0
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -589,36 +607,20 @@ struct AppearanceView: View {
                             spacing: workspaceIconStyleColumnSpacing
                         ) {
                             ForEach(selectableWorkspaceIconStyles) { style in
-                                let isSelected = selectedWorkspaceIconStyle == style
-                                Button {
-                                    workspaceIconStyleBinding.wrappedValue = style
-                                } label: {
-                                    WorkspaceIconStyleOptionLabel(
-                                        style: style,
-                                        isSelected: isSelected,
-                                        tokens: tokens
-                                    )
-                                }
-                                .buttonStyle(
-                                    WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
+                                workspaceIconStyleOption(
+                                    style: style,
+                                    selectedStyle: selectedWorkspaceIconStyle,
+                                    tokens: tokens,
+                                    fixedWidth: workspaceIconStyleItemWidth
                                 )
-                                .frame(width: workspaceIconStyleItemWidth)
-                                .accessibilityLabel(style.title)
-                                .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
-                                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                                .accessibilityIdentifier(
-                                    "settings.workspaceIconStyle.option.\(style.rawValue)"
-                                )
-                                .id(style.id)
                             }
                         }
-                        // 固定两行，末端留白让最后一列可以完整停靠。
+                        // 单行与双行都使用同一滚动容器；末端留白让最后一项完整停靠。
                         .padding(.vertical, 6)
                         .padding(.trailing, 12)
                     }
                     .scrollIndicators(.hidden)
                     .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    .accessibilityIdentifier("settings.workspaceIconStyle")
                     .onAppear {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -628,6 +630,13 @@ struct AppearanceView: View {
                             scrollProxy.scrollTo(selectedWorkspaceIconStyle.id, anchor: .center)
                         }
                     }
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        guard width > 0, workspaceIconStyleViewportWidth != width else { return }
+                        workspaceIconStyleViewportWidth = width
+                    }
+                    .accessibilityIdentifier("settings.workspaceIconStyle")
                 }
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
@@ -735,6 +744,13 @@ struct AppearanceView: View {
     private var workspaceIconStyleRows: [GridItem] {
         let rowHeight: CGFloat = dynamicTypeSize.isAccessibilitySize ? 142 : 96
         let rowSpacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 14 : 10
+        if WorkspaceIconStylePickerLayout.usesSingleRow(
+            viewportWidth: workspaceIconStyleViewportWidth,
+            itemCount: selectableWorkspaceIconStyles.count,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        ) {
+            return [GridItem(.fixed(rowHeight), spacing: 0)]
+        }
         return [
             GridItem(.fixed(rowHeight), spacing: rowSpacing),
             GridItem(.fixed(rowHeight), spacing: 0)
@@ -769,6 +785,31 @@ struct AppearanceView: View {
                 )
             }
         )
+    }
+
+    private func workspaceIconStyleOption(
+        style: WorkspaceIconStyle,
+        selectedStyle: WorkspaceIconStyle,
+        tokens: ThemeTokens,
+        fixedWidth: CGFloat?
+    ) -> some View {
+        let isSelected = selectedStyle == style
+        return Button {
+            workspaceIconStyleBinding.wrappedValue = style
+        } label: {
+            WorkspaceIconStyleOptionLabel(
+                style: style,
+                isSelected: isSelected,
+                tokens: tokens
+            )
+        }
+        .buttonStyle(WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion))
+        .frame(width: fixedWidth)
+        .accessibilityLabel(style.title)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
+        .id(style.id)
     }
 
     private func iconName(for mode: ThemeMode) -> String {
@@ -1378,6 +1419,108 @@ private extension DefaultModelRuntime {
         case .claude:
             return "Claude Code"
         }
+    }
+}
+
+/// iOS 只能说明和引导，不能伪装成能够修改 Mac launchd 环境的远程开关。
+/// 真正的启用入口继续由 Mimi Remote Mac 持有，确保配置、Desktop 重启与失败回滚在同一台电脑完成。
+enum CodexDesktopExperimentGuide {
+    static let stepKeys = [
+        "ui.codex_experiment_step_open_mimi_menu",
+        "ui.codex_experiment_step_choose_experiments",
+        "ui.codex_experiment_step_enable_sharing",
+        "ui.codex_experiment_step_restart_desktop",
+        "ui.codex_experiment_step_verify_session",
+    ]
+}
+
+struct ExperimentalFeaturesSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label {
+                        Text(L10n.text("ui.share_codex_desktop_sessions_experimental"))
+                            .font(themeStore.uiFont(.headline, weight: .semibold))
+                            .foregroundStyle(tokens.primaryText)
+                    } icon: {
+                        Image(systemName: "desktopcomputer")
+                            .foregroundStyle(tokens.accent)
+                    }
+
+                    Text(L10n.text("ui.codex_experiment_summary"))
+                        .font(themeStore.uiFont(.subheadline))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.experimentalFeatures.codexSharing")
+            } footer: {
+                Text(L10n.text("ui.codex_experiment_warning"))
+            }
+
+            Section {
+                ForEach(Array(CodexDesktopExperimentGuide.stepKeys.enumerated()), id: \.offset) { index, key in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(String(index + 1))
+                            .font(themeStore.uiFont(.footnote, weight: .semibold))
+                            .foregroundStyle(tokens.accent)
+                            .frame(width: 28, height: 28)
+                            .background(tokens.accent.opacity(0.12), in: Circle())
+                            .accessibilityHidden(true)
+
+                        Text(L10n.text(key))
+                            .font(themeStore.uiFont(.body))
+                            .foregroundStyle(tokens.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    }
+                    .padding(.vertical, 6)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        L10n.format(
+                            "ui.step_value_value",
+                            index + 1,
+                            L10n.text(key)
+                        )
+                    )
+                    .accessibilityIdentifier("settings.experimentalFeatures.step.\(index + 1)")
+                }
+            } header: {
+                Text(L10n.text("ui.how_to_enable_on_mac"))
+                    .textCase(nil)
+            } footer: {
+                Text(L10n.text("ui.codex_experiment_mac_only_note"))
+            }
+
+            Section {
+                Label {
+                    Text(L10n.text("ui.codex_experiment_service_note"))
+                        .font(themeStore.uiFont(.subheadline))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(tokens.accent)
+                }
+                .padding(.vertical, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.experimentalFeatures.serviceNote")
+            } header: {
+                Text(L10n.text("ui.before_you_use_it"))
+                    .textCase(nil)
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .navigationTitle(L10n.text("ui.experimental_features"))
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("settings.experimentalFeatures.detail")
     }
 }
 

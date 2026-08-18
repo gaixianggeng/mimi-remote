@@ -195,18 +195,38 @@ struct CodexDesktopIntegrationClient {
     var inspect: @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
     var bootstrap: @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
     var setEnabled: @MainActor (_ enabled: Bool, _ codexHome: String?) async throws -> CodexDesktopEnvironmentSnapshot
-    var restartAndApply: @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
+    private var restartAndApplyOperation: @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
+    private var restartAndApplyWithPreparationOperation: (@MainActor (
+        _ preparation: @escaping @MainActor () async throws -> Void
+    ) async throws -> CodexDesktopEnvironmentSnapshot)?
 
     init(
         inspect: @escaping @MainActor () async throws -> CodexDesktopEnvironmentSnapshot,
         bootstrap: @escaping @MainActor () async throws -> CodexDesktopEnvironmentSnapshot,
         setEnabled: @escaping @MainActor (_ enabled: Bool, _ codexHome: String?) async throws -> CodexDesktopEnvironmentSnapshot,
-        restartAndApply: @escaping @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
+        restartAndApply: @escaping @MainActor () async throws -> CodexDesktopEnvironmentSnapshot,
+        restartAndApplyWithPreparation: (@MainActor (
+            _ preparation: @escaping @MainActor () async throws -> Void
+        ) async throws -> CodexDesktopEnvironmentSnapshot)? = nil
     ) {
         self.inspect = inspect
         self.bootstrap = bootstrap
         self.setEnabled = setEnabled
-        self.restartAndApply = restartAndApply
+        self.restartAndApplyOperation = restartAndApply
+        self.restartAndApplyWithPreparationOperation = restartAndApplyWithPreparation
+    }
+
+    @MainActor
+    func restartAndApply(
+        afterTermination preparation: @escaping @MainActor () async throws -> Void = {}
+    ) async throws -> CodexDesktopEnvironmentSnapshot {
+        if let restartAndApplyWithPreparationOperation {
+            return try await restartAndApplyWithPreparationOperation(preparation)
+        }
+        // 测试/预览的轻量 client 没有真实进程拆分能力；仍保持“准备成功后才调用
+        // restart”语义。正式 live client 在下方精确插入 terminate 与 open 之间。
+        try await preparation()
+        return try await restartAndApplyOperation()
     }
 
     /// 预览和单元测试使用的无副作用实现。默认保持关闭，不会假装 backend
@@ -240,7 +260,10 @@ struct CodexDesktopIntegrationClient {
             setEnabled: { enabled, codexHome in
                 try await runtime.setEnabled(enabled, codexHome: codexHome)
             },
-            restartAndApply: { try await runtime.restartAndApply() }
+            restartAndApply: { try await runtime.restartAndApply() },
+            restartAndApplyWithPreparation: { preparation in
+                try await runtime.restartAndApply(afterTermination: preparation)
+            }
         )
     }
 }
@@ -354,7 +377,9 @@ private final class CodexDesktopIntegrationRuntime {
         )
     }
 
-    func restartAndApply() async throws -> CodexDesktopEnvironmentSnapshot {
+    func restartAndApply(
+        afterTermination preparation: @escaping @MainActor () async throws -> Void = {}
+    ) async throws -> CodexDesktopEnvironmentSnapshot {
         let snapshot = try await applyPreference(
             preferenceEnabled,
             codexHome: canonicalCodexHome
@@ -362,11 +387,28 @@ private final class CodexDesktopIntegrationRuntime {
         guard let bundleURL = snapshot.bundleURL else {
             throw CodexDesktopIntegrationError.appNotInstalled
         }
+        let shouldReopen = snapshot.appRunning
 
-        if snapshot.appRunning {
+        if shouldReopen {
             // terminateAndWait 内部只调用普通 NSRunningApplication.terminate，并等待
             // terminated；没有 forceTerminate，也不会在旧进程存活时开第二个实例。
             try await application.terminateAndWait(bundleURL)
+        }
+
+        // 后端 owner 的显式迁移必须发生在旧 Desktop 完全退出之后、重新打开之前。
+        // 这样 Desktop 不会在 socket 短暂消失时自行重连或拉起另一条启动链；准备
+        // 失败则保持关闭，不把 Desktop 打开到已知不可用的共享后端。
+        try await preparation()
+
+        // 确认弹窗与真正执行之间，用户可能已经自行退出 Desktop。实际快照为
+        // stopped 时只提交 daemon 迁移，绝不把用户主动关闭的 App 擅自打开。
+        if !shouldReopen {
+            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            return try await makeSnapshot(
+                environmentValue: snapshot.environmentValue,
+                codexHome: snapshot.codexHome,
+                sessionEpoch: snapshot.sessionEpoch
+            )
         }
 
         // launchd 环境是 Dock/Finder 的长期保险；OpenConfiguration.environment

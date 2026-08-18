@@ -46,6 +46,11 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 720, height: 620)
 
+        Window("实验功能", id: ExperimentMenuRouting.windowID) {
+            ExperimentsView(store: store)
+        }
+        .defaultSize(width: 500, height: 680)
+
         Settings {
             MacSettingsView(store: store)
         }
@@ -69,4 +74,5 @@ enum AppWindow: String {
     case dashboard
     case pairing
     case diagnostics
+    case experiments
 }

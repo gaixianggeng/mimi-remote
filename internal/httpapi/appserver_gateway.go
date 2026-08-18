@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -270,11 +271,12 @@ type appServerGatewayPendingClientRequest struct {
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method    string
-	threadID  string
-	turnID    string
-	itemID    string
-	createdAt time.Time
+	method           string
+	threadID         string
+	turnID           string
+	itemID           string
+	gatewayOwnedTurn bool
+	createdAt        time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {
@@ -464,7 +466,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			ExternalActivity: true,
 		},
 		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request", "on-failure"},
+			ApprovalPolicies: []string{"on-request"},
 			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",
@@ -508,7 +510,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				RateLimits:       claudeRateLimitsAvailable,
 			},
 			Policy: appServerChannelPolicy{
-				ApprovalPolicies: []string{"on-request", "on-failure"},
+				ApprovalPolicies: []string{"on-request"},
 				SandboxModes:     []string{"read-only", "workspace-write"},
 				NetworkAccess:    false,
 				CWDScope:         "agentd_allowlist",
@@ -605,6 +607,20 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	dialStart := time.Now()
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
 	dialDuration := time.Since(dialStart)
+	if err != nil && r.recoverSharedCodexDaemon != nil {
+		// 只在一次真实客户端连接失败后恢复，避免 readyz 轮询不停拉进程。恢复仍
+		// 走 appserver.EnsureLocalDaemon -> launchd owner，绝不由 HTTP handler spawn。
+		recoverCtx, cancel := context.WithTimeout(req.Context(), 35*time.Second)
+		recoverErr := r.recoverSharedCodexDaemon(recoverCtx)
+		cancel()
+		if recoverErr == nil {
+			dialStart = time.Now()
+			upstream, _, err = dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
+			dialDuration = time.Since(dialStart)
+		} else {
+			log.Printf("shared Codex daemon recovery failed: %v", recoverErr)
+		}
+	}
 	if err != nil {
 		r.monitor.recordGatewayDialFailure(dialDuration, err)
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")

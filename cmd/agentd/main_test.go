@@ -1489,12 +1489,15 @@ func TestRunDoctorFixOnlyTightensSensitiveFilePermissions(t *testing.T) {
 		{Name: "config-file", OK: false},
 		{Name: "app-server-token-file", OK: false},
 	}}
-	fixes, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
+	fixes, restartRequired, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
 	if err != nil {
 		t.Fatalf("doctor --fix 收紧权限失败：%v", err)
 	}
 	if runtime.GOOS != "windows" && len(fixes) != 2 {
 		t.Fatalf("应分别修复配置与 token file 权限：%v", fixes)
+	}
+	if restartRequired {
+		t.Fatal("只收紧文件权限不应要求重启 agentd")
 	}
 	for _, path := range []string{configPath, tokenPath} {
 		info, err := os.Lstat(path)
@@ -1639,12 +1642,15 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 		{Name: "app-server-token-file", OK: false},
 	}}
 
-	fixes, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
+	fixes, restartRequired, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
 	if err != nil {
 		t.Fatalf("配置完全缺失时仍应走完整 setup，而不是尝试局部迁移：%v", err)
 	}
 	if len(fixes) == 0 {
 		t.Fatal("完整 setup 应返回修复记录")
+	}
+	if !restartRequired {
+		t.Fatal("完整 setup 重建配置后必须要求重启 agentd")
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {

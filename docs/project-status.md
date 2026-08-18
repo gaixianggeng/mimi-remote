@@ -1,6 +1,6 @@
 # Mimi Remote 项目现状与关键决策
 
-更新日期：2026-08-11
+更新日期：2026-08-12
 
 ## 目标
 
@@ -28,8 +28,8 @@ iPhone / iPad SwiftUI App
 ### 已确定的边界
 
 - `agentd` 是薄网关，不复制一套 Codex 业务协议。
-- macOS 可显式启用官方 local daemon，让 Desktop 与移动端共用同一个 thread writer；Desktop 只有打开但没有运行 turn 时，移动端可以在原 thread 继续，不创建 fork。启用失败时不改配置，关闭时恢复原 WS 配置。
-- 共享 daemon 不等于并发写：Desktop 正在运行的 turn 仍按 external activity 只读；客户端也不能靠 `thread/unsubscribe`、archive/unarchive 或猜测 idle 状态抢占另一个进程。
+- macOS 可显式启用官方 local daemon，让 Desktop 与移动端共用同一个 thread writer；daemon 由 Mimi 安装的用户 LaunchAgent 直接调用官方 CLI 创建，agentd 不再成为它的直接启动者。既有 daemon 只记录待迁移状态，必须由用户确认才会中断并切换 owner；外部 Unix backend 永远只 attach、不接管。Desktop 只有打开但没有运行 turn 时，移动端可以在原 thread 继续，不创建 fork。启用失败时不改配置，关闭时恢复原 WS 配置并卸载 Mimi 的 owner job。
+- 共享 daemon 不等于并发写：Desktop 正在运行的 turn 仍按 external activity 只读；共享模式观测失败时也会 fail-closed 拒绝写入。客户端不能靠 `thread/unsubscribe`、archive/unarchive 或猜测 idle 状态抢占另一个进程。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
 - Codex 默认保持 `approvalPolicy=on-request`、`danger-full-access`、网络关闭；禁止 `approvalPolicy=never` 和默认开网。

@@ -19,6 +19,13 @@ CODE_SIGN_STYLE="${CODE_SIGN_STYLE:-Automatic}"
 XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
 XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
 
+if [[ "${IOS_UNIFIED_ENTRYPOINT:-0}" != "1" ]]; then
+  echo "scripts/deploy-ipad.sh 是 ios-dev.sh 的内部真机执行器，不能直接调用。" >&2
+  echo "日常部署请使用：bash ./scripts/ios-dev.sh run" >&2
+  echo "需要刷新安装时使用：REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run" >&2
+  exit 64
+fi
+
 if [[ ! -d "$PROJECT_PATH" ]]; then
   echo "找不到 Xcode 工程：$PROJECT_PATH" >&2
   echo "如果刚改过 project.yml，请先运行：xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote" >&2

@@ -485,6 +485,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
         let diagnostics = app.descendant(identifier: "settings.diagnostics")
         let advanced = app.descendant(identifier: "settings.advancedDevelopment")
+        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
         let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
         XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
@@ -527,7 +528,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
         // “Mac 与设备”已在页面顶部验证；滚到底部后它可能被 List 懒加载卸载，
         // 这里只检查当前可见的“更多”入口，避免把视口状态误判为功能缺失。
-        let bottomRows = [diagnostics, advanced, aboutLegal]
+        let bottomRows = [experimentalFeatures, diagnostics, advanced, aboutLegal]
         for row in bottomRows {
             XCTAssertTrue(row.waitForExistence(timeout: 4), "“更多”分区入口应存在")
             XCTAssertEqual(
@@ -542,6 +543,34 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         bottomScreenshot.name = "me-preferences-and-more"
         bottomScreenshot.lifetime = .keepAlways
         add(bottomScreenshot)
+    }
+
+    func testExperimentalFeaturesGuideExplainsMacSetup() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
+        XCTAssertTrue(
+            scrollUntilHittable(experimentalFeatures, maximumSwipes: 8),
+            "我的页面应能滚动到实验功能入口"
+        )
+        XCTAssertEqual(
+            experimentalFeatures.frame.height,
+            52,
+            accuracy: 1,
+            "实验功能入口应保持设置页标准行高"
+        )
+        experimentalFeatures.tap()
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.experimentalFeatures.detail")
+                .waitForExistence(timeout: 5),
+            "实验功能入口应进入 Mac 端开启引导"
+        )
+        let finalStep = app.descendant(identifier: "settings.experimentalFeatures.step.5")
+        XCTAssertTrue(
+            scrollUntilHittable(finalStep, maximumSwipes: 4),
+            "实验功能引导应完整展示重启和跨端验证步骤"
+        )
     }
 
     func testComposerPlanGoalAndModelMenusSurviveRotationWithoutCrash() throws {
@@ -954,11 +983,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let expectedStyleIdentifiers = [
             "journey",
             "threeKingdoms",
-            "abstractGeometry",
+            "classicCharacters",
             "redChamber",
             "onePiece",
             "naruto",
-            "solarSystem",
             "worldArt",
             "emoji"
         ]
@@ -975,7 +1003,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 originalStyleID = styleID
             }
         }
-        assertWorkspaceStylePickerUsesExactlyTwoRows(optionFrames)
+        assertWorkspaceStylePickerUsesAdaptiveRows(optionFrames)
 
         guard let originalStyleID else {
             XCTFail("工作区图标风格应有且只有一个当前选项")
@@ -1077,18 +1105,19 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(waitUntilSelected(originalStyle), "测试结束时应恢复原图标风格")
     }
 
-    private func assertWorkspaceStylePickerUsesExactlyTwoRows(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 9)
-        guard frames.count == 9 else { return }
+    private func assertWorkspaceStylePickerUsesAdaptiveRows(_ frames: [CGRect]) {
+        XCTAssertEqual(frames.count, 8)
+        guard frames.count == 8 else { return }
 
         var rowCenters: [CGFloat] = []
         for frame in frames where !rowCenters.contains(where: { abs($0 - frame.midY) <= 2 }) {
             rowCenters.append(frame.midY)
         }
         rowCenters.sort()
-        XCTAssertEqual(rowCenters.count, 2, "全部风格应固定在两行内横向滑动")
-        guard rowCenters.count == 2 else { return }
-        XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
+        XCTAssertTrue((1...2).contains(rowCenters.count), "图标风格应按可用宽度排列为一行或两行")
+        if rowCenters.count == 2 {
+            XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
+        }
     }
 
     private func scrollToWorkspaceStyleOption(

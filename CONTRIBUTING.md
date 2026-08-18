@@ -51,7 +51,7 @@ bash ./scripts/verify-change.sh --full
 `--full` 仍只覆盖受影响语言栈，并补齐仓库级 Gate。CI 红灯时先重跑或定位失败的
 具体 job，不要为了“保险”把所有本地流程再跑一遍。
 
-日常 `build` / `run` 优先租用 available、paired、USB 连接的真机，跳过已占用设备后回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test`、快照与 CI 精确固定这台 M5 iPad，忙或缺失时不切换 iPad mini。使用 `bash ./scripts/ios-dev.sh leases` 查看跨 Worktree 租约和外部 `xcodebuild`；兼容性运行通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
+日常 `build` / `run` 只通过 `bash ./scripts/ios-dev.sh` 执行，优先租用 available、paired、USB 连接的真机，再选择可达的本地网络真机。只有没有可达真机时才回退 `iPad Pro 13-inch (M5)` Simulator；检测到真机但全部忙时明确失败，不静默切换设备类型。`build-for-testing`、`test`、快照与 CI 精确固定这台 M5 iPad，忙或缺失时不切换 iPad mini。使用 `bash ./scripts/ios-dev.sh target` 查看目标和选择原因，使用 `bash ./scripts/ios-dev.sh leases` 查看跨 Worktree 租约和外部 `xcodebuild`；兼容性运行通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
 真机只在改动涉及相机、通知、Keychain、Tailscale/弱网、性能、发布前验收，或 Issue
 明确要求时执行。Simulator 通过不代表这些专项完成；真机结果也不替代固定 M5 的回归。
