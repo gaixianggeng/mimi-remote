@@ -65,6 +65,46 @@ func stopUnmanagedSharedDaemonWithHooks(
 	managedCodexPath string,
 	hooks unmanagedSharedDaemonHooks,
 ) error {
+	return stopUnmanagedSharedDaemonWithExpectedPath(
+		ctx,
+		socketPath,
+		managedCodexPath,
+		hooks,
+	)
+}
+
+// stopUnmanagedSharedDaemonWithExpectedPath 执行严格的 listener 身份确认。
+// 旧式 unmanaged SSH listener 由上层传入 lifecycle.ManagedCodexPath；只有
+// 调用方已经完成 Mimi stable owner 与签名 supervisor 父链验证时，才允许传入
+// 配置解析后的 CodexBin 路径。路径来源不在这里推断，避免把任意 listener
+// executable 放宽成可停止对象。
+func stopUnmanagedSharedDaemonWithExpectedPath(
+	ctx context.Context,
+	socketPath string,
+	expectedCodexPath string,
+	hooks unmanagedSharedDaemonHooks,
+) error {
+	return stopUnmanagedSharedDaemonWithExpectedIdentity(
+		ctx,
+		socketPath,
+		expectedCodexPath,
+		nil,
+		hooks,
+	)
+}
+
+// stopUnmanagedSharedDaemonWithExpectedIdentity 在发送 TERM 前把当前 socket
+// owner 与上层已经完成签名父链验证的 identity 绑定。expectedIdentity 为空时
+// 表示旧式 unmanaged SSH listener，仍只按 lifecycle.ManagedCodexPath 校验；
+// stable owner 关闭路径必须传入非空 identity，防止 socket 在上层复核后换成
+// 同一 configured executable/argv 的另一个进程。
+func stopUnmanagedSharedDaemonWithExpectedIdentity(
+	ctx context.Context,
+	socketPath string,
+	expectedCodexPath string,
+	expectedIdentity *sharedDaemonListenerProcess,
+	hooks unmanagedSharedDaemonHooks,
+) error {
 	running, err := hooks.desktopRunning(ctx)
 	if err != nil {
 		return fmt.Errorf("确认 Codex Desktop 已退出失败：%w", err)
@@ -77,8 +117,11 @@ func stopUnmanagedSharedDaemonWithHooks(
 	if err != nil {
 		return fmt.Errorf("识别非 daemon 管理的 Codex app-server 失败：%w", err)
 	}
-	if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), managedCodexPath); err != nil {
+	if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), expectedCodexPath); err != nil {
 		return err
+	}
+	if expectedIdentity != nil && listener != *expectedIdentity {
+		return fmt.Errorf("Codex app-server owner 与已验证身份不一致，已停止迁移")
 	}
 	// PID 可能在检查命令行期间退出并被复用。发送信号前再次从 socket
 	// 反查 owner；PID、UID、命令与可执行文件任一变化都停止迁移。

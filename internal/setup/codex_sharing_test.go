@@ -38,6 +38,185 @@ func TestStableSharedDaemonTargetAllowsLegacyCustomDisable(t *testing.T) {
 	}
 }
 
+func TestDisableCodexSharingAfterDesktopExitCommitsOnlyAfterOwnerTransaction(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, _ := writeCodexSharingTestConfig(t)
+	document := readCodexSharingTestDocument(t, configPath)
+	appServerConfig := document["app_server"].(map[string]any)
+	appServerConfig["transport"] = "unix"
+	appServerConfig["listen"] = "unix://"
+	appServerConfig["shared_fallback"] = map[string]any{
+		"transport":     "ws",
+		"managed":       true,
+		"listen":        "ws://127.0.0.1:4555",
+		"ws_token_file": "/tmp/upstream-token",
+	}
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validateCalls := 0
+	commitCalls := 0
+	disableCalls := 0
+	result, err := disableCodexSharingAfterDesktopExit(
+		context.Background(),
+		configPath,
+		true,
+		func(
+			_ context.Context,
+			options appserver.LocalDaemonOptions,
+			validate func() error,
+			commit func() error,
+		) error {
+			disableCalls++
+			if !options.StableOwner || options.ValidateStableOwner == nil {
+				t.Fatalf("confirmed disable 必须使用 stable owner 复核：%+v", options)
+			}
+			if err := validate(); err != nil {
+				return err
+			}
+			validateCalls++
+			if err := options.ValidateStableOwner(); err != nil {
+				return err
+			}
+			if err := commit(); err != nil {
+				return err
+			}
+			commitCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disableCalls != 1 || validateCalls != 1 || commitCalls != 1 ||
+		result.Enabled || !result.Changed || !result.RestartRequired || result.Transport != "ws" {
+		t.Fatalf("confirmed disable 结果或事务顺序错误：calls=%d validate=%d commit=%d result=%+v", disableCalls, validateCalls, commitCalls, result)
+	}
+	document = readCodexSharingTestDocument(t, configPath)
+	appServer := document["app_server"].(map[string]any)
+	if appServer["transport"] != "ws" || appServer["shared_fallback"] != nil {
+		t.Fatalf("确认关闭后必须提交 fallback WS：%+v", appServer)
+	}
+}
+
+func TestDisableCodexSharingAfterDesktopExitCleansWSWithoutChangingJSON(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, _ := writeCodexSharingTestConfig(t)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	result, err := disableCodexSharingAfterDesktopExit(
+		context.Background(),
+		configPath,
+		true,
+		func(
+			_ context.Context,
+			options appserver.LocalDaemonOptions,
+			validate func() error,
+			commit func() error,
+		) error {
+			called = true
+			if options.ValidateStableOwner == nil {
+				t.Fatal("WS orphan 清理必须复核 disabled ownership")
+			}
+			if err := validate(); err != nil {
+				return err
+			}
+			return commit()
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called || result.Changed || result.RestartRequired || result.Transport != "ws" {
+		t.Fatalf("WS orphan 清理结果错误：called=%t result=%+v", called, result)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("WS orphan 清理不能改写配置")
+	}
+}
+
+func TestDisableCodexSharingAfterDesktopExitRestoresLegacyCustomFallback(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, _ := writeCodexSharingTestConfig(t)
+	document := readCodexSharingTestDocument(t, configPath)
+	appServer := document["app_server"].(map[string]any)
+	appServer["transport"] = "unix"
+	appServer["listen"] = "unix://"
+	appServer["shared_fallback"] = map[string]any{
+		"transport":     "ws",
+		"managed":       true,
+		"listen":        "ws://127.0.0.1:4555",
+		"ws_token_file": "/tmp/upstream-token",
+	}
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := DisableCodexSharingAfterDesktopExit(context.Background(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Enabled || !result.Changed || !result.RestartRequired || result.Transport != "ws" {
+		t.Fatalf("confirmed custom disable 必须恢复 fallback：%+v", result)
+	}
+	updated := readCodexSharingTestDocument(t, configPath)
+	updatedAppServer := updated["app_server"].(map[string]any)
+	if updatedAppServer["transport"] != "ws" || updatedAppServer["shared_fallback"] != nil {
+		t.Fatalf("custom fallback 未恢复：%+v", updatedAppServer)
+	}
+	if updatedAppServer["future_option"] != "keep" || updated["future_root"] != "keep-root" {
+		t.Fatalf("恢复 custom fallback 不能丢失未知字段：%+v", updated)
+	}
+}
+
+func TestDisableCodexSharingAfterDesktopExitKeepsCustomExternalUnixUnchanged(t *testing.T) {
+	clearSetupEnv(t)
+	configPath, _, _ := writeCodexSharingTestConfig(t)
+	document := readCodexSharingTestDocument(t, configPath)
+	appServer := document["app_server"].(map[string]any)
+	appServer["transport"] = "unix"
+	appServer["listen"] = "unix://"
+	delete(appServer, "shared_fallback")
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append(raw, '\n')
+	if err := os.WriteFile(configPath, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := DisableCodexSharingAfterDesktopExit(context.Background(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Enabled || result.Changed || result.RestartRequired || result.Transport != "unix" {
+		t.Fatalf("confirmed disable 不得接管 custom external Unix：%+v", result)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("confirmed disable 不得改写 custom external Unix 配置")
+	}
+}
+
 func TestConfigureCodexSharingRoundTripsLegacyFallback(t *testing.T) {
 	clearSetupEnv(t)
 	configPath, codexHome, original := writeCodexSharingTestConfig(t)

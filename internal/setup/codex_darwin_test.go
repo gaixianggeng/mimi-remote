@@ -132,7 +132,7 @@ func TestLegacyCustomSharedDisablePreservesDefaultOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ConfigureCodexSharing(context.Background(), customPath, false)
+	result, err := DisableCodexSharingAfterDesktopExit(context.Background(), customPath)
 	if err != nil {
 		t.Fatal(err)
 	}

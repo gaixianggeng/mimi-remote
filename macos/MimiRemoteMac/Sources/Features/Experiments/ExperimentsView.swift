@@ -7,6 +7,7 @@ import SwiftUI
 struct ExperimentsView: View {
     let store: HostStore
     @State private var confirmsCodexRestart = false
+    @State private var disablesCodexFromToggle = false
 
     var body: some View {
         Form {
@@ -42,12 +43,22 @@ struct ExperimentsView: View {
                 Toggle("共享 Codex Desktop 会话（实验）", isOn: Binding(
                     get: { store.codexDesktopEnabled },
                     set: { enabled in
-                        Task { await store.setCodexDesktopEnabled(enabled) }
+                        if enabled {
+                            Task { await store.setCodexDesktopEnabled(true) }
+                        } else {
+                            // 关闭会终止 Desktop 并停止旧共享 daemon，必须先取得
+                            // 明确确认；取消时不写偏好，也不产生待处理半状态。
+                            disablesCodexFromToggle = true
+                            confirmsCodexRestart = true
+                        }
                     }
                 ))
                 .disabled(!store.canChangeCodexDesktop)
 
-                Text(ExperimentPresentation.codexToggleDescription(isEnabled: store.codexDesktopEnabled))
+                Text(ExperimentPresentation.codexToggleDescription(
+                    isEnabled: store.codexDesktopEnabled,
+                    isPending: store.codexDesktopStatus.state == .pendingRestart
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -67,6 +78,7 @@ struct ExperimentsView: View {
 
                 if store.canRestartCodexDesktop {
                     Button("应用设置并完全重启 Codex Desktop") {
+                        disablesCodexFromToggle = false
                         confirmsCodexRestart = true
                     }
                     .disabled(store.isCodexDesktopBusy)
@@ -82,13 +94,36 @@ struct ExperimentsView: View {
         .formStyle(.grouped)
         .scenePadding()
         .frame(width: 500, height: 680)
-        .alert("应用 Codex 共享设置？", isPresented: $confirmsCodexRestart) {
-            Button("取消", role: .cancel) {}
-            Button("确认应用") {
-                Task { await store.restartCodexDesktop() }
+        .alert(
+            disablesCodexFromToggle || !store.codexDesktopEnabled
+                ? "切换到独立 Codex 服务？"
+                : "启用 Codex 共享服务？",
+            isPresented: $confirmsCodexRestart
+        ) {
+            Button("取消", role: .cancel) {
+                disablesCodexFromToggle = false
+            }
+            Button(
+                disablesCodexFromToggle || !store.codexDesktopEnabled
+                    ? "切换并重启"
+                    : "启用并重启"
+            ) {
+                let shouldDisable = disablesCodexFromToggle
+                disablesCodexFromToggle = false
+                Task {
+                    if shouldDisable {
+                        await store.setCodexDesktopEnabled(false)
+                    } else {
+                        await store.restartCodexDesktop()
+                    }
+                }
             }
         } message: {
-            Text("请先保存任务。应用时会正常退出 Codex Desktop，再迁移共享 daemon 并验证结果；如果 Desktop 已退出，只迁移 daemon，不会擅自打开 App。该操作会短暂中断当前连接到 daemon 的手机、SSH 或 CLI。")
+            if disablesCodexFromToggle || !store.codexDesktopEnabled {
+                Text("请先保存任务。Codex Desktop 会正常退出；Mimi 会停止旧共享服务，确认会话已释放后再启动独立服务，然后重新打开 Desktop。")
+            } else {
+                Text("请先保存任务。Codex Desktop 会正常退出；Mimi 会迁移并验证共享服务，然后重新打开 Desktop。该操作会短暂中断手机、SSH 或 CLI 连接。")
+            }
         }
     }
 }

@@ -243,6 +243,143 @@ func TestStopUnmanagedSharedDaemonSignalsOneStrictlyMatchedProcess(t *testing.T)
 	}
 }
 
+func TestStopUnmanagedSharedDaemonUsesConfiguredCodexPathForSignedStableOwner(t *testing.T) {
+	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
+	configuredLink := filepath.Join(t.TempDir(), "codex-current")
+	if err := os.Symlink(configured, configuredLink); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := resolveSharedDaemonCodexBin(configuredLink)
+	if err != nil {
+		t.Fatalf("解析配置 Codex 路径失败：%v", err)
+	}
+	standalone := writeFakeCodexBin(t, t.TempDir(), "standalone-codex")
+	process := sharedDaemonListenerProcess{
+		PID:        1234,
+		ParentPID:  9876,
+		UID:        os.Getuid(),
+		StartSec:   1786522048,
+		StartUsec:  123,
+		Command:    "codex app-server --listen unix://",
+		Executable: configured,
+	}
+
+	inspectCalls := 0
+	desktopChecks := 0
+	termCalls := 0
+	// sharedDaemonValidateSignedRuntime 已在上层完成签名 node supervisor 父链
+	// 验证；这里把同一完整 identity 绑定到最终 TERM helper。
+	err = stopUnmanagedSharedDaemonWithExpectedIdentity(
+		context.Background(),
+		"/tmp/app.sock",
+		expected,
+		&process,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) {
+				desktopChecks++
+				return false, nil
+			},
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				inspectCalls++
+				return process, nil
+			},
+			signalTERM: func(int) error { termCalls++; return nil },
+			currentUID: func() int { return os.Getuid() },
+		},
+	)
+	if err != nil {
+		t.Fatalf("签名 stable owner listener 应按 configured CodexBin 允许一次 TERM：%v", err)
+	}
+	if desktopChecks != 2 || inspectCalls != 2 || termCalls != 1 {
+		t.Fatalf("停止必须保留 Desktop 双重检查、listener 双重确认和一次 TERM：desktop=%d inspect=%d term=%d", desktopChecks, inspectCalls, termCalls)
+	}
+
+	// 同一 listener 若按 lifecycle 的 standalone 路径判断，必须继续拒绝；
+	// 这保证旧式 unmanaged SSH listener 的路径边界没有被放宽。
+	termCalls = 0
+	err = stopUnmanagedSharedDaemonWithHooks(
+		context.Background(),
+		"/tmp/app.sock",
+		standalone,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) { return false, nil },
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				return process, nil
+			},
+			signalTERM: func(int) error { termCalls++; return nil },
+			currentUID: func() int { return os.Getuid() },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || termCalls != 0 {
+		t.Fatalf("legacy unmanaged 路径必须继续要求 standalone executable：err=%v term=%d", err, termCalls)
+	}
+}
+
+func TestStopUnmanagedSharedDaemonRejectsListenerChangedAfterSignedIdentityConfirmation(t *testing.T) {
+	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
+	expected := sharedDaemonListenerProcess{
+		PID:        1234,
+		ParentPID:  9876,
+		UID:        os.Getuid(),
+		StartSec:   1786522048,
+		StartUsec:  123,
+		Command:    "codex app-server --listen unix://",
+		Executable: configured,
+	}
+	// 模拟 socket 在签名父链验证之后换成另一个 owner。它仍使用同一
+	// configured executable、UID 和 argv，但父 PID 已变化；完整 identity
+	// 绑定必须在任何 TERM 前 fail closed。
+	replacement := expected
+	replacement.ParentPID = 9877
+	termCalls := 0
+	err := stopUnmanagedSharedDaemonWithExpectedIdentity(
+		context.Background(),
+		"/tmp/app.sock",
+		configured,
+		&expected,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) { return false, nil },
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				return replacement, nil
+			},
+			signalTERM: func(int) error { termCalls++; return nil },
+			currentUID: func() int { return os.Getuid() },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "与已验证身份不一致") || termCalls != 0 {
+		t.Fatalf("签名确认后 listener identity 变化必须拒绝 TERM：err=%v term=%d", err, termCalls)
+	}
+}
+
+func TestStopUnmanagedSharedDaemonRejectsExecutableDifferentFromConfiguredCodexPath(t *testing.T) {
+	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
+	foreign := writeFakeCodexBin(t, t.TempDir(), "foreign-codex")
+	process := sharedDaemonListenerProcess{
+		PID:        1234,
+		UID:        os.Getuid(),
+		StartSec:   1786522048,
+		Command:    "codex app-server --listen unix://",
+		Executable: foreign,
+	}
+	termCalls := 0
+	err := stopUnmanagedSharedDaemonWithExpectedPath(
+		context.Background(),
+		"/tmp/app.sock",
+		configured,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) { return false, nil },
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				return process, nil
+			},
+			signalTERM: func(int) error { termCalls++; return nil },
+			currentUID: func() int { return os.Getuid() },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || termCalls != 0 {
+		t.Fatalf("configured CodexBin 之外的 executable 必须 fail closed：err=%v term=%d", err, termCalls)
+	}
+}
+
 func TestStopUnmanagedSharedDaemonRejectsDesktopReopenedBeforeSignal(t *testing.T) {
 	process := sharedDaemonListenerProcess{
 		PID:        1234,

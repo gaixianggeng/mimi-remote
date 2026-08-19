@@ -257,7 +257,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let apiClient = CodexAppServerSessionAPIClient(runtime: runtime)
 
