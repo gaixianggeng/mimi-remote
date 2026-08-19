@@ -257,8 +257,15 @@ func (s *Server) handleNotify(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !result.OK() {
+		// APNs 的协议级拒绝用 200 + delivered:false 回报，而不是 5xx：托管 CDN 会
+		// 用自己的错误页替换 5xx 响应体，reason 就此丢失，排障时只剩一个状态码。
+		// 传输层故障仍然回 502，那种情况本来就没有 reason 可言。
 		log.Printf("push provider apns rejected status=%d reason=%s", result.StatusCode, result.Reason)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"delivered": false, "reason": result.Reason})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"delivered":   false,
+			"reason":      result.Reason,
+			"apns_status": result.StatusCode,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"delivered": true})

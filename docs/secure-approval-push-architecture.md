@@ -1,7 +1,7 @@
 # 锁屏审批通知最小架构
 
 更新日期：2026-08-20
-状态：已确认，进入实现。
+状态：实现中。阶段一至阶段四（agentd broker、安全动作层、Provider）已完成并部署；iOS 端待开发。
 
 已确认的两条产品决策：
 
@@ -234,6 +234,52 @@ Provider 只记录：请求计数、延迟、限速、APNs HTTP 状态/原因、
 - iOS：授权状态、Token 刷新/注销、Payload 严格解码、动作类别、通知路由、网络超时、状态清理和权限拒绝测试。
 - 集成：使用假 Provider / 假 APNs 验证端到端协议，不在 CI 使用真实 APNs 私钥。
 - 运行态：实体 iPhone 与实体 iPad 分别验证 App 前台、后台、被系统终止、锁屏、设备重启后首次解锁、多设备竞争和 Tailscale 暂时不可达。Simulator 结果不计为通知专项验收。
+
+## 实现进度
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 一：`agentd` approval broker | 已完成 | Codex gateway 的上游连接升级为具名会话所有，客户端离线期间继续接住审批请求；Claude 复用常驻 bridge，并新增只读观察连接补上「agentd 不再读 bridge」的缺口。由 `app_server.approval_broker` 控制，默认关闭。 |
+| 二：`agentd` 安全动作层 | 已完成 | `internal/pushbridge`：设备注册表、一次性动作句柄状态机、Provider 客户端。由 `push.enabled` 控制，默认关闭；Provider 未配置时即使 enabled 也保持关闭。 |
+| 三：iOS / iPadOS | 未开始 | 远程通知授权、Device Token 生命周期、通知类别与动作、实验功能开关与同意说明、通知清理。 |
+| 四：最小 Provider | 已完成并部署 | `cmd/mimi-push-provider`。 |
+
+### 锁屏可直接放行的范围
+
+只有 `command` 与 `patch` 提供锁屏「允许 / 拒绝」按钮：它们的响应形状是无歧义的
+`{"decision": ...}`，可以原样走 gateway 既有的客户端帧校验链路。
+
+`permission`、`user_input`、`elicitation` 仍然发通知，但只提供「查看详情」：
+
+- `permission` 的允许会授予一个作用域，拒绝必须以 JSON-RPC error 表达，盲批风险过高；
+- `user_input` 与 `elicitation` 离开内容根本无法作答，而内容正是我们刻意不放进推送的东西。
+
+### 决策如何回到 runtime
+
+锁屏决策不会另起一条审批通路。`agentd` 把它合成为一条与 iOS 前台**完全同形**的
+JSON-RPC response，再交给 gateway 既有的 `validateClientFrameContext`：外部 Desktop
+守卫、同 ID 一次性消费、permissions 安全重写全部原样复用。这样不会出现「前台被
+守卫拦住、锁屏却放行」的分叉。
+
+### 已上线的部署
+
+- 服务：`mimi-push-provider.service`（systemd，专用 `mimi-push` 用户，`ProtectSystem=strict`，仅 `/var/lib/mimi-push-provider` 可写）。
+- 监听：`127.0.0.1:8087`，经 nginx `snippets/mimi_push_locations.conf` 以 `/mimi-push/` 前缀对外，`/mimi-push/metrics` 不对外。
+- 密钥：`/etc/mimi-push-provider/`（`0750 root:mimi-push`），ticket 密钥与 APNs `.p8` 均为 `0640`，只在服务器上生成或放置，不进入仓库与 Release 资产。
+- 撤销表：`/var/lib/mimi-push-provider/revocations.db`，每小时清理已自然到期的记录。
+
+已验证：健康检查、Ticket 签发/撤销、非法枚举拒绝、限速、撤销后拒绝，以及 Codex 与
+Claude 两条 runtime 的真实载荷经公网到达 APNs（当前为占位密钥，Apple 返回
+`InvalidProviderToken`，证明链路与请求格式成立）。
+
+**待补**：真实 APNs Auth Key（`.p8` + Key ID）。替换 `/etc/mimi-push-provider/apns.p8`
+与 env 里的 `MIMI_PUSH_APNS_KEY_ID` 后重启即可切到真实投递。
+
+### 一处运维上的坑
+
+APNs 的协议级拒绝必须以 `200 + delivered:false + reason` 回报，不能用 5xx：托管 CDN
+会把 5xx 的响应体替换成自己的错误页，`reason` 就此丢失，线上只剩一个无从下手的
+状态码。传输层故障仍然回 502 —— 那种情况本来也没有 reason 可言。
 
 ## 风险与优化
 

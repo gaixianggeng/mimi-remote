@@ -93,7 +93,20 @@ func (c *Client) Notify(ctx context.Context, notification Notification) error {
 		return errors.New("未配置推送 Provider")
 	}
 	notification.Version = 1
-	return c.post(ctx, "/v1/notify", notification, nil)
+	var response struct {
+		Delivered  bool   `json:"delivered"`
+		Reason     string `json:"reason"`
+		APNsStatus int    `json:"apns_status"`
+	}
+	if err := c.post(ctx, "/v1/notify", notification, &response); err != nil {
+		return err
+	}
+	if !response.Delivered {
+		// Provider 用 200 + delivered:false 回报 APNs 的协议级拒绝，避免托管 CDN
+		// 替换 5xx 响应体时丢掉 reason。这里必须当成失败，不能默认成功。
+		return fmt.Errorf("APNs 拒绝投递（status=%d reason=%s）", response.APNsStatus, response.Reason)
+	}
+	return nil
 }
 
 func (c *Client) post(ctx context.Context, path string, body any, target any) error {

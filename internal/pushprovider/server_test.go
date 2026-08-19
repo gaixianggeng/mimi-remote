@@ -445,3 +445,23 @@ func TestProviderRateLimitsPerTicket(t *testing.T) {
 		t.Fatal("同一张 Ticket 的高频投递必须被限速")
 	}
 }
+
+// APNs 的协议级拒绝必须以 200 + delivered:false 回报：托管 CDN 会把 5xx 的
+// 响应体换成自己的错误页，reason 一旦丢失，线上只剩一个无从下手的状态码。
+func TestProviderReportsAPNsRejectionWithoutFiveXX(t *testing.T) {
+	fake := newFakeAPNs(t)
+	_, httpServer := newTestServer(t, fake)
+	ticket := issueTestTicket(t, httpServer.URL)
+
+	fake.setResponse(http.StatusForbidden, "InvalidProviderToken")
+	status, body := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+	if status != http.StatusOK {
+		t.Fatalf("APNs 协议级拒绝不应回 5xx，got=%d", status)
+	}
+	if body["delivered"] != false {
+		t.Fatalf("必须明确标记未投递：%v", body)
+	}
+	if body["reason"] != "InvalidProviderToken" || body["apns_status"] != float64(http.StatusForbidden) {
+		t.Fatalf("必须保留 APNs 原因用于排障：%v", body)
+	}
+}
