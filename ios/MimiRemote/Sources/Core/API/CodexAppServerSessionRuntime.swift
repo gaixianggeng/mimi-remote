@@ -727,8 +727,8 @@ actor CodexAppServerSessionRuntime {
                   shouldFallbackFromInitialTurnsPage(error) else {
                 throw error
             }
-            // idle 历史会话的发送会通过 createSession(resume:) 进入这里；它和事件订阅一样
-            // 必须允许 initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
+            // idle 历史会话的发送会通过 createSession(resume:) 进入这里；发送链路必须允许
+            // initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
             let fallback = try builder.threadResume(
                 threadID: payload.resumeID,
                 cwd: project.path,
@@ -832,11 +832,18 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func unsubscribeThread(threadID: SessionID) async throws -> CodexAppServerThreadUnsubscribeStatus? {
+        let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
+            || threadResumeTasksBySessionID[threadID] != nil
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         cancelThreadResumeTask(sessionID: threadID)
         // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
         // 发送 thread/resume，而不能被旧的“已 resume”缓存短路。
         threadsResumedOnConnection.remove(threadID)
+        guard hadResumeBinding else {
+            // 独立模式查看空闲历史时从未订阅上游。不要发送多余 unsubscribe，
+            // 更不能让随后的 writer handoff 把一次纯文件读取升级成 archive/unarchive。
+            return .notSubscribed
+        }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         guard threadSubscriptionLeaseBySessionID[threadID] == lease else {
             return nil
@@ -874,9 +881,14 @@ actor CodexAppServerSessionRuntime {
     /// `thread/unsubscribe` 只取消订阅、清除 lease/resume 状态，并不会释放 writer；两步必须按此顺序执行。
     @discardableResult
     func releaseThreadWriterWhenIdle(threadID: SessionID) async throws -> ThreadHandoffResponse {
+        let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
+            || threadResumeTasksBySessionID[threadID] != nil
         // unsubscribe 失败时仍继续发送 handoff：后台/切会话路径是 best-effort，且
         // agentd 会自行等待 active turn 变 idle，不应因一次旧连接 RPC 失败阻断释放。
         _ = try? await unsubscribeThread(threadID: threadID)
+        guard hadResumeBinding else {
+            return ThreadHandoffResponse(threadID: threadID, status: .alreadyReleased)
+        }
         return try await AgentAPIClient(endpoint: endpoint, token: token)
             .releaseThreadWriterWhenIdle(threadID: threadID)
     }
@@ -1743,6 +1755,12 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
         }
+        let config = try await ensureConfig()
+        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 独立 WS 模式下，打开空闲历史只读取 state DB / rollout，不提前把 thread
+            // 加载进 Mimi 的 app-server。首次真正发送时仍会先 resume，再启动 turn。
+            return
+        }
         let projects = try await projects()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
@@ -1760,9 +1778,8 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
         }
-        // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
-        // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
-        // 可能不会回流到 iPad。
+        // 共享 daemon 或运行中 thread 需要 resume 建立 live listener；thread/read/list 只能做
+        // hydration。独立模式的 idle 历史已在上方延迟到首次发送，不会走到这里。
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
@@ -1784,6 +1801,21 @@ actor CodexAppServerSessionRuntime {
         default:
             return false
         }
+    }
+
+    func shouldResumeThreadForEventSubscription(
+        _ session: AgentSession,
+        config: CodexAppServerConfigResponse
+    ) -> Bool {
+        guard runtimeProvider == "codex" else {
+            return true
+        }
+        let transport = config.runtime.transport
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        // Unix 表示 Codex Desktop 与 Mimi 共用同一个 daemon；打开即绑定不会产生
+        // 跨进程 writer 冲突。独立 WS 只为运行中状态恢复绑定，空闲历史延迟到发送。
+        return transport == "unix" || session.isRunning
     }
 
     func replaceThreadSubscriptionLease(
@@ -1808,6 +1840,12 @@ actor CodexAppServerSessionRuntime {
               desiredLease.wantsEvents,
               let context = contextsBySessionID[sessionID]
         else {
+            return
+        }
+        let config = try await ensureConfig()
+        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 独立模式的空闲历史没有服务端订阅需要恢复。旧 unsubscribe 的迟到 ACK
+            // 不能把一次纯读取重新升级成 thread/resume。
             return
         }
         let connection = try await ensureConnection()

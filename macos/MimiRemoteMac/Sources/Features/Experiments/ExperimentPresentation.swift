@@ -59,7 +59,15 @@ enum ExperimentPresentation {
         return detail + " 详情：" + diagnostic
     }
 
-    static func codexToggleDescription(isEnabled: Bool) -> String {
+    static func codexToggleDescription(
+        isEnabled: Bool,
+        isPending: Bool = false
+    ) -> String {
+        if isPending {
+            return isEnabled
+                ? "待应用：重启后，Mimi Remote 与 Codex Desktop 将共享同一个服务。"
+                : "待应用：当前仍使用共享服务；重启后将切换到独立服务。"
+        }
         if isEnabled {
             return "已开启：Mimi Remote 与 Codex Desktop 将尝试共享同一空闲会话；正在运行的任务仍只读。"
         }

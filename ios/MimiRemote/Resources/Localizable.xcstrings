@@ -4950,13 +4950,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session is held by another Codex app-server. Close it in Codex Desktop, or enable sharing in Experimental Features on the Mac, choose Apply Settings and Fully Restart Codex Desktop, and confirm before trying again."
+            "value": "This session is in use by Codex Desktop. Fully quit Codex Desktop, or enable sharing in Experimental Features on the Mac and follow the restart prompt. Closing only the session does not release it."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话正被另一个 Codex app-server 占用。请先在 Codex Desktop 中关闭它；如需跨端继续，请在 Mac 的“实验功能”中开启共享，点击“应用设置并完全重启 Codex Desktop”并确认，然后重试。"
+            "value": "此会话被 Codex Desktop 占用。请完全退出 Codex Desktop，或在 Mac 的“实验功能”中开启共享并按提示重启。仅关闭会话页面不会释放占用。"
           }
         }
       }

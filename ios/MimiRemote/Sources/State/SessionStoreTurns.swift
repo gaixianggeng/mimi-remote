@@ -609,9 +609,8 @@ extension SessionStore {
         } else {
             // 非运行会话有两种可能：真历史，或被瞬时 idle 误读降级的运行会话。
             // 已有缓存时先展示缓存、后台补一次最新页；失败和 savings notice 仍保持静默，
-            // 同时仍建立事件订阅——
-            // thread/resume 的权威状态能立即纠正误判，之后的 turn 事件也能直接推进来，
-            // 不再要求手动刷新。
+            // 同时仍恢复页面连接。共享模式会用 thread/resume 纠正误判；独立模式只读
+            // 持久化历史，直到首次发送才取得 writer。两种模式都不要求手动刷新历史。
             let didRefreshHistory: Bool
             let hasUnreconciledForegroundActivity: Bool
             switch foregroundActivityBySessionID[session.id] {

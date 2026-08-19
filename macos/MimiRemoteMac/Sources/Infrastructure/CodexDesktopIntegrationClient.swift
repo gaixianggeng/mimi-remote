@@ -197,6 +197,8 @@ struct CodexDesktopIntegrationClient {
     var setEnabled: @MainActor (_ enabled: Bool, _ codexHome: String?) async throws -> CodexDesktopEnvironmentSnapshot
     private var restartAndApplyOperation: @MainActor () async throws -> CodexDesktopEnvironmentSnapshot
     private var restartAndApplyWithPreparationOperation: (@MainActor (
+        _ desiredEnabled: Bool?,
+        _ codexHome: String?,
         _ preparation: @escaping @MainActor () async throws -> Void
     ) async throws -> CodexDesktopEnvironmentSnapshot)?
 
@@ -206,6 +208,8 @@ struct CodexDesktopIntegrationClient {
         setEnabled: @escaping @MainActor (_ enabled: Bool, _ codexHome: String?) async throws -> CodexDesktopEnvironmentSnapshot,
         restartAndApply: @escaping @MainActor () async throws -> CodexDesktopEnvironmentSnapshot,
         restartAndApplyWithPreparation: (@MainActor (
+            _ desiredEnabled: Bool?,
+            _ codexHome: String?,
             _ preparation: @escaping @MainActor () async throws -> Void
         ) async throws -> CodexDesktopEnvironmentSnapshot)? = nil
     ) {
@@ -221,11 +225,31 @@ struct CodexDesktopIntegrationClient {
         afterTermination preparation: @escaping @MainActor () async throws -> Void = {}
     ) async throws -> CodexDesktopEnvironmentSnapshot {
         if let restartAndApplyWithPreparationOperation {
-            return try await restartAndApplyWithPreparationOperation(preparation)
+            return try await restartAndApplyWithPreparationOperation(nil, nil, preparation)
         }
         // 测试/预览的轻量 client 没有真实进程拆分能力；仍保持“准备成功后才调用
         // restart”语义。正式 live client 在下方精确插入 terminate 与 open 之间。
         try await preparation()
+        return try await restartAndApplyOperation()
+    }
+
+    @MainActor
+    func restartAndSetEnabled(
+        _ enabled: Bool,
+        codexHome: String?,
+        afterTermination preparation: @escaping @MainActor () async throws -> Void
+    ) async throws -> CodexDesktopEnvironmentSnapshot {
+        if let restartAndApplyWithPreparationOperation {
+            return try await restartAndApplyWithPreparationOperation(
+                enabled,
+                codexHome,
+                preparation
+            )
+        }
+        // 轻量测试 client 没有真实进程边界；仍保证 backend 准备成功后才提交
+        // 新偏好。live client 会在旧 Desktop 完全退出后执行同一顺序。
+        try await preparation()
+        _ = try await setEnabled(enabled, codexHome)
         return try await restartAndApplyOperation()
     }
 
@@ -261,8 +285,12 @@ struct CodexDesktopIntegrationClient {
                 try await runtime.setEnabled(enabled, codexHome: codexHome)
             },
             restartAndApply: { try await runtime.restartAndApply() },
-            restartAndApplyWithPreparation: { preparation in
-                try await runtime.restartAndApply(afterTermination: preparation)
+            restartAndApplyWithPreparation: { desiredEnabled, codexHome, preparation in
+                try await runtime.restartAndApply(
+                    desiredEnabled: desiredEnabled,
+                    codexHome: codexHome,
+                    afterTermination: preparation
+                )
             }
         )
     }
@@ -320,6 +348,8 @@ private final class CodexDesktopIntegrationRuntime {
     private static let ownsSessionEpochKey = "MimiRemoteMac.codexDesktop.ownsSessionEpoch"
     private static let canonicalCodexHomeKey = "MimiRemoteMac.codexDesktop.codexHome"
     private static let restartRequiredAtKey = "MimiRemoteMac.codexDesktop.restartRequiredAt"
+    private static let pendingEnabledKey = "MimiRemoteMac.codexDesktop.pendingEnabled"
+    private static let pendingReopenKey = "MimiRemoteMac.codexDesktop.pendingReopen"
 
     init(
         defaults: UserDefaults,
@@ -366,9 +396,9 @@ private final class CodexDesktopIntegrationRuntime {
         }
         let applicationInfo = application.current()
         if applicationInfo.isRunning {
-            defaults.set(Date().timeIntervalSince1970, forKey: Self.restartRequiredAtKey)
+            storePendingPreference(enabled, reopen: true)
         } else {
-            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            clearPendingPreference()
         }
         return try await makeSnapshot(
             environmentValue: appliedSnapshot.environmentValue,
@@ -378,18 +408,26 @@ private final class CodexDesktopIntegrationRuntime {
     }
 
     func restartAndApply(
+        desiredEnabled: Bool? = nil,
+        codexHome: String? = nil,
         afterTermination preparation: @escaping @MainActor () async throws -> Void = {}
     ) async throws -> CodexDesktopEnvironmentSnapshot {
-        let snapshot = try await applyPreference(
-            preferenceEnabled,
-            codexHome: canonicalCodexHome
-        )
-        guard let bundleURL = snapshot.bundleURL else {
+        // 先只读取进程与环境。任何新偏好都必须等旧 Desktop 完全退出、backend
+        // 事务成功后再提交；否则退出失败或用户手动重开会读到尚未完成的半配置。
+        let before = try await inspect()
+        guard let bundleURL = before.bundleURL else {
             throw CodexDesktopIntegrationError.appNotInstalled
         }
-        let shouldReopen = snapshot.appRunning
+        let shouldReopen = before.appRunning || pendingPreferenceShouldReopen
+        let targetEnabled = desiredEnabled ?? pendingPreferenceEnabled ?? preferenceEnabled
+        let targetCodexHome = targetEnabled
+            ? (normalized(codexHome) ?? canonicalCodexHome)
+            : nil
+        // 用户确认一旦进入受控重启就先持久化目标。后端提交、launchd 写入或
+        // application.open 任一步失败，下一次启动仍能恢复同一个方向。
+        storePendingPreference(targetEnabled, reopen: shouldReopen)
 
-        if shouldReopen {
+        if before.appRunning {
             // terminateAndWait 内部只调用普通 NSRunningApplication.terminate，并等待
             // terminated；没有 forceTerminate，也不会在旧进程存活时开第二个实例。
             try await application.terminateAndWait(bundleURL)
@@ -400,10 +438,12 @@ private final class CodexDesktopIntegrationRuntime {
         // 失败则保持关闭，不把 Desktop 打开到已知不可用的共享后端。
         try await preparation()
 
-        // 确认弹窗与真正执行之间，用户可能已经自行退出 Desktop。实际快照为
-        // stopped 时只提交 daemon 迁移，绝不把用户主动关闭的 App 擅自打开。
+        let snapshot = try await setEnabled(targetEnabled, codexHome: targetCodexHome)
+
+        // 本次操作开始时 Desktop 未运行，且没有上一次失败留下的 reopen 意图时，
+        // 只提交 daemon 迁移，不擅自打开用户原本关闭的 App。
         if !shouldReopen {
-            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            clearPendingPreference()
             return try await makeSnapshot(
                 environmentValue: snapshot.environmentValue,
                 codexHome: snapshot.codexHome,
@@ -420,8 +460,11 @@ private final class CodexDesktopIntegrationRuntime {
                 environment[CodexDesktopIntegrationClient.codexHomeKey] = codexHome
             }
         }
+        // setEnabled 在 Desktop 已停止时会清理 pending；重新打开仍可能失败，
+        // 因此 open 前重新落盘，成功后再把整个恢复事务提交为完成。
+        storePendingPreference(targetEnabled, reopen: true)
         try await application.open(bundleURL, environment)
-        defaults.removeObject(forKey: Self.restartRequiredAtKey)
+        clearPendingPreference()
         // open 已成功提交本次新进程；这里同样使用 applyPreference 的已知环境
         // 快照，避免一次无关的 getenv 瞬时失败制造“重启失败”的假象。
         return try await makeSnapshot(
@@ -439,6 +482,26 @@ private final class CodexDesktopIntegrationRuntime {
         defaults.object(forKey: Self.enabledKey) == nil
             ? false
             : defaults.bool(forKey: Self.enabledKey)
+    }
+
+    private var pendingPreferenceEnabled: Bool? {
+        defaults.object(forKey: Self.pendingEnabledKey) as? Bool
+    }
+
+    private var pendingPreferenceShouldReopen: Bool {
+        defaults.bool(forKey: Self.pendingReopenKey)
+    }
+
+    private func storePendingPreference(_ enabled: Bool, reopen: Bool) {
+        defaults.set(enabled, forKey: Self.pendingEnabledKey)
+        defaults.set(reopen, forKey: Self.pendingReopenKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.restartRequiredAtKey)
+    }
+
+    private func clearPendingPreference() {
+        defaults.removeObject(forKey: Self.pendingEnabledKey)
+        defaults.removeObject(forKey: Self.pendingReopenKey)
+        defaults.removeObject(forKey: Self.restartRequiredAtKey)
     }
 
     private var previousValue: String? {
@@ -714,6 +777,66 @@ private final class CodexDesktopIntegrationRuntime {
         let sessionResetIsSafe = officialValuesAreEmpty
             && (currentSessionEpoch == nil || currentEpochIsOwned)
 
+        // 旧版关闭流程可能已经清除了 UserDefaults ownership，却把 Mimi 专属
+        // launchd marker 和官方两键留在当前 GUI 会话。marker 的命名空间只属于
+        // Mimi；当官方值也为空或精确匹配已记录的 canonical CODEX_HOME 时，可以
+        // 在用户显式关闭时恢复这组三键。值不匹配则按外部冲突处理，绝不猜测。
+        if currentSessionEpoch != nil, !currentEpochIsOwned {
+            let daemonCanBeRecovered = current == nil || current == "1"
+            let homeCanBeRecovered = currentCodexHome == nil
+                || (canonicalCodexHome != nil && currentCodexHome == canonicalCodexHome)
+            guard daemonCanBeRecovered, homeCanBeRecovered else {
+                throw externalConflictWithoutClearing(
+                    CodexDesktopIntegrationClient.ownershipEpochKey,
+                    currentSessionEpoch ?? "(未知 marker)"
+                )
+            }
+
+            var writes: [(key: String, previous: String?)] = []
+            do {
+                if current != nil {
+                    try await restore(
+                        key: CodexDesktopIntegrationClient.environmentKey,
+                        previous: nil
+                    )
+                    writes.append((CodexDesktopIntegrationClient.environmentKey, current))
+                }
+                if currentCodexHome != nil {
+                    try await restore(
+                        key: CodexDesktopIntegrationClient.codexHomeKey,
+                        previous: nil
+                    )
+                    writes.append((CodexDesktopIntegrationClient.codexHomeKey, currentCodexHome))
+                }
+                try await restore(
+                    key: CodexDesktopIntegrationClient.ownershipEpochKey,
+                    previous: nil
+                )
+                writes.append((CodexDesktopIntegrationClient.ownershipEpochKey, currentSessionEpoch))
+            } catch {
+                do {
+                    for write in writes.reversed() {
+                        try await restore(key: write.key, previous: write.previous)
+                    }
+                } catch let rollbackError {
+                    throw CodexDesktopIntegrationError.rollbackFailed(
+                        operation: "恢复遗留的 Codex Desktop 共享环境",
+                        original: error.localizedDescription,
+                        rollback: rollbackError.localizedDescription
+                    )
+                }
+                throw error
+            }
+            clearDaemonOwnership(keepPrevious: true)
+            clearCodexHomeOwnership(keepPrevious: true)
+            clearSessionOwnership()
+            return try await makeSnapshot(
+                environmentValue: nil,
+                codexHome: nil,
+                sessionEpoch: nil
+            )
+        }
+
 		// 禁用时只要两个官方键都已为空，且 marker 为空或仍精确匹配 Mimi，
 		// 就没有外部官方值会被误删；匹配的 marker 也可安全清理。启用路径更
 		// 严格，必须三键全空才会把它认作新的登录会话并重新写入。
@@ -835,18 +958,31 @@ private final class CodexDesktopIntegrationRuntime {
         let resolvedSessionEpoch = normalized(sessionEpoch)
         let applicationInfo = application.current()
         let restartRequiredAt = defaults.double(forKey: Self.restartRequiredAtKey)
+        var pendingEnabled = pendingPreferenceEnabled
         var restartRequired = applicationInfo.isRunning && restartRequiredAt > 0
         if restartRequired,
            let launchDate = applicationInfo.launchDate,
-           launchDate.timeIntervalSince1970 >= restartRequiredAt
+           launchDate.timeIntervalSince1970 >= restartRequiredAt,
+           let target = pendingEnabled,
+           pendingPreferenceIsApplied(
+               target,
+               environmentValue: environmentValue,
+               codexHome: codexHome,
+               sessionEpoch: resolvedSessionEpoch
+           )
         {
             // 用户也可能自行完全退出再从 Dock/Finder 重开。launchd 环境只在
             // 新进程创建时读取，因此新进程的 launchDate 晚于配置提交即可清账。
             restartRequired = false
-            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            clearPendingPreference()
+            pendingEnabled = nil
         } else if !applicationInfo.isRunning, restartRequiredAt > 0 {
             restartRequired = false
-            defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            // 受控流程中 Desktop 已退出正是 backend/env 事务的执行窗口。
+            // 只有没有 pending intent 的旧 restart marker 才能在这里清理。
+            if pendingEnabled == nil {
+                defaults.removeObject(forKey: Self.restartRequiredAtKey)
+            }
         }
         let sessionOwnershipIsValid = ownsSessionEpoch
             && writtenSessionEpoch == resolvedSessionEpoch
@@ -874,8 +1010,28 @@ private final class CodexDesktopIntegrationRuntime {
             appInstalled: applicationInfo.isInstalled,
             appRunning: applicationInfo.isRunning,
             restartRequired: restartRequired,
+            pendingEnabled: pendingEnabled,
             bundleURL: applicationInfo.bundleURL
         )
+    }
+
+    private func pendingPreferenceIsApplied(
+        _ enabled: Bool,
+        environmentValue: String?,
+        codexHome: String?,
+        sessionEpoch: String?
+    ) -> Bool {
+        if enabled {
+            return preferenceEnabled
+                && normalized(environmentValue) == "1"
+                && normalized(codexHome) == canonicalCodexHome
+                && ownsSessionEpoch
+                && normalized(sessionEpoch) == writtenSessionEpoch
+        }
+        return !preferenceEnabled
+            && normalized(environmentValue) == nil
+            && normalized(codexHome) == nil
+            && normalized(sessionEpoch) == nil
     }
 
     private func normalized(_ value: String?) -> String? {
