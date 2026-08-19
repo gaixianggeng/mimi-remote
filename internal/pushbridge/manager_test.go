@@ -417,3 +417,81 @@ func TestActionIDsAreUnpredictable(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// 一个 gateway 会话覆盖该安装下的全部 thread。turn 结束、thread 关闭只能撤掉
+// 该 thread 的审批，否则 A 线程跑完一个 turn，会把 B 线程上还等着的审批一起
+// 作废，用户在锁屏点下去只会得到「已过期」。
+func TestThreadTerminalDoesNotRevokeOtherThreads(t *testing.T) {
+	manager, provider := newTestManager(t, true, "device-a")
+
+	threadA := ApprovalRequest{
+		Runtime:    "codex",
+		SessionKey: "session-1",
+		ThreadID:   "thread-a",
+		RequestID:  "req-a",
+		Method:     "execCommandApproval",
+	}
+	threadB := ApprovalRequest{
+		Runtime:    "codex",
+		SessionKey: "session-1",
+		ThreadID:   "thread-b",
+		RequestID:  "req-b",
+		Method:     "execCommandApproval",
+	}
+	actionA, _ := manager.NotifyPending(t.Context(), threadA)
+	actionB, _ := manager.NotifyPending(t.Context(), threadB)
+
+	manager.ResolveThread(t.Context(), "codex", "session-1", "thread-a")
+
+	if current, _ := manager.actions.Get(actionA.ID); current.State != StateRevoked {
+		t.Fatalf("本 thread 的句柄应被作废，got=%s", current.State)
+	}
+	current, ok := manager.actions.Get(actionB.ID)
+	if !ok || current.State != StatePending {
+		t.Fatalf("其它 thread 的句柄不能被牵连：ok=%v state=%s", ok, current.State)
+	}
+	// 仍然可以正常放行 B。
+	if _, outcome, err := manager.Decide(t.Context(), actionB.ID, "device-a", DecisionAllow,
+		func(context.Context, Action, Decision) error { return nil }); err != nil || outcome != OutcomeProceed {
+		t.Fatalf("其它 thread 的审批应仍可放行：outcome=%s err=%v", outcome, err)
+	}
+	resolved := provider.events(EventApprovalResolved)
+	if len(resolved) == 0 {
+		t.Fatal("被作废的审批应通知设备清理旧卡片")
+	}
+	for _, event := range resolved {
+		if event.ActionID == actionB.ID {
+			t.Fatal("不该给其它 thread 的审批发已处理状态更新")
+		}
+	}
+}
+
+// 会话整体回收时（broker/观察连接结束）确实没人能再代替用户回答，这时才按
+// 会话作废。
+func TestSessionResolveRevokesEveryThread(t *testing.T) {
+	manager, _ := newTestManager(t, true, "device-a")
+	first, _ := manager.NotifyPending(t.Context(), ApprovalRequest{
+		Runtime: "codex", SessionKey: "session-1", ThreadID: "thread-a",
+		RequestID: "req-a", Method: "execCommandApproval",
+	})
+	second, _ := manager.NotifyPending(t.Context(), ApprovalRequest{
+		Runtime: "codex", SessionKey: "session-1", ThreadID: "thread-b",
+		RequestID: "req-b", Method: "execCommandApproval",
+	})
+	manager.ResolveSession(t.Context(), "codex", "session-1")
+	for _, id := range []string{first.ID, second.ID} {
+		if current, _ := manager.actions.Get(id); current.State != StateRevoked {
+			t.Fatalf("会话回收应作废全部句柄，%s state=%s", id, current.State)
+		}
+	}
+}
+
+func TestResolveThreadIgnoresEmptyThreadID(t *testing.T) {
+	manager, _ := newTestManager(t, true, "device-a")
+	action, _ := manager.NotifyPending(t.Context(), codexApproval())
+	// 空 threadID 不能被当成「匹配所有」，那等于悄悄退化成按会话作废。
+	manager.ResolveThread(t.Context(), "codex", "session-1", "")
+	if current, _ := manager.actions.Get(action.ID); current.State != StatePending {
+		t.Fatalf("空 threadID 不应作废任何句柄，got=%s", current.State)
+	}
+}

@@ -67,6 +67,20 @@ func (r *Router) notifyPendingApproval(runtime string, sessionKey string, thread
 	}()
 }
 
+// resolveApprovalNotificationsForThread 用于 turn 结束、thread 关闭这类只影响
+// 单个 thread 的事件。一个 gateway 会话覆盖该安装下的全部 thread，按会话作废
+// 会把其它线程上还等着的审批一起撤掉。
+func (r *Router) resolveApprovalNotificationsForThread(runtime string, sessionKey string, threadID string) {
+	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
+	go func() {
+		defer cancel()
+		r.push.ResolveThread(ctx, runtime, sessionKey, threadID)
+	}()
+}
+
 func (r *Router) resolveApprovalNotifications(runtime string, sessionKey string, requestID string) {
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" {
 		return

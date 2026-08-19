@@ -214,9 +214,30 @@ func (s *ActionStore) Revoke(runtime string, sessionKey string, requestID string
 	return revoked
 }
 
-// RevokeSession 作废整个会话的句柄，用于 thread 关闭或 broker 回收。
+// RevokeSession 作废整个会话的句柄，只用于 broker / 观察连接回收——那时候
+// 确实没人能再代替用户回答任何一条了。
 func (s *ActionStore) RevokeSession(runtime string, sessionKey string) []Action {
 	return s.Revoke(runtime, sessionKey, "")
+}
+
+// RevokeThread 只作废某个 thread 的句柄。
+//
+// 一个 gateway 会话覆盖该安装下的全部 thread，所以 turn 结束、thread 关闭这类
+// 事件绝不能按会话作废：A 线程跑完一个 turn，不该把 B 线程上还等着的审批一起
+// 撤掉。
+func (s *ActionStore) RevokeThread(runtime string, sessionKey string, threadID string) []Action {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	revoked := []Action{}
+	for _, action := range s.actions {
+		if action.Runtime != runtime || action.SessionKey != sessionKey ||
+			action.ThreadID != threadID || action.Terminal() {
+			continue
+		}
+		action.State = StateRevoked
+		revoked = append(revoked, *action)
+	}
+	return revoked
 }
 
 func (s *ActionStore) Get(actionID string) (Action, bool) {

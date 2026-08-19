@@ -45,7 +45,9 @@ type claudeApprovalObserver struct {
 	closed      bool
 	startedAt   time.Time
 	activeTurns map[string]struct{}
-	pending     map[string]struct{}
+	// pending 记录 requestID -> threadID。turn 结束只该撤掉该 thread 的审批，
+	// 一个 bridge 会话下还有别的 thread 在跑。
+	pending map[string]string
 }
 
 // startClaudeApprovalObserver 在客户端断开后接管 bridge 连接。返回 false 表示
@@ -84,7 +86,7 @@ func (r *Router) startClaudeApprovalObserver(
 		cancel:      cancel,
 		startedAt:   time.Now(),
 		activeTurns: map[string]struct{}{},
-		pending:     map[string]struct{}{},
+		pending:     map[string]string{},
 	}
 	r.claudeObservers[sessionKey] = observer
 	r.claudeObserverMu.Unlock()
@@ -162,7 +164,7 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 		}
 		o.mu.Lock()
 		_, known := o.pending[requestID]
-		o.pending[requestID] = struct{}{}
+		o.pending[requestID] = threadID
 		o.mu.Unlock()
 		if !known {
 			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, requestID, method)
@@ -179,12 +181,13 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 	case "serverRequest/resolved":
 		o.forgetResolved(frame.Params)
 	case "turn/completed", "thread/closed", "error":
-		if threadID != "" {
-			o.mu.Lock()
-			delete(o.activeTurns, threadID)
-			o.mu.Unlock()
+		if threadID == "" {
+			return
 		}
-		o.forgetAllPending()
+		o.mu.Lock()
+		delete(o.activeTurns, threadID)
+		o.mu.Unlock()
+		o.forgetPendingForThread(threadID)
 	}
 }
 
@@ -208,15 +211,20 @@ func (o *claudeApprovalObserver) forgetResolved(params json.RawMessage) {
 	}
 }
 
-func (o *claudeApprovalObserver) forgetAllPending() {
+// forgetPendingForThread 只撤掉某个 thread 的待审批。整段会话的作废交给
+// close()，那时候确实没人能再代替用户回答任何一条。
+func (o *claudeApprovalObserver) forgetPendingForThread(threadID string) {
 	o.mu.Lock()
-	pending := make([]string, 0, len(o.pending))
-	for requestID := range o.pending {
-		pending = append(pending, requestID)
+	forgotten := []string{}
+	for requestID, owner := range o.pending {
+		if owner != threadID {
+			continue
+		}
+		forgotten = append(forgotten, requestID)
+		delete(o.pending, requestID)
 	}
-	o.pending = map[string]struct{}{}
 	o.mu.Unlock()
-	for _, requestID := range pending {
+	for _, requestID := range forgotten {
 		o.router.resolveApprovalNotifications("claude", o.sessionKey, requestID)
 	}
 }

@@ -145,9 +145,26 @@ func (m *Manager) Resolve(ctx context.Context, runtime string, sessionKey string
 	}
 }
 
-// ResolveSession 在 thread 关闭或 gateway 会话回收时作废整段会话的句柄。
+// ResolveSession 只在 gateway 会话整体回收时使用：那时候确实没人能再代替
+// 用户回答任何一条。
 func (m *Manager) ResolveSession(ctx context.Context, runtime string, sessionKey string) {
 	m.Resolve(ctx, runtime, sessionKey, "")
+}
+
+// ResolveThread 用于 turn 结束、thread 关闭这类只影响单个 thread 的事件。
+// 一个 gateway 会话覆盖多个 thread，按会话作废会误伤其它线程上的待审批。
+func (m *Manager) ResolveThread(ctx context.Context, runtime string, sessionKey string, threadID string) {
+	if !m.Enabled() || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	revoked := m.actions.RevokeThread(runtime, sessionKey, threadID)
+	if len(revoked) == 0 {
+		return
+	}
+	devices := m.devices.Active()
+	for _, action := range revoked {
+		m.fanout(ctx, action, EventApprovalResolved, devices)
+	}
 }
 
 // Decide 是锁屏动作的落点。resolve 只有在状态机放行后才会被调用一次；它负责把

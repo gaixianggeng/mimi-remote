@@ -451,8 +451,9 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 			b.mu.Unlock()
 		}
 	case "turn/completed", "thread/closed", "error":
-		// turn 结束后旧审批不可能再被应答，锁屏上的卡片必须撤掉。
-		b.router.resolveApprovalNotifications("codex", b.key, "")
+		// turn 结束后该 thread 的旧审批不可能再被应答，锁屏卡片必须撤掉。
+		// 只按 thread 作废：同一个 gateway 会话下还有别的 thread 在跑。
+		b.router.resolveApprovalNotificationsForThread("codex", b.key, threadID)
 		b.mu.Lock()
 		if threadID != "" {
 			delete(b.activeTurns, threadID)
@@ -467,8 +468,10 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 		b.mu.Lock()
 		b.prunePendingLocked()
 		b.mu.Unlock()
-		// 审批已被处理：作废句柄并撤下其它设备上的旧通知。
-		b.router.resolveApprovalNotifications("codex", b.key, "")
+		// 审批已被处理：只作废这一条对应的句柄，撤下其它设备上的旧通知。
+		for _, requestID := range resolvedServerRequestIDs(frame.Params) {
+			b.router.resolveApprovalNotifications("codex", b.key, requestID)
+		}
 	}
 }
 
@@ -595,4 +598,32 @@ func (r *Router) runCodexGatewayBrokerClient(
 	_ = client.Close()
 	broker.detach(sink)
 	monitor.finish(reason)
+}
+
+// resolvedServerRequestIDs 取出 serverRequest/resolved 指向的请求 id。
+// 上游在不同版本里用过几种字段名，这里全部接受但只保留能解析出的那些。
+func resolvedServerRequestIDs(params json.RawMessage) []string {
+	var body struct {
+		RequestID  json.RawMessage `json:"requestId"`
+		RequestID2 json.RawMessage `json:"request_id"`
+		ID         json.RawMessage `json:"id"`
+		ApprovalID json.RawMessage `json:"approvalId"`
+	}
+	if json.Unmarshal(params, &body) != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	ids := []string{}
+	for _, raw := range []json.RawMessage{body.RequestID, body.RequestID2, body.ID, body.ApprovalID} {
+		key := gatewayRequestIDKey(rawMessagePointer(raw))
+		if key == "" {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, key)
+	}
+	return ids
 }
