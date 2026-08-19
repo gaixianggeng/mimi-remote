@@ -38,6 +38,22 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	if hasNetworkAccessEnabled(params) {
 		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
 	}
+	if permissions, exists := params["permissions"]; exists && permissions != nil {
+		if runtimeID != "codex" {
+			return validated, fmt.Errorf("permissions 只允许 Codex runtime 使用")
+		}
+		profileID, ok := gatewayPermissionProfileID(permissions)
+		if !ok {
+			return validated, fmt.Errorf("permissions 必须是有效的命名权限配置档案 ID")
+		}
+		_ = profileID
+		if sandbox, exists := params["sandbox"]; exists && sandbox != nil {
+			return validated, fmt.Errorf("permissions 不能与 sandbox 同时发送")
+		}
+		if sandboxPolicy, exists := params["sandboxPolicy"]; exists && sandboxPolicy != nil {
+			return validated, fmt.Errorf("permissions 不能与 sandboxPolicy 同时发送")
+		}
+	}
 	if value, ok := params["collaborationMode"]; ok {
 		if err := validateGatewayCollaborationMode(value); err != nil {
 			return validated, err
@@ -78,6 +94,22 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		validated.hasCWD = true
 		validated.cwdScope = scope
 		validated.cwdScopeOK = true
+	}
+	if method == "permissionProfile/list" {
+		if runtimeID != "codex" {
+			return validated, fmt.Errorf("permissionProfile/list 只允许 Codex runtime 使用")
+		}
+		if value, exists := params["limit"]; exists && value != nil {
+			limit, ok := gatewayJSONNumberInt64(value)
+			if !ok || limit < 0 || limit > 250 {
+				return validated, fmt.Errorf("permissionProfile/list.limit 必须是 0 到 250 的整数")
+			}
+		}
+		if value, exists := params["cursor"]; exists && value != nil {
+			if cursor, ok := value.(string); !ok || strings.TrimSpace(cursor) == "" || len(cursor) > 2048 {
+				return validated, fmt.Errorf("permissionProfile/list.cursor 必须是有效游标")
+			}
+		}
 	}
 	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
 		scope, pendingManagedPath, scopeOK := r.gatewayScopeForPathWithPendingUse(cwd, gatewayMethodNeedsManagedPendingUse(method))
@@ -182,11 +214,20 @@ func gatewayMethodNeedsManagedPendingUse(method string) bool {
 
 func requiresGatewayCWD(method string) bool {
 	switch method {
-	case "thread/list", "thread/start", "thread/resume", "thread/fork", "turn/start":
+	case "thread/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "permissionProfile/list":
 		return true
 	default:
 		return false
 	}
+}
+
+func gatewayPermissionProfileID(value any) (string, bool) {
+	profileID, ok := value.(string)
+	profileID = strings.TrimSpace(profileID)
+	if !ok || profileID == "" || len(profileID) > 256 || strings.ContainsAny(profileID, "\x00\r\n") {
+		return "", false
+	}
+	return profileID, true
 }
 
 func gatewayStringParam(params map[string]any, key string) (string, bool) {

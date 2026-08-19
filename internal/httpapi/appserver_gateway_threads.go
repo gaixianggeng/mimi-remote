@@ -642,7 +642,7 @@ func (p *appServerGatewayPolicy) sanitizeThreadSearchResponse(payload []byte, pe
 		}
 		threadID := strings.TrimSpace(thread.ID)
 		cwd := strings.TrimSpace(thread.CWD)
-		// 0.144.2 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
+		// 0.147.0 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
 		// 悄悄解释成 agentd 当前目录，也不能把 trim 后与客户端看到值不同的 thread 登记进授权表。
 		if threadID == "" || threadID != thread.ID || cwd == "" || cwd != thread.CWD || !filepath.IsAbs(cwd) {
 			continue
@@ -821,6 +821,15 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("app-server request 缺少 id")
 	}
 	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
+	var requestedPermissions map[string]any
+	if isPermissionsApprovalMethod(method) {
+		params, err := decodeGatewayParams(rawParams)
+		if err == nil {
+			if raw, ok := params["permissions"].(map[string]any); ok {
+				requestedPermissions, _ = sanitizedGatewayPermissionProfile(raw)
+			}
+		}
+	}
 	gatewayOwnedTurn := false
 	if p != nil && p.router != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" &&
 		strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") &&
@@ -846,12 +855,13 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("gateway pending server request 过多")
 	}
 	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
-		method:           method,
-		threadID:         threadID,
-		turnID:           turnID,
-		itemID:           itemID,
-		gatewayOwnedTurn: gatewayOwnedTurn,
-		createdAt:        now,
+		method:               method,
+		threadID:             threadID,
+		turnID:               turnID,
+		itemID:               itemID,
+		requestedPermissions: requestedPermissions,
+		gatewayOwnedTurn:     gatewayOwnedTurn,
+		createdAt:            now,
 	}
 	return nil
 }

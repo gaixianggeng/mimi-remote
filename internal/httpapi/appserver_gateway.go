@@ -100,6 +100,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"permissionProfile/list":  {},
 	"skills/list":             {},
 	"plugin/installed":        {},
 	"account/rateLimits/read": {},
@@ -271,12 +272,13 @@ type appServerGatewayPendingClientRequest struct {
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method           string
-	threadID         string
-	turnID           string
-	itemID           string
-	gatewayOwnedTurn bool
-	createdAt        time.Time
+	method               string
+	threadID             string
+	turnID               string
+	itemID               string
+	requestedPermissions map[string]any
+	gatewayOwnedTurn     bool
+	createdAt            time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {

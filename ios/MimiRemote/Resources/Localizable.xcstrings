@@ -39092,6 +39092,111 @@
         }
       }
     },
+    "ui.active_permission_profile_value": {
+      "comment": "Shows the permission profile that the App Server reports as active.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Active profile: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前生效档案：%@" } }
+      }
+    },
+    "ui.additional_permissions": {
+      "comment": "Heading for extra permissions attached to a command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Additional permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "附加权限" } }
+      }
+    },
+    "ui.agent_requests_network_access": {
+      "comment": "Title for a managed-network command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Agent requests network access" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Agent 请求网络访问" } }
+      }
+    },
+    "ui.file_system": {
+      "comment": "Heading for requested file-system permissions.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File system" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "文件系统" } }
+      }
+    },
+    "ui.host": {
+      "comment": "Label for a network host.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Host" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主机" } }
+      }
+    },
+    "ui.network_access_requested": {
+      "comment": "States that a permission request includes network access.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network access requested" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求网络访问" } }
+      }
+    },
+    "ui.network_request": {
+      "comment": "Heading for managed-network approval context.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network request" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络请求" } }
+      }
+    },
+    "ui.permission_profile_cannot_be_combined_with_legacy_sandbox": {
+      "comment": "Validation error when a named permission profile is sent with legacy sandbox fields.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A permission profile cannot be combined with legacy sandbox settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案不能与旧沙盒设置同时使用。" } }
+      }
+    },
+    "ui.permission_profile_id_is_invalid": {
+      "comment": "Validation error for an invalid named permission profile identifier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The permission profile ID is invalid." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案 ID 无效。" } }
+      }
+    },
+    "ui.permission_profile_wire_value": {
+      "comment": "Technical summary of the permission profile sent to the App Server.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "permissions · %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "permissions · %@" } }
+      }
+    },
+    "ui.permission_profiles": {
+      "comment": "Section heading for named App Server permission profiles.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Permission profiles" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案" } }
+      }
+    },
+    "ui.protocol": {
+      "comment": "Label for a network protocol.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Protocol" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "协议" } }
+      }
+    },
+    "ui.requested_permissions": {
+      "comment": "Heading for the permissions in a runtime approval request.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求的权限" } }
+      }
+    },
+    "ui.selected_permission_profile_value": {
+      "comment": "Shows the locally selected permission profile before the App Server confirms it.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selected profile: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选档案：%@" } }
+      }
+    },
+    "ui.use_named_permission_profile": {
+      "comment": "Accessibility hint for selecting a named permission profile.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use this named permission profile" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用此命名权限档案" } }
+      }
+    },
     "ui.step_value_value": {
       "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
       "extractionState": "manual",

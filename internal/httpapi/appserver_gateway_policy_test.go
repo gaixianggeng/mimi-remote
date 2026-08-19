@@ -814,7 +814,7 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	defer conn.Close()
 
 	threadStart := []byte(fmt.Sprintf(
-		`{"id":50,"method":"thread/start","params":{"cwd":%q,"sandbox":"custom","approvalsReviewer":"auto_review","permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true}}}`,
+		`{"id":50,"method":"thread/start","params":{"cwd":%q,"sandbox":"custom","approvalsReviewer":"auto_review","runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true}}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, threadStart); err != nil {
@@ -833,7 +833,7 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-safe-default")
 
 	turnStart := []byte(fmt.Sprintf(
-		`{"id":51,"method":"turn/start","params":{"threadId":"thread-safe-default","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-failure","approvalsReviewer":"auto_review","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5-codex","reasoning_effort":"high","developer_instructions":null}},"permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"}}}`,
+		`{"id":51,"method":"turn/start","params":{"threadId":"thread-safe-default","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-failure","approvalsReviewer":"auto_review","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5-codex","reasoning_effort":"high","developer_instructions":null}},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"}}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, turnStart); err != nil {
@@ -1243,7 +1243,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
 
-	dangerousTail := `"permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"},"approvalsReviewer":"auto_review"`
+	dangerousTail := `"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"},"approvalsReviewer":"auto_review"`
 	emptyParamFrames := []string{
 		`{"id":60,"method":"initialize","params":{` + dangerousTail + `}}`,
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
@@ -1870,6 +1870,158 @@ func TestAppServerGatewayRewritesPermissionsApprovalResponse(t *testing.T) {
 	}
 	if bytes.Contains(got, []byte("danger-full-access")) || bytes.Contains(got, []byte("networkAccess")) {
 		t.Fatalf("permissions approval response 不应透传危险权限：%s", got)
+	}
+}
+
+func TestAppServerGatewayForwardsOnlyRequestedPermissionSubset(t *testing.T) {
+	requestedPermissions := `{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}},{"access":"write","path":{"type":"special","value":{"kind":"project_roots","subpath":"output"}}}]},"network":{"enabled":true}}`
+	var sentApprovalRequest atomic.Bool
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		if sentApprovalRequest.Swap(true) {
+			return
+		}
+		request := []byte(`{"id":"perm-subset","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"perm-1","permissions":` + requestedPermissions + `}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
+		}
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	_ = readGatewayRaw(t, conn)
+
+	response := []byte(`{"id":"perm-subset","result":{"permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}}]}},"scope":"session","strictAutoReview":false}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, response); err != nil {
+		t.Fatal(err)
+	}
+	got := readUpstreamFrame(t, received)
+	result := decodeGatewayResultForTest(t, got)
+	permissions, ok := result["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions response 应保留合法子集：%s", got)
+	}
+	fileSystem, ok := permissions["fileSystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions response 应保留文件权限：%s", got)
+	}
+	entries, ok := fileSystem["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("permissions response 只能保留用户确认的一个条目：%s", got)
+	}
+	if _, exists := permissions["network"]; exists {
+		t.Fatalf("未确认的网络权限不应被授予：%s", got)
+	}
+	if result["scope"] != "turn" || result["strictAutoReview"] != true {
+		t.Fatalf("授权范围必须固定为当前 turn：%s", got)
+	}
+}
+
+func TestAppServerGatewayDropsOverGrantedPermissions(t *testing.T) {
+	var sentApprovalRequest atomic.Bool
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		if sentApprovalRequest.Swap(true) {
+			return
+		}
+		request := []byte(`{"id":"perm-overgrant","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"perm-1","permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/requested.txt"}}]}}}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
+		}
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	_ = readGatewayRaw(t, conn)
+
+	response := []byte(`{"id":"perm-overgrant","result":{"permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/not-requested.txt"}}]}}}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, response); err != nil {
+		t.Fatal(err)
+	}
+	got := readUpstreamFrame(t, received)
+	permissions, ok := decodeGatewayResultForTest(t, got)["permissions"].(map[string]any)
+	if !ok || len(permissions) != 0 {
+		t.Fatalf("越过原请求范围的响应必须 fail-closed：%s", got)
+	}
+}
+
+func TestAppServerGatewayForwardsPermissionProfileListForAllowlistedCWD(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
+	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	request := []byte(fmt.Sprintf(
+		`{"id":170,"method":"permissionProfile/list","params":{"cwd":%q,"limit":25,"cursor":"next-page","unknown":"drop"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, params, "cwd", "limit", "cursor")
+	if params["cwd"] != projectDir || params["cursor"] != "next-page" {
+		t.Fatalf("permissionProfile/list 必须绑定当前授权工作区：%v", params)
+	}
+	if limit, ok := gatewayJSONNumberInt64(params["limit"]); !ok || limit != 25 {
+		t.Fatalf("permissionProfile/list.limit 应保留受控分页值：%v", params)
+	}
+}
+
+func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-profile")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-profile")
+
+	request := []byte(fmt.Sprintf(
+		`{"id":171,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"use profile"}],"permissions":":workspace","approvalPolicy":"on-request","approvalsReviewer":"user"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	if params["permissions"] != ":workspace" {
+		t.Fatalf("turn/start 应保留命名权限档案：%v", params)
+	}
+	if _, exists := params["sandboxPolicy"]; exists {
+		t.Fatalf("命名权限档案不能与 sandboxPolicy 同时发送：%v", params)
+	}
+
+	conflict := []byte(fmt.Sprintf(
+		`{"id":172,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"conflict"}],"permissions":":workspace","sandboxPolicy":{"type":"readOnly"}}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, conflict); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "不能与 sandboxPolicy 同时发送") {
+		t.Fatalf("permissions 与 sandboxPolicy 冲突必须拒绝：%+v", errFrame)
 	}
 }
 

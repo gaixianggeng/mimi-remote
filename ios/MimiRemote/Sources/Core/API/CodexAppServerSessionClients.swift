@@ -16,6 +16,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.modelOptions()
     }
 
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
+        try await runtime.permissionProfiles(cwd: cwd)
+    }
+
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         try await runtime.channelAvailable(runtimeProvider: runtimeProvider)
     }
@@ -421,6 +425,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             seen.insert(option.id)
             return true
         }
+    }
+
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
+        try await bundle.codex.permissionProfiles(cwd: cwd)
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
@@ -962,6 +970,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         case .sessionRow(_, let metadata),
              .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
+             .permissionProfileUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
