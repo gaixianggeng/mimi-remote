@@ -138,6 +138,9 @@ final class SessionStore: ObservableObject {
     @Published var isUpdatingThreadGoal = false
     @Published var threadGoalErrorMessage: String?
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
+    @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
+    @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
+    @Published var isRefreshingPermissionProfiles = false
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
@@ -457,6 +460,9 @@ final class SessionStore: ObservableObject {
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
+    var permissionProfilesCWD: String?
+    var permissionProfilesRefreshRequestedCWD: String?
+    var permissionProfilesRefreshGeneration = 0
     var accountTokenUsageRefreshHostScope: HostScope?
     @Published var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 

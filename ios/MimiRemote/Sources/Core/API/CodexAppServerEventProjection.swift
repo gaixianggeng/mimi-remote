@@ -112,6 +112,7 @@ extension CodexAppServerSessionRuntime {
             return row.id
         case .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
+             .permissionProfileUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
@@ -152,6 +153,18 @@ extension CodexAppServerSessionRuntime {
             }
             contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: session.dir, activeTurnID: session.activeTurnID)
             emit(.session(session))
+        case "thread/settings/updated":
+            guard let threadID = params["threadId"]?.stringValue else {
+                return
+            }
+            let settings = params["threadSettings"]?.objectValue ?? [:]
+            guard settings.keys.contains("activePermissionProfile") else {
+                return
+            }
+            emit(.permissionProfileUpdated(
+                CodexAppServerActivePermissionProfile(value: settings["activePermissionProfile"]),
+                metadata(threadID: threadID, turnID: nil)
+            ))
         case "thread/status/changed":
             guard let threadID = params["threadId"]?.stringValue,
                   let statusValue = params["status"] else {
@@ -1779,9 +1792,18 @@ extension CodexAppServerSessionRuntime {
             return .object(["decision": .string(decision)])
         }
         if method == "item/permissions/requestApproval" {
+            let normalizedDecision = normalizeApprovalDecision(decision)
+            let requested = params["permissions"]
+            let granted: CodexAppServerJSONValue
+            if normalizedDecision == "accept", let requested, isValidRequestedPermissionProfile(requested) {
+                // 当前界面只提供“批准全部请求项”与“拒绝”。原请求对象经过本地结构校验后
+                // 原样返回，因此不会生成 App Server 没有请求过的路径或网络权限。
+                granted = requested
+            } else {
+                granted = .object([:])
+            }
             return .object([
-                // iPad 端只确认继续/拒绝当前请求，不授予 app-server 额外 permission 范围。
-                "permissions": .object([:]),
+                "permissions": granted,
                 "scope": .string("turn"),
                 "strictAutoReview": .bool(true)
             ])
@@ -1797,6 +1819,122 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         return .object(["decision": .string(decision)])
+    }
+
+    func isValidRequestedPermissionProfile(_ value: CodexAppServerJSONValue) -> Bool {
+        guard let profile = value.objectValue,
+              hasOnlyKeys(profile, ["fileSystem", "network"])
+        else {
+            return false
+        }
+        if let fileSystem = profile["fileSystem"], !isNull(fileSystem) {
+            guard let object = fileSystem.objectValue, isValidRequestedFileSystemPermissions(object) else {
+                return false
+            }
+        }
+        if let network = profile["network"], !isNull(network) {
+            guard let object = network.objectValue,
+                  hasOnlyKeys(object, ["enabled"]),
+                  object["enabled"].map({ isNull($0) || $0.boolValue != nil }) ?? true
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isValidRequestedFileSystemPermissions(
+        _ object: [String: CodexAppServerJSONValue]
+    ) -> Bool {
+        guard hasOnlyKeys(object, ["entries", "globScanMaxDepth", "read", "write"]) else {
+            return false
+        }
+        for key in ["read", "write"] {
+            guard let value = object[key], !isNull(value) else { continue }
+            guard let paths = value.arrayValue,
+                  paths.allSatisfy({ strictNonEmptyString($0) != nil })
+            else {
+                return false
+            }
+        }
+        if let depth = object["globScanMaxDepth"], !isNull(depth) {
+            guard case .int(let value) = depth, value > 0 else {
+                return false
+            }
+        }
+        if let entries = object["entries"], !isNull(entries) {
+            guard let values = entries.arrayValue,
+                  values.allSatisfy(isValidRequestedFileSystemEntry)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isValidRequestedFileSystemEntry(_ value: CodexAppServerJSONValue) -> Bool {
+        guard let object = value.objectValue,
+              hasOnlyKeys(object, ["access", "path"]),
+              let access = object["access"].flatMap(strictNonEmptyString),
+              ["read", "write", "deny"].contains(access),
+              let path = object["path"]?.objectValue,
+              let type = path["type"].flatMap(strictNonEmptyString)
+        else {
+            return false
+        }
+        switch type {
+        case "path":
+            return hasOnlyKeys(path, ["type", "path"])
+                && path["path"].flatMap(strictNonEmptyString) != nil
+        case "glob_pattern":
+            return hasOnlyKeys(path, ["type", "pattern"])
+                && path["pattern"].flatMap(strictNonEmptyString) != nil
+        case "special":
+            guard hasOnlyKeys(path, ["type", "value"]),
+                  let special = path["value"]?.objectValue,
+                  let kind = special["kind"].flatMap(strictNonEmptyString)
+            else {
+                return false
+            }
+            switch kind {
+            case "root", "minimal", "tmpdir", "slash_tmp":
+                return hasOnlyKeys(special, ["kind"])
+            case "project_roots":
+                return hasOnlyKeys(special, ["kind", "subpath"])
+                    && validOptionalString(special["subpath"])
+            case "unknown":
+                return hasOnlyKeys(special, ["kind", "path", "subpath"])
+                    && special["path"].flatMap(strictNonEmptyString) != nil
+                    && validOptionalString(special["subpath"])
+            default:
+                return false
+            }
+        default:
+            return false
+        }
+    }
+
+    private func hasOnlyKeys(
+        _ object: [String: CodexAppServerJSONValue],
+        _ allowed: Set<String>
+    ) -> Bool {
+        Set(object.keys).isSubset(of: allowed)
+    }
+
+    private func strictNonEmptyString(_ value: CodexAppServerJSONValue) -> String? {
+        guard case .string(let raw) = value else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || raw.contains("\0") ? nil : trimmed
+    }
+
+    private func validOptionalString(_ value: CodexAppServerJSONValue?) -> Bool {
+        guard let value else { return true }
+        return isNull(value) || strictNonEmptyString(value) != nil
+    }
+
+    private func isNull(_ value: CodexAppServerJSONValue) -> Bool {
+        if case .null = value { return true }
+        return false
     }
 
     func mcpToolApprovalResponse(

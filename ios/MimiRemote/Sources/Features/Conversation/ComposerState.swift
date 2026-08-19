@@ -454,6 +454,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     }
 
     func apply(to options: inout CodexAppServerTurnOptions) {
+        // 选择旧权限预设表示显式退出命名档案，确保请求只走一条权限通道。
+        options.permissionProfileID = nil
         options.approvalPolicy = approvalPolicy
         options.approvalsReviewer = approvalsReviewer
         options.sandboxMode = sandboxMode

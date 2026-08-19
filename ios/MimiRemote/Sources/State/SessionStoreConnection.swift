@@ -833,6 +833,14 @@ extension SessionStore {
             return
         }
         recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
+        if case .permissionProfileUpdated(let profile, let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let profile {
+                activePermissionProfileBySessionID[id] = profile
+            } else {
+                activePermissionProfileBySessionID.removeValue(forKey: id)
+            }
+        }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
         let output = await eventReducer.reduce(
             event,
@@ -1215,6 +1223,7 @@ extension SessionStore {
         case .sessionRow(_, let metadata),
              .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
+             .permissionProfileUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
@@ -1371,7 +1380,7 @@ extension SessionStore {
             syncRuntimeActivity(with: session)
         case .sessionRow(let row, _):
             syncRuntimeActivity(with: AgentSession(row: row))
-        case .sessionContext, .goalUpdated, .goalCleared, .unknown:
+        case .sessionContext, .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
             return
         }
     }
@@ -2565,6 +2574,12 @@ extension SessionStore {
         isUpdatingThreadGoal = false
         appServerModelOptions = []
         appServerModelOptionsLastRefresh = nil
+        appServerPermissionProfiles = []
+        activePermissionProfileBySessionID = [:]
+        permissionProfilesCWD = nil
+        permissionProfilesRefreshGeneration += 1
+        permissionProfilesRefreshRequestedCWD = nil
+        isRefreshingPermissionProfiles = false
         isClaudeRuntimeChannelAvailable = false
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil

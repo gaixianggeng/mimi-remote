@@ -161,6 +161,53 @@ extension SessionStore {
         }
     }
 
+    func refreshPermissionProfiles(cwd: String?) async {
+        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedCWD.isEmpty else {
+            permissionProfilesRefreshGeneration += 1
+            permissionProfilesRefreshRequestedCWD = nil
+            isRefreshingPermissionProfiles = false
+            appServerPermissionProfiles = []
+            permissionProfilesCWD = nil
+            return
+        }
+        if isRefreshingPermissionProfiles,
+           permissionProfilesRefreshRequestedCWD == normalizedCWD {
+            return
+        }
+        if !isRefreshingPermissionProfiles,
+           permissionProfilesCWD == normalizedCWD {
+            return
+        }
+
+        permissionProfilesRefreshGeneration += 1
+        let refreshGeneration = permissionProfilesRefreshGeneration
+        permissionProfilesRefreshRequestedCWD = normalizedCWD
+        isRefreshingPermissionProfiles = true
+        defer {
+            if permissionProfilesRefreshGeneration == refreshGeneration {
+                permissionProfilesRefreshRequestedCWD = nil
+                isRefreshingPermissionProfiles = false
+            }
+        }
+        do {
+            let profiles = try await clientFactory().permissionProfiles(cwd: normalizedCWD)
+            guard !Task.isCancelled,
+                  permissionProfilesRefreshGeneration == refreshGeneration
+            else { return }
+            appServerPermissionProfiles = profiles
+            permissionProfilesCWD = normalizedCWD
+        } catch {
+            // 权限档案仍是 Beta。旧 app-server 或未开启 experimentalApi 时保持旧沙盒入口，
+            // 不把能力探测失败升级成阻断发送的界面错误。
+            guard !Task.isCancelled,
+                  permissionProfilesRefreshGeneration == refreshGeneration
+            else { return }
+            appServerPermissionProfiles = []
+            permissionProfilesCWD = normalizedCWD
+        }
+    }
+
     func payloadResolvingRequiredModel(_ payload: CodexAppServerTurnPayload) async -> CodexAppServerTurnPayload {
         var resolved = payload
         let lockedRuntimeProvider = selectedSessionRuntimeProviderForTurn()

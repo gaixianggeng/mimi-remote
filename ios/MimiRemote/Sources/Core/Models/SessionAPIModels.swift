@@ -624,6 +624,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     var approvalsReviewer: String
     var sandboxMode: CodexAppServerSandboxMode
     var networkAccess: Bool
+    // 命名权限配置档案由 app-server 解析。存在时必须替代旧 sandbox 字段，不能叠加发送。
+    var permissionProfileID: String?
     var personality: CodexAppServerPersonality?
     var config: CodexAppServerJSONValue?
     var baseInstructions: String?
@@ -648,6 +650,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case approvalsReviewer = "approvals_reviewer"
         case sandboxMode = "sandbox_mode"
         case networkAccess = "network_access"
+        case permissionProfileID = "permission_profile_id"
         case personality
         case config
         case baseInstructions = "base_instructions"
@@ -671,6 +674,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         approvalsReviewer: String = "user",
         sandboxMode: CodexAppServerSandboxMode = .dangerFullAccess,
         networkAccess: Bool = false,
+        permissionProfileID: String? = nil,
         personality: CodexAppServerPersonality? = nil,
         config: CodexAppServerJSONValue? = nil,
         baseInstructions: String? = nil,
@@ -692,6 +696,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         self.approvalsReviewer = approvalsReviewer
         self.sandboxMode = sandboxMode
         self.networkAccess = networkAccess
+        self.permissionProfileID = permissionProfileID?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
         self.personality = personality
         self.config = config
         self.baseInstructions = baseInstructions
@@ -717,6 +722,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             approvalsReviewer: try container.decodeIfPresent(String.self, forKey: .approvalsReviewer) ?? "user",
             sandboxMode: try container.decodeIfPresent(CodexAppServerSandboxMode.self, forKey: .sandboxMode) ?? .dangerFullAccess,
             networkAccess: try container.decodeIfPresent(Bool.self, forKey: .networkAccess) ?? false,
+            permissionProfileID: try container.decodeIfPresent(String.self, forKey: .permissionProfileID),
             personality: try container.decodeIfPresent(CodexAppServerPersonality.self, forKey: .personality),
             config: try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .config),
             baseInstructions: try container.decodeIfPresent(String.self, forKey: .baseInstructions),
@@ -741,6 +747,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         approvalsReviewer: "user",
         sandboxMode: .dangerFullAccess,
         networkAccess: false,
+        permissionProfileID: nil,
         personality: nil,
         config: nil,
         baseInstructions: nil,
@@ -796,6 +803,12 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     private mutating func applyStandardComposerPermissionPreset() {
+        if permissionProfileID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            approvalPolicy = .onRequest
+            approvalsReviewer = "user"
+            networkAccess = false
+            return
+        }
         let reviewer = approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
         if sandboxMode == .readOnly {
             approvalPolicy = .onRequest
@@ -818,14 +831,16 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     func turnParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
-        [
+        let profileID = permissionProfileID.flatMap(nonEmptyString)
+        return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
             "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
             "effort": reasoningEffort.map { .string($0.rawValue) },
             "summary": reasoningSummary.map { .string($0.rawValue) },
             "approvalPolicy": .string(approvalPolicy.rawValue),
             "approvalsReviewer": .string(approvalsReviewer),
-            "sandboxPolicy": sandboxPolicy(projectPath: projectPath),
+            "permissions": profileID.map { .string($0) },
+            "sandboxPolicy": profileID == nil ? sandboxPolicy(projectPath: projectPath) : nil,
             "personality": personality.map { .string($0.rawValue) },
             "outputSchema": outputSchema,
             // app-server 会把 collaboration mode 作为 turn 级状态处理；普通模式也必须显式发送
@@ -835,13 +850,15 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     func threadParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
-        [
+        let profileID = permissionProfileID.flatMap(nonEmptyString)
+        return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
             "modelProvider": modelProvider.flatMap(nonEmptyString).map { .string($0) },
             "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
             "approvalPolicy": .string(approvalPolicy.rawValue),
             "approvalsReviewer": .string(approvalsReviewer),
-            "sandbox": .string(threadSandboxValue),
+            "permissions": profileID.map { .string($0) },
+            "sandbox": profileID == nil ? .string(threadSandboxValue) : nil,
             "personality": personality.map { .string($0.rawValue) },
             "config": config,
             "serviceName": serviceName.flatMap(nonEmptyString).map { .string($0) },
@@ -975,6 +992,50 @@ struct CodexAppServerTurnPayload: Codable, Hashable {
     static func defaultInput(for prompt: String) -> [CodexAppServerUserInput] {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? [] : [.text(trimmed)]
+    }
+}
+
+struct CodexAppServerPermissionProfileSummary: Codable, Hashable, Identifiable {
+    let id: String
+    let description: String?
+
+    static func parseListResult(_ result: CodexAppServerJSONValue?) -> [CodexAppServerPermissionProfileSummary] {
+        guard let values = result?.objectValue?["data"]?.arrayValue else {
+            return []
+        }
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            guard let object = value.objectValue,
+                  object["allowed"]?.boolValue == true,
+                  let id = object["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !id.isEmpty,
+                  seen.insert(id).inserted
+            else {
+                return nil
+            }
+            return CodexAppServerPermissionProfileSummary(
+                id: id,
+                description: object["description"]?.stringValue?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+            )
+        }
+    }
+}
+
+struct CodexAppServerActivePermissionProfile: Codable, Hashable {
+    let id: String
+    let extends: String?
+
+    init?(value: CodexAppServerJSONValue?) {
+        guard let object = value?.objectValue,
+              let id = object["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !id.isEmpty
+        else {
+            return nil
+        }
+        self.id = id
+        self.extends = object["extends"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
     }
 }
 
