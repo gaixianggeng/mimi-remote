@@ -1015,8 +1015,7 @@ struct WorkspaceCurrentDirectoryCard: View {
             .foregroundStyle(tokens.tertiaryText)
             .lineLimit(1)
             .padding(.horizontal, 7)
-            // 不可点，也不参与无障碍导航；当前层级由尾段的 accessibilityValue 播报。
-            .accessibilityHidden(true)
+            // 不可点，但作为静态文本保留给 VoiceOver，补充授权边界以上的路径信息。
     }
 
     /// 首个可见层级之上被裁掉的那段绝对路径，没有则返回 nil。
@@ -1044,7 +1043,7 @@ struct WorkspaceCurrentDirectoryCard: View {
 
     private var pathCrumbs: [PathCrumb] {
         let components = path.split(separator: "/").map(String.init)
-        guard !components.isEmpty else { return [] }
+        guard !components.isEmpty || path == "/" else { return [] }
 
         // 先构造完整轨迹（含文件系统根），再由 visibleCrumbs 按授权边界裁掉上层。
         var crumbs: [PathCrumb] = path.hasPrefix("/") ? [PathCrumb(name: "/", path: "/")] : []
