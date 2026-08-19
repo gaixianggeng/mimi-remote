@@ -601,6 +601,16 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	}
 	defer client.Close()
 
+	// 具名会话可能已经有存活的 broker。命中时完全跳过拨号：复用同一条上游连接，
+	// 离线期间登记的审批请求 id 才继续有效，重连后可以直接重放。
+	brokerKey := ""
+	if r.codexGatewayBrokerEnabled() {
+		brokerKey = codexGatewayBrokerKey(req)
+	}
+	if brokerKey != "" && r.serveAttachedCodexGatewayBroker(req, client, brokerKey) {
+		return
+	}
+
 	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
 	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
 	// 收到可重试错误，而不是每次都白等 10s。外侧握手已完成后才拨号，确保畸形握手不会占用 upstream。
@@ -626,10 +636,20 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")
 		return
 	}
-	defer upstream.Close()
+	// broker 接管后上游连接要比这次 HTTP 请求活得更久，不能由 handler 关闭。
+	upstreamOwnedByBroker := false
+	defer func() {
+		if !upstreamOwnedByBroker {
+			upstream.Close()
+		}
+	}()
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
 	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
+	if brokerKey != "" && r.serveNewCodexGatewayBroker(req, client, upstream, monitor, brokerKey) {
+		upstreamOwnedByBroker = true
+		return
+	}
 	r.proxyAppServerGateway(req.Context(), client, upstream, monitor)
 }
 

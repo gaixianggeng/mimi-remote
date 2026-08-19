@@ -17,16 +17,7 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
-	policy := &appServerGatewayPolicy{
-		router:                r,
-		runtimeID:             "codex",
-		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:        map[string]appServerGatewayAllowedThread{},
-	}
+	policy := newAppServerGatewayPolicy(r, "codex")
 	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
 
@@ -49,6 +40,21 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	_ = client.Close()
 	_ = upstream.Close()
 	monitor.finish(reason)
+}
+
+// newAppServerGatewayPolicy 初始化一次连接（或一个 broker 会话）的全部策略状态。
+// broker 与一对一代理必须共用同一套初始化，否则两条路径的裁剪规则会悄悄分叉。
+func newAppServerGatewayPolicy(r *Router, runtimeID string) *appServerGatewayPolicy {
+	return &appServerGatewayPolicy{
+		router:                r,
+		runtimeID:             runtimeID,
+		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+	}
 }
 
 func configureGatewayReadConn(conn *websocket.Conn) {

@@ -91,6 +91,10 @@ type AppServerConfig struct {
 	SharedFallback *AppServerFallbackConfig `json:"shared_fallback,omitempty"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
+	// ApprovalBroker 让具名 gateway 会话的上游连接在移动端退到后台后有界存活，
+	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
+	// 需要先在真机上验证后台/锁屏路径再放开。
+	ApprovalBroker bool `json:"approval_broker,omitempty"`
 }
 
 type AppServerFallbackConfig struct {
