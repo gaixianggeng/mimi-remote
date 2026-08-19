@@ -116,6 +116,7 @@ final class StaticNetworkPathStatusSource: NetworkPathStatusSource {
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
     func externalActivities() async throws -> ExternalActivityResponse?
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
@@ -249,6 +250,10 @@ extension SessionStoreAPIClient {
         try await refreshAccountTokenUsage()
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
+        []
+    }
+
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
         []
     }
 

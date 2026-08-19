@@ -27,7 +27,7 @@ func TestAppServerGatewayThreadSearchParamsAreStrictlyRebuilt(t *testing.T) {
 		"unknown":       map[string]any{"approvalPolicy": "never", "secret": "must-drop"},
 	}
 	if err := validateGatewayThreadSearchParams(valid); err != nil {
-		t.Fatalf("0.144.2 合法 search params 不应被拒绝：%v", err)
+		t.Fatalf("0.147.0 合法 search params 不应被拒绝：%v", err)
 	}
 	safe := sanitizedGatewayThreadSearchParams(valid)
 	assertGatewayParamsOnly(t, safe, "searchTerm", "cursor", "limit", "sortDirection", "sortKey", "archived", "sourceKinds")
@@ -38,7 +38,7 @@ func TestAppServerGatewayThreadSearchParamsAreStrictlyRebuilt(t *testing.T) {
 		t.Fatalf("未知参数必须剔除，不能透传任意 JSON：%v", safe)
 	}
 	if err := validateGatewayThreadSearchParams(map[string]any{"searchTerm": "x", "limit": json.Number("0"), "cursor": ""}); err != nil {
-		t.Fatalf("0.144.2 schema 允许 uint32 limit=0 与空字符串 cursor：%v", err)
+		t.Fatalf("0.147.0 schema 允许 uint32 limit=0 与空字符串 cursor：%v", err)
 	}
 
 	cases := []struct {
