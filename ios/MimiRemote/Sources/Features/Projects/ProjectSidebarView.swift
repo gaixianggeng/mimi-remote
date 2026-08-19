@@ -557,6 +557,7 @@ private struct SidebarEmptyMessage: View {
 struct OpenWorkspaceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var path = ""
@@ -564,6 +565,9 @@ struct OpenWorkspaceSheet: View {
     @State private var localError: String?
 
     @State private var browsePath: String?
+    /// 首次不带 path 的浏览落在服务端默认浏览根上，正好是授权边界的下沿。
+    /// 记住它，路径条才能只把边界内的层级画成可点。
+    @State private var browseRootPath: String?
     @State private var browseParentPath: String?
     @State private var browseEntries: [DirectoryEntry] = []
     @State private var browseTruncated = false
@@ -581,7 +585,6 @@ struct OpenWorkspaceSheet: View {
 
         NavigationStack {
             Form {
-                currentDirectorySection
                 childDirectoriesSection
 
                 if let localError {
@@ -609,6 +612,11 @@ struct OpenWorkspaceSheet: View {
                 } footer: {
                     Text(L10n.text("ui.you_can_directly_paste_the_absolute_path_in"))
                 }
+            }
+            // 路径条属于浮在内容之上的控制层，不随目录列表滚走：深目录里「我在哪」
+            // 必须始终可读，同时列表从它底下穿过，边界交给 scroll edge 表达而不是分割线。
+            .safeAreaInset(edge: .top, spacing: 0) {
+                pathBar
             }
             .navigationTitle(L10n.text("ui.open_workspace"))
             .toolbar {
@@ -642,20 +650,22 @@ struct OpenWorkspaceSheet: View {
     }
 
     @ViewBuilder
-    private var currentDirectorySection: some View {
-        Section {
-            WorkspaceCurrentDirectoryCard(
-                directoryName: currentDirectoryName,
-                path: browsePath ?? L10n.text("ui.locating_be47409b"),
-                parentPath: browseParentPath,
-                isBrowsing: isBrowsing,
-                isOpening: isOpening,
-                onNavigateToParent: { parentPath in
-                    Task { await browse(to: parentPath) }
-                }
-            )
-        } header: {
-            Text(L10n.text("ui.current_location"))
+    private var pathBar: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        WorkspaceCurrentDirectoryCard(
+            path: browsePath ?? "",
+            rootPath: browseRootPath,
+            parentPath: browseParentPath,
+            isBrowsing: isBrowsing,
+            isOpening: isOpening,
+            onNavigate: { target in
+                Task { await browse(to: target) }
+            }
+        )
+        .background {
+            WorkbenchChromeMaterial(shape: Rectangle(), tokens: tokens)
+                .ignoresSafeArea(edges: .horizontal)
         }
     }
 
@@ -697,30 +707,35 @@ struct OpenWorkspaceSheet: View {
                             Task { await preview(entry) }
                         }
                     } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: entry.isDir ? "folder" : "doc.text")
-                                .font(themeStore.uiFont(size: 18, weight: .regular))
-                                .foregroundStyle(tokens.accent)
-                                .frame(width: 26)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.name)
-                                    .font(themeStore.uiFont(size: 15, weight: .medium))
-                                    .foregroundStyle(tokens.primaryText)
-                                    .lineLimit(1)
-                            }
+                        HStack(spacing: 11) {
+                            // 目录沿用系统文件夹隐喻，但降到次级色重：整列 20 多个 accent 图标
+                            // 会把主题色摊薄，让工具栏里真正的主动作失去唯一性。
+                            Image(systemName: entry.isDir ? "folder.fill" : "doc.text")
+                                .font(themeStore.uiFont(size: 15, weight: .regular))
+                                .foregroundStyle(entry.isDir ? tokens.secondaryText : tokens.tertiaryText)
+                                .frame(width: 20)
+                            Text(entry.name)
+                                .font(themeStore.uiFont(size: 15))
+                                .foregroundStyle(tokens.primaryText)
+                                // 目录名是唯一的辨识依据，长名折行而不是从中间截断。
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 8)
                             if previewingPath == entry.path {
                                 ProgressView()
                                     .controlSize(.small)
                             } else {
                                 Image(systemName: entry.isDir ? "chevron.right" : "eye")
-                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
-                                    .foregroundStyle(tokens.tertiaryText)
+                                    .font(themeStore.uiFont(size: 11, weight: .semibold))
+                                    .foregroundStyle(tokens.tertiaryText.opacity(0.7))
                             }
                         }
+                        // 行内视觉收紧，命中区仍保持系统最小尺寸。
+                        .padding(.vertical, 2)
+                        .frame(minHeight: 40)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .disabled(isOpening || isBrowsing || previewingPath != nil || (!entry.canBrowse && !entry.isPreviewable))
                 }
 
@@ -730,23 +745,15 @@ struct OpenWorkspaceSheet: View {
                         .foregroundStyle(.red)
                 }
             }
-        } header: {
-            Text(L10n.text("ui.content"))
         } footer: {
+            // 原来这里有一个「内容」标题。路径条已经说明当前层级，标题不携带新信息，
+            // 只是在首屏再占一行；边界改由路径条的磨砂层表达。
             if browseTruncated {
                 Text(L10n.text("ui.the_directory_is_too_large_only_the_front"))
             } else {
                 Text(L10n.text("ui.hidden_directories_library_and_common_cache_directories_will"))
             }
         }
-    }
-
-    private var currentDirectoryName: String {
-        guard let browsePath, !browsePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return L10n.text("ui.locating")
-        }
-        let parts = browsePath.split(separator: "/").map(String.init)
-        return parts.last ?? browsePath
     }
 
     private var trimmedPath: String {
@@ -772,6 +779,9 @@ struct OpenWorkspaceSheet: View {
                 return
             }
             browsePath = response.path
+            if target.isEmpty, browseRootPath == nil {
+                browseRootPath = response.path
+            }
             browseParentPath = response.parentPath
             browseEntries = response.entries
             browseTruncated = response.truncated ?? false
@@ -870,65 +880,180 @@ struct OpenWorkspaceSheet: View {
     }
 }
 
+/// 目录选择器的位置指示改用面包屑路径条，而不是「上一级按钮 + 目录名 + 全路径」三段卡片。
+///
+/// 层级本身就是位置信息：轨迹可读出「我在哪」，省掉目录名与全路径的重复表达，
+/// 也把只能单步回退的「上一级」升级为可直接跳到授权范围内的任意祖先层级。
+/// 压缩后的首屏归还给真正的主任务——挑选目录。
 struct WorkspaceCurrentDirectoryCard: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var themeStore: ThemeStore
 
-    let directoryName: String
     let path: String
+    /// 服务端默认浏览根。它之上的层级会被 allowlist 直接拒绝，
+    /// 所以那些段不能画成可点的面包屑，否则每次点击都换来一条 403。
+    let rootPath: String?
     let parentPath: String?
     let isBrowsing: Bool
     let isOpening: Bool
-    let onNavigateToParent: (String) -> Void
+    let onNavigate: (String) -> Void
+
+    /// 每段的 id 用累积路径而非下标：路径前缀天然唯一，
+    /// 目录切换时 SwiftUI 能按层级而不是位置对齐 diff。
+    private struct PathCrumb: Identifiable {
+        let name: String
+        let path: String
+
+        var id: String { path }
+    }
 
     var body: some View {
+        let crumbs = visibleCrumbs
+
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                if crumbs.isEmpty {
+                    placeholderCrumb
+                } else {
+                    if let prefix = elidedPrefix(before: crumbs[0]) {
+                        // 授权边界之上的层级不可进入，但绝对路径仍是确认位置的依据，
+                        // 所以按原文保留成不可点的前缀，而不是压成一个省略号。
+                        // 分隔符照常延续：这仍是一条连续路径，可点与否交给字色区分。
+                        elidedPrefixLabel(prefix)
+                        separator
+                    }
+                    ForEach(Array(crumbs.enumerated()), id: \.element.id) { index, crumb in
+                        if index > 0 {
+                            separator
+                        }
+                        crumbButton(crumb, isCurrent: index == crumbs.count - 1)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+        }
+        // 深路径会把当前层级挤出视野，而当前层级正是路径条要回答的问题。
+        // 尾部锚点让首次显示和每次目录切换都自动停在最深一段，祖先层级留给向左滑。
+        .defaultScrollAnchor(.trailing)
+    }
+
+    @ViewBuilder
+    private func crumbButton(_ crumb: PathCrumb, isCurrent: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 14) {
-            if let parentPath {
-                Button {
-                    onNavigateToParent(parentPath)
-                } label: {
-                    Label {
-                        Text(L10n.text("ui.previous_level"))
-                    } icon: {
-                        Image(systemName: "arrow.up")
-                            .accessibilityHidden(true)
-                    }
-                    .frame(minWidth: 44, minHeight: 44)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(isBrowsing || isOpening)
-                .accessibilityLabel(L10n.text("ui.previous_level"))
-                .accessibilityHint(L10n.text("ui.return_to_previous_level"))
-                .accessibilityIdentifier("workspace.open.parent")
-            }
-
-            HStack(alignment: .center, spacing: 12) {
+        if isCurrent {
+            // 当前层级不是可点目标，用唯一一处 accent 承担「你在这里」，
+            // 让列表行把 accent 让给真正的主动作（打开）。
+            HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
-                    .font(themeStore.uiFont(size: 20, weight: .semibold))
-                    .foregroundStyle(tokens.accent)
-                    .frame(width: 38, height: 38)
-                    .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .font(themeStore.uiFont(size: 11, weight: .semibold))
                     .accessibilityHidden(true)
-
-                Text(directoryName)
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(crumb.name)
+                    .font(themeStore.uiFont(size: 13, weight: .semibold))
             }
+            .foregroundStyle(tokens.accent)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(tokens.accentSoft, in: Capsule())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(crumb.name)
+            .accessibilityValue(L10n.text("ui.current_location"))
+        } else {
+            // 能画成按钮的层级都已被 visibleCrumbs 过滤为服务端确实允许进入的，
+            // 所以这里不存在“点了才发现不能点”的控件。
+            let isParent = crumb.path == parentPath
 
-            Text(path)
-                .font(themeStore.uiFont(size: 12))
-                .foregroundStyle(tokens.secondaryText)
-                // 路径是当前目录的识别信息，允许自然换行，避免长路径被截断后无法确认位置。
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                onNavigate(crumb.path)
+            } label: {
+                Text(crumb.name)
+                    .font(themeStore.uiFont(size: 13))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    // 视觉保持紧凑，命中区仍撑满路径条高度。
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .disabled(isBrowsing || isOpening)
+            .accessibilityLabel(crumb.name)
+            // 只有直接父级适用「返回上一级」；更高层级不给出会误导的提示。
+            .accessibilityHint(isParent ? L10n.text("ui.return_to_previous_level") : "")
+            // 直接父级沿用既有标识，其余层级按累积路径区分，避免同一轨迹里出现重复标识。
+            .accessibilityIdentifier(
+                isParent ? "workspace.open.parent" : "workspace.open.crumb.\(crumb.path)"
+            )
         }
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var separator: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return Image(systemName: "chevron.compact.right")
+            .font(themeStore.uiFont(size: 11, weight: .semibold))
+            .foregroundStyle(tokens.tertiaryText)
+            .accessibilityHidden(true)
+    }
+
+    private var placeholderCrumb: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return Text(L10n.text("ui.locating_be47409b"))
+            .font(themeStore.uiFont(size: 13))
+            .foregroundStyle(tokens.tertiaryText)
+            .frame(minHeight: 44)
+    }
+
+    private func elidedPrefixLabel(_ prefix: String) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return Text(prefix)
+            .font(themeStore.uiFont(size: 13))
+            .foregroundStyle(tokens.tertiaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            // 不可点，也不参与无障碍导航；当前层级由尾段的 accessibilityValue 播报。
+            .accessibilityHidden(true)
+    }
+
+    /// 首个可见层级之上被裁掉的那段绝对路径，没有则返回 nil。
+    private func elidedPrefix(before crumb: PathCrumb) -> String? {
+        guard crumb.path != "/" else { return nil }
+        let prefix = (crumb.path as NSString).deletingLastPathComponent
+        return prefix.isEmpty || prefix == "/" ? nil : prefix
+    }
+
+    /// 只保留授权边界之内的层级。
+    ///
+    /// 边界下沿取「默认浏览根」与服务端明确给出的 `parentPath` 中较浅的一个：
+    /// 前者由首次浏览学到，后者已由服务端确认可进入（可能略高于浏览根）。
+    /// 两者都不在轨迹里时说明已到边界顶，只显示当前层级。
+    private var visibleCrumbs: [PathCrumb] {
+        let crumbs = pathCrumbs
+        guard !crumbs.isEmpty else { return [] }
+
+        let boundaries = Set([rootPath, parentPath].compactMap { $0 })
+        guard let floor = crumbs.first(where: { boundaries.contains($0.path) }) else {
+            return [crumbs[crumbs.count - 1]]
+        }
+        return Array(crumbs.drop(while: { $0.path != floor.path }))
+    }
+
+    private var pathCrumbs: [PathCrumb] {
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return [] }
+
+        // 先构造完整轨迹（含文件系统根），再由 visibleCrumbs 按授权边界裁掉上层。
+        var crumbs: [PathCrumb] = path.hasPrefix("/") ? [PathCrumb(name: "/", path: "/")] : []
+        var accumulated = ""
+        for component in components {
+            accumulated += "/" + component
+            crumbs.append(PathCrumb(name: component, path: accumulated))
+        }
+        return crumbs
     }
 }
 
