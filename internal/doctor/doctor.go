@@ -29,6 +29,28 @@ type Checker struct {
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
+	sharedDaemonReconcile      Check
+}
+
+const sharedDaemonReconcileName = "codex-shared-daemon-reconcile"
+
+// SetSharedDaemonReconcile 记录独立 WS 模式启动时对残留 Mimi 共享 daemon 的
+// 结论。只有需要用户介入的状态才写入；正常情况下这个 check 不出现在 readyz 里。
+func (c *Checker) SetSharedDaemonReconcile(message string, fix string) {
+	c.fileAccessMu.Lock()
+	defer c.fileAccessMu.Unlock()
+	c.sharedDaemonReconcile = Check{
+		Name:    sharedDaemonReconcileName,
+		OK:      false,
+		Message: message,
+		Fix:     fix,
+	}
+}
+
+func (c *Checker) sharedDaemonReconcileCheck() Check {
+	c.fileAccessMu.RLock()
+	defer c.fileAccessMu.RUnlock()
+	return c.sharedDaemonReconcile
 }
 
 type Results struct {
@@ -95,6 +117,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		checks = append(checks, check)
 	}
 	if check := c.fileAccessPreflightCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
+	if check := c.sharedDaemonReconcileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if check := c.configFileCheck(); check.Name != "" {
@@ -177,7 +202,8 @@ func (c *Checker) results(checks []Check) Results {
 
 func isWarningOnlyCheck(name string) bool {
 	switch name {
-	case "tailscale", "macos-code-signing", "file-access-preflight", "codex-daemon-lifecycle-external":
+	case "tailscale", "macos-code-signing", "file-access-preflight", "codex-daemon-lifecycle-external",
+		sharedDaemonReconcileName:
 		return true
 	default:
 		return false

@@ -40,6 +40,9 @@ var managedServicePlatform = runtime.GOOS
 const (
 	serveHTTPDrainTimeout       = 5 * time.Second
 	serveRuntimeShutdownTimeout = 3 * time.Second
+	// 停止残留共享 daemon 要走 stop + 退出确认窗口 + bootout 复核；预算取得比
+	// 单步超时宽，但仍要保证启动不会被一个卡住的 launchctl 长期挂起。
+	sharedDaemonReconcileTimeout = 30 * time.Second
 )
 
 func main() {
@@ -1040,6 +1043,12 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		// 用户全局 LaunchAgent 只归平台默认配置所有。前台运行自定义 profile
 		// 时不得清理默认服务的 owner。
 		if config.IsPlatformDefaultPath(configPath) {
+			// 磁盘 owner 清理之前先收掉仍在运行的 Mimi 共享 daemon：它会一直
+			// 持有此前加载过的每个 thread 的 writer lock，独立 app-server 再
+			// resume 这些会话只会拿到 -32600 already has an active writer。
+			if appServerTransport == "ws" {
+				reconcileRunningSharedDaemonForIndependentMode(cfg, checker)
+			}
 			artifactsPresent, artifactsErr := appserver.SharedDaemonOwnerArtifactsPresent()
 			if artifactsErr != nil {
 				return fmt.Errorf("检查残留共享 daemon owner 失败：%w", artifactsErr)
@@ -1308,6 +1317,40 @@ func shutdownServeResources(manager *session.Manager, appServerWSProcess *appser
 		return err
 	}
 	return nil
+}
+
+// reconcileRunningSharedDaemonForIndependentMode 在独立 WS 模式启动时收掉仍在
+// 运行的 Mimi 共享 daemon。它绝不阻断启动：即使清理失败，agentd 仍应把控制面
+// 拉起来，只是把结论写进日志和 readyz，让用户知道会话为什么写不进去。
+func reconcileRunningSharedDaemonForIndependentMode(cfg config.Config, checker *doctor.Checker) {
+	ctx, cancel := context.WithTimeout(context.Background(), sharedDaemonReconcileTimeout)
+	defer cancel()
+	outcome, err := appserver.ReconcileRunningSharedDaemonForIndependentMode(ctx, appserver.LocalDaemonOptions{
+		CodexBin:    cfg.Codex.Bin,
+		Env:         cfg.Codex.Env,
+		StableOwner: true,
+	})
+	if err != nil {
+		log.Printf("agentd independent mode shared daemon reconcile failed: %v", err)
+		checker.SetSharedDaemonReconcile(
+			"关闭共享后 Mimi 的 Codex 共享 daemon 可能仍在运行，历史会话可能无法发送",
+			"完全退出 Codex Desktop 后重启 agentd；或在 Mac 的“实验功能”中重新开启并关闭一次共享",
+		)
+		return
+	}
+	switch outcome {
+	case appserver.SharedDaemonReconcileStopped:
+		log.Printf("agentd independent mode stopped leftover shared Codex daemon")
+	case appserver.SharedDaemonReconcilePendingDesktopExit:
+		// 这是用户最容易踩到的状态：共享已关掉，但旧 daemon 还攥着 writer lock。
+		log.Printf("agentd independent mode leftover shared Codex daemon still running; Codex Desktop must exit first")
+		checker.SetSharedDaemonReconcile(
+			"Mimi 的 Codex 共享 daemon 仍在运行并占用会话 writer；独立模式下历史会话无法发送",
+			"完全退出 Codex Desktop 后重启 agentd，Mimi 会自动停止该 daemon",
+		)
+	case appserver.SharedDaemonReconcileForeign:
+		log.Printf("agentd independent mode left external Codex Unix backend untouched")
+	}
 }
 
 func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSocketProcess, error) {

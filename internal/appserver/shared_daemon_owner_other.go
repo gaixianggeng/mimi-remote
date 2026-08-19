@@ -105,6 +105,15 @@ func disableSharedDaemonAfterDesktopExit(
 	return nil
 }
 
+// 非 macOS 没有 Mimi LaunchAgent，也就不存在“关闭共享后仍在运行的 Mimi
+// daemon”。这里恒定报告无需处理，而不是假装停过某个进程。
+func reconcileRunningSharedDaemonForIndependentMode(
+	context.Context,
+	LocalDaemonOptions,
+) (SharedDaemonReconcileOutcome, error) {
+	return SharedDaemonReconcileNoop, nil
+}
+
 func removeSharedDaemonOwnerUnlocked(context.Context) error { return nil }
 
 func removeSharedDaemonOwnerForTransactionUnlocked(

@@ -716,6 +716,38 @@ func ReconcileDisabledSharedDaemonOwner(ctx context.Context, validate func() err
 	return CommitSharedDaemonDisable(ctx, validate, func() error { return nil })
 }
 
+// SharedDaemonReconcileOutcome 描述独立 WS 模式启动时对残留共享 daemon 的结论。
+// 关闭共享后 Mimi 自己拉起的 daemon 若继续运行，它会一直持有此前加载过的每个
+// thread 的 writer lock，新的独立 app-server 再也 resume 不了这些会话；因此独立
+// 模式启动必须显式给出结论，而不是默认它已经不在了。
+type SharedDaemonReconcileOutcome string
+
+const (
+	// SharedDaemonReconcileNoop 表示共享 socket 上没有 listener，无需停止任何进程。
+	SharedDaemonReconcileNoop SharedDaemonReconcileOutcome = "noop"
+	// SharedDaemonReconcileForeign 表示 listener 缺少 Mimi stable owner 证据。
+	// Codex Desktop 自己拉起的 app-server 监听同一个 well-known socket，
+	// 独立模式绝不接管它。
+	SharedDaemonReconcileForeign SharedDaemonReconcileOutcome = "foreign"
+	// SharedDaemonReconcilePendingDesktopExit 表示残留 daemon 确属 Mimi，但
+	// Codex Desktop 仍在运行。此时停止会打断 Desktop 正在跑的会话，只上报状态。
+	SharedDaemonReconcilePendingDesktopExit SharedDaemonReconcileOutcome = "pending_desktop_exit"
+	// SharedDaemonReconcileStopped 表示残留 daemon 已停止、owner 已卸载，
+	// 独立 app-server 可以正常获取 writer lock。
+	SharedDaemonReconcileStopped SharedDaemonReconcileOutcome = "stopped"
+)
+
+// ReconcileRunningSharedDaemonForIndependentMode 在 agentd 以独立 WS 模式启动时
+// 清理仍在运行的 Mimi 共享 daemon。它只处理进程生命周期；磁盘 owner 残留仍由
+// ReconcileDisabledSharedDaemonOwner 负责。任何无法确认归属的 listener 都保持
+// 原样，宁可让本次启动带着告警，也不能替用户停掉 Codex Desktop 的后端。
+func ReconcileRunningSharedDaemonForIndependentMode(
+	ctx context.Context,
+	options LocalDaemonOptions,
+) (SharedDaemonReconcileOutcome, error) {
+	return reconcileRunningSharedDaemonForIndependentMode(ctx, options)
+}
+
 func attachLocalDaemon(ctx context.Context, options LocalDaemonOptions) (LocalDaemonStatus, error) {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
 	if err != nil {
