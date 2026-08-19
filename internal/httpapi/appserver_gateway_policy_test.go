@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -209,7 +211,7 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 			want: "不允许 file URL",
 		},
 		{
-			name: "local image outside allowlist",
+			name: "missing external local image",
 			payload: map[string]any{
 				"id":     14,
 				"method": "turn/start",
@@ -225,7 +227,7 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 					},
 				},
 			},
-			want: "path 必须来自 projects allowlist",
+			want: "localImage.path",
 		},
 		{
 			name: "blank skill path",
@@ -408,6 +410,247 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 		})
 	}
 	assertNoUpstreamFrame(t, received)
+}
+
+func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalDir := t.TempDir()
+
+	newParams := func(path string) map[string]any {
+		return map[string]any{
+			"cwd":   projectDir,
+			"input": []any{map[string]any{"type": "localImage", "path": path}},
+		}
+	}
+	validate := func(path string) error {
+		_, err := router.validateGatewayPolicyParams("codex", "turn/start", newParams(path))
+		return err
+	}
+
+	validImages := []struct {
+		name   string
+		header []byte
+	}{
+		{name: "image.png", header: []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}},
+		{name: "image.jpg", header: []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}},
+		{name: "image.gif", header: []byte("GIF89a")},
+		{name: "image.webp", header: []byte("RIFF\x00\x00\x00\x00WEBP")},
+		{name: "image.heic", header: []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0x00, 0x00, 0x00, 0x00, 'h', 'e', 'i', 'c'}},
+	}
+	for _, image := range validImages {
+		t.Run("allows "+image.name, func(t *testing.T) {
+			path := filepath.Join(externalDir, image.name)
+			if err := os.WriteFile(path, append(image.header, []byte("header-only test payload")...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := validate(path); err != nil {
+				t.Fatalf("可读取的 %s 应放行：%v", image.name, err)
+			}
+			params := newParams(path)
+			if _, err := router.validateGatewayPolicyParams("codex", "turn/start", params); err != nil {
+				t.Fatalf("重复验证 %s 失败：%v", image.name, err)
+			}
+			input := params["input"].([]any)[0].(map[string]any)
+			canonical, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := input["path"]; got != canonical {
+				t.Fatalf("项目外 localImage 应转发 canonical path：got=%v want=%s", got, canonical)
+			}
+		})
+	}
+
+	validTarget := filepath.Join(externalDir, "target.png")
+	if err := os.WriteFile(validTarget, append(validImages[0].header, []byte("target")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("canonical symlink", func(t *testing.T) {
+		validLink := filepath.Join(externalDir, "linked-image")
+		if err := os.Symlink(validTarget, validLink); err != nil {
+			t.Skipf("当前平台不可用符号链接：%v", err)
+		}
+		params := newParams(validLink)
+		if _, err := router.validateGatewayPolicyParams("codex", "turn/start", params); err != nil {
+			t.Fatalf("指向有效 canonical target 的 localImage 应放行：%v", err)
+		}
+		canonicalTarget, err := filepath.EvalSymlinks(validTarget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := params["input"].([]any)[0].(map[string]any)
+		if got := input["path"]; got != canonicalTarget {
+			t.Fatalf("符号链接 localImage 应转发 canonical target：got=%v want=%s", got, canonicalTarget)
+		}
+	})
+
+	invalidText := filepath.Join(externalDir, "renamed-secret.png")
+	if err := os.WriteFile(invalidText, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(invalidText); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+		t.Fatalf("改名的普通文件应被拒绝：%v", err)
+	}
+
+	invalidDir := filepath.Join(externalDir, "image-directory")
+	if err := os.Mkdir(invalidDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(invalidDir); err == nil || !strings.Contains(err.Error(), "普通文件") {
+		t.Fatalf("目录应被拒绝：%v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		fifo := filepath.Join(externalDir, "image-fifo.png")
+		mkfifo, err := exec.LookPath("mkfifo")
+		if err == nil {
+			if output, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
+				t.Fatalf("创建 FIFO 失败：%v output=%s", err, output)
+			}
+			if err := validate(fifo); err == nil || !strings.Contains(err.Error(), "普通文件") {
+				t.Fatalf("FIFO 应在 open 前被拒绝：%v", err)
+			}
+		}
+	}
+
+	missing := filepath.Join(externalDir, "missing.png")
+	if err := validate(missing); err == nil || !strings.Contains(err.Error(), "不存在或不可访问") {
+		t.Fatalf("缺失图片应被拒绝：%v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		unreadable := filepath.Join(externalDir, "unreadable.png")
+		if err := os.WriteFile(unreadable, validImages[0].header, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+		if err := validate(unreadable); err == nil {
+			t.Fatal("当前运行用户不可读的项目外图片应被拒绝")
+		}
+	}
+
+	secretTarget := filepath.Join(externalDir, "secret.txt")
+	if err := os.WriteFile(secretTarget, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("rejects symlink to non-image", func(t *testing.T) {
+		secretLink := filepath.Join(externalDir, "secret.png")
+		if err := os.Symlink(secretTarget, secretLink); err != nil {
+			t.Skipf("当前平台不可用符号链接：%v", err)
+		}
+		if err := validate(secretLink); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+			t.Fatalf("指向普通文件的符号链接应按 canonical target 拒绝：%v", err)
+		}
+	})
+}
+
+func TestAppServerGatewayForwardsCanonicalExternalLocalImagePath(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-external-image")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	externalDir := t.TempDir()
+	target := filepath.Join(externalDir, "target.png")
+	if err := os.WriteFile(target, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(externalDir, "dragged-photo")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("当前平台不可用符号链接：%v", err)
+	}
+	canonical, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-external-image")
+
+	frames := [][]byte{
+		[]byte(fmt.Sprintf(
+			`{"id":71,"method":"turn/start","params":{"threadId":"thread-external-image","cwd":%q,"input":[{"type":"localImage","path":%q}],"effort":"xhigh","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+			projectDir,
+			link,
+			projectDir,
+		)),
+		[]byte(fmt.Sprintf(
+			`{"id":72,"method":"turn/steer","params":{"threadId":"thread-external-image","expectedTurnId":"turn-1","input":[{"type":"localImage","path":%q}]}}`,
+			link,
+		)),
+	}
+
+	for _, frame := range frames {
+		if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+			t.Fatal(err)
+		}
+		got := readUpstreamFrame(t, received)
+		params := decodeGatewayParamsForTest(t, got)
+		input := params["input"].([]any)[0].(map[string]any)
+		if input["path"] != canonical {
+			t.Fatalf("最终 upstream frame 必须使用 canonical localImage.path：got=%v want=%s frame=%s", input["path"], canonical, got)
+		}
+	}
+}
+
+func TestAppServerGatewayKeepsMentionAllowlistWithExternalLocalImage(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalDir := t.TempDir()
+	imagePath := filepath.Join(externalDir, "external.png")
+	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mentionPath := filepath.Join(externalDir, "mention.md")
+	if err := os.WriteFile(mentionPath, []byte("mention"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := router.validateGatewayPolicyParams("codex", "turn/start", map[string]any{
+		"cwd": projectDir,
+		"input": []any{
+			map[string]any{"type": "localImage", "path": imagePath},
+			map[string]any{"type": "mention", "path": mentionPath},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "input path 必须来自 projects allowlist") {
+		t.Fatalf("项目外 mention 仍应被拒绝，而有效 localImage 不应放宽 mention：%v", err)
+	}
+}
+
+func TestAppServerGatewayKeepsWritableRootsAllowlistWithExternalLocalImage(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalRoot := filepath.Join(t.TempDir(), "external-writable-root")
+	_, err := router.validateGatewayPolicyParams("codex", "turn/start", map[string]any{
+		"cwd": projectDir,
+		"sandboxPolicy": map[string]any{
+			"type":          "workspaceWrite",
+			"writableRoots": []any{externalRoot},
+			"networkAccess": false,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandboxPolicy.writableRoots 必须来自 projects allowlist") {
+		t.Fatalf("项目外 writableRoots 仍应被拒绝：%v", err)
+	}
 }
 
 func TestAppServerGatewayAllowsExplicitFullAccessSandbox(t *testing.T) {

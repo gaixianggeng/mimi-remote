@@ -24,7 +24,9 @@ for required_file in \
   .goreleaser.yml \
   README.md \
   macos/MimiRemoteMac/MimiRemoteMac.xcodeproj/project.pbxproj \
+  macos/MimiRemoteMac/Resources/Agentd.entitlements \
   macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
   packaging/skill/install-mimi-remote/SKILL.md \
   packaging/skill/install-mimi-remote/agents/openai.yaml \
   packaging/systemd/mimi-remote.service \
@@ -177,6 +179,18 @@ grep -Fq -- '--require-team-signing' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有提供 App/agentd/bridge Team ID 一致性校验。"
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
+grep -Fq 'Resources/Agentd.entitlements' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为 agentd 注入独立权限声明。"
+grep -Fq 'com.apple.security.personal-information.photos-library' \
+  macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
+  || fail "Mac App 没有声明照片图库 entitlement。"
+grep -Fq 'com.apple.security.personal-information.photos-library' \
+  macos/MimiRemoteMac/Resources/Agentd.entitlements \
+  || fail "agentd 没有声明照片图库 entitlement。"
+grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
+  || fail "Mac App 没有声明照片图库用途说明。"
+grep -Fq 'read_signed_entitlement "$AGENT_PATH"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验 agentd 的签名权限。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
 grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \

@@ -313,6 +313,7 @@ type appServerGatewayValidatedParams struct {
 	hasCWD                     bool
 	cwdScope                   gatewayScope
 	cwdScopeOK                 bool
+	rewroteLocalImagePath      bool
 	pendingManagedWorktreePath string
 }
 

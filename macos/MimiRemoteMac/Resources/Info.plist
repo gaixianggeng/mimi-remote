@@ -35,5 +35,7 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>允许 Mimi Remote Mac 在本机和私有网络中启动并检查远程开发服务。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>允许 Mimi Remote Mac 读取你从照片图库发送到远程开发会话的图片。</string>
 </dict>
 </plist>

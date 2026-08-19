@@ -633,7 +633,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	// 无 cwd thread/list 的连接级 opaque cursor 会在 capability 校验时就地
 	// 还原；即使 sanitized 与已变更的 params 相等，也必须重建 frame，不能把
 	// 客户端 token 从原始 payload 直接透传给 upstream。
-	if reflect.DeepEqual(params, sanitized) && method != "thread/list" {
+	if reflect.DeepEqual(params, sanitized) && method != "thread/list" && !validated.rewroteLocalImagePath {
 		return payload, nil
 	}
 	var frame map[string]any

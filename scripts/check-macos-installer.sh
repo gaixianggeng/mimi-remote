@@ -97,6 +97,7 @@ APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
+INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
 if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
   echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude bridge 或 LaunchAgent。" >&2
@@ -126,6 +127,33 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
+
+photo_usage_description="$(
+  plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" 2>/dev/null || true
+)"
+if [[ -z "$photo_usage_description" ]]; then
+  echo "Mac 安装包校验失败：App 缺少照片图库用途说明。" >&2
+  exit 1
+fi
+
+read_signed_entitlement() {
+  local binary_path="$1"
+  local entitlement_key="$2"
+  local escaped_entitlement_key
+  local signed_entitlements
+  # plutil 把点号当作 key path 分隔符；entitlement 名称中的点必须逐个转义。
+  escaped_entitlement_key="${entitlement_key//./\\.}"
+  signed_entitlements="$(codesign -d --entitlements - --xml "$binary_path" 2>/dev/null)" || return 1
+  plutil -extract "$escaped_entitlement_key" raw -o - - <<<"$signed_entitlements" 2>/dev/null
+}
+
+photos_entitlement="com.apple.security.personal-information.photos-library"
+app_photos_entitlement="$(read_signed_entitlement "$APP_PATH" "$photos_entitlement" || true)"
+agent_photos_entitlement="$(read_signed_entitlement "$AGENT_PATH" "$photos_entitlement" || true)"
+if [[ "$app_photos_entitlement" != "true" || "$agent_photos_entitlement" != "true" ]]; then
+  echo "Mac 安装包校验失败：App 与 agentd 必须同时声明照片图库 entitlement。" >&2
+  exit 1
+fi
 
 # macOS 27 的前向兼容通知由 Rosetta 进程启动触发。Apple silicon 上显式选择
 # arm64，避免版本探针继承调用方的翻译架构偏好，反而由发布检查制造误报。
@@ -256,4 +284,4 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、照片图库权限、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
