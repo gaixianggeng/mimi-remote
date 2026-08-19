@@ -577,6 +577,8 @@ struct OpenWorkspaceSheet: View {
     var onOpened: (String) -> Void = { _ in }
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         NavigationStack {
             Form {
                 currentDirectorySection
@@ -610,10 +612,19 @@ struct OpenWorkspaceSheet: View {
             }
             .navigationTitle(L10n.text("ui.open_workspace"))
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(L10n.text("ui.complete")) {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L10n.text("ui.cancel"), role: .cancel) {
                         dismiss()
                     }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("workspace.open.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    WorkspaceOpenCurrentDirectoryToolbarButton(
+                        isOpening: isOpening,
+                        isDisabled: browsePath == nil || isOpening || isBrowsing,
+                        action: openCurrentBrowsePath
+                    )
                 }
             }
             .task {
@@ -625,63 +636,30 @@ struct OpenWorkspaceSheet: View {
             }
             .quickLookPreview($previewURL)
         }
+        .tint(tokens.primaryAction)
     }
 
     @ViewBuilder
     private var currentDirectorySection: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
         Section {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 12) {
-                    Image(systemName: "folder.fill")
-                        .font(themeStore.uiFont(size: 20, weight: .semibold))
-                        .foregroundStyle(tokens.accent)
-                        .frame(width: 38, height: 38)
-                        .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(currentDirectoryName)
-                            .font(themeStore.uiFont(size: 16, weight: .semibold))
-                            .foregroundStyle(tokens.primaryText)
-                            .lineLimit(1)
-                        Text(browsePath ?? L10n.text("ui.locating_be47409b"))
-                            .font(themeStore.uiFont(size: 12))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(2)
-                            .truncationMode(.head)
-                    }
-
-                    Spacer(minLength: 10)
-
-                    if let browseParentPath {
-                        Button {
-                            Task { await browse(to: browseParentPath) }
-                        } label: {
-                            Label(L10n.text("ui.previous_level"), systemImage: "arrow.up")
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(isBrowsing)
-                        .accessibilityLabel(L10n.text("ui.return_to_previous_level"))
-                    }
+            WorkspaceCurrentDirectoryCard(
+                directoryName: currentDirectoryName,
+                path: browsePath ?? L10n.text("ui.locating_be47409b"),
+                parentPath: browseParentPath,
+                isBrowsing: isBrowsing,
+                isOpening: isOpening,
+                onNavigateToParent: { parentPath in
+                    Task { await browse(to: parentPath) }
                 }
-
-                WorkspaceOpenCurrentDirectoryButton(
-                    directoryName: currentDirectoryName,
-                    isOpening: isOpening,
-                    isDisabled: browsePath == nil || isOpening || isBrowsing
-                ) {
-                    if let browsePath {
-                        Task { await open(path: browsePath) }
-                    }
-                }
-            }
-            .padding(.vertical, 4)
+            )
         } header: {
             Text(L10n.text("ui.current_location"))
         }
+    }
+
+    private func openCurrentBrowsePath() {
+        guard let browsePath else { return }
+        Task { await open(path: browsePath) }
     }
 
     @ViewBuilder
@@ -890,11 +868,72 @@ struct OpenWorkspaceSheet: View {
     }
 }
 
-struct WorkspaceOpenCurrentDirectoryButton: View {
+struct WorkspaceCurrentDirectoryCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     let directoryName: String
+    let path: String
+    let parentPath: String?
+    let isBrowsing: Bool
+    let isOpening: Bool
+    let onNavigateToParent: (String) -> Void
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 14) {
+            if let parentPath {
+                Button {
+                    onNavigateToParent(parentPath)
+                } label: {
+                    Label {
+                        Text(L10n.text("ui.previous_level"))
+                    } icon: {
+                        Image(systemName: "arrow.up")
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(isBrowsing || isOpening)
+                .accessibilityLabel(L10n.text("ui.previous_level"))
+                .accessibilityHint(L10n.text("ui.return_to_previous_level"))
+                .accessibilityIdentifier("workspace.open.parent")
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "folder.fill")
+                    .font(themeStore.uiFont(size: 20, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                    .frame(width: 38, height: 38)
+                    .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityHidden(true)
+
+                Text(directoryName)
+                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Text(path)
+                .font(themeStore.uiFont(size: 12))
+                .foregroundStyle(tokens.secondaryText)
+                // 路径是当前目录的识别信息，允许自然换行，避免长路径被截断后无法确认位置。
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct WorkspaceOpenCurrentDirectoryToolbarButton: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
     let isOpening: Bool
     let isDisabled: Bool
     let action: () -> Void
@@ -903,49 +942,25 @@ struct WorkspaceOpenCurrentDirectoryButton: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: "folder.badge.plus")
-                    .font(themeStore.uiFont(size: 18, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        tokens.primaryActionForeground.opacity(0.15),
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    )
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(isOpening ? L10n.text("ui.opening_workspace_bc794723") : L10n.text("ui.open_as_workspace"))
-                        .font(themeStore.uiFont(size: 15, weight: .semibold))
-                        .lineLimit(1)
-                    Text(isOpening ? directoryName : L10n.text("ui.start_working_using_the_current_folder"))
-                        .font(themeStore.uiFont(size: 12))
-                        .foregroundStyle(tokens.primaryActionForeground.opacity(0.78))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                if isOpening {
+            if isOpening {
+                HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
                         .tint(tokens.primaryActionForeground)
-                } else {
-                    Image(systemName: "arrow.right")
-                        .font(themeStore.uiFont(size: 13, weight: .bold))
-                        .accessibilityHidden(true)
+                    Text(L10n.text("ui.opening"))
                 }
+            } else {
+                Text(L10n.text("ui.open"))
             }
-            .foregroundStyle(tokens.primaryActionForeground)
-            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         }
         .buttonStyle(.borderedProminent)
-        // 矩形轮廓与文件夹图标共同强化“动作”语义，避免胶囊长条被误认成已选状态。
-        .buttonBorderShape(.roundedRectangle(radius: 12))
-        .controlSize(.large)
         .tint(tokens.primaryAction)
+        .foregroundStyle(tokens.primaryActionForeground)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(minWidth: 44, minHeight: 44)
         .disabled(isDisabled)
-        .accessibilityLabel(isOpening ? L10n.text("ui.opening_workspace") : L10n.text("ui.open_the_current_folder_as_a_workspace"))
-        .accessibilityHint(L10n.text("ui.start_working_using_your_current_location"))
+        .accessibilityLabel(isOpening ? L10n.text("ui.opening_workspace") : L10n.text("ui.open"))
+        .accessibilityIdentifier("workspace.open.current")
     }
 }
 

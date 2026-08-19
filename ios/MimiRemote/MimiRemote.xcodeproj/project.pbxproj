@@ -264,7 +264,8 @@
 		EC9D3E7F32C22BE4965292BA /* testInlineChoiceRowsOnCompactWidth.inline-rows-compact.png in Resources */ = {isa = PBXBuildFile; fileRef = 6D5108122AC9C253A5B8361D /* testInlineChoiceRowsOnCompactWidth.inline-rows-compact.png */; };
 		ED9957215DF250BC0CDFE040 /* HostSwitcherMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01D29CF13ECEA0EBF33BF7C /* HostSwitcherMenu.swift */; };
 		F0583EC1FE088E3BB8A76710 /* testExpandedProcessGroupRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 4B840A5598C49D381F9BF4D5 /* testExpandedProcessGroupRendering.1.png */; };
-		F08F39B329A077D24D08FECF /* testWorkspaceOpenCurrentDirectoryButton.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 0AEF1C233E236BA44225FA2F /* testWorkspaceOpenCurrentDirectoryButton.1.png */; };
+		A16900000000000000000002 /* testWorkspaceOpenCurrentDirectoryToolbarButton.1.png in Resources */ = {isa = PBXBuildFile; fileRef = A16900000000000000000001 /* testWorkspaceOpenCurrentDirectoryToolbarButton.1.png */; };
+		F08F39B329A077D24D08FECF /* testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 0AEF1C233E236BA44225FA2F /* testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png */; };
 		F0ABEBFE125D238054D75506 /* DoctorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80C5A70C7B1570DFCB3F7CF1 /* DoctorView.swift */; };
 		F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */; };
 		F1BFCDBADE221F598CA62933 /* testExpandedWorkGroupRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 7587EB164AF1902FAD735D90 /* testExpandedWorkGroupRendering.1.png */; };
@@ -340,7 +341,8 @@
 		07BAA9DB4A44577D0DBAC730 /* SkillInterfaceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillInterfaceViews.swift; sourceTree = "<group>"; };
 		08549513F9D308C94B5C1938 /* WorkbenchSidebarComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchSidebarComponents.swift; sourceTree = "<group>"; };
 		089CDD9B409CEDE6D600DA58 /* UnifiedWorkbenchShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedWorkbenchShell.swift; sourceTree = "<group>"; };
-		0AEF1C233E236BA44225FA2F /* testWorkspaceOpenCurrentDirectoryButton.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testWorkspaceOpenCurrentDirectoryButton.1.png; sourceTree = "<group>"; };
+		0AEF1C233E236BA44225FA2F /* testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png; sourceTree = "<group>"; };
+		A16900000000000000000001 /* testWorkspaceOpenCurrentDirectoryToolbarButton.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testWorkspaceOpenCurrentDirectoryToolbarButton.1.png; sourceTree = "<group>"; };
 		0CD3911F5991428A7A3D47EE /* testConnectedStateStaysQuiet.connected-compact.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testConnectedStateStaysQuiet.connected-compact.png"; sourceTree = "<group>"; };
 		0FC920B8D7FE7F76E2C18FD7 /* testConversationBubbleAlignment.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testConversationBubbleAlignment.1.png; sourceTree = "<group>"; };
 		1154D73506BE309E6A2ED0EC /* CarStatusSnapshotCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStatusSnapshotCoordinator.swift; sourceTree = "<group>"; };
@@ -904,7 +906,8 @@
 				90B47F5F094477F8E0CDC100 /* testSingleImageMediaCardAlignmentAcrossLayouts.iphone-390.png */,
 				712B1CDEF343C4D9D338DDDC /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png */,
 				26D33D121E5B1B664D27BCCD /* testUnifiedWorkbenchSidebarNavigationChrome.1.png */,
-				0AEF1C233E236BA44225FA2F /* testWorkspaceOpenCurrentDirectoryButton.1.png */,
+				0AEF1C233E236BA44225FA2F /* testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png */,
+				A16900000000000000000001 /* testWorkspaceOpenCurrentDirectoryToolbarButton.1.png */,
 			);
 			path = ConversationSnapshotTests;
 			sourceTree = "<group>";
@@ -1431,7 +1434,8 @@
 				F52369AA62CB6C0A7664D4B0 /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png in Resources */,
 				3555D54084E26E1CD6667F85 /* testUnifiedWorkbenchSidebarNavigationChrome.1.png in Resources */,
 				7A7F91493B0FA24C459AA49F /* testUnsupportedActivityShowsExplanation.unsupported-compact.png in Resources */,
-				F08F39B329A077D24D08FECF /* testWorkspaceOpenCurrentDirectoryButton.1.png in Resources */,
+				F08F39B329A077D24D08FECF /* testWorkspaceCurrentDirectoryCardWrapsFullPath.1.png in Resources */,
+				A16900000000000000000002 /* testWorkspaceOpenCurrentDirectoryToolbarButton.1.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

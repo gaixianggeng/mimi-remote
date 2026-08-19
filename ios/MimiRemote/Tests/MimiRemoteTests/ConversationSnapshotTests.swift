@@ -68,9 +68,29 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testWorkspaceOpenCurrentDirectoryButton() {
-        let view = WorkspaceOpenCurrentDirectoryButton(
-            directoryName: "gaixiaotongxue",
+    func testWorkspaceCurrentDirectoryCardWrapsFullPath() {
+        let view = WorkspaceCurrentDirectoryCard(
+            directoryName: "codex-ipad-agent",
+            path: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios/MimiRemote",
+            parentPath: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios",
+            isBrowsing: false,
+            isOpening: false,
+            onNavigateToParent: { _ in }
+        )
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 390)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .sizeThatFits)
+        )
+    }
+
+    func testWorkspaceOpenCurrentDirectoryToolbarButton() {
+        let view = WorkspaceOpenCurrentDirectoryToolbarButton(
             isOpening: false,
             isDisabled: false,
             action: {}
@@ -78,12 +98,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(makeThemeStore())
         .environment(\.colorScheme, .light)
         .padding(20)
-        .frame(width: 390, height: 110)
         .background(Color(uiColor: .systemGroupedBackground))
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
+            as: .image(precision: 0.98, layout: .sizeThatFits)
         )
     }
 
