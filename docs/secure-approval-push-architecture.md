@@ -1,7 +1,7 @@
 # 锁屏审批通知最小架构
 
 更新日期：2026-08-20
-状态：实现中。阶段一至阶段四（agentd broker、安全动作层、Provider）已完成并部署；iOS 端待开发。
+状态：四个阶段的代码已全部完成。Provider 已部署并验证到 APNs 边界；剩余阻塞项是真实 APNs Auth Key 与真机验收。
 
 已确认的两条产品决策：
 
@@ -241,7 +241,7 @@ Provider 只记录：请求计数、延迟、限速、APNs HTTP 状态/原因、
 | --- | --- | --- |
 | 一：`agentd` approval broker | 已完成 | Codex gateway 的上游连接升级为具名会话所有，客户端离线期间继续接住审批请求；Claude 复用常驻 bridge，并新增只读观察连接补上「agentd 不再读 bridge」的缺口。由 `app_server.approval_broker` 控制，默认关闭。 |
 | 二：`agentd` 安全动作层 | 已完成 | `internal/pushbridge`：设备注册表、一次性动作句柄状态机、Provider 客户端。由 `push.enabled` 控制，默认关闭；Provider 未配置时即使 enabled 也保持关闭。 |
-| 三：iOS / iPadOS | 未开始 | 远程通知授权、Device Token 生命周期、通知类别与动作、实验功能开关与同意说明、通知清理。 |
+| 三：iOS / iPadOS | 已完成 | 远程通知授权与 `aps-environment`、Device Token 生命周期、通知类别与两个需身份验证的动作、实验功能开关与绑定收件主机的同意、Payload 白名单解码、前台恢复后的通知对账。 |
 | 四：最小 Provider | 已完成并部署 | `cmd/mimi-push-provider`。 |
 
 ### 锁屏可直接放行的范围
@@ -274,6 +274,17 @@ Claude 两条 runtime 的真实载荷经公网到达 APNs（当前为占位密�
 
 **待补**：真实 APNs Auth Key（`.p8` + Key ID）。替换 `/etc/mimi-push-provider/apns.p8`
 与 env 里的 `MIMI_PUSH_APNS_KEY_ID` 后重启即可切到真实投递。
+
+### iOS 侧的两条边界
+
+**同意绑定到主机**。用户同意的是「把设备 Token 交给这个主机」，不是「开启一个功能」。
+收件主机变化后必须重新征得同意，否则一次 agentd 配置改动就能把 Token 导向别处。
+
+**环境判定以描述文件为准**。APNs 的 sandbox 与 production 使用两套互不相通的
+Device Token，选错不会报错，只会让每一条推送静默失败。因此环境从嵌入的描述文件
+读取，读不到才退回按构建配置判断。这里有个已经被测试抓到的坑：描述文件写的是
+`development` / `production`，而 APNs 主机的措辞是 `sandbox` / `production`，
+直接按 rawValue 解析会让 `development` 落空。
 
 ### 一处运维上的坑
 
