@@ -72,4 +72,31 @@ extension HostStoreTests {
         XCTAssertTrue(events.values.isEmpty)
         XCTAssertEqual(store.lifecycle, .notConfigured)
     }
+
+    func testTakeoverRequestsPhotoAuthorizationBeforeStoppingHomebrew() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            registerAgent: { events.append("register-mac") },
+            homebrewStop: { events.append("stop-homebrew") },
+            photoLibraryAccess: PhotoLibraryAccessClient(
+                authorizationStatus: { .notDetermined },
+                requestAuthorization: {
+                    events.append("request-photos")
+                    return .authorized
+                },
+                openPhotosPrivacySettings: {},
+                openFullDiskAccessSettings: {}
+            )
+        )
+        await store.bootstrap()
+
+        await store.takeOverHomebrew()
+
+        XCTAssertEqual(events.values, ["request-photos", "stop-homebrew", "register-mac"])
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNotNil(store.pairing)
+    }
 }

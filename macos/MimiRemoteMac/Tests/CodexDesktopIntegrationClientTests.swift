@@ -299,6 +299,157 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
         XCTAssertTrue(appRunning)
     }
 
+    func testLiveDisableCommitsEnvironmentOnlyAfterTerminateAndBackendStop() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var appRunning = true
+        var events: [String] = []
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: appRunning)
+                },
+                terminateAndWait: { _ in
+                    events.append("terminate")
+                    appRunning = false
+                },
+                open: { _, environment in
+                    XCTAssertTrue(environment.isEmpty)
+                    XCTAssertNil(launchctl.daemon)
+                    XCTAssertNil(launchctl.codexHome)
+                    XCTAssertNil(launchctl.sessionEpoch)
+                    events.append("open")
+                    appRunning = true
+                }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        launchctl.events.removeAll()
+        _ = try await client.restartAndSetEnabled(
+            false,
+            codexHome: nil,
+            afterTermination: {
+                XCTAssertFalse(appRunning)
+                XCTAssertEqual(launchctl.daemon, "1")
+                XCTAssertEqual(launchctl.codexHome, "/tmp/codex")
+                XCTAssertNotNil(launchctl.sessionEpoch)
+                events.append("disable-backend")
+            }
+        )
+
+        XCTAssertEqual(events, ["terminate", "disable-backend", "open"])
+        XCTAssertEqual(launchctl.events, [
+            "unset-\(CodexDesktopIntegrationClient.environmentKey)",
+            "unset-\(CodexDesktopIntegrationClient.codexHomeKey)",
+            "unset-\(CodexDesktopIntegrationClient.ownershipEpochKey)",
+        ])
+    }
+
+    func testLiveDisableOpenFailurePersistsIntentAndRetryReopens() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var appRunning = true
+        var openFails = true
+        var events: [String] = []
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: appRunning)
+                },
+                terminateAndWait: { _ in
+                    events.append("terminate")
+                    appRunning = false
+                },
+                open: { _, environment in
+                    XCTAssertTrue(environment.isEmpty)
+                    events.append("open")
+                    if openFails {
+                        throw NSError(domain: "CodexDesktopTests", code: 168)
+                    }
+                    appRunning = true
+                }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        do {
+            _ = try await client.restartAndSetEnabled(
+                false,
+                codexHome: nil,
+                afterTermination: { events.append("disable-backend") }
+            )
+            XCTFail("open 失败必须向上抛出")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 168)
+        }
+        let interrupted = try await client.inspect()
+        XCTAssertEqual(interrupted.pendingEnabled, false)
+        XCTAssertFalse(interrupted.enabled)
+        XCTAssertFalse(appRunning)
+
+        openFails = false
+        let recovered = try await client.restartAndApply(afterTermination: {
+            events.append("retry-backend")
+        })
+
+        XCTAssertEqual(events, [
+            "terminate",
+            "disable-backend",
+            "open",
+            "retry-backend",
+            "open",
+        ])
+        XCTAssertTrue(appRunning)
+        XCTAssertNil(recovered.pendingEnabled)
+        XCTAssertFalse(recovered.enabled)
+    }
+
+    func testLiveDisableEnvironmentFailureKeepsDisabledRecoveryIntent() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        var appRunning = true
+        let bundleURL = URL(filePath: "/Applications/Codex.app")
+        let client = makeStateClient(
+            defaults: defaults,
+            state: launchctl,
+            application: CodexDesktopApplicationClient(
+                current: {
+                    CodexDesktopApplicationInfo(bundleURL: bundleURL, isRunning: appRunning)
+                },
+                terminateAndWait: { _ in appRunning = false },
+                open: { _, _ in appRunning = true }
+            )
+        )
+
+        _ = try await client.setEnabled(true, "/tmp/codex")
+        launchctl.failEpochUnset = true
+        do {
+            _ = try await client.restartAndSetEnabled(
+                false,
+                codexHome: nil,
+                afterTermination: {}
+            )
+            XCTFail("环境恢复失败必须向上抛出")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 4)
+        }
+
+        let interrupted = try await client.inspect()
+        XCTAssertEqual(interrupted.pendingEnabled, false)
+        XCTAssertTrue(interrupted.enabled, "偏好只有在三项环境全部提交后才能改为 disabled")
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/tmp/codex")
+        XCTAssertNotNil(launchctl.sessionEpoch)
+        XCTAssertFalse(appRunning)
+    }
+
     func testLiveRestartMigrationFailureKeepsDesktopClosedAndNeverOpens() async throws {
         let defaults = makeDefaults()
         let launchctl = FakeLaunchctlState()
@@ -336,6 +487,8 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
 
         XCTAssertEqual(events, ["terminate", "migrate"])
         XCTAssertFalse(appRunning)
+        let interrupted = try await client.inspect()
+        XCTAssertEqual(interrupted.pendingEnabled, true)
     }
 
     func testLiveRestartDoesNotOpenDesktopThatWasAlreadyStoppedAtExecutionTime() async throws {
@@ -659,6 +812,61 @@ final class CodexDesktopIntegrationClientTests: XCTestCase {
         XCTAssertNil(launchctl.daemon)
         XCTAssertNil(launchctl.codexHome)
         XCTAssertNil(launchctl.sessionEpoch)
+    }
+
+    func testDisableRecoversLegacyOrphanedMimiEnvironment() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        let firstClient = makeStateClient(defaults: defaults, state: launchctl)
+        _ = try await firstClient.setEnabled(true, "/tmp/codex")
+
+        // 模拟旧版半回滚：偏好和 ownership 账本已经清除，但 launchd 中三项
+        // 环境仍保留。Mimi 专属 epoch 与 canonical home 共同证明它们可恢复。
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.enabled")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsEnvironment")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsCodexHome")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsSessionEpoch")
+        defaults.removeObject(forKey: "MimiRemoteMac.codexDesktop.writtenValue")
+        defaults.removeObject(forKey: "MimiRemoteMac.codexDesktop.writtenCodexHome")
+        defaults.removeObject(forKey: "MimiRemoteMac.codexDesktop.writtenSessionEpoch")
+        launchctl.events.removeAll()
+
+        let secondClient = makeStateClient(defaults: defaults, state: launchctl)
+        let disabled = try await secondClient.setEnabled(false, nil)
+
+        XCTAssertFalse(disabled.enabled)
+        XCTAssertNil(launchctl.daemon)
+        XCTAssertNil(launchctl.codexHome)
+        XCTAssertNil(launchctl.sessionEpoch)
+        XCTAssertEqual(launchctl.events, [
+            "unset-\(CodexDesktopIntegrationClient.environmentKey)",
+            "unset-\(CodexDesktopIntegrationClient.codexHomeKey)",
+            "unset-\(CodexDesktopIntegrationClient.ownershipEpochKey)",
+        ])
+    }
+
+    func testDisableDoesNotRecoverOrphanedMarkerWithMismatchedCodexHome() async throws {
+        let defaults = makeDefaults()
+        let launchctl = FakeLaunchctlState()
+        let firstClient = makeStateClient(defaults: defaults, state: launchctl)
+        _ = try await firstClient.setEnabled(true, "/tmp/codex")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.enabled")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsEnvironment")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsCodexHome")
+        defaults.set(false, forKey: "MimiRemoteMac.codexDesktop.ownsSessionEpoch")
+        defaults.removeObject(forKey: "MimiRemoteMac.codexDesktop.writtenSessionEpoch")
+        launchctl.codexHome = "/external/codex"
+        launchctl.events.removeAll()
+
+        let secondClient = makeStateClient(defaults: defaults, state: launchctl)
+        await XCTAssertThrowsErrorAsync {
+            _ = try await secondClient.setEnabled(false, nil)
+        }
+
+        XCTAssertEqual(launchctl.daemon, "1")
+        XCTAssertEqual(launchctl.codexHome, "/external/codex")
+        XCTAssertNotNil(launchctl.sessionEpoch)
+        XCTAssertTrue(launchctl.events.isEmpty)
     }
 
     func testRestartWaitsForAllMatchingInstancesBeforeOpening() async throws {

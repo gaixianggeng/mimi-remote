@@ -75,4 +75,14 @@ final class ExperimentPresentationTests: XCTestCase {
         XCTAssertTrue(enabled.contains("将尝试共享同一空闲会话"))
         XCTAssertTrue(enabled.contains("正在运行的任务仍只读"))
     }
+
+    func testCodexToggleDescriptionDoesNotClaimPendingDisableAlreadyFinished() {
+        let pending = ExperimentPresentation.codexToggleDescription(
+            isEnabled: false,
+            isPending: true
+        )
+        XCTAssertTrue(pending.contains("待应用"))
+        XCTAssertTrue(pending.contains("当前仍使用共享服务"))
+        XCTAssertTrue(pending.contains("重启后"))
+    }
 }

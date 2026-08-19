@@ -260,6 +260,9 @@ unless safety_inputs.is_a?(Hash) &&
   abort("PR Gate 自检失败：公开仓库安全门的 reusable inputs 必须默认 fail closed 到完整历史。")
 end
 safety_job = safety_workflow.fetch("jobs").fetch("verify")
+unless safety_job["runs-on"] == "ubuntu-latest" && safety_job["timeout-minutes"] == 5
+  abort("PR Gate 自检失败：公开仓库安全门必须使用 Ubuntu runner 和 5 分钟超时。")
+end
 safety_steps = safety_job.fetch("steps")
 safety_checkout = safety_steps.find { |step| step["name"] == "Checkout" }
 unless safety_checkout&.dig("with", "fetch-depth") == 0
@@ -278,8 +281,78 @@ unless safety_go && safety_go["if"] == "steps.safety.outputs.third_party == 'tru
   abort("PR Gate 自检失败：Setup Go 必须只在第三方许可检查需要时运行。")
 end
 safety_install = safety_steps.find { |step| step["name"] == "Install repository safety tools" }
-unless safety_install.to_s.include?("command -v rg")
+unless safety_install && safety_install["run"].is_a?(String) && safety_install["run"].include?("command -v rg")
   abort("PR Gate 自检失败：公开仓库安全工具安装必须优先复用 runner 已有 ripgrep。")
+end
+safety_install_run = safety_install.fetch("run")
+safety_install_lines = safety_install_run.lines.map do |line|
+  line.strip.sub(/ \\\z/, "")
+end
+required_install_lines = [
+  'if command -v rg >/dev/null 2>&1; then',
+  'rg --version',
+  'if [[ "${RUNNER_ARCH:-}" != "X64" ]]; then',
+  'ripgrep_asset="ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"',
+  'ripgrep_url="https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"',
+  'ripgrep_sha256="33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"',
+  'ripgrep_root="ripgrep-15.2.0-x86_64-unknown-linux-musl"',
+  'tar --extract --gzip --file "$archive_path" --directory "$extract_dir"',
+  %q{printf '%s\n' "$(dirname "$rg_path")" >> "$GITHUB_PATH"},
+  '"$rg_path" --version',
+]
+required_install_lines.each do |required_line|
+  unless safety_install_lines.include?(required_line)
+    abort("PR Gate 自检失败：公开仓库安全工具安装缺少有效命令 #{required_line}。")
+  end
+end
+
+curl_index = safety_install_lines.index("curl")
+curl_url_index = safety_install_lines.index('"$ripgrep_url"')
+checksum_line = %q{if ! printf '%s  %s\n' "$ripgrep_sha256" "$archive_path" | sha256sum --check --status -; then}
+checksum_index = safety_install_lines.index(checksum_line)
+tar_index = safety_install_lines.index('tar --extract --gzip --file "$archive_path" --directory "$extract_dir"')
+github_path_index = safety_install_lines.index(%q{printf '%s\n' "$(dirname "$rg_path")" >> "$GITHUB_PATH"})
+rg_version_index = safety_install_lines.rindex('"$rg_path" --version')
+ordered_indexes = [curl_index, curl_url_index, checksum_index, tar_index, github_path_index, rg_version_index]
+unless ordered_indexes.none?(&:nil?) && ordered_indexes.each_cons(2).all? { |left, right| left < right }
+  abort("PR Gate 自检失败：公开仓库安全工具必须依次下载、校验、解压、导出 PATH 并执行已校验的 rg。")
+end
+
+required_curl_lines = [
+  "--proto '=https'",
+  "--tlsv1.2",
+  "--fail",
+  "--silent",
+  "--show-error",
+  "--location",
+  "--retry 3",
+  "--retry-delay 2",
+  "--retry-max-time 60",
+  "--connect-timeout 10",
+  "--max-time 120",
+  '--output "$archive_path"',
+]
+curl_lines = safety_install_lines[(curl_index + 1)...curl_url_index]
+required_curl_lines.each do |required_line|
+  unless curl_lines.include?(required_line)
+    abort("PR Gate 自检失败：ripgrep 下载命令缺少 #{required_line}。")
+  end
+end
+
+safety_run_scripts = safety_steps.each_with_object([]) do |step, scripts|
+  scripts << step["run"] if step["run"].is_a?(String)
+end.join("\n")
+if safety_run_scripts.match?(/\bapt(?:-get)?\b/)
+  abort("PR Gate 自检失败：公开仓库安全门不得依赖 apt/apt-get。")
+end
+step_actions = safety_steps.each_with_object([]) do |step, actions|
+  actions << step["uses"] if step["uses"].is_a?(String)
+end
+third_party_actions = step_actions.reject do |action|
+  action.start_with?("actions/", "./")
+end
+unless third_party_actions.empty?
+  abort("PR Gate 自检失败：公开仓库安全门不得新增第三方 Action：#{third_party_actions.join(', ')}。")
 end
 safety_check = safety_steps.find { |step| step["name"] == "Check public repository safety" }
 unless safety_check && safety_check.to_s.include?("--pull-request") &&

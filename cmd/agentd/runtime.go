@@ -22,6 +22,11 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
 	codexSharing := fs.String("codex-sharing", "", "Codex Desktop 共享 app-server：enabled 或 disabled")
+	codexSharingDisableConfirmed := fs.Bool(
+		"codex-sharing-disable-confirmed",
+		false,
+		"防误触 interlock：确认 Codex Desktop 已退出后关闭共享 daemon",
+	)
 	codexSharingRestart := fs.Bool("codex-sharing-restart", false, "防误触 interlock：应用待处理的共享 Codex daemon 迁移")
 	codexSharingRestartConfirmed := fs.Bool(
 		"codex-sharing-restart-confirmed",
@@ -36,6 +41,12 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
 	hasCodexSharing := strings.TrimSpace(*codexSharing) != ""
 	hasCodexSharingRestart := *codexSharingRestart
+	if *codexSharingRestartConfirmed && !hasCodexSharingRestart {
+		return fmt.Errorf("--codex-sharing-restart-confirmed 只能与内部迁移入口一起使用")
+	}
+	if *codexSharingDisableConfirmed && !hasCodexSharing {
+		return fmt.Errorf("--codex-sharing-disable-confirmed 只能与 --codex-sharing=disabled 一起使用")
+	}
 	operationCount := 0
 	for _, selected := range []bool{hasClaude, hasCodexSharing, hasCodexSharingRestart} {
 		if selected {
@@ -44,9 +55,6 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	}
 	if operationCount != 1 {
 		return fmt.Errorf("必须且只能传入 --claude、--codex-sharing 或 --codex-sharing-restart 其中一项")
-	}
-	if *codexSharingRestartConfirmed && !hasCodexSharingRestart {
-		return fmt.Errorf("--codex-sharing-restart-confirmed 只能与内部迁移入口一起使用")
 	}
 	if hasCodexSharingRestart && !*codexSharingRestartConfirmed {
 		return fmt.Errorf("共享 daemon 迁移必须同时传入确认防误触开关；该开关不构成调用方鉴权")
@@ -59,8 +67,16 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if *codexSharingDisableConfirmed && enabled {
+			return fmt.Errorf("--codex-sharing-disable-confirmed 只能与 --codex-sharing=disabled 一起使用")
+		}
 		configureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		result, err := agentsetup.ConfigureCodexSharing(configureCtx, *configPath, enabled)
+		var result agentsetup.CodexSharingConfigurationResult
+		if *codexSharingDisableConfirmed {
+			result, err = agentsetup.DisableCodexSharingAfterDesktopExit(configureCtx, *configPath)
+		} else {
+			result, err = agentsetup.ConfigureCodexSharing(configureCtx, *configPath, enabled)
+		}
 		cancel()
 		if err != nil {
 			return err

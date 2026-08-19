@@ -34,6 +34,7 @@
 		BA3AFB462C7AC23FD4B05C0F /* HostStorePhotoLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C6B403F5A8E42D0BF7D0C94 /* HostStorePhotoLibraryTests.swift */; };
 		BD1147B84D71960BBBB74E49 /* CodexDesktopIntegrationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC5CFE21A0402846201F7BF2 /* CodexDesktopIntegrationClient.swift */; };
 		D465B71BBE211F263557A9B6 /* CodexDesktopIntegrationClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DFB2FC63FF54C2F40513F6 /* CodexDesktopIntegrationClientTests.swift */; };
+		D471180169D1F0DC54E650D6 /* HostStoreCodexSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3170FC466DFD34019758BF07 /* HostStoreCodexSharingTests.swift */; };
 		D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */; };
 		DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */; };
 		E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */; };
@@ -61,6 +62,7 @@
 		0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
 		14513EDAFE3A09C6F7A08CC1 /* ExperimentPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperimentPresentationTests.swift; sourceTree = "<group>"; };
 		252E87DED48E48439FF3A75F /* BrandColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandColors.swift; sourceTree = "<group>"; };
+		3170FC466DFD34019758BF07 /* HostStoreCodexSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreCodexSharingTests.swift; sourceTree = "<group>"; };
 		38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandClient.swift; sourceTree = "<group>"; };
 		3C6B403F5A8E42D0BF7D0C94 /* HostStorePhotoLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStorePhotoLibraryTests.swift; sourceTree = "<group>"; };
 		414A74A2A5A2877C1A9CB604 /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
@@ -169,6 +171,7 @@
 				F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */,
 				D5DFB2FC63FF54C2F40513F6 /* CodexDesktopIntegrationClientTests.swift */,
 				14513EDAFE3A09C6F7A08CC1 /* ExperimentPresentationTests.swift */,
+				3170FC466DFD34019758BF07 /* HostStoreCodexSharingTests.swift */,
 				3C6B403F5A8E42D0BF7D0C94 /* HostStorePhotoLibraryTests.swift */,
 				01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */,
 				95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */,
@@ -418,6 +421,7 @@
 				2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */,
 				D465B71BBE211F263557A9B6 /* CodexDesktopIntegrationClientTests.swift in Sources */,
 				A1A08305F933F264072454B6 /* ExperimentPresentationTests.swift in Sources */,
+				D471180169D1F0DC54E650D6 /* HostStoreCodexSharingTests.swift in Sources */,
 				BA3AFB462C7AC23FD4B05C0F /* HostStorePhotoLibraryTests.swift in Sources */,
 				2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */,
 				11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */,

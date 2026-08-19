@@ -1196,15 +1196,6 @@ func RemoveSharedDaemonLaunchAgent(ctx context.Context) error {
 	return nil
 }
 
-// RemoveSharedDaemonOwner 只移除 Mimi 安装的未来启动入口和迁移标记，不停止当前
-// daemon；关闭共享时 Desktop 可能仍在完成退出，直接 stop 会破坏原生流程。
-func RemoveSharedDaemonOwner(ctx context.Context) error {
-	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
-		return LocalDaemonStatus{}, removeSharedDaemonOwnerUnlocked(ctx)
-	})
-	return err
-}
-
 func removeSharedDaemonOwnerUnlocked(ctx context.Context) error {
 	_, err := removeSharedDaemonOwnerForTransactionUnlocked(ctx)
 	return err
@@ -1703,6 +1694,15 @@ func stopSharedDaemon(
 	options LocalDaemonOptions,
 	owner SharedDaemonOwnerStatus,
 ) error {
+	return stopSharedDaemonWithExpectedIdentity(ctx, options, owner, nil)
+}
+
+func stopSharedDaemonWithExpectedIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	owner SharedDaemonOwnerStatus,
+	expected *sharedDaemonListenerProcess,
+) error {
 	socketPath, pathErr := LocalDaemonSocketPath(options.Env)
 	if pathErr != nil {
 		return pathErr
@@ -1728,8 +1728,34 @@ func stopSharedDaemon(
 	if backend != "pid" {
 		return fmt.Errorf("Codex app-server 使用未知 lifecycle backend %q，拒绝迁移", *lifecycle.Backend)
 	}
+	if expected != nil {
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
+	}
 	if err := requireCodexDesktopStopped(ctx, "停止官方 Codex daemon 前"); err != nil {
 		return err
+	}
+	if expected != nil {
+		// Desktop 探测本身也会产生调度窗口。执行官方 stop 前再绑定一次 PID、
+		// 启动时间和签名父链，避免停止刚替换进来的 listener。
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("执行官方 stop 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("执行官方 stop 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
 	}
 
 	bin := strings.TrimSpace(options.CodexBin)
@@ -1755,6 +1781,23 @@ func stopSharedDaemon(
 		return fmt.Errorf("停止旧 Codex local daemon 失败：%w", err)
 	}
 	return fmt.Errorf("停止旧 Codex local daemon 失败：%s", message)
+}
+
+func validateManagedSharedDaemonListenerIdentity(
+	lifecycle LocalDaemonLifecycleStatus,
+	expected sharedDaemonListenerProcess,
+	current sharedDaemonListenerProcess,
+) error {
+	if lifecycle.PID == nil {
+		return fmt.Errorf("官方 Codex daemon 未报告 pid backend 身份，拒绝停止")
+	}
+	if int(*lifecycle.PID) != expected.PID {
+		return fmt.Errorf("官方 Codex daemon PID 与已确认 listener 不一致，拒绝停止")
+	}
+	if current != expected {
+		return fmt.Errorf("共享 daemon listener 在官方 stop 前发生变化，拒绝停止")
+	}
+	return nil
 }
 
 func requireCodexDesktopStopped(ctx context.Context, stage string) error {

@@ -172,29 +172,19 @@ extension ConversationDataFlowTests {
         let unsubscribe = Task {
             try await runtime.unsubscribeThread(threadID: threadID)
         }
+        let unsubscribeStatus = try await unsubscribe.value
+        XCTAssertEqual(unsubscribeStatus, .notSubscribed)
+
+        await configGate.releaseFirstRequest()
         let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
         transportResponse(
             transport,
             id: initialize.id,
             result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
         )
-        let unsubscribeRequest = try await waitForFakeAppServerRequest(
-            transport,
-            method: "thread/unsubscribe",
-            after: 1
-        )
-        transportResponse(
-            transport,
-            id: unsubscribeRequest.id,
-            result: #"{"status":"unsubscribed"}"#
-        )
-        _ = try await unsubscribe.value
-
-        await configGate.releaseFirstRequest()
         let read = try await waitForFakeAppServerRequest(
             transport,
-            method: "thread/read",
-            after: 2
+            method: "thread/read"
         )
         transportResponse(transport, id: read.id, result: #"{"thread":\#(thread)}"#)
         try await staleConnect.value
@@ -202,7 +192,7 @@ extension ConversationDataFlowTests {
         let requests = await transport.sentMessages().compactMap {
             try? decodeAppServerRequest($0)
         }
-        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 1)
+        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 0)
         XCTAssertEqual(
             requests.filter { $0.method == "thread/resume" }.count,
             0,
@@ -224,6 +214,7 @@ extension ConversationDataFlowTests {
             configProvider: {
                 makeDirectAppServerConfig(
                     project: project,
+                    transport: "unix",
                     allowedMethods: [
                         "initialize",
                         "initialized",

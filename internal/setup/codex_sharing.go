@@ -61,6 +61,13 @@ type commitSharedDaemonEnableFunc func(
 	func() error,
 ) (appserver.LocalDaemonStatus, error)
 
+type disableSharedDaemonAfterDesktopExitFunc func(
+	context.Context,
+	appserver.LocalDaemonOptions,
+	func() error,
+	func() error,
+) error
+
 // 单独保留读取 seam，只用于验证 typed config、未知字段 document 与 CAS
 // baseline 确实来自同一份 bytes；生产始终调用 os.ReadFile。
 var readCodexSharingConfigFile = os.ReadFile
@@ -99,6 +106,157 @@ func ConfigureCodexSharing(
 		appserver.CommitSharedDaemonEnable,
 		commitDisable,
 	)
+}
+
+// DisableCodexSharingAfterDesktopExit 只供调用方明确确认 Codex Desktop 已退出
+// 后使用。平台默认配置只有在 appserver 完成 listener、socket/PID 和
+// loaded LaunchAgent 的关闭事务后，才把保存的 fallback WS 提交回磁盘。
+// 旧版 custom profile 只在配置锁内恢复自己的 fallback，不得触碰全局 owner。
+func DisableCodexSharingAfterDesktopExit(
+	ctx context.Context,
+	configPath string,
+) (CodexSharingConfigurationResult, error) {
+	resolvedPath, platformDefault, err := resolveCodexSharingTarget(configPath, false)
+	if err != nil {
+		return CodexSharingConfigurationResult{}, err
+	}
+	if !platformDefault {
+		// 历史版本允许 custom profile 保存 shared_fallback。这里复用
+		// 普通关闭的 CAS/配置锁语义，不执行只属于平台默认配置的
+		// listener 停止和 LaunchAgent bootout。
+		return ConfigureCodexSharing(ctx, resolvedPath, false)
+	}
+	return disableCodexSharingAfterDesktopExit(
+		ctx,
+		resolvedPath,
+		platformDefault,
+		appserver.DisableSharedDaemonAfterDesktopExit,
+	)
+}
+
+func disableCodexSharingAfterDesktopExit(
+	ctx context.Context,
+	configPath string,
+	platformDefault bool,
+	disableSharedDaemon disableSharedDaemonAfterDesktopExitFunc,
+) (CodexSharingConfigurationResult, error) {
+	resolvedPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return CodexSharingConfigurationResult{}, err
+	}
+	existed, err := regularFileOrMissing(resolvedPath, "配置文件")
+	if err != nil {
+		return CodexSharingConfigurationResult{}, err
+	}
+	if !existed {
+		return CodexSharingConfigurationResult{}, fmt.Errorf("配置文件不存在，请先完成 Mimi Remote 设置")
+	}
+	original, err := readCodexSharingConfigFile(resolvedPath)
+	if err != nil {
+		return CodexSharingConfigurationResult{}, fmt.Errorf("读取配置失败：%w", err)
+	}
+	cfg, err := config.LoadSnapshot(original)
+	if err != nil {
+		return CodexSharingConfigurationResult{}, err
+	}
+	validateOriginal := func() error {
+		current, readErr := readCodexSharingConfigFile(resolvedPath)
+		if readErr != nil {
+			return fmt.Errorf("重新读取配置失败：%w", readErr)
+		}
+		if !bytes.Equal(current, original) {
+			return fmt.Errorf("配置已被其他进程修改，请重新执行")
+		}
+		return nil
+	}
+	transport := strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport))
+	if transport == "unix" && cfg.AppServer.SharedFallback == nil {
+		// 没有 shared_fallback 时，Unix listener 的责任主体属于外部部署方。
+		// confirmed disable 不能借配置开关停止或接管它；普通 disable 的兼容
+		// 结果保持不变。
+		return CodexSharingConfigurationResult{
+			Enabled:   false,
+			Transport: cfg.AppServer.Transport,
+			Message:   "Codex Desktop 共享环境已关闭；外部管理的 Unix backend 保持不变。",
+		}, nil
+	}
+	if !platformDefault {
+		// 生产入口已在读取配置前把 custom profile 路由到配置锁事务。
+		// 留下显式失败，避免未来的内部调用误报“已关闭”。
+		return CodexSharingConfigurationResult{}, fmt.Errorf("自定义配置必须使用配置锁恢复 fallback")
+	}
+	if disableSharedDaemon == nil {
+		return CodexSharingConfigurationResult{}, fmt.Errorf("禁用共享 daemon 缺少显式关闭事务")
+	}
+
+	options := appserver.LocalDaemonOptions{
+		CodexBin:    cfg.Codex.Bin,
+		Env:         cfg.Codex.Env,
+		StableOwner: true,
+	}
+	if transport == "unix" && cfg.AppServer.SharedFallback != nil {
+		document, appServerDocument, parseErr := parseCodexSharingConfigDocument(original)
+		if parseErr != nil {
+			return CodexSharingConfigurationResult{}, parseErr
+		}
+		fallback := cfg.AppServer.SharedFallback
+		next := cfg
+		next.AppServer.Transport = fallback.Transport
+		next.AppServer.Managed = fallback.Managed
+		next.AppServer.Listen = fallback.Listen
+		next.AppServer.WSTokenFile = fallback.WSTokenFile
+		next.AppServer.SharedFallback = nil
+		if err := next.Validate(); err != nil {
+			return CodexSharingConfigurationResult{}, fmt.Errorf("关闭后的 Codex 配置无效：%w", err)
+		}
+		if err := encodeCodexSharingAppServer(appServerDocument, next.AppServer); err != nil {
+			return CodexSharingConfigurationResult{}, err
+		}
+		encodedAppServer, err := json.Marshal(appServerDocument)
+		if err != nil {
+			return CodexSharingConfigurationResult{}, fmt.Errorf("编码 app_server 配置失败：%w", err)
+		}
+		document["app_server"] = encodedAppServer
+		updated, err := json.MarshalIndent(document, "", "  ")
+		if err != nil {
+			return CodexSharingConfigurationResult{}, fmt.Errorf("编码配置失败：%w", err)
+		}
+		updated = append(updated, '\n')
+		commitConfig := func() error {
+			if err := writePrivateFileAtomicallyCAS(resolvedPath, original, updated); err != nil {
+				return fmt.Errorf("写入共享 Codex 配置失败：%w", err)
+			}
+			return nil
+		}
+		options.ValidateStableOwner = func() error {
+			return config.ValidateSharedDaemonRecoveryOwnership(resolvedPath, cfg.Codex.Bin, cfg.Codex.Env)
+		}
+		if err := disableSharedDaemon(ctx, options, validateOriginal, commitConfig); err != nil {
+			return CodexSharingConfigurationResult{}, err
+		}
+		return CodexSharingConfigurationResult{
+			Enabled:         false,
+			Changed:         true,
+			RestartRequired: true,
+			Transport:       strings.ToLower(strings.TrimSpace(next.AppServer.Transport)),
+			Message:         codexSharingMessage(false, false),
+		}, nil
+	}
+
+	// 已经是 WS 时 confirmed 入口不改 JSON，只清理旧版 Mimi loaded job。
+	// disabled ownership validator 允许这条幂等修复，但仍锁定 Codex bin/env，
+	// 防止旧进程用过期配置清理新 owner。
+	options.ValidateStableOwner = func() error {
+		return config.ValidateSharedDaemonDisabledOwnership(resolvedPath, cfg.Codex.Bin, cfg.Codex.Env)
+	}
+	if err := disableSharedDaemon(ctx, options, validateOriginal, func() error { return nil }); err != nil {
+		return CodexSharingConfigurationResult{}, err
+	}
+	return CodexSharingConfigurationResult{
+		Enabled:   false,
+		Transport: cfg.AppServer.Transport,
+		Message:   "Codex Desktop 共享会话服务已关闭。",
+	}, nil
 }
 
 func resolveCodexSharingTarget(configPath string, enabled bool) (string, bool, error) {
