@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -302,12 +303,14 @@ func (r *Router) submitClaudeApprovalDecision(ctx context.Context, action pushbr
 }
 
 // pushDeviceStorePath 把设备注册表放在 agentd 自己的配置目录下，权限 0600。
+// 按目录取而不是裁剪文件名：配置文件不一定叫 config.json，裁剪会拼出
+// `.../whatever.jsonpush-devices.json` 这种既不报错也不正确的路径。
 func pushDeviceStorePath(configPath string) string {
 	trimmed := strings.TrimSpace(configPath)
 	if trimmed == "" {
 		return ""
 	}
-	return strings.TrimSuffix(trimmed, "config.json") + pushDeviceStoreFileName
+	return filepath.Join(filepath.Dir(trimmed), pushDeviceStoreFileName)
 }
 
 func newPushManager(cfg pushManagerConfig) *pushbridge.Manager {

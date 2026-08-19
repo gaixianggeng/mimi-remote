@@ -346,3 +346,21 @@ func TestApprovalResponseFrameMatchesClientShape(t *testing.T) {
 		t.Fatal("缺少请求 id 时必须失败")
 	}
 }
+
+// 配置文件不一定叫 config.json。按文件名裁剪会拼出既不报错也不正确的路径，
+// 设备注册表就会落在一个谁也找不到的地方。
+func TestPushDeviceStorePathFollowsConfigDirectory(t *testing.T) {
+	cases := map[string]string{
+		"/Users/me/.config/mimi/config.json": "/Users/me/.config/mimi/push-devices.json",
+		"/etc/mimi/agentd.json":              "/etc/mimi/push-devices.json",
+		"/opt/mimi/custom-name.json":         "/opt/mimi/push-devices.json",
+	}
+	for configPath, want := range cases {
+		if got := pushDeviceStorePath(configPath); got != want {
+			t.Fatalf("pushDeviceStorePath(%q) = %q，期望 %q", configPath, got, want)
+		}
+	}
+	if got := pushDeviceStorePath("  "); got != "" {
+		t.Fatalf("没有配置路径时应返回空，got=%q", got)
+	}
+}
