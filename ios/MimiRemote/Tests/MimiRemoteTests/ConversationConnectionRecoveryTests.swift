@@ -312,6 +312,52 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
     }
 
+    func testActiveWriterSendFailureShowsSharedSetupGuidance() async throws {
+        let project = makeProject(id: "proj_active_writer_send_failure")
+        let running = makeSession(
+            id: "sess_active_writer_send_failure",
+            projectID: project.id,
+            title: "Desktop 会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        socket.onSendFailure?(
+            nil,
+            "app-server 错误 -32600：thread \(running.id) already has an active writer"
+        )
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(
+            store.errorMessage,
+            L10n.text("ui.codex_active_writer_conflict_requires_shared_service")
+        )
+        XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+    }
+
     func testLateOlderNetworkPathUpdateCannotOverwriteSatisfiedState() async throws {
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"

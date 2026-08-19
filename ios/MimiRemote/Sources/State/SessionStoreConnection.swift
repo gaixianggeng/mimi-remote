@@ -2395,10 +2395,19 @@ extension SessionStore {
     }
 
     func setErrorMessage(_ value: String?) {
-        guard errorMessage != value else {
+        // active writer 既可能在连接阶段返回，也可能在已连接后的
+        // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
+        // 避免不同传输路径泄漏原始 -32600 协议错误。
+        let userFacingValue: String?
+        if let value, Self.isCodexActiveWriterConflict(value) {
+            userFacingValue = L10n.text("ui.codex_active_writer_conflict_requires_shared_service")
+        } else {
+            userFacingValue = value
+        }
+        guard errorMessage != userFacingValue else {
             return
         }
-        errorMessage = value
+        errorMessage = userFacingValue
     }
 
     func setHistoryLoadProgress(sessionID: SessionID, title: String, fraction: Double) {

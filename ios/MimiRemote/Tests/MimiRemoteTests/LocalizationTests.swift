@@ -134,6 +134,17 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testActiveWriterConflictExplainsBothRecoveryActions() {
+        XCTAssertEqual(
+            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .english),
+            "This session is in use by Codex Desktop. Fully quit Codex Desktop, or enable sharing in Experimental Features on the Mac and follow the restart prompt. Closing only the session does not release it."
+        )
+        XCTAssertEqual(
+            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .simplifiedChinese),
+            "此会话被 Codex Desktop 占用。请完全退出 Codex Desktop，或在 Mac 的“实验功能”中开启共享并按提示重启。仅关闭会话页面不会释放占用。"
+        )
+    }
+
     func testSessionRowStatefulActionLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
             ("ui.pin_to_top", "pin to top", "置顶"),
