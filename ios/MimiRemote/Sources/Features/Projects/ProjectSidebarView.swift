@@ -617,6 +617,8 @@ struct OpenWorkspaceSheet: View {
                         dismiss()
                     }
                     .frame(minWidth: 44, minHeight: 44)
+                    // 打开请求完成前禁止关闭弹窗，避免后台任务在取消后仍切换当前工作区。
+                    .disabled(isOpening)
                     .accessibilityIdentifier("workspace.open.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
