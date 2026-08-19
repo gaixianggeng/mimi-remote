@@ -1047,7 +1047,9 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			// 持有此前加载过的每个 thread 的 writer lock，独立 app-server 再
 			// resume 这些会话只会拿到 -32600 already has an active writer。
 			if appServerTransport == "ws" {
-				reconcileRunningSharedDaemonForIndependentMode(cfg, checker)
+				if err := reconcileRunningSharedDaemonForIndependentMode(cfg, configPath, checker); err != nil {
+					return err
+				}
 			}
 			artifactsPresent, artifactsErr := appserver.SharedDaemonOwnerArtifactsPresent()
 			if artifactsErr != nil {
@@ -1330,23 +1332,39 @@ func shutdownServeResources(manager *session.Manager, appServerWSProcess *appser
 }
 
 // reconcileRunningSharedDaemonForIndependentMode 在独立 WS 模式启动时收掉仍在
-// 运行的 Mimi 共享 daemon。它绝不阻断启动：即使清理失败，agentd 仍应把控制面
-// 拉起来，只是把结论写进日志和 readyz，让用户知道会话为什么写不进去。
-func reconcileRunningSharedDaemonForIndependentMode(cfg config.Config, checker *doctor.Checker) {
+// 运行的 Mimi 共享 daemon。普通探测/清理失败不阻断控制面，只写入 readyz；
+// 但磁盘已切回 shared 或 Codex 身份变化时必须阻断旧 WS 进程继续启动。
+func reconcileRunningSharedDaemonForIndependentMode(
+	cfg config.Config,
+	configPath string,
+	checker *doctor.Checker,
+) error {
+	if strings.TrimSpace(configPath) == "" {
+		return fmt.Errorf("复核独立模式共享 daemon 清理权缺少配置路径")
+	}
+	expectedBin := cfg.Codex.Bin
+	expectedEnv := maps.Clone(cfg.Codex.Env)
+	var ownershipErr error
 	ctx, cancel := context.WithTimeout(context.Background(), sharedDaemonReconcileTimeout)
 	defer cancel()
 	outcome, err := appserver.ReconcileRunningSharedDaemonForIndependentMode(ctx, appserver.LocalDaemonOptions{
 		CodexBin:    cfg.Codex.Bin,
 		Env:         cfg.Codex.Env,
 		StableOwner: true,
+	}, func() error {
+		ownershipErr = config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
+		return ownershipErr
 	})
+	if ownershipErr != nil {
+		return fmt.Errorf("复核独立模式共享 daemon 清理权失败：%w", ownershipErr)
+	}
 	if err != nil {
 		log.Printf("agentd independent mode shared daemon reconcile failed: %v", err)
 		checker.SetSharedDaemonReconcile(
 			"关闭共享后 Mimi 的 Codex 共享 daemon 可能仍在运行，历史会话可能无法发送",
 			"完全退出 Codex Desktop 后重启 agentd；或在 Mac 的“实验功能”中重新开启并关闭一次共享",
 		)
-		return
+		return nil
 	}
 	switch outcome {
 	case appserver.SharedDaemonReconcileStopped:
@@ -1361,6 +1379,7 @@ func reconcileRunningSharedDaemonForIndependentMode(cfg config.Config, checker *
 	case appserver.SharedDaemonReconcileForeign:
 		log.Printf("agentd independent mode left external Codex Unix backend untouched")
 	}
+	return nil
 }
 
 func setSharedDaemonCleanupWarning(checker *doctor.Checker) {

@@ -1420,13 +1420,18 @@ func disableSharedDaemonAfterDesktopExitWithHooks(
 func reconcileRunningSharedDaemonForIndependentMode(
 	ctx context.Context,
 	options LocalDaemonOptions,
+	validate func() error,
 ) (SharedDaemonReconcileOutcome, error) {
 	outcome := SharedDaemonReconcileNoop
 	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
+		if err := validateIndependentModeSharedDaemonCleanup(validate); err != nil {
+			return LocalDaemonStatus{}, err
+		}
 		var runErr error
 		outcome, runErr = reconcileRunningSharedDaemonForIndependentModeWithHooks(
 			ctx,
 			options,
+			validate,
 			defaultConfirmedSharedDaemonDisableHooks(),
 		)
 		return LocalDaemonStatus{}, runErr
@@ -1440,6 +1445,7 @@ func reconcileRunningSharedDaemonForIndependentMode(
 func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 	ctx context.Context,
 	options LocalDaemonOptions,
+	validate func() error,
 	hooks confirmedSharedDaemonDisableHooks,
 ) (SharedDaemonReconcileOutcome, error) {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
@@ -1475,6 +1481,11 @@ func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 	if desktopRunning {
 		return SharedDaemonReconcilePendingDesktopExit, nil
 	}
+	// 首个副作用必须在 operation lock 内复核磁盘仍为独立模式。另一个
+	// Mimi 进程切回 shared 时也使用同一把锁，旧 WS 进程不能清理新 owner。
+	if err := validateIndependentModeSharedDaemonCleanup(validate); err != nil {
+		return "", err
+	}
 	// 入口降为 manual 必须先于停止：后面任一步失败都不能留下会在下次登录
 	// 自动拉起、并重新抢走 writer lock 的 owner。
 	if err := hooks.stageOwner(owner); err != nil {
@@ -1497,6 +1508,11 @@ func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 	}
 	if hooks.socketAccepts(socketPath) {
 		return "", fmt.Errorf("共享 daemon socket 在卸载残留 owner 前重新出现")
+	}
+	// bootout/remove 是不可逆 owner 变更。等待期间即使有不遵守 Mimi 锁的
+	// 外部配置写入，也必须在这里再次 fail closed。
+	if err := validateIndependentModeSharedDaemonCleanup(validate); err != nil {
+		return "", err
 	}
 	confirmed, err := hooks.inspectOwner(ctx)
 	if err != nil {
@@ -1527,6 +1543,16 @@ func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		return "", fmt.Errorf("清理共享 daemon 迁移状态失败：%w", err)
 	}
 	return SharedDaemonReconcileStopped, nil
+}
+
+func validateIndependentModeSharedDaemonCleanup(validate func() error) error {
+	if validate == nil {
+		return fmt.Errorf("独立模式共享 daemon 清理权复核回调不能为空")
+	}
+	if err := validate(); err != nil {
+		return fmt.Errorf("独立模式共享 daemon 清理权已失效：%w", err)
+	}
+	return nil
 }
 
 func sharedDaemonLoadedOwnerEvidence(owner SharedDaemonOwnerStatus) bool {

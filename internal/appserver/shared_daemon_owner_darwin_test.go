@@ -2730,6 +2730,7 @@ func TestIndependentModeReconcileStopsLeftoverMimiSharedDaemon(t *testing.T) {
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err != nil {
@@ -2741,6 +2742,38 @@ func TestIndependentModeReconcileStopsLeftoverMimiSharedDaemon(t *testing.T) {
 	wantEvents := []string{"stage", "stop", "wait", "bootout", "remove", "clear-enable", "clear-marker"}
 	if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
 		t.Fatalf("独立模式清理副作用顺序错误：got=%v want=%v", events, wantEvents)
+	}
+}
+
+func TestIndependentModeReconcileOwnershipChangeHasNoSideEffects(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		RunAtLoad: true,
+		Path:      filepath.Join(home, "owner.plist"),
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	events := make([]string, 0, 4)
+	hooks := independentModeReconcileHooks(t, &owner, false, &events)
+
+	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
+		context.Background(),
+		options,
+		func() error { return errors.New("当前配置已经启用 Mimi 共享 daemon") },
+		hooks,
+	)
+	if err == nil || !strings.Contains(err.Error(), "清理权已失效") || outcome != "" {
+		t.Fatalf("并发切回共享时必须 fail closed：outcome=%s err=%v", outcome, err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("配置所有权失效后不得产生任何副作用：%v", events)
+	}
+	if !owner.RunAtLoad || owner.MigrationRequired {
+		t.Fatalf("配置所有权失效后不得修改 owner：%+v", owner)
 	}
 }
 
@@ -2765,6 +2798,7 @@ func TestIndependentModeReconcileRefusesBootoutWhenDesktopReopensAfterWait(t *te
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err == nil || !strings.Contains(err.Error(), "重新打开") || outcome != "" {
@@ -2798,6 +2832,7 @@ func TestIndependentModeReconcileRefusesBootoutWhenSocketReappearsAfterWait(t *t
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err == nil || !strings.Contains(err.Error(), "重新出现") || outcome != "" {
@@ -2829,6 +2864,7 @@ func TestIndependentModeReconcileWaitsForCodexDesktopExit(t *testing.T) {
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err != nil {
@@ -2863,6 +2899,7 @@ func TestIndependentModeReconcileLeavesForeignDaemonUntouched(t *testing.T) {
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err != nil {
@@ -2893,6 +2930,7 @@ func TestIndependentModeReconcileNoopWithoutListener(t *testing.T) {
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err != nil {
@@ -2925,6 +2963,7 @@ func TestIndependentModeReconcileTreatsInsecureLeftoverOwnerAsForeign(t *testing
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err != nil {
@@ -2965,6 +3004,7 @@ func TestIndependentModeReconcileWarnsWhenListenerOwnershipCannotBeConfirmed(t *
 	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
 		context.Background(),
 		options,
+		func() error { return nil },
 		hooks,
 	)
 	if err == nil || !strings.Contains(err.Error(), "无法确认") || outcome != "" {

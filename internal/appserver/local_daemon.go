@@ -741,11 +741,13 @@ const (
 // 清理仍在运行的 Mimi 共享 daemon。它只处理进程生命周期；磁盘 owner 残留仍由
 // ReconcileDisabledSharedDaemonOwner 负责。任何无法确认归属的 listener 都保持
 // 原样，宁可让本次启动带着告警，也不能替用户停掉 Codex Desktop 的后端。
+// validate 必须在同一 operation lock 内确认磁盘仍由当前独立配置所有。
 func ReconcileRunningSharedDaemonForIndependentMode(
 	ctx context.Context,
 	options LocalDaemonOptions,
+	validate func() error,
 ) (SharedDaemonReconcileOutcome, error) {
-	return reconcileRunningSharedDaemonForIndependentMode(ctx, options)
+	return reconcileRunningSharedDaemonForIndependentMode(ctx, options, validate)
 }
 
 func attachLocalDaemon(ctx context.Context, options LocalDaemonOptions) (LocalDaemonStatus, error) {
