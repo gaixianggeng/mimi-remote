@@ -343,7 +343,8 @@ This remains an experimental channel. Goal, archive, and fork are not available 
 
 - Mimi Remote is not a general-purpose SSH terminal and does not run Codex inside the iOS sandbox.
 - It has no cloud account, code-hosting proxy, public relay, arbitrary remote shell, unattended deletion, or multi-user sharing.
-- One iOS WebSocket can attach to a session at a time. Cloud/projectless threads, background push, offline remote notifications, profile sync, and IDE sync are not implemented.
+- One iOS WebSocket can attach to a session at a time. Cloud/projectless threads, profile sync, and IDE sync are not implemented.
+- Lock Screen approval reminders are an opt-in experiment that relies on a small maintainer-operated push service. They are off by default, and only command and file-change approvals can be answered without opening the app.
 - A private Tailscale address is recommended across networks. Without Tailscale, Mimi Remote can use a private LAN address only while both devices are on the same local network. Do not expose `agentd` directly to the public Internet.
 - Claude Code support depends on external CLI and bridge behavior, has a smaller feature surface, and must not be treated as the default runtime.
 
@@ -352,6 +353,8 @@ For the complete, code-oriented capability matrix and risk list, see [project st
 ## Privacy and security
 
 Mimi Remote has no ads, analytics SDK, or maintainer-operated telemetry service. Project content, conversations, logs, code, and Codex/Claude credentials remain on your devices unless you explicitly use a third-party service such as Codex, Claude Code, GitHub, Codex voice transcription, or MCP. Apple voice input uses on-device SpeechAnalyzer processing.
+
+Lock Screen approval reminders are the one optional exception, and they are off by default. Turning them on registers this install with a small maintainer-operated service so Apple can deliver a reminder while the app is suspended. That service receives only the APNs device token, anonymous short tags for the Mac and session, the approval kind, and an expiry — never prompts, commands, file contents, session history, or your `agentd` token. Your allow and deny actions still go straight to your own Mac. See the [architecture note](docs/secure-approval-push-architecture.md) and the [operations runbook](docs/operations/push-provider-ops.zh-CN.md).
 
 The app rejects public HTTP endpoints at the application layer and is designed for Tailscale or same-LAN private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), [trademark and brand policy](TRADEMARKS.md), and [support page](docs/support.md).
 

@@ -530,6 +530,86 @@ struct AgentAPIClient {
         return try await request(path: "/api/voice/transcribe", method: "POST", body: body, timeout: 60)
     }
 
+
+    func pushStatus(timeout: TimeInterval = 10) async throws -> PushStatusResponse {
+        try await request(
+            path: "/api/push/status",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
+    }
+
+    func registerPushDevice(
+        deviceID: String,
+        ticket: String,
+        expiresAt: Date,
+        platform: String
+    ) async throws -> PushDeviceRegistrationResponse {
+        struct Body: Encodable {
+            let deviceID: String
+            let ticket: String
+            let expiresAt: String
+            let platform: String
+
+            enum CodingKeys: String, CodingKey {
+                case deviceID = "device_id"
+                case ticket
+                case expiresAt = "expires_at"
+                case platform
+            }
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let body = try JSONEncoder().encode(Body(
+            deviceID: deviceID,
+            ticket: ticket,
+            expiresAt: formatter.string(from: expiresAt),
+            platform: platform
+        ))
+        return try await request(path: "/api/push/devices", method: "POST", body: body)
+    }
+
+    func unregisterPushDevice(deviceID: String) async throws {
+        struct Response: Decodable { let removed: Bool? }
+        let encoded = deviceID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceID
+        let _: Response = try await request(
+            path: "/api/push/devices?device_id=\(encoded)",
+            method: "DELETE",
+            body: Optional<Data>.none
+        )
+    }
+
+    func submitPushDecision(
+        actionID: String,
+        deviceID: String,
+        decision: LockScreenApprovalDecision,
+        timeout: TimeInterval = 12
+    ) async throws -> PushDecisionResponse {
+        struct Body: Encodable {
+            let actionID: String
+            let deviceID: String
+            let decision: String
+
+            enum CodingKeys: String, CodingKey {
+                case actionID = "action_id"
+                case deviceID = "device_id"
+                case decision
+            }
+        }
+        let body = try JSONEncoder().encode(Body(
+            actionID: actionID,
+            deviceID: deviceID,
+            decision: decision.rawValue
+        ))
+        return try await request(
+            path: "/api/push/actions/decide",
+            method: "POST",
+            body: body,
+            timeout: timeout
+        )
+    }
+
     private func request<T: Decodable>(
         path: String,
         method: String,

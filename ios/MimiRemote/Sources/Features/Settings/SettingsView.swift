@@ -364,6 +364,18 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.experimentalFeatures")
 
                 NavigationLink {
+                    LockScreenApprovalSettingsView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.push_lock_screen_approval"),
+                        value: L10n.text("ui.default_off"),
+                        systemImage: "lock.iphone"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.lockScreenApproval")
+
+                NavigationLink {
                     DiagnosticsAndSupportSettingsView(
                         showsHistoryDiagnostics: developerModeEnabled
                     )

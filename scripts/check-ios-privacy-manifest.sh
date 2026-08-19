@@ -26,7 +26,14 @@ expect_raw() {
 
 expect_raw "NSPrivacyTracking" "false"
 expect_raw "NSPrivacyTrackingDomains" "0"
-expect_raw "NSPrivacyCollectedDataTypes" "0"
+# 锁屏审批提醒开启后会把 APNs 设备 Token 发给最小推送服务，因此必须声明；
+# 其余数据一律不出设备，所以这里只允许这一条，多一条就要重新审视披露。
+expect_raw "NSPrivacyCollectedDataTypes" "1"
+expect_raw "NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataType" "NSPrivacyCollectedDataTypeDeviceID"
+expect_raw "NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypeLinked" "false"
+expect_raw "NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypeTracking" "false"
+expect_raw "NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypePurposes" "1"
+expect_raw "NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypePurposes.0" "NSPrivacyCollectedDataTypePurposeAppFunctionality"
 expect_raw "NSPrivacyAccessedAPITypes" "1"
 expect_raw "NSPrivacyAccessedAPITypes.0.NSPrivacyAccessedAPIType" "NSPrivacyAccessedAPICategoryUserDefaults"
 expect_raw "NSPrivacyAccessedAPITypes.0.NSPrivacyAccessedAPITypeReasons" "1"

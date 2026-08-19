@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -89,6 +90,12 @@ struct RootView: View {
             // 冷启动先并行探测真实控制面和 WebSocket，设置页无需用户手动测试即可看到连接状态。
             await appStore.preflightConnection()
 #endif
+        }
+        .task(id: notificationResponseAdapter.approvalInbox.pending) {
+            guard let delivery = notificationResponseAdapter.approvalInbox.pending else { return }
+            // 先消费再做网络操作；新的锁屏动作可独立入队，不会被旧任务结束时误清。
+            notificationResponseAdapter.approvalInbox.consume(delivery)
+            await handleLockScreenApproval(delivery)
         }
         .task(id: notificationRouteTaskID) {
             guard let route = notificationResponseAdapter.pendingRoute else {
@@ -201,6 +208,29 @@ struct RootView: View {
             route: notificationResponseAdapter.pendingRoute,
             hasCompletedInitialBootstrap: hasCompletedInitialBootstrap
         )
+    }
+
+    /// 锁屏动作只做两件事：把决策交给自己的 agentd，或者打开 App 看详情。
+    /// 结果未知时如实展示未知——把超时当成已允许是这条链路上最危险的错误。
+    private func handleLockScreenApproval(_ delivery: LockScreenApprovalDelivery) async {
+        guard let decision = delivery.decision else {
+            if delivery.notification.event == .resolved {
+                await lockScreenApprovalStore.handleResolved(delivery.notification)
+            }
+            return
+        }
+        guard let client = try? appStore.client() else {
+            notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+            return
+        }
+        await lockScreenApprovalStore.submitDecision(
+            decision,
+            for: delivery.notification,
+            client: client
+        )
+        if let message = lockScreenApprovalStore.lastDecisionMessage {
+            notificationRouteAlertMessage = message
+        }
     }
 
     private func handleNotificationRoute(
