@@ -309,6 +309,8 @@ func (b *codexGatewayBroker) close(reason string) {
 	if b.cancel != nil {
 		b.cancel()
 	}
+	// 会话结束后没人能再代替用户回答，剩余句柄必须作废、通知必须撤下。
+	b.router.resolveApprovalNotifications("codex", b.key, "")
 	_ = b.upstream.Close()
 	b.policy.releaseAllHistoryInflight()
 	b.policy.close()
@@ -428,7 +430,13 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 	}
 	method := strings.TrimSpace(frame.Method)
 	if method != "" && frame.ID != nil {
-		b.rememberServerRequestFrame(frame.ID, payload)
+		created := b.rememberServerRequestFrame(frame.ID, payload)
+		if created && b.currentSink() == nil {
+			// 只在客户端确实离线时提醒。App 在前台时审批卡片本来就会实时出现，
+			// 再推一条只是重复打扰。
+			threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+			b.router.notifyPendingApproval("codex", b.key, threadID, gatewayRequestIDKey(frame.ID), method)
+		}
 		return
 	}
 	if method == "" {
@@ -443,6 +451,8 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 			b.mu.Unlock()
 		}
 	case "turn/completed", "thread/closed", "error":
+		// turn 结束后旧审批不可能再被应答，锁屏上的卡片必须撤掉。
+		b.router.resolveApprovalNotifications("codex", b.key, "")
 		b.mu.Lock()
 		if threadID != "" {
 			delete(b.activeTurns, threadID)
@@ -457,22 +467,26 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 		b.mu.Lock()
 		b.prunePendingLocked()
 		b.mu.Unlock()
+		// 审批已被处理：作废句柄并撤下其它设备上的旧通知。
+		b.router.resolveApprovalNotifications("codex", b.key, "")
 	}
 }
 
-func (b *codexGatewayBroker) rememberServerRequestFrame(id *json.RawMessage, payload []byte) {
+// 返回 true 表示这是一条新的待审批请求，值得提醒用户。
+func (b *codexGatewayBroker) rememberServerRequestFrame(id *json.RawMessage, payload []byte) bool {
 	key := gatewayRequestIDKey(id)
 	if key == "" || len(payload) > codexGatewayBrokerFrameMaxBytes {
-		return
+		return false
 	}
 	frame := make([]byte, len(payload))
 	copy(frame, payload)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return
+		return false
 	}
-	if _, exists := b.pending[key]; !exists {
+	_, exists := b.pending[key]
+	if !exists {
 		if len(b.pendingOrder) >= codexGatewayBrokerReplayMax {
 			// 丢最旧的一条而不是拒绝新的：最近的审批请求才是用户要处理的那条。
 			oldest := b.pendingOrder[0]
@@ -482,6 +496,7 @@ func (b *codexGatewayBroker) rememberServerRequestFrame(id *json.RawMessage, pay
 		b.pendingOrder = append(b.pendingOrder, key)
 	}
 	b.pending[key] = frame
+	return !exists
 }
 
 // prunePendingLocked 以 policy 的待处理表为准，丢掉已经被上游解决或过期的帧。

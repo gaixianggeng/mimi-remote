@@ -26,6 +26,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
+	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
@@ -114,8 +115,14 @@ type Router struct {
 	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
 	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
 	// 全部消失，上游请求继续 fail closed。
-	codexBrokerMu                 sync.Mutex
-	codexBrokers                  map[string]*codexGatewayBroker
+	codexBrokerMu sync.Mutex
+	codexBrokers  map[string]*codexGatewayBroker
+	// push 是锁屏审批提醒（MIM-112）的安全层。nil 或未启用时所有入口都是空操作。
+	push *pushbridge.Manager
+	// claudeObservers 让 Claude bridge 会话在移动端离线后仍被观察；否则 agentd
+	// 看不到期间到达的审批请求，也就无从提醒。
+	claudeObserverMu              sync.Mutex
+	claudeObservers               map[string]*claudeApprovalObserver
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex
@@ -280,6 +287,13 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		log.Printf("app-server thread handoff recovery store unavailable err=%v", err)
 	}
 	r.threadHandoffs = newAppServerThreadHandoffCoordinator(r)
+	r.push = newPushManager(pushManagerConfig{
+		Enabled:         cfg.Push.Enabled,
+		ProviderURL:     cfg.Push.ProviderURL,
+		Environment:     cfg.Push.Environment,
+		InstallationID:  installationID,
+		DeviceStorePath: pushDeviceStorePath(options.ConfigPath),
+	})
 	// 构造期间同步安装为 executing entry，再异步恢复。这样第一个 gateway 写请求
 	// 也只能等待 unarchive 完成，不能抢先取消重启恢复。
 	for _, threadID := range r.threadHandoffRecovery.ThreadIDs() {
@@ -318,6 +332,9 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/worktrees/prune", authed(http.HandlerFunc(r.worktreePruneHandler)))
 	mux.Handle("/api/worktrees/cleanup", authed(http.HandlerFunc(r.worktreeCleanupHandler)))
 	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
+	mux.Handle("/api/push/status", authed(http.HandlerFunc(r.pushStatusHandler)))
+	mux.Handle("/api/push/devices", authed(http.HandlerFunc(r.pushDeviceHandler)))
+	mux.Handle("/api/push/actions/decide", authed(http.HandlerFunc(r.pushDecideHandler)))
 	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))
 	mux.Handle("/api/actions/run", authed(http.HandlerFunc(r.commandActionRunHandler)))
 	mux.Handle("/api/git/status", authed(http.HandlerFunc(r.gitStatusHandler)))

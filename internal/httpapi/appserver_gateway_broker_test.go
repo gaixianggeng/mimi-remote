@@ -25,9 +25,12 @@ const (
 // brokerUpstream 把上游连接交给用例本身。gateway 的客户端方法白名单会挡掉自造的
 // 触发帧，所以事件必须由上游侧主动推送，才能复现「客户端离线后上游继续说话」。
 type brokerUpstream struct {
-	url         string
-	conns       chan *websocket.Conn
-	closed      chan struct{}
+	url    string
+	conns  chan *websocket.Conn
+	closed chan struct{}
+	// frames 是上游收到的客户端帧。用例不能自己再读一次连接：gorilla 不支持
+	// 并发读，服务端读循环必须是唯一读者。
+	frames      chan []byte
 	connections *atomic.Int64
 }
 
@@ -36,6 +39,7 @@ func newBrokerUpstream(t *testing.T) *brokerUpstream {
 	up := &brokerUpstream{
 		conns:       make(chan *websocket.Conn, 4),
 		closed:      make(chan struct{}, 4),
+		frames:      make(chan []byte, 32),
 		connections: &atomic.Int64{},
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -58,8 +62,13 @@ func newBrokerUpstream(t *testing.T) *brokerUpstream {
 		}
 		// 持续读取才能让 gorilla 自动应答 gateway 的 ping；同时与用例侧的写并发安全。
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
 				return
+			}
+			select {
+			case up.frames <- append([]byte(nil), payload...):
+			default:
 			}
 		}
 	}))
@@ -294,5 +303,22 @@ func TestCodexGatewayBrokerReplacesPreviousSink(t *testing.T) {
 	_ = first.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, _, err := first.ReadMessage(); err == nil {
 		t.Fatal("同名会话的旧连接应被顶下线")
+	}
+}
+
+// waitForUpstreamFrame 等待上游收到满足条件的客户端帧。
+func (u *brokerUpstream) waitForUpstreamFrame(t *testing.T, match func([]byte) bool, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case payload := <-u.frames:
+			if match(payload) {
+				return payload
+			}
+		case <-deadline:
+			t.Fatal("上游没有收到期望的客户端帧")
+			return nil
+		}
 	}
 }
