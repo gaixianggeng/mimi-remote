@@ -168,6 +168,9 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		{Name: "projects", OK: projectsCount > 0, Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
 		c.runtimeCheck(),
 	}
+	if check := c.sharedDaemonReconcileCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}

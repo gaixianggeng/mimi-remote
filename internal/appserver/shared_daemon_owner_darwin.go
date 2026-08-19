@@ -1225,17 +1225,17 @@ type confirmedSharedDaemonDisableHooks struct {
 	// validateListenerOwnership 证明当前 listener 确实由 Mimi 的签名 node
 	// supervisor 启动。独立模式启动复核用它区分 Mimi daemon 与外部 app-server。
 	validateListenerOwnership func(context.Context, LocalDaemonOptions, string) error
-	inspectOwner          func(context.Context) (SharedDaemonOwnerStatus, error)
-	socketAccepts         func(string) bool
-	stageOwner            func(SharedDaemonOwnerStatus) error
-	inspectListener       func(context.Context, string) (sharedDaemonListenerProcess, error)
-	stopDaemon            func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error
-	waitForStopped        func(context.Context, string, ...sharedDaemonListenerProcess) error
-	launchctl             func(context.Context, ...string) (string, error)
-	removeLaunchAgent     func(context.Context) error
-	clearEnablePrepared   func() error
-	clearMigration        func() error
-	enablePrepared        func() (bool, error)
+	inspectOwner              func(context.Context) (SharedDaemonOwnerStatus, error)
+	socketAccepts             func(string) bool
+	stageOwner                func(SharedDaemonOwnerStatus) error
+	inspectListener           func(context.Context, string) (sharedDaemonListenerProcess, error)
+	stopDaemon                func(context.Context, LocalDaemonOptions, SharedDaemonOwnerStatus) error
+	waitForStopped            func(context.Context, string, ...sharedDaemonListenerProcess) error
+	launchctl                 func(context.Context, ...string) (string, error)
+	removeLaunchAgent         func(context.Context) error
+	clearEnablePrepared       func() error
+	clearMigration            func() error
+	enablePrepared            func() (bool, error)
 }
 
 func defaultConfirmedSharedDaemonDisableHooks() confirmedSharedDaemonDisableHooks {
@@ -1245,17 +1245,17 @@ func defaultConfirmedSharedDaemonDisableHooks() confirmedSharedDaemonDisableHook
 		validateListenerOwnership: func(ctx context.Context, options LocalDaemonOptions, socketPath string) error {
 			return sharedDaemonValidateSignedRuntime(ctx, options, socketPath)
 		},
-		inspectOwner:          InspectSharedDaemonOwner,
-		socketAccepts:         sharedDaemonSocketAcceptsConnection,
-		stageOwner:            stageSharedDaemonOwnerForConfirmedDisable,
-		inspectListener:       inspectSharedDaemonListenerProcess,
-		stopDaemon:            stopSharedDaemonForConfirmedDisable,
-		waitForStopped:        waitForSharedDaemonStopped,
-		launchctl:             sharedDaemonLaunchctl,
-		removeLaunchAgent:     RemoveSharedDaemonLaunchAgent,
-		clearEnablePrepared:   clearSharedDaemonEnablePrepared,
-		clearMigration:        clearSharedDaemonMigrationFlag,
-		enablePrepared:        sharedDaemonEnablePrepared,
+		inspectOwner:        InspectSharedDaemonOwner,
+		socketAccepts:       sharedDaemonSocketAcceptsConnection,
+		stageOwner:          stageSharedDaemonOwnerForConfirmedDisable,
+		inspectListener:     inspectSharedDaemonListenerProcess,
+		stopDaemon:          stopSharedDaemonForConfirmedDisable,
+		waitForStopped:      waitForSharedDaemonStopped,
+		launchctl:           sharedDaemonLaunchctl,
+		removeLaunchAgent:   RemoveSharedDaemonLaunchAgent,
+		clearEnablePrepared: clearSharedDaemonEnablePrepared,
+		clearMigration:      clearSharedDaemonMigrationFlag,
+		enablePrepared:      sharedDaemonEnablePrepared,
 	}
 }
 
@@ -1463,7 +1463,7 @@ func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 	// 占着 well-known socket 的是 Codex Desktop 自己拉起的 app-server。必须先
 	// 拿到签名 node supervisor 父链证据，才能进入任何会改动 owner 的步骤。
 	if err := hooks.validateListenerOwnership(ctx, options, socketPath); err != nil {
-		return SharedDaemonReconcileForeign, nil
+		return "", fmt.Errorf("无法确认残留共享 daemon listener 归属，已保持原样：%w", err)
 	}
 	// 先只读判断 Desktop 是否在跑。stopDaemon 内部还会再次 fail-closed 复核；
 	// 这里提前返回是为了在 Desktop 仍连着 daemon 时一个字节都不改，让调用方
@@ -1489,6 +1489,14 @@ func reconcileRunningSharedDaemonForIndependentModeWithHooks(
 	}
 	if err := hooks.waitForStopped(ctx, socketPath, identity); err != nil {
 		return "", err
+	}
+	// wait 返回只证明原 listener 已退出。Desktop 或其他进程可能在确认窗口后
+	// 重新绑定 well-known socket；bootout 前必须再次同时确认 Desktop 和 socket。
+	if err := hooks.requireDesktopStopped(ctx, "卸载残留共享 daemon owner 前"); err != nil {
+		return "", err
+	}
+	if hooks.socketAccepts(socketPath) {
+		return "", fmt.Errorf("共享 daemon socket 在卸载残留 owner 前重新出现")
 	}
 	confirmed, err := hooks.inspectOwner(ctx)
 	if err != nil {
@@ -1561,19 +1569,29 @@ func stopSharedDaemonForConfirmedDisable(
 	options LocalDaemonOptions,
 	owner SharedDaemonOwnerStatus,
 ) error {
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		return err
+	}
 	lifecycle, err := InspectLocalDaemonLifecycle(ctx, options)
 	if err != nil {
 		return err
 	}
 	if lifecycle.Backend != nil {
-		return stopSharedDaemon(ctx, options, owner)
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("共享 daemon listener 缺少签名 supervisor 父链：%w", err)
+		}
+		listener, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("识别共享 daemon listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, listener, listener); err != nil {
+			return err
+		}
+		return stopSharedDaemonWithExpectedIdentity(ctx, options, owner, &listener)
 	}
 	if !sharedDaemonLoadedOwnerEvidence(owner) {
 		return fmt.Errorf("非 daemon 管理的 Codex app-server 没有已确认的 Mimi stable owner，拒绝停止")
-	}
-	socketPath, err := LocalDaemonSocketPath(options.Env)
-	if err != nil {
-		return err
 	}
 	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
 	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
@@ -2123,6 +2141,15 @@ func stopSharedDaemon(
 	options LocalDaemonOptions,
 	owner SharedDaemonOwnerStatus,
 ) error {
+	return stopSharedDaemonWithExpectedIdentity(ctx, options, owner, nil)
+}
+
+func stopSharedDaemonWithExpectedIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	owner SharedDaemonOwnerStatus,
+	expected *sharedDaemonListenerProcess,
+) error {
 	socketPath, pathErr := LocalDaemonSocketPath(options.Env)
 	if pathErr != nil {
 		return pathErr
@@ -2148,8 +2175,34 @@ func stopSharedDaemon(
 	if backend != "pid" {
 		return fmt.Errorf("Codex app-server 使用未知 lifecycle backend %q，拒绝迁移", *lifecycle.Backend)
 	}
+	if expected != nil {
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
+	}
 	if err := requireCodexDesktopStopped(ctx, "停止官方 Codex daemon 前"); err != nil {
 		return err
+	}
+	if expected != nil {
+		// Desktop 探测本身也会产生调度窗口。执行官方 stop 前再绑定一次 PID、
+		// 启动时间和签名父链，避免停止刚替换进来的 listener。
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("执行官方 stop 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("执行官方 stop 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
 	}
 
 	bin := strings.TrimSpace(options.CodexBin)
@@ -2175,6 +2228,23 @@ func stopSharedDaemon(
 		return fmt.Errorf("停止旧 Codex local daemon 失败：%w", err)
 	}
 	return fmt.Errorf("停止旧 Codex local daemon 失败：%s", message)
+}
+
+func validateManagedSharedDaemonListenerIdentity(
+	lifecycle LocalDaemonLifecycleStatus,
+	expected sharedDaemonListenerProcess,
+	current sharedDaemonListenerProcess,
+) error {
+	if lifecycle.PID == nil {
+		return fmt.Errorf("官方 Codex daemon 未报告 pid backend 身份，拒绝停止")
+	}
+	if int(*lifecycle.PID) != expected.PID {
+		return fmt.Errorf("官方 Codex daemon PID 与已确认 listener 不一致，拒绝停止")
+	}
+	if current != expected {
+		return fmt.Errorf("共享 daemon listener 在官方 stop 前发生变化，拒绝停止")
+	}
+	return nil
 }
 
 func requireCodexDesktopStopped(ctx context.Context, stage string) error {

@@ -2654,6 +2654,12 @@ func independentModeReconcileHooks(
 	socketActive := true
 	listener := sharedDaemonListenerProcess{PID: 4321, UID: os.Getuid(), StartSec: 99}
 	return confirmedSharedDaemonDisableHooks{
+		requireDesktopStopped: func(context.Context, string) error {
+			if desktopRunning {
+				return errors.New("Codex Desktop 仍在运行")
+			}
+			return nil
+		},
 		desktopRunning: func(context.Context) (bool, error) { return desktopRunning, nil },
 		validateListenerOwnership: func(context.Context, LocalDaemonOptions, string) error {
 			return nil
@@ -2735,6 +2741,73 @@ func TestIndependentModeReconcileStopsLeftoverMimiSharedDaemon(t *testing.T) {
 	wantEvents := []string{"stage", "stop", "wait", "bootout", "remove", "clear-enable", "clear-marker"}
 	if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
 		t.Fatalf("独立模式清理副作用顺序错误：got=%v want=%v", events, wantEvents)
+	}
+}
+
+func TestIndependentModeReconcileRefusesBootoutWhenDesktopReopensAfterWait(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		RunAtLoad: true,
+		Path:      filepath.Join(home, "owner.plist"),
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	events := make([]string, 0, 4)
+	hooks := independentModeReconcileHooks(t, &owner, false, &events)
+	hooks.requireDesktopStopped = func(context.Context, string) error {
+		return errors.New("Codex Desktop 已重新打开")
+	}
+
+	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
+		context.Background(),
+		options,
+		hooks,
+	)
+	if err == nil || !strings.Contains(err.Error(), "重新打开") || outcome != "" {
+		t.Fatalf("Desktop 在 wait 后重开时必须拒绝 bootout：outcome=%s err=%v", outcome, err)
+	}
+	if strings.Contains(strings.Join(events, ","), "bootout") {
+		t.Fatalf("Desktop 重开后不得 bootout：%v", events)
+	}
+}
+
+func TestIndependentModeReconcileRefusesBootoutWhenSocketReappearsAfterWait(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+	options := LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		RunAtLoad: true,
+		Path:      filepath.Join(home, "owner.plist"),
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	events := make([]string, 0, 4)
+	hooks := independentModeReconcileHooks(t, &owner, false, &events)
+	socketChecks := 0
+	hooks.socketAccepts = func(string) bool {
+		socketChecks++
+		return true
+	}
+
+	outcome, err := reconcileRunningSharedDaemonForIndependentModeWithHooks(
+		context.Background(),
+		options,
+		hooks,
+	)
+	if err == nil || !strings.Contains(err.Error(), "重新出现") || outcome != "" {
+		t.Fatalf("socket 在 wait 后重现时必须拒绝 bootout：outcome=%s err=%v", outcome, err)
+	}
+	if socketChecks < 2 {
+		t.Fatalf("停止前后都必须复核 socket：checks=%d", socketChecks)
+	}
+	if strings.Contains(strings.Join(events, ","), "bootout") {
+		t.Fatalf("socket 重现后不得 bootout：%v", events)
 	}
 }
 
@@ -2868,7 +2941,7 @@ func TestIndependentModeReconcileTreatsInsecureLeftoverOwnerAsForeign(t *testing
 	}
 }
 
-func TestIndependentModeReconcileKeepsOwnerWhenListenerIsNotMimiStarted(t *testing.T) {
+func TestIndependentModeReconcileWarnsWhenListenerOwnershipCannotBeConfirmed(t *testing.T) {
 	home := sharedDaemonTestHome(t)
 	t.Setenv("HOME", home)
 	options := LocalDaemonOptions{Env: map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}}
@@ -2894,16 +2967,41 @@ func TestIndependentModeReconcileKeepsOwnerWhenListenerIsNotMimiStarted(t *testi
 		options,
 		hooks,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome != SharedDaemonReconcileForeign {
-		t.Fatalf("listener 归属无法证明时必须按外部 daemon 处理：%s", outcome)
+	if err == nil || !strings.Contains(err.Error(), "无法确认") || outcome != "" {
+		t.Fatalf("listener 归属无法证明时必须保留现场并返回可诊断错误：outcome=%s err=%v", outcome, err)
 	}
 	if len(events) != 0 {
 		t.Fatalf("listener 归属无法证明时不得产生副作用：%v", events)
 	}
 	if !owner.RunAtLoad || owner.MigrationRequired {
 		t.Fatalf("绝不能因为外部 listener 把 Mimi owner 降为 manual：%+v", owner)
+	}
+}
+
+func TestValidateManagedSharedDaemonListenerIdentity(t *testing.T) {
+	pid := uint32(4321)
+	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}
+	expected := sharedDaemonListenerProcess{PID: 4321, UID: os.Getuid(), StartSec: 99}
+	if err := validateManagedSharedDaemonListenerIdentity(lifecycle, expected, expected); err != nil {
+		t.Fatalf("一致的 pid listener 身份应通过：%v", err)
+	}
+
+	withoutPID := lifecycle
+	withoutPID.PID = nil
+	if err := validateManagedSharedDaemonListenerIdentity(withoutPID, expected, expected); err == nil {
+		t.Fatal("官方 backend 未报告 PID 时必须 fail closed")
+	}
+
+	otherPID := uint32(9876)
+	wrongLifecycle := lifecycle
+	wrongLifecycle.PID = &otherPID
+	if err := validateManagedSharedDaemonListenerIdentity(wrongLifecycle, expected, expected); err == nil {
+		t.Fatal("lifecycle PID 与 listener 不一致时必须 fail closed")
+	}
+
+	replaced := expected
+	replaced.StartSec++
+	if err := validateManagedSharedDaemonListenerIdentity(lifecycle, expected, replaced); err == nil {
+		t.Fatal("listener 启动身份变化时必须 fail closed")
 	}
 }

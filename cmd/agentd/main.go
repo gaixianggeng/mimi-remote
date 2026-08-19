@@ -1051,21 +1051,31 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			}
 			artifactsPresent, artifactsErr := appserver.SharedDaemonOwnerArtifactsPresent()
 			if artifactsErr != nil {
-				return fmt.Errorf("检查残留共享 daemon owner 失败：%w", artifactsErr)
-			}
-			if artifactsPresent {
+				log.Printf("agentd independent mode could not inspect leftover shared daemon owner: %v", artifactsErr)
+				setSharedDaemonCleanupWarning(checker)
+			} else if artifactsPresent {
 				if configPath == "" {
-					return fmt.Errorf("清理残留共享 daemon owner 缺少可复核的配置路径")
-				}
-				expectedBin := cfg.Codex.Bin
-				expectedEnv := maps.Clone(cfg.Codex.Env)
-				cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 15*time.Second)
-				cleanupErr := appserver.ReconcileDisabledSharedDaemonOwner(cleanupCtx, func() error {
-					return config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
-				})
-				cancelCleanup()
-				if cleanupErr != nil {
-					return fmt.Errorf("清理残留共享 daemon owner 失败：%w", cleanupErr)
+					log.Printf("agentd independent mode cannot clean leftover shared daemon owner without a reviewable config path")
+					setSharedDaemonCleanupWarning(checker)
+				} else {
+					expectedBin := cfg.Codex.Bin
+					expectedEnv := maps.Clone(cfg.Codex.Env)
+					var ownershipErr error
+					cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 15*time.Second)
+					cleanupErr := appserver.ReconcileDisabledSharedDaemonOwner(cleanupCtx, func() error {
+						ownershipErr = config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
+						return ownershipErr
+					})
+					cancelCleanup()
+					if ownershipErr != nil {
+						// 配置已切回共享或 Codex 身份发生变化时，旧 WS 进程继续启动会与
+						// 新 owner 竞争。此类所有权错误仍必须阻断，不能降级为普通清理告警。
+						return fmt.Errorf("复核残留共享 daemon owner 清理权失败：%w", ownershipErr)
+					}
+					if cleanupErr != nil {
+						log.Printf("agentd independent mode could not clean leftover shared daemon owner: %v", cleanupErr)
+						setSharedDaemonCleanupWarning(checker)
+					}
 				}
 			}
 		}
@@ -1351,6 +1361,13 @@ func reconcileRunningSharedDaemonForIndependentMode(cfg config.Config, checker *
 	case appserver.SharedDaemonReconcileForeign:
 		log.Printf("agentd independent mode left external Codex Unix backend untouched")
 	}
+}
+
+func setSharedDaemonCleanupWarning(checker *doctor.Checker) {
+	checker.SetSharedDaemonReconcile(
+		"关闭共享后 Mimi 的 Codex 共享 daemon owner 未完全清理，历史会话可能无法发送",
+		"完全退出 Codex Desktop 后重启 agentd；或在 Mac 的“实验功能”中重新开启并关闭一次共享",
+	)
 }
 
 func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSocketProcess, error) {
