@@ -168,6 +168,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
+		p.completePendingThreadWriter(&frame)
 		p.rememberAccountTokenUsageResponse(&frame, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
 			if len(frame.Error) == 0 && len(frame.Result) > 0 {
@@ -1029,9 +1030,11 @@ func (p *appServerGatewayPolicy) isClosed() bool {
 }
 
 func (p *appServerGatewayPolicy) close() {
+	p.threadWriterForwardMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.threadWriterForwardMu.Unlock()
 		return
 	}
 	p.closed = true
@@ -1042,10 +1045,32 @@ func (p *appServerGatewayPolicy) close() {
 		}
 		delete(p.pendingThreads, key)
 	}
+	writerCandidates := make([]string, 0, len(p.threadWriterCandidates))
+	seenWriterCandidates := make(map[string]struct{}, len(p.threadWriterCandidates)+len(p.pendingThreadWriters))
+	for threadID := range p.threadWriterCandidates {
+		writerCandidates = append(writerCandidates, threadID)
+		seenWriterCandidates[threadID] = struct{}{}
+	}
+	for _, pending := range p.pendingThreadWriters {
+		if !pending.forwarded {
+			continue
+		}
+		threadID := pending.threadID
+		if _, exists := seenWriterCandidates[threadID]; exists {
+			continue
+		}
+		writerCandidates = append(writerCandidates, threadID)
+		seenWriterCandidates[threadID] = struct{}{}
+	}
+	p.threadWriterCandidates = nil
+	p.pendingThreadWriters = nil
+	handoffCapable := p.threadHandoffCapable
 	p.mu.Unlock()
+	p.threadWriterForwardMu.Unlock()
 	for _, path := range paths {
 		p.router.releaseManagedWorktreePendingUse(path)
 	}
+	p.scheduleThreadHandoffsAfterDisconnect(writerCandidates, handoffCapable)
 }
 
 func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending appServerGatewayPendingThreadRequest) []appServerGatewayAllowedThread {
@@ -1293,6 +1318,9 @@ func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pendi
 		}
 		delete(p.pendingThreads, key)
 		for _, thread := range normalized {
+			if !gatewayThreadRejectsWrites(thread) {
+				p.rememberThreadWriterCandidateLocked(pending.method, thread.id)
+			}
 			p.allowedThreads[thread.id] = thread
 			p.router.allowGatewayThread(thread)
 		}
@@ -1317,6 +1345,9 @@ func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pendi
 	}
 	delete(p.pendingThreads, key)
 	for _, thread := range normalized {
+		if !gatewayThreadRejectsWrites(thread) {
+			p.rememberThreadWriterCandidateLocked(pending.method, thread.id)
+		}
 		p.allowedThreads[thread.id] = thread
 		p.router.allowGatewayThread(thread)
 	}

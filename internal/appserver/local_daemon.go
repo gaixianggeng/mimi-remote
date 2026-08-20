@@ -750,6 +750,32 @@ func ReconcileRunningSharedDaemonForIndependentMode(
 	return reconcileRunningSharedDaemonForIndependentMode(ctx, options, validate)
 }
 
+// StartIndependentModeRuntime 把独立配置的最后复核与 runtime 启动放在
+// shared-daemon operation lock 的同一临界区。这样另一个 Mimi 进程不能在
+// “确认仍是 WS”与真正启动 WS backend 之间插入一次 shared 配置提交。
+func StartIndependentModeRuntime(
+	ctx context.Context,
+	validate func() error,
+	start func() error,
+) error {
+	if validate == nil {
+		return fmt.Errorf("独立模式 runtime 启动前的配置复核回调不能为空")
+	}
+	if start == nil {
+		return fmt.Errorf("独立模式 runtime 启动回调不能为空")
+	}
+	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
+		if err := validate(); err != nil {
+			return LocalDaemonStatus{}, fmt.Errorf("独立模式配置在 runtime 启动前已变化：%w", err)
+		}
+		if err := start(); err != nil {
+			return LocalDaemonStatus{}, err
+		}
+		return LocalDaemonStatus{}, nil
+	})
+	return err
+}
+
 func attachLocalDaemon(ctx context.Context, options LocalDaemonOptions) (LocalDaemonStatus, error) {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
 	if err != nil {

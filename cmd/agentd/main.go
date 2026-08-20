@@ -1120,7 +1120,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
 		}
 		if cfg.AppServer.Managed {
-			process, err := startManagedAppServerWebSocket(cfg)
+			process, err := startManagedIndependentAppServerWebSocket(cfg, configPath)
 			if err != nil {
 				return err
 			}

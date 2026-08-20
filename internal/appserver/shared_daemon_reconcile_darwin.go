@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // RemoveSharedDaemonOwner 只移除 Mimi 安装的未来启动入口和迁移标记，不停止当前
@@ -415,6 +416,16 @@ func stopSharedDaemonForConfirmedDisable(
 	if err != nil {
 		return err
 	}
+	if handled, stopErr := stopLegacyPIDBackendWithoutReportedPID(
+		ctx,
+		options,
+		owner,
+		lifecycle,
+		validateLegacyPIDBackendListener,
+		stopManagedSharedDaemonCommand,
+	); handled {
+		return stopErr
+	}
 	if lifecycle.Backend != nil {
 		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
 			return fmt.Errorf("共享 daemon listener 缺少签名 supervisor 父链：%w", err)
@@ -479,4 +490,79 @@ func stopSharedDaemonForConfirmedDisable(
 			currentUID:     os.Getuid,
 		},
 	)
+}
+
+type legacyPIDBackendValidateFunc func(
+	context.Context,
+	LocalDaemonOptions,
+	LocalDaemonLifecycleStatus,
+) error
+
+type legacyPIDBackendStopFunc func(context.Context, LocalDaemonOptions) error
+
+// 旧版 daemon version 会报告 backend=pid，但不返回 PID。此时不能进入依赖
+// lifecycle.PID 的普通路径；先严格验证真实 socket peer，再继续调用官方 stop。
+func stopLegacyPIDBackendWithoutReportedPID(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	owner SharedDaemonOwnerStatus,
+	lifecycle LocalDaemonLifecycleStatus,
+	validate legacyPIDBackendValidateFunc,
+	stop legacyPIDBackendStopFunc,
+) (bool, error) {
+	if lifecycle.Backend == nil || lifecycle.PID != nil ||
+		!strings.EqualFold(strings.TrimSpace(*lifecycle.Backend), "pid") {
+		return false, nil
+	}
+	if !sharedDaemonLoadedOwnerEvidence(owner) {
+		return true, fmt.Errorf("旧 pid backend 没有已确认的 Mimi stable owner，拒绝停止")
+	}
+	if validate == nil || stop == nil {
+		return true, fmt.Errorf("旧 pid backend 缺少安全取证或官方停止实现")
+	}
+	if err := validate(ctx, options, lifecycle); err != nil {
+		return true, err
+	}
+	return true, stop(ctx, options)
+}
+
+func validateLegacyPIDBackendListener(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	lifecycle LocalDaemonLifecycleStatus,
+) error {
+	socketPath, err := LocalDaemonSocketPath(options.Env)
+	if err != nil {
+		return err
+	}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
+	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
+	cancelProbe()
+	if err != nil {
+		return fmt.Errorf("无法确认旧 pid backend：%w", err)
+	}
+	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
+		return err
+	}
+	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
+		return err
+	}
+	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err != nil {
+		return err
+	}
+	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		return fmt.Errorf("旧 pid backend 缺少签名 supervisor 父链：%w", err)
+	}
+	_, err = validateUnmanagedSharedDaemonWithExpectedIdentity(
+		ctx,
+		socketPath,
+		lifecycle.ManagedCodexPath,
+		nil,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: sharedDaemonDesktopRunning,
+			inspect:        inspectSharedDaemonListenerProcess,
+			currentUID:     os.Getuid,
+		},
+	)
+	return err
 }

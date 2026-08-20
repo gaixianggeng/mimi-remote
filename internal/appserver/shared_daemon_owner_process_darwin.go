@@ -105,47 +105,70 @@ func stopUnmanagedSharedDaemonWithExpectedIdentity(
 	expectedIdentity *sharedDaemonListenerProcess,
 	hooks unmanagedSharedDaemonHooks,
 ) error {
+	listener, err := validateUnmanagedSharedDaemonWithExpectedIdentity(
+		ctx,
+		socketPath,
+		expectedCodexPath,
+		expectedIdentity,
+		hooks,
+	)
+	if err != nil {
+		return err
+	}
+	if err := hooks.signalTERM(listener.PID); err != nil {
+		return fmt.Errorf("正常终止旧 Codex app-server 失败：%w", err)
+	}
+	return nil
+}
+
+// validateUnmanagedSharedDaemonWithExpectedIdentity 只完成最终 listener 取证，
+// 不执行停止动作。旧 pid backend 用它验证真实 socket peer 后仍调用官方 stop，
+// 普通 unmanaged 路径则由上层对返回的同一 PID 发送一次 TERM。
+func validateUnmanagedSharedDaemonWithExpectedIdentity(
+	ctx context.Context,
+	socketPath string,
+	expectedCodexPath string,
+	expectedIdentity *sharedDaemonListenerProcess,
+	hooks unmanagedSharedDaemonHooks,
+) (sharedDaemonListenerProcess, error) {
 	running, err := hooks.desktopRunning(ctx)
 	if err != nil {
-		return fmt.Errorf("确认 Codex Desktop 已退出失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("确认 Codex Desktop 已退出失败：%w", err)
 	}
 	if running {
-		return fmt.Errorf("Codex Desktop 仍在运行，拒绝接管非 daemon 管理的 app-server")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex Desktop 仍在运行，拒绝接管非 daemon 管理的 app-server")
 	}
 
 	listener, err := hooks.inspect(ctx, socketPath)
 	if err != nil {
-		return fmt.Errorf("识别非 daemon 管理的 Codex app-server 失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("识别非 daemon 管理的 Codex app-server 失败：%w", err)
 	}
 	if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), expectedCodexPath); err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	if expectedIdentity != nil && listener != *expectedIdentity {
-		return fmt.Errorf("Codex app-server owner 与已验证身份不一致，已停止迁移")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex app-server owner 与已验证身份不一致，已停止迁移")
 	}
 	// PID 可能在检查命令行期间退出并被复用。发送信号前再次从 socket
 	// 反查 owner；PID、UID、命令与可执行文件任一变化都停止迁移。
 	confirmed, err := hooks.inspect(ctx, socketPath)
 	if err != nil {
-		return fmt.Errorf("再次确认 Codex app-server owner 失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("再次确认 Codex app-server owner 失败：%w", err)
 	}
 	if confirmed != listener {
-		return fmt.Errorf("Codex app-server owner 在接管前发生变化，已停止迁移")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex app-server owner 在接管前发生变化，已停止迁移")
 	}
 	// 用户可能在首次检查后从 Dock 重新打开 Desktop。信号前必须
 	// 再按 bundle id 查一次；读取失败也 fail closed，不能凭旧快照
 	// 终止已经被新 Desktop 重新使用的 backend。
 	running, err = hooks.desktopRunning(ctx)
 	if err != nil {
-		return fmt.Errorf("信号前再次确认 Codex Desktop 已退出失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("信号前再次确认 Codex Desktop 已退出失败：%w", err)
 	}
 	if running {
-		return fmt.Errorf("Codex Desktop 在迁移前被重新打开，已停止接管")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex Desktop 在迁移前被重新打开，已停止接管")
 	}
-	if err := hooks.signalTERM(listener.PID); err != nil {
-		return fmt.Errorf("正常终止旧 Codex app-server 失败：%w", err)
-	}
-	return nil
+	return listener, nil
 }
 
 func validateSharedDaemonListenerProcess(

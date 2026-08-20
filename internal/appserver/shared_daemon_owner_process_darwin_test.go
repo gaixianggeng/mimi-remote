@@ -130,6 +130,17 @@ exit 2
 			desktop:     func(context.Context) (bool, error) { return false, errors.New("query failed") },
 			wantMessage: "确认 Codex Desktop 已退出失败",
 		},
+		{
+			name: "desktop reopened before command",
+			desktop: func() func(context.Context) (bool, error) {
+				checks := 0
+				return func(context.Context) (bool, error) {
+					checks++
+					return checks == 2, nil
+				}
+			}(),
+			wantMessage: "重新打开",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

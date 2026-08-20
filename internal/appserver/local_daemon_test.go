@@ -581,6 +581,21 @@ func TestValidateLocalDaemonProbeVersionRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestStartIndependentModeRuntimeRejectsChangedConfigBeforeStart(t *testing.T) {
+	startCalls := 0
+	err := StartIndependentModeRuntime(
+		context.Background(),
+		func() error { return errors.New("config switched to shared") },
+		func() error {
+			startCalls++
+			return nil
+		},
+	)
+	if err == nil || startCalls != 0 {
+		t.Fatalf("配置复核失败时不得启动独立 runtime：calls=%d err=%v", startCalls, err)
+	}
+}
+
 func startLocalDaemonTestServer(
 	t *testing.T,
 	codexHome string,
