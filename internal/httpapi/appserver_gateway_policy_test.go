@@ -440,7 +440,6 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 		{name: "image.jpg", header: []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}},
 		{name: "image.gif", header: []byte("GIF89a")},
 		{name: "image.webp", header: []byte("RIFF\x00\x00\x00\x00WEBP")},
-		{name: "image.heic", header: []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0x00, 0x00, 0x00, 0x00, 'h', 'e', 'i', 'c'}},
 	}
 	for _, image := range validImages {
 		t.Run("allows "+image.name, func(t *testing.T) {

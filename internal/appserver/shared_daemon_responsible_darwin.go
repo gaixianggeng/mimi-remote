@@ -74,40 +74,36 @@ func sharedDaemonAppBundleForResource(binary string) (string, bool) {
 	return bundle, true
 }
 
-// sharedDaemonBundleMainExecutable 从 Contents/MacOS 取主可执行文件。这里不解析
-// Info.plist 的 CFBundleExecutable：Contents/MacOS 恰好只有一个可执行文件是 App
-// bundle 的常态，"恰好一个"本身就是最强的判据；出现第二个文件说明 bundle 结构与
-// 预期不符，此时宁可退回旧链条也不猜。
+// sharedDaemonBundleMainExecutable 按 Info.plist 的 CFBundleExecutable 取主程序。
+// Debug App 会在 Contents/MacOS 额外生成 debug/preview dylib，不能按目录内可执行
+// 文件数量猜测；发布包的唯一性仍由 check-macos-installer.sh 单独守住。
 func sharedDaemonBundleMainExecutable(bundle string) (string, error) {
-	directory := filepath.Join(bundle, "Contents", "MacOS")
-	entries, err := os.ReadDir(directory)
+	infoPlist := filepath.Join(bundle, "Contents", "Info.plist")
+	content, err := os.ReadFile(infoPlist)
 	if err != nil {
-		return "", fmt.Errorf("读取 App 主可执行目录失败：%w", err)
+		return "", fmt.Errorf("读取 App Info.plist 失败：%w", err)
 	}
-	candidate := ""
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return "", fmt.Errorf("App 主可执行目录包含子目录，结构不符合预期")
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return "", fmt.Errorf("读取 App 主可执行文件属性失败：%w", err)
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-			return "", fmt.Errorf("App 主可执行目录包含非可执行文件，结构不符合预期")
-		}
-		if candidate != "" {
-			return "", fmt.Errorf("App 主可执行目录存在多个可执行文件，结构不符合预期")
-		}
-		candidate = filepath.Join(directory, entry.Name())
+	executableName := strings.TrimSpace(sharedDaemonPlistStringValue(content, "CFBundleExecutable"))
+	if executableName == "" || executableName != filepath.Base(executableName) || executableName == "." {
+		return "", fmt.Errorf("App Info.plist 的 CFBundleExecutable 无效")
 	}
-	if candidate == "" {
-		return "", fmt.Errorf("App 主可执行目录为空")
+	directory := filepath.Join(bundle, "Contents", "MacOS")
+	candidate := filepath.Join(directory, executableName)
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("读取 App 主可执行文件属性失败：%w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("App 主可执行文件不可执行")
 	}
 	// 规范化后再写进 plist，避免 launchd 执行的目标与这里校验过的文件不是同一个。
 	canonical, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
 		return "", fmt.Errorf("解析 App 主可执行文件失败：%w", err)
+	}
+	canonicalDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil || filepath.Dir(canonical) != canonicalDirectory {
+		return "", fmt.Errorf("App 主可执行文件必须位于 Contents/MacOS")
 	}
 	return canonical, nil
 }

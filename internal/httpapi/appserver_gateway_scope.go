@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -367,7 +366,7 @@ func validateExternalGatewayLocalImagePath(raw string) (string, error) {
 		return "", gatewayLocalImagePathError(err)
 	}
 	if !gatewaySupportedLocalImageHeader(header[:readCount]) {
-		return "", fmt.Errorf("内容不是受支持的 PNG、JPEG、GIF、WebP 或 HEIC 图片")
+		return "", fmt.Errorf("内容不是受支持的 PNG、JPEG、GIF 或 WebP 图片")
 	}
 	return realPath, nil
 }
@@ -384,35 +383,11 @@ func gatewaySupportedLocalImageHeader(header []byte) bool {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":
 		return true
 	}
-	return gatewayWebPFileHeader(header) || gatewayHEICFileHeader(header)
+	return gatewayWebPFileHeader(header)
 }
 
 func gatewayWebPFileHeader(header []byte) bool {
 	return len(header) >= 12 && string(header[:4]) == "RIFF" && string(header[8:12]) == "WEBP"
-}
-
-func gatewayHEICFileHeader(header []byte) bool {
-	if len(header) < 16 || string(header[4:8]) != "ftyp" {
-		return false
-	}
-	boxSize := int(binary.BigEndian.Uint32(header[:4]))
-	if boxSize < 16 {
-		return false
-	}
-	if boxSize > len(header) {
-		boxSize = len(header)
-	}
-	for offset := 8; offset+4 <= boxSize; offset += 4 {
-		if offset == 12 {
-			continue
-		}
-		brand := strings.ToLower(string(header[offset : offset+4]))
-		switch brand {
-		case "heic", "heix", "hevc", "hevx", "mif1", "msf1":
-			return true
-		}
-	}
-	return false
 }
 
 func validateGatewayCollaborationMode(value any) error {

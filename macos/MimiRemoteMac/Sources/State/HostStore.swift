@@ -235,7 +235,6 @@ final class HostStore {
                 startMonitoring()
                 return
             }
-            await preparePhotoLibraryAccessBeforeMacAgentStart()
             await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
             await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
@@ -306,8 +305,6 @@ final class HostStore {
                 return
             }
 
-            // 先等待用户处理系统授权，再停止仍然可用的 Homebrew 服务。
-            await preparePhotoLibraryAccessBeforeMacAgentStart()
             try await prepareAutomaticNetworkBeforeServiceStart()
             try await homebrew.stop()
             homebrewLoaded = false
@@ -569,6 +566,7 @@ final class HostStore {
 
         do {
             if enabled {
+                await preparePhotoLibraryAccessForCodexDesktopSharing()
                 // 先让 agentd 确保官方 app-server/local daemon 已就绪，再写入
                 // Desktop 的 launchd 环境；backend 失败时绝不能留下无效 env。
                 let sharing = try await configureCodexSharingAndReloadIfNeeded(true)
@@ -1242,7 +1240,11 @@ final class HostStore {
         allowAutomaticRepair: Bool = true
     ) async throws {
         try validateMacAgentConfiguration()
-        await preparePhotoLibraryAccessBeforeMacAgentStart()
+        if codexDesktopStatus.environment.hasLocalPreference,
+           codexDesktopStatus.environment.enabled
+        {
+            await preparePhotoLibraryAccessForCodexDesktopSharing()
+        }
         do {
             try services.registerAgent()
             try await waitForMacAgentReady()
@@ -1268,11 +1270,9 @@ final class HostStore {
         }
     }
 
-    /// 照片授权必须由可见 App 请求：TCC 按 bundle ID 记账，同一 bundle 的
-    /// --codex-daemon-supervisor 进程、以及它拉起的 node 与 codex 都会沿责任链继承这份
-    /// 授权（见 CodexDaemonSupervisor）。后台进程不该静默弹窗，因此在这里一次性问完；
-    /// 用户拒绝时仍允许服务启动，并在设置页保留手动修复入口。
-    private func preparePhotoLibraryAccessBeforeMacAgentStart() async {
+    /// 照片授权由可见 App 请求，避免后台 agentd 启动时静默触发 TCC 弹窗。
+    /// 用户拒绝时仍允许 Codex Desktop 共享继续启用，并保留设置页的手动修复入口。
+    private func preparePhotoLibraryAccessForCodexDesktopSharing() async {
         guard !didPreparePhotoLibraryAccess else { return }
         didPreparePhotoLibraryAccess = true
 

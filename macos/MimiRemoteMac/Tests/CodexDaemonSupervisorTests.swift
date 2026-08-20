@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import MimiRemoteMac
 
@@ -34,7 +35,7 @@ final class CodexDaemonSupervisorTests: XCTestCase {
         let rogue = CodexDaemonSupervisorInvocation.Command(node: "/tmp/node", codex: codex)
         XCTAssertEqual(
             CodexDaemonSupervisor.validate(rogue, verifySignature: { _, _ in true }),
-            .notInsideDesktopBundle("node supervisor")
+            .rejected(.notInsideDesktopBundle("node supervisor"))
         )
     }
 
@@ -45,26 +46,109 @@ final class CodexDaemonSupervisorTests: XCTestCase {
         )
         XCTAssertEqual(
             CodexDaemonSupervisor.validate(mixed, verifySignature: { _, _ in true }),
-            .bundleMismatch
+            .rejected(.bundleMismatch)
         )
     }
 
     func testValidateRejectsUnsignedPrograms() {
         XCTAssertEqual(
             CodexDaemonSupervisor.validate(command(), verifySignature: { _, _ in false }),
-            .signatureRejected("node supervisor")
+            .rejected(.signatureRejected("node supervisor"))
         )
         // codex 单独被换掉时也必须拦下，不能因为 node 过了就放行整条链。
         XCTAssertEqual(
             CodexDaemonSupervisor.validate(command(), verifySignature: { _, identifier in
                 identifier == CodexDaemonSupervisor.nodeSigningIdentifier
             }),
-            .signatureRejected("Codex app-server")
+            .rejected(.signatureRejected("Codex app-server"))
         )
     }
 
     func testValidateAcceptsSignedDesktopPair() {
-        XCTAssertNil(CodexDaemonSupervisor.validate(command(), verifySignature: { _, _ in true }))
+        XCTAssertEqual(
+            CodexDaemonSupervisor.validate(command(), verifySignature: { _, _ in true }),
+            .accepted(command())
+        )
+    }
+
+    func testValidateReturnsTheCanonicalPathsItVerified() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: UUID().uuidString)
+        let resources = root.appending(path: "ChatGPT.app/Contents/Resources")
+        let nodeDirectory = resources.appending(path: "cua_node/bin")
+        try FileManager.default.createDirectory(at: nodeDirectory, withIntermediateDirectories: true)
+        let canonicalNode = nodeDirectory.appending(path: "node")
+        let canonicalCodex = resources.appending(path: "codex")
+        XCTAssertTrue(FileManager.default.createFile(atPath: canonicalNode.path, contents: Data()))
+        XCTAssertTrue(FileManager.default.createFile(atPath: canonicalCodex.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let links = root.appending(path: "links")
+        try FileManager.default.createDirectory(at: links, withIntermediateDirectories: true)
+        let nodeLink = links.appending(path: "node")
+        let codexLink = links.appending(path: "codex")
+        try FileManager.default.createSymbolicLink(at: nodeLink, withDestinationURL: canonicalNode)
+        try FileManager.default.createSymbolicLink(at: codexLink, withDestinationURL: canonicalCodex)
+
+        let linked = CodexDaemonSupervisorInvocation.Command(node: nodeLink.path, codex: codexLink.path)
+        XCTAssertEqual(
+            CodexDaemonSupervisor.validate(linked, verifySignature: { _, _ in true }),
+            .accepted(.init(
+                node: canonicalNode.resolvingSymlinksInPath().path,
+                codex: canonicalCodex.resolvingSymlinksInPath().path
+            ))
+        )
+    }
+
+    func testSanitizedEnvironmentRemovesNodeInjectionAndDesktopTransport() {
+        let environment = CodexDaemonSupervisor.sanitizedEnvironment([
+            "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": "/tmp/codex-home",
+            "NODE_OPTIONS": "--require=/tmp/evil.js",
+            "NODE_PATH": "/tmp/modules",
+            "NODE_FUTURE_INJECTION": "hostile",
+            "CODEX_APP_SERVER_USE_LOCAL_DAEMON": "1",
+            "CODEX_APP_SERVER_WS_URL": "ws://127.0.0.1:1",
+            "MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": "stale",
+        ])
+
+        XCTAssertEqual(environment, ["PATH": "/usr/bin:/bin", "CODEX_HOME": "/tmp/codex-home"])
+    }
+
+    func testStageExecutablesVerifiesTheIndependentCopiesAndMakesDirectoryReadOnly() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let sourceNode = root.appending(path: "source-node")
+        let sourceCodex = root.appending(path: "source-codex")
+        try Data("node".utf8).write(to: sourceNode)
+        try Data("codex".utf8).write(to: sourceCodex)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var verified: [String] = []
+        let staging = try CodexDaemonSupervisor.stageExecutables(
+            .init(node: sourceNode.path, codex: sourceCodex.path),
+            clone: { source, destination in
+                try FileManager.default.copyItem(atPath: source, toPath: destination)
+            },
+            verifySignature: { path, identifier in
+                verified.append(identifier + ":" + path)
+                return true
+            }
+        )
+        defer { staging.remove() }
+
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staging.node)), Data("node".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staging.codex)), Data("codex".utf8))
+        XCTAssertEqual(verified.count, 2)
+        let attributes = try FileManager.default.attributesOfItem(atPath: staging.directory.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o500)
+    }
+
+    func testWaitStatusMappingMatchesSupervisorContract() {
+        XCTAssertEqual(CodexDaemonSupervisor.terminationStatus(for: 0), 0)
+        XCTAssertEqual(CodexDaemonSupervisor.terminationStatus(for: 42 << 8), 42)
+        XCTAssertEqual(CodexDaemonSupervisor.terminationStatus(for: SIGTERM), 1)
+        XCTAssertEqual(CodexDaemonSupervisor.terminationStatus(for: 0x7f), 70)
     }
 
     func testChildArgumentsMatchTheShapeAgentdVerifiesAtRuntime() {
@@ -82,5 +166,7 @@ final class CodexDaemonSupervisorTests: XCTestCase {
         XCTAssertFalse(script.contains("\n"))
         XCTAssertTrue(script.hasPrefix("'use strict';"))
         XCTAssertTrue(script.contains("require('node:child_process')"))
+        XCTAssertTrue(script.contains("MIMI_REMOTE_PINNED_CODEX_PATH"))
+        XCTAssertTrue(script.contains("argv0:argv[0]"))
     }
 }

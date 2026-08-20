@@ -22,6 +22,14 @@ func writeTestAppBundle(t *testing.T) (bundle string, mainExecutable string, res
 			t.Fatalf("创建测试 bundle 失败：%v", err)
 		}
 	}
+	infoPlist := filepath.Join(bundle, "Contents", "Info.plist")
+	infoContent := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Mimi Remote Mac</string>
+</dict></plist>`)
+	if err := os.WriteFile(infoPlist, infoContent, 0o644); err != nil {
+		t.Fatalf("写入 Info.plist 失败：%v", err)
+	}
 	mainExecutable = filepath.Join(macOS, "Mimi Remote Mac")
 	if err := os.WriteFile(mainExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("写入主可执行文件失败：%v", err)
@@ -52,8 +60,13 @@ func TestSharedDaemonAppBundleOnlyAcceptsResourcesLayout(t *testing.T) {
 	}
 }
 
-func TestSharedDaemonBundleMainExecutableRefusesAmbiguousLayout(t *testing.T) {
+func TestSharedDaemonBundleMainExecutableUsesInfoPlistWithDebugLibraries(t *testing.T) {
 	bundle, mainExecutable, _ := writeTestAppBundle(t)
+	for _, name := range []string{"Mimi Remote Mac.debug.dylib", "__preview.dylib"} {
+		if err := os.WriteFile(filepath.Join(bundle, "Contents", "MacOS", name), []byte("debug"), 0o755); err != nil {
+			t.Fatalf("写入 Debug dylib 失败：%v", err)
+		}
+	}
 	got, err := sharedDaemonBundleMainExecutable(bundle)
 	if err != nil {
 		t.Fatalf("解析主可执行文件失败：%v", err)
@@ -61,13 +74,19 @@ func TestSharedDaemonBundleMainExecutableRefusesAmbiguousLayout(t *testing.T) {
 	if resolved, resolveErr := filepath.EvalSymlinks(mainExecutable); resolveErr != nil || got != resolved {
 		t.Fatalf("期望 %q，实际 %q（err=%v）", mainExecutable, got, resolveErr)
 	}
-	// 多出第二个可执行文件时宁可退回旧链条，也不猜哪个才是主程序。
-	second := filepath.Join(bundle, "Contents", "MacOS", "Helper")
-	if err := os.WriteFile(second, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("写入第二个可执行文件失败：%v", err)
-	}
-	if _, err := sharedDaemonBundleMainExecutable(bundle); err == nil {
-		t.Fatal("主可执行目录存在多个可执行文件时必须报错")
+}
+
+func TestSharedDaemonBundleMainExecutableRejectsInvalidInfoPlistTarget(t *testing.T) {
+	bundle, _, _ := writeTestAppBundle(t)
+	infoPlist := filepath.Join(bundle, "Contents", "Info.plist")
+	for _, executableName := range []string{"", "../Resources/agentd", "Missing"} {
+		content := []byte("<plist><dict><key>CFBundleExecutable</key><string>" + executableName + "</string></dict></plist>")
+		if err := os.WriteFile(infoPlist, content, 0o644); err != nil {
+			t.Fatalf("改写 Info.plist 失败：%v", err)
+		}
+		if _, err := sharedDaemonBundleMainExecutable(bundle); err == nil {
+			t.Fatalf("CFBundleExecutable=%q 时必须报错", executableName)
+		}
 	}
 }
 

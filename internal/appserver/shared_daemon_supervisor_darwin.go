@@ -32,8 +32,10 @@ const (
 	sharedDaemonNodeSupervisorScript = `'use strict';` +
 		`const{spawn}=require('node:child_process');` +
 		`const argv=process.argv.slice(1);` +
-		`if(argv.length<4)process.exit(64);` +
-		`const child=spawn(argv[0],argv.slice(1),{detached:false,env:process.env,stdio:'inherit'});` +
+		`const staged=process.env.MIMI_REMOTE_PINNED_CODEX_PATH;` +
+		`delete process.env.MIMI_REMOTE_PINNED_CODEX_PATH;` +
+		`if(argv.length<4||!staged)process.exit(64);` +
+		`const child=spawn(staged,argv.slice(1),{argv0:argv[0],detached:false,env:process.env,stdio:'inherit'});` +
 		`for(const signal of['SIGTERM','SIGINT','SIGHUP'])process.on(signal,()=>{` +
 		`if(child.exitCode===null&&child.signalCode===null)child.kill(signal);` +
 		`});` +
@@ -349,7 +351,7 @@ func validateSignedSharedDaemonProcessChain(
 	if listener.ParentPID <= 1 || listener.ParentPID != supervisor.PID {
 		return fmt.Errorf("共享 daemon listener 父进程与 node supervisor 不一致")
 	}
-	if err := validateSharedDaemonListenerProcess(listener, expectedUID, codexPath); err != nil {
+	if err := validateSignedSharedDaemonListenerProcess(listener, expectedUID, codexPath); err != nil {
 		return err
 	}
 	if validateSignature == nil {
@@ -378,9 +380,9 @@ func validateSharedDaemonNodeSupervisorProcess(
 	if process.PID <= 1 || process.UID != os.Getuid() {
 		return fmt.Errorf("共享 daemon supervisor 进程身份无效")
 	}
-	if strings.TrimSpace(process.Executable) == "" || !sameCanonicalPath(process.Executable, nodePath) {
-		return fmt.Errorf("共享 daemon supervisor 不是 Codex Desktop 内置 node")
-	}
+	// Mimi 从已验签的一次性 clone 启动 node，运行态 executable 因此不再等于
+	// Desktop bundle 路径。调用方紧接着按 PID 校验 OpenAI 动态签名；这里固定
+	// 原始 argv，防止同一个签名 node 被借去执行另一份脚本或 child。
 	fields := sharedDaemonCommandFields(process.Command)
 	if len(fields) < 7 || !sameCanonicalPath(fields[0], nodePath) || fields[1] != "-e" ||
 		fields[2] != sharedDaemonNodeSupervisorScript {
@@ -394,6 +396,24 @@ func validateSharedDaemonNodeSupervisorProcess(
 		fields[index+1] != "app-server" || fields[index+2] != "--listen" || fields[index+3] != "unix://" {
 		return fmt.Errorf("共享 daemon supervisor child 参数不符合预期")
 	}
+	return nil
+}
+
+func validateSignedSharedDaemonListenerProcess(
+	process sharedDaemonListenerProcess,
+	expectedUID int,
+	codexPath string,
+) error {
+	if process.PID <= 1 || process.UID != expectedUID {
+		return fmt.Errorf("共享 daemon listener 进程身份无效")
+	}
+	fields := sharedDaemonCommandFields(process.Command)
+	if len(fields) != 4 || !sameCanonicalPath(fields[0], codexPath) ||
+		fields[1] != "app-server" || fields[2] != "--listen" || fields[3] != "unix://" {
+		return fmt.Errorf("共享 daemon listener 命令行不符合预期")
+	}
+	// executable 来自一次性 clone，路径只保留到 node/codex 退出。真正的代码
+	// 身份由调用方对 socket peer PID 执行动态签名校验，不能退回比较 Desktop 路径。
 	return nil
 }
 
