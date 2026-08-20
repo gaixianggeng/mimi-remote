@@ -4,11 +4,11 @@
 
 这里仅保存项目固定 Codex CLI 版本，以及 `ClientRequest`、`ServerRequest`、`ServerNotification` 的方法名列表。完整 JSON Schema 由检查脚本临时生成，不提交到仓库。
 
-当前快照基于 Codex CLI `0.144.2`：
+当前快照基于 Codex CLI `0.147.0`：
 
-- ClientRequest：122 个方法
+- ClientRequest：133 个方法
 - ServerRequest：11 个方法
-- ServerNotification：68 个方法
+- ServerNotification：70 个方法
 
 ## 检查
 
@@ -28,4 +28,4 @@ bash ./scripts/check-codex-protocol.sh --update
 bash ./scripts/check-codex-protocol.sh
 ```
 
-升级到其他版本时，还必须同步修改 `.github/workflows/codex-protocol.yml` 中固定的 npm 版本。不要直接接受 diff；应先确认新增、删除或重命名的方法是否影响 Go Gateway 和移动端。
+工作流会读取 `codex-version.txt` 安装固定版本。不要直接接受 diff；应先确认新增、删除或重命名的方法是否影响 Go Gateway 和移动端。

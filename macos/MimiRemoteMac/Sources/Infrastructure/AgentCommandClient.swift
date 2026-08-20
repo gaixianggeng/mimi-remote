@@ -15,6 +15,9 @@ struct AgentCommandClient: Sendable {
     ) async throws -> CodexSharingConfigurationResult = { enabled in
         CodexSharingConfigurationResult(enabled: enabled)
     }
+    var disableCodexSharingAfterDesktopExit: @Sendable () async throws -> CodexSharingConfigurationResult = {
+        CodexSharingConfigurationResult(enabled: false)
+    }
     var restartCodexSharing: @Sendable () async throws -> Void = {}
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
@@ -142,6 +145,20 @@ extension AgentCommandClient {
                     )
                 )
             },
+            disableCodexSharingAfterDesktopExit: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(
+                    CodexSharingConfigurationResult.self,
+                    from: try await execute(
+                        binary: binary,
+                        arguments: codexSharingDisableAfterDesktopExitArguments(),
+                        // 需要等待 Desktop 退出后的 daemon stop、socket/PID
+                        // 复核和配置提交；不能在事务完成前终止控制进程。
+                        timeout: .seconds(50),
+                        forceKillAfterTimeout: true
+                    )
+                )
+            },
             restartCodexSharing: {
                 let binary = try requireEmbeddedBinary()
                 _ = try await execute(
@@ -232,6 +249,17 @@ extension AgentCommandClient {
             // 该 client 只会在设置页确认后的 HostStore 迁移闭包中调用；后端
             // 拒绝缺少此显式确认的普通 CLI，避免脚本误绕过 Desktop 退出顺序。
             "--codex-sharing-restart-confirmed",
+        ]
+    }
+
+    static func codexSharingDisableAfterDesktopExitArguments() -> [String] {
+        [
+            "runtime",
+            "--codex-sharing=disabled",
+            // 该参数只由设置页确认后的 Desktop 退出回调传入。Go 端仍会
+            // 独立复核进程已退出；这里不是鉴权，也不能绕过安全检查。
+            "--codex-sharing-disable-confirmed",
+            "--json",
         ]
     }
 }

@@ -98,6 +98,8 @@ var sharedDaemonStrippedEnvKeys = []string{
 	LocalDaemonEnvironmentKey,
 	"CODEX_APP_SERVER_WS_URL",
 	"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH",
+	// 只有非 App 分支可以写入已验证的 codex 路径，不能继承同用户 launchd 环境中的值。
+	sharedDaemonPinnedCodexEnvironmentKey,
 	// supervisor 通过 node -e 执行固定内联脚本。继承 NODE_OPTIONS/require
 	// 等控制面会允许用户环境在脚本前加载额外代码，必须以空值覆盖。
 	"NODE_OPTIONS",
@@ -253,9 +255,9 @@ func resolveSharedDaemonCodexBin(configured string) (string, error) {
 	return canonical, nil
 }
 
-// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行 Codex
-// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node 作为持久
-// supervisor 直接拉起 app-server；最终仍需以 socket peer 父链做运行态验收。
+// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 不引入 shell：装在
+// App 内时由 Mimi 主可执行文件充当 TCC 责任进程再拉起签名 node，否则 launchd 直接
+// 执行 node。node 始终是 app-server 的直接父进程，运行态仍以 socket peer 父链验收。
 func renderSharedDaemonLaunchAgent(
 	nodeBin string,
 	codexBin string,
@@ -266,7 +268,11 @@ func renderSharedDaemonLaunchAgent(
 	if strings.TrimSpace(nodeBin) == "" || strings.TrimSpace(codexBin) == "" {
 		return nil, fmt.Errorf("node supervisor 与 codex 路径不能为空")
 	}
-	arguments := sharedDaemonSupervisorProgramArguments(nodeBin, codexBin)
+	responsibleBin, err := sharedDaemonResolveResponsibleSupervisor()
+	if err != nil {
+		return nil, fmt.Errorf("解析共享 daemon 责任进程失败：%w", err)
+	}
+	arguments := sharedDaemonLaunchAgentProgramArguments(responsibleBin, nodeBin, codexBin)
 	runAtLoad := true
 	if len(runAtLoadOption) > 0 {
 		runAtLoad = runAtLoadOption[0]
@@ -292,7 +298,13 @@ func renderSharedDaemonLaunchAgent(
 	fmt.Fprintf(&buf, "\t\t<key>NumberOfFiles</key>\n\t\t<integer>%d</integer>\n", sharedDaemonSoftFileLimit)
 	buf.WriteString("\t</dict>\n")
 
-	if values := sharedDaemonLaunchAgentEnv(env); len(values) > 0 {
+	values := sharedDaemonLaunchAgentEnv(env)
+	if strings.TrimSpace(responsibleBin) == "" {
+		// Homebrew / 开发构建没有 Mimi 责任进程，先清掉用户域同名变量，
+		// 再只把已验证的 codex 路径固定到 node supervisor 环境。
+		values[sharedDaemonPinnedCodexEnvironmentKey] = codexBin
+	}
+	if len(values) > 0 {
 		buf.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
 		keys := make([]string, 0, len(values))
 		for key := range values {
@@ -1196,15 +1208,6 @@ func RemoveSharedDaemonLaunchAgent(ctx context.Context) error {
 	return nil
 }
 
-// RemoveSharedDaemonOwner 只移除 Mimi 安装的未来启动入口和迁移标记，不停止当前
-// daemon；关闭共享时 Desktop 可能仍在完成退出，直接 stop 会破坏原生流程。
-func RemoveSharedDaemonOwner(ctx context.Context) error {
-	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
-		return LocalDaemonStatus{}, removeSharedDaemonOwnerUnlocked(ctx)
-	})
-	return err
-}
-
 func removeSharedDaemonOwnerUnlocked(ctx context.Context) error {
 	_, err := removeSharedDaemonOwnerForTransactionUnlocked(ctx)
 	return err
@@ -1703,6 +1706,15 @@ func stopSharedDaemon(
 	options LocalDaemonOptions,
 	owner SharedDaemonOwnerStatus,
 ) error {
+	return stopSharedDaemonWithExpectedIdentity(ctx, options, owner, nil)
+}
+
+func stopSharedDaemonWithExpectedIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	owner SharedDaemonOwnerStatus,
+	expected *sharedDaemonListenerProcess,
+) error {
 	socketPath, pathErr := LocalDaemonSocketPath(options.Env)
 	if pathErr != nil {
 		return pathErr
@@ -1728,33 +1740,57 @@ func stopSharedDaemon(
 	if backend != "pid" {
 		return fmt.Errorf("Codex app-server 使用未知 lifecycle backend %q，拒绝迁移", *lifecycle.Backend)
 	}
+	if expected != nil {
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("停止官方 Codex daemon 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
+	}
 	if err := requireCodexDesktopStopped(ctx, "停止官方 Codex daemon 前"); err != nil {
 		return err
 	}
+	if expected != nil {
+		// Desktop 探测本身也会产生调度窗口。执行官方 stop 前再绑定一次 PID、
+		// 启动时间和签名父链，避免停止刚替换进来的 listener。
+		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+			return fmt.Errorf("执行官方 stop 前签名父链复核失败：%w", err)
+		}
+		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
+		if inspectErr != nil {
+			return fmt.Errorf("执行官方 stop 前识别 listener 失败：%w", inspectErr)
+		}
+		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
+			return err
+		}
+	}
+	if err := requireCodexDesktopStopped(ctx, "执行官方 stop 前"); err != nil {
+		return err
+	}
 
-	bin := strings.TrimSpace(options.CodexBin)
-	if bin == "" {
-		bin = "codex"
+	return stopManagedSharedDaemonCommand(ctx, options)
+}
+
+func validateManagedSharedDaemonListenerIdentity(
+	lifecycle LocalDaemonLifecycleStatus,
+	expected sharedDaemonListenerProcess,
+	current sharedDaemonListenerProcess,
+) error {
+	if lifecycle.PID == nil {
+		return fmt.Errorf("官方 Codex daemon 未报告 pid backend 身份，拒绝停止")
 	}
-	cmd := exec.CommandContext(ctx, bin, "app-server", "daemon", "stop")
-	configureManagedCommand(cmd)
-	cmd.Env = buildManagedEnv(options.Env)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
+	if int(*lifecycle.PID) != expected.PID {
+		return fmt.Errorf("官方 Codex daemon PID 与已确认 listener 不一致，拒绝停止")
 	}
-	message := sanitizeDiagnostic(string(output))
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "not running") || strings.Contains(lower, "no running") {
-		return nil
+	if current != expected {
+		return fmt.Errorf("共享 daemon listener 在官方 stop 前发生变化，拒绝停止")
 	}
-	if strings.Contains(lower, unmanagedSharedDaemonMessage) {
-		return fmt.Errorf("官方 lifecycle 报告 pid backend，但 stop 拒绝管理该进程，已停止迁移")
-	}
-	if message == "" {
-		return fmt.Errorf("停止旧 Codex local daemon 失败：%w", err)
-	}
-	return fmt.Errorf("停止旧 Codex local daemon 失败：%s", message)
+	return nil
 }
 
 func requireCodexDesktopStopped(ctx context.Context, stage string) error {

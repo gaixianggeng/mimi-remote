@@ -439,6 +439,7 @@ func waitForThreadSearchQueries(
 func makeDirectAppServerConfig(
     project: AgentProject,
     gatewayAvailable: Bool = true,
+    transport: String = "ws",
     allowedMethods: [String]? = nil,
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
@@ -447,7 +448,7 @@ func makeDirectAppServerConfig(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: "ws",
+            transport: transport,
             managed: true,
             gatewayAvailable: gatewayAvailable,
         upstreamConfigured: gatewayAvailable,

@@ -767,7 +767,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(approvalResponse.id, .int(99))
         XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
 
-        transport.enqueue(#"{"id":100,"method":"item/permissions/requestApproval","params":{"threadId":"thr_direct","turnId":"turn_direct_2","itemId":"perm_direct","permissions":{"sandbox":"danger-full-access","networkAccess":true}}}"#)
+        transport.enqueue(#"{"id":100,"method":"item/permissions/requestApproval","params":{"threadId":"thr_direct","turnId":"turn_direct_2","itemId":"perm_direct","permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}}]},"network":{"enabled":true}}}}"#)
         for _ in 0..<200 where !events.contains(where: {
             if case .approvalRequest(let approval, _) = $0 {
                 return approval.id == "perm_direct"
@@ -779,7 +779,13 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(socket.sendApprovalDecision(approvalID: "perm_direct", decision: "accept", message: nil))
         let permissionsResponse = try await waitForFakeAppServerResponse(transport, id: .int(100))
         XCTAssertEqual(permissionsResponse.id, .int(100))
-        XCTAssertEqual(permissionsResponse.result?["permissions"]?.objectValue?.isEmpty, true)
+        let grantedPermissions = try XCTUnwrap(permissionsResponse.result?["permissions"]?.objectValue)
+        XCTAssertEqual(
+            grantedPermissions["fileSystem"]?.objectValue?["entries"]?.arrayValue?.first?
+                .objectValue?["path"]?.objectValue?["path"]?.stringValue,
+            "/tmp/report.txt"
+        )
+        XCTAssertEqual(grantedPermissions["network"]?.objectValue?["enabled"]?.boolValue, true)
         XCTAssertEqual(permissionsResponse.result?["scope"]?.stringValue, "turn")
         XCTAssertEqual(permissionsResponse.result?["strictAutoReview"]?.boolValue, true)
         XCTAssertNil(permissionsResponse.result?["decision"])
@@ -838,7 +844,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -2160,7 +2168,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project, transport: "unix")
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 

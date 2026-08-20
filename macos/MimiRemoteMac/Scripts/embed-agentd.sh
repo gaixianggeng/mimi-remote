@@ -176,9 +176,15 @@ fi
 chmod 0755 "$bridge_output"
 log "Claude bridge 已内嵌：archs=${architectures[*]} profile=${rust_profile}"
 
+entitlements_args=()
+if [[ -n "${CODE_SIGN_ENTITLEMENTS:-}" && -f "$SRCROOT/$CODE_SIGN_ENTITLEMENTS" ]]; then
+  entitlements_args=(--entitlements "$SRCROOT/$CODE_SIGN_ENTITLEMENTS")
+fi
+
 if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
+    "${entitlements_args[@]}" \
     --options runtime --timestamp=none "$agentd_output"
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.claude-bridge \
@@ -195,10 +201,6 @@ log "内嵌二进制 smoke check 通过"
 # untouched it skips signing, and the bundle ships with a stale seal that
 # fails `codesign --verify`. Re-seal here so both paths end up valid.
 if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
-  entitlements_args=()
-  if [[ -n "${CODE_SIGN_ENTITLEMENTS:-}" && -f "$SRCROOT/$CODE_SIGN_ENTITLEMENTS" ]]; then
-    entitlements_args=(--entitlements "$SRCROOT/$CODE_SIGN_ENTITLEMENTS")
-  fi
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     "${entitlements_args[@]}" \
     --options runtime --timestamp=none \

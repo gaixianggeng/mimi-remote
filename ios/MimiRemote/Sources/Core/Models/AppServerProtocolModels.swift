@@ -455,6 +455,15 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "model/list")
     }
 
+    func permissionProfileList(cwd: String, limit: Int? = nil, cursor: String? = nil) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "permissionProfile/list", params: CodexAppServerJSONValue.objectValue([
+            "cwd": .string(path),
+            "limit": limit.map { .int(Int64($0)) },
+            "cursor": cursor.map { .string($0) }
+        ]))
+    }
+
     func skillsList(cwd: String, forceReload: Bool = false) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "skills/list", params: .object([
@@ -796,6 +805,14 @@ struct CodexAppServerRequestBuilder {
             throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.approvalpolicy_never_is_prohibited"))
         }
         try validateNoDangerousConfig(params["config"] ?? nil)
+        if let profileID = params["permissions"]??.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard !profileID.isEmpty, profileID.utf8.count <= 256 else {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_id_is_invalid"))
+            }
+            if (params["sandbox"] ?? nil) != nil || (params["sandboxPolicy"] ?? nil) != nil {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_cannot_be_combined_with_legacy_sandbox"))
+            }
+        }
         guard let sandbox = params["sandboxPolicy"]??.objectValue else {
             return
         }

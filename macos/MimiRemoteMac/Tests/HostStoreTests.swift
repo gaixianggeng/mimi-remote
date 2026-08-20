@@ -532,24 +532,6 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(store.homebrewLoaded)
     }
 
-    func testTakeoverStopsHomebrewThenStartsBundledAgent() async {
-        let events = EventRecorder()
-        let store = makeStore(
-            configExists: true,
-            homebrewLoaded: true,
-            registerAgent: { events.append("register-mac") },
-            homebrewStop: { events.append("stop-homebrew") }
-        )
-        await store.bootstrap()
-
-        await store.takeOverHomebrew()
-
-        XCTAssertEqual(events.values, ["stop-homebrew", "register-mac"])
-        XCTAssertEqual(store.owner, .macApp)
-        XCTAssertEqual(store.lifecycle, .ready)
-        XCTAssertNotNil(store.pairing)
-    }
-
     func testTakeoverRejectsInvalidAppBeforeStoppingHomebrew() async {
         let events = EventRecorder()
         let message = "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。"
@@ -1120,6 +1102,15 @@ final class HostStoreTests: XCTestCase {
                     codexHome: enabled ? "/tmp/codex" : nil
                 )
             },
+            disableCodexSharingAfterDesktopExit: {
+                events.append("backend-disable-confirmed")
+                sharing.set(false)
+                return CodexSharingConfigurationResult(
+                    enabled: false,
+                    changed: true,
+                    transport: "ws"
+                )
+            },
             codexDesktop: desktop
         )
 
@@ -1130,8 +1121,14 @@ final class HostStoreTests: XCTestCase {
         await store.setCodexDesktopEnabled(false)
         XCTAssertEqual(
             events.values,
-            ["backend-true", "desktop-true", "desktop-false", "backend-false"]
+            [
+                "backend-true",
+                "desktop-true",
+                "backend-disable-confirmed",
+                "desktop-false",
+            ]
         )
+        XCTAssertFalse(sharing.value)
     }
 
     func testCommittedRealDesktopWriteDoesNotRollBackBackendOnFinalGetenvFailure() async {
@@ -1711,7 +1708,7 @@ final class HostStoreTests: XCTestCase {
             bootstrap: { running },
             setEnabled: { _, _ in running },
             restartAndApply: { running },
-            restartAndApplyWithPreparation: { preparation in
+            restartAndApplyWithPreparation: { _, _, preparation in
                 // 模拟 live client 已经退出旧 Desktop、提交 daemon 迁移，随后
                 // application.open 仍在等待。迁移前的 status=true 会在此时迟到。
                 try await preparation()
@@ -1911,7 +1908,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertNotNil(store.codexDesktopError)
     }
 
-    func testDisableRunningDesktopKeepsRestartActionAvailable() async {
+    func testDisableRunningDesktopCompletesConfirmedTransition() async {
         let sharing = SharingFlag()
         sharing.set(true)
         var enabled = true
@@ -1970,14 +1967,23 @@ final class HostStoreTests: XCTestCase {
                     codexHome: next ? "/tmp/codex" : nil
                 )
             },
+            disableCodexSharingAfterDesktopExit: {
+                sharing.set(false)
+                return CodexSharingConfigurationResult(
+                    enabled: false,
+                    changed: true,
+                    transport: "ws"
+                )
+            },
             codexDesktop: desktop
         )
 
         await store.bootstrap()
         await store.setCodexDesktopEnabled(false)
 
-        XCTAssertEqual(store.codexDesktopStatusTitle, "需要重启")
-        XCTAssertTrue(store.canRestartCodexDesktop)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "已关闭")
+        XCTAssertFalse(store.canRestartCodexDesktop)
+        XCTAssertFalse(sharing.value)
     }
 
     func testBackendReloadFailureRestoresPreviousConfigurationBeforeDesktopWrite() async {
@@ -2068,7 +2074,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(backendCalls.values.isEmpty)
     }
 
-    private func makeStore(
+    func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
@@ -2099,6 +2105,9 @@ final class HostStoreTests: XCTestCase {
         configureCodexSharing: @escaping @Sendable (Bool) async throws -> CodexSharingConfigurationResult = { enabled in
             CodexSharingConfigurationResult(enabled: enabled)
         },
+        disableCodexSharingAfterDesktopExit: @escaping @Sendable () async throws -> CodexSharingConfigurationResult = {
+            CodexSharingConfigurationResult(enabled: false)
+        },
         restartCodexSharing: @escaping @Sendable () async throws -> Void = {},
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
@@ -2106,6 +2115,7 @@ final class HostStoreTests: XCTestCase {
         pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil,
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
         codexDesktop: CodexDesktopIntegrationClient = .noop,
+        photoLibraryAccess: PhotoLibraryAccessClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
@@ -2117,6 +2127,7 @@ final class HostStoreTests: XCTestCase {
             doctor: doctor,
             configureClaude: configureClaude,
             configureCodexSharing: configureCodexSharing,
+            disableCodexSharingAfterDesktopExit: disableCodexSharingAfterDesktopExit,
             restartCodexSharing: restartCodexSharing,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
@@ -2151,6 +2162,7 @@ final class HostStoreTests: XCTestCase {
                 fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
             ),
             codexDesktop: codexDesktop,
+            photoLibraryAccess: photoLibraryAccess,
             terminateApplication: terminateApplication
         )
     }
@@ -2232,7 +2244,7 @@ final class HostStoreTests: XCTestCase {
         )
     }
 
-    private nonisolated static func statusWithCodex(
+    nonisolated static func statusWithCodex(
         shared: Bool,
         daemonRestartRequired: Bool = false
     ) -> AgentStatus {
@@ -2321,13 +2333,13 @@ private final class LaggingAgentRegistration {
     }
 }
 
-private enum TestError: LocalizedError {
+enum TestError: LocalizedError {
     case expected
 
     var errorDescription: String? { "预期的测试错误" }
 }
 
-private final class EventRecorder: @unchecked Sendable {
+final class EventRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String] = []
 
@@ -2344,7 +2356,7 @@ private final class EventRecorder: @unchecked Sendable {
     }
 }
 
-private final class SharingFlag: @unchecked Sendable {
+final class SharingFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var stored = false
 

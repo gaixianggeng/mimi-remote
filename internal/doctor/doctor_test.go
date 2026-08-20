@@ -299,6 +299,38 @@ func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	}
 }
 
+func TestCheckerRunReadinessIncludesSharedDaemonReconcileWarning(t *testing.T) {
+	checker := newTestChecker(t, config.Config{
+		Listen:      "127.0.0.1:8787",
+		DevInsecure: true,
+		Runtime:     config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{
+			Transport: "ws",
+			Managed:   false,
+			Listen:    "ws://127.0.0.1:4222",
+		},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+	checker.SetSharedDaemonReconcile("共享 daemon 尚未清理", "退出 Desktop 后重试")
+
+	results := checker.RunReadiness(context.Background())
+	found := false
+	for _, check := range results.Checks {
+		if check.Name != sharedDaemonReconcileName {
+			continue
+		}
+		found = true
+		if check.Level != "warning" || check.OK {
+			t.Fatalf("readyz 中的 reconcile 状态必须是 warning：%+v", check)
+		}
+	}
+	if !found {
+		t.Fatal("readyz 必须包含共享 daemon reconcile 告警")
+	}
+}
+
 func TestDesignatedRequirementRejectsPerBuildCDHash(t *testing.T) {
 	tests := []struct {
 		name   string

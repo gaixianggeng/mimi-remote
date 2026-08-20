@@ -91,7 +91,7 @@ struct ComposerView: View {
 
         // 外层保持透明，由底部输入面板承担唯一主表面；面板内部依靠实色和间距分组，
         // 不再叠加玻璃材质、键帽高光或投影。
-        VStack(alignment: .leading, spacing: 10) {
+        let presentedContent = VStack(alignment: .leading, spacing: 10) {
             queuedTurnTray
             // iPhone 把会话状态并入唯一 Composer 外壳；iPad 继续使用独立托盘，
             // 保留宽屏上的信息密度与既有收起布局。
@@ -226,6 +226,8 @@ struct ComposerView: View {
         } message: { issue in
             Text(issue.message)
         }
+
+        let observedContent = presentedContent
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -245,6 +247,9 @@ struct ComposerView: View {
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
+            Task { @MainActor in
+                await refreshPermissionProfilesForCurrentCWD()
+            }
         }
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
@@ -284,6 +289,8 @@ struct ComposerView: View {
             }
             clampModelSelectionToSelectedSessionRuntime()
         }
+
+        return observedContent
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
             if !canGuide {
                 guidedFollowUpEnabled = false
@@ -308,12 +315,7 @@ struct ComposerView: View {
             clampPermissionSelectionToSelectedSessionRuntime()
         }
         .task {
-            switchComposerDraftScope(to: currentComposerDraftScope)
-            clampModelSelectionToSelectedSessionRuntime()
-            applyDefaultPermissionMode()
-            voiceInput.prewarm()
-            await sessionStore.refreshAppServerModelOptions()
-            await sessionStore.refreshCapabilities()
+            await prepareComposer()
         }
         .onDisappear {
             synchronizeComposerTextBeforeDraftScopeChange()
@@ -325,6 +327,28 @@ struct ComposerView: View {
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
+    }
+
+    @MainActor
+    private func prepareComposer() async {
+        switchComposerDraftScope(to: currentComposerDraftScope)
+        clampModelSelectionToSelectedSessionRuntime()
+        applyDefaultPermissionMode()
+        voiceInput.prewarm()
+        await sessionStore.refreshAppServerModelOptions()
+        await sessionStore.refreshCapabilities()
+        await refreshPermissionProfilesForCurrentCWD()
+    }
+
+    @MainActor
+    private func refreshPermissionProfilesForCurrentCWD() async {
+        let requestedCWD = permissionProfileCWD
+        await sessionStore.refreshPermissionProfiles(cwd: requestedCWD)
+        guard !Task.isCancelled,
+              requestedCWD == permissionProfileCWD,
+              sessionStore.permissionProfilesCWD == requestedCWD
+        else { return }
+        clampPermissionProfileToAvailableOptions()
     }
 
     @discardableResult
@@ -1722,35 +1746,20 @@ struct ComposerView: View {
     }
 
     var permissionMenu: some View {
-        Menu {
-            Section(L10n.text("ui.permission_mode")) {
-                ForEach(availablePermissionModes) { mode in
-                    Button {
-                        setPermissionMode(mode)
-                    } label: {
-                        Label(
-                            mode.title,
-                            systemImage: composerState.permissionMode == mode ? "checkmark" : mode.systemImage
-                        )
-                    }
-                    .accessibilityHint(mode.detail)
-                }
-            }
-            Section(L10n.text("ui.current_effect")) {
-                Text(composerState.permissionMode.detail)
-                Text(permissionWireSummary)
-            }
-        } label: {
-            composerToolbarControlLabel(
-                title: composerState.permissionMode.title,
-                systemImage: composerState.permissionMode.systemImage,
-                tint: permissionTint,
-                accessibilityLabel: L10n.text("ui.permission_mode")
-            )
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.permission_mode"))
-        .accessibilityValue(permissionTitle)
+        ComposerPermissionMenu(
+            permissionModes: availablePermissionModes,
+            permissionProfiles: availablePermissionProfiles,
+            selectedMode: composerState.permissionMode,
+            selectedProfileID: selectedPermissionProfileID,
+            activeProfileID: activePermissionProfile?.id,
+            permissionWireSummary: permissionWireSummary,
+            permissionAccessibilityValue: permissionTitle,
+            tint: permissionTint,
+            reduceMotion: reduceMotion,
+            usesPhoneStyle: isPhoneComposer,
+            onSelectMode: { setPermissionMode($0) },
+            onSelectProfile: { setPermissionProfile($0) }
+        )
     }
 
     // 录音/准备/转写的实时状态，作为状态行中段的胶囊。波形单独订阅 levelMeter，
@@ -1832,6 +1841,51 @@ struct ComposerView: View {
             defaultPermissionModeID = safeMode.rawValue
         }
         composerState.applyPermissionMode(safeMode)
+    }
+
+    func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
+        composerState.updateTurnOptions { options in
+            options.permissionProfileID = profile.id
+            options.approvalPolicy = .onRequest
+            options.approvalsReviewer = "user"
+            options.networkAccess = false
+        }
+    }
+
+    var permissionProfileCWD: String? {
+        let path = sessionStore.selectedSession?.dir ?? sessionStore.selectedProject?.path
+        return path?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+    }
+
+    var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
+        guard selectedSessionRuntimeProviderForModelMenu != "claude",
+              sessionStore.permissionProfilesCWD == permissionProfileCWD
+        else {
+            return []
+        }
+        return sessionStore.appServerPermissionProfiles
+    }
+
+    var selectedPermissionProfileID: String? {
+        composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+    }
+
+    var activePermissionProfile: CodexAppServerActivePermissionProfile? {
+        guard let sessionID = sessionStore.selectedSessionID else {
+            return nil
+        }
+        return sessionStore.activePermissionProfileBySessionID[sessionID]
+    }
+
+    func clampPermissionProfileToAvailableOptions() {
+        guard let selectedPermissionProfileID else { return }
+        guard availablePermissionProfiles.contains(where: { $0.id == selectedPermissionProfileID }) else {
+            composerState.updateTurnOptions { options in
+                options.permissionProfileID = nil
+            }
+            return
+        }
     }
 
     var availablePermissionModes: [ComposerPermissionMode] {

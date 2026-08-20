@@ -24,6 +24,7 @@ final class HostStore {
     private(set) var codexDesktopStatus = CodexDesktopStatus()
     private(set) var isUpdatingCodexDesktop = false
     private(set) var codexDesktopError: String?
+    private(set) var photoLibraryAuthorization: PhotoLibraryAuthorization
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
@@ -56,7 +57,10 @@ final class HostStore {
 
     var canRestartCodexDesktop: Bool {
         codexDesktopStatus.appInstalled
-            && (codexDesktopStatus.appRunning || codexDaemonMigrationRequired)
+            && (codexDesktopStatus.appRunning
+                || codexDaemonMigrationRequired
+                || codexDisableNeedsFinalization
+                || codexDesktopStatus.environment.pendingEnabled != nil)
             && owner == .macApp
             && !isBusy
             && !isUpdatingCodexDesktop
@@ -139,14 +143,24 @@ final class HostStore {
         codexRuntime?.daemonRestartRequired == true && !codexDaemonMigrationCommittedLocally
     }
 
+    /// 旧版半回滚或本次关闭事务中断时，只要目标仍是 disabled、后端仍共享，
+    /// 或 launchd 里仍有 Mimi 专属 marker，就必须保留显式恢复入口。
+    private var codexDisableNeedsFinalization: Bool {
+        codexDesktopStatus.environment.pendingEnabled == false
+            || (!codexDesktopEnabled
+                && (codexBackendIsShared || codexDesktopStatus.environment.sessionEpoch != nil))
+    }
+
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
     private let codexDesktop: CodexDesktopIntegrationClient
+    private let photoLibraryAccess: PhotoLibraryAccessClient
     private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
+    private var didPreparePhotoLibraryAccess = false
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
@@ -165,6 +179,7 @@ final class HostStore {
         health: HealthClient,
         logs: AgentLogClient,
         codexDesktop: CodexDesktopIntegrationClient = .noop,
+        photoLibraryAccess: PhotoLibraryAccessClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {
             NSApplication.shared.terminate(nil)
         }
@@ -175,6 +190,8 @@ final class HostStore {
         self.health = health
         self.logs = logs
         self.codexDesktop = codexDesktop
+        self.photoLibraryAccess = photoLibraryAccess
+        photoLibraryAuthorization = photoLibraryAccess.authorizationStatus()
         self.terminateApplication = terminateApplication
     }
 
@@ -185,7 +202,8 @@ final class HostStore {
             homebrew: .live(),
             health: .live,
             logs: .live,
-            codexDesktop: .live()
+            codexDesktop: .live(),
+            photoLibraryAccess: .live
         )
     }
 
@@ -524,6 +542,14 @@ final class HostStore {
         services.openLoginItemsSettings()
     }
 
+    func openPhotosPrivacySettings() {
+        photoLibraryAccess.openPhotosPrivacySettings()
+    }
+
+    func openFullDiskAccessSettings() {
+        photoLibraryAccess.openFullDiskAccessSettings()
+    }
+
     func setCodexDesktopEnabled(_ enabled: Bool) async {
         guard !isUpdatingCodexDesktop else { return }
         guard owner == .macApp, !isBusy else {
@@ -540,6 +566,7 @@ final class HostStore {
 
         do {
             if enabled {
+                await preparePhotoLibraryAccessForCodexDesktopSharing()
                 // 先让 agentd 确保官方 app-server/local daemon 已就绪，再写入
                 // Desktop 的 launchd 环境；backend 失败时绝不能留下无效 env。
                 let sharing = try await configureCodexSharingAndReloadIfNeeded(true)
@@ -571,35 +598,26 @@ final class HostStore {
                 applyCodexDesktopSnapshot(snapshot)
                 return
             }
-            // 禁用时先按 ownership 恢复 launchd 原值，再关闭 backend；这样即使
-            // 后续 agentd 重载失败，也不会把 Mimi 写入的环境变量留在系统中。
-            let previousCodexHome = codexDesktopStatus.environment.codexHome
-                ?? codexRuntime?.codexHome
-            let snapshot = try await codexDesktop.setEnabled(enabled, nil)
-            do {
-                let backend = try await configureCodexSharingAndReloadIfNeeded(false)
-                // 外部管理的 Unix backend 没有 Mimi 所有的 fallback，禁用只恢复
-                // Desktop 环境，绝不能等待或强迫 backend 变成 WS。
-                if backend.transport?.caseInsensitiveCompare("unix") != .orderedSame {
-                    _ = try await waitForCodexRuntimeShared(false)
-                }
-            } catch {
-                let originalError = error
-                do {
-                    _ = try await configureCodexSharingAndReloadIfNeeded(true)
-                    let restoredHome = try await waitForCodexRuntimeShared(true)
-                    _ = try await codexDesktop.setEnabled(
-                        true,
-                        restoredHome ?? previousCodexHome
+            // 设置页已经取得用户确认。禁用事务严格执行“退出旧 Desktop → 停止并
+            // 验证共享 daemon → 提交 WS → 恢复 launchd 环境 → 按原状态重开”。
+            // 任一步失败都不会在旧 Desktop 存活时提交独立 backend。
+            let hadPendingDisable = codexDesktopStatus.environment.pendingEnabled == false
+            var didCommitDisable = false
+            let snapshot = try await codexDesktop.restartAndSetEnabled(
+                false,
+                codexHome: nil,
+                afterTermination: {
+                    _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
+                        forceReload: hadPendingDisable
                     )
-                } catch let rollbackError {
-                    throw AgentClientError.commandFailed(
-                        "关闭共享失败：\(originalError.localizedDescription)；自动恢复也失败：\(rollbackError.localizedDescription)"
-                    )
+                    didCommitDisable = true
+                    self.recordCommittedCodexMigration()
                 }
-                throw originalError
-            }
+            )
             applyCodexDesktopSnapshot(snapshot)
+            if didCommitDisable {
+                await refreshAfterCommittedCodexMigration()
+            }
         } catch {
             codexDesktopError = error.localizedDescription
             await preserveCodexDesktopErrorState()
@@ -618,7 +636,11 @@ final class HostStore {
             codexDesktopError = "未检测到 Codex Desktop。"
             return
         }
-        guard codexDesktopStatus.appRunning || codexDaemonMigrationRequired else {
+        guard codexDesktopStatus.appRunning
+            || codexDaemonMigrationRequired
+            || codexDisableNeedsFinalization
+            || codexDesktopStatus.environment.pendingEnabled != nil
+        else {
             codexDesktopError = "Codex Desktop 当前未运行，也没有待迁移的共享 daemon。"
             return
         }
@@ -631,25 +653,50 @@ final class HostStore {
             isBusy = false
         }
         var didCommitDaemonMigration = false
+        let hadPendingDisable = codexDesktopStatus.environment.pendingEnabled == false
         do {
             // 先读取一次真实状态，避免只凭设置页缓存决定是否需要 terminate。
             // 即便这里看到 running，live runtime 仍会在实际执行时再取快照，
             // 覆盖用户在两次读取之间自行退出 Desktop 的竞态。
             let currentDesktop = try await codexDesktop.inspect()
-            if !currentDesktop.appRunning, codexDaemonMigrationRequired {
-                // Desktop 本来已退出时只迁移 daemon，不擅自打开 App；命令成功
-                // 就已提交，后续状态刷新失败也不能把它重新解释为迁移失败。
-                try await agent.restartCodexSharing()
+            if !currentDesktop.appRunning,
+               currentDesktop.pendingEnabled == nil,
+               codexDaemonMigrationRequired || codexDisableNeedsFinalization
+            {
+                // Desktop 本来已退出时只提交待处理的 backend 切换，不擅自打开
+                // App。禁用路径会在提交 WS 前确认旧 listener 与 loaded job 消失。
+                if codexDesktopEnabled {
+                    try await agent.restartCodexSharing()
+                } else {
+                    // 旧版半回滚可能只留下 launchd 环境而 Desktop 已经退出。
+                    // 先清理旧 daemon 并提交 WS，再恢复环境；中途失败时 Desktop
+                    // 保持关闭，不能让它按独立环境重新连到仍共享的 backend。
+                    _ = try await disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
+                        forceReload: hadPendingDisable
+                    )
+                    let disabledEnvironment = try await codexDesktop.setEnabled(false, nil)
+                    applyCodexDesktopSnapshot(disabledEnvironment)
+                }
                 didCommitDaemonMigration = true
                 recordCommittedCodexMigration()
                 await refreshAfterCommittedCodexMigration()
                 return
             }
             let snapshot = try await codexDesktop.restartAndApply(afterTermination: {
-                // 开启共享时，用户的确认同时授权迁移共享 daemon。Desktop 已经
-                // 正常退出后才 stop 旧 daemon，再由 launchd 拉起；失败时不重新打开。
-                if self.codexDesktopEnabled, self.codexDaemonMigrationRequired {
-                    try await self.agent.restartCodexSharing()
+                // 用户确认后，backend 迁移严格位于旧 Desktop 退出与新实例打开
+                // 之间。禁用只有在旧 Unix listener 和 loaded job 均消失后才提交 WS。
+                let targetEnabled = self.codexDesktopStatus.environment.pendingEnabled
+                    ?? self.codexDesktopEnabled
+                if targetEnabled {
+                    if self.codexDaemonMigrationRequired {
+                        try await self.agent.restartCodexSharing()
+                        didCommitDaemonMigration = true
+                        self.recordCommittedCodexMigration()
+                    }
+                } else {
+                    _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
+                        forceReload: hadPendingDisable
+                    )
                     didCommitDaemonMigration = true
                     self.recordCommittedCodexMigration()
                 }
@@ -1044,6 +1091,33 @@ final class HostStore {
         return result
     }
 
+    /// 只在 Codex Desktop 已由受控流程正常退出后调用。Go 端会再次检查 Desktop
+    /// 状态，并在提交 WS 配置前验证旧 Unix listener、PID 与 loaded job 均已消失。
+    /// 配置一旦安全提交，服务重载失败也不反向启动共享 daemon，避免重新制造双后端。
+    private func disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
+        forceReload: Bool = false
+    ) async throws
+        -> CodexSharingConfigurationResult
+    {
+        let result = try await agent.disableCodexSharingAfterDesktopExit()
+        guard !result.enabled else {
+            throw AgentClientError.commandFailed(
+                result.message.isEmpty
+                    ? "agentd 未能关闭 Codex Desktop 共享。"
+                    : result.message
+            )
+        }
+        if result.restartRequired || forceReload {
+            try await reloadMacAgentForConfigurationChange()
+        }
+        // 外部管理的 Unix backend 不属于 Mimi，显式关闭只恢复 Desktop 环境，
+        // 不等待它变成 WS，也不停止外部进程。
+        if result.transport?.caseInsensitiveCompare("unix") != .orderedSame {
+            _ = try await waitForCodexRuntimeShared(false)
+        }
+        return result
+    }
+
     private func waitForCodexRuntimeShared(_ expected: Bool) async throws -> String? {
         var lastRuntime: AgentRuntimeStatus?
         for attempt in 0..<12 {
@@ -1166,6 +1240,11 @@ final class HostStore {
         allowAutomaticRepair: Bool = true
     ) async throws {
         try validateMacAgentConfiguration()
+        if codexDesktopStatus.environment.hasLocalPreference,
+           codexDesktopStatus.environment.enabled
+        {
+            await preparePhotoLibraryAccessForCodexDesktopSharing()
+        }
         do {
             try services.registerAgent()
             try await waitForMacAgentReady()
@@ -1189,6 +1268,18 @@ final class HostStore {
                 )
             }
         }
+    }
+
+    /// 照片授权由可见 App 请求，避免后台 agentd 启动时静默触发 TCC 弹窗。
+    /// 用户拒绝时仍允许 Codex Desktop 共享继续启用，并保留设置页的手动修复入口。
+    private func preparePhotoLibraryAccessForCodexDesktopSharing() async {
+        guard !didPreparePhotoLibraryAccess else { return }
+        didPreparePhotoLibraryAccess = true
+
+        let current = photoLibraryAccess.authorizationStatus()
+        photoLibraryAuthorization = current
+        guard current == .notDetermined else { return }
+        photoLibraryAuthorization = await photoLibraryAccess.requestAuthorization()
     }
 
     private func waitForMacAgentUnregistered() async throws {
@@ -1448,13 +1539,21 @@ final class HostStore {
             if codexDesktopError.contains("外部") || codexDesktopError.contains("已被其他程序") {
                 return .externalConflict
             }
-            if forcePending, snapshot.appRunning || codexDaemonMigrationRequired {
+            if (forcePending || snapshot.pendingEnabled != nil),
+               snapshot.appRunning
+                   || codexDaemonMigrationRequired
+                   || codexDisableNeedsFinalization
+                   || snapshot.pendingEnabled != nil
+            {
                 return .pendingRestart
             }
             return .failed
         }
         if snapshot.appInstalled == false {
             return .notInstalled
+        }
+        if snapshot.pendingEnabled != nil {
+            return .pendingRestart
         }
         if snapshot.enabled, codexDaemonMigrationRequired {
             return .pendingRestart
@@ -1463,6 +1562,11 @@ final class HostStore {
             return .pendingRestart
         }
         if !snapshot.enabled {
+            // 共享 backend 尚未完成关闭，或旧版半回滚留下 Mimi 专属 marker 时，
+            // 必须继续提供“应用设置”入口。只有确认流程完成后才能显示已关闭。
+            if codexBackendIsShared || snapshot.sessionEpoch != nil {
+                return .pendingRestart
+            }
             if snapshot.environmentValue == "1" {
                 return .externalConflict
             }
@@ -1512,7 +1616,13 @@ final class HostStore {
             applyCodexDesktopSnapshot(snapshot, forcePending: forcePending)
         } else {
             let current = codexDesktopStatus
-            let state: CodexDesktopStatusState = forcePending && (current.appRunning || codexDaemonMigrationRequired)
+            let shouldKeepPending = forcePending
+                || current.environment.pendingEnabled != nil
+            let state: CodexDesktopStatusState = shouldKeepPending
+                && (current.appRunning
+                    || codexDaemonMigrationRequired
+                    || codexDisableNeedsFinalization
+                    || current.environment.pendingEnabled != nil)
                 ? .pendingRestart
                 : .failed
             codexDesktopStatus = CodexDesktopStatus(

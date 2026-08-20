@@ -377,6 +377,9 @@ struct CodexDesktopEnvironmentSnapshot: Equatable, Sendable {
     let appInstalled: Bool
     let appRunning: Bool
     let restartRequired: Bool
+    /// 已取得用户确认、但 Desktop 环境或重开尚未全部完成的目标状态。
+    /// nil 表示没有待恢复事务；该值由 Mac App 持久化，不能从当前环境猜测。
+    let pendingEnabled: Bool?
     let bundleURL: URL?
 
     init(
@@ -396,6 +399,7 @@ struct CodexDesktopEnvironmentSnapshot: Equatable, Sendable {
         appInstalled: Bool = false,
         appRunning: Bool = false,
         restartRequired: Bool = false,
+        pendingEnabled: Bool? = nil,
         bundleURL: URL? = nil
     ) {
         self.hasLocalPreference = hasLocalPreference
@@ -414,6 +418,7 @@ struct CodexDesktopEnvironmentSnapshot: Equatable, Sendable {
         self.appInstalled = appInstalled
         self.appRunning = appRunning
         self.restartRequired = restartRequired
+        self.pendingEnabled = pendingEnabled
         self.bundleURL = bundleURL
     }
 }
@@ -443,7 +448,7 @@ struct CodexDesktopStatus: Equatable, Sendable {
         self.error = error
     }
 
-    var enabled: Bool { environment.enabled }
+    var enabled: Bool { environment.pendingEnabled ?? environment.enabled }
     var appInstalled: Bool { environment.appInstalled }
     var appRunning: Bool { environment.appRunning }
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,14 +128,14 @@ func TestValidateSignedSharedDaemonProcessChainRequiresExactSignedParent(t *test
 		PID:        4242,
 		ParentPID:  4343,
 		UID:        os.Getuid(),
-		Executable: codexPath,
+		Executable: "/private/tmp/staged/codex",
 		Command:    strings.Join([]string{codexPath, "app-server", "--listen", "unix://"}, "\x00"),
 	}
 	supervisor := sharedDaemonListenerProcess{
 		PID:        4343,
 		ParentPID:  1,
 		UID:        os.Getuid(),
-		Executable: nodePath,
+		Executable: "/private/tmp/staged/node",
 		Command: strings.Join([]string{
 			nodePath, "-e", sharedDaemonNodeSupervisorScript, "--",
 			codexPath, "app-server", "--listen", "unix://",
@@ -274,10 +275,6 @@ func TestValidateSharedDaemonNodeSupervisorProcessRejectsUnsafeArgv(t *testing.T
 			process.UID++
 			return process
 		},
-		"foreign executable": func(process sharedDaemonListenerProcess) sharedDaemonListenerProcess {
-			process.Executable = "/tmp/node"
-			return process
-		},
 		"wrong node script": func(process sharedDaemonListenerProcess) sharedDaemonListenerProcess {
 			argv := strings.Split(process.Command, "\x00")
 			argv[2] = "console.log('unexpected')"
@@ -305,6 +302,23 @@ func TestValidateSharedDaemonNodeSupervisorProcessRejectsUnsafeArgv(t *testing.T
 	}
 }
 
+func TestValidateSignedSharedDaemonListenerProcessAcceptsStagedExecutable(t *testing.T) {
+	codexPath := "/Applications/ChatGPT.app/Contents/Resources/codex"
+	process := sharedDaemonListenerProcess{
+		PID:        4242,
+		UID:        os.Getuid(),
+		Executable: "/private/tmp/random/codex",
+		Command:    strings.Join([]string{codexPath, "app-server", "--listen", "unix://"}, "\x00"),
+	}
+	if err := validateSignedSharedDaemonListenerProcess(process, os.Getuid(), codexPath); err != nil {
+		t.Fatalf("已由调用方动态验签的一次性 codex 应按原始 argv 通过：%v", err)
+	}
+	process.Command = strings.Join([]string{process.Executable, "app-server", "--listen", "unix://"}, "\x00")
+	if err := validateSignedSharedDaemonListenerProcess(process, os.Getuid(), codexPath); err == nil {
+		t.Fatal("一次性 executable 路径不得冒充原始 Codex argv")
+	}
+}
+
 func TestSharedDaemonNodeSupervisorForwardsSignalsWithoutChildKilledState(t *testing.T) {
 	// Node 的 child.killed 只表示最近一次 kill 调用，不表示子进程仍然存活；
 	// supervisor 必须依据可观测退出状态决定是否转发信号，避免漏发终止信号。
@@ -313,6 +327,43 @@ func TestSharedDaemonNodeSupervisorForwardsSignalsWithoutChildKilledState(t *tes
 	}
 	if !strings.Contains(sharedDaemonNodeSupervisorScript, "child.kill(signal)") {
 		t.Fatal("supervisor 必须把 SIGTERM/SIGINT/SIGHUP 转发给 app-server child")
+	}
+}
+
+func TestSharedDaemonNodeSupervisorUsesStagedCodexWithoutLeakingItToChild(t *testing.T) {
+	if !strings.Contains(sharedDaemonNodeSupervisorScript, "process.env.MIMI_REMOTE_PINNED_CODEX_PATH") ||
+		!strings.Contains(sharedDaemonNodeSupervisorScript, "delete process.env.MIMI_REMOTE_PINNED_CODEX_PATH") {
+		t.Fatal("supervisor 必须只从内部环境读取一次性 codex，并在 spawn 前从 child 环境删除")
+	}
+	if !strings.Contains(sharedDaemonNodeSupervisorScript, "argv0:argv[0]") {
+		t.Fatal("一次性 codex 必须保留原始 Codex argv0，供运行态父链验收")
+	}
+}
+
+func TestSharedDaemonNodeSupervisorLaunchesPinnedCodex(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("当前环境没有 node：%v", err)
+	}
+	cmd := exec.Command(
+		node,
+		"-e",
+		sharedDaemonNodeSupervisorScript,
+		"--",
+		"/usr/bin/true",
+		"app-server",
+		"--listen",
+		"unix://",
+	)
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		if !strings.HasPrefix(item, sharedDaemonPinnedCodexEnvironmentKey+"=") {
+			env = append(env, item)
+		}
+	}
+	cmd.Env = append(env, sharedDaemonPinnedCodexEnvironmentKey+"=/usr/bin/true")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node supervisor 必须拉起 pinned codex：%v output=%s", err, output)
 	}
 }
 

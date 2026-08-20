@@ -117,6 +117,87 @@ struct ComposerToolbarControlLabel: View {
     }
 }
 
+/// 权限配置菜单单独形成泛型边界，避免继续放大 ComposerView 已经很长的视图类型。
+struct ComposerPermissionMenu: View {
+    let permissionModes: [ComposerPermissionMode]
+    let permissionProfiles: [CodexAppServerPermissionProfileSummary]
+    let selectedMode: ComposerPermissionMode
+    let selectedProfileID: String?
+    let activeProfileID: String?
+    let permissionWireSummary: String
+    let permissionAccessibilityValue: String
+    let tint: Color
+    let reduceMotion: Bool
+    let usesPhoneStyle: Bool
+    let onSelectMode: (ComposerPermissionMode) -> Void
+    let onSelectProfile: (CodexAppServerPermissionProfileSummary) -> Void
+
+    var body: some View {
+        Menu {
+            Section(L10n.text("ui.permission_mode")) {
+                ForEach(permissionModes) { mode in
+                    Button {
+                        onSelectMode(mode)
+                    } label: {
+                        Label(mode.title, systemImage: modeIcon(mode))
+                    }
+                    .accessibilityHint(mode.detail)
+                }
+            }
+            if !permissionProfiles.isEmpty {
+                Section(L10n.text("ui.permission_profiles")) {
+                    ForEach(permissionProfiles) { profile in
+                        Button {
+                            onSelectProfile(profile)
+                        } label: {
+                            Label(profile.id, systemImage: profileIcon(profile))
+                        }
+                        .accessibilityHint(profile.description ?? L10n.text("ui.use_named_permission_profile"))
+                    }
+                }
+            }
+            Section(L10n.text("ui.current_effect")) {
+                Text(currentEffectSummary)
+                Text(permissionWireSummary)
+            }
+        } label: {
+            ComposerToolbarControlLabel(
+                title: selectedProfileID ?? selectedMode.title,
+                systemImage: selectedProfileID == nil ? selectedMode.systemImage : "shield.lefthalf.filled",
+                trailingSystemImage: nil,
+                isSelected: false,
+                tint: tint,
+                titleMaxWidth: nil,
+                accessibilityLabel: L10n.text("ui.permission_mode"),
+                showsRestingSurface: true,
+                usesPhoneStyle: usesPhoneStyle,
+                usesCondensedTitle: false
+            )
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.permission_mode"))
+        .accessibilityValue(permissionAccessibilityValue)
+    }
+
+    private func modeIcon(_ mode: ComposerPermissionMode) -> String {
+        selectedProfileID == nil && selectedMode == mode ? "checkmark" : mode.systemImage
+    }
+
+    private func profileIcon(_ profile: CodexAppServerPermissionProfileSummary) -> String {
+        selectedProfileID == profile.id ? "checkmark" : "shield.lefthalf.filled"
+    }
+
+    private var currentEffectSummary: String {
+        if let activeProfileID {
+            return L10n.format("ui.active_permission_profile_value", activeProfileID)
+        }
+        if let selectedProfileID {
+            return L10n.format("ui.selected_permission_profile_value", selectedProfileID)
+        }
+        return selectedMode.detail
+    }
+}
+
 /// 紧凑工具栏只持有已经擦除的子控件，避免父 View 的泛型类型继续聚合多个
 /// Menu/Popover。真正的复杂子树由 ComposerView 的独立非内联方法逐个构建。
 struct CompactComposerToolbarShell: View {
@@ -793,14 +874,25 @@ extension ComposerView {
     }
 
     var permissionTitle: String {
-        "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
+        if let profileID = selectedPermissionProfileID {
+            return activePermissionProfile.map {
+                L10n.format("ui.active_permission_profile_value", $0.id)
+            } ?? L10n.format("ui.selected_permission_profile_value", profileID)
+        }
+        return "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
     }
 
     var permissionWireSummary: String {
-        "\(composerState.turnOptions.approvalPolicy.rawValue) · \(composerState.turnOptions.approvalsReviewer)"
+        if let profileID = selectedPermissionProfileID {
+            return L10n.format("ui.permission_profile_wire_value", profileID)
+        }
+        return "\(composerState.turnOptions.approvalPolicy.rawValue) · \(composerState.turnOptions.approvalsReviewer)"
     }
 
     var permissionTint: Color {
+        if selectedPermissionProfileID != nil {
+            return themeStore.tokens(for: colorScheme).accent
+        }
         switch composerState.permissionMode {
         case .requestApproval:
             return themeStore.tokens(for: colorScheme).accent
