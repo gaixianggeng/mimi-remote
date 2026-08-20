@@ -351,6 +351,31 @@ func (b *codexGatewayBroker) detach(sink *codexGatewaySink) {
 		return
 	}
 	log.Printf("codex gateway broker detached session=%s pending=%d", sanitizeGatewayDiagnostic(b.key), b.pendingCount())
+	// 审批「到达时用户在看」不等于「用户一直会看」。带着未应答的审批走开是这个
+	// 需求要解决的核心场景，所以客户端离开时必须为仍然挂着的审批补一条提醒。
+	// NotifyPending 按请求去重，已经提醒过的不会重复打扰。
+	b.notifyPendingApprovalsAfterDetach()
+}
+
+// notifyPendingApprovalsAfterDetach 为客户端离开时仍未应答的审批补发提醒。
+func (b *codexGatewayBroker) notifyPendingApprovalsAfterDetach() {
+	b.mu.Lock()
+	frames := make([][]byte, 0, len(b.pendingOrder))
+	for _, key := range b.pendingOrder {
+		if frame, ok := b.pending[key]; ok {
+			frames = append(frames, frame)
+		}
+	}
+	b.mu.Unlock()
+	for _, payload := range frames {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
+			continue
+		}
+		threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+		b.router.notifyPendingApproval("codex", b.key, threadID,
+			gatewayRequestIDKey(frame.ID), strings.TrimSpace(frame.Method))
+	}
 }
 
 func (b *codexGatewayBroker) pendingCount() int {

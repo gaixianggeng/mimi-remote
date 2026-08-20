@@ -364,3 +364,74 @@ func TestPushDeviceStorePathFollowsConfigDirectory(t *testing.T) {
 		t.Fatalf("没有配置路径时应返回空，got=%q", got)
 	}
 }
+
+// 真机验证暴露的设计缺口：审批「到达时用户在看」不等于「用户会一直在看」。
+// 带着一条未应答的审批锁屏走开，正是这个需求要解决的核心场景——而原实现只在
+// 审批到达那一刻判断是否离线，于是这种情况下用户再也收不到任何提醒。
+func TestPendingApprovalIsPushedWhenClientLeaves(t *testing.T) {
+	up := newBrokerUpstream(t)
+	provider := newFakePushProvider(t)
+	server, router := pushTestFixture(t, up.url, provider.server.URL)
+	registerPushDevice(t, server, "device-a")
+
+	client := brokerDial(t, server, pushTestSession)
+	upstream := up.accept(t)
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, client, "turn/started", 3*time.Second)
+
+	// 审批在前台到达：此时不该推送，卡片本来就显示在 App 里。
+	up.emit(t, upstream, brokerApprovalFrame)
+	readFrameWithMethod(t, client, "execCommandApproval", 3*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	if provider.count() != 0 {
+		t.Fatalf("客户端在线时不应推送，got=%d", provider.count())
+	}
+
+	// 用户带着这条未应答的审批走开：必须补一条提醒。
+	_ = client.Close()
+	broker := waitForBroker(t, router, pushTestSession, true)
+	if broker.pendingCount() != 1 {
+		t.Fatalf("离开时应仍有一条待审批，got=%d", broker.pendingCount())
+	}
+	notification := provider.waitFor(t, "approval.pending")
+	if notification["runtime"] != "codex" || notification["approval_kind"] != "command" {
+		t.Fatalf("补推内容不正确：%v", notification)
+	}
+}
+
+// 补推同样要去重：反复进出后台不能把同一条审批推成一串通知。
+func TestRepeatedDetachDoesNotDuplicatePush(t *testing.T) {
+	up := newBrokerUpstream(t)
+	provider := newFakePushProvider(t)
+	server, router := pushTestFixture(t, up.url, provider.server.URL)
+	registerPushDevice(t, server, "device-a")
+
+	client := brokerDial(t, server, pushTestSession)
+	upstream := up.accept(t)
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, client, "turn/started", 3*time.Second)
+	up.emit(t, upstream, brokerApprovalFrame)
+	readFrameWithMethod(t, client, "execCommandApproval", 3*time.Second)
+
+	_ = client.Close()
+	waitForBroker(t, router, pushTestSession, true)
+	provider.waitFor(t, "approval.pending")
+
+	// 再进出一次后台：同一条审批不应产生第二条通知。
+	second := brokerDial(t, server, pushTestSession)
+	readFrameWithMethod(t, second, "execCommandApproval", 3*time.Second)
+	_ = second.Close()
+	time.Sleep(500 * time.Millisecond)
+
+	pending := 0
+	provider.mu.Lock()
+	for _, body := range provider.received {
+		if body["event"] == "approval.pending" {
+			pending++
+		}
+	}
+	provider.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("同一条审批只应提醒一次，got=%d", pending)
+	}
+}
