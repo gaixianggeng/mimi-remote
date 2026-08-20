@@ -115,7 +115,7 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 WORK_DIR="$(mktemp -d -t mimi-macos-installer)"
 KEYCHAIN_PATH=""
 KEYCHAIN_LIST_FILE=""
-DMG_MOUNT_DIR="$WORK_DIR/dmg-mount"
+DMG_MOUNT_DIR=""
 DMG_MOUNTED=0
 
 detach_dmg() {
@@ -403,6 +403,7 @@ if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
     "$AGENT_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -424,6 +425,7 @@ else
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
     "$AGENT_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -452,16 +454,17 @@ hdiutil create \
   -format UDRW \
   "$DMG_WRITABLE_PATH"
 
-mkdir -p "$DMG_MOUNT_DIR"
-if ! hdiutil attach \
-  -quiet \
-  -readwrite \
-  -nobrowse \
-  -mountpoint "$DMG_MOUNT_DIR" \
-  "$DMG_WRITABLE_PATH"; then
-  # attach 失败时也尝试按挂载点卸载，覆盖 hdiutil 部分成功但返回错误的情况。
-  hdiutil detach "$DMG_MOUNT_DIR" -force -quiet >/dev/null 2>&1 || true
+DMG_ATTACH_OUTPUT=""
+if ! DMG_ATTACH_OUTPUT="$(hdiutil attach -readwrite -nobrowse "$DMG_WRITABLE_PATH")"; then
   echo "Mac 安装包构建失败：无法以可写模式挂载临时 DMG。" >&2
+  exit 1
+fi
+# Finder 会把背景图保存为 alias。使用 /Volumes 下的真实卷挂载点，
+# 才能让 alias 在用户之后挂载最终 DMG 时重新解析。
+DMG_MOUNT_DIR="$(awk -F '\t' '$NF ~ /^\/Volumes\// { mount_path=$NF } END { print mount_path }' <<<"$DMG_ATTACH_OUTPUT")"
+if [[ -z "$DMG_MOUNT_DIR" || ! -d "$DMG_MOUNT_DIR" ]]; then
+  echo "Mac 安装包构建失败：无法解析临时 DMG 挂载点。" >&2
+  printf '%s\n' "$DMG_ATTACH_OUTPUT" >&2
   exit 1
 fi
 DMG_MOUNTED=1

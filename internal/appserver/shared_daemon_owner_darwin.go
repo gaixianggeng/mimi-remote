@@ -98,6 +98,8 @@ var sharedDaemonStrippedEnvKeys = []string{
 	LocalDaemonEnvironmentKey,
 	"CODEX_APP_SERVER_WS_URL",
 	"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH",
+	// 只有非 App 分支可以写入已验证的 codex 路径，不能继承同用户 launchd 环境中的值。
+	sharedDaemonPinnedCodexEnvironmentKey,
 	// supervisor 通过 node -e 执行固定内联脚本。继承 NODE_OPTIONS/require
 	// 等控制面会允许用户环境在脚本前加载额外代码，必须以空值覆盖。
 	"NODE_OPTIONS",
@@ -253,9 +255,9 @@ func resolveSharedDaemonCodexBin(configured string) (string, error) {
 	return canonical, nil
 }
 
-// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行 Codex
-// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node 作为持久
-// supervisor 直接拉起 app-server；最终仍需以 socket peer 父链做运行态验收。
+// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 不引入 shell：装在
+// App 内时由 Mimi 主可执行文件充当 TCC 责任进程再拉起签名 node，否则 launchd 直接
+// 执行 node。node 始终是 app-server 的直接父进程，运行态仍以 socket peer 父链验收。
 func renderSharedDaemonLaunchAgent(
 	nodeBin string,
 	codexBin string,
@@ -266,7 +268,11 @@ func renderSharedDaemonLaunchAgent(
 	if strings.TrimSpace(nodeBin) == "" || strings.TrimSpace(codexBin) == "" {
 		return nil, fmt.Errorf("node supervisor 与 codex 路径不能为空")
 	}
-	arguments := sharedDaemonSupervisorProgramArguments(nodeBin, codexBin)
+	responsibleBin, err := sharedDaemonResolveResponsibleSupervisor()
+	if err != nil {
+		return nil, fmt.Errorf("解析共享 daemon 责任进程失败：%w", err)
+	}
+	arguments := sharedDaemonLaunchAgentProgramArguments(responsibleBin, nodeBin, codexBin)
 	runAtLoad := true
 	if len(runAtLoadOption) > 0 {
 		runAtLoad = runAtLoadOption[0]
@@ -292,7 +298,13 @@ func renderSharedDaemonLaunchAgent(
 	fmt.Fprintf(&buf, "\t\t<key>NumberOfFiles</key>\n\t\t<integer>%d</integer>\n", sharedDaemonSoftFileLimit)
 	buf.WriteString("\t</dict>\n")
 
-	if values := sharedDaemonLaunchAgentEnv(env); len(values) > 0 {
+	values := sharedDaemonLaunchAgentEnv(env)
+	if strings.TrimSpace(responsibleBin) == "" {
+		// Homebrew / 开发构建没有 Mimi 责任进程，先清掉用户域同名变量，
+		// 再只把已验证的 codex 路径固定到 node supervisor 环境。
+		values[sharedDaemonPinnedCodexEnvironmentKey] = codexBin
+	}
+	if len(values) > 0 {
 		buf.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
 		keys := make([]string, 0, len(values))
 		for key := range values {

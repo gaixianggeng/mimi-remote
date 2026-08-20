@@ -43,6 +43,22 @@ struct MacSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("文件访问") {
+                LabeledContent("照片图库", value: store.photoLibraryAuthorization.title)
+                Text("首次启动 App 托管的后台服务前，系统会询问照片图库权限。拒绝后可以在系统设置中重新允许。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("打开照片图库权限设置…") {
+                    store.openPhotosPrivacySettings()
+                }
+                Button("打开完全磁盘访问权限设置…") {
+                    store.openFullDiskAccessSettings()
+                }
+                Text("完全磁盘访问权限只用于照片图库或其他受保护目录仍被 macOS 拒绝的情况。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("隐私") {
                 Text("Mimi Remote Mac 不上传日志、代码、Token 或使用数据。长期 Token 只保存在 agentd 的私有配置中，App 只处理短期配对票据。")
                     .font(.caption)

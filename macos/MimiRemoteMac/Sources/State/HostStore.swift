@@ -24,6 +24,7 @@ final class HostStore {
     private(set) var codexDesktopStatus = CodexDesktopStatus()
     private(set) var isUpdatingCodexDesktop = false
     private(set) var codexDesktopError: String?
+    private(set) var photoLibraryAuthorization: PhotoLibraryAuthorization
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
@@ -156,8 +157,10 @@ final class HostStore {
     private let health: HealthClient
     private let logs: AgentLogClient
     private let codexDesktop: CodexDesktopIntegrationClient
+    private let photoLibraryAccess: PhotoLibraryAccessClient
     private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
+    private var didPreparePhotoLibraryAccess = false
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
@@ -176,6 +179,7 @@ final class HostStore {
         health: HealthClient,
         logs: AgentLogClient,
         codexDesktop: CodexDesktopIntegrationClient = .noop,
+        photoLibraryAccess: PhotoLibraryAccessClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {
             NSApplication.shared.terminate(nil)
         }
@@ -186,6 +190,8 @@ final class HostStore {
         self.health = health
         self.logs = logs
         self.codexDesktop = codexDesktop
+        self.photoLibraryAccess = photoLibraryAccess
+        photoLibraryAuthorization = photoLibraryAccess.authorizationStatus()
         self.terminateApplication = terminateApplication
     }
 
@@ -196,7 +202,8 @@ final class HostStore {
             homebrew: .live(),
             health: .live,
             logs: .live,
-            codexDesktop: .live()
+            codexDesktop: .live(),
+            photoLibraryAccess: .live
         )
     }
 
@@ -535,6 +542,14 @@ final class HostStore {
         services.openLoginItemsSettings()
     }
 
+    func openPhotosPrivacySettings() {
+        photoLibraryAccess.openPhotosPrivacySettings()
+    }
+
+    func openFullDiskAccessSettings() {
+        photoLibraryAccess.openFullDiskAccessSettings()
+    }
+
     func setCodexDesktopEnabled(_ enabled: Bool) async {
         guard !isUpdatingCodexDesktop else { return }
         guard owner == .macApp, !isBusy else {
@@ -551,6 +566,7 @@ final class HostStore {
 
         do {
             if enabled {
+                await preparePhotoLibraryAccessForCodexDesktopSharing()
                 // 先让 agentd 确保官方 app-server/local daemon 已就绪，再写入
                 // Desktop 的 launchd 环境；backend 失败时绝不能留下无效 env。
                 let sharing = try await configureCodexSharingAndReloadIfNeeded(true)
@@ -1224,6 +1240,11 @@ final class HostStore {
         allowAutomaticRepair: Bool = true
     ) async throws {
         try validateMacAgentConfiguration()
+        if codexDesktopStatus.environment.hasLocalPreference,
+           codexDesktopStatus.environment.enabled
+        {
+            await preparePhotoLibraryAccessForCodexDesktopSharing()
+        }
         do {
             try services.registerAgent()
             try await waitForMacAgentReady()
@@ -1247,6 +1268,18 @@ final class HostStore {
                 )
             }
         }
+    }
+
+    /// 照片授权由可见 App 请求，避免后台 agentd 启动时静默触发 TCC 弹窗。
+    /// 用户拒绝时仍允许 Codex Desktop 共享继续启用，并保留设置页的手动修复入口。
+    private func preparePhotoLibraryAccessForCodexDesktopSharing() async {
+        guard !didPreparePhotoLibraryAccess else { return }
+        didPreparePhotoLibraryAccess = true
+
+        let current = photoLibraryAccess.authorizationStatus()
+        photoLibraryAuthorization = current
+        guard current == .notDetermined else { return }
+        photoLibraryAuthorization = await photoLibraryAccess.requestAuthorization()
     }
 
     private func waitForMacAgentUnregistered() async throws {

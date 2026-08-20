@@ -2,7 +2,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -10,8 +16,14 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	_ "golang.org/x/image/webp"
 
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+)
+
+const (
+	gatewayLocalImageMaxBytes  int64 = 20 << 20
+	gatewayLocalImageMaxPixels int64 = 50_000_000
 )
 
 func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, params map[string]any) (appServerGatewayValidatedParams, error) {
@@ -147,12 +159,24 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			return validated, fmt.Errorf("sandboxPolicy.writableRoots 必须来自 projects allowlist")
 		}
 	}
-	inputPaths, err := collectUserInputPaths(method, params)
+	collectedInputPaths, err := collectGatewayInputPaths(method, params)
 	if err != nil {
 		return validated, err
 	}
+	for _, path := range collectedInputPaths.localImages {
+		// localImage 无论是否位于项目内，都必须在 canonical target 上确认
+		// 当前 agentd 用户能够读取真实图片，不能让项目 allowlist 绕过文件校验。
+		realPath, err := validateGatewayLocalImagePath(path.path)
+		if err != nil {
+			return validated, fmt.Errorf("%s.input.localImage.path %w", method, err)
+		}
+		// 后续 upstream 会重新打开 localImage.path。转发 canonical path，避免
+		// 客户端提交的符号链接在校验后被替换成另一个未验证目标。
+		path.input["path"] = realPath
+		validated.rewroteLocalImagePath = true
+	}
 	if method != "turn/steer" {
-		for _, path := range inputPaths {
+		for _, path := range collectedInputPaths.mentions {
 			if _, ok := r.projectForGatewayPath(path); ok {
 				continue
 			}
@@ -230,49 +254,152 @@ func gatewayBoolParam(params map[string]any, key string) (bool, bool) {
 	return typed, ok
 }
 
-func collectUserInputPaths(method string, params map[string]any) ([]string, error) {
+type gatewayInputPaths struct {
+	localImages []gatewayLocalImageInput
+	mentions    []string
+}
+
+type gatewayLocalImageInput struct {
+	path  string
+	input map[string]any
+}
+
+// collectGatewayInputPaths 解析结构化输入，并把 localImage 与 mention 分开。
+// localImage 在项目外有独立的只读文件验证；mention 仍由调用方按原有 allowlist 校验。
+func collectGatewayInputPaths(method string, params map[string]any) (gatewayInputPaths, error) {
+	paths := gatewayInputPaths{}
 	raw, ok := params["input"]
 	if !ok {
-		return nil, nil
+		return paths, nil
 	}
 	items, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s.input 必须是数组", method)
+		return paths, fmt.Errorf("%s.input 必须是数组", method)
 	}
-	paths := []string{}
 	for _, item := range items {
 		obj, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s.input item 必须是 object", method)
+			return paths, fmt.Errorf("%s.input item 必须是 object", method)
 		}
 		inputType, _ := gatewayStringParam(obj, "type")
 		switch inputType {
-		case "localImage", "mention":
+		case "localImage":
 			path, ok := gatewayStringParam(obj, "path")
 			if !ok {
-				return nil, fmt.Errorf("%s.input.%s.path 不能为空", method, inputType)
+				return paths, fmt.Errorf("%s.input.%s.path 不能为空", method, inputType)
 			}
-			paths = append(paths, path)
+			paths.localImages = append(paths.localImages, gatewayLocalImageInput{path: path, input: obj})
+		case "mention":
+			path, ok := gatewayStringParam(obj, "path")
+			if !ok {
+				return paths, fmt.Errorf("%s.input.%s.path 不能为空", method, inputType)
+			}
+			paths.mentions = append(paths.mentions, path)
 		case "skill":
 			// Skill 可能来自用户级 / 管理员级 skill root 或插件缓存，不属于当前项目工作区；
 			// gateway 只校验字段完整性，不把 skill.path 当作文件输入路径做 allowlist 限制。
 			if _, ok := gatewayStringParam(obj, "path"); !ok {
-				return nil, fmt.Errorf("%s.input.skill.path 不能为空", method)
+				return paths, fmt.Errorf("%s.input.skill.path 不能为空", method)
 			}
 		case "image":
 			url, ok := gatewayStringParam(obj, "url")
 			if !ok {
-				return nil, fmt.Errorf("%s.input.image.url 不能为空", method)
+				return paths, fmt.Errorf("%s.input.image.url 不能为空", method)
 			}
 			if strings.HasPrefix(strings.ToLower(url), "file:") {
-				return nil, fmt.Errorf("%s.input.image.url 不允许 file URL，请使用 localImage.path", method)
+				return paths, fmt.Errorf("%s.input.image.url 不允许 file URL，请使用 localImage.path", method)
 			}
 		case "text":
 		default:
-			return nil, fmt.Errorf("%s.input 类型不支持：%s", method, inputType)
+			return paths, fmt.Errorf("%s.input 类型不支持：%s", method, inputType)
 		}
 	}
 	return paths, nil
+}
+
+// collectUserInputPaths 保留原有调用方接口，但只返回 mention 路径。
+// 项目外 localImage 不应进入 mention 的 allowlist 校验，而是由 gateway policy
+// 在转发前单独执行只读图片验证。
+func collectUserInputPaths(method string, params map[string]any) ([]string, error) {
+	paths, err := collectGatewayInputPaths(method, params)
+	if err != nil {
+		return nil, err
+	}
+	return paths.mentions, nil
+}
+
+func validateGatewayLocalImagePath(raw string) (string, error) {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return "", fmt.Errorf("路径不能为空")
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("路径不可解析")
+	}
+	realPath, err := filepath.EvalSymlinks(absolutePath)
+	if err != nil {
+		return "", gatewayLocalImagePathError(err)
+	}
+	// 先拒绝稳定存在的目录、FIFO 和设备文件，再调用可能阻塞的 open。
+	// open 后还会从同一个文件描述符复核一次，缩小路径替换窗口。
+	pathStat, err := os.Stat(realPath)
+	if err != nil {
+		return "", gatewayLocalImagePathError(err)
+	}
+	if !pathStat.Mode().IsRegular() {
+		return "", fmt.Errorf("必须指向普通文件")
+	}
+
+	file, err := os.Open(realPath)
+	if err != nil {
+		return "", gatewayLocalImagePathError(err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return "", gatewayLocalImagePathError(err)
+	}
+	if !stat.Mode().IsRegular() {
+		return "", fmt.Errorf("必须指向普通文件")
+	}
+	if stat.Size() > gatewayLocalImageMaxBytes {
+		return "", fmt.Errorf("文件不能超过 %d MB", gatewayLocalImageMaxBytes>>20)
+	}
+
+	config, format, err := image.DecodeConfig(file)
+	if err != nil || !gatewaySupportedLocalImageFormat(format) {
+		return "", fmt.Errorf("内容不是受支持的 PNG、JPEG、GIF 或 WebP 图片")
+	}
+	if config.Width <= 0 || config.Height <= 0 ||
+		int64(config.Width) > gatewayLocalImageMaxPixels/int64(config.Height) {
+		return "", fmt.Errorf("图片像素不能超过 %d", gatewayLocalImageMaxPixels)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", gatewayLocalImagePathError(err)
+	}
+	// DecodeConfig 只能证明文件头成立。完整解码同一个已打开的文件描述符，避免
+	// 把截断文件或只伪造 magic bytes 的普通文件转交给长期运行的 app-server。
+	if _, decodedFormat, err := image.Decode(file); err != nil || decodedFormat != format {
+		return "", fmt.Errorf("图片内容损坏或不完整")
+	}
+	return realPath, nil
+}
+
+func gatewayLocalImagePathError(err error) error {
+	if message, ok := pathAccessDeniedMessage(err); ok {
+		return errors.New(message)
+	}
+	return fmt.Errorf("不存在或不可访问")
+}
+
+func gatewaySupportedLocalImageFormat(format string) bool {
+	switch format {
+	case "png", "jpeg", "gif", "webp":
+		return true
+	}
+	return false
 }
 
 func validateGatewayCollaborationMode(value any) error {
