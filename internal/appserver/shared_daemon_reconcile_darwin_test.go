@@ -619,6 +619,55 @@ func TestIndependentModeReconcileWarnsWhenListenerOwnershipCannotBeConfirmed(t *
 	}
 }
 
+func TestStopLegacyPIDBackendWithoutReportedPIDUsesStrictFallback(t *testing.T) {
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{Backend: &backend}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	stopCalls := 0
+	validateCalls := 0
+	handled, err := stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) error {
+			validateCalls++
+			return nil
+		},
+		func(context.Context, LocalDaemonOptions) error {
+			stopCalls++
+			return nil
+		},
+	)
+	if err != nil || !handled || validateCalls != 1 || stopCalls != 1 {
+		t.Fatalf("旧 pid backend 应严格取证后调用官方 stop：handled=%t validate=%d stop=%d err=%v", handled, validateCalls, stopCalls, err)
+	}
+
+	owner.Loaded = false
+	handled, err = stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) error {
+			validateCalls++
+			return nil
+		},
+		func(context.Context, LocalDaemonOptions) error {
+			stopCalls++
+			return nil
+		},
+	)
+	if !handled || err == nil || validateCalls != 1 || stopCalls != 1 {
+		t.Fatalf("缺少 stable owner 时必须 fail closed：handled=%t validate=%d stop=%d err=%v", handled, validateCalls, stopCalls, err)
+	}
+}
+
 func TestValidateManagedSharedDaemonListenerIdentity(t *testing.T) {
 	pid := uint32(4321)
 	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}
