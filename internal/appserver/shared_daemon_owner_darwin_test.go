@@ -106,6 +106,10 @@ func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) 
 }
 
 func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
+	original := sharedDaemonResolveResponsibleSupervisor
+	sharedDaemonResolveResponsibleSupervisor = func() (string, error) { return "", nil }
+	t.Cleanup(func() { sharedDaemonResolveResponsibleSupervisor = original })
+
 	nodeBin := "/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 	codexBin := "/opt/codex bin/codex"
 	rendered, err := renderSharedDaemonLaunchAgent(
@@ -158,6 +162,9 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 		t.Fatalf("plist 必须固定 CODEX_HOME：\n%s", content)
 	}
 	for _, key := range sharedDaemonStrippedEnvKeys {
+		if key == sharedDaemonPinnedCodexEnvironmentKey {
+			continue
+		}
 		// 空值覆盖 launchd 用户域中 Desktop 写入的值，同时避免 shell wrapper。
 		emptyEntry := "<key>" + key + "</key>\n\t\t<string></string>"
 		if !strings.Contains(content, emptyEntry) {
@@ -166,6 +173,9 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 	}
 	if value := sharedDaemonPlistStringValue(rendered, "NODE_OPTIONS"); value != "" {
 		t.Fatalf("supervisor 必须清空继承的 NODE_OPTIONS，实际=%q", value)
+	}
+	if value := sharedDaemonPlistStringValue(rendered, sharedDaemonPinnedCodexEnvironmentKey); value != codexBin {
+		t.Fatalf("非 App 启动必须把已验证 codex 路径固定到 supervisor 环境，实际=%q", value)
 	}
 }
 

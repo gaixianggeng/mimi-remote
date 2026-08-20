@@ -6,11 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"log"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -412,7 +417,7 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
-func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *testing.T) {
+func TestAppServerGatewayValidatesLocalImageContentAndReadability(t *testing.T) {
 	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
 	projects := router.projects.List()
 	if len(projects) != 1 {
@@ -433,18 +438,18 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 	}
 
 	validImages := []struct {
-		name   string
-		header []byte
+		name string
+		data []byte
 	}{
-		{name: "image.png", header: []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}},
-		{name: "image.jpg", header: []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}},
-		{name: "image.gif", header: []byte("GIF89a")},
-		{name: "image.webp", header: []byte("RIFF\x00\x00\x00\x00WEBP")},
+		{name: "image.png", data: gatewayTestLocalImageBytes(t, "png")},
+		{name: "image.jpg", data: gatewayTestLocalImageBytes(t, "jpeg")},
+		{name: "image.gif", data: gatewayTestLocalImageBytes(t, "gif")},
+		{name: "image.webp", data: gatewayTestLocalImageBytes(t, "webp")},
 	}
 	for _, image := range validImages {
 		t.Run("allows "+image.name, func(t *testing.T) {
 			path := filepath.Join(externalDir, image.name)
-			if err := os.WriteFile(path, append(image.header, []byte("header-only test payload")...), 0o600); err != nil {
+			if err := os.WriteFile(path, image.data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := validate(path); err != nil {
@@ -466,7 +471,7 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 	}
 
 	validTarget := filepath.Join(externalDir, "target.png")
-	if err := os.WriteFile(validTarget, append(validImages[0].header, []byte("target")...), 0o600); err != nil {
+	if err := os.WriteFile(validTarget, validImages[0].data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("canonical symlink", func(t *testing.T) {
@@ -494,6 +499,27 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 	}
 	if err := validate(invalidText); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
 		t.Fatalf("改名的普通文件应被拒绝：%v", err)
+	}
+	projectInvalidText := filepath.Join(projectDir, "renamed-project-secret.png")
+	if err := os.WriteFile(projectInvalidText, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(projectInvalidText); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+		t.Fatalf("项目内改名的普通文件也应被拒绝：%v", err)
+	}
+	headerOnly := filepath.Join(externalDir, "header-only.png")
+	if err := os.WriteFile(headerOnly, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(headerOnly); err == nil {
+		t.Fatal("只有 magic bytes 的伪图片应被拒绝")
+	}
+	truncated := filepath.Join(externalDir, "truncated.png")
+	if err := os.WriteFile(truncated, validImages[0].data[:len(validImages[0].data)-4], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(truncated); err == nil || !strings.Contains(err.Error(), "损坏或不完整") {
+		t.Fatalf("截断图片应被拒绝：%v", err)
 	}
 
 	invalidDir := filepath.Join(externalDir, "image-directory")
@@ -524,7 +550,7 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 
 	if runtime.GOOS != "windows" {
 		unreadable := filepath.Join(externalDir, "unreadable.png")
-		if err := os.WriteFile(unreadable, validImages[0].header, 0o000); err != nil {
+		if err := os.WriteFile(unreadable, validImages[0].data, 0o000); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
@@ -548,6 +574,35 @@ func TestAppServerGatewayValidatesExternalLocalImageContentAndReadability(t *tes
 	})
 }
 
+func gatewayTestLocalImageBytes(t *testing.T, format string) []byte {
+	t.Helper()
+	if format == "webp" {
+		data, err := base64.StdEncoding.DecodeString("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoBAAEAAgA0JQBOgCgAAP7zaZTttFpfKgy20+AA")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	var err error
+	switch format {
+	case "png":
+		err = png.Encode(&buf, img)
+	case "jpeg":
+		err = jpeg.Encode(&buf, img, nil)
+	case "gif":
+		err = gif.Encode(&buf, img, nil)
+	default:
+		t.Fatalf("不支持的测试图片格式：%s", format)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func TestAppServerGatewayForwardsCanonicalExternalLocalImagePath(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
@@ -560,7 +615,7 @@ func TestAppServerGatewayForwardsCanonicalExternalLocalImagePath(t *testing.T) {
 
 	externalDir := t.TempDir()
 	target := filepath.Join(externalDir, "target.png")
-	if err := os.WriteFile(target, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+	if err := os.WriteFile(target, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(externalDir, "dragged-photo")
@@ -611,7 +666,7 @@ func TestAppServerGatewayKeepsMentionAllowlistWithExternalLocalImage(t *testing.
 	projectDir := projects[0].Path
 	externalDir := t.TempDir()
 	imagePath := filepath.Join(externalDir, "external.png")
-	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+	if err := os.WriteFile(imagePath, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	mentionPath := filepath.Join(externalDir, "mention.md")
@@ -2291,7 +2346,7 @@ func TestAppServerGatewayForwardsModelList(t *testing.T) {
 	}
 }
 
-func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
+func TestAppServerGatewayPreservesStructuredUserInputWhileCanonicalizingLocalImage(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-structured")
@@ -2306,7 +2361,7 @@ func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(userSkillPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(localImage, []byte("png"), 0o600); err != nil {
+	if err := os.WriteFile(localImage, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(userSkillPath, []byte("skill"), 0o600); err != nil {
@@ -2332,8 +2387,23 @@ func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
 
 	select {
 	case got := <-received:
-		if !bytes.Equal(got, authorized) {
-			t.Fatalf("结构化 input 必须原样转发：got=%s want=%s", got, authorized)
+		var gotFrame map[string]any
+		if err := json.Unmarshal(got, &gotFrame); err != nil {
+			t.Fatalf("解析 upstream frame 失败：%v frame=%s", err, got)
+		}
+		var wantFrame map[string]any
+		if err := json.Unmarshal(authorized, &wantFrame); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := filepath.EvalSymlinks(localImage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantParams := wantFrame["params"].(map[string]any)
+		wantInput := wantParams["input"].([]any)[2].(map[string]any)
+		wantInput["path"] = canonical
+		if !reflect.DeepEqual(gotFrame, wantFrame) {
+			t.Fatalf("结构化 input 除 canonical localImage.path 外必须保持不变：got=%s want=%v", got, wantFrame)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到结构化 input 帧")

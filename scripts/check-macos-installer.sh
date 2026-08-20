@@ -206,10 +206,14 @@ if [[ "$app_photos_entitlement" != "true" ]]; then
   echo "Mac 安装包校验失败：App 必须声明照片图库 entitlement。" >&2
   exit 1
 fi
+agent_photos_entitlement="$(read_signed_entitlement "$AGENT_PATH" "$photos_entitlement" || true)"
+if [[ "$agent_photos_entitlement" != "true" ]]; then
+  echo "Mac 安装包校验失败：agentd 必须声明照片图库 entitlement。" >&2
+  exit 1
+fi
 
-# 共享 daemon 的 TCC 责任进程靠 Contents/MacOS 里“恰好一个可执行文件”定位
-# （internal/appserver/shared_daemon_responsible_darwin.go）。多出第二个二进制会让
-# agentd 静默退回只有 node 的旧链条，实验模式下的照片授权随之失效且不报错。
+# 运行时按 Info.plist 的 CFBundleExecutable 解析 TCC 责任进程；最终 Release 包仍只应
+# 包含这个主程序，避免把 Debug/Preview dylib 或其他未预期入口带进安装产物。
 main_executable_count="$(find "$APP_PATH/Contents/MacOS" -maxdepth 1 -type f -perm -111 | wc -l | tr -d " ")"
 if [[ "$main_executable_count" != "1" ]]; then
   echo "Mac 安装包校验失败：Contents/MacOS 必须恰好有一个可执行文件，实际 ${main_executable_count} 个。" >&2

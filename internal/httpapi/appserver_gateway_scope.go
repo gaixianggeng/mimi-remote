@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/url"
 	"os"
@@ -12,8 +16,14 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	_ "golang.org/x/image/webp"
 
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+)
+
+const (
+	gatewayLocalImageMaxBytes  int64 = 20 << 20
+	gatewayLocalImageMaxPixels int64 = 50_000_000
 )
 
 func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, params map[string]any) (appServerGatewayValidatedParams, error) {
@@ -154,12 +164,9 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		return validated, err
 	}
 	for _, path := range collectedInputPaths.localImages {
-		// 项目内 localImage 保留既有行为；项目外 localImage 是只读输入，
-		// 必须在 canonical target 上确认当前 agentd 用户能够读取真实图片。
-		if _, ok := r.projectForGatewayPath(path.path); ok {
-			continue
-		}
-		realPath, err := validateExternalGatewayLocalImagePath(path.path)
+		// localImage 无论是否位于项目内，都必须在 canonical target 上确认
+		// 当前 agentd 用户能够读取真实图片，不能让项目 allowlist 绕过文件校验。
+		realPath, err := validateGatewayLocalImagePath(path.path)
 		if err != nil {
 			return validated, fmt.Errorf("%s.input.localImage.path %w", method, err)
 		}
@@ -321,7 +328,7 @@ func collectUserInputPaths(method string, params map[string]any) ([]string, erro
 	return paths.mentions, nil
 }
 
-func validateExternalGatewayLocalImagePath(raw string) (string, error) {
+func validateGatewayLocalImagePath(raw string) (string, error) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
 		return "", fmt.Errorf("路径不能为空")
@@ -357,16 +364,25 @@ func validateExternalGatewayLocalImagePath(raw string) (string, error) {
 	if !stat.Mode().IsRegular() {
 		return "", fmt.Errorf("必须指向普通文件")
 	}
+	if stat.Size() > gatewayLocalImageMaxBytes {
+		return "", fmt.Errorf("文件不能超过 %d MB", gatewayLocalImageMaxBytes>>20)
+	}
 
-	// 只从同一个已打开的 canonical target 读取很小的文件头，避免仅按扩展名
-	// 把被改名的敏感文件当成图片，也不把整个图片内容加载进 gateway。
-	header := make([]byte, 512)
-	readCount, err := file.Read(header)
-	if err != nil && !errors.Is(err, io.EOF) {
+	config, format, err := image.DecodeConfig(file)
+	if err != nil || !gatewaySupportedLocalImageFormat(format) {
+		return "", fmt.Errorf("内容不是受支持的 PNG、JPEG、GIF 或 WebP 图片")
+	}
+	if config.Width <= 0 || config.Height <= 0 ||
+		int64(config.Width) > gatewayLocalImageMaxPixels/int64(config.Height) {
+		return "", fmt.Errorf("图片像素不能超过 %d", gatewayLocalImageMaxPixels)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", gatewayLocalImagePathError(err)
 	}
-	if !gatewaySupportedLocalImageHeader(header[:readCount]) {
-		return "", fmt.Errorf("内容不是受支持的 PNG、JPEG、GIF 或 WebP 图片")
+	// DecodeConfig 只能证明文件头成立。完整解码同一个已打开的文件描述符，避免
+	// 把截断文件或只伪造 magic bytes 的普通文件转交给长期运行的 app-server。
+	if _, decodedFormat, err := image.Decode(file); err != nil || decodedFormat != format {
+		return "", fmt.Errorf("图片内容损坏或不完整")
 	}
 	return realPath, nil
 }
@@ -378,16 +394,12 @@ func gatewayLocalImagePathError(err error) error {
 	return fmt.Errorf("不存在或不可访问")
 }
 
-func gatewaySupportedLocalImageHeader(header []byte) bool {
-	switch detectFileContentTypeFromBytes(header) {
-	case "image/png", "image/jpeg", "image/gif", "image/webp":
+func gatewaySupportedLocalImageFormat(format string) bool {
+	switch format {
+	case "png", "jpeg", "gif", "webp":
 		return true
 	}
-	return gatewayWebPFileHeader(header)
-}
-
-func gatewayWebPFileHeader(header []byte) bool {
-	return len(header) >= 12 && string(header[:4]) == "RIFF" && string(header[8:12]) == "WEBP"
+	return false
 }
 
 func validateGatewayCollaborationMode(value any) error {

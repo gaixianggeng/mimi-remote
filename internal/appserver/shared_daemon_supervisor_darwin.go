@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	sharedDaemonOpenAITeamIdentifier   = "2DC432GLL2"
-	sharedDaemonCodexSigningIdentifier = "codex"
-	sharedDaemonNodeSigningIdentifier  = "node"
-	sharedDaemonCodeSignRetryAttempts  = 16
-	sharedDaemonCodeSignRetryInterval  = time.Second
-	sharedDaemonCodeSignTimeout        = 20 * time.Second
+	sharedDaemonOpenAITeamIdentifier      = "2DC432GLL2"
+	sharedDaemonCodexSigningIdentifier    = "codex"
+	sharedDaemonNodeSigningIdentifier     = "node"
+	sharedDaemonPinnedCodexEnvironmentKey = "MIMI_REMOTE_PINNED_CODEX_PATH"
+	sharedDaemonCodeSignRetryAttempts     = 16
+	sharedDaemonCodeSignRetryInterval     = time.Second
+	sharedDaemonCodeSignTimeout           = 20 * time.Second
 
 	// LaunchAgent 本身就是 OpenAI 签名的 node supervisor，并始终保持为
 	// app-server 的直接父进程。这样不依赖 detached 后代能否逃离 launchd 的

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -336,6 +337,33 @@ func TestSharedDaemonNodeSupervisorUsesStagedCodexWithoutLeakingItToChild(t *tes
 	}
 	if !strings.Contains(sharedDaemonNodeSupervisorScript, "argv0:argv[0]") {
 		t.Fatal("一次性 codex 必须保留原始 Codex argv0，供运行态父链验收")
+	}
+}
+
+func TestSharedDaemonNodeSupervisorLaunchesPinnedCodex(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("当前环境没有 node：%v", err)
+	}
+	cmd := exec.Command(
+		node,
+		"-e",
+		sharedDaemonNodeSupervisorScript,
+		"--",
+		"/usr/bin/true",
+		"app-server",
+		"--listen",
+		"unix://",
+	)
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		if !strings.HasPrefix(item, sharedDaemonPinnedCodexEnvironmentKey+"=") {
+			env = append(env, item)
+		}
+	}
+	cmd.Env = append(env, sharedDaemonPinnedCodexEnvironmentKey+"=/usr/bin/true")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node supervisor 必须拉起 pinned codex：%v output=%s", err, output)
 	}
 }
 

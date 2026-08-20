@@ -124,7 +124,7 @@ func TestSharedDaemonLaunchAgentProgramArgumentsNeverForwardsSupervisorScript(t 
 func TestRenderSharedDaemonLaunchAgentPutsResponsibleProcessFirst(t *testing.T) {
 	responsible := "/Applications/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac"
 	original := sharedDaemonResolveResponsibleSupervisor
-	sharedDaemonResolveResponsibleSupervisor = func() (string, bool) { return responsible, true }
+	sharedDaemonResolveResponsibleSupervisor = func() (string, error) { return responsible, nil }
 	t.Cleanup(func() { sharedDaemonResolveResponsibleSupervisor = original })
 
 	node := "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
@@ -147,6 +147,20 @@ func TestRenderSharedDaemonLaunchAgentPutsResponsibleProcessFirst(t *testing.T) 
 	}
 	if strings.Contains(content, "<string>/bin/sh</string>") || strings.Contains(content, "use strict") {
 		t.Fatalf("plist 不能引入 shell 或 supervisor 脚本正文：\n%s", content)
+	}
+	if value := sharedDaemonPlistStringValue(rendered, sharedDaemonPinnedCodexEnvironmentKey); value != "" {
+		t.Fatalf("Mimi supervisor 必须自行注入 staged codex，plist 不得传入原始路径：%q", value)
+	}
+}
+
+func TestRenderSharedDaemonLaunchAgentRejectsBrokenAppResponsibleProcess(t *testing.T) {
+	original := sharedDaemonResolveResponsibleSupervisor
+	sharedDaemonResolveResponsibleSupervisor = func() (string, error) { return "", os.ErrInvalid }
+	t.Cleanup(func() { sharedDaemonResolveResponsibleSupervisor = original })
+
+	_, err := renderSharedDaemonLaunchAgent("/opt/node", "/opt/codex", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "责任进程") {
+		t.Fatalf("App 主程序不可解析时必须 fail closed：%v", err)
 	}
 }
 

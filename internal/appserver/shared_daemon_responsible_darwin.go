@@ -20,7 +20,8 @@ const sharedDaemonResponsibleSupervisorFlag = "--codex-daemon-supervisor"
 var sharedDaemonResolveResponsibleSupervisor = resolveSharedDaemonResponsibleSupervisor
 
 // resolveSharedDaemonResponsibleSupervisor 返回当前 agentd 所在 Mimi App bundle
-// 的主可执行文件。
+// 的主可执行文件。空路径且无错误表示当前确实不是 App 安装；已经命中 App 布局但
+// 主程序不可解析时返回错误，禁止静默降级到没有正确 TCC 责任进程的 node 链。
 //
 // 存在这一层的原因只有一个：macOS 的 TCC 授权按“责任进程”记账。launchd 直接拉起
 // 裸二进制时，责任进程就是它自己——node/codex 没有 Info.plist，永远弹不出授权框，
@@ -33,26 +34,26 @@ var sharedDaemonResolveResponsibleSupervisor = resolveSharedDaemonResponsibleSup
 // Desktop 的文件访问会归因到 Mimi。但 MIM-157 真正踩的坑是 agentd 这个裸二进制按
 // 路径记账、App 一升级授权就失效；换成 bundle 记账后该问题不复存在。
 //
-// agentd 以 Homebrew 或开发构建等非 App 形态运行时返回 false，调用方继续沿用
-// 只有 OpenAI node 的旧 ProgramArguments，不影响既有安装。
-func resolveSharedDaemonResponsibleSupervisor() (string, bool) {
+// agentd 以 Homebrew 或开发构建等非 App 形态运行时返回空路径和 nil，调用方继续
+// 沿用只有 OpenAI node 的旧 ProgramArguments，不影响既有安装。
+func resolveSharedDaemonResponsibleSupervisor() (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("解析 agentd 可执行文件失败：%w", err)
 	}
 	canonical, err := filepath.EvalSymlinks(executable)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("解析 agentd 真实路径失败：%w", err)
 	}
 	bundle, ok := sharedDaemonAppBundleForResource(canonical)
 	if !ok {
-		return "", false
+		return "", nil
 	}
 	supervisor, err := sharedDaemonBundleMainExecutable(bundle)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	return supervisor, true
+	return supervisor, nil
 }
 
 // sharedDaemonAppBundleForResource 只认 <X>.app/Contents/Resources/<binary> 这一种

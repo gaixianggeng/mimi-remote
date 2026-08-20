@@ -98,6 +98,8 @@ var sharedDaemonStrippedEnvKeys = []string{
 	LocalDaemonEnvironmentKey,
 	"CODEX_APP_SERVER_WS_URL",
 	"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH",
+	// 只有非 App 分支可以写入已验证的 codex 路径，不能继承同用户 launchd 环境中的值。
+	sharedDaemonPinnedCodexEnvironmentKey,
 	// supervisor 通过 node -e 执行固定内联脚本。继承 NODE_OPTIONS/require
 	// 等控制面会允许用户环境在脚本前加载额外代码，必须以空值覆盖。
 	"NODE_OPTIONS",
@@ -266,7 +268,10 @@ func renderSharedDaemonLaunchAgent(
 	if strings.TrimSpace(nodeBin) == "" || strings.TrimSpace(codexBin) == "" {
 		return nil, fmt.Errorf("node supervisor 与 codex 路径不能为空")
 	}
-	responsibleBin, _ := sharedDaemonResolveResponsibleSupervisor()
+	responsibleBin, err := sharedDaemonResolveResponsibleSupervisor()
+	if err != nil {
+		return nil, fmt.Errorf("解析共享 daemon 责任进程失败：%w", err)
+	}
 	arguments := sharedDaemonLaunchAgentProgramArguments(responsibleBin, nodeBin, codexBin)
 	runAtLoad := true
 	if len(runAtLoadOption) > 0 {
@@ -293,7 +298,13 @@ func renderSharedDaemonLaunchAgent(
 	fmt.Fprintf(&buf, "\t\t<key>NumberOfFiles</key>\n\t\t<integer>%d</integer>\n", sharedDaemonSoftFileLimit)
 	buf.WriteString("\t</dict>\n")
 
-	if values := sharedDaemonLaunchAgentEnv(env); len(values) > 0 {
+	values := sharedDaemonLaunchAgentEnv(env)
+	if strings.TrimSpace(responsibleBin) == "" {
+		// Homebrew / 开发构建没有 Mimi 责任进程，先清掉用户域同名变量，
+		// 再只把已验证的 codex 路径固定到 node supervisor 环境。
+		values[sharedDaemonPinnedCodexEnvironmentKey] = codexBin
+	}
+	if len(values) > 0 {
 		buf.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
 		keys := make([]string, 0, len(values))
 		for key := range values {
