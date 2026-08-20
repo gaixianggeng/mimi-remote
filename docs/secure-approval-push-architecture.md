@@ -286,6 +286,29 @@ Device Token，选错不会报错，只会让每一条推送静默失败。因�
 `development` / `production`，而 APNs 主机的措辞是 `sandbox` / `production`，
 直接按 rawValue 解析会让 `development` 落空。
 
+### 真机验证暴露的三个问题
+
+这三个都是单元测试测不出来的，记下来避免重复踩。
+
+**1. 复用上游连接 ≠ 复用握手状态。** broker 让一条 app-server 连接跨多次客户端
+连接存活，但 JSON-RPC 握手是有状态的：客户端每次重连都会重发 `initialize`，
+而那条上游早已握过手，回 `already initialized`，iOS 判定致命错误后断开重连，
+形成每秒一轮的风暴。修法是 broker 缓存首次握手结果并在重连时本地应答，上游
+只握手一次。设计复用型连接时，**先问哪些状态是「每个客户端会话一份」的**。
+
+**2. nil receiver 安全救不了字段访问。** `relayGatewayConnMonitor` 的方法都做了
+nil 保护，但 `sink.monitor` 这一步在 `sink` 为 nil 时就已经解引用，直接
+SIGSEGV 打死整个 agentd。而「客户端离线、sink 为 nil」恰恰是 broker 存在的
+意义，是最常见状态而非边角情况。
+
+**3. 确定的失败不能报成「未知」。** agentd 用 404/409/410 表达「已过期」「冲突」
+「已被处理」，iOS 的 API 客户端对非 2xx 一律抛错，被一个 catch 兜住后全变成
+「结果未知」。这违反了本文档自己写的「UI 必须能表达已经由其他设备处理的状态」。
+
+**这三个里有两个直接打断了主消息通道**——broker 改的是 gateway 的连接生命周期，
+不是旁路。这也是 `app_server.approval_broker` 必须独立成开关并默认关闭的理由：
+推送本身是纯附加的，broker 不是。
+
 ### 一处运维上的坑
 
 APNs 的协议级拒绝必须以 `200 + delivered:false + reason` 回报，不能用 5xx：托管 CDN
