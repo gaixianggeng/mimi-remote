@@ -63,14 +63,34 @@ sudo install -o root -g root -m 0755 /tmp/mimi-push-provider /opt/mimi-push-prov
 
 服务无状态迁移需求，重启只会丢掉进程内的限速计数与指标；撤销表在磁盘上。
 
-## 换上真实 APNs 私钥
+## APNs 私钥（已就位）
 
-首次上线时用的是占位私钥，Apple 会稳定返回 `InvalidProviderToken`。换真钥：
+当前使用 Key ID **`NXU86Q978A`**（门户里名为 *CatName APNs*），配置为 **Team Scoped (All topics)**、
+**Sandbox & Production**。Team Scoped 意味着它对该团队下所有 Bundle ID 有效，包含
+`com.gaixianggeng.mimi`，因此不需要为 Mimi 单独建一把。
 
-1. 把 `.p8` 放到 `/etc/mimi-push-provider/apns.p8`，`chown root:mimi-push`、`chmod 0640`；
-2. 在 `/etc/mimi-push-provider/env` 里把 `MIMI_PUSH_APNS_KEY_ID` 改成真实 Key ID；
+**这把 key 与 CatName 共用。** 轮换它会同时影响两个服务，动手前先确认另一侧也准备好了。
+Apple 每个团队最多只能同时存在 2 把 APNs Auth Key，目前已用 1 把。
+
+私钥原件在服务器的 `/home/ubuntu/secure/AuthKey_NXU86Q978A.p8`，Provider 用的副本在
+`/etc/mimi-push-provider/apns.p8`（`0640 root:mimi-push`）。Apple 只允许下载一次，
+别删原件。
+
+### 换成另一把 key 时
+
+1. 把新 `.p8` 放到 `/etc/mimi-push-provider/apns.p8`，`chown root:mimi-push`、`chmod 0640`；
+2. 在 `/etc/mimi-push-provider/env` 里改 `MIMI_PUSH_APNS_KEY_ID`；
 3. `sudo systemctl restart mimi-push-provider`；
-4. 用下面的验证清单确认 `delivered:true`。
+4. 按下面的验证清单确认。
+
+### 怎么判断 key 是否生效
+
+用一个**伪造的** device token 打一次真实 APNs，看 `/metrics` 里的 `apns_statuses`：
+
+- `403` → `InvalidProviderToken`，key 或 Key ID 不对，**鉴权没过**；
+- `400` → `BadDeviceToken`，**鉴权已通过**，只是 token 是假的。这就是 key 正常的标志。
+
+要看到 `delivered:true` 必须用真机拿到的真实 device token。
 
 ## 密钥轮换
 
