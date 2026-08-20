@@ -322,3 +322,28 @@ func (u *brokerUpstream) waitForUpstreamFrame(t *testing.T, match func([]byte) b
 		}
 	}
 }
+
+// 真机验证抓到的崩溃：客户端离线时（sink 为 nil）收到一条被策略拒绝的上游帧，
+// pumpUpstream 会去读 sink.monitor 字段——从 nil 指针取字段直接 SIGSEGV，
+// 整个 agentd 一起死。而「客户端离线」正是 broker 存在的意义，不是边角情况。
+func TestCodexGatewayBrokerSurvivesRejectedFrameWhileDetached(t *testing.T) {
+	up := newBrokerUpstream(t)
+	server, router := brokerTestServer(t, up.url, true)
+
+	first := brokerDial(t, server, brokerTestSession)
+	upstream := up.accept(t)
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, first, "turn/started", 3*time.Second)
+	_ = first.Close()
+	broker := waitForBroker(t, router, brokerTestSession, true)
+
+	// 未被移动端支持的反向请求：policy 会拒绝它并要求回错误，走的正是崩溃那条分支。
+	up.emit(t, upstream, `{"jsonrpc":"2.0","id":"unsupported-1","method":"someRuntime/unknownRequest","params":{"threadId":"thread-1"}}`)
+	// 再发一条正常审批，证明 broker 在上一帧之后仍然活着并继续工作。
+	up.emit(t, upstream, brokerApprovalFrame)
+	waitForPendingCount(t, broker, 1, "被拒绝的帧不能打死 broker：后续审批仍必须被接住")
+
+	// 会话整体仍然可用：重连能拿回重放。
+	second := brokerDial(t, server, brokerTestSession)
+	readFrameWithMethod(t, second, "execCommandApproval", 3*time.Second)
+}

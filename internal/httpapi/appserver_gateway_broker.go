@@ -46,6 +46,18 @@ type codexGatewaySink struct {
 	once    sync.Once
 }
 
+// monitorOrNil 是离线期间唯一安全的统计入口。
+//
+// relayGatewayConnMonitor 的方法都做了 nil receiver 保护，但那救不了从一个 nil
+// sink 上**取字段**——那一步就已经解引用了。而「客户端离线、sink 为 nil」恰恰是
+// broker 存在的意义，是这条路径最常见的状态，不是边角情况。
+func (s *codexGatewaySink) monitorOrNil() *relayGatewayConnMonitor {
+	if s == nil {
+		return nil
+	}
+	return s.monitor
+}
+
 // finish 只送出第一个终止原因。broker 侧的上游故障与 handler 侧的客户端读错误
 // 可能同时发生，重复写 channel 会让先到的原因被覆盖或阻塞。
 func (s *codexGatewaySink) finish(reason string) {
@@ -338,9 +350,9 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		policyDuration := time.Since(policyStart)
 		sink := b.currentSink()
 		if policyErr != nil {
-			sink.monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
+			sink.monitorOrNil().recordPolicyError("upstream_to_client", len(payload), policyDuration)
 			if policyErr.historyResponseBlocked {
-				sink.monitor.recordHistoryResponseBlocked(len(payload), payload)
+				sink.monitorOrNil().recordHistoryResponseBlocked(len(payload), payload)
 			}
 			if policyErr.target == "client" {
 				if sink != nil && !writeGatewayPolicyError(sink.conn, sink.writeMu, policyErr) {
@@ -353,7 +365,7 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 			continue
 		}
 		if !forward {
-			sink.monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
+			sink.monitorOrNil().recordDropped("upstream_to_client", len(payload), policyDuration)
 			continue
 		}
 		b.observeLifecycle(messageType, forwardPayload)
