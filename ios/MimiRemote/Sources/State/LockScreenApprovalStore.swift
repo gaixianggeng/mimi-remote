@@ -224,9 +224,42 @@ final class LockScreenApprovalStore: ObservableObject {
             )
             lastDecisionMessage = Self.message(for: response)
             await removeNotification(identifier: notification.notificationIdentifier)
+        } catch let error as AgentAPIError {
+            // agentd 用 HTTP 状态码表达确定结论。把 404/409/410 一并说成「未知」
+            // 是在撒谎：它明明已经告诉我们这条请求被谁、以什么方式处理掉了。
+            lastDecisionMessage = Self.message(forServerError: error)
+            if Self.isDefinitive(error) {
+                await removeNotification(identifier: notification.notificationIdentifier)
+            }
         } catch {
-            // 网络不可达时不猜测结果，也不自动重试「允许」。
+            // 真正联系不上时才说未知，而且不自动重试「允许」。
             lastDecisionMessage = L10n.text("ui.push_approval_result_unknown")
+        }
+    }
+
+    /// 只有 agentd 明确回答过的状态才算确定；确定之后那张通知不再可操作，应当撤下。
+    static func isDefinitive(_ error: AgentAPIError) -> Bool {
+        guard case .server(let status, _) = error else { return false }
+        return [403, 404, 409, 410].contains(status)
+    }
+
+    static func message(forServerError error: AgentAPIError) -> String {
+        guard case .server(let status, _) = error else {
+            return L10n.text("ui.push_approval_result_unknown")
+        }
+        switch status {
+        case 404, 410:
+            // 句柄不存在或已作废：过期、已被前台处理、或 agentd 重启后 fail closed。
+            return L10n.text("ui.push_approval_expired")
+        case 409:
+            return L10n.text("ui.push_approval_conflict")
+        case 403:
+            return L10n.text("ui.push_approval_device_not_allowed")
+        case 202:
+            return L10n.text("ui.push_approval_in_progress")
+        default:
+            // 502 是 agentd 够到了但 runtime 没够到——那才是真正的未知。
+            return L10n.text("ui.push_approval_result_unknown")
         }
     }
 

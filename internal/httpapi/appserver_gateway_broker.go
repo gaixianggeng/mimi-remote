@@ -91,6 +91,13 @@ type codexGatewayBroker struct {
 	// pending 保存待审批反向请求原帧，pendingOrder 维持到达顺序，重连按序重放。
 	pending      map[string][]byte
 	pendingOrder []string
+	// initializeResult 是上游对第一次 initialize 的应答内容。
+	//
+	// JSON-RPC 握手是有状态的：上游连接只能被 initialize 一次，但客户端每次重连
+	// 都会重发。缓存下来由 broker 本地应答，上游才不会回 "already initialized"
+	// 把客户端推进重连风暴。
+	initializeResult    json.RawMessage
+	initializeRequestID string
 }
 
 // codexGatewayBrokerKey 读取客户端声明的具名会话。iOS 已经在 gateway URL 上带
@@ -242,6 +249,63 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 		}
 	}
 	return true
+}
+
+// interceptClientFrame 在帧到达上游之前处理握手。
+//
+// 第一次 initialize 照常放行并记下它的 id，好在响应回来时缓存结果；此后每次
+// 重连的 initialize 都由 broker 用缓存结果本地应答，initialized 通知直接吞掉。
+func (b *codexGatewayBroker) interceptClientFrame(payload []byte) (bool, []byte) {
+	var frame appServerGatewayFrame
+	if json.Unmarshal(payload, &frame) != nil {
+		return false, nil
+	}
+	switch strings.TrimSpace(frame.Method) {
+	case "initialize":
+		b.mu.Lock()
+		cached := b.initializeResult
+		if len(cached) == 0 {
+			b.initializeRequestID = gatewayRequestIDKey(frame.ID)
+			b.mu.Unlock()
+			return false, nil
+		}
+		b.mu.Unlock()
+		if frame.ID == nil {
+			return true, nil
+		}
+		response, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      frame.ID,
+			"result":  cached,
+		})
+		if err != nil {
+			// 宁可放行让上游报错，也不静默吞掉客户端的握手。
+			return false, nil
+		}
+		return true, response
+	case "initialized":
+		b.mu.Lock()
+		initialized := len(b.initializeResult) > 0
+		b.mu.Unlock()
+		// 上游已经收过 initialized，重复发送同样会被判为协议错误。
+		return initialized, nil
+	default:
+		return false, nil
+	}
+}
+
+// rememberInitializeResult 捕获上游对首次 initialize 的应答。
+func (b *codexGatewayBroker) rememberInitializeResult(frame *appServerGatewayFrame) {
+	if frame == nil || frame.ID == nil || len(frame.Result) == 0 {
+		return
+	}
+	key := gatewayRequestIDKey(frame.ID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if key == "" || key != b.initializeRequestID || len(b.initializeResult) > 0 {
+		return
+	}
+	b.initializeResult = append(json.RawMessage(nil), frame.Result...)
 }
 
 // replayFramesLocked 只重放 policy 仍认为待处理的请求。policy 已经实现了
@@ -441,6 +505,11 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 		return
 	}
 	method := strings.TrimSpace(frame.Method)
+	if method == "" && frame.ID != nil {
+		// 响应帧：只关心首次 initialize 的结果。
+		b.rememberInitializeResult(&frame)
+		return
+	}
 	if method != "" && frame.ID != nil {
 		created := b.rememberServerRequestFrame(frame.ID, payload)
 		if created && b.currentSink() == nil {
@@ -599,7 +668,7 @@ func (r *Router) runCodexGatewayBrokerClient(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		sink.finish(r.copyClientFramesToAppServer(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor))
+		sink.finish(r.copyClientFramesToAppServer(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor, broker.interceptClientFrame))
 	}()
 	go func() {
 		sink.finish(pingGatewayConnection(ctx, client, clientWriteMu, "client_ping_write"))

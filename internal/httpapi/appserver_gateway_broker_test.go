@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -346,4 +347,89 @@ func TestCodexGatewayBrokerSurvivesRejectedFrameWhileDetached(t *testing.T) {
 	// 会话整体仍然可用：重连能拿回重放。
 	second := brokerDial(t, server, brokerTestSession)
 	readFrameWithMethod(t, second, "execCommandApproval", 3*time.Second)
+}
+
+// 真机验证抓到的重连风暴：broker 复用同一条上游连接，但 JSON-RPC 握手是有状态的。
+// 客户端每次重连都会重发 initialize，上游那条连接早已握过手，于是回
+// "already initialized"，iOS 判定致命错误 → 断开 → 重连，每秒一轮。
+func TestCodexGatewayBrokerAnswersRepeatInitializeLocally(t *testing.T) {
+	up := newBrokerUpstream(t)
+	server, _ := brokerTestServer(t, up.url, true)
+
+	first := brokerDial(t, server, brokerTestSession)
+	upstream := up.accept(t)
+	// 必须先有活跃 turn，broker 才会在客户端断开后存活——没有它 broker 会立刻
+	// 回收，重连拿到的是一条全新上游，也就复现不出握手复用的问题。
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, first, "turn/started", 3*time.Second)
+
+	// 首次握手必须照常送到上游。
+	if err := first.WriteMessage(websocket.TextMessage,
+		[]byte(`{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	forwarded := up.waitForUpstreamFrame(t, func(payload []byte) bool {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		return json.Unmarshal(payload, &frame) == nil && frame.Method == "initialize"
+	}, 3*time.Second)
+	var forwardedFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(forwarded, &forwardedFrame); err != nil {
+		t.Fatal(err)
+	}
+	up.emit(t, upstream, `{"jsonrpc":"2.0","id":`+string(forwardedFrame.ID)+`,"result":{"userAgent":"broker-test"}}`)
+	// 等客户端确实收到首次握手结果，确保 broker 已经缓存下来。
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_ = first.SetReadDeadline(deadline)
+		_, payload, err := first.ReadMessage()
+		if err != nil {
+			t.Fatalf("首次握手没有回到客户端：%v", err)
+		}
+		if bytes.Contains(payload, []byte("broker-test")) {
+			break
+		}
+	}
+	_ = first.Close()
+
+	// 重连后重发握手：必须由 broker 本地应答，上游不能再看到第二次 initialize。
+	second := brokerDial(t, server, brokerTestSession)
+	if err := second.WriteMessage(websocket.TextMessage,
+		[]byte(`{"jsonrpc":"2.0","id":"init-2","method":"initialize","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		_ = second.SetReadDeadline(deadline)
+		_, payload, err := second.ReadMessage()
+		if err != nil {
+			t.Fatalf("重连握手没有得到应答：%v", err)
+		}
+		var frame struct {
+			ID     string          `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(payload, &frame) != nil || frame.ID != "init-2" {
+			continue
+		}
+		if !bytes.Contains(frame.Result, []byte("broker-test")) {
+			t.Fatalf("重连握手应回放缓存结果，got=%s", frame.Result)
+		}
+		break
+	}
+
+	select {
+	case payload := <-up.frames:
+		var frame struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(payload, &frame) == nil && frame.Method == "initialize" {
+			t.Fatal("上游不能收到第二次 initialize —— 这正是 already initialized 的来源")
+		}
+	case <-time.After(500 * time.Millisecond):
+		// 上游安静，符合预期。
+	}
 }

@@ -22,7 +22,7 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	defer policy.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor, nil)
 	}()
 	go func() {
 		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
@@ -80,11 +80,30 @@ func pingGatewayConnection(ctx context.Context, conn *websocket.Conn, writeMu *s
 	}
 }
 
-func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
+// clientFrameInterceptor 让 broker 在帧到达上游之前把它接下来。
+//
+// 它存在的唯一原因是握手状态：broker 复用同一条上游连接，而 JSON-RPC 握手是
+// 有状态的——客户端每次重连都会重发 initialize，上游那条连接却早已握过手，
+// 会回 "already initialized"，客户端据此判定致命错误并重连，形成风暴。
+//
+// 返回 handled=true 表示这一帧不再转发；response 非空时直接回给客户端。
+type clientFrameInterceptor func(payload []byte) (handled bool, response []byte)
+
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, intercept clientFrameInterceptor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
 			return gatewayCloseReason("client_read", err)
+		}
+		if intercept != nil && messageType == websocket.TextMessage {
+			if handled, response := intercept(payload); handled {
+				if len(response) > 0 {
+					if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, response); err != nil {
+						return gatewayCloseReason("client_intercept_write", err)
+					}
+				}
+				continue
+			}
 		}
 		policyStart := time.Now()
 		forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)

@@ -248,3 +248,37 @@ final class LockScreenApprovalTests: XCTestCase {
         return envelope
     }
 }
+
+extension LockScreenApprovalTests {
+    /// agentd 用 HTTP 状态码表达确定结论。把它们一并说成「未知」是在撒谎——
+    /// 设计上明确要求 UI 能表达「已被其他设备处理」「已过期」这些状态。
+    @MainActor
+    func testServerStatusesAreNotCollapsedIntoUnknown() {
+        func message(_ status: Int) -> String {
+            LockScreenApprovalStore.message(forServerError: .server(status: status, message: ""))
+        }
+        XCTAssertEqual(message(404), L10n.text("ui.push_approval_expired"))
+        XCTAssertEqual(message(410), L10n.text("ui.push_approval_expired"))
+        XCTAssertEqual(message(409), L10n.text("ui.push_approval_conflict"))
+        XCTAssertEqual(message(403), L10n.text("ui.push_approval_device_not_allowed"))
+        // 502 是 agentd 够到了但 runtime 没够到，那才是真正的未知。
+        XCTAssertEqual(message(502), L10n.text("ui.push_approval_result_unknown"))
+        XCTAssertEqual(
+            LockScreenApprovalStore.message(forServerError: .invalidResponse),
+            L10n.text("ui.push_approval_result_unknown")
+        )
+    }
+
+    /// 确定结论之后那张通知不再可操作，必须撤下；未知则保留，让用户能重试。
+    @MainActor
+    func testOnlyDefinitiveOutcomesClearTheNotification() {
+        for status in [403, 404, 409, 410] {
+            XCTAssertTrue(
+                LockScreenApprovalStore.isDefinitive(.server(status: status, message: "")),
+                "\(status) 应视为确定结论"
+            )
+        }
+        XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.server(status: 502, message: "")))
+        XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.invalidResponse))
+    }
+}
