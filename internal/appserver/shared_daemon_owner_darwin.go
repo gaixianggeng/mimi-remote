@@ -253,9 +253,9 @@ func resolveSharedDaemonCodexBin(configured string) (string, error) {
 	return canonical, nil
 }
 
-// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 直接执行 Codex
-// Desktop 内置的签名 node，不引入 shell 或 Mimi 可执行文件。node 作为持久
-// supervisor 直接拉起 app-server；最终仍需以 socket peer 父链做运行态验收。
+// renderSharedDaemonLaunchAgent 生成 plist。ProgramArguments 不引入 shell：装在
+// App 内时由 Mimi 主可执行文件充当 TCC 责任进程再拉起签名 node，否则 launchd 直接
+// 执行 node。node 始终是 app-server 的直接父进程，运行态仍以 socket peer 父链验收。
 func renderSharedDaemonLaunchAgent(
 	nodeBin string,
 	codexBin string,
@@ -266,7 +266,8 @@ func renderSharedDaemonLaunchAgent(
 	if strings.TrimSpace(nodeBin) == "" || strings.TrimSpace(codexBin) == "" {
 		return nil, fmt.Errorf("node supervisor 与 codex 路径不能为空")
 	}
-	arguments := sharedDaemonSupervisorProgramArguments(nodeBin, codexBin)
+	responsibleBin, _ := sharedDaemonResolveResponsibleSupervisor()
+	arguments := sharedDaemonLaunchAgentProgramArguments(responsibleBin, nodeBin, codexBin)
 	runAtLoad := true
 	if len(runAtLoadOption) > 0 {
 		runAtLoad = runAtLoadOption[0]

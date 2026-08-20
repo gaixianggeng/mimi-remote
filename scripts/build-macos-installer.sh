@@ -401,7 +401,6 @@ if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
-    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/Agentd.entitlements" \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
     "$AGENT_PATH"
@@ -423,7 +422,6 @@ else
     --sign "$CODESIGN_IDENTITY" \
     --keychain "$KEYCHAIN_PATH" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
-    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/Agentd.entitlements" \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
     "$AGENT_PATH"

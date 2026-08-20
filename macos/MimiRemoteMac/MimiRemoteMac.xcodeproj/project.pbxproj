@@ -12,6 +12,8 @@
 		11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */; };
 		1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 252E87DED48E48439FF3A75F /* BrandColors.swift */; };
 		24DB015A7182EFD4401ABED1 /* PhotoLibraryAccessClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9C3D35758B7D2B2638A2334 /* PhotoLibraryAccessClient.swift */; };
+		4C7A1E9B03D6F2A85B14C7D9 /* CodexDaemonSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2B60F41D7A8C35E0B94F62 /* CodexDaemonSupervisor.swift */; };
+		6D3F8A21C4E07B95D8F3A61C /* CodexDaemonSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9C4E7B15D830F6C29B7E04 /* CodexDaemonSupervisorTests.swift */; };
 		2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */; };
 		2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */; };
 		2F6C3092D9D2A6993F9C62B0 /* ExperimentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97938E4BFF530423DDA33CDC /* ExperimentsView.swift */; };
@@ -56,6 +58,8 @@
 /* Begin PBXFileReference section */
 		01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
 		0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManagementClient.swift; sourceTree = "<group>"; };
+		9E2B60F41D7A8C35E0B94F62 /* CodexDaemonSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDaemonSupervisor.swift; sourceTree = "<group>"; };
+		2A9C4E7B15D830F6C29B7E04 /* CodexDaemonSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDaemonSupervisorTests.swift; sourceTree = "<group>"; };
 		0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiRemoteMacApp.swift; sourceTree = "<group>"; };
 		067C5878128418FC7FEBE76A /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		08DE170A943EDB5164E2CD95 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
@@ -169,6 +173,7 @@
 			children = (
 				DFA410B972FDE86680731233 /* AgentCommandClientTests.swift */,
 				F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */,
+				2A9C4E7B15D830F6C29B7E04 /* CodexDaemonSupervisorTests.swift */,
 				D5DFB2FC63FF54C2F40513F6 /* CodexDesktopIntegrationClientTests.swift */,
 				14513EDAFE3A09C6F7A08CC1 /* ExperimentPresentationTests.swift */,
 				3170FC466DFD34019758BF07 /* HostStoreCodexSharingTests.swift */,
@@ -233,6 +238,7 @@
 		C99BB8B5F433D41956D51A80 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				9E2B60F41D7A8C35E0B94F62 /* CodexDaemonSupervisor.swift */,
 				0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */,
 			);
 			path = App;
@@ -401,6 +407,7 @@
 				DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */,
 				0233FB757655D673A1588B25 /* MenuBarContentView.swift in Sources */,
 				EB40EB38AC0DD1E7C9C3B21E /* MenuRuntimePresentation.swift in Sources */,
+				4C7A1E9B03D6F2A85B14C7D9 /* CodexDaemonSupervisor.swift in Sources */,
 				F496A4E680E86AEC0F3AB5E9 /* MimiRemoteMacApp.swift in Sources */,
 				73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */,
 				B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */,
@@ -419,6 +426,7 @@
 			files = (
 				F0B1F99A2045339CB960772E /* AgentCommandClientTests.swift in Sources */,
 				2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */,
+				6D3F8A21C4E07B95D8F3A61C /* CodexDaemonSupervisorTests.swift in Sources */,
 				D465B71BBE211F263557A9B6 /* CodexDesktopIntegrationClientTests.swift in Sources */,
 				A1A08305F933F264072454B6 /* ExperimentPresentationTests.swift in Sources */,
 				D471180169D1F0DC54E650D6 /* HostStoreCodexSharingTests.swift in Sources */,

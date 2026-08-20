@@ -179,7 +179,6 @@ log "Claude bridge 已内嵌：archs=${architectures[*]} profile=${rust_profile}
 if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
-    --entitlements "$SRCROOT/Resources/Agentd.entitlements" \
     --options runtime --timestamp=none "$agentd_output"
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.claude-bridge \

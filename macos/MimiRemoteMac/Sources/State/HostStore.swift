@@ -1268,8 +1268,10 @@ final class HostStore {
         }
     }
 
-    /// 照片授权必须由可见 App 请求。agentd 只负责使用同一签名主体已经获得的授权，
-    /// 不能在后台静默弹窗；用户拒绝时仍允许服务启动，并在设置页保留手动修复入口。
+    /// 照片授权必须由可见 App 请求：TCC 按 bundle ID 记账，同一 bundle 的
+    /// --codex-daemon-supervisor 进程、以及它拉起的 node 与 codex 都会沿责任链继承这份
+    /// 授权（见 CodexDaemonSupervisor）。后台进程不该静默弹窗，因此在这里一次性问完；
+    /// 用户拒绝时仍允许服务启动，并在设置页保留手动修复入口。
     private func preparePhotoLibraryAccessBeforeMacAgentStart() async {
         guard !didPreparePhotoLibraryAccess else { return }
         didPreparePhotoLibraryAccess = true
