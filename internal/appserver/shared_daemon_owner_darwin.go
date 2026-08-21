@@ -1741,15 +1741,16 @@ func stopSharedDaemonWithExpectedIdentity(
 		return fmt.Errorf("Codex app-server 使用未知 lifecycle backend %q，拒绝迁移", *lifecycle.Backend)
 	}
 	if expected != nil {
-		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		if _, err := captureStableManagedSharedDaemonListenerIdentity(
+			ctx,
+			options,
+			socketPath,
+			lifecycle,
+			expected,
+			sharedDaemonCaptureSignedRuntimeIdentity,
+			inspectSharedDaemonListenerProcess,
+		); err != nil {
 			return fmt.Errorf("停止官方 Codex daemon 前签名父链复核失败：%w", err)
-		}
-		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
-		if inspectErr != nil {
-			return fmt.Errorf("停止官方 Codex daemon 前识别 listener 失败：%w", inspectErr)
-		}
-		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
-			return err
 		}
 	}
 	if err := requireCodexDesktopStopped(ctx, "停止官方 Codex daemon 前"); err != nil {
@@ -1758,15 +1759,16 @@ func stopSharedDaemonWithExpectedIdentity(
 	if expected != nil {
 		// Desktop 探测本身也会产生调度窗口。执行官方 stop 前再绑定一次 PID、
 		// 启动时间和签名父链，避免停止刚替换进来的 listener。
-		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
+		if _, err := captureStableManagedSharedDaemonListenerIdentity(
+			ctx,
+			options,
+			socketPath,
+			lifecycle,
+			expected,
+			sharedDaemonCaptureSignedRuntimeIdentity,
+			inspectSharedDaemonListenerProcess,
+		); err != nil {
 			return fmt.Errorf("执行官方 stop 前签名父链复核失败：%w", err)
-		}
-		current, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
-		if inspectErr != nil {
-			return fmt.Errorf("执行官方 stop 前识别 listener 失败：%w", inspectErr)
-		}
-		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, *expected, current); err != nil {
-			return err
 		}
 	}
 	if err := requireCodexDesktopStopped(ctx, "执行官方 stop 前"); err != nil {

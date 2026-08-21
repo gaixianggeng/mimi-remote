@@ -427,14 +427,16 @@ func stopSharedDaemonForConfirmedDisable(
 		return stopErr
 	}
 	if lifecycle.Backend != nil {
-		if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
-			return fmt.Errorf("共享 daemon listener 缺少签名 supervisor 父链：%w", err)
-		}
-		listener, inspectErr := inspectSharedDaemonListenerProcess(ctx, socketPath)
-		if inspectErr != nil {
-			return fmt.Errorf("识别共享 daemon listener 失败：%w", inspectErr)
-		}
-		if err := validateManagedSharedDaemonListenerIdentity(lifecycle, listener, listener); err != nil {
+		listener, err := captureStableManagedSharedDaemonListenerIdentity(
+			ctx,
+			options,
+			socketPath,
+			lifecycle,
+			nil,
+			sharedDaemonCaptureSignedRuntimeIdentity,
+			inspectSharedDaemonListenerProcess,
+		)
+		if err != nil {
 			return err
 		}
 		return stopSharedDaemonWithExpectedIdentity(ctx, options, owner, &listener)
@@ -533,6 +535,38 @@ func captureStableSignedSharedDaemonListenerIdentity(
 		return sharedDaemonListenerProcess{}, fmt.Errorf("socket owner 与已验签 listener 身份不一致")
 	}
 	return validated, nil
+}
+
+// captureStableManagedSharedDaemonListenerIdentity 把官方 pid backend 报告的
+// PID、调用方已确认的 identity，以及本次实际完成验签的 socket owner 绑定。
+// official stop 不接收 expected identity，因此每次停止前都必须重新完成这组取证。
+func captureStableManagedSharedDaemonListenerIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	socketPath string,
+	lifecycle LocalDaemonLifecycleStatus,
+	expected *sharedDaemonListenerProcess,
+	capture sharedDaemonSignedRuntimeCaptureFunc,
+	inspect sharedDaemonListenerInspectFunc,
+) (sharedDaemonListenerProcess, error) {
+	current, err := captureStableSignedSharedDaemonListenerIdentity(
+		ctx,
+		options,
+		socketPath,
+		capture,
+		inspect,
+	)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, err
+	}
+	bound := current
+	if expected != nil {
+		bound = *expected
+	}
+	if err := validateManagedSharedDaemonListenerIdentity(lifecycle, bound, current); err != nil {
+		return sharedDaemonListenerProcess{}, err
+	}
+	return current, nil
 }
 
 // 旧版 daemon version 会报告 backend=pid，但不返回 PID。此时不能进入依赖

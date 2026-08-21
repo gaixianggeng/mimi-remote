@@ -754,6 +754,46 @@ func TestCaptureStableSignedSharedDaemonListenerIdentityReturnsBoundIdentity(t *
 	}
 }
 
+func TestCaptureStableManagedSharedDaemonListenerIdentityRejectsABASwap(t *testing.T) {
+	a := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/a/codex",
+	}
+	b := a
+	b.PID = 102
+	b.ParentPID = 202
+	b.Executable = "/private/tmp/b/codex"
+	pid := uint32(b.PID)
+	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}
+	expected := b
+	inspectCalls := 0
+
+	_, err := captureStableManagedSharedDaemonListenerIdentity(
+		context.Background(),
+		LocalDaemonOptions{},
+		"/tmp/app.sock",
+		lifecycle,
+		&expected,
+		func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+			// 正常 pid backend 过去只保留外层 inspect 到的 B，丢弃这里验签的 A。
+			return a, nil
+		},
+		func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			inspectCalls++
+			return b, nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "socket owner 与已验签 listener 身份不一致") {
+		t.Fatalf("正常 pid backend 的 B→A→B 换主必须 fail closed：%v", err)
+	}
+	if inspectCalls != 2 {
+		t.Fatalf("必须在验签前后绑定 socket owner：inspect=%d", inspectCalls)
+	}
+}
+
 func TestValidateManagedSharedDaemonListenerIdentity(t *testing.T) {
 	pid := uint32(4321)
 	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}
