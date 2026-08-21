@@ -595,6 +595,10 @@ struct OpenWorkspaceSheet: View {
             directoryBrowser
                 .navigationTitle(L10n.text("ui.open_workspace"))
                 .navigationBarTitleDisplayMode(.inline)
+                // 顶栏与紧贴其下的路径条合成同一块实底。留系统玻璃的话，
+                // 列表照样会从顶栏后面透上来，和刚被路径条挡住的那截接不上。
+                .toolbarBackground(tokens.sidebarBackground, for: .navigationBar)
+                .workspaceOpaqueNavigationBar()
                 .toolbar {
                     if #available(iOS 26.0, *) {
                         ToolbarItem(placement: .cancellationAction) {
@@ -683,12 +687,9 @@ struct OpenWorkspaceSheet: View {
             pathBar
         }
 
-        if #available(iOS 26.0, *) {
-            // 行滚到路径条后方时渐隐，而不是被磨砂层齐刷刷切断。
-            list.scrollEdgeEffectStyle(.soft, for: .top)
-        } else {
-            list
-        }
+        // 顶部渐隐由路径条自己那条渐变负责，不再叠系统 scroll edge：
+        // 两层一起作用时，行的残影会透到层级文字后面。
+        list
     }
 
     @ViewBuilder
@@ -706,13 +707,23 @@ struct OpenWorkspaceSheet: View {
             }
         )
         .background {
-            // 磨砂本身是中性灰。先铺一层画布色再叠材质，路径条才和这一屏的暖白同色系，
-            // 而不是在列表顶上压出一条灰带。
-            ZStack {
-                Rectangle().fill(tokens.sidebarBackground)
-                WorkbenchChromeMaterial(shape: Rectangle(), tokens: tokens)
-                Rectangle().fill(tokens.sidebarBackground.opacity(0.72))
-            }
+            // 路径条必须先读得清楚。磨砂会把从下面滚过去的目录行糊成一层底噪，
+            // 正好压在层级文字后面；这里改成实底，路径落在干净的画布上。
+            Rectangle()
+                .fill(tokens.sidebarBackground)
+                .ignoresSafeArea(edges: .horizontal)
+        }
+        .overlay(alignment: .bottom) {
+            // 实底不等于硬边界：行是在路径条下沿这一小段里渐隐的，
+            // 化开的过程留给渐变，而不是切一条分割线。
+            LinearGradient(
+                colors: [tokens.sidebarBackground, tokens.sidebarBackground.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: WorkspaceBrowsePathBarMetrics.fadeHeight)
+            .allowsHitTesting(false)
+            .offset(y: WorkspaceBrowsePathBarMetrics.fadeHeight)
             .ignoresSafeArea(edges: .horizontal)
         }
     }
@@ -1098,6 +1109,24 @@ struct OpenWorkspaceSheet: View {
     }
 }
 
+enum WorkspaceBrowsePathBarMetrics {
+    /// 路径条下沿的渐隐高度。够长才能读成「行化开了」，再长就会盖住第一行的名字。
+    static let fadeHeight: CGFloat = 14
+}
+
+extension View {
+    /// `toolbarBackground(_:for:)` 只给出颜色，可见性还得单独声明；
+    /// iOS 26 换了新 API，旧系统继续用原来的写法。
+    @ViewBuilder
+    func workspaceOpaqueNavigationBar() -> some View {
+        if #available(iOS 26.0, *) {
+            toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        } else {
+            toolbarBackground(.visible, for: .navigationBar)
+        }
+    }
+}
+
 /// 行按下的那一刻整行浮起一层浅底，抬指即落回：反馈跟着手指走，
 /// 而不是等请求回来才有变化。
 private struct WorkspaceBrowseRowButtonStyle: ButtonStyle {
@@ -1267,10 +1296,10 @@ struct WorkspaceCurrentDirectoryCard: View {
             // 让列表行把 accent 让给真正的主动作（打开）。
             HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
-                    .font(themeStore.uiFont(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(size: 12, weight: .semibold))
                     .accessibilityHidden(true)
                 Text(crumb.name)
-                    .font(themeStore.uiFont(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(size: 14, weight: .semibold))
                     .lineLimit(1)
             }
             .foregroundStyle(tokens.accent)
@@ -1292,7 +1321,7 @@ struct WorkspaceCurrentDirectoryCard: View {
                 onNavigate(crumb.path)
             } label: {
                 Text(crumb.name)
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(size: 14, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
                     // 首段与列表的 16pt 内容边距对齐，之后各段留出 6pt 呼吸。
@@ -1318,8 +1347,8 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Image(systemName: "chevron.compact.right")
-            .font(themeStore.uiFont(size: 11, weight: .semibold))
-            .foregroundStyle(tokens.tertiaryText.opacity(0.55))
+            .font(themeStore.uiFont(size: 12, weight: .semibold))
+            .foregroundStyle(tokens.tertiaryText.opacity(0.6))
             .accessibilityHidden(true)
     }
 
@@ -1327,7 +1356,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(L10n.text("ui.locating_be47409b"))
-            .font(themeStore.uiFont(size: 13))
+            .font(themeStore.uiFont(size: 14))
             .foregroundStyle(tokens.tertiaryText)
             .frame(minHeight: 44)
     }
@@ -1336,7 +1365,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(prefix)
-            .font(themeStore.uiFont(size: 13))
+            .font(themeStore.uiFont(size: 14))
             .foregroundStyle(tokens.tertiaryText)
             .lineLimit(1)
             .padding(.trailing, prefix == "/" ? 0 : 6)
