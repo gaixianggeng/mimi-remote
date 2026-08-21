@@ -295,6 +295,12 @@ struct UnifiedWorkbenchShell: View {
             presentation: .toolbar,
             manageConnections: { openConnectionSettings(layout: layout) }
         )
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // 设备入口移到 Shell 后仍需保持会话页原有的收键盘行为。
+                dismissSessionSearchKeyboard()
+            }
+        )
         .frame(width: 44, height: 44)
 
         if #available(iOS 26.0, *), !reduceTransparency {
@@ -302,6 +308,15 @@ struct UnifiedWorkbenchShell: View {
         } else {
             switcher.workbenchChromeCircle(tokens: tokens)
         }
+    }
+
+    private func dismissSessionSearchKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private func splitLayout(
