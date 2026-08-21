@@ -68,7 +68,7 @@ struct ExperimentsView: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(store.isCodexDesktopBusy ? "正在更新" : store.codexDesktopStatusTitle)
+                        Text(store.codexDesktopStatusTitle)
                     }
                 }
 

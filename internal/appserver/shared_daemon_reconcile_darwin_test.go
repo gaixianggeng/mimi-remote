@@ -10,7 +10,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestConfirmedSharedDaemonDisableRefreshesDeadlineAfterLockWait(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+
+	lockHeld := make(chan struct{})
+	releaseLock := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := withSharedDaemonOperationLock(
+			context.Background(),
+			func() (LocalDaemonStatus, error) {
+				close(lockHeld)
+				<-releaseLock
+				return LocalDaemonStatus{}, nil
+			},
+		)
+		holderDone <- err
+	}()
+	<-lockHeld
+
+	timer := time.AfterFunc(100*time.Millisecond, func() { close(releaseLock) })
+	defer timer.Stop()
+	started := time.Now()
+	var operationStarted time.Time
+	var operationDeadline time.Time
+	_, err := withConfirmedSharedDaemonDisableLock(
+		context.Background(),
+		time.Second,
+		500*time.Millisecond,
+		func(ctx context.Context) (LocalDaemonStatus, error) {
+			operationStarted = time.Now()
+			var ok bool
+			operationDeadline, ok = ctx.Deadline()
+			if !ok {
+				t.Fatal("关闭事务必须有独立 deadline")
+			}
+			return LocalDaemonStatus{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("等待锁后执行关闭事务失败: %v", err)
+	}
+	if err := <-holderDone; err != nil {
+		t.Fatalf("释放测试锁失败: %v", err)
+	}
+	if waited := operationStarted.Sub(started); waited < 80*time.Millisecond {
+		t.Fatalf("测试未制造出有效锁等待: %s", waited)
+	}
+	if remaining := operationDeadline.Sub(operationStarted); remaining < 400*time.Millisecond {
+		t.Fatalf("锁等待侵蚀了关闭事务预算: %s", remaining)
+	}
+}
 
 func TestConfirmedSharedDaemonDisableStopsUnloadsCleansThenCommits(t *testing.T) {
 	home := sharedDaemonTestHome(t)

@@ -7,6 +7,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
+)
+
+const (
+	confirmedSharedDaemonDisableLockWaitTimeout  = 15 * time.Second
+	confirmedSharedDaemonDisableOperationTimeout = 90 * time.Second
 )
 
 // RemoveSharedDaemonOwner 只移除 Mimi 安装的未来启动入口和迁移标记，不停止当前
@@ -24,10 +30,37 @@ func disableSharedDaemonAfterDesktopExit(
 	validate func() error,
 	commit func() error,
 ) error {
-	_, err := withSharedDaemonOperationLock(ctx, func() (LocalDaemonStatus, error) {
-		return disableSharedDaemonAfterDesktopExitUnlocked(ctx, options, validate, commit)
-	})
+	_, err := withConfirmedSharedDaemonDisableLock(
+		ctx,
+		confirmedSharedDaemonDisableLockWaitTimeout,
+		confirmedSharedDaemonDisableOperationTimeout,
+		func(operationCtx context.Context) (LocalDaemonStatus, error) {
+			return disableSharedDaemonAfterDesktopExitUnlocked(
+				operationCtx,
+				options,
+				validate,
+				commit,
+			)
+		},
+	)
 	return err
+}
+
+// confirmed disable 先等待跨进程锁，再为真正的关闭事务创建新预算。两段若
+// 共用同一个 deadline，锁竞争会吃掉官方 daemon graceful drain 的时间。
+func withConfirmedSharedDaemonDisableLock(
+	ctx context.Context,
+	lockWaitTimeout time.Duration,
+	operationTimeout time.Duration,
+	operation func(context.Context) (LocalDaemonStatus, error),
+) (LocalDaemonStatus, error) {
+	lockCtx, cancelLockWait := context.WithTimeout(ctx, lockWaitTimeout)
+	defer cancelLockWait()
+	return withSharedDaemonOperationLock(lockCtx, func() (LocalDaemonStatus, error) {
+		operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
+		defer cancelOperation()
+		return operation(operationCtx)
+	})
 }
 
 type confirmedSharedDaemonDisableHooks struct {
