@@ -220,6 +220,12 @@ struct UnifiedWorkbenchShell: View {
         let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
             bottomSafeAreaInset: bottomSafeAreaInset
         )
+        let showsTabletHostSwitcher = !layout.isPhone && (
+            navigationState.compactSelectedTab == .sessions
+                ? navigationState.compactSessionPath.isEmpty
+                : navigationState.compactSelectedTab == .workspaces
+                    && navigationState.compactWorkspacePath.isEmpty
+        )
 
         return TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
@@ -262,6 +268,14 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
+        .overlay(alignment: .topLeading) {
+            if showsTabletHostSwitcher {
+                compactTabletHostSwitcher(layout: layout, tokens: tokens)
+                    .padding(.leading, 10)
+                    // 顶部 Chrome 的内容线比 TabView overlay 原点高 8pt。
+                    .offset(y: -8)
+            }
+        }
         // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
         .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
@@ -270,6 +284,24 @@ struct UnifiedWorkbenchShell: View {
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
         )
+    }
+
+    @ViewBuilder
+    private func compactTabletHostSwitcher(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens
+    ) -> some View {
+        let switcher = HostSwitcherMenu(
+            presentation: .toolbar,
+            manageConnections: { openConnectionSettings(layout: layout) }
+        )
+        .frame(width: 44, height: 44)
+
+        if #available(iOS 26.0, *), !reduceTransparency {
+            switcher.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            switcher.workbenchChromeCircle(tokens: tokens)
+        }
     }
 
     private func splitLayout(
@@ -1010,7 +1042,7 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         bottomContentMargin: CGFloat? = nil
     ) -> some View {
-        let manageConnections: (() -> Void)? = layout.usesCompactNavigation
+        let manageConnections: (() -> Void)? = layout.usesCompactNavigation && layout.isPhone
             ? { openConnectionSettings(layout: layout) }
             : nil
 
@@ -1038,7 +1070,7 @@ struct UnifiedWorkbenchShell: View {
 
     private func workspaces(layout: WorkbenchLayout) -> some View {
         let manageConnections: (() -> Void)?
-        if layout.usesCompactNavigation {
+        if layout.usesCompactNavigation && layout.isPhone {
             manageConnections = {
                 openConnectionSettings(layout: layout)
             }
