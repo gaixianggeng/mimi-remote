@@ -23,6 +23,7 @@ final class HostStore {
     private(set) var claudeError: String?
     private(set) var codexDesktopStatus = CodexDesktopStatus()
     private(set) var isUpdatingCodexDesktop = false
+    private(set) var codexDesktopTransitionPhase: CodexDesktopTransitionPhase?
     private(set) var codexDesktopError: String?
     private(set) var photoLibraryAuthorization: PhotoLibraryAuthorization
     var lastError: String?
@@ -68,13 +69,19 @@ final class HostStore {
     }
 
     var codexDesktopStatusTitle: String {
-        ExperimentPresentation.codexStatusTitle(for: codexDesktopStatus.state)
+        if let codexDesktopTransitionPhase {
+            return codexDesktopTransitionPhase.title
+        }
+        return ExperimentPresentation.codexStatusTitle(for: codexDesktopStatus.state)
     }
 
     var codexDesktopStatusDetail: String {
+        if let codexDesktopTransitionPhase {
+            return codexDesktopTransitionPhase.detail
+        }
         // 具体错误仍保留在 Store 供诊断和重试使用；展示层仅在待处理/失败边界附上
         // 脱敏后的诊断摘要，避免把底层协议错误（例如裸 -32600）直接暴露给用户。
-        ExperimentPresentation.codexStatusDetail(
+        return ExperimentPresentation.codexStatusDetail(
             for: codexDesktopStatus.state,
             error: codexDesktopError
         )
@@ -558,8 +565,10 @@ final class HostStore {
         }
         isBusy = true
         isUpdatingCodexDesktop = true
+        codexDesktopTransitionPhase = enabled ? .preparingSharedService : .closingDesktop
         codexDesktopError = nil
         defer {
+            codexDesktopTransitionPhase = nil
             isUpdatingCodexDesktop = false
             isBusy = false
         }
@@ -607,6 +616,7 @@ final class HostStore {
                 false,
                 codexHome: nil,
                 afterTermination: {
+                    self.codexDesktopTransitionPhase = .waitingForRunningTasks
                     _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
                         forceReload: hadPendingDisable
                     )
@@ -647,8 +657,10 @@ final class HostStore {
 
         isBusy = true
         isUpdatingCodexDesktop = true
+        codexDesktopTransitionPhase = .preparingRestart
         codexDesktopError = nil
         defer {
+            codexDesktopTransitionPhase = nil
             isUpdatingCodexDesktop = false
             isBusy = false
         }
@@ -666,11 +678,13 @@ final class HostStore {
                 // Desktop 本来已退出时只提交待处理的 backend 切换，不擅自打开
                 // App。禁用路径会在提交 WS 前确认旧 listener 与 loaded job 消失。
                 if codexDesktopEnabled {
+                    codexDesktopTransitionPhase = .preparingSharedService
                     try await agent.restartCodexSharing()
                 } else {
                     // 旧版半回滚可能只留下 launchd 环境而 Desktop 已经退出。
                     // 先清理旧 daemon 并提交 WS，再恢复环境；中途失败时 Desktop
                     // 保持关闭，不能让它按独立环境重新连到仍共享的 backend。
+                    codexDesktopTransitionPhase = .waitingForRunningTasks
                     _ = try await disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
                         forceReload: hadPendingDisable
                     )
@@ -682,18 +696,21 @@ final class HostStore {
                 await refreshAfterCommittedCodexMigration()
                 return
             }
+            codexDesktopTransitionPhase = .closingDesktop
             let snapshot = try await codexDesktop.restartAndApply(afterTermination: {
                 // 用户确认后，backend 迁移严格位于旧 Desktop 退出与新实例打开
                 // 之间。禁用只有在旧 Unix listener 和 loaded job 均消失后才提交 WS。
                 let targetEnabled = self.codexDesktopStatus.environment.pendingEnabled
                     ?? self.codexDesktopEnabled
                 if targetEnabled {
+                    self.codexDesktopTransitionPhase = .preparingSharedService
                     if self.codexDaemonMigrationRequired {
                         try await self.agent.restartCodexSharing()
                         didCommitDaemonMigration = true
                         self.recordCommittedCodexMigration()
                     }
                 } else {
+                    self.codexDesktopTransitionPhase = .waitingForRunningTasks
                     _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
                         forceReload: hadPendingDisable
                     )
@@ -1108,11 +1125,13 @@ final class HostStore {
             )
         }
         if result.restartRequired || forceReload {
+            codexDesktopTransitionPhase = .startingIndependentService
             try await reloadMacAgentForConfigurationChange()
         }
         // 外部管理的 Unix backend 不属于 Mimi，显式关闭只恢复 Desktop 环境，
         // 不等待它变成 WS，也不停止外部进程。
         if result.transport?.caseInsensitiveCompare("unix") != .orderedSame {
+            codexDesktopTransitionPhase = .startingIndependentService
             _ = try await waitForCodexRuntimeShared(false)
         }
         return result
@@ -1946,50 +1965,4 @@ final class HostStore {
         return store
     }
 #endif
-}
-
-private enum ServiceLifecycleError: LocalizedError {
-    case invalidConfiguration(String)
-    case unregisterTimedOut
-    case stopTimedOut
-    case requiresApproval
-    case agentRegistrationFailed(String)
-    case automaticRepairFailed(initial: String, recovery: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidConfiguration(let detail):
-            detail
-        case .unregisterTimedOut:
-            "服务停止超时，未继续启动；请稍后重试。"
-        case .stopTimedOut:
-            "旧服务仍占用当前 Endpoint，未继续启动新版本；请稍后重试。"
-        case .requiresApproval:
-            "请先在系统设置的登录项中允许 Mimi Remote Mac。"
-        case .agentRegistrationFailed(let detail):
-            "系统没有找到原服务记录，自动重新登记失败：\(detail)。请运行诊断并重试。"
-        case .automaticRepairFailed(let initial, let recovery):
-            "服务首次启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
-        }
-    }
-}
-
-private enum ClaudeRuntimeControlError: LocalizedError {
-    case signedOut
-    case unavailable
-    case disabled
-    case timedOut(enabled: Bool)
-
-    var errorDescription: String? {
-        switch self {
-        case .signedOut:
-            "Claude Code 尚未登录。"
-        case .unavailable:
-            "Claude Runtime 未能连接。"
-        case .disabled:
-            "服务重载后 Claude 仍处于关闭状态。"
-        case .timedOut(let enabled):
-            enabled ? "等待 Claude Runtime 连接超时。" : "等待 Claude Runtime 停止超时。"
-        }
-    }
 }

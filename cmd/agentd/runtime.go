@@ -13,6 +13,11 @@ import (
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
+const (
+	codexSharingMutationTimeout         = 45 * time.Second
+	confirmedCodexSharingDisableTimeout = 110 * time.Second
+)
+
 func runRuntime(args []string) error {
 	return runRuntimeWithWriters(args, os.Stdout, os.Stderr)
 }
@@ -70,7 +75,13 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		if *codexSharingDisableConfirmed && enabled {
 			return fmt.Errorf("--codex-sharing-disable-confirmed 只能与 --codex-sharing=disabled 一起使用")
 		}
-		configureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		configureTimeout := codexSharingMutationTimeout
+		if *codexSharingDisableConfirmed {
+			// 内层会分别给跨进程锁等待和关闭事务分配预算。这里覆盖两段预算
+			// 以及命令收尾，避免锁竞争侵蚀官方 daemon 的 graceful drain 时间。
+			configureTimeout = confirmedCodexSharingDisableTimeout
+		}
+		configureCtx, cancel := context.WithTimeout(context.Background(), configureTimeout)
 		var result agentsetup.CodexSharingConfigurationResult
 		if *codexSharingDisableConfirmed {
 			result, err = agentsetup.DisableCodexSharingAfterDesktopExit(configureCtx, *configPath)
@@ -88,7 +99,7 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if hasCodexSharingRestart {
-		restartCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		restartCtx, cancel := context.WithTimeout(context.Background(), codexSharingMutationTimeout)
 		result, err := agentsetup.RestartCodexSharingDaemon(restartCtx, *configPath)
 		cancel()
 		if err != nil {

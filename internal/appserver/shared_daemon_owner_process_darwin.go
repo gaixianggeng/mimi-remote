@@ -96,8 +96,8 @@ func stopUnmanagedSharedDaemonWithExpectedPath(
 // stopUnmanagedSharedDaemonWithExpectedIdentity 在发送 TERM 前把当前 socket
 // owner 与上层已经完成签名父链验证的 identity 绑定。expectedIdentity 为空时
 // 表示旧式 unmanaged SSH listener，仍只按 lifecycle.ManagedCodexPath 校验；
-// stable owner 关闭路径必须传入非空 identity，防止 socket 在上层复核后换成
-// 同一 configured executable/argv 的另一个进程。
+// 非空时表示 stable owner 已完成动态签名与 supervisor 父链验证，因此允许
+// executable 位于一次性 staging 目录，但仍严格绑定原始 argv 和完整进程身份。
 func stopUnmanagedSharedDaemonWithExpectedIdentity(
 	ctx context.Context,
 	socketPath string,
@@ -143,11 +143,27 @@ func validateUnmanagedSharedDaemonWithExpectedIdentity(
 	if err != nil {
 		return sharedDaemonListenerProcess{}, fmt.Errorf("识别非 daemon 管理的 Codex app-server 失败：%w", err)
 	}
-	if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), expectedCodexPath); err != nil {
-		return sharedDaemonListenerProcess{}, err
-	}
 	if expectedIdentity != nil && listener != *expectedIdentity {
 		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex app-server owner 与已验证身份不一致，已停止迁移")
+	}
+	if expectedIdentity == nil {
+		if err := validateSharedDaemonListenerProcess(listener, hooks.currentUID(), expectedCodexPath); err != nil {
+			return sharedDaemonListenerProcess{}, err
+		}
+	} else {
+		// 上层已经按 PID 验证 OpenAI 动态签名和 node supervisor 父链。这里不能
+		// 再把真实 executable 与 Desktop bundle 路径比较，因为 MIM-170 会从
+		// 只读临时 clone 执行 codex；改为复核原始 argv、UID 和同一完整 identity。
+		if strings.TrimSpace(listener.Executable) == "" {
+			return sharedDaemonListenerProcess{}, fmt.Errorf("已验证的共享 daemon listener 缺少 executable 身份")
+		}
+		if err := validateSignedSharedDaemonListenerProcess(
+			listener,
+			hooks.currentUID(),
+			expectedCodexPath,
+		); err != nil {
+			return sharedDaemonListenerProcess{}, fmt.Errorf("已验证的共享 daemon listener 身份无效：%w", err)
+		}
 	}
 	// PID 可能在检查命令行期间退出并被复用。发送信号前再次从 socket
 	// 反查 owner；PID、UID、命令与可执行文件任一变化都停止迁移。

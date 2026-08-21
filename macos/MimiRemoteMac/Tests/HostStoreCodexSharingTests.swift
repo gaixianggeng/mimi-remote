@@ -183,6 +183,71 @@ extension HostStoreTests {
         XCTAssertEqual(store.codexDesktopStatus.state, .disabled)
     }
 
+    func testConfirmedDisableExplainsDrainWithoutPromisingReopen() async {
+        let drainGate = CodexTransitionGate()
+        let completionGate = CodexTransitionGate()
+        let sharing = SharingFlag()
+        sharing.set(true)
+        var enabled = true
+        var appRunning = true
+        let snapshot: () -> CodexDesktopEnvironmentSnapshot = {
+            CodexDesktopEnvironmentSnapshot(
+                hasLocalPreference: true,
+                enabled: enabled,
+                environmentValue: enabled ? "1" : nil,
+                codexHome: enabled ? "/tmp/codex" : nil,
+                appInstalled: true,
+                appRunning: appRunning
+            )
+        }
+        let desktop = CodexDesktopIntegrationClient(
+            inspect: { snapshot() },
+            bootstrap: { snapshot() },
+            setEnabled: { _, _ in snapshot() },
+            restartAndApply: { snapshot() },
+            restartAndApplyWithPreparation: { _, _, preparation in
+                appRunning = false
+                try await preparation()
+                await completionGate.suspend()
+                enabled = false
+                return snapshot()
+            }
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { Self.statusWithCodex(shared: sharing.value) },
+            disableCodexSharingAfterDesktopExit: {
+                await drainGate.suspend()
+                sharing.set(false)
+                return CodexSharingConfigurationResult(
+                    enabled: false,
+                    changed: true,
+                    transport: "ws"
+                )
+            },
+            codexDesktop: desktop
+        )
+
+        await store.bootstrap()
+        let transition = Task { await store.setCodexDesktopEnabled(false) }
+
+        await drainGate.waitUntilSuspended()
+        XCTAssertEqual(store.codexDesktopTransitionPhase, .waitingForRunningTasks)
+        XCTAssertEqual(store.codexDesktopStatusTitle, "正在结束运行中的任务")
+        XCTAssertTrue(store.codexDesktopStatusDetail.contains("任务较长时"))
+
+        await drainGate.resume()
+        await completionGate.waitUntilSuspended()
+        XCTAssertNotEqual(store.codexDesktopStatusTitle, "正在重新打开 Codex Desktop")
+        XCTAssertFalse(store.codexDesktopStatusDetail.contains("重新打开"))
+
+        await completionGate.resume()
+        await transition.value
+        XCTAssertNil(store.codexDesktopTransitionPhase)
+        XCTAssertEqual(store.codexDesktopStatus.state, .disabled)
+    }
+
     func testConfirmedDisableFailureKeepsDesktopClosedAndRetryAvailable() async {
         let events = EventRecorder()
         let sharing = SharingFlag()
@@ -344,5 +409,31 @@ extension HostStoreTests {
         XCTAssertFalse(store.canRestartCodexDesktop)
         XCTAssertNil(store.codexDesktopError)
         XCTAssertTrue(appRunning)
+    }
+}
+
+private actor CodexTransitionGate {
+    private var isSuspended = false
+    private var isReleased = false
+    private var suspension: CheckedContinuation<Void, Never>?
+    private var observers: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        isSuspended = true
+        observers.forEach { $0.resume() }
+        observers.removeAll()
+        guard !isReleased else { return }
+        await withCheckedContinuation { suspension = $0 }
+    }
+
+    func waitUntilSuspended() async {
+        guard !isSuspended else { return }
+        await withCheckedContinuation { observers.append($0) }
+    }
+
+    func resume() {
+        isReleased = true
+        suspension?.resume()
+        suspension = nil
     }
 }

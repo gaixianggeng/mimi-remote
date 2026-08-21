@@ -10,7 +10,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestConfirmedSharedDaemonDisableRefreshesDeadlineAfterLockWait(t *testing.T) {
+	home := sharedDaemonTestHome(t)
+	t.Setenv("HOME", home)
+
+	lockHeld := make(chan struct{})
+	releaseLock := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := withSharedDaemonOperationLock(
+			context.Background(),
+			func() (LocalDaemonStatus, error) {
+				close(lockHeld)
+				<-releaseLock
+				return LocalDaemonStatus{}, nil
+			},
+		)
+		holderDone <- err
+	}()
+	<-lockHeld
+
+	timer := time.AfterFunc(100*time.Millisecond, func() { close(releaseLock) })
+	defer timer.Stop()
+	started := time.Now()
+	var operationStarted time.Time
+	var operationDeadline time.Time
+	_, err := withConfirmedSharedDaemonDisableLock(
+		context.Background(),
+		time.Second,
+		500*time.Millisecond,
+		func(ctx context.Context) (LocalDaemonStatus, error) {
+			operationStarted = time.Now()
+			var ok bool
+			operationDeadline, ok = ctx.Deadline()
+			if !ok {
+				t.Fatal("关闭事务必须有独立 deadline")
+			}
+			return LocalDaemonStatus{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("等待锁后执行关闭事务失败: %v", err)
+	}
+	if err := <-holderDone; err != nil {
+		t.Fatalf("释放测试锁失败: %v", err)
+	}
+	if waited := operationStarted.Sub(started); waited < 80*time.Millisecond {
+		t.Fatalf("测试未制造出有效锁等待: %s", waited)
+	}
+	if remaining := operationDeadline.Sub(operationStarted); remaining < 400*time.Millisecond {
+		t.Fatalf("锁等待侵蚀了关闭事务预算: %s", remaining)
+	}
+}
 
 func TestConfirmedSharedDaemonDisableStopsUnloadsCleansThenCommits(t *testing.T) {
 	home := sharedDaemonTestHome(t)
@@ -665,6 +719,132 @@ func TestStopLegacyPIDBackendWithoutReportedPIDUsesStrictFallback(t *testing.T) 
 	)
 	if !handled || err == nil || validateCalls != 1 || stopCalls != 1 {
 		t.Fatalf("缺少 stable owner 时必须 fail closed：handled=%t validate=%d stop=%d err=%v", handled, validateCalls, stopCalls, err)
+	}
+}
+
+func TestStopLegacyPIDBackendWithoutReportedPIDRejectsABASwapAroundSignedIdentity(t *testing.T) {
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{Backend: &backend}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	a := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/a/codex",
+	}
+	b := a
+	b.PID = 102
+	b.ParentPID = 202
+	b.Executable = "/private/tmp/b/codex"
+	captureCalls := 0
+	inspectCalls := 0
+	stopCalls := 0
+
+	handled, err := stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(ctx context.Context, options LocalDaemonOptions, _ LocalDaemonLifecycleStatus) error {
+			_, captureErr := captureStableSignedSharedDaemonListenerIdentity(
+				ctx,
+				options,
+				"/tmp/app.sock",
+				func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+					captureCalls++
+					// 验签函数只认可 A；模拟 socket 在它前后都由未验签 B 占用，
+					// 中间短暂切回 A 完成验签的 ABA 序列。
+					return a, nil
+				},
+				func(context.Context, string) (sharedDaemonListenerProcess, error) {
+					inspectCalls++
+					return b, nil
+				},
+			)
+			return captureErr
+		},
+		func(context.Context, LocalDaemonOptions) error {
+			stopCalls++
+			return nil
+		},
+	)
+	if !handled || err == nil || !strings.Contains(err.Error(), "socket owner 与已验签 listener 身份不一致") {
+		t.Fatalf("ABA 换主时必须 fail closed：handled=%t err=%v", handled, err)
+	}
+	if captureCalls != 1 || inspectCalls != 2 || stopCalls != 0 {
+		t.Fatalf("ABA 换主后不得停止：capture=%d inspect=%d stop=%d", captureCalls, inspectCalls, stopCalls)
+	}
+}
+
+func TestCaptureStableSignedSharedDaemonListenerIdentityReturnsBoundIdentity(t *testing.T) {
+	expected := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/staged/codex",
+	}
+	inspectCalls := 0
+	got, err := captureStableSignedSharedDaemonListenerIdentity(
+		context.Background(),
+		LocalDaemonOptions{},
+		"/tmp/app.sock",
+		func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+			return expected, nil
+		},
+		func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			inspectCalls++
+			return expected, nil
+		},
+	)
+	if err != nil || got != expected || inspectCalls != 2 {
+		t.Fatalf("稳定且已验签的 listener 应返回同一 identity：got=%+v inspect=%d err=%v", got, inspectCalls, err)
+	}
+}
+
+func TestCaptureStableManagedSharedDaemonListenerIdentityRejectsABASwap(t *testing.T) {
+	a := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/a/codex",
+	}
+	b := a
+	b.PID = 102
+	b.ParentPID = 202
+	b.Executable = "/private/tmp/b/codex"
+	pid := uint32(b.PID)
+	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}
+	expected := b
+	inspectCalls := 0
+
+	_, err := captureStableManagedSharedDaemonListenerIdentity(
+		context.Background(),
+		LocalDaemonOptions{},
+		"/tmp/app.sock",
+		lifecycle,
+		&expected,
+		func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+			// 正常 pid backend 过去只保留外层 inspect 到的 B，丢弃这里验签的 A。
+			return a, nil
+		},
+		func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			inspectCalls++
+			return b, nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "socket owner 与已验签 listener 身份不一致") {
+		t.Fatalf("正常 pid backend 的 B→A→B 换主必须 fail closed：%v", err)
+	}
+	if inspectCalls != 2 {
+		t.Fatalf("必须在验签前后绑定 socket owner：inspect=%d", inspectCalls)
 	}
 }
 

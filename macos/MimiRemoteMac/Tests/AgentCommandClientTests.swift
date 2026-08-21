@@ -2,6 +2,13 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentCommandClientTests: XCTestCase {
+    func testConfirmedDisableTimeoutCoversDaemonDrainAndPostValidation() {
+        XCTAssertEqual(
+            AgentCommandClient.confirmedCodexSharingDisableTimeout,
+            .seconds(115)
+        )
+    }
+
     func testSetupUsesSeparateProjectScanAndHomeBrowseRoots() {
         let arguments = AgentCommandClient.setupArguments(
             workspaceRoot: URL(filePath: "/test-user/code"),
