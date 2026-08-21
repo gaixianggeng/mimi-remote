@@ -172,10 +172,9 @@ struct HostSwitcherMenu: View {
             }
             // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
             .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
-            // 磨砂圆画在 Menu 自己的 label 里，不由调用方在外层补：一是同一个入口在
-            // iPad 顶栏和 iPhone 胶囊行上过去分别是系统玻璃和扁平磨砂，二是外层的 44pt
-            // 框撑不开 Menu 的命中区域，图标只有 22pt 可点。
-            .workbenchChromeCircle(tokens: themeStore.tokens(for: colorScheme))
+            // 磨砂圆交给调用方：放在导航栏里必须用不参与布局的
+            // `workbenchToolbarChromeCircle`，放在自由浮层里才能用带真实尺寸的
+            // `workbenchChromeCircle`。这里统一画会让导航栏那一路撑坏安全区。
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,

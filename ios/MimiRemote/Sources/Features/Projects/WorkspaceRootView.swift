@@ -441,8 +441,9 @@ struct WorkspaceRootView: View {
                                 presentation: .toolbar,
                                 manageConnections: manageConnections
                             )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
                         }
-                        // HostSwitcherMenu 自带磨砂圆；关掉系统共享玻璃，否则两层背景叠在一起。
+                        // 按钮自带磨砂圆；关掉系统共享玻璃，否则两层背景叠在一起。
                         .sharedBackgroundVisibility(.hidden)
                         // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
@@ -452,6 +453,7 @@ struct WorkspaceRootView: View {
                                 presentation: .toolbar,
                                 manageConnections: manageConnections
                             )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
                         }
                     }
                 }
@@ -631,11 +633,11 @@ struct WorkspaceRootView: View {
         HStack(spacing: 8) {
             if !usesTabletTopBarHostSwitcher, let manageConnections {
                 // iPhone 保留原有工作区布局：设备入口与工作区文件夹胶囊共用这一行。
-                // 磨砂圆由 HostSwitcherMenu 的 `.toolbar` label 自己绘制，这里不再叠一层。
                 HostSwitcherMenu(
                     presentation: .toolbar,
                     manageConnections: manageConnections
                 )
+                .workbenchChromeCircle(tokens: tokens)
             }
 
             ScrollViewReader { proxy in

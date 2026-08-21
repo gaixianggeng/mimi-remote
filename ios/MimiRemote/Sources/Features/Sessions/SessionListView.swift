@@ -534,6 +534,7 @@ struct SessionListView: View {
                         presentation: .toolbar,
                         manageConnections: manageConnections
                     )
+                    .workbenchToolbarChromeCircle(tokens: tokens)
                     .simultaneousGesture(
                         TapGesture().onEnded { dismissSessionSearchKeyboard() }
                     )
@@ -657,12 +658,11 @@ struct SessionListView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            // 磨砂圆画在 label 上，命中区域才真的是 44pt；外层 ToolbarItem 负责
-            // 关掉 iOS 26 的系统共享玻璃底板。
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 的系统共享玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
-                .workbenchChromeCircle(tokens: tokens)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
-        .buttonStyle(.plain)
         // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
         .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)
         .tint(tokens.secondaryText)
@@ -1099,7 +1099,7 @@ struct SessionListView: View {
         } label: {
             WorkbenchChromeIcon(systemName: "ellipsis")
                 .foregroundStyle(tokens.secondaryText)
-                .workbenchChromeCircle(tokens: tokens)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         .accessibilityLabel(
             hasActiveFilters

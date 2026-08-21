@@ -270,7 +270,7 @@ struct UnifiedWorkbenchShell: View {
         }
         .overlay(alignment: .topLeading) {
             if showsTabletHostSwitcher {
-                compactTabletHostSwitcher(layout: layout)
+                compactTabletHostSwitcher(layout: layout, tokens: tokens)
                     .padding(.leading, 10)
                     // 顶部 Chrome 的内容线比 TabView overlay 原点高 8pt。
                     .offset(y: -8)
@@ -286,9 +286,11 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    /// 44pt 磨砂圆由 `HostSwitcherMenu` 的 `.toolbar` label 自己绘制，这里不再套第二层：
-    /// 外层的 frame 撑不开 Menu 的命中区域，只会让 22pt 的图标浮在一个更大的背景上。
-    private func compactTabletHostSwitcher(layout: WorkbenchLayout) -> some View {
+    /// 这是 TabView 上的自由浮层，不在导航栏里，所以可以用带真实尺寸的 44pt 磨砂圆。
+    private func compactTabletHostSwitcher(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens
+    ) -> some View {
         HostSwitcherMenu(
             presentation: .toolbar,
             manageConnections: { openConnectionSettings(layout: layout) }
@@ -299,6 +301,7 @@ struct UnifiedWorkbenchShell: View {
                 dismissSessionSearchKeyboard()
             }
         )
+        .workbenchChromeCircle(tokens: tokens)
     }
 
     private func dismissSessionSearchKeyboard() {
@@ -1176,7 +1179,7 @@ struct UnifiedWorkbenchShell: View {
                     } label: {
                         WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.primaryText.opacity(0.72))
-                            .workbenchChromeCircle(tokens: tokens)
+                            .workbenchToolbarChromeCircle(tokens: tokens)
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
@@ -1191,7 +1194,7 @@ struct UnifiedWorkbenchShell: View {
                         } label: {
                             WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
-                                .workbenchChromeCircle(tokens: tokens)
+                                .workbenchToolbarChromeCircle(tokens: tokens)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
                     }
@@ -1660,12 +1663,11 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            // 磨砂圆画在 label 上，和工作区、会话列表的顶栏按钮同源；
-            // 外层 ToolbarItem 负责关掉 iOS 26 自动附加的系统玻璃底板。
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 自动附加的系统玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
-                .workbenchChromeCircle(tokens: tokens)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
-        .buttonStyle(.plain)
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
         .accessibilityLabel(accessibilityLabel)

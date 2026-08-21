@@ -676,6 +676,9 @@ enum WorkbenchChromeIconMetrics {
     static let symbolSize: CGFloat = 15
     static let symbolFrame: CGFloat = 18
     static let minimumHitTarget: CGFloat = 44
+    /// 顶栏磨砂圆的视觉直径。取 40 而不是 44，是因为这正是系统给自己的工具栏圆
+    /// 分配的尺寸——实测把 label 硬设成 44pt，系统会压回 40pt。
+    static let toolbarCircleDiameter: CGFloat = 40
 }
 
 struct WorkbenchChromeIcon: View {
@@ -766,6 +769,25 @@ func workbenchChromeToolbarItem<Content: View>(
 }
 
 extension View {
+    /// 顶栏（`ToolbarItem`）专用：磨砂圆**只作为背景绘制，不参与布局**。
+    ///
+    /// 不能在这里用 `workbenchChromeCircle`。给 ToolbarItem 的 label 硬设 44pt frame
+    /// 会和导航栏的高度协商打架：系统会把它压回 40pt，而这次压缩会让详情列算错安全区。
+    /// 表现是宽屏下从工作区点进会话时 Composer 卡在半空、下方一大片空白，唤起并收起
+    /// 键盘（强制重算一次安全区）才恢复。三次隔离构建定位到就是这个 frame。
+    ///
+    /// 背景不影响父视图尺寸，所以这里画多大都不会动导航栏度量；命中区域仍由系统
+    /// 按工具栏项的标准规则提供。
+    func workbenchToolbarChromeCircle(tokens: ThemeTokens) -> some View {
+        background {
+            WorkbenchChromeMaterial(shape: Circle(), tokens: tokens)
+                .frame(
+                    width: WorkbenchChromeIconMetrics.toolbarCircleDiameter,
+                    height: WorkbenchChromeIconMetrics.toolbarCircleDiameter
+                )
+        }
+    }
+
     /// 顶栏图标按钮统一成 44pt 磨砂圆。放进 `ToolbarItem` 时不要直接用这个，
     /// 走 `workbenchChromeToolbarItem`：它会同时关掉 iPadOS/iOS 26 自动附加的
     /// 共享玻璃底板，否则那层玻璃会叠在这层磨砂下面，形成两层背景。
