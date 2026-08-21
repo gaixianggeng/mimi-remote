@@ -12,6 +12,34 @@ final class CodexDaemonSupervisorTests: XCTestCase {
         CodexDaemonSupervisorInvocation.Command(node: node, codex: codex)
     }
 
+    private struct StagingFixture {
+        let root: URL
+        let command: CodexDaemonSupervisorInvocation.Command
+        let helper: URL
+    }
+
+    private func makeStagingFixture(includeHelper: Bool = true) throws -> StagingFixture {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let resources = root.appending(path: "ChatGPT.app/Contents/Resources")
+        let nodeDirectory = resources.appending(path: "cua_node/bin")
+        try FileManager.default.createDirectory(at: nodeDirectory, withIntermediateDirectories: true)
+
+        let sourceNode = nodeDirectory.appending(path: "node")
+        let sourceCodex = resources.appending(path: "codex")
+        let sourceHelper = resources.appending(path: "codex-code-mode-host")
+        try Data("node".utf8).write(to: sourceNode)
+        try Data("codex".utf8).write(to: sourceCodex)
+        if includeHelper {
+            try Data("code-mode-host".utf8).write(to: sourceHelper)
+        }
+
+        return StagingFixture(
+            root: root,
+            command: .init(node: sourceNode.path, codex: sourceCodex.path),
+            helper: sourceHelper
+        )
+    }
+
     func testParseAcceptsOnlyTheExactSupervisorShape() {
         let flag = CodexDaemonSupervisorInvocation.flag
         XCTAssertEqual(
@@ -115,19 +143,116 @@ final class CodexDaemonSupervisorTests: XCTestCase {
         XCTAssertEqual(environment, ["PATH": "/usr/bin:/bin", "CODEX_HOME": "/tmp/codex-home"])
     }
 
-    func testStageExecutablesVerifiesTheIndependentCopiesAndMakesDirectoryReadOnly() throws {
-        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        let sourceNode = root.appending(path: "source-node")
-        let sourceCodex = root.appending(path: "source-codex")
-        try Data("node".utf8).write(to: sourceNode)
-        try Data("codex".utf8).write(to: sourceCodex)
-        defer { try? FileManager.default.removeItem(at: root) }
+    func testStageExecutablesRejectsMissingCodeModeHostBeforeCloning() throws {
+        let fixture = try makeStagingFixture(includeHelper: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var cloneCalled = false
+        XCTAssertThrowsError(
+            try CodexDaemonSupervisor.stageExecutables(
+                fixture.command,
+                clone: { _, _ in cloneCalled = true },
+                verifySignature: { _, _ in true }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? CodexDaemonSupervisorError,
+                .helperMissing(fixture.helper.path)
+            )
+        }
+        XCTAssertFalse(cloneCalled)
+    }
+
+    func testStageExecutablesRejectsSymbolicLinkCodeModeHostBeforeCloning() throws {
+        let fixture = try makeStagingFixture(includeHelper: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let realHelper = fixture.helper.deletingLastPathComponent().appending(path: "real-code-mode-host")
+        try Data("code-mode-host".utf8).write(to: realHelper)
+        try FileManager.default.createSymbolicLink(at: fixture.helper, withDestinationURL: realHelper)
+
+        var cloneCalled = false
+        XCTAssertThrowsError(
+            try CodexDaemonSupervisor.stageExecutables(
+                fixture.command,
+                clone: { _, _ in cloneCalled = true },
+                verifySignature: { _, _ in true }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? CodexDaemonSupervisorError,
+                .helperMissing(fixture.helper.path)
+            )
+        }
+        XCTAssertFalse(cloneCalled)
+    }
+
+    func testStageExecutablesRejectsUnsignedCodeModeHostAndCleansUp() throws {
+        let fixture = try makeStagingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var stagedDirectory: URL?
+        var thrownError: Error?
+        XCTAssertThrowsError(
+            try CodexDaemonSupervisor.stageExecutables(
+                fixture.command,
+                clone: { source, destination in
+                    stagedDirectory = URL(fileURLWithPath: destination).deletingLastPathComponent()
+                    try FileManager.default.copyItem(atPath: source, toPath: destination)
+                },
+                verifySignature: { _, identifier in
+                    identifier != CodexDaemonSupervisor.codeModeHostSigningIdentifier
+                }
+            )
+        ) { thrownError = $0 }
+        XCTAssertEqual(
+            thrownError as? CodexDaemonSupervisorError,
+            .signatureRejected("一次性 codex-code-mode-host")
+        )
+        XCTAssertNotNil(stagedDirectory)
+        if let stagedDirectory {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: stagedDirectory.path))
+        }
+    }
+
+    func testStageExecutablesCloneFailureCleansUpPartialDirectory() throws {
+        let fixture = try makeStagingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var stagedDirectory: URL?
+        var thrownError: Error?
+        XCTAssertThrowsError(
+            try CodexDaemonSupervisor.stageExecutables(
+                fixture.command,
+                clone: { source, destination in
+                    stagedDirectory = URL(fileURLWithPath: destination).deletingLastPathComponent()
+                    if source == fixture.helper.path {
+                        throw CodexDaemonSupervisorError.stagingFailed("simulated clone failure")
+                    }
+                    try FileManager.default.copyItem(atPath: source, toPath: destination)
+                },
+                verifySignature: { _, _ in true }
+            )
+        ) { thrownError = $0 }
+        XCTAssertEqual(
+            thrownError as? CodexDaemonSupervisorError,
+            .stagingFailed("simulated clone failure")
+        )
+        XCTAssertNotNil(stagedDirectory)
+        if let stagedDirectory {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: stagedDirectory.path))
+        }
+    }
+
+    func testStageExecutablesVerifiesThreeIndependentCopiesAndMakesDirectoryReadOnly() throws {
+        let fixture = try makeStagingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
 
         var verified: [String] = []
+        var clonedSources: [String] = []
         let staging = try CodexDaemonSupervisor.stageExecutables(
-            .init(node: sourceNode.path, codex: sourceCodex.path),
+            fixture.command,
             clone: { source, destination in
+                clonedSources.append(source)
                 try FileManager.default.copyItem(atPath: source, toPath: destination)
             },
             verifySignature: { path, identifier in
@@ -139,9 +264,46 @@ final class CodexDaemonSupervisorTests: XCTestCase {
 
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staging.node)), Data("node".utf8))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staging.codex)), Data("codex".utf8))
-        XCTAssertEqual(verified.count, 2)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: staging.codeModeHost)),
+            Data("code-mode-host".utf8)
+        )
+        XCTAssertEqual(
+            staging.codeModeHost,
+            staging.directory.appending(path: "codex-code-mode-host").path
+        )
+        XCTAssertEqual(clonedSources, [fixture.command.node, fixture.command.codex, fixture.helper.path])
+        XCTAssertEqual(
+            verified.map { $0.components(separatedBy: ":").first! },
+            [
+                CodexDaemonSupervisor.nodeSigningIdentifier,
+                CodexDaemonSupervisor.codexSigningIdentifier,
+                CodexDaemonSupervisor.codeModeHostSigningIdentifier,
+            ]
+        )
+        for path in [staging.node, staging.codex, staging.codeModeHost] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o500)
+        }
         let attributes = try FileManager.default.attributesOfItem(atPath: staging.directory.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o500)
+    }
+
+    func testStageExecutablesCleanupRemovesTheReadOnlyDirectory() throws {
+        let fixture = try makeStagingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let staging = try CodexDaemonSupervisor.stageExecutables(
+            fixture.command,
+            clone: { source, destination in
+                try FileManager.default.copyItem(atPath: source, toPath: destination)
+            },
+            verifySignature: { _, _ in true }
+        )
+        let directory = staging.directory
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        staging.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
 
     func testWaitStatusMappingMatchesSupervisorContract() {

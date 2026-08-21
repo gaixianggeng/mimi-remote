@@ -32,6 +32,7 @@ enum CodexDaemonSupervisorInvocation {
 enum CodexDaemonSupervisorError: Error, Equatable {
     case notInsideDesktopBundle(String)
     case bundleMismatch
+    case helperMissing(String)
     case signatureRejected(String)
     case stagingFailed(String)
     case spawnFailed(String)
@@ -40,6 +41,7 @@ enum CodexDaemonSupervisorError: Error, Equatable {
         switch self {
         case .notInsideDesktopBundle(let name): "\(name) 不在 Codex Desktop App bundle 内"
         case .bundleMismatch: "node 与 codex 不属于同一个 Codex Desktop App bundle"
+        case .helperMissing(let path): "Codex Desktop bundle 缺少可用的 codex-code-mode-host：\(path)"
         case .signatureRejected(let name): "\(name) 不是受支持的 OpenAI 签名程序"
         case .stagingFailed(let detail): "准备一次性共享 daemon 程序失败：\(detail)"
         case .spawnFailed(let detail): "拉起共享 daemon 失败：\(detail)"
@@ -56,6 +58,7 @@ struct CodexDaemonSupervisorStaging {
     let directory: URL
     let node: String
     let codex: String
+    let codeModeHost: String
 
     func remove() {
         _ = chmod(directory.path, S_IRWXU)
@@ -68,6 +71,8 @@ enum CodexDaemonSupervisor {
     static let openAITeamIdentifier = "2DC432GLL2"
     static let nodeSigningIdentifier = "node"
     static let codexSigningIdentifier = "codex"
+    static let codeModeHostSigningIdentifier = "codex-code-mode-host"
+    private static let codeModeHostFilename = "codex-code-mode-host"
     static let stagedCodexEnvironmentKey = "MIMI_REMOTE_PINNED_CODEX_PATH"
     private static let strippedEnvironmentKeys: Set<String> = [
         "CODEX_APP_SERVER_USE_LOCAL_DAEMON",
@@ -136,7 +141,7 @@ enum CodexDaemonSupervisor {
     /// 原始 Desktop App 位于当前用户可写的 /Applications 时，单纯“验签路径后再执行”
     /// 仍有替换窗口。先用 APFS clone 取得独立 inode，再对真正将执行的副本验签；随后
     /// 把目录降为只读。macOS 会在运行中可执行文件被删除时终止进程，因此一次性目录
-    /// 必须保留到 node/codex 都退出，再由 supervisor 统一清理。
+    /// 必须保留到 node、codex 及其 helper 都退出，再由 supervisor 统一清理。
     ///
     /// 这层防护覆盖 App 更新和普通路径替换，不把同 UID 主动篡改临时副本作为安全边界；
     /// 后一种威胁需要 root-owned staging/特权 helper，超出当前无提权 LaunchAgent 的范围。
@@ -145,6 +150,9 @@ enum CodexDaemonSupervisor {
         clone: (String, String) throws -> Void = cloneExecutable,
         verifySignature: (String, String) -> Bool = verifyOpenAISignature
     ) throws -> CodexDaemonSupervisorStaging {
+        // helper 不是 supervisor 的外部参数。它只能由已经验收的 node/codex
+        // bundle 推导，避免调用方把另一份可执行文件带进 TCC 责任进程链。
+        let codeModeHost = try codeModeHostPath(for: command)
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         do {
@@ -155,25 +163,63 @@ enum CodexDaemonSupervisor {
             )
             let stagedNode = directory.appending(path: "node").path
             let stagedCodex = directory.appending(path: "codex").path
+            let stagedCodeModeHost = directory.appending(path: codeModeHostFilename).path
             try clone(command.node, stagedNode)
             try clone(command.codex, stagedCodex)
+            try clone(codeModeHost, stagedCodeModeHost)
             guard verifySignature(stagedNode, nodeSigningIdentifier) else {
                 throw CodexDaemonSupervisorError.signatureRejected("一次性 node supervisor")
             }
             guard verifySignature(stagedCodex, codexSigningIdentifier) else {
                 throw CodexDaemonSupervisorError.signatureRejected("一次性 Codex app-server")
             }
+            guard verifySignature(stagedCodeModeHost, codeModeHostSigningIdentifier) else {
+                throw CodexDaemonSupervisorError.signatureRejected("一次性 codex-code-mode-host")
+            }
             guard chmod(stagedNode, S_IRUSR | S_IXUSR) == 0,
                   chmod(stagedCodex, S_IRUSR | S_IXUSR) == 0,
+                  chmod(stagedCodeModeHost, S_IRUSR | S_IXUSR) == 0,
                   chmod(directory.path, S_IRUSR | S_IXUSR) == 0 else {
                 throw CodexDaemonSupervisorError.stagingFailed(String(cString: strerror(errno)))
             }
-            return .init(directory: directory, node: stagedNode, codex: stagedCodex)
+            return .init(
+                directory: directory,
+                node: stagedNode,
+                codex: stagedCodex,
+                codeModeHost: stagedCodeModeHost
+            )
         } catch {
             _ = chmod(directory.path, S_IRWXU)
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
+    }
+
+    /// 从已验签的 node/codex 对中推导同一 bundle 的 code-mode helper。
+    /// 这里不接受独立 helper 参数，且拒绝 bundle 外的路径或符号链接，避免 TOCTOU
+    /// 防护只覆盖主程序而把 helper 留成可替换的旁路。
+    private static func codeModeHostPath(
+        for command: CodexDaemonSupervisorInvocation.Command
+    ) throws -> String {
+        let node = URL(fileURLWithPath: command.node).resolvingSymlinksInPath().path
+        guard let bundle = desktopBundle(forNode: node) else {
+            throw CodexDaemonSupervisorError.notInsideDesktopBundle("node supervisor")
+        }
+        let resources = URL(fileURLWithPath: bundle).appendingPathComponent("Contents/Resources")
+        let expectedCodex = resources.appendingPathComponent("codex").path
+        let codex = URL(fileURLWithPath: command.codex).resolvingSymlinksInPath().path
+        guard codex == expectedCodex else {
+            throw CodexDaemonSupervisorError.bundleMismatch
+        }
+
+        let helper = resources.appendingPathComponent(codeModeHostFilename).path
+        let helperURL = URL(fileURLWithPath: helper)
+        guard helperURL.resolvingSymlinksInPath().path == helper,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: helper),
+              attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw CodexDaemonSupervisorError.helperMissing(helper)
+        }
+        return helper
     }
 
     static func cloneExecutable(source: String, destination: String) throws {
