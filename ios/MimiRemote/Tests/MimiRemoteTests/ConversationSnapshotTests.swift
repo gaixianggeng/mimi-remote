@@ -68,7 +68,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    // 路径条要在深路径下仍然只占一行高度，并把尾段（当前层级）留在可见区。
+    // 路径条要在深路径下仍然只占一行高度，并从绝对路径的左侧开始展示。
     func testWorkspaceCurrentDirectoryBreadcrumbKeepsSingleRow() {
         let view = WorkspaceCurrentDirectoryCard(
             path: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios/MimiRemote",
