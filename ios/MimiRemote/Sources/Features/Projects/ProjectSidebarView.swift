@@ -595,10 +595,6 @@ struct OpenWorkspaceSheet: View {
             directoryBrowser
                 .navigationTitle(L10n.text("ui.open_workspace"))
                 .navigationBarTitleDisplayMode(.inline)
-                // 顶栏与紧贴其下的路径条合成同一块实底。留系统玻璃的话，
-                // 列表照样会从顶栏后面透上来，和刚被路径条挡住的那截接不上。
-                .toolbarBackground(tokens.sidebarBackground, for: .navigationBar)
-                .workspaceOpaqueNavigationBar()
                 .toolbar {
                     if #available(iOS 26.0, *) {
                         ToolbarItem(placement: .cancellationAction) {
@@ -687,9 +683,13 @@ struct OpenWorkspaceSheet: View {
             pathBar
         }
 
-        // 顶部渐隐由路径条自己那条渐变负责，不再叠系统 scroll edge：
-        // 两层一起作用时，行的残影会透到层级文字后面。
-        list
+        if #available(iOS 26.0, *) {
+            // 行接近路径条时先被系统渐进虚化，再进入材质后方；两段虚化连起来，
+            // 才不会出现「清晰的行忽然贴到层级文字背后」。
+            list.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            list
+        }
     }
 
     @ViewBuilder
@@ -707,24 +707,8 @@ struct OpenWorkspaceSheet: View {
             }
         )
         .background {
-            // 路径条必须先读得清楚。磨砂会把从下面滚过去的目录行糊成一层底噪，
-            // 正好压在层级文字后面；这里改成实底，路径落在干净的画布上。
-            Rectangle()
-                .fill(tokens.sidebarBackground)
+            WorkspaceBrowsePathBarSurface(tokens: tokens)
                 .ignoresSafeArea(edges: .horizontal)
-        }
-        .overlay(alignment: .bottom) {
-            // 实底不等于硬边界：行是在路径条下沿这一小段里渐隐的，
-            // 化开的过程留给渐变，而不是切一条分割线。
-            LinearGradient(
-                colors: [tokens.sidebarBackground, tokens.sidebarBackground.opacity(0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: WorkspaceBrowsePathBarMetrics.fadeHeight)
-            .allowsHitTesting(false)
-            .offset(y: WorkspaceBrowsePathBarMetrics.fadeHeight)
-            .ignoresSafeArea(edges: .horizontal)
         }
     }
 
@@ -1109,20 +1093,25 @@ struct OpenWorkspaceSheet: View {
     }
 }
 
-enum WorkspaceBrowsePathBarMetrics {
-    /// 路径条下沿的渐隐高度。够长才能读成「行化开了」，再长就会盖住第一行的名字。
-    static let fadeHeight: CGFloat = 14
-}
+/// 路径条的材质层。
+///
+/// 这里刻意比其它 chrome 更浓一档：路径条上是一行密排的小字，正下方又是不停滚动的
+/// 目录名，`regularMaterial` 透出来的残影会直接落在层级文字后面。加一层画布色把
+/// 材质拉回这一屏的暖白，滚动时仍看得见内容在后面移动，但只剩一层化开的色块。
+/// Reduce Transparency 下退成等价实色。
+private struct WorkspaceBrowsePathBarSurface: View {
+    let tokens: ThemeTokens
 
-extension View {
-    /// `toolbarBackground(_:for:)` 只给出颜色，可见性还得单独声明；
-    /// iOS 26 换了新 API，旧系统继续用原来的写法。
-    @ViewBuilder
-    func workspaceOpaqueNavigationBar() -> some View {
-        if #available(iOS 26.0, *) {
-            toolbarBackgroundVisibility(.visible, for: .navigationBar)
-        } else {
-            toolbarBackground(.visible, for: .navigationBar)
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ZStack {
+            if reduceTransparency {
+                Rectangle().fill(tokens.sidebarBackground)
+            } else {
+                Rectangle().fill(.ultraThickMaterial)
+                Rectangle().fill(tokens.sidebarBackground.opacity(0.35))
+            }
         }
     }
 }
