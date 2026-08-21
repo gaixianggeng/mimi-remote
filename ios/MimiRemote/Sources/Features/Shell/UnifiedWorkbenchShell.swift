@@ -270,7 +270,7 @@ struct UnifiedWorkbenchShell: View {
         }
         .overlay(alignment: .topLeading) {
             if showsTabletHostSwitcher {
-                compactTabletHostSwitcher(layout: layout, tokens: tokens)
+                compactTabletHostSwitcher(layout: layout)
                     .padding(.leading, 10)
                     // 顶部 Chrome 的内容线比 TabView overlay 原点高 8pt。
                     .offset(y: -8)
@@ -286,12 +286,10 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    @ViewBuilder
-    private func compactTabletHostSwitcher(
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens
-    ) -> some View {
-        let switcher = HostSwitcherMenu(
+    /// 44pt 磨砂圆由 `HostSwitcherMenu` 的 `.toolbar` label 自己绘制，这里不再套第二层：
+    /// 外层的 frame 撑不开 Menu 的命中区域，只会让 22pt 的图标浮在一个更大的背景上。
+    private func compactTabletHostSwitcher(layout: WorkbenchLayout) -> some View {
+        HostSwitcherMenu(
             presentation: .toolbar,
             manageConnections: { openConnectionSettings(layout: layout) }
         )
@@ -301,13 +299,6 @@ struct UnifiedWorkbenchShell: View {
                 dismissSessionSearchKeyboard()
             }
         )
-        .frame(width: 44, height: 44)
-
-        if #available(iOS 26.0, *), !reduceTransparency {
-            switcher.glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            switcher.workbenchChromeCircle(tokens: tokens)
-        }
     }
 
     private func dismissSessionSearchKeyboard() {
