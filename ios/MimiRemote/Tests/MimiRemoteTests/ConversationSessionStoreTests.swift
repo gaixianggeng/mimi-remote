@@ -2880,6 +2880,20 @@ extension ConversationDataFlowTests {
         }
     }
 
+    func testWorkbenchNavigationPreparesCompactWorkspaceBeforeLayoutTransition() {
+        var state = WorkbenchNavigationState(route: .sessions)
+
+        _ = state.reduce(
+            .open(.workspaces, source: nil),
+            usesCompactNavigation: false,
+            selectedSessionID: nil
+        )
+
+        XCTAssertEqual(state.route, .workspaces)
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+    }
+
     func testWorkbenchNavigationRestoresSessionIntoItsSourceStack() {
         var state = WorkbenchNavigationState()
         let route = WorkbenchRestorationRoute.session(

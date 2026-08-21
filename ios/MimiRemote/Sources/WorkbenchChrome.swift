@@ -202,7 +202,7 @@ struct WorkbenchNavigationState: Equatable {
             switch commit.reason {
             case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
-                applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
+                applyRoot(route.rootPage)
                 restoreMeIfNeeded(
                     preservesMe,
                     usesCompactNavigation: usesCompactNavigation
@@ -348,9 +348,9 @@ struct WorkbenchNavigationState: Equatable {
     ) -> WorkbenchNavigationEffect? {
         switch destination {
         case .sessions:
-            applyRoot(.sessions, usesCompactNavigation: usesCompactNavigation)
+            applyRoot(.sessions)
         case .workspaces:
-            applyRoot(.workspaces, usesCompactNavigation: usesCompactNavigation)
+            applyRoot(.workspaces)
         case .me:
             selection = .me
             if usesCompactNavigation {
@@ -375,22 +375,19 @@ struct WorkbenchNavigationState: Equatable {
         return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
     }
 
-    private mutating func applyRoot(
-        _ page: WorkbenchRootPage,
-        usesCompactNavigation: Bool
-    ) {
+    private mutating func applyRoot(_ page: WorkbenchRootPage) {
         pendingSessionSelectionID = nil
         switch page {
         case .sessions:
             route = .sessions
             selection = .sessions
-            guard usesCompactNavigation else { return }
+            // 宽屏期间也要同步隐藏的紧凑 Tab。否则旋转后首帧会先显示旧 Tab，
+            // 再由布局回调纠正，导致 iPad 顶栏第一次落到单独一行。
             compactSelectedTab = .sessions
             compactSessionPath = []
         case .workspaces:
             route = .workspaces
             selection = .workspaces
-            guard usesCompactNavigation else { return }
             compactSelectedTab = .workspaces
             compactWorkspacePath = []
         }

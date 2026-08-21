@@ -36,8 +36,7 @@ struct HostSwitcherMenu: View {
                 hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
             })
             .task(id: platformRefreshTrigger) {
-                guard appStore.connectionProfiles.count > 1,
-                      appStore.connectionProfiles.contains(where: { $0.hostPlatform == .unknown }) else {
+                guard Self.needsPlatformRefresh(appStore.connectionProfiles) else {
                     return
                 }
                 hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
@@ -152,8 +151,8 @@ struct HostSwitcherMenu: View {
                 connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
             )))
         case .toolbar:
-            // 顶栏只表达当前主机可切换；多设备时用服务端真实平台增强辨识度，
-            // 单设备和未知平台继续使用通用电脑，避免根据名称或地址猜测系统。
+            // 顶栏始终使用服务端真实平台增强辨识度；只有未知平台继续使用通用电脑，
+            // 避免根据名称或地址猜测系统。
             ZStack(alignment: .bottomTrailing) {
                 // 圆形按钮的触控范围保持不变，只放大品牌图形的光学占比。
                 HostPlatformGlyph(kind: currentHostIconKind, size: 22)
@@ -186,10 +185,15 @@ struct HostSwitcherMenu: View {
     }
 
     private var currentHostIconKind: HostPlatformIconKind {
-        guard appStore.connectionProfiles.count > 1 else {
-            return .genericComputer
-        }
-        return appStore.activeConnectionProfile?.hostPlatform.iconKind ?? .genericComputer
+        Self.iconKind(for: appStore.activeConnectionProfile)
+    }
+
+    static func iconKind(for profile: ConnectionProfile?) -> HostPlatformIconKind {
+        profile?.hostPlatform.iconKind ?? .genericComputer
+    }
+
+    static func needsPlatformRefresh(_ profiles: [ConnectionProfile]) -> Bool {
+        profiles.contains(where: { $0.hostPlatform == .unknown })
     }
 
     private var platformRefreshTrigger: String {
@@ -218,8 +222,7 @@ struct HostSwitcherMenu: View {
         connectionText: String
     ) -> String {
         var components = [profileName]
-        if appStore.connectionProfiles.count > 1,
-           let platformName = appStore.activeConnectionProfile?.hostPlatform.displayName {
+        if let platformName = appStore.activeConnectionProfile?.hostPlatform.displayName {
             components.append(platformName)
         }
         components.append(connectionText)
