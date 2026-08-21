@@ -344,7 +344,7 @@ extension ComposerView {
             shape.fill(tokens.elevatedSurface)
         } else {
             shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
                 }

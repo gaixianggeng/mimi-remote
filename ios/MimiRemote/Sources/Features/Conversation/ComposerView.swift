@@ -1005,10 +1005,11 @@ struct ComposerView: View {
             } else if isPhoneComposer {
                 // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
                 // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 顶部使用 soft scroll edge，Composer 降到更轻一档的 thinMaterial；
+                // 材质档位跟随全局唯一档：Composer 之前用更轻的 thinMaterial，和同屏的
+                // 顶栏按钮、回到底部浮钮不是一种质感，底部反而显得比控件层还虚。
                 // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
                 shape
-                    .fill(.thinMaterial)
+                    .fill(WorkbenchMaterial.surface)
                     .overlay {
                         shape.fill(tokens.inputBackground.opacity(0.14))
                     }
@@ -1025,10 +1026,9 @@ struct ComposerView: View {
         } else if reduceTransparency {
             shape.fill(tokens.elevatedSurface)
         } else {
-            // 深色输入区继续作为底部唯一的功能材质层；这次只收敛已确认有问题的浅色层级，
-            // 避免连带改变已完成运行态验收的深色 Composer。
+            // 深色输入区继续作为底部唯一的功能材质层，档位与其它表面一致。
             shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(0.46))
                 }

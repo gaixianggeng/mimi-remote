@@ -574,7 +574,7 @@ extension View {
             toolbarBackground(
                 reduceTransparency
                     ? AnyShapeStyle(tokens.elevatedSurface)
-                    : AnyShapeStyle(.ultraThickMaterial),
+                    : AnyShapeStyle(WorkbenchMaterial.surface),
                 for: .tabBar
             )
             .toolbarBackground(.visible, for: .tabBar)
@@ -695,9 +695,22 @@ struct WorkbenchChromeIcon: View {
     }
 }
 
-/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass
-/// 的高光边缘与折射。同一套材质覆盖所有 chrome，避免一屏出现两种玻璃浓度。
-/// Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
+/// 全 App 唯一的材质档位。
+///
+/// 任何需要“看得出后面有东西在动、但读不出内容”的表面都用这一档。过去按控件重要性
+/// 在 `.ultraThin` / `.thin` / `.regular` / `.ultraThick` 之间挑，结果是一屏能同时看到
+/// 三四种模糊浓度——顶栏按钮、Composer、路径条各是一档，体感上互相打架。
+///
+/// 需要更强遮蔽的表面靠在材质上叠一层主题色 tint 解决，**不要换一档材质**：加 tint 是
+/// 在同一层模糊结果上着色，换档位则是换一种质感。也不要给 Material 本身加 opacity，
+/// 那会把已经合成的模糊重新混回清晰背景。
+enum WorkbenchMaterial {
+    /// 扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass 的高光边缘与折射。
+    static let surface: Material = .regularMaterial
+}
+
+/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂。同一套材质覆盖所有 chrome，
+/// 避免一屏出现两种玻璃浓度。Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
 struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     let shape: ChromeShape
     let tokens: ThemeTokens
@@ -711,7 +724,7 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
             if reduceTransparency {
                 shape.fill(tokens.elevatedSurface)
             } else {
-                shape.fill(.regularMaterial)
+                shape.fill(WorkbenchMaterial.surface)
             }
 
             if tintLevel > 0 {
@@ -728,10 +741,37 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     }
 }
 
+/// 顶栏图标控件的统一入口。
+///
+/// iOS 26 会给每个 `ToolbarItem` 自动附加一层系统 Liquid Glass 底板。那层玻璃有高光
+/// 边缘和折射，和工作区胶囊、侧栏按钮共用的扁平磨砂是两种材质——同屏出现就是最刺眼的
+/// 那档冲突（工作区顶栏磨砂、会话页顶栏玻璃，切 Tab 就能看出来）。这里统一关掉系统
+/// 底板，改由 `WorkbenchChromeMaterial` 提供同一档磨砂。
+///
+/// `content` 自己负责画表面——图标按钮和 Menu 都应该在**自己的 label 上**调用
+/// `workbenchChromeCircle`，而不是套在 `Button` / `Menu` 外面：外层的 44pt 框撑不开
+/// 控件的命中区域，只会让图标保持原尺寸可点。
+///
+/// 需要在 `ToolbarItem` 上再挂 `matchedTransitionSource` 的调用方无法复用这个包装，
+/// 请在自己的 `#available(iOS 26.0, *)` 分支里同时补上 `sharedBackgroundVisibility(.hidden)`。
+@ToolbarContentBuilder
+func workbenchChromeToolbarItem<Content: View>(
+    placement: ToolbarItemPlacement,
+    @ViewBuilder content: () -> Content
+) -> some ToolbarContent {
+    let chrome = content()
+    if #available(iOS 26.0, *) {
+        ToolbarItem(placement: placement) { chrome }
+            .sharedBackgroundVisibility(.hidden)
+    } else {
+        ToolbarItem(placement: placement) { chrome }
+    }
+}
+
 extension View {
-    /// 顶栏图标按钮统一成 44pt 磨砂圆。调用方仍需在 ToolbarItem 上加
-    /// `.sharedBackgroundVisibility(.hidden)`，否则 iPadOS/iOS 26 自动附加的玻璃底板
-    /// 会叠在这层磨砂下面，形成两层背景。
+    /// 顶栏图标按钮统一成 44pt 磨砂圆。放进 `ToolbarItem` 时不要直接用这个，
+    /// 走 `workbenchChromeToolbarItem`：它会同时关掉 iPadOS/iOS 26 自动附加的
+    /// 共享玻璃底板，否则那层玻璃会叠在这层磨砂下面，形成两层背景。
     func workbenchChromeCircle(tokens: ThemeTokens) -> some View {
         frame(
             width: WorkbenchChromeIconMetrics.minimumHitTarget,
@@ -849,13 +889,13 @@ struct WorkbenchSidebarContainer<
     }
 
     private var floatingSurfaceBackground: some View {
-        // 大型导航面与普通项目卡复用同一实色；动态玻璃只保留给局部按钮。
+        // 大型导航面与普通项目卡复用同一实色；局部控件一律走扁平磨砂，不引入第二种材质。
         Rectangle()
             .fill(tokens.sidebarSurfaceBackground)
     }
 }
 
-/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用系统玻璃与 SF Symbol 补回入口。
+/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用磨砂圆与 SF Symbol 补回入口。
 struct WorkbenchFloatingSidebarRevealButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
@@ -888,7 +928,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
             brand
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // 收起与展开共用同一个系统玻璃按钮，保证触摸、指针和按压反馈完全一致。
+            // 收起与展开共用同一个磨砂按钮，保证触摸、指针和按压反馈完全一致。
             WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: onCollapse)
                 .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
         }
@@ -899,48 +939,19 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     }
 }
 
-/// 结构切换只保留一层系统按钮玻璃；Reduce Transparency 使用等尺寸实色回退。
+/// 结构切换与其它 chrome 共用同一档扁平磨砂，不走 Liquid Glass：侧栏浮层背景本身是
+/// 实色，玻璃后面没有内容可折射，只会渲染成一枚发亮的高光圆，和旁边工作区胶囊的磨砂
+/// 对不上。Reduce Transparency 由 `WorkbenchChromeMaterial` 内部退成等尺寸实色。
 private struct WorkbenchFloatingSidebarToggleButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    @ViewBuilder
     var body: some View {
-        if #available(iOS 26.0, *), !reduceTransparency {
-            button
-                .buttonStyle(.plain)
-                // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
-                // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
-                .glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            button
-                .buttonStyle(.plain)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(tokens.elevatedSurface)
-                    } else {
-                        // iOS 18–25 使用稳定的系统材质，不模拟 Liquid Glass 的折射与高光。
-                        Circle().fill(.regularMaterial)
-                    }
-                }
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border, lineWidth: 1)
-                }
-        }
-    }
-
-    private var button: some View {
         Button(action: action) {
             WorkbenchChromeIcon(systemName: "sidebar.left")
-                .frame(
-                    width: WorkbenchChromeIconMetrics.minimumHitTarget,
-                    height: WorkbenchChromeIconMetrics.minimumHitTarget
-                )
-                .contentShape(Circle())
+                .workbenchChromeCircle(tokens: tokens)
         }
+        .buttonStyle(.plain)
         .foregroundStyle(tokens.primaryText)
         // 与触控、指针和 VoiceOver 共用同一个 action，不新增第二套 visibility 状态。
         .keyboardShortcut("s", modifiers: [.control, .command])
@@ -948,15 +959,11 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
 }
 
 extension View {
-    /// 主操作在 iOS 26+ 使用原生突出玻璃；旧系统回退到系统强调按钮，
-    /// 只降低材质表现，不改变按钮的 action、禁用态、键盘快捷键或无障碍语义。
-    @ViewBuilder
+    /// 主操作是唯一允许脱离磨砂的 chrome：它靠实心主题色表达“这一屏的下一步”，
+    /// 而不是靠材质厚度。全系统统一使用系统强调按钮，不再在 iOS 26 上换成
+    /// `glassProminent`——那会让同一个按钮在新旧系统上分别是玻璃和实色两种质感。
     func workbenchProminentActionStyle() -> some View {
-        if #available(iOS 26.0, *) {
-            buttonStyle(.glassProminent)
-        } else {
-            buttonStyle(.borderedProminent)
-        }
+        buttonStyle(.borderedProminent)
     }
 }
 
@@ -1250,7 +1257,7 @@ struct RelatedSessionConversationView: View {
         .foregroundStyle(tokens.secondaryText)
         .frame(maxWidth: .infinity, minHeight: 44)
         .padding(.horizontal, 12)
-        .background(.regularMaterial)
+        .background(WorkbenchMaterial.surface)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(tokens.border.opacity(0.72))
@@ -1679,6 +1686,10 @@ private struct WorkbenchTopScrollEdgeBoost: View {
             // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
             let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
             Rectangle()
+                // 这里是全 App 唯一不走 `WorkbenchMaterial.surface` 的地方，而且是有意的：
+                // 它不是一块表面，是叠在系统 soft scroll edge 之上的**第二次采样**，
+                // 实际观感 = 系统边缘虚化 + 这一层。换成同一档 surface 会把顶部压成
+                // 明显比其它表面更浓的一块，正好制造这次要消掉的浓度差。
                 .fill(.ultraThinMaterial)
                 .mask(
                     LinearGradient(

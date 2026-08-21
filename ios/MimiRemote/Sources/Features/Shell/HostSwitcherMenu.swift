@@ -64,7 +64,6 @@ struct HostSwitcherMenu: View {
         case .sidebar:
             switcherMenu
         case .toolbar:
-            // 保留系统工具栏的中性玻璃，只恢复图标本身的主题主色，避免形成额外的大面积焦点。
             switcherMenu
         }
     }
@@ -174,6 +173,10 @@ struct HostSwitcherMenu: View {
             }
             // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
             .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
+            // 磨砂圆画在 Menu 自己的 label 里，不由调用方在外层补：一是同一个入口在
+            // iPad 顶栏和 iPhone 胶囊行上过去分别是系统玻璃和扁平磨砂，二是外层的 44pt
+            // 框撑不开 Menu 的命中区域，图标只有 22pt 可点。
+            .workbenchChromeCircle(tokens: themeStore.tokens(for: colorScheme))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,

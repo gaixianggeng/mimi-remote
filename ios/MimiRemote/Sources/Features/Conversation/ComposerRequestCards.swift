@@ -746,7 +746,7 @@ struct PendingUserInputSheet: View {
                         tokens.background
                     } else {
                         Rectangle()
-                            .fill(.ultraThinMaterial)
+                            .fill(WorkbenchMaterial.surface)
                             .overlay(tokens.background.opacity(colorScheme == .light ? 0.76 : 0.62))
                     }
                 }
