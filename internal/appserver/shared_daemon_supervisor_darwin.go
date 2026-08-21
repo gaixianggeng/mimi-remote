@@ -47,9 +47,10 @@ const (
 var (
 	// 测试替换 resolver/validator 后可以使用临时可执行文件，不依赖本机安装
 	// ChatGPT.app，也不会伪造系统 codesign 输出。
-	sharedDaemonResolveSupervisorNode = resolveSharedDaemonSupervisorNode
-	sharedDaemonValidateSupervisor    = validateSharedDaemonSupervisorBinaries
-	sharedDaemonValidateSignedRuntime = validateSignedSharedDaemonRuntime
+	sharedDaemonResolveSupervisorNode        = resolveSharedDaemonSupervisorNode
+	sharedDaemonValidateSupervisor           = validateSharedDaemonSupervisorBinaries
+	sharedDaemonValidateSignedRuntime        = validateSignedSharedDaemonRuntime
+	sharedDaemonCaptureSignedRuntimeIdentity = captureSignedSharedDaemonRuntimeIdentity
 )
 
 type sharedDaemonCodeSigningTarget struct {
@@ -297,25 +298,37 @@ func validateSignedSharedDaemonRuntime(
 	options LocalDaemonOptions,
 	socketPath string,
 ) error {
+	_, err := captureSignedSharedDaemonRuntimeIdentity(ctx, options, socketPath)
+	return err
+}
+
+// captureSignedSharedDaemonRuntimeIdentity 返回它实际完成动态签名、父链和稳定性
+// 复核的 listener。关闭路径必须绑定这份 identity，不能在验签返回后另行猜测
+// socket owner，否则 A→B→A→B 的 ABA 切换可以把未验签进程混入停止目标。
+func captureSignedSharedDaemonRuntimeIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	socketPath string,
+) (sharedDaemonListenerProcess, error) {
 	codexPath, err := resolveSharedDaemonCodexBin(options.CodexBin)
 	if err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	nodePath, err := sharedDaemonResolveSupervisorNode(codexPath)
 	if err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 
 	listener, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
 	if err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	if listener.ParentPID <= 1 {
-		return fmt.Errorf("共享 daemon listener 缺少签名 node supervisor")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("共享 daemon listener 缺少签名 node supervisor")
 	}
 	supervisor, err := inspectSharedDaemonProcessIdentity(listener.ParentPID, os.Getuid())
 	if err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	if err := validateSignedSharedDaemonProcessChain(
 		listener,
@@ -325,20 +338,20 @@ func validateSignedSharedDaemonRuntime(
 		codexPath,
 		validateSharedDaemonRunningCodeSignature,
 	); err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 
 	// PID、启动时间和命令行在两次取证间任一变化都 fail closed，避免把 PID
 	// 复用或 socket 竞争赢家错误归因给刚安装的 supervisor。
 	confirmedListener, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
 	if err != nil || confirmedListener != listener {
-		return fmt.Errorf("共享 daemon listener 在身份复核期间发生变化")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("共享 daemon listener 在身份复核期间发生变化")
 	}
 	confirmedSupervisor, err := inspectSharedDaemonProcessIdentity(supervisor.PID, os.Getuid())
 	if err != nil || confirmedSupervisor != supervisor {
-		return fmt.Errorf("共享 daemon supervisor 在身份复核期间发生变化")
+		return sharedDaemonListenerProcess{}, fmt.Errorf("共享 daemon supervisor 在身份复核期间发生变化")
 	}
-	return nil
+	return confirmedListener, nil
 }
 
 func validateSignedSharedDaemonProcessChain(

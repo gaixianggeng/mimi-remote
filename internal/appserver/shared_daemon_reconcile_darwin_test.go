@@ -668,6 +668,92 @@ func TestStopLegacyPIDBackendWithoutReportedPIDUsesStrictFallback(t *testing.T) 
 	}
 }
 
+func TestStopLegacyPIDBackendWithoutReportedPIDRejectsABASwapAroundSignedIdentity(t *testing.T) {
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{Backend: &backend}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	a := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/a/codex",
+	}
+	b := a
+	b.PID = 102
+	b.ParentPID = 202
+	b.Executable = "/private/tmp/b/codex"
+	captureCalls := 0
+	inspectCalls := 0
+	stopCalls := 0
+
+	handled, err := stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(ctx context.Context, options LocalDaemonOptions, _ LocalDaemonLifecycleStatus) error {
+			_, captureErr := captureStableSignedSharedDaemonListenerIdentity(
+				ctx,
+				options,
+				"/tmp/app.sock",
+				func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+					captureCalls++
+					// 验签函数只认可 A；模拟 socket 在它前后都由未验签 B 占用，
+					// 中间短暂切回 A 完成验签的 ABA 序列。
+					return a, nil
+				},
+				func(context.Context, string) (sharedDaemonListenerProcess, error) {
+					inspectCalls++
+					return b, nil
+				},
+			)
+			return captureErr
+		},
+		func(context.Context, LocalDaemonOptions) error {
+			stopCalls++
+			return nil
+		},
+	)
+	if !handled || err == nil || !strings.Contains(err.Error(), "socket owner 与已验签 listener 身份不一致") {
+		t.Fatalf("ABA 换主时必须 fail closed：handled=%t err=%v", handled, err)
+	}
+	if captureCalls != 1 || inspectCalls != 2 || stopCalls != 0 {
+		t.Fatalf("ABA 换主后不得停止：capture=%d inspect=%d stop=%d", captureCalls, inspectCalls, stopCalls)
+	}
+}
+
+func TestCaptureStableSignedSharedDaemonListenerIdentityReturnsBoundIdentity(t *testing.T) {
+	expected := sharedDaemonListenerProcess{
+		PID:        101,
+		ParentPID:  201,
+		UID:        os.Getuid(),
+		StartSec:   301,
+		Executable: "/private/tmp/staged/codex",
+	}
+	inspectCalls := 0
+	got, err := captureStableSignedSharedDaemonListenerIdentity(
+		context.Background(),
+		LocalDaemonOptions{},
+		"/tmp/app.sock",
+		func(context.Context, LocalDaemonOptions, string) (sharedDaemonListenerProcess, error) {
+			return expected, nil
+		},
+		func(context.Context, string) (sharedDaemonListenerProcess, error) {
+			inspectCalls++
+			return expected, nil
+		},
+	)
+	if err != nil || got != expected || inspectCalls != 2 {
+		t.Fatalf("稳定且已验签的 listener 应返回同一 identity：got=%+v inspect=%d err=%v", got, inspectCalls, err)
+	}
+}
+
 func TestValidateManagedSharedDaemonListenerIdentity(t *testing.T) {
 	pid := uint32(4321)
 	lifecycle := LocalDaemonLifecycleStatus{PID: &pid}

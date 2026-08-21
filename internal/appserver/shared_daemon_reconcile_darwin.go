@@ -454,22 +454,15 @@ func stopSharedDaemonForConfirmedDisable(
 	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
 		return err
 	}
-	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
-		return fmt.Errorf("共享 daemon listener 缺少签名 supervisor 父链：%w", err)
-	}
-	listener, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
+	confirmed, err := captureStableSignedSharedDaemonListenerIdentity(
+		ctx,
+		options,
+		socketPath,
+		sharedDaemonCaptureSignedRuntimeIdentity,
+		inspectSharedDaemonListenerProcess,
+	)
 	if err != nil {
-		return fmt.Errorf("识别共享 daemon listener 失败：%w", err)
-	}
-	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
-		return fmt.Errorf("再次确认共享 daemon listener 身份失败：%w", err)
-	}
-	confirmed, err := inspectSharedDaemonListenerProcess(ctx, socketPath)
-	if err != nil {
-		return fmt.Errorf("再次确认共享 daemon owner 失败：%w", err)
-	}
-	if confirmed != listener {
-		return fmt.Errorf("共享 daemon owner 在正常关闭前发生变化，已停止关闭")
+		return fmt.Errorf("确认共享 daemon listener 身份失败：%w", err)
 	}
 	if err := requireCodexDesktopStopped(ctx, "正常终止共享 daemon 前"); err != nil {
 		return err
@@ -499,6 +492,48 @@ type legacyPIDBackendValidateFunc func(
 ) error
 
 type legacyPIDBackendStopFunc func(context.Context, LocalDaemonOptions) error
+
+type sharedDaemonSignedRuntimeCaptureFunc func(
+	context.Context,
+	LocalDaemonOptions,
+	string,
+) (sharedDaemonListenerProcess, error)
+
+type sharedDaemonListenerInspectFunc func(
+	context.Context,
+	string,
+) (sharedDaemonListenerProcess, error)
+
+// captureStableSignedSharedDaemonListenerIdentity 把动态签名/父链证明与调用方
+// 看到的 socket owner 绑定。capture 返回它内部实际验签并稳定复核过的 identity；
+// 前后两次 socket 取证必须都等于它，ABA 换主也不能把未验签进程混入停止目标。
+func captureStableSignedSharedDaemonListenerIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	socketPath string,
+	capture sharedDaemonSignedRuntimeCaptureFunc,
+	inspect sharedDaemonListenerInspectFunc,
+) (sharedDaemonListenerProcess, error) {
+	if capture == nil || inspect == nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("共享 daemon listener 缺少安全取证实现")
+	}
+	before, err := inspect(ctx, socketPath)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("验签前识别 listener 失败：%w", err)
+	}
+	validated, err := capture(ctx, options, socketPath)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("listener 缺少签名 supervisor 父链：%w", err)
+	}
+	after, err := inspect(ctx, socketPath)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("验签后识别 listener 失败：%w", err)
+	}
+	if before != validated || after != validated {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("socket owner 与已验签 listener 身份不一致")
+	}
+	return validated, nil
+}
 
 // 旧版 daemon version 会报告 backend=pid，但不返回 PID。此时不能进入依赖
 // lifecycle.PID 的普通路径；先严格验证真实 socket peer，再继续调用官方 stop。
@@ -550,14 +585,25 @@ func validateLegacyPIDBackendListener(
 	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err != nil {
 		return err
 	}
-	if err := sharedDaemonValidateSignedRuntime(ctx, options, socketPath); err != nil {
-		return fmt.Errorf("旧 pid backend 缺少签名 supervisor 父链：%w", err)
+	listener, err := captureStableSignedSharedDaemonListenerIdentity(
+		ctx,
+		options,
+		socketPath,
+		sharedDaemonCaptureSignedRuntimeIdentity,
+		inspectSharedDaemonListenerProcess,
+	)
+	if err != nil {
+		return fmt.Errorf("确认旧 pid backend listener 身份失败：%w", err)
+	}
+	expectedCodexPath, err := resolveSharedDaemonCodexBin(options.CodexBin)
+	if err != nil {
+		return fmt.Errorf("解析旧 pid backend Codex 可执行文件失败：%w", err)
 	}
 	_, err = validateUnmanagedSharedDaemonWithExpectedIdentity(
 		ctx,
 		socketPath,
-		lifecycle.ManagedCodexPath,
-		nil,
+		expectedCodexPath,
+		&listener,
 		unmanagedSharedDaemonHooks{
 			desktopRunning: sharedDaemonDesktopRunning,
 			inspect:        inspectSharedDaemonListenerProcess,
