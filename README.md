@@ -212,7 +212,7 @@ Private-LAN access is opt-in. Without Tailscale and without that selection, a fr
 
 Requirements:
 
-- A Mac running macOS 26 or later, with Codex CLI installed and signed in.
+- A Mac running macOS 15 or later, with Codex CLI installed and signed in.
 - The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
 
 For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
