@@ -356,6 +356,245 @@ func TestExternalActivityAlsoSupportsUserMessageBeforeTaskStarted(t *testing.T) 
 	}
 }
 
+func TestExternalActivitySupportsCurrentItemCompletedUserMessageFormat(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		lines func(time.Time) []string
+	}{
+		{
+			name: "task_started before item_completed",
+			lines: func(now time.Time) []string {
+				return []string{
+					externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-ipad"),
+					externalItemCompletedUserMessageLine(
+						now.Add(time.Second),
+						"thread-ipad",
+						"turn-ipad",
+						"client-ipad",
+					),
+				}
+			},
+		},
+		{
+			name: "item_completed before task_started",
+			lines: func(now time.Time) []string {
+				return []string{
+					externalItemCompletedUserMessageLine(
+						now.Add(100*time.Millisecond),
+						"thread-ipad",
+						"turn-ipad",
+						"client-ipad",
+					),
+					externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-ipad"),
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			fixture.tracker.now = func() time.Time { return now }
+			fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+			path := fixture.writeRollout("thread-ipad", "Codex Desktop", fixture.projectDir, tc.lines(now)...)
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode",
+				ThreadSource: "user", RolloutPath: path,
+			}}
+
+			if got := fixture.snapshot(t); len(got) != 0 {
+				t.Fatalf("当前 item_completed/UserMessage 格式不应被识别为 Desktop external：%+v", got)
+			}
+			entry := fixture.tracker.files[path]
+			if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+				t.Fatalf("当前格式应复用 gateway 归属和 task_started 顺序逻辑：%+v", entry)
+			}
+		})
+	}
+}
+
+func TestExternalActivityIgnoresNonUserMessageItemCompleted(t *testing.T) {
+	itemTypes := []string{"AgentMessage", "user_message", " UserMessage "}
+	for _, itemType := range itemTypes {
+		t.Run(itemType, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+			fixture.tracker.now = func() time.Time { return now }
+			fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+			path := fixture.writeRollout(
+				"thread-1",
+				"Codex Desktop",
+				fixture.projectDir,
+				externalItemCompletedLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"turn-desktop",
+					itemType,
+					"client-ipad",
+				),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			)
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-1", CWD: fixture.projectDir, Source: "vscode",
+				ThreadSource: "user", RolloutPath: path,
+			}}
+
+			got := fixture.snapshot(t)
+			if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+				t.Fatalf("非精确 UserMessage item 不得隐藏 Desktop turn：%+v", got)
+			}
+			entry := fixture.tracker.files[path]
+			if entry.gatewayOwned || entry.gatewayTurnPending {
+				t.Fatalf("非 UserMessage item 不得产生 gateway ownership：%+v", entry)
+			}
+		})
+	}
+}
+
+func TestExternalActivityCurrentUserMessageRequiresExactClientID(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		eventClient string
+	}{
+		{name: "wrong client id", eventClient: "client-desktop"},
+		{name: "missing client id", eventClient: ""},
+		{name: "whitespace client id", eventClient: "   "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			fixture.tracker.now = func() time.Time { return now }
+			fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+			path := fixture.writeRollout(
+				"thread-1",
+				"Codex Desktop",
+				fixture.projectDir,
+				externalItemCompletedUserMessageLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"turn-desktop",
+					tc.eventClient,
+				),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			)
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-1", CWD: fixture.projectDir, Source: "vscode",
+				ThreadSource: "user", RolloutPath: path,
+			}}
+
+			got := fixture.snapshot(t)
+			if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+				t.Fatalf("空或错误 client_id 必须 fail-closed 保留 Desktop external：%+v", got)
+			}
+			entry := fixture.tracker.files[path]
+			if entry.gatewayOwned || entry.gatewayTurnPending {
+				t.Fatalf("空或错误 client_id 不得产生 gateway ownership：%+v", entry)
+			}
+		})
+	}
+}
+
+func TestExternalActivityCurrentUserMessageRequiresExactTurnID(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		lines []string
+	}{
+		{
+			name: "pending evidence cannot claim different started turn",
+			lines: []string{
+				externalItemCompletedUserMessageLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"turn-ipad",
+					"client-ipad",
+				),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			},
+		},
+		{
+			name: "late evidence cannot claim superseding desktop turn",
+			lines: []string{
+				externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
+				externalEventLineAt(now.Add(200*time.Millisecond), "task_complete", "turn-ipad"),
+				externalEventLineAt(now.Add(300*time.Millisecond), "task_started", "turn-desktop"),
+				externalItemCompletedUserMessageLine(
+					now.Add(500*time.Millisecond),
+					"thread-1",
+					"turn-ipad",
+					"client-ipad",
+				),
+			},
+		},
+		{
+			name: "terminal clears pending evidence before desktop turn",
+			lines: []string{
+				externalItemCompletedUserMessageLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"turn-ipad",
+					"client-ipad",
+				),
+				externalEventLineAt(now.Add(200*time.Millisecond), "task_complete", "turn-ipad"),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			},
+		},
+		{
+			name: "missing turn id fails closed",
+			lines: []string{
+				externalItemCompletedUserMessageLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"",
+					"client-ipad",
+				),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			fixture.tracker.now = func() time.Time { return now }
+			fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+			path := fixture.writeRollout(
+				"thread-1",
+				"Codex Desktop",
+				fixture.projectDir,
+				tc.lines...,
+			)
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-1", CWD: fixture.projectDir, Source: "vscode",
+				ThreadSource: "user", RolloutPath: path,
+			}}
+
+			got := fixture.snapshot(t)
+			if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+				t.Fatalf("不匹配或缺失 turn_id 必须 fail-closed 保留 Desktop external：%+v", got)
+			}
+			entry := fixture.tracker.files[path]
+			if !entry.active || entry.turnID != "turn-desktop" ||
+				entry.gatewayOwned || entry.gatewayTurnPending {
+				t.Fatalf("Desktop turn 不得吸收其他 turn 的 ownership 证据：%+v", entry)
+			}
+		})
+	}
+}
+
 func TestExternalActivityExpiredPendingEvidenceCannotHideLaterDesktopTurn(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
@@ -986,6 +1225,39 @@ func externalUserMessageLine(timestamp time.Time, clientID string) string {
 	payload := map[string]any{"type": "user_message"}
 	if strings.TrimSpace(clientID) != "" {
 		payload["client_id"] = clientID
+	}
+	record := map[string]any{
+		"timestamp": timestamp.UTC().Format(time.RFC3339Nano),
+		"type":      "event_msg",
+		"payload":   payload,
+	}
+	data, _ := json.Marshal(record)
+	return string(data)
+}
+
+func externalItemCompletedUserMessageLine(
+	timestamp time.Time,
+	threadID string,
+	turnID string,
+	clientID string,
+) string {
+	return externalItemCompletedLine(timestamp, threadID, turnID, "UserMessage", clientID)
+}
+
+func externalItemCompletedLine(timestamp time.Time, threadID, turnID, itemType, clientID string) string {
+	item := map[string]any{"type": itemType}
+	if clientID != "" {
+		item["client_id"] = clientID
+	}
+	payload := map[string]any{
+		"type": "item_completed",
+		"item": item,
+	}
+	if threadID != "" {
+		payload["thread_id"] = threadID
+	}
+	if turnID != "" {
+		payload["turn_id"] = turnID
 	}
 	record := map[string]any{
 		"timestamp": timestamp.UTC().Format(time.RFC3339Nano),
