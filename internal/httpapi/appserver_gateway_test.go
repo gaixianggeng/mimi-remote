@@ -404,6 +404,32 @@ func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 	}
 }
 
+func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
+	env := buildClaudeBridgeEnv(map[string]string{
+		"https_proxy": "http://127.0.0.1:18080",
+	})
+
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			canonical := strings.ToUpper(key)
+			if _, exists := values[canonical]; exists {
+				t.Fatalf("代理环境变量不应因大小写重复：%v", env)
+			}
+			values[canonical] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://127.0.0.1:10808" ||
+		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
+		values["NO_PROXY"] != "localhost,127.0.0.1" {
+		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
+	}
+}
+
 func TestClaudeGatewayLimitReturnsJSONRPCErrorFrame(t *testing.T) {
 	bridge := writeTestBridge(t, `#!/bin/sh
 while IFS= read -r line; do sleep 10; done

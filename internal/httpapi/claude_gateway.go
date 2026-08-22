@@ -765,7 +765,11 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 }
 
 func buildClaudeBridgeEnv(extra map[string]string) []string {
-	keys := []string{"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM"}
+	keys := []string{
+		"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM",
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+	}
 	out := make([]string, 0, len(keys)+len(extra))
 	seen := map[string]struct{}{}
 	for _, key := range keys {
@@ -773,17 +777,23 @@ func buildClaudeBridgeEnv(extra map[string]string) []string {
 		if value == "" {
 			continue
 		}
+		canonicalKey := strings.ToUpper(key)
+		if _, ok := seen[canonicalKey]; ok {
+			continue
+		}
 		out = append(out, key+"="+value)
-		seen[key] = struct{}{}
+		seen[canonicalKey] = struct{}{}
 	}
 	for key, value := range extra {
 		key = strings.TrimSpace(key)
 		if key == "" || strings.Contains(key, "=") {
 			continue
 		}
-		if _, ok := seen[key]; ok {
+		canonicalKey := strings.ToUpper(key)
+		if _, ok := seen[canonicalKey]; ok {
 			for i, item := range out {
-				if strings.HasPrefix(item, key+"=") {
+				existingKey, _, _ := strings.Cut(item, "=")
+				if strings.EqualFold(existingKey, key) {
 					out[i] = key + "=" + value
 					break
 				}
@@ -791,12 +801,14 @@ func buildClaudeBridgeEnv(extra map[string]string) []string {
 			continue
 		}
 		out = append(out, key+"="+value)
+		seen[canonicalKey] = struct{}{}
 	}
 	// 远程 Claude 通道永不允许绕过权限；即使本机配置误设为 true，也在进程边界强制覆盖。
 	const bypassKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
 	foundBypass := false
 	for index, item := range out {
-		if strings.HasPrefix(item, bypassKey+"=") {
+		key, _, _ := strings.Cut(item, "=")
+		if strings.EqualFold(key, bypassKey) {
 			out[index] = bypassKey + "=false"
 			foundBypass = true
 			break

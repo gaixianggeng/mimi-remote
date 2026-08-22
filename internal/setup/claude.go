@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -34,15 +33,26 @@ type ClaudeConfigurationResult struct {
 	PreviousPreference ClaudeActivationPreference `json:"previous_preference"`
 	Changed            bool                       `json:"changed"`
 	RestartRequired    bool                       `json:"restart_required"`
+	ClaudeBin          string                     `json:"claude_bin,omitempty"`
+	ClaudeVersion      string                     `json:"claude_version,omitempty"`
+	LoggedIn           *bool                      `json:"logged_in,omitempty"`
+	ProxyConfigured    bool                       `json:"proxy_configured"`
+	SystemProxyEnabled bool                       `json:"system_proxy_enabled"`
+	ProxyMismatch      bool                       `json:"proxy_mismatch"`
 	Reason             string                     `json:"reason"`
 	Message            string                     `json:"message"`
 }
 
 type claudePreflightResult struct {
-	OK        bool
-	ClaudeBin string
-	Reason    string
-	Message   string
+	OK                 bool
+	ClaudeBin          string
+	ClaudeVersion      string
+	LoggedIn           *bool
+	ProxyConfigured    bool
+	SystemProxyEnabled bool
+	ProxyMismatch      bool
+	Reason             string
+	Message            string
 }
 
 func ParseClaudeActivationPreference(raw string) (ClaudeActivationPreference, error) {
@@ -139,6 +149,12 @@ func ConfigureClaude(
 			}
 		case ClaudeActivationAuto, ClaudeActivationEnabled:
 			preflight = preflightClaude(ctx, cfg)
+			result.ClaudeBin = preflight.ClaudeBin
+			result.ClaudeVersion = preflight.ClaudeVersion
+			result.LoggedIn = preflight.LoggedIn
+			result.ProxyConfigured = preflight.ProxyConfigured
+			result.SystemProxyEnabled = preflight.SystemProxyEnabled
+			result.ProxyMismatch = preflight.ProxyMismatch
 			if preflight.OK {
 				targetEnabled = true
 			} else if requested == ClaudeActivationEnabled {
@@ -192,6 +208,12 @@ func ConfigureClaude(
 	result.Preference = targetPreference
 	result.Changed = changed
 	result.RestartRequired = currentEnabled != targetEnabled || currentClaudeBin != targetClaudeBin
+	result.ClaudeBin = preflight.ClaudeBin
+	result.ClaudeVersion = preflight.ClaudeVersion
+	result.LoggedIn = preflight.LoggedIn
+	result.ProxyConfigured = preflight.ProxyConfigured
+	result.SystemProxyEnabled = preflight.SystemProxyEnabled
+	result.ProxyMismatch = preflight.ProxyMismatch
 	result.Reason = preflight.Reason
 	result.Message = preflight.Message
 	if targetEnabled && preflight.OK && preflight.Message == "" {
@@ -295,12 +317,20 @@ func encodeClaudeDocument(
 }
 
 func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResult {
+	commandEnvironment := claudeCommandEnvironment(cfg.Claude.Env)
+	proxyConfigured := claudeProxyConfigured(commandEnvironment)
+	systemProxyEnabled := claudeSystemProxyConfigured()
+	proxyMismatch := systemProxyEnabled && !proxyConfigured
+	baseResult := claudePreflightResult{
+		ProxyConfigured:    proxyConfigured,
+		SystemProxyEnabled: systemProxyEnabled,
+		ProxyMismatch:      proxyMismatch,
+	}
 	bridge, ok := claudebridge.ResolveBinary(cfg.Claude.BridgeBin)
 	if !ok {
-		return claudePreflightResult{
-			Reason:  "bridge_missing",
-			Message: "App 内没有可用的 Claude bridge，请重新安装 Mimi Remote Mac。",
-		}
+		baseResult.Reason = "bridge_missing"
+		baseResult.Message = "App 内没有可用的 Claude bridge，请重新安装 Mimi Remote。"
+		return baseResult
 	}
 	bridgeCtx, cancelBridge := context.WithTimeout(ctx, 2*time.Second)
 	bridgeCommand := exec.CommandContext(
@@ -308,66 +338,67 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		bridge,
 		append(append([]string{}, cfg.Claude.Args...), "--version")...,
 	)
-	bridgeCommand.Env = claudeCommandEnvironment(cfg.Claude.Env)
+	bridgeCommand.Env = commandEnvironment
 	bridgeVersionOutput, bridgeErr := bridgeCommand.Output()
 	cancelBridge()
 	bridgeVersion, parsed := claudebridge.ParseVersion(string(bridgeVersionOutput))
 	if bridgeErr != nil || !parsed {
-		return claudePreflightResult{
-			Reason:  "bridge_version_unknown",
-			Message: "无法确认 Claude bridge 版本，请重新安装 Mimi Remote Mac。",
-		}
+		baseResult.Reason = "bridge_version_unknown"
+		baseResult.Message = "无法确认 Claude bridge 版本，请重新安装 Mimi Remote。"
+		return baseResult
 	}
 	if !claudebridge.IsSupported(bridgeVersion) {
-		return claudePreflightResult{
-			Reason:  "bridge_unsupported",
-			Message: "Claude bridge 版本不兼容，请升级 Mimi Remote Mac。",
-		}
+		baseResult.Reason = "bridge_unsupported"
+		baseResult.Message = "Claude bridge 版本不兼容，请升级 Mimi Remote。"
+		return baseResult
 	}
 
 	configuredClaudeBin := strings.TrimSpace(cfg.Claude.Env[claudeBinaryEnvKey])
 	claudeBin, err := resolveClaudeBin(configuredClaudeBin)
 	if err != nil {
-		return claudePreflightResult{
-			Reason:  "claude_missing",
-			Message: "未检测到 Claude Code。安装并登录后，重新打开 Mimi Remote Mac 即可自动启用。",
-		}
+		baseResult.Reason = "claude_missing"
+		baseResult.Message = "未检测到 Claude Code。安装并登录后，重新打开 Mimi Remote 即可自动启用。"
+		return baseResult
 	}
+	baseResult.ClaudeBin = claudeBin
+	claudeVersion, err := probeClaudeVersion(ctx, claudeBin, commandEnvironment)
+	if err != nil {
+		baseResult.Reason = "claude_version_unknown"
+		baseResult.Message = "检测到 Claude Code，但无法确认版本。请重新安装或升级 Claude Code。"
+		return baseResult
+	}
+	baseResult.ClaudeVersion = claudeVersion
 	authCtx, cancelAuth := context.WithTimeout(ctx, 5*time.Second)
 	authCommand := exec.CommandContext(authCtx, claudeBin, "auth", "status")
-	authCommand.Env = claudeCommandEnvironment(cfg.Claude.Env)
-	authCommand.Stdout = io.Discard
+	authCommand.Env = commandEnvironment
 	authCommand.Stderr = io.Discard
-	authErr := authCommand.Run()
+	authOutput, authErr := authCommand.Output()
 	cancelAuth()
-	if authErr != nil {
-		return claudePreflightResult{
-			ClaudeBin: claudeBin,
-			Reason:    "claude_signed_out",
-			Message:   "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。",
-		}
+	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput)
+	if parsedAuth {
+		baseResult.LoggedIn = &loggedIn
 	}
-	return claudePreflightResult{
-		OK:        true,
-		ClaudeBin: claudeBin,
-		Reason:    "ready",
-		Message:   "已检测到 Claude Code 和兼容的 Claude bridge。",
+	if parsedAuth && !loggedIn {
+		baseResult.Reason = "claude_signed_out"
+		baseResult.Message = "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
+		return baseResult
 	}
+	if authErr != nil || !parsedAuth {
+		baseResult.Reason = "claude_auth_status_failed"
+		baseResult.Message = "已检测到 Claude Code，但无法确认登录状态。请在终端运行 claude auth status 查看具体原因。"
+		return baseResult
+	}
+	baseResult.OK = true
+	baseResult.Reason = "ready"
+	baseResult.Message = fmt.Sprintf("已检测到 Claude Code %s 和兼容的 Claude bridge。", claudeVersion)
+	if proxyMismatch {
+		baseResult.Message += " Windows 系统代理已启用，但 Claude 进程未配置 HTTP(S)_PROXY；如直连不可用，请重启 Mimi Remote 以继承用户代理环境。"
+	}
+	return baseResult
 }
 
 func resolveClaudeBin(configured string) (string, error) {
-	candidates := []string{strings.TrimSpace(configured), "claude"}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".local", "bin", "claude"),
-			filepath.Join(home, ".npm-global", "bin", "claude"),
-		)
-		if runtime.GOOS == "windows" {
-			candidates = append(candidates,
-				filepath.Join(home, "AppData", "Roaming", "npm", "claude.cmd"),
-			)
-		}
-	}
+	candidates := claudeExecutableCandidates(configured)
 	seen := map[string]struct{}{}
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
@@ -390,24 +421,69 @@ func resolveClaudeBin(configured string) (string, error) {
 	return "", exec.ErrNotFound
 }
 
+func probeClaudeVersion(ctx context.Context, claudeBin string, environment []string) (string, error) {
+	versionCtx, cancelVersion := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelVersion()
+	command := exec.CommandContext(versionCtx, claudeBin, "--version")
+	command.Env = environment
+	output, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	version, ok := claudebridge.ParseVersion(string(output))
+	if !ok {
+		return "", fmt.Errorf("无法解析 Claude Code 版本")
+	}
+	return version, nil
+}
+
+func parseClaudeAuthStatus(output []byte) (bool, bool) {
+	status := struct {
+		LoggedIn *bool `json:"loggedIn"`
+	}{}
+	if err := json.Unmarshal(output, &status); err != nil || status.LoggedIn == nil {
+		return false, false
+	}
+	return *status.LoggedIn, true
+}
+
+func claudeProxyConfigured(environment []string) bool {
+	for _, item := range environment {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(key)) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY":
+			return true
+		}
+	}
+	return false
+}
+
 func claudeCommandEnvironment(extra map[string]string) []string {
 	environment := append([]string{}, os.Environ()...)
-	values := map[string]string{}
+	type environmentValue struct {
+		key   string
+		value string
+	}
+	values := map[string]environmentValue{}
 	for _, item := range environment {
 		if key, value, ok := strings.Cut(item, "="); ok {
-			values[key] = value
+			values[claudeEnvironmentKey(key)] = environmentValue{key: key, value: value}
 		}
 	}
 	for key, value := range extra {
 		key = strings.TrimSpace(key)
 		if key != "" && !strings.Contains(key, "=") {
-			values[key] = value
+			values[claudeEnvironmentKey(key)] = environmentValue{key: key, value: value}
 		}
 	}
-	values["CLAUDE_BRIDGE_BYPASS_PERMISSIONS"] = "false"
+	const bypassKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
+	values[claudeEnvironmentKey(bypassKey)] = environmentValue{key: bypassKey, value: "false"}
 	environment = environment[:0]
-	for key, value := range values {
-		environment = append(environment, key+"="+value)
+	for _, entry := range values {
+		environment = append(environment, entry.key+"="+entry.value)
 	}
 	return environment
 }

@@ -209,6 +209,7 @@ struct InitSlot {
 struct RuntimeState {
     model: Option<String>,
     effort_level: Option<String>,
+    effort_level_unsupported: bool,
     permission_mode: Option<String>,
 }
 
@@ -283,21 +284,7 @@ impl ClaudeProcessHandle {
         args.push("stream-json".into());
         args.push("--include-partial-messages".into());
         args.push("--verbose".into());
-        // 通过临时 JSON 覆盖启用 Claude 官方 Bash 沙箱；不改写项目或用户 settings。
-        // 沙箱不可用时直接失败，绝不回退到未隔离命令。
-        args.push("--settings".into());
-        args.push(
-            serde_json::json!({
-                "sandbox": {
-                    "enabled": true,
-                    "failIfUnavailable": true,
-                    "allowUnsandboxedCommands": false,
-                    "autoAllowBashIfSandboxed": false
-                }
-            })
-            .to_string()
-            .into(),
-        );
+        apply_platform_security_args(&mut args);
         if bypass_permissions {
             args.push("--dangerously-skip-permissions".into());
         } else {
@@ -376,6 +363,7 @@ impl ClaudeProcessHandle {
         let runtime_state = Arc::new(Mutex::new(RuntimeState {
             model: model.clone(),
             effort_level: None,
+            effort_level_unsupported: false,
             permission_mode: None,
         }));
 
@@ -614,23 +602,39 @@ impl ClaudeProcessHandle {
         if let Some(want) = effort_level {
             let need_dispatch = {
                 let guard = self.runtime_state.lock().await;
-                guard.effort_level.as_deref() != Some(want)
+                !guard.effort_level_unsupported && guard.effort_level.as_deref() != Some(want)
             };
             if need_dispatch {
-                self.request_control(
-                    ControlRequestBody::ApplyFlagSettings {
-                        settings: serde_json::json!({"effortLevel": want}),
-                    },
-                    deadline,
-                )
-                .await
-                .map_err(|source| ClaudeProcessError::RuntimeOverride {
-                    field: "effortLevel",
-                    value: want.to_string(),
-                    source: Box::new(source),
-                })?;
-                let mut guard = self.runtime_state.lock().await;
-                guard.effort_level = Some(want.to_string());
+                let result = self
+                    .request_control(
+                        ControlRequestBody::ApplyFlagSettings {
+                            settings: serde_json::json!({"effortLevel": want}),
+                        },
+                        deadline,
+                    )
+                    .await;
+                match result {
+                    Ok(_) => {
+                        let mut guard = self.runtime_state.lock().await;
+                        guard.effort_level = Some(want.to_string());
+                    }
+                    Err(source @ ClaudeProcessError::ControlError { .. }) => {
+                        tracing::warn!(
+                            error = %source,
+                            effort_level = want,
+                            "claude runtime does not support effortLevel; continuing with its default"
+                        );
+                        let mut guard = self.runtime_state.lock().await;
+                        guard.effort_level_unsupported = true;
+                    }
+                    Err(source) => {
+                        return Err(ClaudeProcessError::RuntimeOverride {
+                            field: "effortLevel",
+                            value: want.to_string(),
+                            source: Box::new(source),
+                        });
+                    }
+                }
             }
         }
         if let Some(want) = permission_mode {
@@ -693,6 +697,32 @@ impl ClaudeProcessHandle {
             handle.abort();
         }
     }
+}
+
+fn apply_platform_security_args(args: &mut Vec<OsString>) {
+    if cfg!(windows) {
+        // Claude Code does not support its Bash sandbox on native Windows.
+        // Do not silently run a shell outside the sandbox: disable the shell
+        // tool while retaining stdio permission prompts for built-in tools.
+        args.push("--disallowedTools".into());
+        args.push("Bash".into());
+        return;
+    }
+    // Use a temporary override so the bridge never edits project or user
+    // settings. If the platform sandbox is unavailable, fail closed.
+    args.push("--settings".into());
+    args.push(
+        serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": false,
+                "autoAllowBashIfSandboxed": false
+            }
+        })
+        .to_string()
+        .into(),
+    );
 }
 
 impl alleycat_bridge_core::pool::PoolMember for ClaudeProcessHandle {
@@ -849,6 +879,25 @@ impl ClaudeProcessHandle {
 mod tests {
     use super::*;
     use crate::pool::claude_protocol::SystemInit;
+
+    #[test]
+    fn platform_security_never_runs_an_unsandboxed_windows_shell() {
+        let mut args = Vec::new();
+        apply_platform_security_args(&mut args);
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        if cfg!(windows) {
+            assert_eq!(args, ["--disallowedTools", "Bash"]);
+        } else {
+            assert_eq!(args.first().map(String::as_str), Some("--settings"));
+            assert!(
+                args.get(1)
+                    .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
+            );
+        }
+    }
 
     #[tokio::test]
     async fn wait_for_init_returns_immediately_when_already_set() {
@@ -1108,6 +1157,64 @@ mod tests {
             .apply_runtime_overrides(None, Some("xhigh"), None, Duration::from_millis(50))
             .await
             .expect("duplicate is a no-op");
+        assert!(writer_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unsupported_effort_falls_back_and_other_overrides_continue() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+        let h2 = Arc::clone(&handle);
+        let task = tokio::spawn(async move {
+            h2.apply_runtime_overrides(
+                None,
+                Some("medium"),
+                Some("default"),
+                Duration::from_secs(2),
+            )
+            .await
+        });
+
+        let effort_line = writer_rx.recv().await.expect("effort writer line");
+        let effort: serde_json::Value = serde_json::from_str(&effort_line).expect("json");
+        let request_id = effort["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&request_id)
+            .unwrap()
+            .send(ControlResponseBody::Error {
+                error: "unknown control request apply_flag_settings".into(),
+            })
+            .unwrap();
+
+        let permission_line = writer_rx.recv().await.expect("permission writer line");
+        let permission: serde_json::Value = serde_json::from_str(&permission_line).expect("json");
+        assert_eq!(permission["request"]["subtype"], "set_permission_mode");
+        let request_id = permission["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&request_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+
+        task.await.expect("join").expect("fallback succeeds");
+        assert_eq!(
+            handle.runtime_snapshot().await,
+            (None, None, Some("default".into()))
+        );
+        handle
+            .apply_runtime_overrides(None, Some("xhigh"), None, Duration::from_millis(50))
+            .await
+            .expect("unsupported effort remains a no-op");
         assert!(writer_rx.try_recv().is_err());
     }
 

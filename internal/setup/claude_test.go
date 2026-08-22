@@ -205,6 +205,19 @@ func TestParseClaudeActivationPreferenceRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+func TestParseClaudeAuthStatusRequiresExplicitLoggedInField(t *testing.T) {
+	loggedIn, ok := parseClaudeAuthStatus([]byte(`{"loggedIn":true,"authMethod":"claude.ai"}`))
+	if !ok || !loggedIn {
+		t.Fatal("有效 Claude auth status 应解析为已登录")
+	}
+	if _, ok := parseClaudeAuthStatus([]byte(`{"authMethod":"claude.ai"}`)); ok {
+		t.Fatal("缺少 loggedIn 时不得猜测登录状态")
+	}
+	if _, ok := parseClaudeAuthStatus([]byte(`not-json`)); ok {
+		t.Fatal("无效输出不得误报为已登出")
+	}
+}
+
 func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) string {
 	t.Helper()
 	root := t.TempDir()
@@ -212,7 +225,11 @@ func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) s
 	claude := filepath.Join(root, "claude")
 	// 测试夹具跟随 agentd 的最低兼容版本，避免能力门禁升级后测试仍伪装成旧 bridge。
 	writeExecutableFixture(t, bridge, "printf 'alleycat-claude-bridge "+claudebridge.MinimumVersion+"\\n'\n")
-	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
+	loggedIn := "true"
+	if authExit != 0 {
+		loggedIn = "false"
+	}
+	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '{\\\"loggedIn\\\":"+loggedIn+"}\\n'; exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
 	configPath := filepath.Join(root, "config.json")
 	document := map[string]any{
 		"auth": map[string]any{"token": "0123456789abcdef0123456789abcdef"},
