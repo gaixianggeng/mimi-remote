@@ -585,13 +585,21 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 				terminalTurnID = entry.turnID
 			}
 			t.removeGatewayOwnedTurnClaim(entry.metaThreadID, terminalTurnID)
+			// evidence 先到时 entry.turnID 仍为空，不能让其他 Turn 的迟到 terminal
+			// 清除已经绑定 Turn 的新版 pending。旧格式没有 pending Turn ID，继续
+			// fail-closed；无 ID terminal 也按不确定边界清理。
+			terminalMatchesPendingTurn := turnID == "" ||
+				entry.gatewayTurnPendingTurnID == "" ||
+				turnID == entry.gatewayTurnPendingTurnID
 			// 旧 turn 的迟到 terminal 不能终止已经开始的新 turn。
 			if turnID == "" || entry.turnID == "" || turnID == entry.turnID {
 				entry.active = false
 				entry.turnID = ""
 				entry.turnStartedAt = time.Time{}
 				entry.gatewayOwned = false
-				clearGatewayTurnPending(entry)
+				if terminalMatchesPendingTurn {
+					clearGatewayTurnPending(entry)
+				}
 			}
 		}
 	}

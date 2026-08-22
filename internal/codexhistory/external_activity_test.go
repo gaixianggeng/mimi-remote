@@ -550,6 +550,19 @@ func TestExternalActivityCurrentUserMessageRequiresExactTurnID(t *testing.T) {
 			},
 		},
 		{
+			name: "idless terminal clears pending evidence before desktop turn",
+			lines: []string{
+				externalItemCompletedUserMessageLine(
+					now.Add(100*time.Millisecond),
+					"thread-1",
+					"turn-ipad",
+					"client-ipad",
+				),
+				externalEventLineAt(now.Add(200*time.Millisecond), "task_complete", ""),
+				externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-desktop"),
+			},
+		},
+		{
 			name: "missing turn id fails closed",
 			lines: []string{
 				externalItemCompletedUserMessageLine(
@@ -592,6 +605,41 @@ func TestExternalActivityCurrentUserMessageRequiresExactTurnID(t *testing.T) {
 				t.Fatalf("Desktop turn 不得吸收其他 turn 的 ownership 证据：%+v", entry)
 			}
 		})
+	}
+}
+
+func TestExternalActivityCurrentPendingSurvivesUnrelatedTerminal(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-1",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalItemCompletedUserMessageLine(
+			now.Add(100*time.Millisecond),
+			"thread-1",
+			"turn-ipad",
+			"client-ipad",
+		),
+		externalEventLineAt(now.Add(200*time.Millisecond), "task_complete", "turn-older"),
+		externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-ipad"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-1", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("其他 Turn 的迟到 terminal 不应清除当前 pending ownership：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || entry.turnID != "turn-ipad" || !entry.gatewayOwned || entry.gatewayTurnPending {
+		t.Fatalf("pending ownership 应由匹配的 task_started 消费：%+v", entry)
 	}
 }
 
