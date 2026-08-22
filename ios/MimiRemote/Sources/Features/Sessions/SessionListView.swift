@@ -505,10 +505,10 @@ struct SessionListView: View {
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .background { SessionSearchPresentationReporter() }
         .sessionListNativeSearchable(
             isEnabled: !showsToolbarSearchField,
             text: $sessionStore.sessionSearchQuery,
-            isPresented: $sessionStore.isSessionSearchPresented,
             prompt: Text(L10n.text("ui.search_session")),
             tintColor: tokens.primaryText,
             toolbarSurface: tokens.background,
@@ -1726,7 +1726,6 @@ private extension View {
     func sessionListNativeSearchable(
         isEnabled: Bool,
         text: Binding<String>,
-        isPresented: Binding<Bool>,
         prompt: Text,
         tintColor: Color,
         toolbarSurface: Color,
@@ -1736,7 +1735,6 @@ private extension View {
         if isEnabled {
             searchable(
                 text: text,
-                isPresented: isPresented,
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: prompt
             )
@@ -1750,5 +1748,27 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+
+/// 把系统搜索框的激活态上报给 `SessionStore`，供 Shell 决定是否收起浮层设备入口。
+///
+/// 只读 `\.isSearching`，**不要**改用 `.searchable(isPresented:)` 的双向绑定：
+/// 那样我们会反向驱动系统的搜索状态，反复激活/取消几次后会卡在已激活，
+/// 表现为顶部 Tab 栏收起后不再还回来。
+private struct SessionSearchPresentationReporter: View {
+    @Environment(\.isSearching) private var isSearching
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onAppear { sessionStore.isSessionSearchPresented = isSearching }
+            .onDisappear { sessionStore.isSessionSearchPresented = false }
+            .onChange(of: isSearching) { _, newValue in
+                sessionStore.isSessionSearchPresented = newValue
+            }
     }
 }
