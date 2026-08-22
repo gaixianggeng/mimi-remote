@@ -220,12 +220,16 @@ struct UnifiedWorkbenchShell: View {
         let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
             bottomSafeAreaInset: bottomSafeAreaInset
         )
-        let showsTabletHostSwitcher = !layout.isPhone && (
-            navigationState.compactSelectedTab == .sessions
-                ? navigationState.compactSessionPath.isEmpty
-                : navigationState.compactSelectedTab == .workspaces
-                    && navigationState.compactWorkspacePath.isEmpty
-        )
+        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
+        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
+        let showsTabletHostSwitcher = !layout.isPhone
+            && !sessionStore.isSessionSearchPresented
+            && (
+                navigationState.compactSelectedTab == .sessions
+                    ? navigationState.compactSessionPath.isEmpty
+                    : navigationState.compactSelectedTab == .workspaces
+                        && navigationState.compactWorkspacePath.isEmpty
+            )
 
         return TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
@@ -272,8 +276,10 @@ struct UnifiedWorkbenchShell: View {
             if showsTabletHostSwitcher {
                 compactTabletHostSwitcher(layout: layout, tokens: tokens)
                     .padding(.leading, 10)
-                    // 顶部 Chrome 的内容线比 TabView overlay 原点高 8pt。
-                    .offset(y: -8)
+                    // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
+                    // TabView overlay 的原点比那条线高，这里补回来；数值随
+                    // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
+                    .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
             }
         }
         // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
@@ -286,7 +292,8 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    /// 这是 TabView 上的自由浮层，不在导航栏里，所以可以用带真实尺寸的 44pt 磨砂圆。
+    /// TabView 上的自由浮层。命中区域保持 44pt，但磨砂圆按顶栏那档画成 40pt——
+    /// 它和导航栏里的「···」「+」在同一条视线上，直径不一致会立刻被看出来。
     private func compactTabletHostSwitcher(
         layout: WorkbenchLayout,
         tokens: ThemeTokens
@@ -301,7 +308,12 @@ struct UnifiedWorkbenchShell: View {
                 dismissSessionSearchKeyboard()
             }
         )
-        .workbenchChromeCircle(tokens: tokens)
+        .frame(
+            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+            height: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .contentShape(Circle())
+        .workbenchToolbarChromeCircle(tokens: tokens)
     }
 
     private func dismissSessionSearchKeyboard() {

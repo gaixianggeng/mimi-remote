@@ -679,6 +679,11 @@ enum WorkbenchChromeIconMetrics {
     /// 顶栏磨砂圆的视觉直径。取 40 而不是 44，是因为这正是系统给自己的工具栏圆
     /// 分配的尺寸——实测把 label 硬设成 44pt，系统会压回 40pt。
     static let toolbarCircleDiameter: CGFloat = 40
+    /// iPad 紧凑布局里设备入口是 TabView 的浮层，不受导航栏排版约束，要自己对齐到
+    /// Tab 胶囊与顶栏按钮的中心线（iPad mini 竖屏实测三者都在 y=53.8pt）。
+    /// 磨砂圆统一成 40pt 之后浮层原点正好落在那条线上，所以这里是 0；
+    /// 日后若改动 `toolbarCircleDiameter` 或浮层的 padding，要重新标定这个值。
+    static let compactHostSwitcherCenterOffset: CGFloat = 0
 }
 
 struct WorkbenchChromeIcon: View {

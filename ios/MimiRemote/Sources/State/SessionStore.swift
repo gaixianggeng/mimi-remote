@@ -104,6 +104,12 @@ final class SessionStore: ObservableObject {
     @Published var selectedSessionID: String?
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
+    /// 系统搜索框是否处于激活态（聚焦/展开），与 `isSessionSearchActive` 不同：
+    /// 后者按查询是否非空判定，聚焦但没输入时仍是 false，盖不住"键盘已弹出"这一段。
+    /// iPad 紧凑布局的设备入口是画在 TabView 上的浮层，不归导航栏管，搜索激活时
+    /// 系统会收起 Tab 胶囊和顶栏按钮，浮层却留在原地被搜索框压住，所以需要这个信号。
+    @Published var isSessionSearchPresented = false
+
     @Published var sessionSearchQuery = "" {
         didSet {
             guard oldValue != sessionSearchQuery else {

@@ -508,6 +508,7 @@ struct SessionListView: View {
         .sessionListNativeSearchable(
             isEnabled: !showsToolbarSearchField,
             text: $sessionStore.sessionSearchQuery,
+            isPresented: $sessionStore.isSessionSearchPresented,
             prompt: Text(L10n.text("ui.search_session")),
             tintColor: tokens.primaryText,
             toolbarSurface: tokens.background,
@@ -1725,6 +1726,7 @@ private extension View {
     func sessionListNativeSearchable(
         isEnabled: Bool,
         text: Binding<String>,
+        isPresented: Binding<Bool>,
         prompt: Text,
         tintColor: Color,
         toolbarSurface: Color,
@@ -1734,6 +1736,7 @@ private extension View {
         if isEnabled {
             searchable(
                 text: text,
+                isPresented: isPresented,
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: prompt
             )
