@@ -1095,10 +1095,10 @@ struct OpenWorkspaceSheet: View {
 
 /// 路径条的材质层。
 ///
-/// 这里刻意比其它 chrome 更浓一档：路径条上是一行密排的小字，正下方又是不停滚动的
-/// 目录名，`regularMaterial` 透出来的残影会直接落在层级文字后面。加一层画布色把
-/// 材质拉回这一屏的暖白，滚动时仍看得见内容在后面移动，但只剩一层化开的色块。
-/// Reduce Transparency 下退成等价实色。
+/// 路径条上是一行密排的小字，正下方又是不停滚动的目录名，材质透出来的残影会直接落在
+/// 层级文字后面。这里**不再靠换一档更厚的材质**去压（那会让路径条成为一屏里唯一一块
+/// 更浓的玻璃），改为在同一档磨砂上加厚画布色 tint：滚动时仍看得见内容在后面移动，
+/// 但只剩一层化开的色块。Reduce Transparency 下退成等价实色。
 private struct WorkspaceBrowsePathBarSurface: View {
     let tokens: ThemeTokens
 
@@ -1109,8 +1109,8 @@ private struct WorkspaceBrowsePathBarSurface: View {
             if reduceTransparency {
                 Rectangle().fill(tokens.sidebarBackground)
             } else {
-                Rectangle().fill(.ultraThickMaterial)
-                Rectangle().fill(tokens.sidebarBackground.opacity(0.35))
+                Rectangle().fill(WorkbenchMaterial.surface)
+                Rectangle().fill(tokens.sidebarBackground.opacity(0.62))
             }
         }
     }

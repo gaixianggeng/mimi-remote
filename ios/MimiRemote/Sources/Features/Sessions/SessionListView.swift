@@ -505,6 +505,7 @@ struct SessionListView: View {
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .background { SessionSearchPresentationReporter() }
         .sessionListNativeSearchable(
             isEnabled: !showsToolbarSearchField,
             text: $sessionStore.sessionSearchQuery,
@@ -529,22 +530,23 @@ struct SessionListView: View {
                 }
             }
             if let manageConnections {
-                ToolbarItem(placement: .topBarLeading) {
+                workbenchChromeToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
                         manageConnections: manageConnections
                     )
+                    .workbenchToolbarChromeCircle(tokens: tokens)
                     .simultaneousGesture(
                         TapGesture().onEnded { dismissSessionSearchKeyboard() }
                     )
                 }
-                // iOS 26+ 用固定间隔拆分玻璃组；旧系统依靠普通工具栏布局即可。
+                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死。
                 if #available(iOS 26.0, *) {
                     ToolbarSpacer(.fixed, placement: .topBarLeading)
                 }
             }
             // 筛选、刷新合入同一个菜单；加号保持独立，常驻圆形工具按钮固定为两个。
-            ToolbarItem(placement: .topBarTrailing) {
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 filterMenu(tokens: tokens)
                     .simultaneousGesture(
                         TapGesture().onEnded { dismissSessionSearchKeyboard() }
@@ -619,9 +621,11 @@ struct SessionListView: View {
                     .transitionSourceID,
                 in: newSessionPresentationNamespace
             )
+            // 按钮自带磨砂圆，系统共享玻璃必须关掉，否则是两层背景。
+            .sharedBackgroundVisibility(.hidden)
         } else {
             // iOS 18–25 保留新建入口，但不注册仅新系统支持的 Toolbar zoom 来源。
-            ToolbarItem(placement: .topBarTrailing) {
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 newSessionToolbarButton(
                     tokens: tokens,
                     source: .sessionsToolbar(hasNamespace: false)
@@ -655,7 +659,10 @@ struct SessionListView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 的系统共享玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
         .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)
@@ -1093,6 +1100,7 @@ struct SessionListView: View {
         } label: {
             WorkbenchChromeIcon(systemName: "ellipsis")
                 .foregroundStyle(tokens.secondaryText)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         .accessibilityLabel(
             hasActiveFilters
@@ -1740,5 +1748,27 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+
+/// 把系统搜索框的激活态上报给 `SessionStore`，供 Shell 决定是否收起浮层设备入口。
+///
+/// 只读 `\.isSearching`，**不要**改用 `.searchable(isPresented:)` 的双向绑定：
+/// 那样我们会反向驱动系统的搜索状态，反复激活/取消几次后会卡在已激活，
+/// 表现为顶部 Tab 栏收起后不再还回来。
+private struct SessionSearchPresentationReporter: View {
+    @Environment(\.isSearching) private var isSearching
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onAppear { sessionStore.isSessionSearchPresented = isSearching }
+            .onDisappear { sessionStore.isSessionSearchPresented = false }
+            .onChange(of: isSearching) { _, newValue in
+                sessionStore.isSessionSearchPresented = newValue
+            }
     }
 }

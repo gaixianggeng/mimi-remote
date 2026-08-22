@@ -220,12 +220,16 @@ struct UnifiedWorkbenchShell: View {
         let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
             bottomSafeAreaInset: bottomSafeAreaInset
         )
-        let showsTabletHostSwitcher = !layout.isPhone && (
-            navigationState.compactSelectedTab == .sessions
-                ? navigationState.compactSessionPath.isEmpty
-                : navigationState.compactSelectedTab == .workspaces
-                    && navigationState.compactWorkspacePath.isEmpty
-        )
+        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
+        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
+        let showsTabletHostSwitcher = !layout.isPhone
+            && !sessionStore.isSessionSearchPresented
+            && (
+                navigationState.compactSelectedTab == .sessions
+                    ? navigationState.compactSessionPath.isEmpty
+                    : navigationState.compactSelectedTab == .workspaces
+                        && navigationState.compactWorkspacePath.isEmpty
+            )
 
         return TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
@@ -272,8 +276,10 @@ struct UnifiedWorkbenchShell: View {
             if showsTabletHostSwitcher {
                 compactTabletHostSwitcher(layout: layout, tokens: tokens)
                     .padding(.leading, 10)
-                    // 顶部 Chrome 的内容线比 TabView overlay 原点高 8pt。
-                    .offset(y: -8)
+                    // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
+                    // TabView overlay 的原点比那条线高，这里补回来；数值随
+                    // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
+                    .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
             }
         }
         // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
@@ -286,12 +292,13 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    @ViewBuilder
+    /// TabView 上的自由浮层。命中区域保持 44pt，但磨砂圆按顶栏那档画成 40pt——
+    /// 它和导航栏里的「···」「+」在同一条视线上，直径不一致会立刻被看出来。
     private func compactTabletHostSwitcher(
         layout: WorkbenchLayout,
         tokens: ThemeTokens
     ) -> some View {
-        let switcher = HostSwitcherMenu(
+        HostSwitcherMenu(
             presentation: .toolbar,
             manageConnections: { openConnectionSettings(layout: layout) }
         )
@@ -301,13 +308,12 @@ struct UnifiedWorkbenchShell: View {
                 dismissSessionSearchKeyboard()
             }
         )
-        .frame(width: 44, height: 44)
-
-        if #available(iOS 26.0, *), !reduceTransparency {
-            switcher.glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            switcher.workbenchChromeCircle(tokens: tokens)
-        }
+        .frame(
+            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+            height: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .contentShape(Circle())
+        .workbenchToolbarChromeCircle(tokens: tokens)
     }
 
     private func dismissSessionSearchKeyboard() {
@@ -1157,7 +1163,7 @@ struct UnifiedWorkbenchShell: View {
                 }
             }
             if layout.usesCompactNavigation {
-                ToolbarItem(placement: .topBarTrailing) {
+                workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let session = sessionStore.selectedSession {
                             SessionActionMenuContent(
@@ -1185,12 +1191,13 @@ struct UnifiedWorkbenchShell: View {
                     } label: {
                         WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.primaryText.opacity(0.72))
+                            .workbenchToolbarChromeCircle(tokens: tokens)
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
             } else {
                 if let session = sessionStore.selectedSession {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    workbenchChromeToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             SessionActionMenuContent(
                                 session: session,
@@ -1199,6 +1206,7 @@ struct UnifiedWorkbenchShell: View {
                         } label: {
                             WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
+                                .workbenchToolbarChromeCircle(tokens: tokens)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
                     }
@@ -1207,7 +1215,7 @@ struct UnifiedWorkbenchShell: View {
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
+                workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     workbenchToolbarIconButton(
                         systemImage: "arrow.clockwise",
                         accessibilityLabel: L10n.text("ui.refresh_current_session"),
@@ -1217,7 +1225,7 @@ struct UnifiedWorkbenchShell: View {
                         Task { await sessionStore.refreshCurrentContext() }
                     }
                 }
-                // iOS 26+ 用固定间隔保持独立玻璃组；旧系统直接沿用普通工具栏间距。
+                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死，不靠系统按内容估算。
                 if #available(iOS 26.0, *) {
                     ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 }
@@ -1623,9 +1631,11 @@ struct UnifiedWorkbenchShell: View {
                     .transitionSourceID,
                 in: presentationNamespace
             )
+            // 按钮自带磨砂圆，系统共享玻璃必须关掉，否则是两层背景。
+            .sharedBackgroundVisibility(.hidden)
         } else {
             // iOS 18–25 仍可打开 Inspector，只取消依赖新 Toolbar API 的 zoom 来源。
-            ToolbarItem(placement: .topBarTrailing) {
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 inspectorToolbarButton(
                     layout: layout,
                     tokens: tokens,
@@ -1653,7 +1663,9 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("sessionDetail.inspector")
     }
 
-    /// 顶栏交给系统工具栏材质和命中区域处理；这里只表达图标与激活状态，避免自绘圆形再叠一层系统玻璃。
+    /// 顶栏图标按钮的统一形态：44pt 扁平磨砂圆，和工作区胶囊、侧栏控件同一档材质。
+    /// 调用方必须把它放进 `workbenchChromeToolbarItem`（或自行 `sharedBackgroundVisibility(.hidden)`），
+    /// 否则 iOS 26 的系统玻璃底板会叠在这层磨砂下面。
     private func workbenchToolbarIconButton(
         systemImage: String,
         accessibilityLabel: String,
@@ -1663,7 +1675,10 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 自动附加的系统玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
@@ -1858,7 +1873,7 @@ private struct SessionNavigationMaterialModifier: ViewModifier {
         } else if usesCompactNavigation {
             content
                 // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
-                .toolbarBackground(.regularMaterial, for: .navigationBar)
+                .toolbarBackground(WorkbenchMaterial.surface, for: .navigationBar)
                 .toolbarBackgroundVisibility(.visible, for: .navigationBar)
                 .toolbarColorScheme(colorScheme, for: .navigationBar)
         } else {

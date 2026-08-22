@@ -435,15 +435,26 @@ struct WorkspaceRootView: View {
                 .accessibilityIdentifier("workspace.browser")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        HostSwitcherMenu(
-                            presentation: .toolbar,
-                            manageConnections: manageConnections
-                        )
-                    }
-                    // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
                     if #available(iOS 26.0, *) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            HostSwitcherMenu(
+                                presentation: .toolbar,
+                                manageConnections: manageConnections
+                            )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
+                        }
+                        // 按钮自带磨砂圆；关掉系统共享玻璃，否则两层背景叠在一起。
+                        .sharedBackgroundVisibility(.hidden)
+                        // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
+                    } else {
+                        ToolbarItem(placement: .topBarLeading) {
+                            HostSwitcherMenu(
+                                presentation: .toolbar,
+                                manageConnections: manageConnections
+                            )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
+                        }
                     }
                 }
         } else {

@@ -530,7 +530,7 @@ struct AddContentPanel: View {
                 tokens.surface
             } else {
                 Rectangle()
-                    .fill(.thinMaterial)
+                    .fill(WorkbenchMaterial.surface)
                     .overlay(tokens.surface.opacity(colorScheme == .light ? 0.28 : 0.20))
             }
         }

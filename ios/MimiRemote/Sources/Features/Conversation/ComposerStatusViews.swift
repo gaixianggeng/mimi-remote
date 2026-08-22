@@ -250,8 +250,10 @@ extension QueuedTurnEntry {
 
 enum ComposerStatusTrayMaterialStrength: Equatable {
     case opaque
-    case thin
-    case regular
+    /// 全 App 唯一的磨砂档位，见 `WorkbenchMaterial.surface`。
+    /// 过去这里按展开/收起分成 thin / regular 两档，结果是同一枚托盘在两个状态下
+    /// 是两种质感，展开时还比旁边的输入卡更浓。遮蔽交给 tint，不再换档位。
+    case frosted
 }
 
 enum ComposerStatusTrayPlacement: Equatable {
@@ -283,8 +285,10 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
     /// 只有 `.standalone` 会真正绘制这套表面。iPhone 恒定使用 `.embedded`，
     /// 状态直接长在 Composer 外壳里，材质由 Composer 自身提供，因此这里不需要
     /// 也不应该再有一条 phone 专用分支——那只会让样式看起来被覆盖，实际却渲染不到。
+    ///
+    /// 同理，这里不再接收展开状态：材质、tint 和描边在两个状态下完全相同，
+    /// 留一个不影响任何返回值的参数只会让调用方以为展开态另有一套样式。
     static func resolve(
-        isExpanded: Bool,
         scheme: ThemeResolvedScheme,
         reduceTransparency: Bool,
         increasedContrast: Bool = false
@@ -306,10 +310,10 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
             )
         }
 
-        // 深色继续保留功能材质；展开时只增加模糊厚度保证长内容可读，
+        // 深色继续保留功能材质；长内容的可读性由 tint 保证，
         // 不再靠阴影、彩色双描边或多层高光制造实体卡片感。
         return Self(
-            materialStrength: isExpanded ? .regular : .thin,
+            materialStrength: .frosted,
             surfaceTintOpacity: 0.46,
             borderOpacity: 0.58
         )
@@ -798,17 +802,10 @@ struct ComposerStatusTray: View {
             } else {
                 shape.fill(tokens.elevatedSurface)
             }
-        case .regular:
-            // 深色展开态内容更多，只增加材质模糊厚度。
+        case .frosted:
+            // 只在深色出现；浅色独立托盘一律走 `.opaque`。
             shape
-                .fill(.regularMaterial)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
-                }
-        case .thin:
-            // `.thin` 只在深色收起态出现；浅色独立托盘一律走 `.opaque`。
-            shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
@@ -817,7 +814,6 @@ struct ComposerStatusTray: View {
 
     private func surfaceStyle(tokens: ThemeTokens) -> ComposerStatusTraySurfaceStyle {
         ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: isGoalExpanded,
             scheme: tokens.resolvedScheme,
             reduceTransparency: reduceTransparency,
             increasedContrast: colorSchemeContrast == .increased

@@ -63,7 +63,6 @@ struct HostSwitcherMenu: View {
         case .sidebar:
             switcherMenu
         case .toolbar:
-            // 保留系统工具栏的中性玻璃，只恢复图标本身的主题主色，避免形成额外的大面积焦点。
             switcherMenu
         }
     }
@@ -173,6 +172,9 @@ struct HostSwitcherMenu: View {
             }
             // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
             .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
+            // 磨砂圆交给调用方：放在导航栏里必须用不参与布局的
+            // `workbenchToolbarChromeCircle`，放在自由浮层里才能用带真实尺寸的
+            // `workbenchChromeCircle`。这里统一画会让导航栏那一路撑坏安全区。
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,

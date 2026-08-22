@@ -1002,33 +1002,28 @@ struct ComposerView: View {
                 shape
                     .fill(tokens.inputBackground)
                     .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-            } else if isPhoneComposer {
+            } else {
+                // 浅色输入卡不再按设备分叉：iPad 之前是纯实色白、iPhone 是材质，
+                // 同一个组件在两块屏上是两种质感，iPad 上底部还成了整屏唯一不透明的一块。
+                //
                 // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
                 // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 顶部使用 soft scroll edge，Composer 降到更轻一档的 thinMaterial；
                 // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
+                // 阴影沿用材质路径那一组：半径与偏移刻意收紧，避免在暖底上形成第三圈模糊白色。
                 shape
-                    .fill(.thinMaterial)
+                    .fill(WorkbenchMaterial.surface)
                     .overlay {
                         shape.fill(tokens.inputBackground.opacity(0.14))
                     }
                     .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
                     .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)
-            } else {
-                // 输入卡和侧栏共用清晰白色；短接触阴影收住边缘，轻环境阴影只表达少量浮起。
-                // 半径与偏移刻意收紧，避免 r20 / y10 在暖底上形成第三圈模糊白色。
-                shape
-                    .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.035), radius: 8, y: 3)
             }
         } else if reduceTransparency {
             shape.fill(tokens.elevatedSurface)
         } else {
-            // 深色输入区继续作为底部唯一的功能材质层；这次只收敛已确认有问题的浅色层级，
-            // 避免连带改变已完成运行态验收的深色 Composer。
+            // 深色输入区继续作为底部唯一的功能材质层，档位与其它表面一致。
             shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(0.46))
                 }

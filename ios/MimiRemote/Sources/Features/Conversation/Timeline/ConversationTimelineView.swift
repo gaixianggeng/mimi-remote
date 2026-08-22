@@ -1118,48 +1118,27 @@ private struct ConversationReturnToTailButton: View {
         .accessibilityIdentifier("conversation.returnToTail")
     }
 
-    @ViewBuilder
     private var buttonLabel: some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                baseLabel
-                    .background {
-                        if reduceTransparency {
-                            Circle().fill(tokens.elevatedSurface)
-                        }
-                    }
-                    // regular glass 先打散正文再折射，避免 clear glass 把下方大字扭成不可辨识符号。
-                    // Reduce Transparency 关闭玻璃动画与透明度。
-                    .glassEffect(
-                        reduceTransparency ? .identity : .regular.interactive(),
-                        in: .circle
+        baseLabel
+            // 与顶栏按钮、侧栏控件、工作区胶囊共用同一档扁平磨砂。这里原本用
+            // `.glassEffect(.regular.interactive())`，浮在 Composer 正上方时就是一屏里
+            // 第二种玻璃浓度——「回到底部」比输入卡还亮，反而抢了视线。
+            // 描边和阴影保留：这枚按钮浮在滚动正文之上，需要边界和高度差才读得出层级。
+            .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
+            .overlay {
+                Circle()
+                    .stroke(
+                        colorScheme == .light
+                            ? Color.black.opacity(reduceTransparency ? 0.22 : 0.10)
+                            : Color.white.opacity(reduceTransparency ? 0.28 : 0.14),
+                        lineWidth: 0.75
                     )
-            } else {
-                baseLabel
-                    .background {
-                        if reduceTransparency {
-                            Circle().fill(tokens.elevatedSurface)
-                        } else {
-                            // iOS 18–25 使用普通系统材质，只保留浮层层级和 44pt 命中区域。
-                            Circle().fill(.regularMaterial)
-                        }
-                    }
             }
-        }
-        .overlay {
-            Circle()
-                .stroke(
-                    colorScheme == .light
-                        ? Color.black.opacity(reduceTransparency ? 0.22 : 0.10)
-                        : Color.white.opacity(reduceTransparency ? 0.28 : 0.14),
-                    lineWidth: 0.75
-                )
-        }
-        .shadow(
-            color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
-            radius: 6,
-            y: 2
-        )
+            .shadow(
+                color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
+                radius: 6,
+                y: 2
+            )
     }
 
     private var baseLabel: some View {
