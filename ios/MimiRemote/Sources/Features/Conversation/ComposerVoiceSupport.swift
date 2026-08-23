@@ -594,6 +594,18 @@ final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked
     }
 }
 
+private final class VoiceAudioSessionOperationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    func next() -> UInt64 {
+        lock.withLock {
+            value &+= 1
+            return value
+        }
+    }
+}
+
 actor VoiceAudioSessionCoordinator {
     typealias RecoveryHandler = @MainActor @Sendable (_ succeeded: Bool) -> Void
 
@@ -604,11 +616,13 @@ actor VoiceAudioSessionCoordinator {
     static let shared = VoiceAudioSessionCoordinator()
 
     private let backend: any VoiceAudioSessionBackend
+    private let operationSequence = VoiceAudioSessionOperationSequence()
     private var currentActivationID: UUID?
     private var currentActivationRecoveryHandler: RecoveryHandler?
     private var activationRequestIDs: Set<UUID> = []
     private var latestActivationRequestID: UUID?
-    private var failedActivationRefreshRequestIDs: Set<UUID> = []
+    private var latestSuccessfulActivationSequences: [UUID: UInt64] = [:]
+    private var failedActivationRefreshSequences: [UUID: UInt64] = [:]
     private var hasAbandonedActivation = false
 
     init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
@@ -631,16 +645,31 @@ actor VoiceAudioSessionCoordinator {
 
         var didActivateBackend = false
         do {
-            repeat {
-                try await performActivationAttempt(requestID: requestID)
+            while true {
+                let activationSequence = try await performActivationAttempt(requestID: requestID)
                 didActivateBackend = true
+                recordSuccessfulActivation(activationSequence, for: requestID)
                 try Task.checkCancellation()
                 // 旧停用可能在本次 setActive 成功后才落地。补激活若已明确失败，
                 // 发布租约前再激活一次，不能让调用方在失活会话上启动采集器。
-            } while failedActivationRefreshRequestIDs.remove(requestID) != nil
+                guard let deactivationSequence = failedActivationRefreshSequences.removeValue(
+                    forKey: requestID
+                ) else {
+                    break
+                }
+                let latestActivationSequence = latestSuccessfulActivationSequences[
+                    requestID,
+                    default: activationSequence
+                ]
+                if latestActivationSequence > deactivationSequence {
+                    // 本次 setActive 晚于旧停用落地，会话已经恢复，不需要重复激活。
+                    break
+                }
+            }
         } catch {
             activationRequestIDs.remove(requestID)
-            failedActivationRefreshRequestIDs.remove(requestID)
+            failedActivationRefreshSequences.removeValue(forKey: requestID)
+            latestSuccessfulActivationSequences.removeValue(forKey: requestID)
             if didActivateBackend {
                 markAbandonedActivation()
             }
@@ -650,20 +679,26 @@ actor VoiceAudioSessionCoordinator {
 
         activationRequestIDs.remove(requestID)
         guard latestActivationRequestID == requestID else {
+            latestSuccessfulActivationSequences.removeValue(forKey: requestID)
             markAbandonedActivation()
             deactivateAbandonedActivationIfIdle()
             throw CancellationError()
         }
 
         let activation = Activation(id: requestID)
+        if let previousActivationID = currentActivationID,
+           previousActivationID != activation.id {
+            latestSuccessfulActivationSequences.removeValue(forKey: previousActivationID)
+        }
         currentActivationID = activation.id
         currentActivationRecoveryHandler = onRecovery
         hasAbandonedActivation = false
         return activation
     }
 
-    private func performActivationAttempt(requestID: UUID) async throws {
+    private func performActivationAttempt(requestID: UUID) async throws -> UInt64 {
         let backend = self.backend
+        let operationSequence = self.operationSequence
         // setActive(true) 是同步阻塞调用。每次尝试使用独立执行任务，确保一次挂起不会占住
         // coordinator actor；后续重试仍能登记自己的请求并独立尝试激活。
         let activationTask = Task.detached(priority: .userInitiated) {
@@ -671,8 +706,9 @@ actor VoiceAudioSessionCoordinator {
             try backend.prepareForRecording()
             try Task.checkCancellation()
             try backend.activateForRecording()
+            return operationSequence.next()
         }
-        try await withTaskCancellationHandler {
+        return try await withTaskCancellationHandler {
             try await activationTask.value
         } onCancel: {
             activationTask.cancel()
@@ -685,8 +721,16 @@ actor VoiceAudioSessionCoordinator {
     private func cancelActivationRequest(_ requestID: UUID) {
         // 同步系统调用可能不响应 Task 取消；先移除逻辑请求，避免它阻止有效重试结束时停用。
         activationRequestIDs.remove(requestID)
-        failedActivationRefreshRequestIDs.remove(requestID)
+        failedActivationRefreshSequences.removeValue(forKey: requestID)
+        latestSuccessfulActivationSequences.removeValue(forKey: requestID)
         deactivateAbandonedActivationIfIdle()
+    }
+
+    private func recordSuccessfulActivation(_ sequence: UInt64, for requestID: UUID) {
+        latestSuccessfulActivationSequences[requestID] = max(
+            latestSuccessfulActivationSequences[requestID] ?? 0,
+            sequence
+        )
     }
 
     private func markAbandonedActivation() {
@@ -711,15 +755,16 @@ actor VoiceAudioSessionCoordinator {
 
     private func scheduleDeactivation() {
         let backend = self.backend
+        let operationSequence = self.operationSequence
         Task.detached(priority: .userInitiated) {
             // iOS 18–25 在新 I/O 已经启动时可能先停用会话，再以 isBusy 返回失败。
             // 无论返回值如何，都按“可能已经停用”处理；有新租约时补激活是幂等且更安全的结果。
             try? backend.deactivateRecording()
-            await self.deactivationDidComplete()
+            await self.deactivationDidComplete(sequence: operationSequence.next())
         }
     }
 
-    private func deactivationDidComplete() {
+    private func deactivationDidComplete(sequence: UInt64) {
         hasAbandonedActivation = false
         guard currentActivationID != nil || !activationRequestIDs.isEmpty else {
             return
@@ -728,11 +773,18 @@ actor VoiceAudioSessionCoordinator {
         let recoveryActivationID = currentActivationID ?? latestActivationRequestID.flatMap { requestID in
             activationRequestIDs.contains(requestID) ? requestID : nil
         }
-        scheduleActivationRefresh(recoveryActivationID: recoveryActivationID)
+        scheduleActivationRefresh(
+            recoveryActivationID: recoveryActivationID,
+            deactivationSequence: sequence
+        )
     }
 
-    private func scheduleActivationRefresh(recoveryActivationID: UUID?) {
+    private func scheduleActivationRefresh(
+        recoveryActivationID: UUID?,
+        deactivationSequence: UInt64
+    ) {
         let backend = self.backend
+        let operationSequence = self.operationSequence
         Task.detached(priority: .userInitiated) {
             do {
                 try backend.prepareForRecording()
@@ -740,12 +792,16 @@ actor VoiceAudioSessionCoordinator {
             } catch {
                 await self.activationRefreshDidFinish(
                     recoveryActivationID: recoveryActivationID,
+                    deactivationSequence: deactivationSequence,
+                    activationSequence: nil,
                     succeeded: false
                 )
                 return
             }
             await self.activationRefreshDidFinish(
                 recoveryActivationID: recoveryActivationID,
+                deactivationSequence: deactivationSequence,
+                activationSequence: operationSequence.next(),
                 succeeded: true
             )
         }
@@ -753,10 +809,21 @@ actor VoiceAudioSessionCoordinator {
 
     private func activationRefreshDidFinish(
         recoveryActivationID: UUID?,
+        deactivationSequence: UInt64,
+        activationSequence: UInt64?,
         succeeded: Bool
     ) {
         if let recoveryActivationID,
+           let latestActivationSequence = latestSuccessfulActivationSequences[recoveryActivationID],
+           latestActivationSequence > deactivationSequence {
+            // 同一请求已有一次发生在旧停用之后的成功激活；迟到补激活结果不能结束健康录音。
+            return
+        }
+        if let recoveryActivationID,
            currentActivationID == recoveryActivationID {
+            if let activationSequence {
+                recordSuccessfulActivation(activationSequence, for: recoveryActivationID)
+            }
             if let recoveryHandler = currentActivationRecoveryHandler {
                 // setActive(false) 已经可能中断当前采集；补激活后通知租约持有者重启采集器。
                 Task { @MainActor in
@@ -768,10 +835,16 @@ actor VoiceAudioSessionCoordinator {
         if let recoveryActivationID,
            currentActivationID == nil,
            activationRequestIDs.contains(recoveryActivationID) {
+            if let activationSequence {
+                recordSuccessfulActivation(activationSequence, for: recoveryActivationID)
+            }
             // 请求的后端 setActive 已经可能成功，但 actor 还未发布租约。记录补激活失败，
             // 让该请求在取得租约前重新确认会话为 active。
             if !succeeded {
-                failedActivationRefreshRequestIDs.insert(recoveryActivationID)
+                failedActivationRefreshSequences[recoveryActivationID] = max(
+                    failedActivationRefreshSequences[recoveryActivationID] ?? 0,
+                    deactivationSequence
+                )
             }
             return
         }
@@ -794,6 +867,7 @@ actor VoiceAudioSessionCoordinator {
         }
         currentActivationID = nil
         currentActivationRecoveryHandler = nil
+        latestSuccessfulActivationSequences.removeValue(forKey: activation.id)
         // 新请求已进入 setActive 时，旧租约只能移交当前激活状态，不能执行全局停用。
         // 新请求成功后会接管租约；失败或取消后再由 abandoned cleanup 配对停用。
         guard activationRequestIDs.isEmpty else {
