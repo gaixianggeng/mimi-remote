@@ -86,6 +86,20 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)
 	}
+	if cfg.Claude.MaxConcurrentBridges != config.DefaultClaudeMaxConcurrentBridges {
+		t.Fatalf("setup Claude 并发默认值异常：got=%d want=%d", cfg.Claude.MaxConcurrentBridges, config.DefaultClaudeMaxConcurrentBridges)
+	}
+	rawConfig, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored config.Config
+	if err := json.Unmarshal(rawConfig, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Claude.MaxConcurrentBridges != config.DefaultClaudeMaxConcurrentBridges {
+		t.Fatalf("setup 必须把有效 Claude 并发值写入磁盘：got=%d want=%d", stored.Claude.MaxConcurrentBridges, config.DefaultClaudeMaxConcurrentBridges)
+	}
 }
 
 func TestPairingURLRefreshCreatesDistinctTicketsAndKeepsPriorValidUntilOwnExpiry(t *testing.T) {
