@@ -165,6 +165,36 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
             [.prepare, .activate, .prepare, .activate, .deactivate]
         )
     }
+
+    func testOldDeactivationDoesNotInterruptPendingRetry() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(blockedActivationCall: 2)
+        defer { backend.releaseActivation() }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldActivation = try await coordinator.activate()
+        let retryRequest = Task {
+            try await coordinator.activate()
+        }
+
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while !backend.hasStartedActivation, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard backend.hasStartedActivation else {
+            XCTFail("Retry activation did not start")
+            return
+        }
+
+        await coordinator.deactivate(oldActivation)
+        XCTAssertEqual(backend.operations, [.prepare, .activate, .prepare, .activate])
+
+        backend.releaseActivation()
+        let retryActivation = try await retryRequest.value
+        await coordinator.deactivate(retryActivation)
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .activate, .prepare, .activate, .deactivate]
+        )
+    }
 }
 
 private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
@@ -176,14 +206,18 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
 
     private let lock = NSLock()
     private var storedOperations: [Operation] = []
-    private let blocksActivation: Bool
+    private let blockedActivationCall: Int?
     private let activationCondition = NSCondition()
     private var activationStarted = false
     private var activationReleased = false
     private var activationCallCount = 0
 
     init(blocksActivation: Bool = false) {
-        self.blocksActivation = blocksActivation
+        blockedActivationCall = blocksActivation ? 1 : nil
+    }
+
+    init(blockedActivationCall: Int) {
+        self.blockedActivationCall = blockedActivationCall
     }
 
     var operations: [Operation] {
@@ -202,10 +236,10 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
 
     func activateForRecording() throws {
         record(.activate)
-        guard blocksActivation else { return }
+        guard let blockedActivationCall else { return }
         activationCondition.lock()
         activationCallCount += 1
-        if activationCallCount == 1 {
+        if activationCallCount == blockedActivationCall {
             activationStarted = true
             activationCondition.broadcast()
             while !activationReleased {

@@ -688,6 +688,12 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         currentActivationID = nil
+        // 新请求已进入 setActive 时，旧租约只能移交当前激活状态，不能执行全局停用。
+        // 新请求成功后会接管租约；失败或取消后再由 abandoned cleanup 配对停用。
+        guard activationRequestIDs.isEmpty else {
+            hasAbandonedActivation = true
+            return
+        }
         hasAbandonedActivation = false
         try? backend.deactivateRecording()
     }
