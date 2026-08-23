@@ -908,14 +908,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
     }
 
-    func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
+    func testSelectedWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,
             "目录移除确认的 popover 锚点只在 iPad regular width 下验收。"
         )
         try relaunchDirectlyIntoWorkspaces()
 
-        let projectID = "debug-sample-app"
+        let projectID = "debug-mimi-demo"
         for (orientation, attachmentName) in [
             (UIDeviceOrientation.landscapeLeft, "landscape-sidebar"),
             (.portrait, "portrait")
@@ -924,11 +924,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
             let source = app.descendant(identifier: "workspace.card.\(projectID)")
             XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区项目胶囊应保持可见")
+            XCTAssertTrue(source.isSelected, "当前选中的工作区应保持选中状态")
             assertMinimumTouchTarget(source, named: "工作区项目胶囊")
             source.press(forDuration: 1.0)
 
             let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
-            XCTAssertTrue(request.waitForExistence(timeout: 6), "长按菜单应提供移除目录入口")
+            XCTAssertTrue(request.waitForExistence(timeout: 6), "当前选中工作区的长按菜单应提供移除目录入口")
             request.tap()
 
             let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
@@ -959,7 +960,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         XCTAssertTrue(
             source.waitForNonExistence(timeout: 8),
-            "确认后只应从当前工作区列表移除 Debug 样例目录"
+            "确认后应从当前工作区列表移除选中的 Debug 样例目录"
         )
     }
 
