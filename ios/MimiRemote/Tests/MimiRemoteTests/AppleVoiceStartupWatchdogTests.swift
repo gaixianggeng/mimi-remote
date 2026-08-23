@@ -73,7 +73,33 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         XCTAssertEqual(backend.operations, [.prepare, .activate])
 
         await coordinator.deactivate(retryActivation)
-        XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate])
+        try await waitForOperations([.prepare, .activate, .deactivate], in: backend)
+    }
+
+    func testActivationDoesNotWaitForBlockedPrewarm() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(blockedPreparationCall: 1)
+        defer { backend.releasePreparation() }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let prewarmRequest = Task {
+            try await coordinator.prewarm()
+        }
+
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while !backend.hasStartedPreparation, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard backend.hasStartedPreparation else {
+            XCTFail("Audio prewarm did not start")
+            return
+        }
+
+        let activation = try await coordinator.activate()
+        XCTAssertEqual(backend.operations, [.prepare, .prepare, .activate])
+
+        backend.releasePreparation()
+        try await prewarmRequest.value
+        await coordinator.deactivate(activation)
+        try await waitForOperations([.prepare, .prepare, .activate, .deactivate], in: backend)
     }
 
     func testCancellationDuringActivationIsCleanedUpBeforeRetry() async throws {
@@ -102,15 +128,15 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         } catch is CancellationError {
             // setActive 返回后检测到取消，并立即配对停用。
         }
-        XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate])
+        try await waitForOperations([.prepare, .activate, .deactivate], in: backend)
 
         let retryActivation = try await coordinator.activate()
         XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate, .prepare, .activate])
 
         await coordinator.deactivate(retryActivation)
-        XCTAssertEqual(
-            backend.operations,
-            [.prepare, .activate, .deactivate, .prepare, .activate, .deactivate]
+        try await waitForOperations(
+            [.prepare, .activate, .deactivate, .prepare, .activate, .deactivate],
+            in: backend
         )
     }
 
@@ -168,9 +194,9 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         } catch is CancellationError {
             // 迟到旧请求只清理自己的遗留激活。
         }
-        XCTAssertEqual(
-            backend.operations,
-            [.prepare, .activate, .prepare, .activate, .deactivate, .deactivate]
+        try await waitForOperations(
+            [.prepare, .activate, .prepare, .activate, .deactivate, .deactivate],
+            in: backend
         )
     }
 
@@ -198,10 +224,78 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         backend.releaseActivation()
         let retryActivation = try await retryRequest.value
         await coordinator.deactivate(retryActivation)
+        try await waitForOperations(
+            [.prepare, .activate, .prepare, .activate, .deactivate],
+            in: backend
+        )
+    }
+
+    func testRetryDoesNotWaitForBlockedDeactivation() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(blockedDeactivationCall: 1)
+        defer { backend.releaseDeactivation() }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldActivation = try await coordinator.activate()
+
+        await coordinator.deactivate(oldActivation)
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while !backend.hasStartedDeactivation, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard backend.hasStartedDeactivation else {
+            XCTFail("Audio deactivation did not start")
+            return
+        }
+
+        let retryCompleted = expectation(description: "retry completed during deactivation")
+        var retryActivation: VoiceAudioSessionCoordinator.Activation?
+        var retryError: Error?
+        let retryRequest = Task {
+            do {
+                retryActivation = try await coordinator.activate()
+            } catch {
+                retryError = error
+            }
+            retryCompleted.fulfill()
+        }
+
+        await fulfillment(of: [retryCompleted], timeout: 0.25)
+        XCTAssertNil(retryError)
         XCTAssertEqual(
             backend.operations,
-            [.prepare, .activate, .prepare, .activate, .deactivate]
+            [.prepare, .activate, .deactivate, .prepare, .activate]
         )
+
+        backend.releaseDeactivation()
+        await retryRequest.value
+        try await waitForOperation(.activate, count: 3, in: backend)
+
+        let activation = try XCTUnwrap(retryActivation)
+        await coordinator.deactivate(activation)
+        try await waitForOperation(.deactivate, count: 2, in: backend)
+    }
+
+    private func waitForOperations(
+        _ expected: [StartupWatchdogAudioSessionBackend.Operation],
+        in backend: StartupWatchdogAudioSessionBackend
+    ) async throws {
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while backend.operations != expected, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertEqual(backend.operations, expected)
+    }
+
+    private func waitForOperation(
+        _ operation: StartupWatchdogAudioSessionBackend.Operation,
+        count: Int,
+        in backend: StartupWatchdogAudioSessionBackend
+    ) async throws {
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while backend.operations.filter({ $0 == operation }).count < count,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertGreaterThanOrEqual(backend.operations.filter { $0 == operation }.count, count)
     }
 }
 
@@ -214,18 +308,44 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
 
     private let lock = NSLock()
     private var storedOperations: [Operation] = []
+    private let blockedPreparationCall: Int?
     private let blockedActivationCall: Int?
+    private let blockedDeactivationCall: Int?
+    private let preparationCondition = NSCondition()
+    private var preparationStarted = false
+    private var preparationReleased = false
+    private var preparationCallCount = 0
     private let activationCondition = NSCondition()
     private var activationStarted = false
     private var activationReleased = false
     private var activationCallCount = 0
+    private let deactivationCondition = NSCondition()
+    private var deactivationStarted = false
+    private var deactivationReleased = false
+    private var deactivationCallCount = 0
 
     init(blocksActivation: Bool = false) {
+        blockedPreparationCall = nil
         blockedActivationCall = blocksActivation ? 1 : nil
+        blockedDeactivationCall = nil
     }
 
     init(blockedActivationCall: Int) {
+        blockedPreparationCall = nil
         self.blockedActivationCall = blockedActivationCall
+        blockedDeactivationCall = nil
+    }
+
+    init(blockedDeactivationCall: Int) {
+        blockedPreparationCall = nil
+        blockedActivationCall = nil
+        self.blockedDeactivationCall = blockedDeactivationCall
+    }
+
+    init(blockedPreparationCall: Int) {
+        self.blockedPreparationCall = blockedPreparationCall
+        blockedActivationCall = nil
+        blockedDeactivationCall = nil
     }
 
     var operations: [Operation] {
@@ -238,8 +358,31 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         return activationStarted
     }
 
+    var hasStartedPreparation: Bool {
+        preparationCondition.lock()
+        defer { preparationCondition.unlock() }
+        return preparationStarted
+    }
+
+    var hasStartedDeactivation: Bool {
+        deactivationCondition.lock()
+        defer { deactivationCondition.unlock() }
+        return deactivationStarted
+    }
+
     func prepareForRecording() throws {
         record(.prepare)
+        guard let blockedPreparationCall else { return }
+        preparationCondition.lock()
+        preparationCallCount += 1
+        if preparationCallCount == blockedPreparationCall {
+            preparationStarted = true
+            preparationCondition.broadcast()
+            while !preparationReleased {
+                preparationCondition.wait()
+            }
+        }
+        preparationCondition.unlock()
     }
 
     func activateForRecording() throws {
@@ -259,6 +402,17 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
 
     func deactivateRecording() throws {
         record(.deactivate)
+        guard let blockedDeactivationCall else { return }
+        deactivationCondition.lock()
+        deactivationCallCount += 1
+        if deactivationCallCount == blockedDeactivationCall {
+            deactivationStarted = true
+            deactivationCondition.broadcast()
+            while !deactivationReleased {
+                deactivationCondition.wait()
+            }
+        }
+        deactivationCondition.unlock()
     }
 
     private func record(_ operation: Operation) {
@@ -272,5 +426,19 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         activationReleased = true
         activationCondition.broadcast()
         activationCondition.unlock()
+    }
+
+    func releasePreparation() {
+        preparationCondition.lock()
+        preparationReleased = true
+        preparationCondition.broadcast()
+        preparationCondition.unlock()
+    }
+
+    func releaseDeactivation() {
+        deactivationCondition.lock()
+        deactivationReleased = true
+        deactivationCondition.broadcast()
+        deactivationCondition.unlock()
     }
 }

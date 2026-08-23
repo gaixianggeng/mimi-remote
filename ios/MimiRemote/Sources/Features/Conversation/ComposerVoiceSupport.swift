@@ -611,8 +611,12 @@ actor VoiceAudioSessionCoordinator {
         self.backend = backend
     }
 
-    func prewarm() throws {
-        try backend.prepareForRecording()
+    func prewarm() async throws {
+        let backend = self.backend
+        // 预热也会调用同步的 AVAudioSession API；它不能占住负责重试租约的 actor。
+        try await Task.detached(priority: .utility) {
+            try backend.prepareForRecording()
+        }.value
     }
 
     func activate() async throws -> Activation {
@@ -688,7 +692,50 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         hasAbandonedActivation = false
-        try? backend.deactivateRecording()
+        scheduleDeactivation()
+    }
+
+    private func scheduleDeactivation() {
+        let backend = self.backend
+        Task.detached(priority: .userInitiated) {
+            do {
+                try backend.deactivateRecording()
+            } catch {
+                return
+            }
+            await self.deactivationDidComplete()
+        }
+    }
+
+    private func deactivationDidComplete() {
+        hasAbandonedActivation = false
+        guard currentActivationID != nil || !activationRequestIDs.isEmpty else {
+            return
+        }
+        // 停用开始后可能已经有新租约或新请求；迟到停用必须补一次激活，保证最终状态为 active。
+        scheduleActivationRefresh()
+    }
+
+    private func scheduleActivationRefresh() {
+        let backend = self.backend
+        Task.detached(priority: .userInitiated) {
+            do {
+                try backend.prepareForRecording()
+                try backend.activateForRecording()
+            } catch {
+                return
+            }
+            await self.activationRefreshDidComplete()
+        }
+    }
+
+    private func activationRefreshDidComplete() {
+        guard currentActivationID == nil else {
+            return
+        }
+        // 补激活完成时请求可能已取消；保留遗留标记，让最后一个请求退出时配对停用。
+        hasAbandonedActivation = true
+        deactivateAbandonedActivationIfIdle()
     }
 
     func deactivate(_ activation: Activation) {
@@ -704,7 +751,7 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         hasAbandonedActivation = false
-        try? backend.deactivateRecording()
+        scheduleDeactivation()
     }
 }
 

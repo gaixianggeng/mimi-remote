@@ -548,6 +548,10 @@ extension ConversationDataFlowTests {
         )
 
         await coordinator.deactivate(secondActivation)
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while backend.operations.last != .deactivate, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         XCTAssertEqual(
             backend.operations,
             [.prepare, .prepare, .activate, .prepare, .activate, .deactivate]
