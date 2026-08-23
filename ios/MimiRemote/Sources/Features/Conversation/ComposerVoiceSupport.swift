@@ -702,11 +702,9 @@ actor VoiceAudioSessionCoordinator {
     private func scheduleDeactivation() {
         let backend = self.backend
         Task.detached(priority: .userInitiated) {
-            do {
-                try backend.deactivateRecording()
-            } catch {
-                return
-            }
+            // iOS 18–25 在新 I/O 已经启动时可能先停用会话，再以 isBusy 返回失败。
+            // 无论返回值如何，都按“可能已经停用”处理；有新租约时补激活是幂等且更安全的结果。
+            try? backend.deactivateRecording()
             await self.deactivationDidComplete()
         }
     }

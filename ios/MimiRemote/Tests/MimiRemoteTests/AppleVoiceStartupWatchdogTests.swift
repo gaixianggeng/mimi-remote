@@ -279,6 +279,32 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         try await waitForOperation(.deactivate, count: 2, in: backend)
     }
 
+    func testFailedLateDeactivationStillRefreshesCurrentActivation() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(
+            blockedDeactivationCall: 1,
+            failingDeactivationCall: 1
+        )
+        defer { backend.releaseDeactivation() }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldActivation = try await coordinator.activate()
+
+        await coordinator.deactivate(oldActivation)
+        try await waitForDeactivationStart(in: backend)
+
+        let captureRecovered = expectation(description: "capture recovered after failed late deactivation")
+        let retryActivation = try await coordinator.activate(onRecovery: { succeeded in
+            XCTAssertTrue(succeeded)
+            captureRecovered.fulfill()
+        })
+
+        backend.releaseDeactivation()
+        try await waitForOperation(.activate, count: 3, in: backend)
+        await fulfillment(of: [captureRecovered], timeout: 0.25)
+
+        await coordinator.deactivate(retryActivation)
+        try await waitForOperation(.deactivate, count: 2, in: backend)
+    }
+
     func testStaleRefreshFailureDoesNotStopNewerActivation() async throws {
         let backend = StartupWatchdogAudioSessionBackend(
             blockedActivationCall: 3,
@@ -362,6 +388,7 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
 private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
     enum TestError: Error {
         case activationFailed
+        case deactivationFailed
     }
 
     enum Operation: Equatable {
@@ -376,6 +403,7 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
     private let blockedActivationCall: Int?
     private let failingActivationCall: Int?
     private let blockedDeactivationCall: Int?
+    private let failingDeactivationCall: Int?
     private let preparationCondition = NSCondition()
     private var preparationStarted = false
     private var preparationReleased = false
@@ -394,6 +422,7 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         blockedActivationCall = blocksActivation ? 1 : nil
         failingActivationCall = nil
         blockedDeactivationCall = nil
+        failingDeactivationCall = nil
     }
 
     init(blockedActivationCall: Int) {
@@ -401,13 +430,15 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         self.blockedActivationCall = blockedActivationCall
         failingActivationCall = nil
         blockedDeactivationCall = nil
+        failingDeactivationCall = nil
     }
 
-    init(blockedDeactivationCall: Int) {
+    init(blockedDeactivationCall: Int, failingDeactivationCall: Int? = nil) {
         blockedPreparationCall = nil
         blockedActivationCall = nil
         failingActivationCall = nil
         self.blockedDeactivationCall = blockedDeactivationCall
+        self.failingDeactivationCall = failingDeactivationCall
     }
 
     init(blockedPreparationCall: Int) {
@@ -415,6 +446,7 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         blockedActivationCall = nil
         failingActivationCall = nil
         blockedDeactivationCall = nil
+        failingDeactivationCall = nil
     }
 
     init(
@@ -426,6 +458,7 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         self.blockedActivationCall = blockedActivationCall
         self.failingActivationCall = failingActivationCall
         self.blockedDeactivationCall = blockedDeactivationCall
+        failingDeactivationCall = nil
     }
 
     var operations: [Operation] {
@@ -487,10 +520,10 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
 
     func deactivateRecording() throws {
         record(.deactivate)
-        guard let blockedDeactivationCall else { return }
         deactivationCondition.lock()
         deactivationCallCount += 1
-        if deactivationCallCount == blockedDeactivationCall {
+        let currentCall = deactivationCallCount
+        if currentCall == blockedDeactivationCall {
             deactivationStarted = true
             deactivationCondition.broadcast()
             while !deactivationReleased {
@@ -498,6 +531,9 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
             }
         }
         deactivationCondition.unlock()
+        if currentCall == failingDeactivationCall {
+            throw TestError.deactivationFailed
+        }
     }
 
     private func record(_ operation: Operation) {
