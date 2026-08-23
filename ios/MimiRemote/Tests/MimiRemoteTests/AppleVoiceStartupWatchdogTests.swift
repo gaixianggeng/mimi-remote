@@ -344,6 +344,45 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         try await waitForOperation(.deactivate, count: 2, in: backend)
     }
 
+    func testCancellingPendingRequestDeactivatesSuccessfulRefresh() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(
+            blockedActivationCall: 2,
+            blockedDeactivationCall: 1
+        )
+        defer {
+            backend.releaseActivation()
+            backend.releaseDeactivation()
+        }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldActivation = try await coordinator.activate()
+
+        await coordinator.deactivate(oldActivation)
+        try await waitForDeactivationStart(in: backend)
+
+        let retryRequest = Task {
+            try await coordinator.activate()
+        }
+        try await waitForActivationStart(in: backend)
+
+        // 主激活继续阻塞，旧停用落地后的补激活先成功并占用全局音频会话。
+        backend.releaseDeactivation()
+        try await waitForOperation(.activate, count: 3, in: backend)
+        try await Task.sleep(for: .milliseconds(40))
+
+        retryRequest.cancel()
+        // 不释放主激活也必须先清理补激活，不能让 .record/.duckOthers 一直保持 active。
+        try await waitForOperation(.deactivate, count: 2, in: backend)
+
+        backend.releaseActivation()
+        do {
+            _ = try await retryRequest.value
+            XCTFail("Cancelled request must not retain audio activation")
+        } catch is CancellationError {
+            // 迟到的主激活成功后还会执行自己的补偿停用。
+        }
+        try await waitForOperation(.deactivate, count: 3, in: backend)
+    }
+
     func testStaleRefreshFailureDoesNotStopNewerActivation() async throws {
         let backend = StartupWatchdogAudioSessionBackend(
             blockedActivationCall: 3,
@@ -496,6 +535,17 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         blockedPreparationCall = nil
         self.blockedActivationCall = blockedActivationCall
         self.failingActivationCall = failingActivationCall
+        self.blockedDeactivationCall = blockedDeactivationCall
+        failingDeactivationCall = nil
+    }
+
+    init(
+        blockedActivationCall: Int,
+        blockedDeactivationCall: Int
+    ) {
+        blockedPreparationCall = nil
+        self.blockedActivationCall = blockedActivationCall
+        failingActivationCall = nil
         self.blockedDeactivationCall = blockedDeactivationCall
         failingDeactivationCall = nil
     }

@@ -669,8 +669,10 @@ actor VoiceAudioSessionCoordinator {
         } catch {
             activationRequestIDs.remove(requestID)
             failedActivationRefreshSequences.removeValue(forKey: requestID)
-            latestSuccessfulActivationSequences.removeValue(forKey: requestID)
-            if didActivateBackend {
+            let hadSuccessfulActivation = latestSuccessfulActivationSequences.removeValue(
+                forKey: requestID
+            ) != nil
+            if didActivateBackend || hadSuccessfulActivation {
                 markAbandonedActivation()
             }
             deactivateAbandonedActivationIfIdle()
@@ -722,7 +724,13 @@ actor VoiceAudioSessionCoordinator {
         // 同步系统调用可能不响应 Task 取消；先移除逻辑请求，避免它阻止有效重试结束时停用。
         activationRequestIDs.remove(requestID)
         failedActivationRefreshSequences.removeValue(forKey: requestID)
-        latestSuccessfulActivationSequences.removeValue(forKey: requestID)
+        let hadSuccessfulActivation = latestSuccessfulActivationSequences.removeValue(
+            forKey: requestID
+        ) != nil
+        if hadSuccessfulActivation {
+            // 待发布请求可能已经通过补激活占用了全局会话；取消时必须配对停用。
+            markAbandonedActivation()
+        }
         deactivateAbandonedActivationIfIdle()
     }
 
