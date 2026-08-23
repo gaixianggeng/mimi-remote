@@ -167,6 +167,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				"TERM": "xterm-256color",
 			},
 		},
+		Claude: config.DefaultClaudeConfig(),
 		Session: config.SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},

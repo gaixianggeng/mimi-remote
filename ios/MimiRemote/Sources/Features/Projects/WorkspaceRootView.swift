@@ -1020,7 +1020,7 @@ struct WorkspaceRootView: View {
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        guard selectedWorkspaceID != project.id else { return }
+        // 当前浏览选择可以被移出；目录列表变化后，现有同步逻辑会选择剩余目录。
         runtimeSessionPagesByKey = runtimeSessionPagesByKey.filter { $0.key.workspaceID != project.id }
         sessionLoadStates = sessionLoadStates.filter { $0.key.workspaceID != project.id }
         sessionLoadInvocationTokens.remove { $0.workspaceID == project.id }
@@ -1388,14 +1388,12 @@ private struct WorkspaceProjectChip: View {
             .accessibilityIdentifier("workspace.card.icon.\(project.id)")
         }
 
-        if !isSelected {
-            Button(role: .destructive) {
-                isPresentingRemoveConfirmation = true
-            } label: {
-                Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
-            }
-            .accessibilityIdentifier("workspace.remove.request.\(project.id)")
+        Button(role: .destructive) {
+            isPresentingRemoveConfirmation = true
+        } label: {
+            Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
         }
+        .accessibilityIdentifier("workspace.remove.request.\(project.id)")
     }
 
     @ViewBuilder

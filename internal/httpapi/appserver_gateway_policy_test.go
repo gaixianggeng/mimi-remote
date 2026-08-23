@@ -2079,6 +2079,59 @@ func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testi
 	}
 }
 
+func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMarker(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-preserve")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-preserve")
+
+	conflict := []byte(fmt.Sprintf(
+		`{"id":173,"method":"turn/start","params":{"threadId":"thread-preserve","cwd":%q,"input":[{"type":"text","text":"conflict"}],"mimiPreserveThreadPermissions":true,"approvalPolicy":"on-request"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, conflict); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "不能与 approvalPolicy 同时发送") {
+		t.Fatalf("沿用 Thread 权限不能夹带覆盖值：%+v", errFrame)
+	}
+
+	request := []byte(fmt.Sprintf(
+		`{"id":174,"method":"turn/start","params":{"threadId":"thread-preserve","cwd":%q,"input":[{"type":"text","text":"preserve"}],"mimiPreserveThreadPermissions":true}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "approvalPolicy", "approvalsReviewer", "effort")
+	if params["threadId"] != "thread-preserve" || params["cwd"] != projectDir {
+		t.Fatalf("turn/start 必须保留 Thread 与授权工作区：%v", params)
+	}
+	if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" {
+		t.Fatalf("turn/start 沿用文件权限时仍必须强制远端审批：%v", params)
+	}
+
+	resumeParams := sanitizedGatewayThreadParams("codex", "thread/resume", map[string]any{
+		"threadId":                            "thread-preserve",
+		"cwd":                                 projectDir,
+		"initialTurnsPage":                    map[string]any{"limit": float64(5), "itemsView": "summary"},
+		gatewayPreserveThreadPermissionsParam: true,
+	})
+	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage", "approvalPolicy", "approvalsReviewer")
+	if resumeParams["approvalPolicy"] != "on-request" || resumeParams["approvalsReviewer"] != "user" {
+		t.Fatalf("thread/resume 沿用文件权限时仍必须覆盖本地审批策略：%v", resumeParams)
+	}
+}
+
 func TestAppServerGatewayServerRequestPendingUsesLongerTTLThanThreadResponses(t *testing.T) {
 	oldThreadTTL := appServerGatewayPendingThreadTTL
 	oldServerTTL := appServerGatewayPendingServerRequestTTL

@@ -2226,12 +2226,17 @@ actor CodexAppServerSessionRuntime {
         connection: CodexAppServerConnection,
         retryThreadHandoffInProgress: Bool = true
     ) async throws {
+        var passiveResumeOptions = CodexAppServerTurnOptions.default
+        // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
+        // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
+        passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
+        let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
         let result: CodexAppServerJSONValue?
         do {
             let request = try builder.threadResume(
                 threadID: sessionID,
                 cwd: cwd,
-                options: runtimeScopedThreadOptions(.default)
+                options: scopedPassiveResumeOptions
             )
             if retryThreadHandoffInProgress {
                 result = try await sendRetryingThreadHandoffInProgress(
@@ -2250,7 +2255,7 @@ actor CodexAppServerSessionRuntime {
                 let request = try builder.threadResume(
                     threadID: sessionID,
                     cwd: cwd,
-                    options: runtimeScopedThreadOptions(.default),
+                    options: scopedPassiveResumeOptions,
                     includeInitialTurnsPage: false
                 )
                 if retryThreadHandoffInProgress {

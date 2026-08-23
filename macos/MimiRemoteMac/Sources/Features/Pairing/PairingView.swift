@@ -326,41 +326,51 @@ private struct PairingActionBar: View {
     let refresh: () -> Void
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
-                Button(action: copy) {
-                    Label(
-                        didCopy ? "已复制" : "复制配对链接",
-                        systemImage: didCopy ? "checkmark" : "doc.on.doc"
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 12) {
+                    actionButtons
                 }
-                .buttonStyle(.glass)
-                .accessibilityLabel(didCopy ? "配对链接已复制" : "复制配对链接")
-                .accessibilityHint("将当前十分钟有效的配对链接复制到剪贴板")
-
-                Button(action: refresh) {
-                    HStack(spacing: 7) {
-                        if isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        Text(isRefreshing ? "正在刷新" : "刷新二维码")
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(isRefreshing)
-                .accessibilityLabel(isRefreshing ? "正在刷新二维码" : "刷新二维码")
-                .accessibilityHint("生成一张新的十分钟配对二维码")
-                .accessibilityValue(isRefreshing ? "进行中" : "就绪")
+            } else {
+                actionButtons
             }
         }
         .controlSize(.large)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            Button(action: copy) {
+                Label(
+                    didCopy ? "已复制" : "复制配对链接",
+                    systemImage: didCopy ? "checkmark" : "doc.on.doc"
+                )
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .modifier(PairingActionButtonStyleModifier(isProminent: false))
+            .accessibilityLabel(didCopy ? "配对链接已复制" : "复制配对链接")
+            .accessibilityHint("将当前十分钟有效的配对链接复制到剪贴板")
+
+            Button(action: refresh) {
+                HStack(spacing: 7) {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    Text(isRefreshing ? "正在刷新" : "刷新二维码")
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .modifier(PairingActionButtonStyleModifier(isProminent: true))
+            .disabled(isRefreshing)
+            .accessibilityLabel(isRefreshing ? "正在刷新二维码" : "刷新二维码")
+            .accessibilityHint("生成一张新的十分钟配对二维码")
+            .accessibilityValue(isRefreshing ? "进行中" : "就绪")
+        }
     }
 }
 
@@ -425,7 +435,7 @@ private struct PairingUnavailableState: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.glassProminent)
+            .modifier(PairingActionButtonStyleModifier(isProminent: true))
             .controlSize(.large)
             .disabled(isRetrying)
             .accessibilityLabel(isRetrying ? "正在重新生成二维码" : "重新生成二维码")
@@ -433,6 +443,26 @@ private struct PairingUnavailableState: View {
             .accessibilityValue(isRetrying ? "进行中" : "可重试")
         }
         .padding(40)
+    }
+}
+
+private struct PairingActionButtonStyleModifier: ViewModifier {
+    let isProminent: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        // 仅让支持 Liquid Glass 的系统使用玻璃按钮，旧系统保留相同的原生交互语义。
+        if #available(macOS 26.0, *) {
+            if isProminent {
+                content.buttonStyle(.glassProminent)
+            } else {
+                content.buttonStyle(.glass)
+            }
+        } else if isProminent {
+            content.buttonStyle(.borderedProminent)
+        } else {
+            content.buttonStyle(.bordered)
+        }
     }
 }
 

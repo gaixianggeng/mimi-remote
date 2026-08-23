@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	gatewayLocalImageMaxBytes  int64 = 20 << 20
-	gatewayLocalImageMaxPixels int64 = 50_000_000
+	gatewayLocalImageMaxBytes             int64 = 20 << 20
+	gatewayLocalImageMaxPixels            int64 = 50_000_000
+	gatewayPreserveThreadPermissionsParam       = "mimiPreserveThreadPermissions"
 )
 
 func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, params map[string]any) (appServerGatewayValidatedParams, error) {
@@ -34,6 +35,17 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			r.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		}
 	}()
+	if value, exists := params[gatewayPreserveThreadPermissionsParam]; exists {
+		preserve, ok := value.(bool)
+		if !ok || !preserve || runtimeID != "codex" || (method != "thread/resume" && method != "turn/start") {
+			return validated, fmt.Errorf("%s 只允许 Codex thread/resume 或 turn/start 使用 true", gatewayPreserveThreadPermissionsParam)
+		}
+		for _, key := range []string{"approvalPolicy", "approvalsReviewer", "permissions", "sandbox", "sandboxPolicy"} {
+			if override, present := params[key]; present && override != nil {
+				return validated, fmt.Errorf("%s 不能与 %s 同时发送", gatewayPreserveThreadPermissionsParam, key)
+			}
+		}
+	}
 	if hasApprovalPolicyNever(params) {
 		return validated, fmt.Errorf("approvalPolicy=never 不允许远程使用")
 	}

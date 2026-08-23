@@ -176,6 +176,7 @@
 		989F7144D36711010C69FAD9 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */; };
 		9928E62AE42C8C038223B3EC /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png in Resources */ = {isa = PBXBuildFile; fileRef = CEE63E1F88F94DC3D0C543CF /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png */; };
 		9B897FC15CC75C70A0DC5444 /* TokenUsageCardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 620EE3CCFD6A92164C8F272F /* TokenUsageCardSnapshotTests.swift */; platformFilters = (ios, ); };
+		A18400000000000000000001 /* AppleVoiceStartupWatchdogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18400000000000000000002 /* AppleVoiceStartupWatchdogTests.swift */; };
 		9BB164C3CFDE5A1120D2A096 /* ProfileRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302CD30CD51E926987FAD6C3 /* ProfileRootView.swift */; };
 		9CDA4F02261EE4460043EC2B /* testRichMarkdownConversationRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 2ACC589478ECDD4A4FB9BEB0 /* testRichMarkdownConversationRendering.1.png */; };
 		9DB7FDC4C6AB0FBB1DE2DC8D /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 5F6590638B16083675339655 /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png */; };
@@ -489,6 +490,7 @@
 		83CFAE116262795C7501365E /* CarStatusSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStatusSnapshotTests.swift; sourceTree = "<group>"; };
 		85879EDF3D64609C3C6BA873 /* WorkspaceGitSummaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitSummaryTests.swift; sourceTree = "<group>"; };
 		86B6C2FC1CE749D7A8268F85 /* ConversationComposerHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerHistoryTests.swift; sourceTree = "<group>"; };
+		A18400000000000000000002 /* AppleVoiceStartupWatchdogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleVoiceStartupWatchdogTests.swift; sourceTree = "<group>"; };
 		88A2FAA4C2526405C2DDB750 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		8AA53A2531C62C2974077C88 /* LocalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationTests.swift; sourceTree = "<group>"; };
 		8AE76E723980EA82E7BBD4A8 /* testSkillInvocationCardLightAppearance.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testSkillInvocationCardLightAppearance.1.png; sourceTree = "<group>"; };
@@ -750,6 +752,7 @@
 			children = (
 				1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */,
 				554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */,
+				A18400000000000000000002 /* AppleVoiceStartupWatchdogTests.swift */,
 				54AAB784C642D2B0234E48BA /* CameraAttachmentTests.swift */,
 				83CFAE116262795C7501365E /* CarStatusSnapshotTests.swift */,
 				FA34FDB7E26D6307E81C07CC /* CodexAppServerProtocolTests.swift */,
@@ -1493,6 +1496,7 @@
 			files = (
 				84F5B773E0438B85B671B2F3 /* AgentAPIClientRequestTests.swift in Sources */,
 				FA451031EB72AE10C3552C3F /* AppExternalLinksTests.swift in Sources */,
+				A18400000000000000000001 /* AppleVoiceStartupWatchdogTests.swift in Sources */,
 				03E7996441667D59DF2F9E3A /* CameraAttachmentTests.swift in Sources */,
 				101A9079E24B09BCAB8B54FF /* CarStatusSnapshotTests.swift in Sources */,
 				523D4FE3642B0D171DB1647E /* CodexAppServerProtocolTests.swift in Sources */,

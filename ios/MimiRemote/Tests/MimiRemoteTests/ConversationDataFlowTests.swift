@@ -3050,6 +3050,26 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(composerState.turnOptions.networkAccess)
     }
 
+    func testComposerPermissionSelectionCacheKeepsExistingThreadPreservationUntilExplicitOverride() throws {
+        var state = ComposerState()
+        state.preserveThreadPermissionSettings()
+        XCTAssertTrue(state.turnOptions.preservesThreadPermissionSettings)
+
+        let sessionScope = ComposerDraftScopeKey.session("thread-1")
+        var cache = ComposerPermissionSelectionCache()
+        cache.save(state.permissionSelectionSnapshot(), for: sessionScope)
+
+        state.applyPermissionMode(.readOnly)
+        XCTAssertFalse(state.turnOptions.preservesThreadPermissionSettings)
+        state.restorePermissionSelectionSnapshot(try XCTUnwrap(cache.snapshot(for: sessionScope)))
+        XCTAssertTrue(state.turnOptions.preservesThreadPermissionSettings)
+        XCTAssertNil(state.turnOptions.permissionProfileID)
+
+        state.applyPermissionMode(.fullAccess)
+        XCTAssertFalse(state.turnOptions.preservesThreadPermissionSettings)
+        XCTAssertEqual(state.turnOptions.sandboxMode, .dangerFullAccess)
+    }
+
     func testComposerCanInitializeWithGlobalDefaultPermissionMode() {
         let composerState = ComposerState(defaultPermissionMode: .requestApproval)
 

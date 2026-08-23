@@ -874,6 +874,10 @@ extension ComposerView {
     }
 
     var permissionTitle: String {
+        if composerState.turnOptions.preservesThreadPermissionSettings,
+           activePermissionProfile == nil {
+            return L10n.text("ui.follow_the_current_thread_permissions")
+        }
         if let profileID = selectedPermissionProfileID {
             return activePermissionProfile.map {
                 L10n.format("ui.active_permission_profile_value", $0.id)
@@ -883,6 +887,11 @@ extension ComposerView {
     }
 
     var permissionWireSummary: String {
+        if composerState.turnOptions.preservesThreadPermissionSettings {
+            return activePermissionProfile.map {
+                L10n.format("ui.active_permission_profile_value", $0.id)
+            } ?? L10n.text("ui.follow_the_current_thread_permissions")
+        }
         if let profileID = selectedPermissionProfileID {
             return L10n.format("ui.permission_profile_wire_value", profileID)
         }
