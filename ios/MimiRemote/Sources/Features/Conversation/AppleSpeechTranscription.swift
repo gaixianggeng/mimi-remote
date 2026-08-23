@@ -122,6 +122,7 @@ enum AppleSpeechTranscriptionError: LocalizedError {
     case noTranscriptionResult
     case audioSessionInterrupted
     case mediaServicesReset
+    case startupTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -133,7 +134,7 @@ enum AppleSpeechTranscriptionError: LocalizedError {
             return L10n.text("ui.apple_voice_input_audio_conversion_failed")
         case .recordingFailed:
             return L10n.text("ui.apple_voice_input_could_not_start_recording")
-        case .resultStreamEnded, .noTranscriptionResult, .mediaServicesReset:
+        case .resultStreamEnded, .noTranscriptionResult, .mediaServicesReset, .startupTimedOut:
             return L10n.text("ui.apple_voice_input_stopped_please_try_again")
         case .audioSessionInterrupted:
             return L10n.text("ui.apple_voice_input_was_interrupted_please_try_again")
@@ -158,6 +159,8 @@ enum AppleSpeechTranscriptionError: LocalizedError {
             return "audio_session_interrupted"
         case .mediaServicesReset:
             return "media_services_reset"
+        case .startupTimedOut:
+            return "startup_timeout"
         }
     }
 }
@@ -172,7 +175,7 @@ final class AppleSpeechTranscriptionSession {
         category: "AppleSpeech"
     )
 
-    private let sessionID = UUID()
+    private let sessionID: UUID
     private var analyzer: SpeechAnalyzer?
     private var audioEngine: AVAudioEngine?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
@@ -188,8 +191,30 @@ final class AppleSpeechTranscriptionSession {
     private var acceptsTranscriptionResults = false
     private var isFinishing = false
 
-    init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
+    init(
+        sessionID: UUID = UUID(),
+        audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared
+    ) {
+        self.sessionID = sessionID
         self.audioSessionCoordinator = audioSessionCoordinator
+    }
+
+    func logStartRequested(locale: Locale) {
+        Self.logger.info(
+            "start_requested id=\(self.sessionID.uuidString, privacy: .public) locale=\(locale.identifier, privacy: .public)"
+        )
+    }
+
+    func logPermissionDone(granted: Bool) {
+        Self.logger.info(
+            "permission_done id=\(self.sessionID.uuidString, privacy: .public) granted=\(granted, privacy: .public)"
+        )
+    }
+
+    func logStartupTimeout() {
+        Self.logger.error(
+            "startup_timeout id=\(self.sessionID.uuidString, privacy: .public)"
+        )
     }
 
     func start(
@@ -334,7 +359,11 @@ final class AppleSpeechTranscriptionSession {
         onLevel: @escaping @MainActor (CGFloat) -> Void,
         onFailure: @escaping @MainActor (Error) -> Void
     ) async throws {
+        try Task.checkCancellation()
         let activation = try await audioSessionCoordinator.activate()
+        Self.logger.info(
+            "audio_session_activated id=\(self.sessionID.uuidString, privacy: .public)"
+        )
         do {
             // start() 等待系统会话期间可能已被取消；先检查，再触碰 MainActor 上的 engine。
             try Task.checkCancellation()
@@ -379,6 +408,9 @@ final class AppleSpeechTranscriptionSession {
                 inputNode.removeTap(onBus: 0)
                 throw AppleSpeechTranscriptionError.recordingFailed
             }
+            Self.logger.info(
+                "audio_engine_started id=\(self.sessionID.uuidString, privacy: .public)"
+            )
             audioEngine = engine
             audioSessionActivation = activation
             Self.logger.info(

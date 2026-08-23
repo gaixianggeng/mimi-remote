@@ -2,6 +2,30 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+struct AppleVoiceStartupWatchdog {
+    static let defaultTimeout: Duration = .seconds(15)
+
+    let timeout: Duration
+
+    init(timeout: Duration = Self.defaultTimeout) {
+        self.timeout = timeout
+    }
+
+    func arm(onTimeout: @escaping @MainActor @Sendable () -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            onTimeout()
+        }
+    }
+}
+
 enum VoiceMicButtonState: Equatable {
     case idle
     case preparing
@@ -562,7 +586,7 @@ final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked
     }
 
     func activateForRecording() throws {
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSession.setActive(true)
     }
 
     func deactivateRecording() throws {
@@ -589,8 +613,22 @@ actor VoiceAudioSessionCoordinator {
     }
 
     func activate() throws -> Activation {
+        try Task.checkCancellation()
         try backend.prepareForRecording()
+        try Task.checkCancellation()
+
+        let hadExistingActivation = currentActivationID != nil
         try backend.activateForRecording()
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // setActive 已经成功但调用方在返回前取消时，必须撤销这次独占激活。
+            // 已有租约表示音频会话原本就在使用中，此时不能误停仍有效的新会话。
+            if !hadExistingActivation {
+                try? backend.deactivateRecording()
+            }
+            throw error
+        }
         let activation = Activation(id: UUID())
         currentActivationID = activation.id
         return activation
@@ -629,6 +667,7 @@ final class VoiceInputController: NSObject, ObservableObject {
     // 只在 iOS 26+ 方法内部还原成 AppleSpeechTranscriptionSession。
     private var appleSession: AnyObject?
     private var appleLifecycleTask: Task<Void, Never>?
+    private var appleStartupWatchdogTask: Task<Void, Never>?
     private var appleFinishHandler: (() -> Void)?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
     private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
@@ -729,17 +768,21 @@ final class VoiceInputController: NSObject, ObservableObject {
 
         isPreparing = true
         MimiHaptics.prepare(.commit)
-        let session = AppleSpeechTranscriptionSession(audioSessionCoordinator: audioSessionCoordinator)
+        let session = AppleSpeechTranscriptionSession(
+            sessionID: requestID,
+            audioSessionCoordinator: audioSessionCoordinator
+        )
         appleSession = session
-        let pendingAudioSessionCleanup = audioSessionCleanupTask
+        session.logStartRequested(locale: locale)
         appleLifecycleTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
             do {
-                // cancel() 会立即恢复 UI；真正开始下一轮前仍需等旧音频会话清理完毕。
-                await pendingAudioSessionCleanup?.value
                 guard startRequestID == requestID else { return }
-                guard await requestRecordPermission() else {
+                let granted = await requestRecordPermission()
+                session.logPermissionDone(granted: granted)
+                guard granted else {
                     guard startRequestID == requestID else { return }
+                    cancelAppleStartupWatchdog()
                     errorMessage = L10n.text("ui.microphone_permission_is_not_enabled_please_allow_it")
                     await session.cancel()
                     completeAppleInteraction(notifyFinish: true)
@@ -775,6 +818,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                         // 结果流可能在 session.start() 返回前就失败；先让本次请求失效，
                         // 防止外层启动任务随后又把已经失败的会话标成录音中。
                         startRequestID = nil
+                        cancelAppleStartupWatchdog()
                         errorMessage = userFacingAppleSpeechError(error)
                         isPreparing = false
                         isRecording = false
@@ -789,6 +833,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                     await session.cancel()
                     return
                 }
+                cancelAppleStartupWatchdog()
                 appleLifecycleTask = nil
                 isPreparing = false
                 isRecording = true
@@ -806,6 +851,20 @@ final class VoiceInputController: NSObject, ObservableObject {
                 errorMessage = userFacingAppleSpeechError(error)
                 completeAppleInteraction(notifyFinish: true)
             }
+        }
+        appleStartupWatchdogTask = AppleVoiceStartupWatchdog().arm { [weak self] in
+            guard let self,
+                  self.activeProvider == .apple,
+                  self.startRequestID == requestID,
+                  self.isPreparing else {
+                return
+            }
+            (self.appleSession as? AppleSpeechTranscriptionSession)?.logStartupTimeout()
+            self.errorMessage = self.userFacingAppleSpeechError(
+                AppleSpeechTranscriptionError.startupTimedOut
+            )
+            self.startRequestID = nil
+            self.cancelAppleTranscription(notifyFinish: true)
         }
     }
 
@@ -853,6 +912,8 @@ final class VoiceInputController: NSObject, ObservableObject {
             completeAppleInteraction(notifyFinish: true)
             return
         }
+        cancelAppleStartupWatchdog()
+        startRequestID = nil
         isPreparing = false
         isRecording = false
         levelMeter.reset()
@@ -875,13 +936,12 @@ final class VoiceInputController: NSObject, ObservableObject {
     private func cancelAppleTranscription(notifyFinish: Bool) {
         let session = appleSession as? AppleSpeechTranscriptionSession
         let lifecycleTask = appleLifecycleTask
+        startRequestID = nil
+        cancelAppleStartupWatchdog()
         lifecycleTask?.cancel()
-        let previousCleanup = audioSessionCleanupTask
-        audioSessionCleanupTask = Task {
-            // 等被取消的 start/finish 任务真正退出后再补一次幂等清理；
-            // 下一次 start 会等待这条任务链，避免旧 Apple 会话与新录音交叉。
-            await previousCleanup?.value
-            await lifecycleTask?.value
+        // 系统权限或 Speech await 可能不响应取消；旧任务只异步收尾，不能成为下一轮启动的闸门。
+        // 会话的 activation lease 会让迟到的旧 deactivate 失效，避免关闭新会话。
+        Task {
             await session?.cancel()
         }
         completeAppleInteraction(notifyFinish: notifyFinish)
@@ -890,6 +950,7 @@ final class VoiceInputController: NSObject, ObservableObject {
     @available(iOS 26.0, *)
     private func completeAppleInteraction(notifyFinish: Bool) {
         let handler = appleFinishHandler
+        cancelAppleStartupWatchdog()
         appleFinishHandler = nil
         appleSession = nil
         appleLifecycleTask = nil
@@ -905,6 +966,7 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     private func completeUnavailableAppleInteraction(notifyFinish: Bool) {
         let handler = appleFinishHandler
+        cancelAppleStartupWatchdog()
         appleFinishHandler = nil
         appleLifecycleTask?.cancel()
         appleLifecycleTask = nil
@@ -916,6 +978,11 @@ final class VoiceInputController: NSObject, ObservableObject {
         if notifyFinish {
             handler?()
         }
+    }
+
+    private func cancelAppleStartupWatchdog() {
+        appleStartupWatchdogTask?.cancel()
+        appleStartupWatchdogTask = nil
     }
 
     private func userFacingAppleSpeechError(_ error: Error) -> String {

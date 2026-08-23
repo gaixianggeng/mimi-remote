@@ -1,0 +1,178 @@
+import Foundation
+import XCTest
+@testable import MimiRemote
+
+@MainActor
+final class AppleVoiceStartupWatchdogTests: XCTestCase {
+    func testArmInvokesOnTimeoutOnceAfterShortTimeout() async {
+        let watchdog = AppleVoiceStartupWatchdog(timeout: .milliseconds(20))
+        let callback = expectation(description: "startup timeout callback")
+        var callbackCount = 0
+
+        let task = watchdog.arm {
+            callbackCount += 1
+            callback.fulfill()
+        }
+
+        await fulfillment(of: [callback], timeout: 0.25)
+        try? await Task.sleep(for: .milliseconds(40))
+        task.cancel()
+
+        XCTAssertEqual(callbackCount, 1)
+    }
+
+    func testCancellingTaskPreventsTimeoutCallback() async {
+        let watchdog = AppleVoiceStartupWatchdog(timeout: .milliseconds(50))
+        var callbackCount = 0
+
+        let task = watchdog.arm {
+            callbackCount += 1
+        }
+        task.cancel()
+
+        try? await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(callbackCount, 0)
+    }
+
+    func testStartupTimedOutHasDiagnosticCodeAndDescription() {
+        let error = AppleSpeechTranscriptionError.startupTimedOut
+
+        XCTAssertEqual(error.diagnosticCode, "startup_timeout")
+        XCTAssertFalse(error.errorDescription?.isEmpty ?? true)
+    }
+
+    func testCancelledQueuedActivationCannotOverrideImmediateRetry() async throws {
+        let backend = StartupWatchdogAudioSessionBackend()
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let waitingToActivate = expectation(description: "old request waiting")
+        let (gate, releaseOldRequest) = AsyncStream<Void>.makeStream()
+
+        let oldRequest = Task {
+            waitingToActivate.fulfill()
+            for await _ in gate.prefix(1) {}
+            return try await coordinator.activate()
+        }
+        await fulfillment(of: [waitingToActivate], timeout: 0.25)
+
+        oldRequest.cancel()
+        let retry = Task {
+            try await coordinator.activate()
+        }
+        releaseOldRequest.yield(())
+        releaseOldRequest.finish()
+
+        do {
+            _ = try await oldRequest.value
+            XCTFail("Cancelled request must not activate the audio session")
+        } catch is CancellationError {
+            // 旧请求按预期失效。
+        }
+
+        let retryActivation = try await retry.value
+        XCTAssertEqual(backend.operations, [.prepare, .activate])
+
+        await coordinator.deactivate(retryActivation)
+        XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate])
+    }
+
+    func testCancellationDuringActivationIsCleanedUpBeforeRetry() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(blocksActivation: true)
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldRequest = Task {
+            try await coordinator.activate()
+        }
+
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while !backend.hasStartedActivation, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard backend.hasStartedActivation else {
+            backend.releaseActivation()
+            XCTFail("Audio activation did not start")
+            return
+        }
+
+        oldRequest.cancel()
+        backend.releaseActivation()
+
+        do {
+            _ = try await oldRequest.value
+            XCTFail("Cancelled request must not retain audio activation")
+        } catch is CancellationError {
+            // setActive 返回后检测到取消，并立即配对停用。
+        }
+        XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate])
+
+        let retryActivation = try await coordinator.activate()
+        XCTAssertEqual(backend.operations, [.prepare, .activate, .deactivate, .prepare, .activate])
+
+        await coordinator.deactivate(retryActivation)
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .activate, .deactivate, .prepare, .activate, .deactivate]
+        )
+    }
+}
+
+private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
+    enum Operation: Equatable {
+        case prepare
+        case activate
+        case deactivate
+    }
+
+    private let lock = NSLock()
+    private var storedOperations: [Operation] = []
+    private let blocksActivation: Bool
+    private let activationCondition = NSCondition()
+    private var activationStarted = false
+    private var activationReleased = false
+
+    init(blocksActivation: Bool = false) {
+        self.blocksActivation = blocksActivation
+    }
+
+    var operations: [Operation] {
+        lock.withLock { storedOperations }
+    }
+
+    var hasStartedActivation: Bool {
+        activationCondition.lock()
+        defer { activationCondition.unlock() }
+        return activationStarted
+    }
+
+    func prepareForRecording() throws {
+        record(.prepare)
+    }
+
+    func activateForRecording() throws {
+        record(.activate)
+        guard blocksActivation else { return }
+        activationCondition.lock()
+        activationStarted = true
+        activationCondition.broadcast()
+        while !activationReleased {
+            activationCondition.wait()
+        }
+        activationCondition.unlock()
+    }
+
+    func deactivateRecording() throws {
+        record(.deactivate)
+    }
+
+    private func record(_ operation: Operation) {
+        lock.withLock {
+            storedOperations.append(operation)
+        }
+    }
+
+    func releaseActivation() {
+        activationCondition.lock()
+        activationReleased = true
+        activationCondition.broadcast()
+        activationCondition.unlock()
+    }
+}
