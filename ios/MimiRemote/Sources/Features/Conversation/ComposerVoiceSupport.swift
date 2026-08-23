@@ -717,31 +717,45 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         // 停用开始后可能已经有新租约或新请求；迟到停用必须补一次激活，保证最终状态为 active。
-        scheduleActivationRefresh()
+        scheduleActivationRefresh(recoveryActivationID: currentActivationID)
     }
 
-    private func scheduleActivationRefresh() {
+    private func scheduleActivationRefresh(recoveryActivationID: UUID?) {
         let backend = self.backend
         Task.detached(priority: .userInitiated) {
             do {
                 try backend.prepareForRecording()
                 try backend.activateForRecording()
             } catch {
-                await self.activationRefreshDidFinish(succeeded: false)
+                await self.activationRefreshDidFinish(
+                    recoveryActivationID: recoveryActivationID,
+                    succeeded: false
+                )
                 return
             }
-            await self.activationRefreshDidFinish(succeeded: true)
+            await self.activationRefreshDidFinish(
+                recoveryActivationID: recoveryActivationID,
+                succeeded: true
+            )
         }
     }
 
-    private func activationRefreshDidFinish(succeeded: Bool) {
-        guard currentActivationID == nil else {
+    private func activationRefreshDidFinish(
+        recoveryActivationID: UUID?,
+        succeeded: Bool
+    ) {
+        if let recoveryActivationID,
+           currentActivationID == recoveryActivationID {
             if let recoveryHandler = currentActivationRecoveryHandler {
                 // setActive(false) 已经可能中断当前采集；补激活后通知租约持有者重启采集器。
                 Task { @MainActor in
                     recoveryHandler(succeeded)
                 }
             }
+            return
+        }
+        // 补激活属于旧租约时，不能把迟到的失败结果转发给已经接管的新录音。
+        guard currentActivationID == nil else {
             return
         }
         guard succeeded else {
