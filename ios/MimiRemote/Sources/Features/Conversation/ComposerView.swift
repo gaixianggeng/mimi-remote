@@ -227,7 +227,7 @@ struct ComposerView: View {
             Text(issue.message)
         }
 
-        let observedContent = presentedContent
+        let scopeObservedContent = presentedContent
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -239,16 +239,7 @@ struct ComposerView: View {
             showsAdvancedOptionsSheet = false
         }
         .onChange(of: defaultPermissionModeID) { _, _ in
-            // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
-            // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
-            switch activeComposerDraftScope {
-            case .project:
-                applyDefaultPermissionMode()
-            case .session(let sessionID) where sessionID.hasPrefix("local:"):
-                applyDefaultPermissionMode()
-            case .none, .session:
-                break
-            }
+            applyDefaultPermissionModeForActiveScope()
         }
         .onChange(of: voiceInputProviderRawValue) { _, _ in
             // 提供方变化是语音会话边界；旧引擎的迟到结果不能写入新选择下的草稿。
@@ -263,6 +254,8 @@ struct ComposerView: View {
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
+
+        let observedContent = scopeObservedContent
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
@@ -270,9 +263,6 @@ struct ComposerView: View {
         .onChange(of: composerState.modelSelectionSnapshot()) { _, snapshot in
             // 模型偏好独立于正文保存；空输入、发送成功和视图重建都不能清掉会话选择。
             sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
-        }
-        .onChange(of: composerState.permissionSelectionSnapshot()) { _, snapshot in
-            sessionStore.saveComposerPermissionSelection(snapshot, for: activeComposerDraftScope)
         }
         .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
             guard let completion,
@@ -566,6 +556,10 @@ struct ComposerView: View {
         } else {
             applyDefaultPermissionMode()
         }
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: scope
+        )
     }
 
     func resetComposerSendModeAfterSubmit() {
@@ -1859,6 +1853,23 @@ struct ComposerView: View {
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
         composerState.applyPermissionMode(safePermissionMode(stored))
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    func applyDefaultPermissionModeForActiveScope() {
+        // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
+        // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
+        switch activeComposerDraftScope {
+        case .project:
+            applyDefaultPermissionMode()
+        case .session(let sessionID) where sessionID.hasPrefix("local:"):
+            applyDefaultPermissionMode()
+        case .none, .session:
+            break
+        }
     }
 
     func setPermissionMode(_ mode: ComposerPermissionMode) {
@@ -1868,6 +1879,10 @@ struct ComposerView: View {
             defaultPermissionModeID = safeMode.rawValue
         }
         composerState.applyPermissionMode(safeMode)
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
     }
 
     func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
@@ -1878,6 +1893,10 @@ struct ComposerView: View {
             options.approvalsReviewer = "user"
             options.networkAccess = false
         }
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
     }
 
     var permissionProfileCWD: String? {
