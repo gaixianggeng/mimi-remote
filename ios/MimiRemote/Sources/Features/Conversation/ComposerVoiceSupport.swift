@@ -792,6 +792,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                     await session.cancel()
                     return
                 }
+                armAppleStartupWatchdog(requestID: requestID)
                 try await session.start(
                     locale: locale,
                     onTranscript: { [weak self] transcript in
@@ -852,20 +853,6 @@ final class VoiceInputController: NSObject, ObservableObject {
                 completeAppleInteraction(notifyFinish: true)
             }
         }
-        appleStartupWatchdogTask = AppleVoiceStartupWatchdog().arm { [weak self] in
-            guard let self,
-                  self.activeProvider == .apple,
-                  self.startRequestID == requestID,
-                  self.isPreparing else {
-                return
-            }
-            (self.appleSession as? AppleSpeechTranscriptionSession)?.logStartupTimeout()
-            self.errorMessage = self.userFacingAppleSpeechError(
-                AppleSpeechTranscriptionError.startupTimedOut
-            )
-            self.startRequestID = nil
-            self.cancelAppleTranscription(notifyFinish: true)
-        }
     }
 
     func stop() {
@@ -913,7 +900,6 @@ final class VoiceInputController: NSObject, ObservableObject {
             return
         }
         cancelAppleStartupWatchdog()
-        startRequestID = nil
         isPreparing = false
         isRecording = false
         levelMeter.reset()
@@ -983,6 +969,24 @@ final class VoiceInputController: NSObject, ObservableObject {
     private func cancelAppleStartupWatchdog() {
         appleStartupWatchdogTask?.cancel()
         appleStartupWatchdogTask = nil
+    }
+
+    @available(iOS 26.0, *)
+    private func armAppleStartupWatchdog(requestID: UUID) {
+        cancelAppleStartupWatchdog()
+        appleStartupWatchdogTask = AppleVoiceStartupWatchdog().arm { [weak self] in
+            guard let self,
+                  self.activeProvider == .apple,
+                  self.startRequestID == requestID,
+                  self.isPreparing else {
+                return
+            }
+            (self.appleSession as? AppleSpeechTranscriptionSession)?.logStartupTimeout()
+            self.errorMessage = self.userFacingAppleSpeechError(
+                AppleSpeechTranscriptionError.startupTimedOut
+            )
+            self.cancelAppleTranscription(notifyFinish: true)
+        }
     }
 
     private func userFacingAppleSpeechError(_ error: Error) -> String {
