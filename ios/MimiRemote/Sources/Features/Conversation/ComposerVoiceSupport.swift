@@ -2,6 +2,52 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+struct AppleVoiceStartupWatchdog {
+    static let defaultTimeout: Duration = .seconds(15)
+
+    let timeout: Duration
+
+    init(timeout: Duration = Self.defaultTimeout) {
+        self.timeout = timeout
+    }
+
+    func arm(onTimeout: @escaping @MainActor @Sendable () -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            onTimeout()
+        }
+    }
+}
+
+struct VoiceAudioCaptureRecoveryGate {
+    private var pendingResult: Bool?
+
+    mutating func receive(_ succeeded: Bool, isCaptureReady: Bool) -> Bool? {
+        guard isCaptureReady else {
+            // 租约可能先于采集器发布；保留最新结果，不能在启动窗口静默丢失恢复失败。
+            pendingResult = succeeded
+            return nil
+        }
+        return succeeded
+    }
+
+    mutating func consumePendingResult() -> Bool? {
+        defer { pendingResult = nil }
+        return pendingResult
+    }
+
+    mutating func reset() {
+        pendingResult = nil
+    }
+}
+
 enum VoiceMicButtonState: Equatable {
     case idle
     case preparing
@@ -540,10 +586,10 @@ enum AdvancedTurnOptionsError: LocalizedError {
     }
 }
 
-/// 将系统音频会话调用隔离在非 MainActor 的串行执行域中。
+/// 将系统音频会话调用隔离在非 MainActor 的协调域中。
 ///
 /// AVAudioSession 的 category/active 切换可能阻塞；UI 与录音器生命周期仍由 MainActor 管理，
-/// 这里只负责不可并发的系统会话状态，避免阻塞界面或发生旧清理关闭新录音的竞态。
+/// 这里只负责系统会话租约，避免阻塞界面或发生旧清理关闭新录音的竞态。
 protocol VoiceAudioSessionBackend: Sendable {
     func prepareForRecording() throws
     func activateForRecording() throws
@@ -562,7 +608,7 @@ final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked
     }
 
     func activateForRecording() throws {
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSession.setActive(true)
     }
 
     func deactivateRecording() throws {
@@ -570,7 +616,21 @@ final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked
     }
 }
 
+private final class VoiceAudioSessionOperationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    func next() -> UInt64 {
+        lock.withLock {
+            value &+= 1
+            return value
+        }
+    }
+}
+
 actor VoiceAudioSessionCoordinator {
+    typealias RecoveryHandler = @MainActor @Sendable (_ succeeded: Bool) -> Void
+
     struct Activation: Sendable, Equatable {
         fileprivate let id: UUID
     }
@@ -578,22 +638,256 @@ actor VoiceAudioSessionCoordinator {
     static let shared = VoiceAudioSessionCoordinator()
 
     private let backend: any VoiceAudioSessionBackend
+    private let operationSequence = VoiceAudioSessionOperationSequence()
     private var currentActivationID: UUID?
+    private var currentActivationRecoveryHandler: RecoveryHandler?
+    private var activationRequestIDs: Set<UUID> = []
+    private var latestActivationRequestID: UUID?
+    private var latestSuccessfulActivationSequences: [UUID: UInt64] = [:]
+    private var failedActivationRefreshSequences: [UUID: UInt64] = [:]
+    private var hasAbandonedActivation = false
 
     init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
         self.backend = backend
     }
 
-    func prewarm() throws {
-        try backend.prepareForRecording()
+    func prewarm() async throws {
+        let backend = self.backend
+        // 预热也会调用同步的 AVAudioSession API；它不能占住负责重试租约的 actor。
+        try await Task.detached(priority: .utility) {
+            try backend.prepareForRecording()
+        }.value
     }
 
-    func activate() throws -> Activation {
-        try backend.prepareForRecording()
-        try backend.activateForRecording()
-        let activation = Activation(id: UUID())
+    func activate(onRecovery: RecoveryHandler? = nil) async throws -> Activation {
+        try Task.checkCancellation()
+        let requestID = UUID()
+        activationRequestIDs.insert(requestID)
+        latestActivationRequestID = requestID
+
+        var didActivateBackend = false
+        do {
+            while true {
+                let activationSequence = try await performActivationAttempt(requestID: requestID)
+                didActivateBackend = true
+                recordSuccessfulActivation(activationSequence, for: requestID)
+                try Task.checkCancellation()
+                // 旧停用可能在本次 setActive 成功后才落地。补激活若已明确失败，
+                // 发布租约前再激活一次，不能让调用方在失活会话上启动采集器。
+                guard let deactivationSequence = failedActivationRefreshSequences.removeValue(
+                    forKey: requestID
+                ) else {
+                    break
+                }
+                let latestActivationSequence = latestSuccessfulActivationSequences[
+                    requestID,
+                    default: activationSequence
+                ]
+                if latestActivationSequence > deactivationSequence {
+                    // 本次 setActive 晚于旧停用落地，会话已经恢复，不需要重复激活。
+                    break
+                }
+            }
+        } catch {
+            activationRequestIDs.remove(requestID)
+            failedActivationRefreshSequences.removeValue(forKey: requestID)
+            let hadSuccessfulActivation = latestSuccessfulActivationSequences.removeValue(
+                forKey: requestID
+            ) != nil
+            if didActivateBackend || hadSuccessfulActivation {
+                markAbandonedActivation()
+            }
+            deactivateAbandonedActivationIfIdle()
+            throw error
+        }
+
+        activationRequestIDs.remove(requestID)
+        guard latestActivationRequestID == requestID else {
+            latestSuccessfulActivationSequences.removeValue(forKey: requestID)
+            markAbandonedActivation()
+            deactivateAbandonedActivationIfIdle()
+            throw CancellationError()
+        }
+
+        let activation = Activation(id: requestID)
+        if let previousActivationID = currentActivationID,
+           previousActivationID != activation.id {
+            latestSuccessfulActivationSequences.removeValue(forKey: previousActivationID)
+        }
         currentActivationID = activation.id
+        currentActivationRecoveryHandler = onRecovery
+        hasAbandonedActivation = false
         return activation
+    }
+
+    private func performActivationAttempt(requestID: UUID) async throws -> UInt64 {
+        let backend = self.backend
+        let operationSequence = self.operationSequence
+        // setActive(true) 是同步阻塞调用。每次尝试使用独立执行任务，确保一次挂起不会占住
+        // coordinator actor；后续重试仍能登记自己的请求并独立尝试激活。
+        let activationTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            try backend.prepareForRecording()
+            try Task.checkCancellation()
+            try backend.activateForRecording()
+            return operationSequence.next()
+        }
+        return try await withTaskCancellationHandler {
+            try await activationTask.value
+        } onCancel: {
+            activationTask.cancel()
+            Task {
+                await self.cancelActivationRequest(requestID)
+            }
+        }
+    }
+
+    private func cancelActivationRequest(_ requestID: UUID) {
+        // 同步系统调用可能不响应 Task 取消；先移除逻辑请求，避免它阻止有效重试结束时停用。
+        activationRequestIDs.remove(requestID)
+        failedActivationRefreshSequences.removeValue(forKey: requestID)
+        let hadSuccessfulActivation = latestSuccessfulActivationSequences.removeValue(
+            forKey: requestID
+        ) != nil
+        if hadSuccessfulActivation {
+            // 待发布请求可能已经通过补激活占用了全局会话；取消时必须配对停用。
+            markAbandonedActivation()
+        }
+        deactivateAbandonedActivationIfIdle()
+    }
+
+    private func recordSuccessfulActivation(_ sequence: UInt64, for requestID: UUID) {
+        latestSuccessfulActivationSequences[requestID] = max(
+            latestSuccessfulActivationSequences[requestID] ?? 0,
+            sequence
+        )
+    }
+
+    private func markAbandonedActivation() {
+        // AVAudioSession 是进程级共享状态；已有租约时，迟到成功已经由该租约共同拥有。
+        if currentActivationID == nil {
+            hasAbandonedActivation = true
+        }
+    }
+
+    private func deactivateAbandonedActivationIfIdle() {
+        // 有更新请求或有效租约时不能停用全局 AVAudioSession，否则迟到旧请求会关闭新录音。
+        guard
+            hasAbandonedActivation,
+            activationRequestIDs.isEmpty,
+            currentActivationID == nil
+        else {
+            return
+        }
+        hasAbandonedActivation = false
+        scheduleDeactivation()
+    }
+
+    private func scheduleDeactivation() {
+        let backend = self.backend
+        let operationSequence = self.operationSequence
+        Task.detached(priority: .userInitiated) {
+            // iOS 18–25 在新 I/O 已经启动时可能先停用会话，再以 isBusy 返回失败。
+            // 无论返回值如何，都按“可能已经停用”处理；有新租约时补激活是幂等且更安全的结果。
+            try? backend.deactivateRecording()
+            await self.deactivationDidComplete(sequence: operationSequence.next())
+        }
+    }
+
+    private func deactivationDidComplete(sequence: UInt64) {
+        hasAbandonedActivation = false
+        guard currentActivationID != nil || !activationRequestIDs.isEmpty else {
+            return
+        }
+        // 停用开始后可能已经有新租约或新请求；迟到停用必须补一次激活，保证最终状态为 active。
+        let recoveryActivationID = currentActivationID ?? latestActivationRequestID.flatMap { requestID in
+            activationRequestIDs.contains(requestID) ? requestID : nil
+        }
+        scheduleActivationRefresh(
+            recoveryActivationID: recoveryActivationID,
+            deactivationSequence: sequence
+        )
+    }
+
+    private func scheduleActivationRefresh(
+        recoveryActivationID: UUID?,
+        deactivationSequence: UInt64
+    ) {
+        let backend = self.backend
+        let operationSequence = self.operationSequence
+        Task.detached(priority: .userInitiated) {
+            do {
+                try backend.prepareForRecording()
+                try backend.activateForRecording()
+            } catch {
+                await self.activationRefreshDidFinish(
+                    recoveryActivationID: recoveryActivationID,
+                    deactivationSequence: deactivationSequence,
+                    activationSequence: nil,
+                    succeeded: false
+                )
+                return
+            }
+            await self.activationRefreshDidFinish(
+                recoveryActivationID: recoveryActivationID,
+                deactivationSequence: deactivationSequence,
+                activationSequence: operationSequence.next(),
+                succeeded: true
+            )
+        }
+    }
+
+    private func activationRefreshDidFinish(
+        recoveryActivationID: UUID?,
+        deactivationSequence: UInt64,
+        activationSequence: UInt64?,
+        succeeded: Bool
+    ) {
+        if let recoveryActivationID,
+           let latestActivationSequence = latestSuccessfulActivationSequences[recoveryActivationID],
+           latestActivationSequence > deactivationSequence {
+            // 同一请求已有一次发生在旧停用之后的成功激活；迟到补激活结果不能结束健康录音。
+            return
+        }
+        if let recoveryActivationID,
+           currentActivationID == recoveryActivationID {
+            if let activationSequence {
+                recordSuccessfulActivation(activationSequence, for: recoveryActivationID)
+            }
+            if let recoveryHandler = currentActivationRecoveryHandler {
+                // setActive(false) 已经可能中断当前采集；补激活后通知租约持有者重启采集器。
+                Task { @MainActor in
+                    recoveryHandler(succeeded)
+                }
+            }
+            return
+        }
+        if let recoveryActivationID,
+           currentActivationID == nil,
+           activationRequestIDs.contains(recoveryActivationID) {
+            if let activationSequence {
+                recordSuccessfulActivation(activationSequence, for: recoveryActivationID)
+            }
+            // 请求的后端 setActive 已经可能成功，但 actor 还未发布租约。记录补激活失败，
+            // 让该请求在取得租约前重新确认会话为 active。
+            if !succeeded {
+                failedActivationRefreshSequences[recoveryActivationID] = max(
+                    failedActivationRefreshSequences[recoveryActivationID] ?? 0,
+                    deactivationSequence
+                )
+            }
+            return
+        }
+        // 补激活属于旧租约时，不能把迟到的失败结果转发给已经接管的新录音。
+        guard currentActivationID == nil else {
+            return
+        }
+        guard succeeded else {
+            return
+        }
+        // 补激活完成时请求可能已取消；保留遗留标记，让最后一个请求退出时配对停用。
+        hasAbandonedActivation = true
+        deactivateAbandonedActivationIfIdle()
     }
 
     func deactivate(_ activation: Activation) {
@@ -602,7 +896,16 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         currentActivationID = nil
-        try? backend.deactivateRecording()
+        currentActivationRecoveryHandler = nil
+        latestSuccessfulActivationSequences.removeValue(forKey: activation.id)
+        // 新请求已进入 setActive 时，旧租约只能移交当前激活状态，不能执行全局停用。
+        // 新请求成功后会接管租约；失败或取消后再由 abandoned cleanup 配对停用。
+        guard activationRequestIDs.isEmpty else {
+            hasAbandonedActivation = true
+            return
+        }
+        hasAbandonedActivation = false
+        scheduleDeactivation()
     }
 }
 
@@ -629,10 +932,13 @@ final class VoiceInputController: NSObject, ObservableObject {
     // 只在 iOS 26+ 方法内部还原成 AppleSpeechTranscriptionSession。
     private var appleSession: AnyObject?
     private var appleLifecycleTask: Task<Void, Never>?
+    private var appleStartupWatchdogTask: Task<Void, Never>?
     private var appleFinishHandler: (() -> Void)?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
     private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionRecoveryGate = VoiceAudioCaptureRecoveryGate()
     private var audioSessionCleanupTask: Task<Void, Never>?
+    private var codexStartupTask: Task<Void, Never>?
 
     init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
         self.audioSessionCoordinator = audioSessionCoordinator
@@ -649,6 +955,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         finishHandler = onFinish
         pressStartedAt = Date()
         recordingStartedAt = nil
+        audioSessionRecoveryGate.reset()
         errorMessage = nil
         noticeMessage = nil
 
@@ -681,7 +988,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         MimiHaptics.prepare(.commit)
 
         let pendingAudioSessionCleanup = audioSessionCleanupTask
-        Task {
+        codexStartupTask = Task {
             // 新一轮录音必须等待上一轮清理落地，避免 category/active 状态交叉。
             await pendingAudioSessionCleanup?.value
             guard startRequestID == requestID else {
@@ -701,6 +1008,7 @@ final class VoiceInputController: NSObject, ObservableObject {
             }
             do {
                 try await startRecording(requestID: requestID)
+                codexStartupTask = nil
             } catch {
                 guard startRequestID == requestID else {
                     return
@@ -729,17 +1037,21 @@ final class VoiceInputController: NSObject, ObservableObject {
 
         isPreparing = true
         MimiHaptics.prepare(.commit)
-        let session = AppleSpeechTranscriptionSession(audioSessionCoordinator: audioSessionCoordinator)
+        let session = AppleSpeechTranscriptionSession(
+            sessionID: requestID,
+            audioSessionCoordinator: audioSessionCoordinator
+        )
         appleSession = session
-        let pendingAudioSessionCleanup = audioSessionCleanupTask
+        session.logStartRequested(locale: locale)
         appleLifecycleTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
             do {
-                // cancel() 会立即恢复 UI；真正开始下一轮前仍需等旧音频会话清理完毕。
-                await pendingAudioSessionCleanup?.value
                 guard startRequestID == requestID else { return }
-                guard await requestRecordPermission() else {
+                let granted = await requestRecordPermission()
+                session.logPermissionDone(granted: granted)
+                guard granted else {
                     guard startRequestID == requestID else { return }
+                    cancelAppleStartupWatchdog()
                     errorMessage = L10n.text("ui.microphone_permission_is_not_enabled_please_allow_it")
                     await session.cancel()
                     completeAppleInteraction(notifyFinish: true)
@@ -751,6 +1063,15 @@ final class VoiceInputController: NSObject, ObservableObject {
                 }
                 try await session.start(
                     locale: locale,
+                    onStartupMonitoringReady: { [weak self] in
+                        guard let self,
+                              activeProvider == .apple,
+                              startRequestID == requestID,
+                              isPreparing else {
+                            return
+                        }
+                        armAppleStartupWatchdog(requestID: requestID)
+                    },
                     onTranscript: { [weak self] transcript in
                         guard self?.activeProvider == .apple,
                               self?.startRequestID == requestID else {
@@ -775,6 +1096,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                         // 结果流可能在 session.start() 返回前就失败；先让本次请求失效，
                         // 防止外层启动任务随后又把已经失败的会话标成录音中。
                         startRequestID = nil
+                        cancelAppleStartupWatchdog()
                         errorMessage = userFacingAppleSpeechError(error)
                         isPreparing = false
                         isRecording = false
@@ -789,6 +1111,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                     await session.cancel()
                     return
                 }
+                cancelAppleStartupWatchdog()
                 appleLifecycleTask = nil
                 isPreparing = false
                 isRecording = true
@@ -853,6 +1176,7 @@ final class VoiceInputController: NSObject, ObservableObject {
             completeAppleInteraction(notifyFinish: true)
             return
         }
+        cancelAppleStartupWatchdog()
         isPreparing = false
         isRecording = false
         levelMeter.reset()
@@ -875,13 +1199,12 @@ final class VoiceInputController: NSObject, ObservableObject {
     private func cancelAppleTranscription(notifyFinish: Bool) {
         let session = appleSession as? AppleSpeechTranscriptionSession
         let lifecycleTask = appleLifecycleTask
+        startRequestID = nil
+        cancelAppleStartupWatchdog()
         lifecycleTask?.cancel()
-        let previousCleanup = audioSessionCleanupTask
-        audioSessionCleanupTask = Task {
-            // 等被取消的 start/finish 任务真正退出后再补一次幂等清理；
-            // 下一次 start 会等待这条任务链，避免旧 Apple 会话与新录音交叉。
-            await previousCleanup?.value
-            await lifecycleTask?.value
+        // 系统权限或 Speech await 可能不响应取消；旧任务只异步收尾，不能成为下一轮启动的闸门。
+        // 会话的 activation lease 会让迟到的旧 deactivate 失效，避免关闭新会话。
+        Task {
             await session?.cancel()
         }
         completeAppleInteraction(notifyFinish: notifyFinish)
@@ -890,6 +1213,7 @@ final class VoiceInputController: NSObject, ObservableObject {
     @available(iOS 26.0, *)
     private func completeAppleInteraction(notifyFinish: Bool) {
         let handler = appleFinishHandler
+        cancelAppleStartupWatchdog()
         appleFinishHandler = nil
         appleSession = nil
         appleLifecycleTask = nil
@@ -905,6 +1229,7 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     private func completeUnavailableAppleInteraction(notifyFinish: Bool) {
         let handler = appleFinishHandler
+        cancelAppleStartupWatchdog()
         appleFinishHandler = nil
         appleLifecycleTask?.cancel()
         appleLifecycleTask = nil
@@ -915,6 +1240,29 @@ final class VoiceInputController: NSObject, ObservableObject {
         levelMeter.reset()
         if notifyFinish {
             handler?()
+        }
+    }
+
+    private func cancelAppleStartupWatchdog() {
+        appleStartupWatchdogTask?.cancel()
+        appleStartupWatchdogTask = nil
+    }
+
+    @available(iOS 26.0, *)
+    private func armAppleStartupWatchdog(requestID: UUID) {
+        cancelAppleStartupWatchdog()
+        appleStartupWatchdogTask = AppleVoiceStartupWatchdog().arm { [weak self] in
+            guard let self,
+                  self.activeProvider == .apple,
+                  self.startRequestID == requestID,
+                  self.isPreparing else {
+                return
+            }
+            (self.appleSession as? AppleSpeechTranscriptionSession)?.logStartupTimeout()
+            self.errorMessage = self.userFacingAppleSpeechError(
+                AppleSpeechTranscriptionError.startupTimedOut
+            )
+            self.cancelAppleTranscription(notifyFinish: true)
         }
     }
 
@@ -957,11 +1305,16 @@ final class VoiceInputController: NSObject, ObservableObject {
     }
 
     private func startRecording(requestID: UUID) async throws {
-        let activation = try await audioSessionCoordinator.activate()
+        let activation = try await audioSessionCoordinator.activate(onRecovery: { [weak self] succeeded in
+            self?.recoverCodexAudioCapture(requestID: requestID, succeeded: succeeded)
+        })
         do {
             try Task.checkCancellation()
             guard startRequestID == requestID else {
                 throw CancellationError()
+            }
+            if audioSessionRecoveryGate.consumePendingResult() == false {
+                throw VoiceInputError.recordingFailed
             }
 
             let url = FileManager.default.temporaryDirectory
@@ -992,6 +1345,31 @@ final class VoiceInputController: NSObject, ObservableObject {
             await audioSessionCoordinator.deactivate(activation)
             throw error
         }
+    }
+
+    private func recoverCodexAudioCapture(requestID: UUID, succeeded: Bool) {
+        guard activeProvider == .codex,
+              startRequestID == requestID else {
+            return
+        }
+        guard let recoveryResult = audioSessionRecoveryGate.receive(
+            succeeded,
+            isCaptureReady: isRecording && recorder != nil
+        ) else {
+            return
+        }
+        guard let recorder else { return }
+        guard recoveryResult else {
+            errorMessage = VoiceInputError.recordingFailed.localizedDescription
+            finish(fileURL: nil)
+            return
+        }
+        guard recorder.record() else {
+            errorMessage = VoiceInputError.recordingFailed.localizedDescription
+            finish(fileURL: nil)
+            return
+        }
+        startMetering()
     }
 
     private func startMetering() {
@@ -1067,12 +1445,16 @@ final class VoiceInputController: NSObject, ObservableObject {
         )
         recorder?.stop()
         recorder = nil
+        // 启动可能仍阻塞在系统音频会话；先取消任务，让 coordinator 立即淘汰旧请求。
+        codexStartupTask?.cancel()
+        codexStartupTask = nil
         meteringTask?.cancel()
         meteringTask = nil
         recordingURL = nil
         startRequestID = nil
         pressStartedAt = nil
         recordingStartedAt = nil
+        audioSessionRecoveryGate.reset()
         isPreparing = false
         isRecording = false
         activeProvider = nil
