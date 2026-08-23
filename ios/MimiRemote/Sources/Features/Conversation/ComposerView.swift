@@ -1863,7 +1863,7 @@ struct ComposerView: View {
         // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
         // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
         switch activeComposerDraftScope {
-        case .project:
+        case .newSession:
             applyDefaultPermissionMode()
         case .session(let sessionID) where sessionID.hasPrefix("local:"):
             applyDefaultPermissionMode()
