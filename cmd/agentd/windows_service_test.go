@@ -86,7 +86,7 @@ func TestWindowsManagedStartAlreadyRunningIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestWindowsManagedStopRequestsGracefulShutdown(t *testing.T) {
+func TestWindowsManagedStopRequestsGracefulShutdownAndSynchronizesTask(t *testing.T) {
 	marker := installFakeWindowsCommands(t)
 	pidPath, err := windowsManagedPIDPath()
 	if err != nil {
@@ -123,11 +123,65 @@ func TestWindowsManagedStopRequestsGracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "schtasks|/End") {
-		t.Fatalf("优雅退出成功后不应再强制结束计划任务：%s", raw)
+	if !strings.Contains(string(raw), "schtasks|/End|/TN|Mimi Remote agentd") {
+		t.Fatalf("优雅退出成功后必须等待 Task Scheduler 状态收敛：%s", raw)
 	}
 	if _, err := os.Stat(stopPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("优雅退出后应清理 stop marker：%v", err)
+	}
+}
+
+func TestWindowsManagedRestartEndsTaskBeforeStartingReplacement(t *testing.T) {
+	marker := installFakeWindowsCommands(t)
+	if err := runManagedServiceForPlatform("windows", "restart", io.Discard, io.Discard); err != nil {
+		t.Fatalf("Windows restart 失败：%v", err)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(raw)
+	endIndex := strings.Index(calls, "schtasks|/End|/TN|Mimi Remote agentd")
+	runIndex := strings.LastIndex(calls, "schtasks|/Run|/TN|Mimi Remote agentd")
+	if endIndex < 0 || runIndex < 0 || endIndex > runIndex {
+		t.Fatalf("restart 必须先同步停止 Task Scheduler 实例再启动新实例：%s", calls)
+	}
+}
+
+func TestWindowsManagedStopWaitsForSchedulerToReportStopped(t *testing.T) {
+	marker := installFakeWindowsCommands(t)
+	t.Setenv("AGENTD_FAKE_TASK_STATE_TRANSITION", "1")
+	if err := runManagedServiceForPlatform("windows", "stop", io.Discard, io.Discard); err != nil {
+		t.Fatalf("Windows stop 失败：%v", err)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(raw), "Get-ScheduledTask"); count != 2 {
+		t.Fatalf("Task Scheduler 过渡期间应持续探测到明确停止，实际状态查询次数=%d：%s", count, raw)
+	}
+}
+
+func TestWindowsManagedStopDoesNotSwallowUnexpectedSchedulerError(t *testing.T) {
+	installFakeWindowsCommands(t)
+	t.Setenv("AGENTD_FAKE_TASK_END_DENIED", "1")
+	var stderr strings.Builder
+	err := runManagedServiceForPlatform("windows", "stop", io.Discard, &stderr)
+	if err == nil {
+		t.Fatal("Task Scheduler 拒绝停止时必须失败")
+	}
+	if !strings.Contains(err.Error(), "Access is denied") || !strings.Contains(stderr.String(), "Access is denied") {
+		t.Fatalf("Task Scheduler 的意外错误必须保留：err=%v stderr=%q", err, stderr.String())
+	}
+}
+
+func TestWaitForWindowsManagedTaskStoppedTimesOutDuringPersistentTransition(t *testing.T) {
+	installFakeWindowsCommands(t)
+	t.Setenv("AGENTD_FAKE_TASK_STATE_ALWAYS_PENDING", "1")
+	err := waitForWindowsManagedTaskStopped("schtasks", io.Discard, io.Discard, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "停止超时") {
+		t.Fatalf("Task Scheduler 持续过渡时必须超时失败：%v", err)
 	}
 }
 
@@ -256,11 +310,30 @@ func TestWindowsCommandProbe(t *testing.T) {
 				os.Exit(1)
 			}
 		case "/End":
+			if os.Getenv("AGENTD_FAKE_TASK_END_DENIED") == "1" {
+				fmt.Fprintln(os.Stderr, "ERROR: Access is denied.")
+				os.Exit(1)
+			}
 			fmt.Fprintln(os.Stderr, "ERROR: The task is not currently running.")
 			os.Exit(1)
 		}
 	}
 	if os.Args[3] == "powershell.exe" {
+		if strings.Contains(strings.Join(commandArgs, " "), "Get-ScheduledTask") {
+			if os.Getenv("AGENTD_FAKE_TASK_STATE_ALWAYS_PENDING") == "1" {
+				fmt.Fprint(os.Stdout, "Running")
+				os.Exit(0)
+			}
+			if os.Getenv("AGENTD_FAKE_TASK_STATE_TRANSITION") == "1" {
+				raw, _ := os.ReadFile(marker)
+				if strings.Count(string(raw), "Get-ScheduledTask") == 1 {
+					fmt.Fprint(os.Stdout, "Running")
+					os.Exit(0)
+				}
+			}
+			fmt.Fprint(os.Stdout, "Ready")
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stdout, "followed")
 	}
 	os.Exit(0)

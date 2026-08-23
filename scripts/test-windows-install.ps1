@@ -29,8 +29,11 @@ if ($postInstallSource.IndexOf('ConfigurePrivateLanFirewallRule(True)') -gt $pos
     throw 'Unsafe inbound rules must be repaired before the upgraded scheduled task is registered or started.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
-foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)')) {
+foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
+}
+foreach ($expected in @('up --no-pair --wait 30s', 'restart --no-pair --wait 30s')) {
+    if (-not $source.Contains($expected)) { throw "Installer source is missing the extended cold-start readiness window: $expected" }
 }
 $firewallSource = Get-Content -LiteralPath $firewall -Raw
 foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateNetwork')", 'Get-NetConnectionProfile', 'Get-UnmanagedInboundAllowRules', 'Remove-UnmanagedInboundAllowRules', '-Profile Private', '-RemoteAddress LocalSubnet', '-Program $AgentPath', 'Get-NetFirewallApplicationFilter', 'Get-NetFirewallAddressFilter')) {
