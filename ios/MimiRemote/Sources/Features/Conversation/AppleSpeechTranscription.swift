@@ -219,6 +219,7 @@ final class AppleSpeechTranscriptionSession {
 
     func start(
         locale: Locale,
+        onStartupMonitoringReady: @escaping @MainActor () -> Void,
         onTranscript: @escaping @MainActor (String) -> Void,
         onLevel: @escaping @MainActor (CGFloat) -> Void,
         onFailure: @escaping @MainActor (Error) -> Void
@@ -248,6 +249,7 @@ final class AppleSpeechTranscriptionSession {
             try await installationRequest.downloadAndInstall()
         }
         try Task.checkCancellation()
+        onStartupMonitoringReady()
 
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
             throw AppleSpeechTranscriptionError.audioFormatUnavailable

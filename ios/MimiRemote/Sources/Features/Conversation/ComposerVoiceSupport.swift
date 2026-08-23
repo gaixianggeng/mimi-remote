@@ -792,9 +792,17 @@ final class VoiceInputController: NSObject, ObservableObject {
                     await session.cancel()
                     return
                 }
-                armAppleStartupWatchdog(requestID: requestID)
                 try await session.start(
                     locale: locale,
+                    onStartupMonitoringReady: { [weak self] in
+                        guard let self,
+                              activeProvider == .apple,
+                              startRequestID == requestID,
+                              isPreparing else {
+                            return
+                        }
+                        armAppleStartupWatchdog(requestID: requestID)
+                    },
                     onTranscript: { [weak self] transcript in
                         guard self?.activeProvider == .apple,
                               self?.startRequestID == requestID else {
