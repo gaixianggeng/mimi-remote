@@ -44,6 +44,7 @@ if (-not $buildSource.Contains('/DMySignTool=mimi-authenticode')) { throw 'Relea
 if (-not $buildSource.Contains('[switch]$AllowUnsignedRelease')) { throw 'Unsigned release builds must require an explicit switch.' }
 if (-not $buildSource.Contains("'unsigned-release'")) { throw 'Unsigned release builds must record their signing mode in metadata.' }
 if (-not $buildSource.Contains('Mimi-Remote-Setup-$Version-unsigned')) { throw 'Unsigned release filenames must identify that they are unsigned.' }
+if (-not $buildSource.Contains('-X main.releaseVersion=$Version')) { throw 'Windows tray builds must embed the installer and GitHub Release version.' }
 $checkSource = Get-Content -LiteralPath $check -Raw
 if (-not $checkSource.Contains("'unsigned-release'")) { throw 'Installer validation must recognize unsigned release metadata.' }
 $releaseSource = Get-Content -LiteralPath $releaseWorkflow -Raw
