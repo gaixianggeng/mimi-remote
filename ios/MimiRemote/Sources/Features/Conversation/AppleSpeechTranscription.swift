@@ -362,7 +362,9 @@ final class AppleSpeechTranscriptionSession {
         onFailure: @escaping @MainActor (Error) -> Void
     ) async throws {
         try Task.checkCancellation()
-        let activation = try await audioSessionCoordinator.activate()
+        let activation = try await audioSessionCoordinator.activate(onRecovery: { [weak self] succeeded in
+            self?.recoverAudioCapture(succeeded: succeeded, onFailure: onFailure)
+        })
         Self.logger.info(
             "audio_session_activated id=\(self.sessionID.uuidString, privacy: .public)"
         )
@@ -421,6 +423,41 @@ final class AppleSpeechTranscriptionSession {
         } catch {
             await audioSessionCoordinator.deactivate(activation)
             throw error
+        }
+    }
+
+    private func recoverAudioCapture(
+        succeeded: Bool,
+        onFailure: @escaping @MainActor (Error) -> Void
+    ) {
+        guard !isFinishing,
+              audioSessionActivation != nil,
+              let audioEngine else {
+            return
+        }
+        guard succeeded else {
+            reportFailure(
+                AppleSpeechTranscriptionError.recordingFailed,
+                stage: "audio_session_recovery",
+                onFailure: onFailure
+            )
+            return
+        }
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            Self.logger.info(
+                "audio_capture_recovered id=\(self.sessionID.uuidString, privacy: .public)"
+            )
+        } catch {
+            reportFailure(
+                AppleSpeechTranscriptionError.recordingFailed,
+                stage: "audio_session_recovery",
+                onFailure: onFailure
+            )
         }
     }
 

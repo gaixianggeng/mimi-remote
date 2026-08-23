@@ -247,11 +247,15 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         }
 
         let retryCompleted = expectation(description: "retry completed during deactivation")
+        let captureRecovered = expectation(description: "capture recovered after late deactivation")
         var retryActivation: VoiceAudioSessionCoordinator.Activation?
         var retryError: Error?
         let retryRequest = Task {
             do {
-                retryActivation = try await coordinator.activate()
+                retryActivation = try await coordinator.activate(onRecovery: { succeeded in
+                    XCTAssertTrue(succeeded)
+                    captureRecovered.fulfill()
+                })
             } catch {
                 retryError = error
             }
@@ -268,6 +272,7 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         backend.releaseDeactivation()
         await retryRequest.value
         try await waitForOperation(.activate, count: 3, in: backend)
+        await fulfillment(of: [captureRecovered], timeout: 0.25)
 
         let activation = try XCTUnwrap(retryActivation)
         await coordinator.deactivate(activation)
