@@ -608,6 +608,7 @@ actor VoiceAudioSessionCoordinator {
     private var currentActivationRecoveryHandler: RecoveryHandler?
     private var activationRequestIDs: Set<UUID> = []
     private var latestActivationRequestID: UUID?
+    private var failedActivationRefreshRequestIDs: Set<UUID> = []
     private var hasAbandonedActivation = false
 
     init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
@@ -628,38 +629,26 @@ actor VoiceAudioSessionCoordinator {
         activationRequestIDs.insert(requestID)
         latestActivationRequestID = requestID
 
-        let backend = self.backend
-        // setActive(true) 是同步阻塞调用。每次请求使用独立执行任务，确保一次挂起不会占住
-        // coordinator actor；后续重试仍能登记自己的请求并独立尝试激活。
-        let activationTask = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            try backend.prepareForRecording()
-            try Task.checkCancellation()
-            try backend.activateForRecording()
-        }
+        var didActivateBackend = false
         do {
-            try await withTaskCancellationHandler {
-                try await activationTask.value
-            } onCancel: {
-                activationTask.cancel()
-                Task {
-                    await self.cancelActivationRequest(requestID)
-                }
-            }
+            repeat {
+                try await performActivationAttempt(requestID: requestID)
+                didActivateBackend = true
+                try Task.checkCancellation()
+                // 旧停用可能在本次 setActive 成功后才落地。补激活若已明确失败，
+                // 发布租约前再激活一次，不能让调用方在失活会话上启动采集器。
+            } while failedActivationRefreshRequestIDs.remove(requestID) != nil
         } catch {
             activationRequestIDs.remove(requestID)
+            failedActivationRefreshRequestIDs.remove(requestID)
+            if didActivateBackend {
+                markAbandonedActivation()
+            }
             deactivateAbandonedActivationIfIdle()
             throw error
         }
 
         activationRequestIDs.remove(requestID)
-        do {
-            try Task.checkCancellation()
-        } catch {
-            markAbandonedActivation()
-            deactivateAbandonedActivationIfIdle()
-            throw error
-        }
         guard latestActivationRequestID == requestID else {
             markAbandonedActivation()
             deactivateAbandonedActivationIfIdle()
@@ -673,9 +662,30 @@ actor VoiceAudioSessionCoordinator {
         return activation
     }
 
+    private func performActivationAttempt(requestID: UUID) async throws {
+        let backend = self.backend
+        // setActive(true) 是同步阻塞调用。每次尝试使用独立执行任务，确保一次挂起不会占住
+        // coordinator actor；后续重试仍能登记自己的请求并独立尝试激活。
+        let activationTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            try backend.prepareForRecording()
+            try Task.checkCancellation()
+            try backend.activateForRecording()
+        }
+        try await withTaskCancellationHandler {
+            try await activationTask.value
+        } onCancel: {
+            activationTask.cancel()
+            Task {
+                await self.cancelActivationRequest(requestID)
+            }
+        }
+    }
+
     private func cancelActivationRequest(_ requestID: UUID) {
         // 同步系统调用可能不响应 Task 取消；先移除逻辑请求，避免它阻止有效重试结束时停用。
         activationRequestIDs.remove(requestID)
+        failedActivationRefreshRequestIDs.remove(requestID)
         deactivateAbandonedActivationIfIdle()
     }
 
@@ -715,7 +725,10 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         // 停用开始后可能已经有新租约或新请求；迟到停用必须补一次激活，保证最终状态为 active。
-        scheduleActivationRefresh(recoveryActivationID: currentActivationID)
+        let recoveryActivationID = currentActivationID ?? latestActivationRequestID.flatMap { requestID in
+            activationRequestIDs.contains(requestID) ? requestID : nil
+        }
+        scheduleActivationRefresh(recoveryActivationID: recoveryActivationID)
     }
 
     private func scheduleActivationRefresh(recoveryActivationID: UUID?) {
@@ -749,6 +762,16 @@ actor VoiceAudioSessionCoordinator {
                 Task { @MainActor in
                     recoveryHandler(succeeded)
                 }
+            }
+            return
+        }
+        if let recoveryActivationID,
+           currentActivationID == nil,
+           activationRequestIDs.contains(recoveryActivationID) {
+            // 请求的后端 setActive 已经可能成功，但 actor 还未发布租约。记录补激活失败，
+            // 让该请求在取得租约前重新确认会话为 active。
+            if !succeeded {
+                failedActivationRefreshRequestIDs.insert(recoveryActivationID)
             }
             return
         }

@@ -305,6 +305,40 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         try await waitForOperation(.deactivate, count: 2, in: backend)
     }
 
+    func testPendingActivationRetriesAfterRefreshFailure() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(
+            blockedActivationCall: 2,
+            failingActivationCall: 3,
+            blockedDeactivationCall: 1
+        )
+        defer {
+            backend.releaseActivation()
+            backend.releaseDeactivation()
+        }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldActivation = try await coordinator.activate()
+
+        await coordinator.deactivate(oldActivation)
+        try await waitForDeactivationStart(in: backend)
+
+        let retryRequest = Task {
+            try await coordinator.activate()
+        }
+        try await waitForActivationStart(in: backend)
+
+        // 待发布请求的第一次 setActive 已经进入系统调用；旧停用随后落地并触发一次失败补激活。
+        backend.releaseDeactivation()
+        try await waitForOperation(.activate, count: 3, in: backend)
+        try await Task.sleep(for: .milliseconds(40))
+
+        backend.releaseActivation()
+        let retryActivation = try await retryRequest.value
+        XCTAssertEqual(backend.operations.filter { $0 == .activate }.count, 4)
+
+        await coordinator.deactivate(retryActivation)
+        try await waitForOperation(.deactivate, count: 2, in: backend)
+    }
+
     func testStaleRefreshFailureDoesNotStopNewerActivation() async throws {
         let backend = StartupWatchdogAudioSessionBackend(
             blockedActivationCall: 3,
