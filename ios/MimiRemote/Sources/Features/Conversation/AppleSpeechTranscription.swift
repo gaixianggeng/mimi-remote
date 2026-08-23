@@ -180,6 +180,7 @@ final class AppleSpeechTranscriptionSession {
     private var audioEngine: AVAudioEngine?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
     private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionRecoveryGate = VoiceAudioCaptureRecoveryGate()
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var audioSessionObserverTokens: [NSObjectProtocol] = []
@@ -232,6 +233,7 @@ final class AppleSpeechTranscriptionSession {
         didReceiveFirstAudioBuffer = false
         didReceiveFirstResult = false
         acceptsTranscriptionResults = true
+        audioSessionRecoveryGate.reset()
         healthMonitor.reset()
         Self.logger.info(
             "session_start id=\(self.sessionID.uuidString, privacy: .public) locale=\(locale.identifier, privacy: .public)"
@@ -371,6 +373,9 @@ final class AppleSpeechTranscriptionSession {
         do {
             // start() 等待系统会话期间可能已被取消；先检查，再触碰 MainActor 上的 engine。
             try Task.checkCancellation()
+            if audioSessionRecoveryGate.consumePendingResult() == false {
+                throw AppleSpeechTranscriptionError.recordingFailed
+            }
 
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
@@ -430,12 +435,17 @@ final class AppleSpeechTranscriptionSession {
         succeeded: Bool,
         onFailure: @escaping @MainActor (Error) -> Void
     ) {
-        guard !isFinishing,
-              audioSessionActivation != nil,
-              let audioEngine else {
+        guard !isFinishing else {
             return
         }
-        guard succeeded else {
+        guard let recoveryResult = audioSessionRecoveryGate.receive(
+            succeeded,
+            isCaptureReady: audioSessionActivation != nil && audioEngine != nil
+        ) else {
+            return
+        }
+        guard let audioEngine else { return }
+        guard recoveryResult else {
             reportFailure(
                 AppleSpeechTranscriptionError.recordingFailed,
                 stage: "audio_session_recovery",
@@ -621,6 +631,7 @@ final class AppleSpeechTranscriptionSession {
         healthWatchdogTask = nil
         stopObservingAudioSession()
         healthMonitor.reset()
+        audioSessionRecoveryGate.reset()
         acceptsTranscriptionResults = false
         analyzer = nil
     }

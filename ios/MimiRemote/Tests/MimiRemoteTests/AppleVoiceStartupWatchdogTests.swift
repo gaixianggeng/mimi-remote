@@ -42,6 +42,29 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         XCTAssertFalse(error.errorDescription?.isEmpty ?? true)
     }
 
+    func testRecoveryGateDefersFailureUntilCaptureInitialization() {
+        var gate = VoiceAudioCaptureRecoveryGate()
+
+        XCTAssertNil(gate.receive(false, isCaptureReady: false))
+        XCTAssertEqual(gate.consumePendingResult(), false)
+        XCTAssertNil(gate.consumePendingResult())
+    }
+
+    func testRecoveryGateKeepsLatestStartupResult() {
+        var gate = VoiceAudioCaptureRecoveryGate()
+
+        XCTAssertNil(gate.receive(false, isCaptureReady: false))
+        XCTAssertNil(gate.receive(true, isCaptureReady: false))
+        XCTAssertEqual(gate.consumePendingResult(), true)
+    }
+
+    func testRecoveryGateReturnsResultImmediatelyAfterCaptureInitialization() {
+        var gate = VoiceAudioCaptureRecoveryGate()
+
+        XCTAssertEqual(gate.receive(false, isCaptureReady: true), false)
+        XCTAssertNil(gate.consumePendingResult())
+    }
+
     func testCancelledQueuedActivationCannotOverrideImmediateRetry() async throws {
         let backend = StartupWatchdogAudioSessionBackend()
         let coordinator = VoiceAudioSessionCoordinator(backend: backend)

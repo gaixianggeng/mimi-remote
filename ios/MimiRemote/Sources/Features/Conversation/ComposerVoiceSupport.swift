@@ -26,6 +26,28 @@ struct AppleVoiceStartupWatchdog {
     }
 }
 
+struct VoiceAudioCaptureRecoveryGate {
+    private var pendingResult: Bool?
+
+    mutating func receive(_ succeeded: Bool, isCaptureReady: Bool) -> Bool? {
+        guard isCaptureReady else {
+            // 租约可能先于采集器发布；保留最新结果，不能在启动窗口静默丢失恢复失败。
+            pendingResult = succeeded
+            return nil
+        }
+        return succeeded
+    }
+
+    mutating func consumePendingResult() -> Bool? {
+        defer { pendingResult = nil }
+        return pendingResult
+    }
+
+    mutating func reset() {
+        pendingResult = nil
+    }
+}
+
 enum VoiceMicButtonState: Equatable {
     case idle
     case preparing
@@ -914,6 +936,7 @@ final class VoiceInputController: NSObject, ObservableObject {
     private var appleFinishHandler: (() -> Void)?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
     private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionRecoveryGate = VoiceAudioCaptureRecoveryGate()
     private var audioSessionCleanupTask: Task<Void, Never>?
     private var codexStartupTask: Task<Void, Never>?
 
@@ -932,6 +955,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         finishHandler = onFinish
         pressStartedAt = Date()
         recordingStartedAt = nil
+        audioSessionRecoveryGate.reset()
         errorMessage = nil
         noticeMessage = nil
 
@@ -1289,6 +1313,9 @@ final class VoiceInputController: NSObject, ObservableObject {
             guard startRequestID == requestID else {
                 throw CancellationError()
             }
+            if audioSessionRecoveryGate.consumePendingResult() == false {
+                throw VoiceInputError.recordingFailed
+            }
 
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("voice-\(UUID().uuidString)")
@@ -1322,12 +1349,17 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     private func recoverCodexAudioCapture(requestID: UUID, succeeded: Bool) {
         guard activeProvider == .codex,
-              startRequestID == requestID,
-              isRecording,
-              let recorder else {
+              startRequestID == requestID else {
             return
         }
-        guard succeeded else {
+        guard let recoveryResult = audioSessionRecoveryGate.receive(
+            succeeded,
+            isCaptureReady: isRecording && recorder != nil
+        ) else {
+            return
+        }
+        guard let recorder else { return }
+        guard recoveryResult else {
             errorMessage = VoiceInputError.recordingFailed.localizedDescription
             finish(fileURL: nil)
             return
@@ -1422,6 +1454,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         startRequestID = nil
         pressStartedAt = nil
         recordingStartedAt = nil
+        audioSessionRecoveryGate.reset()
         isPreparing = false
         isRecording = false
         activeProvider = nil
