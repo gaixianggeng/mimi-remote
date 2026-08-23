@@ -7816,13 +7816,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Default run permissions for new input areas and after switching sessions. The permission buttons in the input area will also update this global default value simultaneously."
+            "value": "Default run permissions for new conversations. Existing threads keep their current permissions until you explicitly change them in the input area."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于新输入区和切换会话后的默认运行权限。输入区里的权限按钮也会同步更新这个全局默认值。"
+            "value": "用于新对话的默认运行权限。已有会话会沿用当前权限，直到你在输入区中明确修改。"
           }
         }
       }
@@ -39097,6 +39097,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Active profile: %@" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前生效档案：%@" } }
+      }
+    },
+    "ui.follow_the_current_thread_permissions": {
+      "comment": "Indicates that an existing thread keeps its current App Server permission settings.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use current thread permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "沿用当前会话权限" } }
       }
     },
     "ui.additional_permissions": {

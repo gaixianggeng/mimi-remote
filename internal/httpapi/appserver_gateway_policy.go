@@ -1405,6 +1405,9 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
 		}
 	}
+	if method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params) {
+		return safe
+	}
 	workspaceWrite := false
 	if runtimeID == "codex" {
 		if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
@@ -1464,26 +1467,33 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
 		safe["collaborationMode"] = collaborationMode
 	}
-	workspaceWrite := false
-	if runtimeID == "codex" {
-		if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
-			safe["permissions"] = profileID
+	if !gatewayPreservesThreadPermissionSettings(params) {
+		workspaceWrite := false
+		if runtimeID == "codex" {
+			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+				safe["permissions"] = profileID
+			} else {
+				safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
+				sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
+				workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+			}
 		} else {
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
 		}
-	} else {
-		safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
-		sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
-		workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort
 	}
 	return safe
+}
+
+func gatewayPreservesThreadPermissionSettings(params map[string]any) bool {
+	preserve, _ := params[gatewayPreserveThreadPermissionsParam].(bool)
+	return preserve
 }
 
 func sanitizedGatewayTurnSteerParams(params map[string]any) map[string]any {

@@ -624,6 +624,9 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     var approvalsReviewer: String
     var sandboxMode: CodexAppServerSandboxMode
     var networkAccess: Bool
+    // 已存在 Thread 在用户没有显式改权限时沿用服务端当前设置。该标记只发给 Mimi gateway，
+    // gateway 剥离后不向 app-server 注入 approval / sandbox 覆盖值。
+    var preservesThreadPermissionSettings: Bool
     // 命名权限配置档案由 app-server 解析。存在时必须替代旧 sandbox 字段，不能叠加发送。
     var permissionProfileID: String?
     var personality: CodexAppServerPersonality?
@@ -650,6 +653,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case approvalsReviewer = "approvals_reviewer"
         case sandboxMode = "sandbox_mode"
         case networkAccess = "network_access"
+        case preservesThreadPermissionSettings = "preserves_thread_permission_settings"
         case permissionProfileID = "permission_profile_id"
         case personality
         case config
@@ -674,6 +678,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         approvalsReviewer: String = "user",
         sandboxMode: CodexAppServerSandboxMode = .dangerFullAccess,
         networkAccess: Bool = false,
+        preservesThreadPermissionSettings: Bool = false,
         permissionProfileID: String? = nil,
         personality: CodexAppServerPersonality? = nil,
         config: CodexAppServerJSONValue? = nil,
@@ -696,6 +701,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         self.approvalsReviewer = approvalsReviewer
         self.sandboxMode = sandboxMode
         self.networkAccess = networkAccess
+        self.preservesThreadPermissionSettings = preservesThreadPermissionSettings
         self.permissionProfileID = permissionProfileID?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
         self.personality = personality
         self.config = config
@@ -722,6 +728,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             approvalsReviewer: try container.decodeIfPresent(String.self, forKey: .approvalsReviewer) ?? "user",
             sandboxMode: try container.decodeIfPresent(CodexAppServerSandboxMode.self, forKey: .sandboxMode) ?? .dangerFullAccess,
             networkAccess: try container.decodeIfPresent(Bool.self, forKey: .networkAccess) ?? false,
+            preservesThreadPermissionSettings: try container.decodeIfPresent(Bool.self, forKey: .preservesThreadPermissionSettings) ?? false,
             permissionProfileID: try container.decodeIfPresent(String.self, forKey: .permissionProfileID),
             personality: try container.decodeIfPresent(CodexAppServerPersonality.self, forKey: .personality),
             config: try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .config),
@@ -747,6 +754,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         approvalsReviewer: "user",
         sandboxMode: .dangerFullAccess,
         networkAccess: false,
+        preservesThreadPermissionSettings: false,
         permissionProfileID: nil,
         personality: nil,
         config: nil,
@@ -803,6 +811,13 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     private mutating func applyStandardComposerPermissionPreset() {
+        if preservesThreadPermissionSettings {
+            permissionProfileID = nil
+            approvalPolicy = .onRequest
+            approvalsReviewer = "user"
+            networkAccess = false
+            return
+        }
         if permissionProfileID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             approvalPolicy = .onRequest
             approvalsReviewer = "user"
@@ -831,16 +846,18 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     func turnParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
-        let profileID = permissionProfileID.flatMap(nonEmptyString)
+        let preservesPermissions = preservesThreadPermissionSettings
+        let profileID = preservesPermissions ? nil : permissionProfileID.flatMap(nonEmptyString)
         return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
             "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
             "effort": reasoningEffort.map { .string($0.rawValue) },
             "summary": reasoningSummary.map { .string($0.rawValue) },
-            "approvalPolicy": .string(approvalPolicy.rawValue),
-            "approvalsReviewer": .string(approvalsReviewer),
+            "approvalPolicy": preservesPermissions ? nil : .string(approvalPolicy.rawValue),
+            "approvalsReviewer": preservesPermissions ? nil : .string(approvalsReviewer),
             "permissions": profileID.map { .string($0) },
-            "sandboxPolicy": profileID == nil ? sandboxPolicy(projectPath: projectPath) : nil,
+            "sandboxPolicy": preservesPermissions || profileID != nil ? nil : sandboxPolicy(projectPath: projectPath),
+            "mimiPreserveThreadPermissions": preservesPermissions ? .bool(true) : nil,
             "personality": personality.map { .string($0.rawValue) },
             "outputSchema": outputSchema,
             // app-server 会把 collaboration mode 作为 turn 级状态处理；普通模式也必须显式发送
@@ -850,15 +867,17 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 
     func threadParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
-        let profileID = permissionProfileID.flatMap(nonEmptyString)
+        let preservesPermissions = preservesThreadPermissionSettings
+        let profileID = preservesPermissions ? nil : permissionProfileID.flatMap(nonEmptyString)
         return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
             "modelProvider": modelProvider.flatMap(nonEmptyString).map { .string($0) },
             "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
-            "approvalPolicy": .string(approvalPolicy.rawValue),
-            "approvalsReviewer": .string(approvalsReviewer),
+            "approvalPolicy": preservesPermissions ? nil : .string(approvalPolicy.rawValue),
+            "approvalsReviewer": preservesPermissions ? nil : .string(approvalsReviewer),
             "permissions": profileID.map { .string($0) },
-            "sandbox": profileID == nil ? .string(threadSandboxValue) : nil,
+            "sandbox": preservesPermissions || profileID != nil ? nil : .string(threadSandboxValue),
+            "mimiPreserveThreadPermissions": preservesPermissions ? .bool(true) : nil,
             "personality": personality.map { .string($0.rawValue) },
             "config": config,
             "serviceName": serviceName.flatMap(nonEmptyString).map { .string($0) },

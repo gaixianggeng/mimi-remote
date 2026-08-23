@@ -455,6 +455,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 
     func apply(to options: inout CodexAppServerTurnOptions) {
         // 选择旧权限预设表示显式退出命名档案，确保请求只走一条权限通道。
+        options.preservesThreadPermissionSettings = false
         options.permissionProfileID = nil
         options.approvalPolicy = approvalPolicy
         options.approvalsReviewer = approvalsReviewer
@@ -464,6 +465,56 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     }
 
     private static let autoReviewer = "auto_review"
+}
+
+struct ComposerPermissionSelectionSnapshot: Equatable {
+    var preservesThreadSettings: Bool
+    var profileID: String?
+    var mode: ComposerPermissionMode
+
+    init(options: CodexAppServerTurnOptions) {
+        preservesThreadSettings = options.preservesThreadPermissionSettings
+        profileID = options.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+        mode = ComposerPermissionMode(options: options)
+    }
+
+    func apply(to options: inout CodexAppServerTurnOptions) {
+        if preservesThreadSettings {
+            options.preservesThreadPermissionSettings = true
+            options.permissionProfileID = nil
+            options.networkAccess = false
+        } else if let profileID {
+            options.preservesThreadPermissionSettings = false
+            options.permissionProfileID = profileID
+            options.approvalPolicy = .onRequest
+            options.approvalsReviewer = "user"
+            options.networkAccess = false
+        } else {
+            mode.apply(to: &options)
+        }
+    }
+}
+
+struct ComposerPermissionSelectionCache {
+    private var snapshotsByScope: [ComposerDraftScopeKey: ComposerPermissionSelectionSnapshot] = [:]
+
+    mutating func save(_ snapshot: ComposerPermissionSelectionSnapshot, for scope: ComposerDraftScopeKey) {
+        guard scope != .none else { return }
+        snapshotsByScope[scope] = snapshot
+    }
+
+    func snapshot(for scope: ComposerDraftScopeKey) -> ComposerPermissionSelectionSnapshot? {
+        snapshotsByScope[scope]
+    }
+
+    mutating func remove(scope: ComposerDraftScopeKey) {
+        snapshotsByScope.removeValue(forKey: scope)
+    }
+
+    mutating func removeAll() {
+        snapshotsByScope.removeAll(keepingCapacity: false)
+    }
 }
 
 enum ComposerSendMode: String, CaseIterable, Identifiable {
@@ -680,6 +731,22 @@ struct ComposerState {
 
     mutating func restoreModelSelectionSnapshot(_ snapshot: ComposerModelSelectionSnapshot) {
         snapshot.apply(to: &turnOptions)
+    }
+
+    func permissionSelectionSnapshot() -> ComposerPermissionSelectionSnapshot {
+        ComposerPermissionSelectionSnapshot(options: turnOptions)
+    }
+
+    mutating func restorePermissionSelectionSnapshot(_ snapshot: ComposerPermissionSelectionSnapshot) {
+        snapshot.apply(to: &turnOptions)
+    }
+
+    mutating func preserveThreadPermissionSettings() {
+        updateTurnOptions { options in
+            options.preservesThreadPermissionSettings = true
+            options.permissionProfileID = nil
+            options.networkAccess = false
+        }
     }
 
     mutating func addAttachment(_ input: CodexAppServerUserInput) {

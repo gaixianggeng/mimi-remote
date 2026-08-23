@@ -2461,6 +2461,7 @@ extension SessionStore {
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
         composerModelSelectionCache.removeAll()
+        composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         queuedRunningTurnsBySessionID.removeAll()

@@ -239,7 +239,16 @@ struct ComposerView: View {
             showsAdvancedOptionsSheet = false
         }
         .onChange(of: defaultPermissionModeID) { _, _ in
-            applyDefaultPermissionMode()
+            // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
+            // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
+            switch activeComposerDraftScope {
+            case .project:
+                applyDefaultPermissionMode()
+            case .session(let sessionID) where sessionID.hasPrefix("local:"):
+                applyDefaultPermissionMode()
+            case .none, .session:
+                break
+            }
         }
         .onChange(of: voiceInputProviderRawValue) { _, _ in
             // 提供方变化是语音会话边界；旧引擎的迟到结果不能写入新选择下的草稿。
@@ -261,6 +270,9 @@ struct ComposerView: View {
         .onChange(of: composerState.modelSelectionSnapshot()) { _, snapshot in
             // 模型偏好独立于正文保存；空输入、发送成功和视图重建都不能清掉会话选择。
             sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
+        }
+        .onChange(of: composerState.permissionSelectionSnapshot()) { _, snapshot in
+            sessionStore.saveComposerPermissionSelection(snapshot, for: activeComposerDraftScope)
         }
         .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
             guard let completion,
@@ -324,6 +336,10 @@ struct ComposerView: View {
                 composerState.modelSelectionSnapshot(),
                 for: activeComposerDraftScope
             )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
@@ -333,7 +349,7 @@ struct ComposerView: View {
     private func prepareComposer() async {
         switchComposerDraftScope(to: currentComposerDraftScope)
         clampModelSelectionToSelectedSessionRuntime()
-        applyDefaultPermissionMode()
+        restoreComposerPermissionSelection(for: currentComposerDraftScope)
         voiceInput.prewarm()
         await sessionStore.refreshAppServerModelOptions()
         await sessionStore.refreshCapabilities()
@@ -479,25 +495,29 @@ struct ComposerView: View {
         synchronizeComposerTextBeforeDraftScopeChange()
         let outgoingDraft = composerState.draftSnapshot()
         let outgoingModelSelection = composerState.modelSelectionSnapshot()
+        let outgoingPermissionSelection = composerState.permissionSelectionSnapshot()
         sessionStore.saveComposerDraft(outgoingDraft, for: previousScope)
         sessionStore.saveComposerModelSelection(outgoingModelSelection, for: previousScope)
+        sessionStore.saveComposerPermissionSelection(outgoingPermissionSelection, for: previousScope)
         if isOptimisticHandoff {
             // local:* 只是创建接口返回前的临时身份。服务端 ID 回来时迁移当前可见草稿，
             // 避免用户正在输入的追加指令和模型选择被新 scope 的默认值覆盖。
             sessionStore.saveComposerDraft(outgoingDraft, for: nextScope)
             sessionStore.saveComposerModelSelection(outgoingModelSelection, for: nextScope)
+            sessionStore.saveComposerPermissionSelection(outgoingPermissionSelection, for: nextScope)
             sessionStore.removeComposerDraft(for: previousScope)
             sessionStore.removeComposerModelSelection(for: previousScope)
+            sessionStore.removeComposerPermissionSelection(for: previousScope)
         }
         cancelVoiceInteraction(clearStatus: true)
 
-        applyDefaultPermissionMode()
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
         restoreComposerModelSelection(for: nextScope)
+        restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
@@ -533,6 +553,18 @@ struct ComposerView: View {
             ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
         composerState.updateTurnOptions { options in
             applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
+        }
+    }
+
+    func restoreComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
+        if let snapshot = sessionStore.composerPermissionSelection(for: scope) {
+            composerState.restorePermissionSelectionSnapshot(snapshot)
+        } else if case .session(let sessionID) = scope,
+                  !sessionID.hasPrefix("local:"),
+                  selectedSessionRuntimeProviderForModelMenu != "claude" {
+            composerState.preserveThreadPermissionSettings()
+        } else {
+            applyDefaultPermissionMode()
         }
     }
 
@@ -1840,6 +1872,7 @@ struct ComposerView: View {
 
     func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
         composerState.updateTurnOptions { options in
+            options.preservesThreadPermissionSettings = false
             options.permissionProfileID = profile.id
             options.approvalPolicy = .onRequest
             options.approvalsReviewer = "user"
@@ -1862,8 +1895,13 @@ struct ComposerView: View {
     }
 
     var selectedPermissionProfileID: String? {
-        composerState.turnOptions.permissionProfileID?
-            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+        if let profileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty {
+            return profileID
+        }
+        return composerState.turnOptions.preservesThreadPermissionSettings
+            ? activePermissionProfile?.id
+            : nil
     }
 
     var activePermissionProfile: CodexAppServerActivePermissionProfile? {
@@ -1874,8 +1912,9 @@ struct ComposerView: View {
     }
 
     func clampPermissionProfileToAvailableOptions() {
-        guard let selectedPermissionProfileID else { return }
-        guard availablePermissionProfiles.contains(where: { $0.id == selectedPermissionProfileID }) else {
+        guard let explicitProfileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty else { return }
+        guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
             composerState.updateTurnOptions { options in
                 options.permissionProfileID = nil
             }

@@ -274,6 +274,8 @@ final class SessionStore: ObservableObject {
     // 模型与推理强度按会话保留，但只存在当前连接的内存生命周期内。
     // 与内容草稿分开后，空输入或发送成功也不会误删模型偏好。
     var composerModelSelectionCache = ComposerModelSelectionCache()
+    // 权限选择按会话保留；未显式选择的既有 Thread 使用“沿用服务端当前设置”。
+    var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -834,6 +836,23 @@ final class SessionStore: ObservableObject {
 
     func removeComposerModelSelection(for scope: ComposerDraftScopeKey) {
         composerModelSelectionCache.remove(scope: scope)
+    }
+
+    func saveComposerPermissionSelection(
+        _ snapshot: ComposerPermissionSelectionSnapshot,
+        for scope: ComposerDraftScopeKey
+    ) {
+        composerPermissionSelectionCache.save(snapshot, for: scope)
+    }
+
+    func composerPermissionSelection(
+        for scope: ComposerDraftScopeKey
+    ) -> ComposerPermissionSelectionSnapshot? {
+        composerPermissionSelectionCache.snapshot(for: scope)
+    }
+
+    func removeComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
+        composerPermissionSelectionCache.remove(scope: scope)
     }
 
     func composerSendModeForScopeActivation(
