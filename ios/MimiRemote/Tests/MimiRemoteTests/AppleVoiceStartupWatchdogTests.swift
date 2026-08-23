@@ -113,6 +113,58 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
             [.prepare, .activate, .deactivate, .prepare, .activate, .deactivate]
         )
     }
+
+    func testRetryDoesNotWaitForBlockedActivation() async throws {
+        let backend = StartupWatchdogAudioSessionBackend(blocksActivation: true)
+        defer { backend.releaseActivation() }
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+        let oldRequest = Task {
+            try await coordinator.activate()
+        }
+
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while !backend.hasStartedActivation, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard backend.hasStartedActivation else {
+            XCTFail("Audio activation did not start")
+            return
+        }
+
+        oldRequest.cancel()
+        let retryCompleted = expectation(description: "retry activation completed")
+        var retryActivation: VoiceAudioSessionCoordinator.Activation?
+        var retryError: Error?
+        let retryRequest = Task {
+            do {
+                retryActivation = try await coordinator.activate()
+            } catch {
+                retryError = error
+            }
+            retryCompleted.fulfill()
+        }
+
+        // 第一次 setActive 仍未返回时，重试必须通过独立执行任务完成。
+        await fulfillment(of: [retryCompleted], timeout: 0.25)
+        XCTAssertNil(retryError)
+        XCTAssertEqual(backend.operations, [.prepare, .activate, .prepare, .activate])
+
+        backend.releaseActivation()
+        do {
+            _ = try await oldRequest.value
+            XCTFail("Cancelled request must not retain audio activation")
+        } catch is CancellationError {
+            // 迟到旧请求不能覆盖或关闭已经成功的重试。
+        }
+        await retryRequest.value
+
+        let activation = try XCTUnwrap(retryActivation)
+        await coordinator.deactivate(activation)
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .activate, .prepare, .activate, .deactivate]
+        )
+    }
 }
 
 private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
@@ -128,6 +180,7 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
     private let activationCondition = NSCondition()
     private var activationStarted = false
     private var activationReleased = false
+    private var activationCallCount = 0
 
     init(blocksActivation: Bool = false) {
         self.blocksActivation = blocksActivation
@@ -151,10 +204,13 @@ private final class StartupWatchdogAudioSessionBackend: VoiceAudioSessionBackend
         record(.activate)
         guard blocksActivation else { return }
         activationCondition.lock()
-        activationStarted = true
-        activationCondition.broadcast()
-        while !activationReleased {
-            activationCondition.wait()
+        activationCallCount += 1
+        if activationCallCount == 1 {
+            activationStarted = true
+            activationCondition.broadcast()
+            while !activationReleased {
+                activationCondition.wait()
+            }
         }
         activationCondition.unlock()
     }

@@ -564,10 +564,10 @@ enum AdvancedTurnOptionsError: LocalizedError {
     }
 }
 
-/// 将系统音频会话调用隔离在非 MainActor 的串行执行域中。
+/// 将系统音频会话调用隔离在非 MainActor 的协调域中。
 ///
 /// AVAudioSession 的 category/active 切换可能阻塞；UI 与录音器生命周期仍由 MainActor 管理，
-/// 这里只负责不可并发的系统会话状态，避免阻塞界面或发生旧清理关闭新录音的竞态。
+/// 这里只负责系统会话租约，避免阻塞界面或发生旧清理关闭新录音的竞态。
 protocol VoiceAudioSessionBackend: Sendable {
     func prepareForRecording() throws
     func activateForRecording() throws
@@ -603,6 +603,9 @@ actor VoiceAudioSessionCoordinator {
 
     private let backend: any VoiceAudioSessionBackend
     private var currentActivationID: UUID?
+    private var activationRequestIDs: Set<UUID> = []
+    private var latestActivationRequestID: UUID?
+    private var hasAbandonedActivation = false
 
     init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
         self.backend = backend
@@ -612,26 +615,71 @@ actor VoiceAudioSessionCoordinator {
         try backend.prepareForRecording()
     }
 
-    func activate() throws -> Activation {
+    func activate() async throws -> Activation {
         try Task.checkCancellation()
-        try backend.prepareForRecording()
-        try Task.checkCancellation()
+        let requestID = UUID()
+        activationRequestIDs.insert(requestID)
+        latestActivationRequestID = requestID
 
-        let hadExistingActivation = currentActivationID != nil
-        try backend.activateForRecording()
+        let backend = self.backend
+        // setActive(true) 是同步阻塞调用。每次请求使用独立执行任务，确保一次挂起不会占住
+        // coordinator actor；后续重试仍能登记自己的请求并独立尝试激活。
+        let activationTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            try backend.prepareForRecording()
+            try Task.checkCancellation()
+            try backend.activateForRecording()
+        }
+        do {
+            try await withTaskCancellationHandler {
+                try await activationTask.value
+            } onCancel: {
+                activationTask.cancel()
+            }
+        } catch {
+            activationRequestIDs.remove(requestID)
+            deactivateAbandonedActivationIfIdle()
+            throw error
+        }
+
+        activationRequestIDs.remove(requestID)
         do {
             try Task.checkCancellation()
         } catch {
-            // setActive 已经成功但调用方在返回前取消时，必须撤销这次独占激活。
-            // 已有租约表示音频会话原本就在使用中，此时不能误停仍有效的新会话。
-            if !hadExistingActivation {
-                try? backend.deactivateRecording()
-            }
+            markAbandonedActivation()
+            deactivateAbandonedActivationIfIdle()
             throw error
         }
-        let activation = Activation(id: UUID())
+        guard latestActivationRequestID == requestID else {
+            markAbandonedActivation()
+            deactivateAbandonedActivationIfIdle()
+            throw CancellationError()
+        }
+
+        let activation = Activation(id: requestID)
         currentActivationID = activation.id
+        hasAbandonedActivation = false
         return activation
+    }
+
+    private func markAbandonedActivation() {
+        // AVAudioSession 是进程级共享状态；已有租约时，迟到成功已经由该租约共同拥有。
+        if currentActivationID == nil {
+            hasAbandonedActivation = true
+        }
+    }
+
+    private func deactivateAbandonedActivationIfIdle() {
+        // 有更新请求或有效租约时不能停用全局 AVAudioSession，否则迟到旧请求会关闭新录音。
+        guard
+            hasAbandonedActivation,
+            activationRequestIDs.isEmpty,
+            currentActivationID == nil
+        else {
+            return
+        }
+        hasAbandonedActivation = false
+        try? backend.deactivateRecording()
     }
 
     func deactivate(_ activation: Activation) {
@@ -640,6 +688,7 @@ actor VoiceAudioSessionCoordinator {
             return
         }
         currentActivationID = nil
+        hasAbandonedActivation = false
         try? backend.deactivateRecording()
     }
 }
