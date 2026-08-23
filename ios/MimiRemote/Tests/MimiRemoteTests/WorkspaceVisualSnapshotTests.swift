@@ -82,7 +82,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             )
         ]
         let referenceDate = Date(timeIntervalSince1970: 1_785_105_600)
-        let sessions = [
+        let allSessions = [
             AgentSession(
                 id: "workspace-running",
                 projectID: projects[0].id,
@@ -153,6 +153,11 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 )
             )
         ]
+        // iPhone 宽度快照专门保持单一“最近会话”分组，覆盖窄屏不显示分组标题时的计数语义；
+        // iPad 继续保留运行中与最近会话两个分组，锁住宽屏层级。
+        let sessions = hasBottomTabBar
+            ? allSessions.filter { $0.id != "workspace-running" }
+            : allSessions
         let workspaces = projects.enumerated().map { index, project in
             AgentWorkspace(
                 project: project,
@@ -222,9 +227,20 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             screenSize: CGSize(width: width, height: height)
         )
 
+        let bottomSafeAreaInset: CGFloat = hasBottomTabBar
+            ? WorkbenchPageLayout.defaultCompactBottomSafeAreaInset
+            : 0
+        let bottomChromeClearance = hasBottomTabBar
+            ? WorkbenchPageLayout.compactBottomChromeClearance(
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
+
         let view = WorkspaceRootView(
             onStartSession: { _, _ in },
             onOpenSession: { _ in },
+            manageConnections: hasBottomTabBar ? {} : nil,
+            embedsNavigationStack: false,
             appearanceStore: appearanceStore,
             initialWorkspaceID: projects[0].id,
             // 固定“当前时间”后，相对分组和右侧时刻不会随测试运行日期漂移。
@@ -236,6 +252,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         .environment(\.colorScheme, .light)
         .environment(\.workbenchHasCompactTabBar, true)
         .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
+        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .frame(width: width, height: height)
 
         if let failure = verifySnapshot(
