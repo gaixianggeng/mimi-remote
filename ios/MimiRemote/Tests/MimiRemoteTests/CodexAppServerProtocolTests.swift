@@ -2525,6 +2525,37 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(turnParams["sandboxPolicy"])
     }
 
+    func testPreservingThreadPermissionsUsesGatewayMarkerWithoutOverrides() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var options = CodexAppServerTurnOptions.default
+        options.preservesThreadPermissionSettings = true
+
+        let resume = try builder.threadResume(
+            threadID: "thread-1",
+            projectID: project.id,
+            options: options
+        )
+        let resumeParams = try XCTUnwrap(resume.params?.objectValue)
+        XCTAssertEqual(resumeParams["mimiPreserveThreadPermissions"]?.boolValue, true)
+        XCTAssertNil(resumeParams["approvalPolicy"])
+        XCTAssertNil(resumeParams["approvalsReviewer"])
+        XCTAssertNil(resumeParams["permissions"])
+        XCTAssertNil(resumeParams["sandbox"])
+
+        let turn = try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "继续", options: options)
+        )
+        let turnParams = try XCTUnwrap(turn.params?.objectValue)
+        XCTAssertEqual(turnParams["mimiPreserveThreadPermissions"]?.boolValue, true)
+        XCTAssertNil(turnParams["approvalPolicy"])
+        XCTAssertNil(turnParams["approvalsReviewer"])
+        XCTAssertNil(turnParams["permissions"])
+        XCTAssertNil(turnParams["sandboxPolicy"])
+    }
+
     func testPermissionProfileListFiltersDisallowedAndDuplicateProfiles() {
         let result: CodexAppServerJSONValue = .object([
             "data": .array([
