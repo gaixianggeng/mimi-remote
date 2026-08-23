@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -38,6 +40,8 @@ type ClaudeConfigurationResult struct {
 	LoggedIn           *bool                      `json:"logged_in,omitempty"`
 	ProxyConfigured    bool                       `json:"proxy_configured"`
 	SystemProxyEnabled bool                       `json:"system_proxy_enabled"`
+	SystemProxyKnown   bool                       `json:"system_proxy_known"`
+	SystemProxySource  string                     `json:"system_proxy_source,omitempty"`
 	ProxyMismatch      bool                       `json:"proxy_mismatch"`
 	Reason             string                     `json:"reason"`
 	Message            string                     `json:"message"`
@@ -50,9 +54,17 @@ type claudePreflightResult struct {
 	LoggedIn           *bool
 	ProxyConfigured    bool
 	SystemProxyEnabled bool
+	SystemProxyKnown   bool
+	SystemProxySource  string
 	ProxyMismatch      bool
 	Reason             string
 	Message            string
+}
+
+type claudeSystemProxyDetection struct {
+	Enabled bool
+	Known   bool
+	Source  string
 }
 
 func ParseClaudeActivationPreference(raw string) (ClaudeActivationPreference, error) {
@@ -154,6 +166,8 @@ func ConfigureClaude(
 			result.LoggedIn = preflight.LoggedIn
 			result.ProxyConfigured = preflight.ProxyConfigured
 			result.SystemProxyEnabled = preflight.SystemProxyEnabled
+			result.SystemProxyKnown = preflight.SystemProxyKnown
+			result.SystemProxySource = preflight.SystemProxySource
 			result.ProxyMismatch = preflight.ProxyMismatch
 			if preflight.OK {
 				targetEnabled = true
@@ -213,6 +227,8 @@ func ConfigureClaude(
 	result.LoggedIn = preflight.LoggedIn
 	result.ProxyConfigured = preflight.ProxyConfigured
 	result.SystemProxyEnabled = preflight.SystemProxyEnabled
+	result.SystemProxyKnown = preflight.SystemProxyKnown
+	result.SystemProxySource = preflight.SystemProxySource
 	result.ProxyMismatch = preflight.ProxyMismatch
 	result.Reason = preflight.Reason
 	result.Message = preflight.Message
@@ -318,12 +334,14 @@ func encodeClaudeDocument(
 
 func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResult {
 	commandEnvironment := claudeCommandEnvironment(cfg.Claude.Env)
-	proxyConfigured := claudeProxyConfigured(commandEnvironment)
-	systemProxyEnabled := claudeSystemProxyConfigured()
-	proxyMismatch := systemProxyEnabled && !proxyConfigured
+	proxyConfigured := claudeenv.HasSupportedProxy(commandEnvironment)
+	systemProxy := claudeSystemProxyStatus()
+	proxyMismatch := systemProxy.Known && systemProxy.Enabled && !proxyConfigured
 	baseResult := claudePreflightResult{
 		ProxyConfigured:    proxyConfigured,
-		SystemProxyEnabled: systemProxyEnabled,
+		SystemProxyEnabled: systemProxy.Enabled,
+		SystemProxyKnown:   systemProxy.Known,
+		SystemProxySource:  systemProxy.Source,
 		ProxyMismatch:      proxyMismatch,
 	}
 	bridge, ok := claudebridge.ResolveBinary(cfg.Claude.BridgeBin)
@@ -368,31 +386,23 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		return baseResult
 	}
 	baseResult.ClaudeVersion = claudeVersion
-	authCtx, cancelAuth := context.WithTimeout(ctx, 5*time.Second)
-	authCommand := exec.CommandContext(authCtx, claudeBin, "auth", "status")
-	authCommand.Env = commandEnvironment
-	authCommand.Stderr = io.Discard
-	authOutput, authErr := authCommand.Output()
-	cancelAuth()
-	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput)
-	if parsedAuth {
-		baseResult.LoggedIn = &loggedIn
-	}
-	if parsedAuth && !loggedIn {
-		baseResult.Reason = "claude_signed_out"
-		baseResult.Message = "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
-		return baseResult
-	}
-	if authErr != nil || !parsedAuth {
+	loggedIn, authErr := probeClaudeAuthStatus(ctx, claudeBin, commandEnvironment, 5*time.Second)
+	baseResult.LoggedIn = loggedIn
+	if authErr != nil {
 		baseResult.Reason = "claude_auth_status_failed"
 		baseResult.Message = "已检测到 Claude Code，但无法确认登录状态。请在终端运行 claude auth status 查看具体原因。"
+		return baseResult
+	}
+	if loggedIn == nil || !*loggedIn {
+		baseResult.Reason = "claude_signed_out"
+		baseResult.Message = "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
 		return baseResult
 	}
 	baseResult.OK = true
 	baseResult.Reason = "ready"
 	baseResult.Message = fmt.Sprintf("已检测到 Claude Code %s 和兼容的 Claude bridge。", claudeVersion)
 	if proxyMismatch {
-		baseResult.Message += " Windows 系统代理已启用，但 Claude 进程未配置 HTTP(S)_PROXY；如直连不可用，请重启 Mimi Remote 以继承用户代理环境。"
+		baseResult.Message += " Windows 用户代理已启用，但 Claude 进程未配置受支持的 HTTP(S) 代理；请设置 HTTPS_PROXY/HTTP_PROXY 或 claude.env 后完全重启 Mimi Remote。"
 	}
 	return baseResult
 }
@@ -447,43 +457,41 @@ func parseClaudeAuthStatus(output []byte) (bool, bool) {
 	return *status.LoggedIn, true
 }
 
-func claudeProxyConfigured(environment []string) bool {
-	for _, item := range environment {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		switch strings.ToUpper(strings.TrimSpace(key)) {
-		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY":
-			return true
-		}
+func probeClaudeAuthStatus(
+	ctx context.Context,
+	claudeBin string,
+	environment []string,
+	deadline time.Duration,
+) (*bool, error) {
+	authCtx, cancelAuth := context.WithTimeout(ctx, deadline)
+	authCommand := exec.CommandContext(authCtx, claudeBin, "auth", "status")
+	authCommand.Env = environment
+	authCommand.Stderr = io.Discard
+	authOutput, authErr := authCommand.Output()
+	authContextErr := authCtx.Err()
+	cancelAuth()
+
+	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput)
+	var result *bool
+	if parsedAuth {
+		result = &loggedIn
 	}
-	return false
+	if authErr != nil && authContextErr != nil {
+		return result, authContextErr
+	}
+	if !parsedAuth {
+		return nil, fmt.Errorf("Claude auth status 未返回有效 JSON")
+	}
+	if authErr == nil {
+		return result, nil
+	}
+	var exitError *exec.ExitError
+	if !loggedIn && errors.As(authErr, &exitError) && exitError.ExitCode() == 1 {
+		return result, nil
+	}
+	return result, authErr
 }
 
 func claudeCommandEnvironment(extra map[string]string) []string {
-	environment := append([]string{}, os.Environ()...)
-	type environmentValue struct {
-		key   string
-		value string
-	}
-	values := map[string]environmentValue{}
-	for _, item := range environment {
-		if key, value, ok := strings.Cut(item, "="); ok {
-			values[claudeEnvironmentKey(key)] = environmentValue{key: key, value: value}
-		}
-	}
-	for key, value := range extra {
-		key = strings.TrimSpace(key)
-		if key != "" && !strings.Contains(key, "=") {
-			values[claudeEnvironmentKey(key)] = environmentValue{key: key, value: value}
-		}
-	}
-	const bypassKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
-	values[claudeEnvironmentKey(bypassKey)] = environmentValue{key: bypassKey, value: "false"}
-	environment = environment[:0]
-	for _, entry := range values {
-		environment = append(environment, entry.key+"="+entry.value)
-	}
-	return environment
+	return claudeenv.Build(extra)
 }

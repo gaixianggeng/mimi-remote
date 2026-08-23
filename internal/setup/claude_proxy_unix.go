@@ -2,10 +2,6 @@
 
 package setup
 
-func claudeSystemProxyConfigured() bool {
-	return false
-}
-
-func claudeEnvironmentKey(key string) string {
-	return key
+func claudeSystemProxyStatus() claudeSystemProxyDetection {
+	return claudeSystemProxyDetection{Known: true, Source: "not_applicable"}
 }

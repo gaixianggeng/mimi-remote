@@ -184,6 +184,10 @@ pub struct ClaudeProcessHandle {
     /// can diff and skip no-op writes (avoids burning a request RTT per turn
     /// when nothing changes).
     runtime_state: Arc<Mutex<RuntimeState>>,
+    /// Serializes the read → control request → cache write transaction for
+    /// per-turn runtime overrides. The active-turn guard is registered later,
+    /// so concurrent turn/start calls can otherwise race in this window.
+    runtime_override_gate: Arc<Mutex<()>>,
     /// Background tasks. Held so they keep running for the handle's lifetime
     /// and abort cleanly on drop.
     _tasks: Arc<TaskSet>,
@@ -395,6 +399,7 @@ impl ClaudeProcessHandle {
             init_slot,
             pending_controls,
             runtime_state,
+            runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: tasks,
         })
     }
@@ -567,9 +572,10 @@ impl ClaudeProcessHandle {
     /// `Some(_)` means "ensure claude is running with this value" (dispatch
     /// only if it differs from the cached state).
     ///
-    /// On any setter failure the runtime cache is NOT updated, so a retry
-    /// will re-attempt rather than silently ignore the override. Errors are
-    /// returned as-is from `request_control`.
+    /// On setter failure the runtime cache is not updated. Explicit effort
+    /// rejection degrades only that turn; only a method-level unsupported
+    /// response disables future effort requests for this process. Transport,
+    /// timeout, and process-exit failures remain fatal.
     pub async fn apply_runtime_overrides(
         &self,
         model: Option<&str>,
@@ -577,6 +583,7 @@ impl ClaudeProcessHandle {
         permission_mode: Option<&str>,
         deadline: Duration,
     ) -> Result<(), ClaudeProcessError> {
+        let _runtime_override_guard = self.runtime_override_gate.lock().await;
         if let Some(want) = model {
             let need_dispatch = {
                 let guard = self.runtime_state.lock().await;
@@ -619,13 +626,17 @@ impl ClaudeProcessHandle {
                         guard.effort_level = Some(want.to_string());
                     }
                     Err(source @ ClaudeProcessError::ControlError { .. }) => {
+                        let globally_unsupported = effort_control_is_globally_unsupported(&source);
                         tracing::warn!(
                             error = %source,
                             effort_level = want,
-                            "claude runtime does not support effortLevel; continuing with its default"
+                            globally_unsupported,
+                            "claude runtime rejected effortLevel; continuing with its default"
                         );
-                        let mut guard = self.runtime_state.lock().await;
-                        guard.effort_level_unsupported = true;
+                        if globally_unsupported {
+                            let mut guard = self.runtime_state.lock().await;
+                            guard.effort_level_unsupported = true;
+                        }
                     }
                     Err(source) => {
                         return Err(ClaudeProcessError::RuntimeOverride {
@@ -706,6 +717,7 @@ fn apply_platform_security_args(args: &mut Vec<OsString>) {
         // tool while retaining stdio permission prompts for built-in tools.
         args.push("--disallowedTools".into());
         args.push("Bash".into());
+        args.push("PowerShell".into());
         return;
     }
     // Use a temporary override so the bridge never edits project or user
@@ -723,6 +735,62 @@ fn apply_platform_security_args(args: &mut Vec<OsString>) {
         .to_string()
         .into(),
     );
+}
+
+fn effort_control_is_globally_unsupported(error: &ClaudeProcessError) -> bool {
+    let ClaudeProcessError::ControlError { message, .. } = error else {
+        return false;
+    };
+    let normalized = message.to_ascii_lowercase();
+    let names_method =
+        normalized.contains("apply_flag_settings") || normalized.contains("apply flag settings");
+    names_method
+        && [
+            "unknown control request",
+            "unsupported control request",
+            "method not found",
+            "not implemented",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn redact_url_userinfo(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut copied_through = 0;
+    let mut search_from = 0;
+    while let Some(relative_scheme_end) = value[search_from..].find("://") {
+        let scheme_end = search_from + relative_scheme_end;
+        let scheme_start = value[..scheme_end]
+            .rfind(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '+' | '-' | '.')
+            })
+            .map_or(0, |index| index + 1);
+        let scheme = &value[scheme_start..scheme_end];
+        let authority_start = scheme_end + 3;
+        if scheme.is_empty() || !scheme.as_bytes()[0].is_ascii_alphabetic() {
+            search_from = authority_start;
+            continue;
+        }
+        if authority_start >= value.len() {
+            break;
+        }
+        let authority_end = value[authority_start..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '?' | '#')
+            })
+            .map_or(value.len(), |offset| authority_start + offset);
+        let authority = &value[authority_start..authority_end];
+        if let Some(userinfo_end) = authority.rfind('@') {
+            result.push_str(&value[copied_through..authority_start]);
+            result.push_str("<redacted>@");
+            result.push_str(&authority[userinfo_end + 1..]);
+            copied_through = authority_end;
+        }
+        search_from = authority_end.max(authority_start + 1).min(value.len());
+    }
+    result.push_str(&value[copied_through..]);
+    result
 }
 
 impl alleycat_bridge_core::pool::PoolMember for ClaudeProcessHandle {
@@ -810,7 +878,8 @@ async fn reader_task(
                 let _ = events_tx.send(event);
             }
             Err(err) => {
-                tracing::warn!(?err, line = %trimmed, "claude reader task: failed to parse line");
+                let line = redact_url_userinfo(trimmed);
+                tracing::warn!(?err, line = %line, "claude reader task: failed to parse line");
             }
         }
     }
@@ -829,6 +898,7 @@ async fn stderr_task(stderr: ChildStderr, pid: Option<u32>) {
         // Claude prints diagnostic chatter to stderr; surface it through
         // tracing so debug builds get it without polluting the codex
         // JSON-RPC channel.
+        let line = redact_url_userinfo(&line);
         tracing::debug!(?pid, "claude stderr: {line}");
     }
 }
@@ -856,6 +926,7 @@ impl ClaudeProcessHandle {
             init_slot: Arc::new(InitSlot::default()),
             pending_controls: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(RuntimeState::default())),
+            runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: Arc::new(TaskSet {
                 writer: Mutex::new(None),
                 reader: Mutex::new(None),
@@ -889,13 +960,27 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         if cfg!(windows) {
-            assert_eq!(args, ["--disallowedTools", "Bash"]);
+            assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
         } else {
             assert_eq!(args.first().map(String::as_str), Some("--settings"));
             assert!(
                 args.get(1)
                     .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
             );
+        }
+    }
+
+    #[test]
+    fn child_diagnostics_redact_url_userinfo() {
+        let diagnostic = redact_url_userinfo(
+            "connect http://alice:hunter%402@proxy.example:8080 via socks5://bob:secret@proxy:1080",
+        );
+        assert_eq!(
+            diagnostic,
+            "connect http://<redacted>@proxy.example:8080 via socks5://<redacted>@proxy:1080"
+        );
+        for secret in ["alice", "hunter%402", "bob", "secret"] {
+            assert!(!diagnostic.contains(secret));
         }
     }
 
@@ -1216,6 +1301,124 @@ mod tests {
             .await
             .expect("unsupported effort remains a no-op");
         assert!(writer_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn value_specific_effort_rejection_does_not_disable_future_effort() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+
+        let first_handle = Arc::clone(&handle);
+        let first = tokio::spawn(async move {
+            first_handle
+                .apply_runtime_overrides(None, Some("max"), None, Duration::from_secs(2))
+                .await
+        });
+        let first_line = writer_rx.recv().await.expect("first effort line");
+        let first_request: serde_json::Value = serde_json::from_str(&first_line).expect("json");
+        let first_id = first_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&first_id)
+            .unwrap()
+            .send(ControlResponseBody::Error {
+                error: "effort max is not available for the current model".into(),
+            })
+            .unwrap();
+        first
+            .await
+            .expect("join")
+            .expect("value rejection falls back");
+
+        let second_handle = Arc::clone(&handle);
+        let second = tokio::spawn(async move {
+            second_handle
+                .apply_runtime_overrides(None, Some("medium"), None, Duration::from_secs(2))
+                .await
+        });
+        let second_line = writer_rx.recv().await.expect("second effort line");
+        let second_request: serde_json::Value = serde_json::from_str(&second_line).expect("json");
+        assert_eq!(
+            second_request["request"]["settings"]["effortLevel"],
+            "medium"
+        );
+        let second_id = second_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&second_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        second
+            .await
+            .expect("join")
+            .expect("supported effort retries");
+        assert_eq!(handle.runtime_snapshot().await.1.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_runtime_overrides_are_serialized() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+
+        let first_handle = Arc::clone(&handle);
+        let first = tokio::spawn(async move {
+            first_handle
+                .apply_runtime_overrides(None, Some("medium"), None, Duration::from_secs(2))
+                .await
+        });
+        let first_line = writer_rx.recv().await.expect("first effort line");
+        let first_request: serde_json::Value = serde_json::from_str(&first_line).expect("json");
+
+        let second_handle = Arc::clone(&handle);
+        let second = tokio::spawn(async move {
+            second_handle
+                .apply_runtime_overrides(None, Some("high"), None, Duration::from_secs(2))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            writer_rx.try_recv().is_err(),
+            "second override must wait until the first cache transaction completes"
+        );
+
+        let first_id = first_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&first_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        first.await.expect("first join").expect("first override");
+
+        let second_line = writer_rx.recv().await.expect("second effort line");
+        let second_request: serde_json::Value = serde_json::from_str(&second_line).expect("json");
+        assert_eq!(second_request["request"]["settings"]["effortLevel"], "high");
+        let second_id = second_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&second_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        second.await.expect("second join").expect("second override");
+        assert_eq!(handle.runtime_snapshot().await.1.as_deref(), Some("high"));
     }
 
     #[tokio::test]

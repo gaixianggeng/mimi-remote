@@ -406,6 +406,7 @@ func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 
 func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("http_proxy", "http://127.0.0.1:10808")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
 	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
 	env := buildClaudeBridgeEnv(map[string]string{
@@ -427,6 +428,22 @@ func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing
 		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
 		values["NO_PROXY"] != "localhost,127.0.0.1" {
 		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
+	}
+}
+
+func TestClaudeGatewayRedactsProxyCredentialsFromDiagnostics(t *testing.T) {
+	proxy := "http://alice:hunter%402@proxy.example:8080"
+	line := sanitizeClaudeBridgeDiagnostic(
+		"connect failed proxy="+proxy+" fallback=socks5://bob:secret@proxy.example:1080",
+		[]string{proxy},
+	)
+	for _, secret := range []string{"alice", "hunter%402", "bob", "secret"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("proxy credential %q leaked in diagnostic: %s", secret, line)
+		}
+	}
+	if !strings.Contains(line, "<redacted proxy>") || !strings.Contains(line, "socks5://<redacted>@") {
+		t.Fatalf("diagnostic should retain useful redacted structure: %s", line)
 	}
 }
 
