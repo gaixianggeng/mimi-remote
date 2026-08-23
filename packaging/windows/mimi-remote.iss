@@ -169,7 +169,7 @@ procedure InitializeAndVerifyManagedService;
 var
   ResultCode: Integer;
 begin
-  if not Exec(ExpandConstant('{app}\agentd.exe'), 'up --no-pair', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
+  if not Exec(ExpandConstant('{app}\agentd.exe'), 'up --no-pair --wait 30s', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to initialize Mimi Remote after installation.');
   end;
@@ -206,7 +206,7 @@ var
 begin
   SetLANAccessPolicy(Enabled);
   if not Exec(ExpandConstant('{app}\agentd.exe'),
-    'restart --no-pair',
+    'restart --no-pair --wait 30s',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to restart Mimi Remote after applying the Windows LAN access policy.');
