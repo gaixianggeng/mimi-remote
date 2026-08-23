@@ -280,6 +280,9 @@ struct WorkspaceRootView: View {
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
     @State private var workspaceStripViewportWidth: CGFloat = 0
+    /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
+    /// 因此可以安全地用来决定要不要把 Runtime 筛选器并进这一行。
+    @State private var workspaceStripContainerWidth: CGFloat = 0
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -427,6 +430,27 @@ struct WorkspaceRootView: View {
         UIDevice.current.userInterfaceIdiom == .pad && manageConnections != nil
     }
 
+    /// 设备入口是否占用胶囊行的横向预算。宽屏由顶栏或侧栏承载它，这一行就整条留给工作区。
+    private var showsHostSwitcherInStrip: Bool {
+        !usesTabletTopBarHostSwitcher && manageConnections != nil
+    }
+
+    /// 宽度够时 Runtime 筛选器并入胶囊行，内容头部整条消失；不够时退回列表上方独立一行。
+    ///
+    /// 判据只有可用宽度，不掺设备型号，也不看设备入口放在哪：Split View 和 Stage Manager
+    /// 会持续改变可用宽度，按 idiom 判断会让 1/3 分屏挤成一团，而横屏 iPhone 明明放得下却退化。
+    ///
+    /// 这里读整行容器宽而不是 `workspaceStripViewportWidth`：后者是胶囊滚动区的剩余宽度，
+    /// 筛选器一出现就会把它压小，用它做判据会在阈值附近来回震荡（出现→变窄→消失→变宽→出现）。
+    /// 整行容器宽只由页面宽度决定，插不插筛选器都读到同一个值。
+    private var usesInlineRuntimePicker: Bool {
+        let hostSwitcherBudget: CGFloat = showsHostSwitcherInStrip
+            ? WorkbenchChromeIconMetrics.minimumHitTarget + WorkspaceStripLayout.chipSpacing
+            : 0
+        return workspaceStripContainerWidth - hostSwitcherBudget
+            >= WorkspaceStripLayout.inlineRuntimePickerMinimumWidth
+    }
+
     @ViewBuilder
     private func navigationContent(tokens: ThemeTokens) -> some View {
         if usesTabletTopBarHostSwitcher, let manageConnections {
@@ -466,15 +490,37 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func openDirectoryButton(tokens: ThemeTokens) -> some View {
+    /// 「打开目录」不再是钉在行尾的工具栏圆钮，而是胶囊行末尾的虚线胶囊：
+    /// 与项目胶囊同高同形，待在它所添加的那个列表里面，读作「在这一排后面再加一个」。
+    /// 它仍然是个加号，但形状、材质和所处层次都与右下角浮起的新建会话按钮不同，
+    /// 因此两个加号不会互相冒充——一个添工作区，一个建会话。
+    private func addWorkspaceChip(tokens: ThemeTokens) -> some View {
         Button {
             isPresentingOpenWorkspace = true
         } label: {
-            WorkbenchChromeIcon(systemName: "folder.badge.plus")
-                .workbenchChromeCircle(tokens: tokens)
+            Image(systemName: "plus")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(
+                    width: WorkspaceStripLayout.addChipVisualSize,
+                    height: WorkspaceStripLayout.addChipVisualSize
+                )
+                .background {
+                    Capsule()
+                        .strokeBorder(
+                            tokens.border,
+                            style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                        )
+                }
+                // 视觉比项目胶囊小一圈——它是次级动作，不该和工作区身份等重；
+                // 但外层仍撑满 44pt 行高，命中区不跟着缩。
+                .frame(
+                    width: WorkspaceStripLayout.chipHeight,
+                    height: WorkspaceStripLayout.chipHeight
+                )
+                .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(tokens.secondaryText)
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.open_directory"))
         .accessibilityIdentifier("workspace.toolbar.openDirectory")
     }
@@ -684,12 +730,29 @@ struct WorkspaceRootView: View {
                 }
             }
 
-            // “打开目录”与切换工作区是同一类操作，和胶囊行齐平；
-            // 它固定在行尾，不参与胶囊的横向滚动。
-            openDirectoryButton(tokens: tokens)
+            // 宽屏把 Runtime 筛选器收进这一行，整条内容头部因此可以整体消失。
+            // 分隔线和间距是刻意的：让这一行读成「左导航／右工具」的工具条，
+            // 而不是一排并列的同级选择器——项目、添加目录和 Runtime 筛选并不同级。
+            if usesInlineRuntimePicker {
+                Divider()
+                    .frame(height: 22)
+                    .padding(.horizontal, 4)
+
+                WorkspaceRuntimePicker(
+                    selection: $selectedSessionRuntime,
+                    claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                )
+            }
         }
         .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
         .frame(height: WorkspaceStripLayout.stripHeight)
+        // 只观测已经排好的整行宽度，不参与布局协商；插不插筛选器都读到同一个值。
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard width > 0, workspaceStripContainerWidth != width else { return }
+            workspaceStripContainerWidth = width
+        }
         .accessibilityLabel(L10n.text("ui.workspace_list"))
     }
 
@@ -808,6 +871,10 @@ struct WorkspaceRootView: View {
                     }
                     .id(project.id)
                 }
+
+                // 「添加工作区」跟着胶囊一起横滚，而不是钉在行尾：
+                // 它必须待在它所添加的那个列表里面，「在这一排后面再加一个」才成立。
+                addWorkspaceChip(tokens: tokens)
             }
         }
         .padding(.vertical, 8)
@@ -877,6 +944,8 @@ struct WorkspaceRootView: View {
         return WorkspaceDetailView(
             statusLine: statusLine(),
             showsStatusLine: showsStatusLine,
+            // 胶囊行已经承载筛选器时，详情页不再自己画一条筛选行。
+            showsInlineRuntimePicker: usesInlineRuntimePicker,
             // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
             // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
             recentSessions: WorkspaceSessionPresentation.visibleSessions(
@@ -1429,11 +1498,14 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
     let statusLine: StatusLine
     let showsStatusLine: Bool
+    /// 宽屏下 Runtime 筛选器由胶囊行承载，这里整条内容头部都不画。
+    let showsInlineRuntimePicker: Bool
     let recentSessions: [AgentSession]
     let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
@@ -1462,22 +1534,51 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             )
             .padding(.top, 16)
             // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
+            // 只有按钮真的浮在内容之上时才追加让位高度；回到行内就不需要了。
             .padding(
                 .bottom,
-                hasCompactTabBar
+                (hasCompactTabBar
                     ? bottomChromeClearance
-                    : WorkbenchPageLayout.regularPadding
+                    : WorkbenchPageLayout.regularPadding)
+                    + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance)
             )
             .frame(maxWidth: 920, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        // 浮起按钮会压住列表最后几行。用系统原生的柔化滚动边缘让内容在撞上它之前淡掉，
+        // 而不是给按钮加一块底板——会话页用的也是同一个 helper。
+        .workbenchSoftBottomScrollEdge()
+        // 叠在 ScrollView 之外，否则会跟着内容一起滚走。
+        // 新建会话是本页最高频的动作，右上角在竖屏是最难够的位置；下沉到拇指区。
+        // 底部已经站着一条浮动 Tab 栏时不再浮第二层——那会在同一个角上叠两层浮动材质。
+        // 这种布局下新建按钮回到筛选行右端（见 `recentSessionsHeader`），一点高度都不多花。
+        //
+        // 只给两条边留同样的 20pt。浮动 Tab 栏的避让已经由容器的 safe area 给过一次，
+        // 这里再叠 `bottomChromeClearance` 会重复计算，把按钮顶到半空
+        // （实测 iPhone 上多抬了 84pt）。那个常量是给滚动内容做 inset 的，不是浮层的位移量。
+        .overlay(alignment: .bottomTrailing) {
+            if !hasBottomTabBar {
+                newSessionButton(tokens: tokens)
+                    .padding(WorkspaceSessionFabMetrics.edgeInset)
+            }
+        }
     }
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            recentSessionsHeader(tokens: tokens)
+        // 分组只算一次：筛选行要用它决定计数该不该出现，列表要用它渲染分段。
+        let grouped = Dictionary(grouping: recentSessions) { session in
+            WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
+        }
+        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+
+        return VStack(alignment: .leading, spacing: 8) {
+            if !showsInlineRuntimePicker {
+                // 只有一个分组时筛选行就是那一段的标题，计数收在行尾；
+                // 有多个分组时每段各自带计数，头部再放一个总数只会重复。
+                recentSessionsHeader(showsCount: populatedGroups.count <= 1, tokens: tokens)
+            }
 
             // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
             // 它是这个列表的说明文字，夹在筛选行上方会重新读成悬空的元数据。
@@ -1504,7 +1605,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
                     .workbenchSurface(tokens: tokens, role: .groupedPanel)
             } else {
-                groupedSessionSections(tokens: tokens)
+                groupedSessionSections(
+                    populatedGroups: populatedGroups,
+                    grouped: grouped,
+                    tokens: tokens
+                )
             }
         }
     }
@@ -1513,18 +1618,23 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     /// 每段使用一张整体卡片，12 小时边界再把“最近会话”拆成上下两张卡片。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
-    private func groupedSessionSections(tokens: ThemeTokens) -> some View {
-        let grouped = Dictionary(grouping: recentSessions) { session in
-            WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
-        }
+    private func groupedSessionSections(
+        populatedGroups: [WorkspaceSessionGroup],
+        grouped: [WorkspaceSessionGroup: [AgentSession]],
+        tokens: ThemeTokens
+    ) -> some View {
         let branchValues = recentSessions.map(\.gitBranchName)
-        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+        // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
+        // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
+        let showsSectionHeaders = populatedGroups.count > 1
 
         VStack(alignment: .leading, spacing: 18) {
             ForEach(populatedGroups, id: \.self) { group in
                 let sessions = grouped[group] ?? []
                 VStack(alignment: .leading, spacing: 8) {
-                    sectionHeader(group, count: sessions.count, tokens: tokens)
+                    if showsSectionHeaders {
+                        sectionHeader(group, count: sessions.count, tokens: tokens)
+                    }
                     sessionGroupBody(
                         group,
                         sessions: sessions,
@@ -1683,66 +1793,82 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityIdentifier("workspace.sessions.loadMore")
     }
 
-    /// 筛选器固定在列表左侧，紧接结果区域；新建会话保留在右侧。
-    /// 所有尺寸统一使用图标入口；空间不足时只调整筛选器与按钮的排布，不改变按钮语义和外观。
+    /// 筛选器固定在列表左侧，紧接它所过滤的结果，与会话行共用同一条左边线。
     /// 页面已经通过筛选器说明 Runtime，卡片不再重复渲染品牌或 Runtime 文案。
-    private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
-        ViewThatFits(in: .horizontal) {
-            recentSessionsHeaderLine(tokens: tokens)
-
-            // 窄屏或大字体时自然改为两行，筛选器仍排在结果前，新建操作靠右。
-            VStack(alignment: .leading, spacing: 8) {
-                runtimePicker
-
-                HStack {
-                    Spacer(minLength: 0)
-                    newSessionButton(tokens: tokens)
-                }
-            }
-        }
-    }
-
-    private func recentSessionsHeaderLine(tokens: ThemeTokens) -> some View {
+    ///
+    /// 新建按钮下沉右下之后这一行只剩筛选器，不再有两个元素争抢宽度，`ViewThatFits` 也就不需要了。
+    /// 窄屏把 Runtime 降级成菜单：分段控件是这一屏第二颗灰胶囊，而多数人一天只用一个 Runtime。
+    private func recentSessionsHeader(showsCount: Bool, tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
-            runtimePicker
+            WorkspaceRuntimeMenuPicker(
+                selection: $selectedRuntime,
+                claudeChannelAvailable: claudeChannelAvailable
+            )
 
             Spacer(minLength: 8)
 
-            newSessionButton(tokens: tokens)
+            if showsCount {
+                Text("\(recentSessions.count)")
+                    .font(themeStore.uiFont(.subheadline))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .monospacedDigit()
+                    .padding(
+                        .trailing,
+                        hasBottomTabBar ? 4 : WorkspaceSessionRowMetrics.horizontalPadding
+                    )
+            }
+
+            // 底部被浮动 Tab 栏占住时，新建按钮回到这一行的右端。
+            // 这行本来就被菜单的 44pt 命中区撑满，多放一颗按钮不增加任何高度。
+            // 灰色计数和实色圆钮的视觉重量差得远，不会读成同一个东西。
+            if hasBottomTabBar {
+                newSessionButton(tokens: tokens)
+            }
         }
     }
 
-    private var runtimePicker: some View {
-        WorkspaceRuntimePicker(
-            selection: $selectedRuntime,
-            claudeChannelAvailable: claudeChannelAvailable
-        )
-    }
+    /// 浮在列表右下角。
+    ///
+    /// 曾经在角上挂过一枚 runtime 品牌标记，用来补偿筛选器和这个按钮分处页面两端。
+    /// 实机上它读成贴在纯色圆上的一块杂物，代价大于收益，已移除；
+    /// 「会建哪种会话」改由顶部筛选器单独承担，VoiceOver 仍从 `accessibilityValue` 拿到。
     private func newSessionButton(tokens: ThemeTokens) -> some View {
-        Button {
+        // 浮起时可以画得实体一些；回到筛选行里必须收进 44pt 行高，也不该再投影——
+        // 行内元素投影会读成一枚悬在纸面上的贴纸。
+        let isFloating = !hasBottomTabBar
+        let diameter = isFloating
+            ? WorkspaceSessionFabMetrics.diameter
+            : WorkspaceSessionFabMetrics.inlineDiameter
+
+        return Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            Group {
-                // iPhone 与 iPad 统一只显示纯加号，文字语义由无障碍标签完整保留。
-                Image(systemName: "plus")
-                    .font(.system(size: 17, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(width: 36, height: 36)
-                    .offset(y: -0.5)
-            }
-            .foregroundStyle(tokens.primaryActionForeground)
-            .background(tokens.primaryAction, in: Capsule())
-            .frame(minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-                   minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
-            .contentShape(Rectangle())
-            .fixedSize(horizontal: true, vertical: false)
+            Image(systemName: "plus")
+                .font(.system(size: isFloating ? 24 : 18, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.primaryActionForeground)
+                .frame(width: diameter, height: diameter)
+                .background(tokens.primaryAction, in: Circle())
+                .frame(
+                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
+                .contentShape(Circle())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .shadow(
+            color: isFloating
+                ? tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28)
+                : .clear,
+            radius: isFloating ? 12 : 0,
+            y: isFloating ? 5 : 0
+        )
         .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         .accessibilityValue(selectedRuntime.title)
         .accessibilityIdentifier("workspace.sessions.newSession")
     }
+
     private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
         ZStack {
             // 时间标签位于两张整体卡片之间，横线只帮助扫读，不穿过卡片表面。
