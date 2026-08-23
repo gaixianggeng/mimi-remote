@@ -1405,11 +1405,11 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
 		}
 	}
-	if method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params) {
-		return safe
-	}
 	workspaceWrite := false
-	if runtimeID == "codex" {
+	if method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params) {
+		// 只沿用已有 Thread 的文件系统 sandbox / permission profile。远端审批策略仍必须
+		// 由可信 gateway 显式覆盖，不能继承本地创建 Thread 时可能使用的 never。
+	} else if runtimeID == "codex" {
 		if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
 			safe["permissions"] = profileID
 		} else {
@@ -1467,8 +1467,8 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
 		safe["collaborationMode"] = collaborationMode
 	}
+	workspaceWrite := false
 	if !gatewayPreservesThreadPermissionSettings(params) {
-		workspaceWrite := false
 		if runtimeID == "codex" {
 			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
 				safe["permissions"] = profileID
@@ -1482,8 +1482,8 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
 		}
-		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	}
+	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort

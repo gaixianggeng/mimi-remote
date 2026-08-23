@@ -2112,9 +2112,12 @@ func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMark
 		t.Fatal(err)
 	}
 	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
-	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "effort")
+	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "approvalPolicy", "approvalsReviewer", "effort")
 	if params["threadId"] != "thread-preserve" || params["cwd"] != projectDir {
 		t.Fatalf("turn/start 必须保留 Thread 与授权工作区：%v", params)
+	}
+	if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" {
+		t.Fatalf("turn/start 沿用文件权限时仍必须强制远端审批：%v", params)
 	}
 
 	resumeParams := sanitizedGatewayThreadParams("codex", "thread/resume", map[string]any{
@@ -2123,7 +2126,10 @@ func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMark
 		"initialTurnsPage":                    map[string]any{"limit": float64(5), "itemsView": "summary"},
 		gatewayPreserveThreadPermissionsParam: true,
 	})
-	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage")
+	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage", "approvalPolicy", "approvalsReviewer")
+	if resumeParams["approvalPolicy"] != "on-request" || resumeParams["approvalsReviewer"] != "user" {
+		t.Fatalf("thread/resume 沿用文件权限时仍必须覆盖本地审批策略：%v", resumeParams)
+	}
 }
 
 func TestAppServerGatewayServerRequestPendingUsesLongerTTLThanThreadResponses(t *testing.T) {
