@@ -149,20 +149,28 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
         XCTAssertNil(retryError)
         XCTAssertEqual(backend.operations, [.prepare, .activate, .prepare, .activate])
 
+        await retryRequest.value
+        let activation = try XCTUnwrap(retryActivation)
+        await coordinator.deactivate(activation)
+        let deactivationDeadline = ContinuousClock.now + .milliseconds(250)
+        while backend.operations.last != .deactivate, ContinuousClock.now < deactivationDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .activate, .prepare, .activate, .deactivate]
+        )
+
         backend.releaseActivation()
         do {
             _ = try await oldRequest.value
             XCTFail("Cancelled request must not retain audio activation")
         } catch is CancellationError {
-            // 迟到旧请求不能覆盖或关闭已经成功的重试。
+            // 迟到旧请求只清理自己的遗留激活。
         }
-        await retryRequest.value
-
-        let activation = try XCTUnwrap(retryActivation)
-        await coordinator.deactivate(activation)
         XCTAssertEqual(
             backend.operations,
-            [.prepare, .activate, .prepare, .activate, .deactivate]
+            [.prepare, .activate, .prepare, .activate, .deactivate, .deactivate]
         )
     }
 

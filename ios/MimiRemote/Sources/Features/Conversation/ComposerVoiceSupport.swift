@@ -635,6 +635,9 @@ actor VoiceAudioSessionCoordinator {
                 try await activationTask.value
             } onCancel: {
                 activationTask.cancel()
+                Task {
+                    await self.cancelActivationRequest(requestID)
+                }
             }
         } catch {
             activationRequestIDs.remove(requestID)
@@ -660,6 +663,12 @@ actor VoiceAudioSessionCoordinator {
         currentActivationID = activation.id
         hasAbandonedActivation = false
         return activation
+    }
+
+    private func cancelActivationRequest(_ requestID: UUID) {
+        // 同步系统调用可能不响应 Task 取消；先移除逻辑请求，避免它阻止有效重试结束时停用。
+        activationRequestIDs.remove(requestID)
+        deactivateAbandonedActivationIfIdle()
     }
 
     private func markAbandonedActivation() {
