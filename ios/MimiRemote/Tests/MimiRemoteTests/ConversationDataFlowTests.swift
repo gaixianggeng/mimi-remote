@@ -632,6 +632,24 @@ final class ConversationDataFlowTests: XCTestCase {
         ))
     }
 
+    func testConversationTimelineOnlyRevealsAfterTailSentinelIsVisible() {
+        XCTAssertFalse(ConversationTimelineView.shouldPresentStabilizedTimeline(
+            hasTimelineContent: true,
+            didAttemptInitialTailScroll: true,
+            isTailSentinelVisible: false
+        ))
+        XCTAssertFalse(ConversationTimelineView.shouldPresentStabilizedTimeline(
+            hasTimelineContent: true,
+            didAttemptInitialTailScroll: false,
+            isTailSentinelVisible: true
+        ))
+        XCTAssertTrue(ConversationTimelineView.shouldPresentStabilizedTimeline(
+            hasTimelineContent: true,
+            didAttemptInitialTailScroll: true,
+            isTailSentinelVisible: true
+        ))
+    }
+
     func testConversationTimelineStartsAtTailAfterSwitchingFromScrolledSession() async throws {
         let firstSessionID = "tail-position-first"
         let secondSessionID = "tail-position-second"

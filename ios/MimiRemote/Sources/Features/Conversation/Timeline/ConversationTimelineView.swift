@@ -27,7 +27,9 @@ struct ConversationTimelineView: View {
     // 滚动任务 bookkeeping 不属于界面状态，放在引用对象中避免每次取消/重排任务都触发 body 失效。
     @State private var tailScrollCoordinator = ConversationTailScrollCoordinator()
     @State private var isUserScrollingTimeline = false
+    @State private var timelinePresentationGeneration = 0
     @State private var initialTailScrollAttemptedIdentity: ConversationTimelineListIdentity?
+    @State private var visibleTailSentinelIdentity: ConversationTimelineListIdentity?
     @State private var presentedTimelineIdentity: ConversationTimelineListIdentity?
 
     private let messageTailFollowThreshold: CGFloat = 120
@@ -63,7 +65,8 @@ struct ConversationTimelineView: View {
                 profileID: hostProfileID,
                 sessionID: displayedSessionID ?? "__none__"
             ),
-            hasTimelineContent: !timelineItems.isEmpty
+            hasTimelineContent: !timelineItems.isEmpty,
+            presentationGeneration: timelinePresentationGeneration
         )
         let isTimelineReadable = timelineItems.isEmpty
             || presentedTimelineIdentity == timelineListIdentity
@@ -131,6 +134,19 @@ struct ConversationTimelineView: View {
                         // Section，scrollTo 不会把新快照行号用于旧 UICollectionView 快照。
                         Color.clear
                             .frame(height: 1)
+                            .onScrollVisibilityChange(threshold: 0.5) { isVisible in
+                                if isVisible {
+                                    visibleTailSentinelIdentity = timelineListIdentity
+                                    confirmTimelinePresentationIfReady(
+                                        timelineListIdentity,
+                                        hasTimelineContent: !timelineItems.isEmpty
+                                    )
+                                } else if visibleTailSentinelIdentity == timelineListIdentity {
+                                    visibleTailSentinelIdentity = nil
+                                }
+                            }
+                            // ID 必须标记可见性包装后的整行，否则 ScrollViewReader 可能只找到
+                            // 尚未进入 List 快照的内部 Color，首屏 scrollTo 会一直无效。
                             .id(Self.timelineTailSentinelID)
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets())
@@ -165,10 +181,6 @@ struct ConversationTimelineView: View {
                     if nearBottom {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
-                        if !timelineItems.isEmpty,
-                           initialTailScrollAttemptedIdentity == timelineListIdentity {
-                            presentedTimelineIdentity = timelineListIdentity
-                        }
                     } else if !isTailFollowLocked {
                         shouldFollowMessageTail = false
                     }
@@ -203,7 +215,7 @@ struct ConversationTimelineView: View {
 
                 if !isTimelineReadable {
                     // List 必须先进入视图层级才能获得真实高度并执行 scrollTo。用真实画布
-                    // 覆盖这段布局窗口；贴底几何确认后整块移除，不展示顶部或中间位置。
+                    // 覆盖这段布局窗口；尾部哨兵确认可见后整块移除，不展示顶部或中间位置。
                     ConversationTimelineStabilizingCover(
                         backgroundColor: UIColor(tokens.conversationCanvasBackground)
                     )
@@ -224,6 +236,9 @@ struct ConversationTimelineView: View {
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
                 isUserScrollingTimeline = false
+                // 每次进入会话都生成新的 List/展示身份。不能只清空 Optional 状态，
+                // 否则 onChange 与新 task 的执行顺序可能再次取消正确的首屏定位。
+                timelinePresentationGeneration += 1
                 expandedActivityIDs.removeAll()
                 expandedActivityGroupIDs.removeAll()
                 workGroupExpansionOverrides.removeAll()
@@ -236,6 +251,7 @@ struct ConversationTimelineView: View {
                 shouldFollowMessageTail = true
                 forceNextMessageTailScroll = true
                 isTailFollowLocked = displayedSessionID != nil
+                timelinePresentationGeneration += 1
                 if !messages.isEmpty {
                     HostSwitchSignpost.event("first_text_visible")
                 }
@@ -352,8 +368,8 @@ struct ConversationTimelineView: View {
                       presentedTimelineIdentity != timelineListIdentity else {
                     return
                 }
-                // List 尚不可见时只执行一次布局后贴底。几何确认贴底后再放开正文，
-                // 不需要延迟 900ms 的第二次重锚。
+                // List 尚不可见时在首轮布局内贴底。尾部哨兵确认可见后再放开正文，
+                // 不需要延迟 900ms 后制造一次用户可见的重锚。
                 let expectedSessionID = displayedSessionID
                 let expectedTailItemID = timelineItems.last?.id
                 await Task.yield()
@@ -363,22 +379,31 @@ struct ConversationTimelineView: View {
                     return
                 }
                 initialTailScrollAttemptedIdentity = timelineListIdentity
-                forceScrollToTimelineTail(
-                    timelineItems: timelineItems,
-                    proxy: proxy,
-                    animated: false
-                )
-                await Task.yield()
-                guard !Task.isCancelled,
-                      displayedSessionID == expectedSessionID,
-                      initialTailScrollAttemptedIdentity == timelineListIdentity,
-                      isTimelineNearBottom else {
-                    return
+                // List 的 UIKit 快照可能晚于 SwiftUI task 提交。所有重试都发生在稳定遮罩下，
+                // 并且只由尾部哨兵真实可见来结束，不能再把“已调用 scrollTo”当成成功。
+                for _ in 0..<8 {
+                    guard !Task.isCancelled,
+                          displayedSessionID == expectedSessionID,
+                          currentTimelineTailItemID() == expectedTailItemID,
+                          initialTailScrollAttemptedIdentity == timelineListIdentity,
+                          presentedTimelineIdentity != timelineListIdentity else {
+                        return
+                    }
+                    forceScrollToTimelineTail(
+                        timelineItems: timelineItems,
+                        proxy: proxy,
+                        animated: false
+                    )
+                    try? await Task.sleep(nanoseconds: 32_000_000)
+                    confirmTimelinePresentationIfReady(
+                        timelineListIdentity,
+                        hasTimelineContent: true
+                    )
                 }
-                presentedTimelineIdentity = timelineListIdentity
             }
             .onDisappear {
                 cancelPendingTailScrollAttempts()
+                timelinePresentationGeneration += 1
             }
         }
     }
@@ -768,6 +793,14 @@ struct ConversationTimelineView: View {
             && !hasHistorySavingsNotice
     }
 
+    static func shouldPresentStabilizedTimeline(
+        hasTimelineContent: Bool,
+        didAttemptInitialTailScroll: Bool,
+        isTailSentinelVisible: Bool
+    ) -> Bool {
+        hasTimelineContent && didAttemptInitialTailScroll && isTailSentinelVisible
+    }
+
     private func loadEarlierRow(proxy: ScrollViewProxy, timelineItems: [ConversationTimelineItem]) -> some View {
         HStack {
             Spacer()
@@ -954,7 +987,6 @@ struct ConversationTimelineView: View {
         }
         shouldFollowMessageTail = true
         hasUnseenTailMessage = false
-        isTimelineNearBottom = true
         forceNextMessageTailScroll = false
         scrollToTimelineTail(proxy: proxy, animated: animated)
     }
@@ -1089,11 +1121,26 @@ struct ConversationTimelineView: View {
     private func currentTimelineTailItemID() -> String? {
         timelineItemCache.tailItemID
     }
+
+    private func confirmTimelinePresentationIfReady(
+        _ identity: ConversationTimelineListIdentity,
+        hasTimelineContent: Bool
+    ) {
+        guard Self.shouldPresentStabilizedTimeline(
+            hasTimelineContent: hasTimelineContent,
+            didAttemptInitialTailScroll: initialTailScrollAttemptedIdentity == identity,
+            isTailSentinelVisible: visibleTailSentinelIdentity == identity
+        ) else {
+            return
+        }
+        presentedTimelineIdentity = identity
+    }
 }
 
 private struct ConversationTimelineListIdentity: Hashable {
     let scope: ScopedSessionID
     let hasTimelineContent: Bool
+    let presentationGeneration: Int
 }
 
 private struct ConversationTimelineStabilizingCover: UIViewRepresentable {
