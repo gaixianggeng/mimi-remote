@@ -24558,6 +24558,24 @@
         }
       }
     },
+    "ui.running_sessions_count": {
+      "comment": "Accessibility summary for the number of running sessions in one workspace.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running sessions: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行的会话：%@"
+          }
+        }
+      }
+    },
     "ui.sessions_count": {
       "comment": "Plural count used in the localized iOS UI.",
       "extractionState": "stale",
