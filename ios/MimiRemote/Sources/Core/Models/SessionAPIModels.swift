@@ -557,6 +557,7 @@ private enum CodexAppServerDefaults {
 enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
     case untrusted
     case onRequest = "on-request"
+    case never
 
     var id: String { rawValue }
 
@@ -570,6 +571,8 @@ enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Iden
             // 旧版 Mimi 会把自动审批持久化为 on-failure。新版 app-server 已删除该值，
             // 因此只在本地解码时迁移，任何后续持久化和请求都统一写回 on-request。
             self = .onRequest
+        case Self.never.rawValue:
+            self = .never
         default:
             throw DecodingError.dataCorruptedError(
                 in: container,
@@ -581,6 +584,12 @@ enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Iden
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
+    }
+
+    static func forPermissionProfileID(_ profileID: String?) -> Self {
+        profileID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == ":danger-full-access"
+            ? .never
+            : .onRequest
     }
 }
 
@@ -819,7 +828,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             return
         }
         if permissionProfileID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            approvalPolicy = .onRequest
+            approvalPolicy = .forPermissionProfileID(permissionProfileID)
             approvalsReviewer = "user"
             networkAccess = false
             return
@@ -831,7 +840,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             return
         }
         if sandboxMode == .dangerFullAccess {
-            approvalPolicy = .onRequest
+            // “完全访问”是用户显式选择的最高权限档，与 Mac 本地 Full Access 保持一致。
+            approvalPolicy = .never
             approvalsReviewer = "user"
             return
         }

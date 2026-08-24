@@ -363,7 +363,7 @@ extension ConversationDataFlowTests {
             (.readOnly, .onRequest, "user", .readOnly),
             (.requestApproval, .onRequest, "user", .workspaceWrite),
             (.autoApprove, .onRequest, "auto_review", .workspaceWrite),
-            (.fullAccess, .onRequest, "user", .dangerFullAccess)
+            (.fullAccess, .never, "user", .dangerFullAccess)
         ]
 
         for testCase in cases {
@@ -399,7 +399,7 @@ extension ConversationDataFlowTests {
         ))
         let options = submitted.payload.options
 
-        XCTAssertEqual(options.approvalPolicy, .onRequest)
+        XCTAssertEqual(options.approvalPolicy, .never)
         XCTAssertEqual(options.approvalsReviewer, "user")
         XCTAssertEqual(options.sandboxMode, .dangerFullAccess)
         XCTAssertFalse(options.networkAccess)

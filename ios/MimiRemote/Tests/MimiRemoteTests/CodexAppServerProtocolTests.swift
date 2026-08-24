@@ -861,8 +861,12 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }
 
-    func testApprovalPolicyRejectsUnsupportedPersistedValues() {
-        for value in ["never", "granular", "unknown"] {
+    func testApprovalPolicyAcceptsNeverAndRejectsUnsupportedPersistedValues() throws {
+        XCTAssertEqual(
+            try JSONDecoder().decode(CodexAppServerApprovalPolicy.self, from: Data(#""never""#.utf8)),
+            .never
+        )
+        for value in ["granular", "unknown"] {
             XCTAssertThrowsError(
                 try JSONDecoder().decode(
                     CodexAppServerApprovalPolicy.self,
@@ -871,6 +875,38 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 "Mimi 不应静默接受未开放的审批策略：\(value)"
             )
         }
+    }
+
+    func testNoApprovalRequiresExplicitFullAccess() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var fullAccess = CodexAppServerTurnOptions.default
+        fullAccess.approvalPolicy = .never
+        fullAccess.sandboxMode = .dangerFullAccess
+
+        let threadRequest = try builder.threadStart(projectID: project.id, options: fullAccess)
+        XCTAssertEqual(threadRequest.params?.objectValue?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(threadRequest.params?.objectValue?["sandbox"]?.stringValue, "danger-full-access")
+
+        let turnRequest = try builder.turnStart(
+            threadID: "thread-full-access",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "直接执行", options: fullAccess)
+        )
+        XCTAssertEqual(turnRequest.params?.objectValue?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(turnRequest.params?.objectValue?["sandboxPolicy"]?.objectValue?["type"]?.stringValue, "dangerFullAccess")
+
+        var workspace = fullAccess
+        workspace.sandboxMode = .workspaceWrite
+        XCTAssertThrowsError(try builder.threadStart(projectID: project.id, options: workspace))
+
+        var namedWorkspace = fullAccess
+        namedWorkspace.permissionProfileID = ":workspace"
+        XCTAssertThrowsError(try builder.threadStart(projectID: project.id, options: namedWorkspace))
+
+        var namedFullAccess = fullAccess
+        namedFullAccess.permissionProfileID = ":danger-full-access"
+        XCTAssertNoThrow(try builder.threadStart(projectID: project.id, options: namedFullAccess))
     }
 
     func testTurnStartBuilderUsesDefaultCollaborationModeForGoalTurns() throws {

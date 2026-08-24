@@ -3093,10 +3093,39 @@ final class ConversationDataFlowTests: XCTestCase {
 
         composerState.applyPermissionMode(.fullAccess)
         XCTAssertEqual(composerState.permissionMode, .fullAccess)
-        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .never)
         XCTAssertEqual(composerState.turnOptions.approvalsReviewer, "user")
         XCTAssertEqual(composerState.turnOptions.sandboxMode, .dangerFullAccess)
         XCTAssertFalse(composerState.turnOptions.networkAccess)
+    }
+
+    func testBuiltInPermissionProfilesCollapseIntoUserModes() {
+        XCTAssertEqual(ComposerPermissionMode(builtInPermissionProfileID: ":read-only"), .readOnly)
+        XCTAssertEqual(ComposerPermissionMode(builtInPermissionProfileID: ":workspace"), .requestApproval)
+        XCTAssertEqual(ComposerPermissionMode(builtInPermissionProfileID: ":danger-full-access"), .fullAccess)
+        XCTAssertNil(ComposerPermissionMode(builtInPermissionProfileID: "team-profile"))
+        XCTAssertEqual(CodexAppServerApprovalPolicy.forPermissionProfileID(":danger-full-access"), .never)
+        XCTAssertEqual(CodexAppServerApprovalPolicy.forPermissionProfileID(":workspace"), .onRequest)
+    }
+
+    func testUnavailableCustomPermissionProfileFallsBackWithoutEscalation() {
+        var state = ComposerState()
+        state.updateTurnOptions { options in
+            options.preservesThreadPermissionSettings = false
+            options.permissionProfileID = "team-profile"
+            options.approvalPolicy = .onRequest
+            options.approvalsReviewer = "user"
+            options.sandboxMode = .dangerFullAccess
+        }
+
+        state.resetUnavailablePermissionProfile()
+
+        XCTAssertNil(state.turnOptions.permissionProfileID)
+        XCTAssertFalse(state.turnOptions.preservesThreadPermissionSettings)
+        XCTAssertEqual(state.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(state.turnOptions.approvalsReviewer, "user")
+        XCTAssertEqual(state.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertFalse(state.turnOptions.networkAccess)
     }
 
     func testComposerPermissionSelectionCacheKeepsExistingThreadPreservationUntilExplicitOverride() throws {
@@ -3130,13 +3159,13 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(ComposerPermissionMode.stored("missing"), .fullAccess)
     }
 
-    func testComposerDefaultsToFullAccessWithApproval() {
+    func testComposerDefaultsToFullAccessWithoutApproval() {
         let composerState = ComposerState()
 
         XCTAssertNil(composerState.turnOptions.model)
         XCTAssertEqual(composerState.turnOptions.reasoningEffort, .xhigh)
         XCTAssertEqual(composerState.permissionMode, .fullAccess)
-        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .never)
         XCTAssertEqual(composerState.turnOptions.approvalsReviewer, "user")
         XCTAssertEqual(composerState.turnOptions.sandboxMode, .dangerFullAccess)
         XCTAssertFalse(composerState.turnOptions.networkAccess)

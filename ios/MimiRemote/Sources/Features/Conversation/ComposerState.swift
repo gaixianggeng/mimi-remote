@@ -359,6 +359,19 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
         ComposerPermissionMode(rawValue: rawValue) ?? defaultMode
     }
 
+    init?(builtInPermissionProfileID rawValue: String) {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case ":read-only":
+            self = .readOnly
+        case ":workspace":
+            self = .requestApproval
+        case ":danger-full-access":
+            self = .fullAccess
+        default:
+            return nil
+        }
+    }
+
     init(options: CodexAppServerTurnOptions) {
         let reviewer = options.approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
         if options.sandboxMode == .readOnly {
@@ -426,8 +439,10 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 
     var approvalPolicy: CodexAppServerApprovalPolicy {
         switch self {
-        case .requestApproval, .readOnly, .autoApprove, .fullAccess:
+        case .requestApproval, .readOnly, .autoApprove:
             return .onRequest
+        case .fullAccess:
+            return .never
         }
     }
 
@@ -487,7 +502,7 @@ struct ComposerPermissionSelectionSnapshot: Equatable {
         } else if let profileID {
             options.preservesThreadPermissionSettings = false
             options.permissionProfileID = profileID
-            options.approvalPolicy = .onRequest
+            options.approvalPolicy = .forPermissionProfileID(profileID)
             options.approvalsReviewer = "user"
             options.networkAccess = false
         } else {
@@ -606,6 +621,15 @@ struct ComposerState {
         updateTurnOptions { options in
             mode.apply(to: &options)
         }
+    }
+
+    mutating func resetUnavailablePermissionProfile() {
+        guard turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty != nil
+        else { return }
+        // 自定义档案消失时不能只清 ID；底层 sandbox 可能仍是完全访问默认值，
+        // 下一次提交会因此升级为无审批。明确回退到受控工作区和用户审批。
+        applyPermissionMode(.requestApproval)
     }
 
     mutating func updateTurnOptions(_ update: (inout CodexAppServerTurnOptions) -> Void) {
