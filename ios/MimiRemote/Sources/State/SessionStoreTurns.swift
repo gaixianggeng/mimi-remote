@@ -642,7 +642,8 @@ extension SessionStore {
                     clearRuntimeActivity(sessionID: session.id)
                 }
             } else if conversationStore.hasLoadedHistory(sessionID: session.id) {
-                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+                // 已有缓存就是可读首屏；后台对账保持静默，避免尾部临时加载行改变布局。
+                scheduleQuietHistoryRefresh(for: session)
                 didRefreshHistory = true
             } else {
                 didRefreshHistory = await loadHistoryIfNeeded(for: session)

@@ -928,6 +928,41 @@ func distanceFromBottom(_ scrollView: UIScrollView) -> CGFloat {
 }
 
 @MainActor
+func isViewEffectivelyVisible(_ view: UIView, within rootView: UIView) -> Bool {
+    var currentView: UIView? = view
+    while let candidate = currentView {
+        if candidate.isHidden || candidate.alpha <= 0.01 || candidate.layer.opacity <= 0.01 {
+            return false
+        }
+        if candidate === rootView {
+            return true
+        }
+        currentView = candidate.superview
+    }
+    return false
+}
+
+@MainActor
+func conversationTimelineIsStabilizing(in rootView: UIView) -> Bool {
+    func findMarker(from view: UIView) -> UIView? {
+        if view.accessibilityIdentifier == ConversationTimelineView.stabilizingCoverAccessibilityIdentifier {
+            return view
+        }
+        for subview in view.subviews {
+            if let marker = findMarker(from: subview) {
+                return marker
+            }
+        }
+        return nil
+    }
+
+    guard let marker = findMarker(from: rootView) else {
+        return false
+    }
+    return isViewEffectivelyVisible(marker, within: rootView)
+}
+
+@MainActor
 func waitForConversationTimelineAtBottom(
     in rootView: UIView,
     tolerance: CGFloat = 4,
@@ -940,7 +975,9 @@ func waitForConversationTimelineAtBottom(
         rootView.layoutIfNeeded()
         if let scrollView = conversationTimelineScrollView(in: rootView) {
             latestScrollView = scrollView
-            if distanceFromBottom(scrollView) <= tolerance {
+            if distanceFromBottom(scrollView) <= tolerance,
+               isViewEffectivelyVisible(scrollView, within: rootView),
+               !conversationTimelineIsStabilizing(in: rootView) {
                 return scrollView
             }
         }

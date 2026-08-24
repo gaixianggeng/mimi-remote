@@ -588,7 +588,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNotEqual(refreshed.itemIDs, suspended.itemIDs)
     }
 
-    func testConversationTimelineAllowsInitialTailRetryButRespectsUserScrollAway() {
+    func testConversationTimelineAllowsInitialTailAttemptButRespectsUserScrollAway() {
         XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
             force: false,
             shouldFollowMessageTail: false,
@@ -674,6 +674,16 @@ final class ConversationDataFlowTests: XCTestCase {
         host.view.frame = window.bounds
         host.view.layoutIfNeeded()
 
+        let firstReadableScrollView = try XCTUnwrap(
+            conversationTimelineScrollView(in: host.view),
+            "缓存时间线应在首轮布局形成可读 List"
+        )
+        XCTAssertTrue(
+            distanceFromBottom(firstReadableScrollView) <= 4
+                || conversationTimelineIsStabilizing(in: host.view),
+            "首轮布局若尚未贴底，时间线必须保持不可见，不能暴露顶部画面"
+        )
+
         // 全量套件下 List 快照提交可能明显晚于固定 sleep；轮询真实几何但不主动滚动，
         // 仍严格要求业务逻辑自行收敛到尾部 4pt 内。
         let firstScrollView = try await waitForConversationTimelineAtBottom(
@@ -681,6 +691,7 @@ final class ConversationDataFlowTests: XCTestCase {
             timeout: 8
         )
         XCTAssertLessThanOrEqual(distanceFromBottom(firstScrollView), 4)
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
 
         // 先把会话 A 人工停在顶部，再切换会话；会话 B 必须丢弃旧 contentOffset 并默认展示最新消息。
         firstScrollView.setContentOffset(
@@ -689,11 +700,31 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         sessionStore.selectedSessionID = secondSessionID
 
+        var secondSessionOffsetSamples: [CGFloat] = []
+        let samplingDeadline = Date().addingTimeInterval(1.1)
+        repeat {
+            host.view.layoutIfNeeded()
+            if let candidate = conversationTimelineScrollView(in: host.view),
+               candidate !== firstScrollView,
+               !conversationTimelineIsStabilizing(in: host.view) {
+                secondSessionOffsetSamples.append(distanceFromBottom(candidate))
+            }
+            try await Task.sleep(nanoseconds: 16_000_000)
+        } while Date() < samplingDeadline
+
+        XCTAssertFalse(secondSessionOffsetSamples.isEmpty, "切换会话后应建立独立的 List")
+        XCTAssertLessThanOrEqual(
+            secondSessionOffsetSamples.max() ?? .infinity,
+            4,
+            "切换后的首帧和 900ms 旧兜底窗口内都不能出现可见的顶部跳转"
+        )
+
         let secondScrollView = try await waitForConversationTimelineAtBottom(
             in: host.view,
             timeout: 8
         )
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
     }
 
     func testConversationTopUnderlapOnlyDependsOnTransparencyPreference() {
