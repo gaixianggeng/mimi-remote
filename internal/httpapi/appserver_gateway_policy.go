@@ -1417,7 +1417,8 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
-			fullAccess = normalizePolicyValue(safe["sandbox"].(string)) == "dangerfullaccess"
+			requestedSandbox, requestedSandboxOK := gatewayStringParam(params, "sandbox")
+			fullAccess = requestedSandboxOK && normalizePolicyValue(requestedSandbox) == "dangerfullaccess"
 		}
 	} else {
 		safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
@@ -1481,7 +1482,9 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 				safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 				sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 				workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
-				fullAccess = normalizePolicyValue(sandboxPolicy["type"].(string)) == "dangerfullaccess"
+				requestedSandbox, _ := params["sandboxPolicy"].(map[string]any)
+				requestedType, requestedTypeOK := gatewayStringParam(requestedSandbox, "type")
+				fullAccess = requestedTypeOK && normalizePolicyValue(requestedType) == "dangerfullaccess"
 			}
 		} else {
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
@@ -1669,9 +1672,9 @@ func sanitizedGatewayCollaborationMode(raw any) (map[string]any, bool) {
 func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool, fullAccess bool) (string, string) {
 	policy, _ := gatewayStringParam(params, "approvalPolicy")
 	reviewer, _ := gatewayStringParam(params, "approvalsReviewer")
-	// 无审批只接受用户显式选择的完全访问组合；validateGatewayPolicyParams 会在改写前
-	// 拒绝其它 sandbox、Claude runtime 和 config 注入，避免缺省值被解释为授权。
-	if fullAccess && normalizePolicyValue(policy) == "never" {
+	// 完全访问本身就是用户的显式无审批选择。旧版 App 仍会同时发送 on-request，
+	// Gateway 在这里归一化为 never；缺省 sandbox 不会被当成显式授权。
+	if fullAccess {
 		return "never", "user"
 	}
 	// 自动审批只允许在归一化后的 workspace-write 沙盒中生效。审批与沙盒在这里强绑定，

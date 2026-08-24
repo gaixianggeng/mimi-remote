@@ -723,7 +723,7 @@ func TestAppServerGatewayAllowsExplicitFullAccessWithoutApproval(t *testing.T) {
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-full-access")
 
 	request := []byte(fmt.Sprintf(
-		`{"id":10,"method":"turn/start","params":{"threadId":"thread-full-access","cwd":%q,"input":[{"type":"text","text":"需要完整访问"}],"approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess","networkAccess":false}}}`,
+		`{"id":10,"method":"turn/start","params":{"threadId":"thread-full-access","cwd":%q,"input":[{"type":"text","text":"需要完整访问"}],"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess","networkAccess":false}}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
@@ -982,6 +982,16 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 			wantReviewer: "user",
 		},
 		{
+			name: "legacy app full access is normalized without approval",
+			params: map[string]any{
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "user",
+			},
+			fullAccess:   true,
+			wantPolicy:   "never",
+			wantReviewer: "user",
+		},
+		{
 			name: "legacy auto review falls back",
 			params: map[string]any{
 				"approvalPolicy":    "on-failure",
@@ -1037,24 +1047,28 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 		name          string
 		threadSandbox string
 		turnSandbox   string
+		wantPolicy    string
 		wantReviewer  string
 	}{
 		{
 			name:          "workspace write keeps auto review",
 			threadSandbox: "workspace-write",
 			turnSandbox:   "workspaceWrite",
+			wantPolicy:    "on-request",
 			wantReviewer:  "auto_review",
 		},
 		{
 			name:          "read only requires user review",
 			threadSandbox: "read-only",
 			turnSandbox:   "readOnly",
+			wantPolicy:    "on-request",
 			wantReviewer:  "user",
 		},
 		{
-			name:          "full access requires user review",
+			name:          "explicit full access disables approval",
 			threadSandbox: "danger-full-access",
 			turnSandbox:   "dangerFullAccess",
+			wantPolicy:    "never",
 			wantReviewer:  "user",
 		},
 	}
@@ -1068,7 +1082,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"approvalsReviewer": "auto_review",
 					"sandbox":           tt.threadSandbox,
 				})
-				if threadParams["approvalPolicy"] != "on-request" || threadParams["approvalsReviewer"] != tt.wantReviewer {
+				if threadParams["approvalPolicy"] != tt.wantPolicy || threadParams["approvalsReviewer"] != tt.wantReviewer {
 					t.Fatalf("%s 审批组合异常：%v", method, threadParams)
 				}
 			}
@@ -1082,7 +1096,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"networkAccess": false,
 				},
 			}, "/tmp/project")
-			if turnParams["approvalPolicy"] != "on-request" || turnParams["approvalsReviewer"] != tt.wantReviewer {
+			if turnParams["approvalPolicy"] != tt.wantPolicy || turnParams["approvalsReviewer"] != tt.wantReviewer {
 				t.Fatalf("turn/start 审批组合异常：%v", turnParams)
 			}
 		})
@@ -2079,7 +2093,7 @@ func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testi
 	}
 
 	fullAccess := []byte(fmt.Sprintf(
-		`{"id":1711,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"full access"}],"permissions":":danger-full-access","approvalPolicy":"never","approvalsReviewer":"user"}}`,
+		`{"id":1711,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"full access"}],"permissions":":danger-full-access","approvalPolicy":"on-request","approvalsReviewer":"user"}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, fullAccess); err != nil {
