@@ -1390,9 +1390,10 @@ enum WorkbenchPageLayout {
     // 把系统可用性结果显式传入，让 iPadOS 26 的位置变化可脱离真实运行环境单测。
     static func hasBottomTabBar(
         isPhone: Bool,
+        isHorizontallyCompact: Bool,
         isIOS26OrLater: Bool
     ) -> Bool {
-        isPhone || !isIOS26OrLater
+        isPhone || (isHorizontallyCompact && !isIOS26OrLater)
     }
 }
 
@@ -1404,7 +1405,7 @@ private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// Tab 栏是否位于屏幕**底部**。iPhone 是，iPadOS 26 的紧凑 TabView 把它渲染在顶部。
+/// Tab 栏是否位于屏幕**底部**。iPhone 始终是；iPad 按横向 size class 与系统版本适配。
 ///
 /// 这不等同于 `workbenchHasCompactTabBar`：那个只回答「有没有紧凑 Tab 栏」，
 /// 两个平台都为真。页面要决定「右下角能不能放浮起按钮」时必须问这一个——
