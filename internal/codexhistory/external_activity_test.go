@@ -74,6 +74,41 @@ func TestExternalActivityReadsStateDatabaseWithoutSQLiteCLI(t *testing.T) {
 	}
 }
 
+func TestExternalActivityMatchesWindowsExtendedNamespaceCWD(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows extended-length paths are platform-specific")
+	}
+
+	fixture := newExternalActivityTrackerFixture(t)
+	path := fixture.writeRollout(
+		"thread-windows-namespace",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLine("task_started", "turn-windows-namespace"),
+	)
+	fixture.rows = []externalActivityTestRow{{
+		ID:           "thread-windows-namespace",
+		CWD:          `\\?\` + fixture.projectDir,
+		Source:       "vscode",
+		ThreadSource: "user",
+		RolloutPath:  path,
+	}}
+
+	activities := fixture.snapshot(t)
+	if len(activities) != 1 ||
+		activities[0].ThreadID != "thread-windows-namespace" ||
+		activities[0].ProjectID != "demo" ||
+		activities[0].TurnID != "turn-windows-namespace" ||
+		activities[0].State != "running" {
+		t.Fatalf("Windows namespace cwd should project active Desktop work: %+v", activities)
+	}
+
+	fixture.appendLine(path, externalEventLine("task_complete", "turn-windows-namespace"))
+	if activities := fixture.snapshot(t); len(activities) != 0 {
+		t.Fatalf("terminal lifecycle should clear Windows namespace activity: %+v", activities)
+	}
+}
+
 func TestExternalActivityDatabasePathUsesConfiguredCodexHome(t *testing.T) {
 	configuredHome := filepath.Join(t.TempDir(), "configured-codex-home")
 	processHome := filepath.Join(t.TempDir(), "process-codex-home")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -106,6 +107,10 @@ func (r *Registry) Get(id string) (Project, bool) {
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {
+	path, ok := pathForProjectMatch(path)
+	if !ok {
+		return Project{}, false
+	}
 	cacheKey := ""
 	absPath, err := filepath.Abs(path)
 	if err == nil {
@@ -136,6 +141,38 @@ func (r *Registry) FindByPath(path string) (Project, bool) {
 		r.storePathMatch(cleanRealPath, project, ok)
 	}
 	return project, ok
+}
+
+// pathForProjectMatch accepts the Windows extended-length spelling that Codex
+// persists for local drive paths while keeping device and network namespaces
+// outside the project allowlist. filepath.Rel does not consider
+// `\\?\C:\dir` equivalent to `C:\dir`, even though both names address the
+// same local directory on Windows.
+func pathForProjectMatch(path string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return path, true
+	}
+
+	clean := filepath.Clean(path)
+	const extendedPrefix = `\\?\`
+	if strings.HasPrefix(clean, extendedPrefix) {
+		localPath := strings.TrimPrefix(clean, extendedPrefix)
+		volume := filepath.VolumeName(localPath)
+		if len(volume) != 2 || volume[1] != ':' ||
+			!((volume[0] >= 'A' && volume[0] <= 'Z') ||
+				(volume[0] >= 'a' && volume[0] <= 'z')) ||
+			len(localPath) <= len(volume) || !os.IsPathSeparator(localPath[len(volume)]) {
+			return "", false
+		}
+		return filepath.Clean(localPath), true
+	}
+
+	// Do not let Win32 device or NT object-manager spellings pass through Abs
+	// and accidentally compare equal to an authorized local project.
+	if strings.HasPrefix(clean, `\\.\`) || strings.HasPrefix(clean, `\??\`) {
+		return "", false
+	}
+	return clean, true
 }
 
 func (r *Registry) findByCleanPath(cleanPath string) (Project, bool) {
