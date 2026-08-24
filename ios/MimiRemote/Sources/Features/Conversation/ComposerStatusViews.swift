@@ -470,11 +470,11 @@ struct ComposerStatusTray: View {
         sessionControlNotice != nil || quotaNotice != nil || usage != nil
     }
 
-    /// 展开只会多出目标详情、额度完整文案和刷新入口。只挂着「仅观察」时，展开态和
-    /// 收起态渲染的内容完全一样，那颗 chevron 点了什么也不会发生，纯属噪声。
-    /// 目标、额度这类真的有下文的状态继续保留开合。
+    /// 展开只为真正的次级内容或操作保留：目标详情、额度完整文案和刷新入口，
+    /// 以及观察态中可执行的接管操作。不可接管的只读观察没有下文，继续隐藏 disclosure。
     var hasExpandableDetail: Bool {
-        goal != nil || quotaNotice != nil || usage != nil
+        goal != nil || quotaNotice != nil || usage != nil ||
+            (sessionControlNotice != nil && allowsTakeOver)
     }
 
     /// 没有可展开内容时忽略外部的展开状态，避免目标被清空后停在一个收不回去的展开态。
