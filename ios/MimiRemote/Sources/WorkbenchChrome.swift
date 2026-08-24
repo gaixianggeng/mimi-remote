@@ -151,6 +151,14 @@ struct WorkbenchNavigationState: Equatable {
         return sessionID
     }
 
+    /// 路由先于 SessionStore 选择提交时，详情只能显示稳定底板，不能短暂复用上一个会话。
+    func canPresentSessionDetail(selectedSessionID: SessionID?) -> Bool {
+        guard let detailSessionID = route.detailSessionID else {
+            return true
+        }
+        return selectedSessionID == detailSessionID
+    }
+
     /// 宽屏详情不是一次 push，系统不会自动提供返回工作区的按钮；紧凑布局由外层
     /// `NavigationStack` 管理 path，保留系统返回即可，避免顶栏出现两个返回控件。
     func showsWorkspaceBackButton(usesCompactNavigation: Bool) -> Bool {

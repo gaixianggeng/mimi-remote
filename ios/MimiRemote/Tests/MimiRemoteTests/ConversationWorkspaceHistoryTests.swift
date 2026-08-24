@@ -3921,11 +3921,11 @@ extension ConversationDataFlowTests {
         await store.selectSession(updated)
         await client.waitForHistoryRequestCount(2)
 
-        // 后台补拉只显示时间线内轻量进度，不能把 savings 或失败横幅盖到已有会话上。
+        // 缓存已经形成可读首屏，后台补拉不能再插入会改变尾部布局的临时进度行。
         XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "已缓存历史" })
-        XCTAssertNotNil(
+        XCTAssertNil(
             store.historyLoadProgress(sessionID: history.id),
-            "缓存消息可见时，签名变化触发的静默补拉仍需给出轻量进度"
+            "缓存消息可见时，静默补拉必须保持不可见"
         )
         XCTAssertNil(store.selectedHistorySavingsNotice)
         client.failHistoryRequest(at: 1, with: MockError.timeout)
