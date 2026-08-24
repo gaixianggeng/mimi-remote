@@ -217,10 +217,22 @@ struct UnifiedWorkbenchShell: View {
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        // iPadOS 26 把紧凑 TabView 的 Tab 栏渲染在**顶部**，底部没有任何浮动 chrome。
-        // 仍按 iPhone 那套预留 118pt，会在列表底部留下一整块空气，
+        let isIOS26OrLater: Bool
+        if #available(iOS 26.0, *) {
+            isIOS26OrLater = true
+        } else {
+            isIOS26OrLater = false
+        }
+        let hasBottomTabBar = WorkbenchPageLayout.hasBottomTabBar(
+            isPhone: layout.isPhone,
+            isHorizontallyCompact: horizontalSizeClass == .compact,
+            isIOS26OrLater: isIOS26OrLater
+        )
+        // iPadOS 18 起 regular-width iPad 已把 Tab 栏放在顶部；18–25 只有 compact-width
+        // iPad 仍回到底部，26 起两种 iPad 宽度都在顶部。iPhone 始终保留底部 Tab 栏。
+        // 仍按底部 Tab 栏预留 118pt，会在列表底部留下一整块空气，
         // 也会把右下角浮起的新建按钮顶离屏幕边缘、看起来既不贴边又压住内容。
-        let bottomChromeClearance = layout.isPhone
+        let bottomChromeClearance = hasBottomTabBar
             ? WorkbenchPageLayout.compactBottomChromeClearance(
                 bottomSafeAreaInset: bottomSafeAreaInset
             )
@@ -291,9 +303,8 @@ struct UnifiedWorkbenchShell: View {
         .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .environment(\.workbenchHasCompactTabBar, true)
-        // iPhone 的 Tab 栏浮在底部，iPadOS 26 把它渲染在顶部。
-        // 页面据此决定右下角能不能放浮起按钮。
-        .environment(\.workbenchHasBottomTabBar, layout.isPhone)
+        // 页面按系统 Tab 栏的实际位置决定右下角能不能放浮起按钮。
+        .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
