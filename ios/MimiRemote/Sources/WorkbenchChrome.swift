@@ -557,12 +557,12 @@ struct WorkbenchNavigationState: Equatable {
 extension View {
     func themedWorkbenchNavigationChrome(tokens: ThemeTokens, colorScheme: ColorScheme) -> some View {
         // 会话工作台嵌在 NavigationSplitView 里，系统导航栏默认会透出平台背景。
-        // 这里统一让导航栏和状态栏区域吃主题色，避免 iPad 横屏顶部出现黑色断层。
+        // 这里统一让导航栏和状态栏区域吃工作台画布色，避免滚动边缘露出另一种色温。
         //
         // 但底色只在滚动到边缘时才该出现：强制 `.visible` 会钉死一条不透明实色条和一道发丝线，
         // 同时把顶栏按钮压成贴在实色上的图标。这里改为把主题色交给 scroll edge effect，
         // 让系统自己决定何时显形。
-        toolbarBackground(tokens.background, for: .navigationBar)
+        toolbarBackground(tokens.workbenchCanvasBackground, for: .navigationBar)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
 

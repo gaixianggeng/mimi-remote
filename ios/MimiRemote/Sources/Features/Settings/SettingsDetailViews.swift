@@ -730,7 +730,7 @@ struct AppearanceView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
@@ -1197,7 +1197,7 @@ struct DefaultModelSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -1525,8 +1525,40 @@ struct ExperimentalFeaturesSettingsView: View {
 }
 
 extension View {
+    func settingsCanvasBackground(tokens: ThemeTokens) -> some View {
+        modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
+    }
+
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
-            .background(tokens.background.ignoresSafeArea())
+            .settingsCanvasBackground(tokens: tokens)
+    }
+}
+
+private struct SettingsCanvasBackgroundModifier: ViewModifier {
+    @Environment(\.settingsUsesWorkbenchCanvas) private var settingsUsesWorkbenchCanvas
+
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        content.background(
+            (settingsUsesWorkbenchCanvas
+                ? tokens.workbenchCanvasBackground
+                : tokens.background
+            ).ignoresSafeArea()
+        )
+    }
+}
+
+/// 同一套设置详情既会从“我的”进入，也会在独立设置 sheet 内导航；
+/// 由入口传递画布类型，避免详情页自行猜测呈现方式。
+private struct SettingsUsesWorkbenchCanvasKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var settingsUsesWorkbenchCanvas: Bool {
+        get { self[SettingsUsesWorkbenchCanvasKey.self] }
+        set { self[SettingsUsesWorkbenchCanvasKey.self] = newValue }
     }
 }
