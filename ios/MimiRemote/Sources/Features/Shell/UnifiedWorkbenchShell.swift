@@ -1054,6 +1054,9 @@ struct UnifiedWorkbenchShell: View {
                     relation: relation,
                     parentSessionID: parentID,
                     showsCloseButton: false,
+                    shouldHideTabBar: WorkbenchPageLayout.shouldHideSessionDetailTabBar(
+                        hasBottomTabBar: hasBottomTabBar
+                    ),
                     onClose: {}
                 )
             } else {

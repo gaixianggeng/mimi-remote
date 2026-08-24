@@ -1146,6 +1146,7 @@ struct RelatedSessionConversationView: View {
     let relation: SessionContextSubagent
     let parentSessionID: SessionID
     let showsCloseButton: Bool
+    var shouldHideTabBar = true
     let onClose: () -> Void
 
     @State private var isLoading = true
@@ -1216,7 +1217,7 @@ struct RelatedSessionConversationView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(shouldHideTabBar ? .hidden : .visible, for: .tabBar)
         .accessibilityIdentifier("subagent.conversation.\(relation.id)")
         .task(id: relation.id) {
             isLoading = true

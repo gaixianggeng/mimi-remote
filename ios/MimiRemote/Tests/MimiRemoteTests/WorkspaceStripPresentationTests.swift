@@ -47,7 +47,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
-    func testSessionDetailOnlyHidesBottomTabBar() {
+    func testSessionAndSubagentDetailsOnlyHideBottomTabBar() {
         XCTAssertTrue(
             WorkbenchPageLayout.shouldHideSessionDetailTabBar(hasBottomTabBar: true)
         )
