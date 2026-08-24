@@ -153,6 +153,45 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testComposerPermissionChangeRequiresQueuedTurnBeforeGuidanceCanResume() {
+        var composerState = ComposerState()
+        let previousSelection = composerState.permissionSelectionSnapshot()
+        composerState.applyPermissionMode(.readOnly)
+        composerState.markPermissionSelectionRequiresNewTurnIfChanged(
+            from: previousSelection,
+            sessionIsRunning: true
+        )
+
+        XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(
+            composerState.runningTurnDelivery(canUseGuidedFollowUp: true, guidedFollowUpEnabled: true),
+            .queued,
+            "turn/steer 不能携带下一回合权限，必须排队到新的 turn/start"
+        )
+
+        let submittedSelection = composerState.permissionSelectionSnapshot()
+        composerState.markPermissionSelectionSubmitted(submittedSelection)
+
+        XCTAssertFalse(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(
+            composerState.runningTurnDelivery(canUseGuidedFollowUp: true, guidedFollowUpEnabled: true),
+            .guided
+        )
+    }
+
+    func testLatePermissionSubmitAckDoesNotClearNewerSelection() {
+        var composerState = ComposerState()
+        composerState.markPermissionSelectionRequiresNewTurn()
+        let submittedSelection = composerState.permissionSelectionSnapshot()
+
+        composerState.applyPermissionMode(.readOnly)
+        composerState.markPermissionSelectionRequiresNewTurn()
+        composerState.markPermissionSelectionSubmitted(submittedSelection)
+
+        XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(composerState.permissionMode, .readOnly)
+    }
+
     func testComposerPrimaryActionKeepsRunningTurnSubmissionAndStopReachable() {
         XCTAssertEqual(
             ComposerPrimaryAction.resolve(

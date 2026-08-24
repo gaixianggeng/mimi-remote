@@ -331,6 +331,46 @@ func TestExternalActivityDelayedUserMessageAfterTaskStartedStillClaimsGatewayTur
 	}
 }
 
+func TestExternalActivityDelayedScanStillClaimsGatewayTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	registeredAt := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	now := registeredAt
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-ipad",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(registeredAt.Add(time.Second), "task_started", "turn-ipad"),
+	)
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	now = registeredAt.Add(5 * time.Second)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.snapshot(t); len(got) != 1 || got[0].TurnID != "turn-ipad" {
+		t.Fatalf("client_id 证据尚未落盘时必须暂时保持 external：%+v", got)
+	}
+
+	// 模拟 App 退到后台：有效 client_id 很快落盘，但三分钟后才再次扫描。
+	fixture.appendLine(path, externalUserMessageLine(registeredAt.Add(6*time.Second), "client-ipad"))
+	now = registeredAt.Add(gatewayTurnEvidenceTTL + time.Minute)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("延迟扫描仍应按 rollout 事件时间认回 gateway turn：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+		t.Fatalf("延迟扫描应建立精确 gateway 归属：%+v", entry)
+	}
+}
+
 func TestExternalActivityExactMessageCannotClaimTurnStartedOutsideGatewayWindow(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
@@ -710,7 +750,7 @@ func TestExternalActivityExpiredPendingEvidenceCannotHideLaterDesktopTurn(t *tes
 		t.Fatal("超过生命周期关联窗口后，pending gateway 证据必须主动失效")
 	}
 
-	now = now.Add(gatewayTurnRegistrationTTL + time.Second)
+	now = now.Add(gatewayTurnEvidenceTTL + time.Second)
 	fixture.appendLine(path, externalEventLineAt(now, "task_started", "turn-desktop"))
 	if err := os.Chtimes(path, now, now); err != nil {
 		t.Fatal(err)
@@ -782,7 +822,7 @@ func TestExternalActivityGatewayOwnershipRequiresExactEvidence(t *testing.T) {
 			registeredThread: "thread-1",
 			registeredClient: "client-ipad",
 			eventClient:      "client-ipad",
-			eventAt:          now.Add(-gatewayTurnRegistrationTTL),
+			eventAt:          now.Add(-gatewayTurnEvidenceTTL),
 		},
 		{
 			name:             "missing client id",
@@ -1172,7 +1212,7 @@ func TestGatewayTurnRegistrationsAreBoundedAndExpire(t *testing.T) {
 		t.Fatalf("gateway 登记表必须有容量上限：got=%d want=%d", got, gatewayTurnRegistrationLimit)
 	}
 
-	now = now.Add(gatewayTurnRegistrationTTL + time.Second)
+	now = now.Add(gatewayTurnRegistrationRetention + time.Second)
 	fixture.tracker.RegisterGatewayTurnStart("thread-fresh", "client-fresh")
 	if got := len(fixture.tracker.gatewayTurns); got != 1 {
 		t.Fatalf("过期 gateway 登记应在新写入时被裁剪：got=%d entries=%+v", got, fixture.tracker.gatewayTurns)

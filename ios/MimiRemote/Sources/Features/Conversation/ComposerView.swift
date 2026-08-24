@@ -396,6 +396,9 @@ struct ComposerView: View {
                 await MainActor.run {
                     // 提交时已经同步清过对应 cache。这里不能再次删除，否则发送期间
                     // 输入的下一条草稿会被成功回调误删。
+                    if activeComposerDraftScope == submittedDraftScope {
+                        composerState.markPermissionSelectionSubmitted(submitted.permissionSelection)
+                    }
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -441,6 +444,9 @@ struct ComposerView: View {
             } else {
                 await MainActor.run {
                     // 与普通发送保持一致：成功回调不二次触碰草稿 cache。
+                    if activeComposerDraftScope == submittedDraftScope {
+                        composerState.markPermissionSelectionSubmitted(submitted.permissionSelection)
+                    }
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -636,10 +642,10 @@ struct ComposerView: View {
     }
 
     var canUseGuidedFollowUp: Bool {
-        guard let session = sessionStore.selectedSession else {
-            return false
-        }
-        return canChooseRunningFollowUpDelivery && session.activeTurnID != nil
+        guard let session = sessionStore.selectedSession else { return false }
+        return canChooseRunningFollowUpDelivery
+            && session.activeTurnID != nil
+            && !composerState.permissionSelectionRequiresNewTurn
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -1877,7 +1883,12 @@ struct ComposerView: View {
         if selectedSessionRuntimeProviderForModelMenu != "claude" {
             defaultPermissionModeID = safeMode.rawValue
         }
+        let previousSelection = composerState.permissionSelectionSnapshot()
         composerState.applyPermissionMode(safeMode)
+        composerState.markPermissionSelectionRequiresNewTurnIfChanged(
+            from: previousSelection,
+            sessionIsRunning: sessionStore.selectedSession?.isRunning == true
+        )
         sessionStore.saveComposerPermissionSelection(
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
@@ -1889,6 +1900,7 @@ struct ComposerView: View {
             setPermissionMode(builtInMode)
             return
         }
+        let previousSelection = composerState.permissionSelectionSnapshot()
         composerState.updateTurnOptions { options in
             options.preservesThreadPermissionSettings = false
             options.permissionProfileID = profile.id
@@ -1896,6 +1908,10 @@ struct ComposerView: View {
             options.approvalsReviewer = "user"
             options.networkAccess = false
         }
+        composerState.markPermissionSelectionRequiresNewTurnIfChanged(
+            from: previousSelection,
+            sessionIsRunning: sessionStore.selectedSession?.isRunning == true
+        )
         sessionStore.saveComposerPermissionSelection(
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
