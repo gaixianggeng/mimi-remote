@@ -266,7 +266,7 @@ struct DoctorView: View {
             .frame(maxWidth: 760, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.diagnosis"))
         .tint(tokens.accent)
         .task {

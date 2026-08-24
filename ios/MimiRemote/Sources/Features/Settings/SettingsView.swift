@@ -114,6 +114,7 @@ struct SettingsView: View {
                 settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
             }
         }
+        .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
         // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
         // 重建，但不会再销毁负责呈现相机的宿主。
         .fullScreenCover(
@@ -648,7 +649,7 @@ private struct ConnectionManagementView: View {
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(themeStore.tokens(for: colorScheme).workbenchCanvasBackground.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
         .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }
@@ -768,7 +769,7 @@ private struct ConnectionSpeedTestView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.connection_speed_test"))
         .tint(tokens.accent)
     }
