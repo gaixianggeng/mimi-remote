@@ -72,6 +72,9 @@ func StartManaged(ctx context.Context, options ManagedOptions) (*ManagedProcess,
 	if err := ctx.Err(); err != nil {
 		return nil, InitializeResult{}, err
 	}
+	if err := validateManagedCodexRuntime(ctx, bin); err != nil {
+		return nil, InitializeResult{}, fmt.Errorf("拒绝启动不安全的 Codex app-server：%w", err)
+	}
 	// 传入的 ctx 只约束 initialize 握手；子进程寿命由 Shutdown 统一管理。
 	// 否则 startAppServerRuntime 返回时取消握手 ctx，会把托管 app-server 一起杀掉。
 	cmd := exec.CommandContext(context.Background(), bin, "app-server", "--listen", "stdio://")
@@ -125,6 +128,9 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := validateManagedCodexRuntime(ctx, bin); err != nil {
+		return nil, fmt.Errorf("拒绝启动不安全的 Codex app-server WebSocket：%w", err)
 	}
 	listen, err := normalizeWebSocketListen(options.Listen)
 	if err != nil {

@@ -628,6 +628,58 @@ func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
 	}
 }
 
+func TestCheckerRejectsUnsafeWindowsCodexVersion(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows independent runtime safety gate is platform-specific")
+	}
+	path := filepath.Join(t.TempDir(), "codex-old.cmd")
+	body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.145.0\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: path},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+
+	check := checker.codexAppServerCheck(context.Background())
+	if check.OK || !strings.Contains(check.Message, "single-writer") ||
+		!strings.Contains(check.Fix, "0.145.0") ||
+		!strings.Contains(check.Fix, appserver.MinimumIndependentWriterVersion) {
+		t.Fatalf("Doctor should explain the unsafe Windows runtime and recovery: %+v", check)
+	}
+}
+
+func TestCheckerReportsSafeWindowsCodexPathAndVersion(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows independent runtime diagnostics are platform-specific")
+	}
+	path := writeFakeCodexWithAppServerHelp(t, filepath.Join(t.TempDir(), "codex-safe"))
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: path},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+
+	check := checker.codexAppServerCheck(context.Background())
+	if !check.OK || !strings.Contains(check.Message, "0.149.0") ||
+		!strings.Contains(check.Message, filepath.Clean(path)) {
+		t.Fatalf("Doctor should expose the selected safe Windows runtime: %+v", check)
+	}
+}
+
 func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 	t.Run("secure regular file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "secret")
@@ -797,7 +849,7 @@ func writeFakeCodexWithAppServerHelp(t *testing.T, path string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		path += ".cmd"
-		body := "@echo off\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
+		body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.149.0\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}

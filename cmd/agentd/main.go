@@ -947,8 +947,9 @@ func runDoctorFix(
 			}
 		}
 	}
-	if hasFailedCheck(current, "codex") && !needsSetup {
-		// 旧的绝对路径失效时只修复 codex.bin；无法发现替代项则保留原 Doctor 结果继续给出安装指引。
+	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
+		// 旧的绝对路径失效或 Windows CLI 缺少 single-writer 基线时只修复
+		// codex.bin；无法发现安全替代项则保留原 Doctor 结果继续给出升级指引。
 		codexPath, repaired, repairErr := agentsetup.RepairCodexBin(configPath)
 		if repairErr == nil && repaired {
 			fixes = append(fixes, "已恢复 Codex CLI 路径："+codexPath)
