@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -27,6 +28,23 @@ import (
 func TestVersionDoesNotRequireConfig(t *testing.T) {
 	if err := run([]string{"agentd", "version"}); err != nil {
 		t.Fatalf("version 不应依赖配置：%v", err)
+	}
+}
+
+func TestCodexCLIRepairErrorPreservesCompatibilityGuidance(t *testing.T) {
+	unsafe := fmt.Errorf(
+		"%w：Codex 版本为 0.145.0",
+		appserver.ErrIndependentWriterCapabilityUnavailable,
+	)
+	err := codexCLIRepairError(unsafe)
+	if !errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
+		t.Fatalf("启动错误应保留版本不兼容原因：%v", err)
+	}
+	message := err.Error()
+	if !strings.Contains(message, "版本不兼容") ||
+		!strings.Contains(message, ">= "+appserver.MinimumIndependentWriterVersion) ||
+		strings.Contains(message, "未找到 Codex CLI") {
+		t.Fatalf("启动错误应要求升级而不是提示安装：%s", message)
 	}
 }
 
