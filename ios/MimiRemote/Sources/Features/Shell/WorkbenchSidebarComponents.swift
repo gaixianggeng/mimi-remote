@@ -348,7 +348,7 @@ struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
     }
 }
 
-/// 全局配置放左侧，主创建动作放右侧；两端布局在侧栏高度变化时保持稳定。
+/// 全局配置固定在左侧；只有主内容没有独立 FAB 的布局才在右侧补充创建入口。
 struct WorkbenchSidebarFooter: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -383,7 +383,7 @@ struct WorkbenchSidebarFooter: View {
         // 同时仍把完整触控区域留在安全区之上。
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
-        // 两枚按钮各自绘制自己的表面，不再交给 GlassEffectContainer 合成：
+        // Footer 按钮各自绘制自己的表面，不再交给 GlassEffectContainer 合成：
         // 合成只对 Liquid Glass 有意义，而这一行现在和其它 chrome 一样是扁平磨砂。
         footerButtonRow
             .offset(y: safeAreaVisualOffset)
@@ -404,8 +404,16 @@ struct WorkbenchSidebarFooter: View {
 
             Spacer(minLength: 0)
 
-            newSessionButton
+            if Self.showsNewSessionButton(usesFloatingSurface: usesFloatingSurface) {
+                newSessionButton
+            }
         }
+    }
+
+    /// 宽 iPad 浮动侧栏与主内容同时可见，主内容右下角已经提供创建入口。
+    /// 侧栏只保留“我的”，避免同一屏出现两个同级的新建会话按钮。
+    static func showsNewSessionButton(usesFloatingSurface: Bool) -> Bool {
+        !usesFloatingSurface
     }
 
     private var meButton: some View {

@@ -1396,6 +1396,15 @@ private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// Tab 栏是否位于屏幕**底部**。iPhone 是，iPadOS 26 的紧凑 TabView 把它渲染在顶部。
+///
+/// 这不等同于 `workbenchHasCompactTabBar`：那个只回答「有没有紧凑 Tab 栏」，
+/// 两个平台都为真。页面要决定「右下角能不能放浮起按钮」时必须问这一个——
+/// 底部已经站着一条浮动 Tab 栏时再浮一颗按钮，同一个角上叠两层浮动材质，层级会塌。
+private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var workbenchBottomChromeClearance: CGFloat {
         get { self[WorkbenchBottomChromeClearanceKey.self] }
@@ -1405,6 +1414,11 @@ extension EnvironmentValues {
     var workbenchHasCompactTabBar: Bool {
         get { self[WorkbenchHasCompactTabBarKey.self] }
         set { self[WorkbenchHasCompactTabBarKey.self] = newValue }
+    }
+
+    var workbenchHasBottomTabBar: Bool {
+        get { self[WorkbenchHasBottomTabBarKey.self] }
+        set { self[WorkbenchHasBottomTabBarKey.self] = newValue }
     }
 }
 

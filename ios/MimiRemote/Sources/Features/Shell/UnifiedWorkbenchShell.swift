@@ -217,9 +217,14 @@ struct UnifiedWorkbenchShell: View {
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
-            bottomSafeAreaInset: bottomSafeAreaInset
-        )
+        // iPadOS 26 把紧凑 TabView 的 Tab 栏渲染在**顶部**，底部没有任何浮动 chrome。
+        // 仍按 iPhone 那套预留 118pt，会在列表底部留下一整块空气，
+        // 也会把右下角浮起的新建按钮顶离屏幕边缘、看起来既不贴边又压住内容。
+        let bottomChromeClearance = layout.isPhone
+            ? WorkbenchPageLayout.compactBottomChromeClearance(
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
         // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
         // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
         let showsTabletHostSwitcher = !layout.isPhone
@@ -286,6 +291,9 @@ struct UnifiedWorkbenchShell: View {
         .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .environment(\.workbenchHasCompactTabBar, true)
+        // iPhone 的 Tab 栏浮在底部，iPadOS 26 把它渲染在顶部。
+        // 页面据此决定右下角能不能放浮起按钮。
+        .environment(\.workbenchHasBottomTabBar, layout.isPhone)
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)

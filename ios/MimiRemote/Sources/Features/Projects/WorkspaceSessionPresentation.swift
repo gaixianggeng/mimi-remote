@@ -112,6 +112,20 @@ enum WorkspaceSessionRowMetrics {
     static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
 }
 
+/// 新建会话按钮浮在列表右下角。它不再与筛选器并排，因此可以画得比原来的 36pt 更实体；
+/// 54pt 同时把命中区带到 44pt 之上，不需要再叠一层透明 frame。
+enum WorkspaceSessionFabMetrics {
+    static let diameter: CGFloat = 54
+    /// 回到筛选行里的形态。必须收进 44pt 行高，因此比浮起态小一圈；
+    /// 命中区仍由外层 44pt frame 保证。
+    static let inlineDiameter: CGFloat = 36
+    /// 距屏幕右下两条边的留白，两个方向取同一个值，按钮才落在视觉上的角上。
+    static let edgeInset: CGFloat = 20
+    /// 列表底部要额外让出的高度，保证最后一行能滚到浮起按钮**之上**被读到，
+    /// 而不是永远压在按钮底下。柔化边缘只负责让它淡出，让不让得开是另一回事。
+    static var contentBottomAllowance: CGFloat { diameter + edgeInset * 2 }
+}
+
 /// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
 /// 卡片内的状态导轨和文案表达，避免把分组背景误读成会话状态。
 enum WorkspaceSessionGroup: String, CaseIterable {
