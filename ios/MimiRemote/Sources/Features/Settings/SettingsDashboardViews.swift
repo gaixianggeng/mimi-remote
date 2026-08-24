@@ -19,7 +19,7 @@ struct InitialPairingView: View {
         // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
     }
 }
 private struct SettingsDashboardSection<Content: View>: View {

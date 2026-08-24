@@ -527,7 +527,7 @@ struct SessionListView: View {
             text: $sessionStore.sessionSearchQuery,
             prompt: Text(L10n.text("ui.search_session")),
             tintColor: tokens.primaryText,
-            toolbarSurface: tokens.background,
+            toolbarSurface: tokens.workbenchCanvasBackground,
             colorScheme: colorScheme,
             onSubmit: dismissSessionSearchKeyboard
         )

@@ -730,7 +730,7 @@ struct AppearanceView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
@@ -1197,7 +1197,7 @@ struct DefaultModelSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -1527,6 +1527,6 @@ struct ExperimentalFeaturesSettingsView: View {
 extension View {
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
-            .background(tokens.background.ignoresSafeArea())
+            .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
     }
 }
