@@ -380,8 +380,9 @@ struct ConversationTimelineView: View {
                 }
                 initialTailScrollAttemptedIdentity = timelineListIdentity
                 // List 的 UIKit 快照可能晚于 SwiftUI task 提交。所有重试都发生在稳定遮罩下，
-                // 并且只由尾部哨兵真实可见来结束，不能再把“已调用 scrollTo”当成成功。
-                for _ in 0..<8 {
+                // 并且只由尾部哨兵真实可见或任务取消来结束，不能用固定次数制造永久空白。
+                var attempt = 0
+                while true {
                     guard !Task.isCancelled,
                           displayedSessionID == expectedSessionID,
                           currentTimelineTailItemID() == expectedTailItemID,
@@ -394,7 +395,15 @@ struct ConversationTimelineView: View {
                         proxy: proxy,
                         animated: false
                     )
-                    try? await Task.sleep(nanoseconds: 32_000_000)
+                    attempt += 1
+                    // 首轮快速覆盖常规 List 快照延迟；慢布局随后降频，避免长历史在
+                    // 遮罩期间持续高频占用 MainActor，同时仍能在快照就绪后自行恢复。
+                    let retryDelay = attempt <= 8 ? 32_000_000 : 160_000_000
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(retryDelay))
+                    } catch {
+                        return
+                    }
                     confirmTimelinePresentationIfReady(
                         timelineListIdentity,
                         hasTimelineContent: true
@@ -1037,6 +1046,29 @@ struct ConversationTimelineView: View {
                 timelineItems: timelineItems,
                 proxy: proxy,
                 animated: animatedFirstAttempt
+            )
+
+            // 新行插入或 Markdown 行高增长可能晚于第一轮 scrollTo 完成。等一个短的
+            // 布局窗口后再无动画校正一次，保证已展示会话继续贴尾；初始进入仍由遮罩
+            // 隔离，不恢复原先 900ms 后用户可见的重锚。
+            do {
+                try await Task.sleep(nanoseconds: 180_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  tailScrollCoordinator.attemptGeneration == attemptGeneration,
+                  tailScrollCoordinator.userScrollAwayGeneration == scrollAwayGeneration,
+                  displayedSessionID == sessionID,
+                  currentTimelineTailItemID() == expectedTailItemID,
+                  !isPreservingHistoryScroll
+            else {
+                return
+            }
+            forceScrollToTimelineTail(
+                timelineItems: timelineItems,
+                proxy: proxy,
+                animated: false
             )
         }
     }

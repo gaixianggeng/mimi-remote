@@ -3,6 +3,7 @@ import Combine
 import Security
 import SwiftUI
 import UIKit
+import SnapshotTesting
 @testable import MimiRemote
 
 extension XCTestCase {
@@ -960,6 +961,52 @@ func conversationTimelineIsStabilizing(in rootView: UIView) -> Bool {
         return false
     }
     return isViewEffectivelyVisible(marker, within: rootView)
+}
+
+@MainActor
+func assertStabilizedConversationSnapshot<Content: View>(
+    of view: Content,
+    size: CGSize,
+    precision: Float = 0.98,
+    named: String? = nil,
+    file: StaticString = #filePath,
+    testName: String = #function,
+    line: UInt = #line
+) async throws {
+    let host = UIHostingController(rootView: view)
+    let windowScene = try XCTUnwrap(
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    )
+    let window = UIWindow(windowScene: windowScene)
+    window.frame = CGRect(origin: .zero, size: size)
+    window.rootViewController = host
+    window.makeKeyAndVisible()
+    defer { window.isHidden = true }
+
+    host.view.frame = window.bounds
+    host.view.setNeedsLayout()
+    host.view.layoutIfNeeded()
+    let presentationDeadline = Date().addingTimeInterval(8)
+    while conversationTimelineIsStabilizing(in: host.view),
+          Date() < presentationDeadline {
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 16_000_000)
+    }
+    XCTAssertFalse(
+        conversationTimelineIsStabilizing(in: host.view),
+        "会话快照必须等时间线完成首屏定位后再截图"
+    )
+
+    // 会话快照验证稳定后的内容与样式。先把真实 List 放进窗口并完成首屏定位，
+    // 避免离屏 SwiftUI 快照只截到稳定遮罩。
+    assertSnapshot(
+        of: host.view,
+        as: .image(precision: precision, size: size),
+        named: named,
+        file: file,
+        testName: testName,
+        line: line
+    )
 }
 
 @MainActor
