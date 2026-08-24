@@ -1386,6 +1386,14 @@ enum WorkbenchPageLayout {
             + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
             + compactTabBarBreathingRoom
     }
+
+    // 把系统可用性结果显式传入，让 iPadOS 26 的位置变化可脱离真实运行环境单测。
+    static func hasBottomTabBar(
+        isPhone: Bool,
+        isIOS26OrLater: Bool
+    ) -> Bool {
+        isPhone || !isIOS26OrLater
+    }
 }
 
 private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {

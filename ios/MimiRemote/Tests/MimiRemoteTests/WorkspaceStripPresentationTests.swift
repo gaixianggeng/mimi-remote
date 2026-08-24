@@ -2,6 +2,33 @@ import XCTest
 @testable import MimiRemote
 
 final class WorkspaceStripPresentationTests: XCTestCase {
+    func testBottomTabBarMappingUsesDeviceAndSystemGeneration() {
+        XCTAssertTrue(
+            WorkbenchPageLayout.hasBottomTabBar(
+                isPhone: false,
+                isIOS26OrLater: false
+            )
+        )
+        XCTAssertFalse(
+            WorkbenchPageLayout.hasBottomTabBar(
+                isPhone: false,
+                isIOS26OrLater: true
+            )
+        )
+        XCTAssertTrue(
+            WorkbenchPageLayout.hasBottomTabBar(
+                isPhone: true,
+                isIOS26OrLater: false
+            )
+        )
+        XCTAssertTrue(
+            WorkbenchPageLayout.hasBottomTabBar(
+                isPhone: true,
+                isIOS26OrLater: true
+            )
+        )
+    }
+
     func testBottomTabBarAlwaysKeepsRuntimeMenuAndInlineNewSessionEntry() {
         XCTAssertFalse(
             WorkspaceStripLayout.usesInlineRuntimePicker(
