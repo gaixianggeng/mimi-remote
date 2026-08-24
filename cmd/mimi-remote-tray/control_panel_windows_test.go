@@ -31,6 +31,52 @@ func TestControlPanelPresentationForReadyService(t *testing.T) {
 	}
 }
 
+func TestControlPanelPresentationSeparatesCodexAndClaudeConnectionStates(t *testing.T) {
+	status := agentStatus{
+		Version:   "1.2.3",
+		ProcessOK: true,
+		ServiceOK: true,
+		DoctorOK:  true,
+		RuntimeStatus: &runtimeStatus{Runtimes: []runtimeEntry{
+			{ID: "codex", Enabled: true, State: "connected"},
+			{ID: "claude", Enabled: false, State: "disabled"},
+		}},
+	}
+	presentation := makeControlPanelPresentation(status, nil, false, false)
+	if presentation.CodexValue != "已连接" {
+		t.Fatalf("Codex state = %q, want 已连接", presentation.CodexValue)
+	}
+	if presentation.ClaudeValue != "未配置" {
+		t.Fatalf("Claude Code state = %q, want 未配置", presentation.ClaudeValue)
+	}
+	if presentation.CodexColor == presentation.ClaudeColor {
+		t.Fatal("connected and unconfigured runtimes should use different colors")
+	}
+}
+
+func TestControlPanelRuntimePresentationSupportsRuntimeStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot *runtimeStatus
+		want     string
+	}{
+		{name: "available", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "available"}}}, want: "运行时可用"},
+		{name: "signed out", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "signed_out"}}}, want: "未登录"},
+		{name: "unavailable", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "unavailable"}}}, want: "不可用"},
+		{name: "refreshing", snapshot: &runtimeStatus{Refreshing: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "unavailable", Reason: "refresh_in_progress"}}}, want: "正在检查"},
+		{name: "stale", snapshot: &runtimeStatus{Stale: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "connected"}}}, want: "状态已过期"},
+		{name: "missing runtime", snapshot: &runtimeStatus{}, want: "状态未知"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := makeControlPanelRuntimePresentation(testCase.snapshot, "codex", true)
+			if got.Value != testCase.want {
+				t.Fatalf("runtime state = %q, want %q", got.Value, testCase.want)
+			}
+		})
+	}
+}
+
 func TestControlPanelPresentationForStoppedService(t *testing.T) {
 	status := agentStatus{Version: "1.2.3"}
 	presentation := makeControlPanelPresentation(status, nil, false, false)
