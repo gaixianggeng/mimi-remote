@@ -947,8 +947,9 @@ func runDoctorFix(
 			}
 		}
 	}
-	if hasFailedCheck(current, "codex") && !needsSetup {
-		// 旧的绝对路径失效时只修复 codex.bin；无法发现替代项则保留原 Doctor 结果继续给出安装指引。
+	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
+		// 旧的绝对路径失效或 Windows CLI 缺少 single-writer 基线时只修复
+		// codex.bin；无法发现安全替代项则保留原 Doctor 结果继续给出升级指引。
 		codexPath, repaired, repairErr := agentsetup.RepairCodexBin(configPath)
 		if repairErr == nil && repaired {
 			fixes = append(fixes, "已恢复 Codex CLI 路径："+codexPath)
@@ -1793,7 +1794,7 @@ func ensureCodexCLIAvailable(configPath string) error {
 	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
 	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
 	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {
-		return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
+		return codexCLIRepairError(err)
 	}
 	cfg, err := config.LoadForDoctor(configPath)
 	if err != nil {
@@ -1807,6 +1808,17 @@ func ensureCodexCLIAvailable(configPath string) error {
 		return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
 	}
 	return nil
+}
+
+func codexCLIRepairError(err error) error {
+	if errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
+		return fmt.Errorf(
+			"Codex CLI 版本不兼容，Mimi Remote 助手还不能启动。\n\n%w\n请将这台电脑的 Codex CLI 升级到 >= %s，然后重新运行：\n  agentd up",
+			err,
+			appserver.MinimumIndependentWriterVersion,
+		)
+	}
+	return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
 }
 
 func printSetupResult(w io.Writer, result agentsetup.Result) {

@@ -419,7 +419,7 @@ func resolveClaudeBin(configured string) (string, error) {
 			continue
 		}
 		seen[candidate] = struct{}{}
-		resolved, err := lookupUsableCodexExecutable(candidate)
+		resolved, err := lookupUsableExecutable(candidate)
 		if err != nil {
 			continue
 		}
