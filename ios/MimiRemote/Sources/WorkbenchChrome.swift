@@ -1403,6 +1403,12 @@ enum WorkbenchPageLayout {
     ) -> Bool {
         isPhone || (isHorizontallyCompact && !isIOS26OrLater)
     }
+
+    static func shouldHideSessionDetailTabBar(hasBottomTabBar: Bool) -> Bool {
+        // iPadOS 26 的顶部 Tab 栏一旦在详情页隐藏，会改变返回目标的顶部布局基准；
+        // 只隐藏底部 Tab 栏，既保留正文空间，也让顶部 Tab 的返回路径保持同一锚点。
+        hasBottomTabBar
+    }
 }
 
 private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {

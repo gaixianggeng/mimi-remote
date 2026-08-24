@@ -255,7 +255,12 @@ struct UnifiedWorkbenchShell: View {
                     bottomContentMargin: bottomChromeClearance
                 )
                     .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(destination, layout: layout, tokens: tokens)
+                        compactDestination(
+                            destination,
+                            layout: layout,
+                            tokens: tokens,
+                            hasBottomTabBar: hasBottomTabBar
+                        )
                     }
             }
             .tabItem {
@@ -267,7 +272,12 @@ struct UnifiedWorkbenchShell: View {
             NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
                 workspaces(layout: layout)
                     .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(destination, layout: layout, tokens: tokens)
+                        compactDestination(
+                            destination,
+                            layout: layout,
+                            tokens: tokens,
+                            hasBottomTabBar: hasBottomTabBar
+                        )
                     }
             }
             .tabItem {
@@ -1014,7 +1024,8 @@ struct UnifiedWorkbenchShell: View {
     private func compactDestination(
         _ destination: AppDestination,
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        hasBottomTabBar: Bool
     ) -> some View {
         switch destination {
         case .sessions:
@@ -1028,7 +1039,13 @@ struct UnifiedWorkbenchShell: View {
                 embedsNavigationStack: false
             )
         case .session:
-            sessionDetail(layout: layout, tokens: tokens)
+            sessionDetail(
+                layout: layout,
+                tokens: tokens,
+                shouldHideTabBar: WorkbenchPageLayout.shouldHideSessionDetailTabBar(
+                    hasBottomTabBar: hasBottomTabBar
+                )
+            )
         case .subagent(let parentID, let childID):
             if let relation = selectedRelatedSubagent,
                relation.id == childID,
@@ -1137,7 +1154,11 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func sessionDetail(layout: WorkbenchLayout, tokens: ThemeTokens) -> some View {
+    private func sessionDetail(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        shouldHideTabBar: Bool = true
+    ) -> some View {
         let detailSessionID = navigationState.route.detailSessionID
         let canPresentSessionDetail = navigationState.canPresentSessionDetail(
             selectedSessionID: sessionStore.selectedSessionID
@@ -1279,7 +1300,7 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(shouldHideTabBar ? .hidden : .visible, for: .tabBar)
         .modifier(
             SessionNavigationMaterialModifier(
                 usesCompactNavigation: layout.usesCompactNavigation,

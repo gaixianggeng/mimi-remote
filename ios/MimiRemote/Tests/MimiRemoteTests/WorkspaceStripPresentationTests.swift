@@ -47,6 +47,15 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
+    func testSessionDetailOnlyHidesBottomTabBar() {
+        XCTAssertTrue(
+            WorkbenchPageLayout.shouldHideSessionDetailTabBar(hasBottomTabBar: true)
+        )
+        XCTAssertFalse(
+            WorkbenchPageLayout.shouldHideSessionDetailTabBar(hasBottomTabBar: false)
+        )
+    }
+
     func testBottomTabBarAlwaysKeepsRuntimeMenuAndInlineNewSessionEntry() {
         XCTAssertFalse(
             WorkspaceStripLayout.usesInlineRuntimePicker(
