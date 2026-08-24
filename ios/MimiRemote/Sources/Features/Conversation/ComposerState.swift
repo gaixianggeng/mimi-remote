@@ -359,6 +359,19 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
         ComposerPermissionMode(rawValue: rawValue) ?? defaultMode
     }
 
+    init?(builtInPermissionProfileID rawValue: String) {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case ":read-only":
+            self = .readOnly
+        case ":workspace":
+            self = .requestApproval
+        case ":danger-full-access":
+            self = .fullAccess
+        default:
+            return nil
+        }
+    }
+
     init(options: CodexAppServerTurnOptions) {
         let reviewer = options.approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
         if options.sandboxMode == .readOnly {
@@ -426,8 +439,10 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 
     var approvalPolicy: CodexAppServerApprovalPolicy {
         switch self {
-        case .requestApproval, .readOnly, .autoApprove, .fullAccess:
+        case .requestApproval, .readOnly, .autoApprove:
             return .onRequest
+        case .fullAccess:
+            return .never
         }
     }
 
@@ -487,7 +502,7 @@ struct ComposerPermissionSelectionSnapshot: Equatable {
         } else if let profileID {
             options.preservesThreadPermissionSettings = false
             options.permissionProfileID = profileID
-            options.approvalPolicy = .onRequest
+            options.approvalPolicy = .forPermissionProfileID(profileID)
             options.approvalsReviewer = "user"
             options.networkAccess = false
         } else {

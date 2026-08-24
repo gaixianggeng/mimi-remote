@@ -1406,21 +1406,24 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 		}
 	}
 	workspaceWrite := false
+	fullAccess := false
 	if method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params) {
 		// 只沿用已有 Thread 的文件系统 sandbox / permission profile。远端审批策略仍必须
 		// 由可信 gateway 显式覆盖，不能继承本地创建 Thread 时可能使用的 never。
 	} else if runtimeID == "codex" {
 		if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
 			safe["permissions"] = profileID
+			fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(safe["sandbox"].(string)) == "dangerfullaccess"
 		}
 	} else {
 		safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 		workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
+	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	return safe
 }
 
@@ -1468,14 +1471,17 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 		safe["collaborationMode"] = collaborationMode
 	}
 	workspaceWrite := false
+	fullAccess := false
 	if !gatewayPreservesThreadPermissionSettings(params) {
 		if runtimeID == "codex" {
 			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
 				safe["permissions"] = profileID
+				fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
 			} else {
 				safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 				sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 				workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+				fullAccess = normalizePolicyValue(sandboxPolicy["type"].(string)) == "dangerfullaccess"
 			}
 		} else {
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
@@ -1483,7 +1489,7 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
 		}
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
+	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort
@@ -1660,12 +1666,17 @@ func sanitizedGatewayCollaborationMode(raw any) (map[string]any, bool) {
 	}, true
 }
 
-func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool) (string, string) {
+func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool, fullAccess bool) (string, string) {
 	policy, _ := gatewayStringParam(params, "approvalPolicy")
 	reviewer, _ := gatewayStringParam(params, "approvalsReviewer")
+	// 无审批只接受用户显式选择的完全访问组合；validateGatewayPolicyParams 会在改写前
+	// 拒绝其它 sandbox、Claude runtime 和 config 注入，避免缺省值被解释为授权。
+	if fullAccess && normalizePolicyValue(policy) == "never" {
+		return "never", "user"
+	}
 	// 自动审批只允许在归一化后的 workspace-write 沙盒中生效。审批与沙盒在这里强绑定，
 	// 防止已认证客户端拼出 auto_review + danger-full-access 绕过用户确认。
-	// never / networkAccess 仍由 validateGatewayPolicyParams 统一拦截。
+	// networkAccess 仍由 validateGatewayPolicyParams 统一拦截。
 	if workspaceWrite && normalizePolicyValue(policy) == "onrequest" && reviewer == "auto_review" {
 		return "on-request", reviewer
 	}

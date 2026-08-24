@@ -1773,7 +1773,6 @@ struct ComposerView: View {
             selectedMode: composerState.permissionMode,
             selectedProfileID: selectedPermissionProfileID,
             activeProfileID: activePermissionProfile?.id,
-            permissionWireSummary: permissionWireSummary,
             permissionAccessibilityValue: permissionTitle,
             tint: permissionTint,
             reduceMotion: reduceMotion,
@@ -1886,10 +1885,14 @@ struct ComposerView: View {
     }
 
     func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: profile.id) {
+            setPermissionMode(builtInMode)
+            return
+        }
         composerState.updateTurnOptions { options in
             options.preservesThreadPermissionSettings = false
             options.permissionProfileID = profile.id
-            options.approvalPolicy = .onRequest
+            options.approvalPolicy = .forPermissionProfileID(profile.id)
             options.approvalsReviewer = "user"
             options.networkAccess = false
         }
@@ -1910,7 +1913,10 @@ struct ComposerView: View {
         else {
             return []
         }
-        return sessionStore.appServerPermissionProfiles
+        // 三个内建档案与上方用户权限模式完全重复，只把真正的自定义档案放进高级入口。
+        return sessionStore.appServerPermissionProfiles.filter {
+            ComposerPermissionMode(builtInPermissionProfileID: $0.id) == nil
+        }
     }
 
     var selectedPermissionProfileID: String? {
@@ -1933,6 +1939,14 @@ struct ComposerView: View {
     func clampPermissionProfileToAvailableOptions() {
         guard let explicitProfileID = composerState.turnOptions.permissionProfileID?
             .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty else { return }
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: explicitProfileID) {
+            composerState.applyPermissionMode(builtInMode)
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            return
+        }
         guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
             composerState.updateTurnOptions { options in
                 options.permissionProfileID = nil
