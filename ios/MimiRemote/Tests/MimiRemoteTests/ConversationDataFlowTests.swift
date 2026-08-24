@@ -3059,6 +3059,26 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(CodexAppServerApprovalPolicy.forPermissionProfileID(":workspace"), .onRequest)
     }
 
+    func testUnavailableCustomPermissionProfileFallsBackWithoutEscalation() {
+        var state = ComposerState()
+        state.updateTurnOptions { options in
+            options.preservesThreadPermissionSettings = false
+            options.permissionProfileID = "team-profile"
+            options.approvalPolicy = .onRequest
+            options.approvalsReviewer = "user"
+            options.sandboxMode = .dangerFullAccess
+        }
+
+        state.resetUnavailablePermissionProfile()
+
+        XCTAssertNil(state.turnOptions.permissionProfileID)
+        XCTAssertFalse(state.turnOptions.preservesThreadPermissionSettings)
+        XCTAssertEqual(state.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(state.turnOptions.approvalsReviewer, "user")
+        XCTAssertEqual(state.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertFalse(state.turnOptions.networkAccess)
+    }
+
     func testComposerPermissionSelectionCacheKeepsExistingThreadPreservationUntilExplicitOverride() throws {
         var state = ComposerState()
         state.preserveThreadPermissionSettings()

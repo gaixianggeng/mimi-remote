@@ -1948,9 +1948,11 @@ struct ComposerView: View {
             return
         }
         guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
-            composerState.updateTurnOptions { options in
-                options.permissionProfileID = nil
-            }
+            composerState.resetUnavailablePermissionProfile()
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             return
         }
     }

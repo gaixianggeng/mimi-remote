@@ -623,6 +623,15 @@ struct ComposerState {
         }
     }
 
+    mutating func resetUnavailablePermissionProfile() {
+        guard turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty != nil
+        else { return }
+        // 自定义档案消失时不能只清 ID；底层 sandbox 可能仍是完全访问默认值，
+        // 下一次提交会因此升级为无审批。明确回退到受控工作区和用户审批。
+        applyPermissionMode(.requestApproval)
+    }
+
     mutating func updateTurnOptions(_ update: (inout CodexAppServerTurnOptions) -> Void) {
         var updatedOptions = turnOptions
         update(&updatedOptions)
