@@ -328,8 +328,13 @@ extension ThemeTokens {
         }
     }
 
-    /// 禁用发送仍保留主行动的位置和轮廓，但用低饱和暖色明确表达“尚不可发送”。
+    /// 禁用发送仍保留主行动的位置和轮廓，但用低对比中性面明确表达“尚不可发送”。
     /// 这比把按钮清空成普通工具键更稳定，也避免底栏出现六个同权重入口。
+    ///
+    /// 曾经用的是低饱和暖粉。工具键还带着键帽底色时它只是“另一块浅色”；
+    /// 键帽全部去掉之后，输入卡里唯一的色块就是它，一枚和页面上任何东西都不同族的
+    /// 杏粉圆——空草稿又恰恰是进入会话的默认状态。这里改回中性灰阶：
+    /// 它比输入卡白面暗一档因而形状清楚，又不引入第二个色相。
     var composerInactiveActionSurface: Color {
         guard preset == .codex else {
             return accent.opacity(0.20)
@@ -337,12 +342,16 @@ extension ThemeTokens {
         switch resolvedScheme {
         case .light:
             return Color(
-                red: 234.0 / 255.0,
-                green: 218.0 / 255.0,
-                blue: 210.0 / 255.0
+                red: 237.0 / 255.0,
+                green: 235.0 / 255.0,
+                blue: 231.0 / 255.0
             )
         case .dark:
-            return Color(red: 0.310, green: 0.255, blue: 0.282)
+            return Color(
+                red: 55.0 / 255.0,
+                green: 52.0 / 255.0,
+                blue: 56.0 / 255.0
+            )
         }
     }
 
@@ -359,10 +368,12 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
+            // 与中性禁用底同族的深灰，压在 237/235/231 上约 5:1，
+            // 明显可读又远弱于启用态的白压深紫（约 14:1）。
             return Color(
-                red: 122.0 / 255.0,
-                green: 85.0 / 255.0,
-                blue: 112.0 / 255.0
+                red: 99.0 / 255.0,
+                green: 98.0 / 255.0,
+                blue: 95.0 / 255.0
             )
         case .dark:
             return Color.white.opacity(0.62)

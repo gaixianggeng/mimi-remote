@@ -789,11 +789,15 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertTrue(ComposerStatusTrayPlacement.embedded.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.visualHeight, 36)
+        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.disclosureHitSize, CGSize(width: 44, height: 44))
 
         XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
         XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.visualHeight, 44)
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.disclosureHitSize, CGSize(width: 44, height: 44))
     }
 
     func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
