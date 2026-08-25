@@ -106,6 +106,10 @@ func TestValidateSharedDaemonCodeSignatureMetadataForNodeAndCodex(t *testing.T) 
 }
 
 func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
+	original := sharedDaemonResolveResponsibleSupervisor
+	sharedDaemonResolveResponsibleSupervisor = func() (string, error) { return "", nil }
+	t.Cleanup(func() { sharedDaemonResolveResponsibleSupervisor = original })
+
 	nodeBin := "/opt/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 	codexBin := "/opt/codex bin/codex"
 	rendered, err := renderSharedDaemonLaunchAgent(
@@ -158,6 +162,9 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 		t.Fatalf("plist 必须固定 CODEX_HOME：\n%s", content)
 	}
 	for _, key := range sharedDaemonStrippedEnvKeys {
+		if key == sharedDaemonPinnedCodexEnvironmentKey {
+			continue
+		}
 		// 空值覆盖 launchd 用户域中 Desktop 写入的值，同时避免 shell wrapper。
 		emptyEntry := "<key>" + key + "</key>\n\t\t<string></string>"
 		if !strings.Contains(content, emptyEntry) {
@@ -166,6 +173,9 @@ func TestRenderSharedDaemonLaunchAgentUsesSignedNodeSupervisor(t *testing.T) {
 	}
 	if value := sharedDaemonPlistStringValue(rendered, "NODE_OPTIONS"); value != "" {
 		t.Fatalf("supervisor 必须清空继承的 NODE_OPTIONS，实际=%q", value)
+	}
+	if value := sharedDaemonPlistStringValue(rendered, sharedDaemonPinnedCodexEnvironmentKey); value != codexBin {
+		t.Fatalf("非 App 启动必须把已验证 codex 路径固定到 supervisor 环境，实际=%q", value)
 	}
 }
 
@@ -2166,6 +2176,51 @@ func TestSharedDaemonOperationLockSerializesCallers(t *testing.T) {
 	}
 	if !secondEntered.Load() {
 		t.Fatal("第二个操作未执行")
+	}
+}
+
+func TestStartIndependentModeRuntimeKeepsOperationLockThroughStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- StartIndependentModeRuntime(
+			context.Background(),
+			func() error { return nil },
+			func() error {
+				close(startEntered)
+				<-releaseStart
+				return nil
+			},
+		)
+	}()
+	<-startEntered
+
+	var competingEntered atomic.Bool
+	competingDone := make(chan error, 1)
+	go func() {
+		_, err := withSharedDaemonOperationLock(context.Background(), func() (LocalDaemonStatus, error) {
+			competingEntered.Store(true)
+			return LocalDaemonStatus{}, nil
+		})
+		competingDone <- err
+	}()
+	time.Sleep(150 * time.Millisecond)
+	if competingEntered.Load() {
+		t.Fatal("模式切换不能插入独立 runtime 的最终复核与启动")
+	}
+	close(releaseStart)
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-competingDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime 启动结束后模式切换应取得 operation lock")
 	}
 }
 

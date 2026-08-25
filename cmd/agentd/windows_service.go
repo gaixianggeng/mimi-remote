@@ -99,7 +99,13 @@ func stopWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
 						for time.Now().Before(deadline) {
 							if _, err := os.Stat(pidPath); errors.Is(err, os.ErrNotExist) {
 								_ = os.Remove(stopPath)
-								return nil
+								// The service removes its PID file during graceful shutdown, but
+								// Task Scheduler may still report the old instance as Running for a
+								// short window. With MultipleInstances=IgnoreNew, an immediate
+								// restart would then be accepted as a no-op and leave the service
+								// offline. Fall through and synchronize the scheduler state before
+								// returning to the caller.
+								return waitForWindowsManagedTaskStopped(schtasks, stdout, stderr, 10*time.Second)
 							}
 							time.Sleep(100 * time.Millisecond)
 						}
@@ -111,7 +117,59 @@ func stopWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
 			}
 		}
 	}
-	return runWindowsTaskAction(schtasks, "End", stdout, stderr, true)
+	return waitForWindowsManagedTaskStopped(schtasks, stdout, stderr, 10*time.Second)
+}
+
+func waitForWindowsManagedTaskStopped(
+	schtasks string,
+	stdout, stderr io.Writer,
+	timeout time.Duration,
+) error {
+	if err := runWindowsTaskAction(schtasks, "End", stdout, stderr, true); err != nil {
+		return err
+	}
+	powershell, err := windowsLookPath("powershell.exe")
+	if err != nil {
+		return fmt.Errorf("未找到 powershell.exe，无法等待 Windows 当前用户计划任务停止：%w", err)
+	}
+	const stateScript = `$task = Get-ScheduledTask -TaskName $env:MIMI_REMOTE_WINDOWS_TASK_NAME -ErrorAction Stop; [Console]::Out.Write([string]$task.State)`
+	deadline := time.Now().Add(timeout)
+	for {
+		var commandStdout, commandStderr bytes.Buffer
+		cmd := windowsExecCommand(powershell, "-NoProfile", "-NonInteractive", "-Command", stateScript)
+		cmd.Env = append(cmd.Environ(), "MIMI_REMOTE_WINDOWS_TASK_NAME="+windowsManagedTaskName)
+		cmd.Stdout = &commandStdout
+		cmd.Stderr = &commandStderr
+		err := cmd.Run()
+		detail := commandStdout.String() + commandStderr.String()
+		if err != nil {
+			_, _ = io.Copy(stdout, &commandStdout)
+			_, _ = io.Copy(stderr, &commandStderr)
+			return fmt.Errorf(
+				"查询 Windows 当前用户计划任务 %q 状态失败：%w%s",
+				windowsManagedTaskName,
+				err,
+				formatWindowsCommandDetail(detail),
+			)
+		}
+		switch strings.ToLower(strings.TrimSpace(commandStdout.String())) {
+		case "ready", "disabled":
+			return nil
+		case "running", "queued":
+			// Keep polling below. /End only submits the stop request, while an
+			// IgnoreNew task cannot safely be restarted until this state clears.
+		default:
+			return fmt.Errorf(
+				"Windows 当前用户计划任务 %q 返回了未知状态%s",
+				windowsManagedTaskName,
+				formatWindowsCommandDetail(detail),
+			)
+		}
+		if timeout <= 0 || time.Now().After(deadline) {
+			return fmt.Errorf("等待 Windows 当前用户计划任务 %q 停止超时", windowsManagedTaskName)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func forceKillWindowsProcessTree(pid string, stdout, stderr io.Writer) error {

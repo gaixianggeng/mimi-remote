@@ -25,6 +25,8 @@ struct AgentCommandClient: Sendable {
 }
 
 extension AgentCommandClient {
+    static let confirmedCodexSharingDisableTimeout: Duration = .seconds(115)
+
     static func live(
         executor: ProcessExecutor = .shared,
         bundle: Bundle = .main
@@ -152,9 +154,9 @@ extension AgentCommandClient {
                     from: try await execute(
                         binary: binary,
                         arguments: codexSharingDisableAfterDesktopExitArguments(),
-                        // 需要等待 Desktop 退出后的 daemon stop、socket/PID
-                        // 复核和配置提交；不能在事务完成前终止控制进程。
-                        timeout: .seconds(50),
+                        // Go 内层会分别等待跨进程锁并执行最多 90 秒的关闭事务；
+                        // 客户端再留出命令启动和 JSON 收尾时间，不能提前终止。
+                        timeout: confirmedCodexSharingDisableTimeout,
                         forceKillAfterTimeout: true
                     )
                 )

@@ -46,14 +46,16 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 // broker 与一对一代理必须共用同一套初始化，否则两条路径的裁剪规则会悄悄分叉。
 func newAppServerGatewayPolicy(r *Router, runtimeID string) *appServerGatewayPolicy {
 	return &appServerGatewayPolicy{
-		router:                r,
-		runtimeID:             runtimeID,
-		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+		router:                 r,
+		runtimeID:              runtimeID,
+		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests:  map[string]appServerGatewayPendingClientRequest{},
+		pendingServerRequests:  map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:         map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:         map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:         map[string]appServerGatewayAllowedThread{},
+		threadWriterCandidates: map[string]struct{}{},
+		pendingThreadWriters:   map[string]appServerGatewayPendingThreadWriter{},
 	}
 }
 
@@ -129,7 +131,9 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 		}
 		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
 		writeStart := time.Now()
-		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {
+		if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
+			return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
+		}); err != nil {
 			monitor.cancelRPCRequest(requestID)
 			return gatewayCloseReason("upstream_write", err)
 		}

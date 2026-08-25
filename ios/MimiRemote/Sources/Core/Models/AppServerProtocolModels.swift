@@ -455,6 +455,15 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "model/list")
     }
 
+    func permissionProfileList(cwd: String, limit: Int? = nil, cursor: String? = nil) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "permissionProfile/list", params: CodexAppServerJSONValue.objectValue([
+            "cwd": .string(path),
+            "limit": limit.map { .int(Int64($0)) },
+            "cursor": cursor.map { .string($0) }
+        ]))
+    }
+
     func skillsList(cwd: String, forceReload: Bool = false) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "skills/list", params: .object([
@@ -792,14 +801,23 @@ struct CodexAppServerRequestBuilder {
         if let cwd = params["cwd"]??.stringValue, cwd != projectPath {
             throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.cwd_must_be_from_project_allowlist"))
         }
-        if normalizedDangerToken(params["approvalPolicy"]??.stringValue) == "never" {
-            throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.approvalpolicy_never_is_prohibited"))
+        if normalizedDangerToken(params["approvalPolicy"]??.stringValue) == "never",
+           !usesExplicitFullAccess(params) {
+            throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.approvalpolicy_never_requires_full_access"))
         }
         try validateNoDangerousConfig(params["config"] ?? nil)
+        if let profileID = params["permissions"]??.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard !profileID.isEmpty, profileID.utf8.count <= 256 else {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_id_is_invalid"))
+            }
+            if (params["sandbox"] ?? nil) != nil || (params["sandboxPolicy"] ?? nil) != nil {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_cannot_be_combined_with_legacy_sandbox"))
+            }
+        }
         guard let sandbox = params["sandboxPolicy"]??.objectValue else {
             return
         }
-        // 默认允许用户批准下的最高文件系统权限，但仍不默认打开网络访问。
+        // 完全访问可以显式关闭审批，但仍不默认打开网络访问。
         if sandbox["networkAccess"]?.boolValue == true {
             throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.remote_network_access_is_prohibited_by_default"))
         }
@@ -819,6 +837,18 @@ struct CodexAppServerRequestBuilder {
             .lowercased()
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: "_", with: "")
+    }
+
+    private func usesExplicitFullAccess(_ params: [String: CodexAppServerJSONValue?]) -> Bool {
+        if params["permissions"]??.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == ":danger-full-access" {
+            return true
+        }
+        if normalizedDangerToken(params["sandbox"]??.stringValue) == "dangerfullaccess" {
+            return true
+        }
+        return normalizedDangerToken(params["sandboxPolicy"]??.objectValue?["type"]?.stringValue) == "dangerfullaccess"
     }
 
     private func collectWorkspaceInputPaths(_ input: CodexAppServerJSONValue?) throws -> [String] {

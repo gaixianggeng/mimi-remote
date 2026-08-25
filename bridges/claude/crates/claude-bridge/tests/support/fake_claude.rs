@@ -29,6 +29,12 @@
 //! - `FAKE_CLAUDE_INIT_DELAY_MS`: optional delay before emitting the
 //!   `system/init`. Defaults to 0. Used by tests that need to exercise
 //!   `wait_for_init` slow paths.
+//! - `FAKE_CLAUDE_EXIT_ON_CONTROL_ONCE`: optional marker path. The first fake
+//!   generation atomically creates the marker and exits after receiving a
+//!   control request but before replying. Later generations reply normally.
+//! - `FAKE_CLAUDE_EXIT_ON_CONTROL_ALWAYS`: when non-empty, every generation
+//!   exits after receiving a control request. This verifies that recovery
+//!   changes transport instead of repeating the same failed request.
 //! - A script line `{"type":"exit_once","marker":"/tmp/path"}` atomically
 //!   creates `marker` and exits the first fake process that reaches it.
 //!   Later processes skip the directive. This models one crashed Claude
@@ -123,6 +129,9 @@ fn main() -> ExitCode {
         };
 
         if inbound.get("type").and_then(Value::as_str) == Some("control_request") {
+            if exit_on_control() {
+                return ExitCode::from(24);
+            }
             let request_id = inbound
                 .get("request_id")
                 .and_then(Value::as_str)
@@ -297,18 +306,33 @@ fn run_script<W: Write>(out: &mut W, steps: &[ScriptStep], session_id: &str, tur
             }
             ScriptStep::Sleep(d) => thread::sleep(*d),
             ScriptStep::ExitOnce(marker) => {
-                if fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(marker)
-                    .is_ok()
-                {
+                if create_marker_once(marker) {
                     return true;
                 }
             }
         }
     }
     false
+}
+
+fn exit_on_control() -> bool {
+    if env::var_os("FAKE_CLAUDE_EXIT_ON_CONTROL_ALWAYS")
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return true;
+    }
+    env::var_os("FAKE_CLAUDE_EXIT_ON_CONTROL_ONCE")
+        .filter(|path| !path.is_empty())
+        .is_some_and(|path| create_marker_once(std::path::Path::new(&path)))
+}
+
+fn create_marker_once(path: &std::path::Path) -> bool {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .is_ok()
 }
 
 fn substitute_session(value: &mut Value, session_id: &str) {

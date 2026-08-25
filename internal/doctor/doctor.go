@@ -402,6 +402,21 @@ func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
 	if !commandExists(c.cfg.Codex.Bin) {
 		return Check{Name: "codex-app-server", OK: false, Message: "无法检查 Codex app-server 能力", Fix: "先安装 Codex CLI"}
 	}
+	versionSummary := ""
+	if runtime.GOOS == "windows" {
+		versionCtx, versionCancel := context.WithTimeout(ctx, 3*time.Second)
+		info, err := appserver.ValidateIndependentCodexRuntime(versionCtx, c.cfg.Codex.Bin)
+		versionCancel()
+		if err != nil {
+			return Check{
+				Name:    "codex-app-server",
+				OK:      false,
+				Message: "Codex CLI 不满足 Windows single-writer 安全基线",
+				Fix:     err.Error() + "；请选择或升级到兼容版本后运行 agentd doctor --fix",
+			}
+		}
+		versionSummary = fmt.Sprintf("（%s；%s）", info.Version, info.Path)
+	}
 	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(runCtx, c.cfg.Codex.Bin, "app-server", "--help").CombinedOutput()
@@ -426,7 +441,7 @@ func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
 		}
 		return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server Unix daemon 能力可用"}
 	}
-	return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server WebSocket 能力可用"}
+	return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server WebSocket 能力可用" + versionSummary}
 }
 
 func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {

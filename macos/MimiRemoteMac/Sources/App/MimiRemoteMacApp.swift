@@ -1,6 +1,18 @@
 import SwiftUI
 
+/// 同一个可执行文件有两种角色：默认是菜单栏 App，带 --codex-daemon-supervisor 时是
+/// 共享 Codex daemon 的无 UI TCC 责任进程（见 CodexDaemonSupervisor）。分叉必须发生在
+/// 触碰 SwiftUI 之前，否则 launchd 拉起的后台进程会连带初始化 AppKit。
 @main
+enum MimiRemoteMacMain {
+    static func main() {
+        if let command = CodexDaemonSupervisorInvocation.parse(CommandLine.arguments) {
+            CodexDaemonSupervisor.run(command)
+        }
+        MimiRemoteMacApp.main()
+    }
+}
+
 struct MimiRemoteMacApp: App {
     @State private var store: HostStore
 

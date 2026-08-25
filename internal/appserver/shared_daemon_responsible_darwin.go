@@ -1,0 +1,131 @@
+//go:build darwin
+
+package appserver
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// sharedDaemonResponsibleSupervisorFlag 是 Mimi App 主可执行文件进入无 UI
+// supervisor 模式的唯一开关。Swift 侧 CodexDaemonSupervisorInvocation.flag 必须
+// 使用同一个字面量，TestSharedDaemonResponsibleSupervisorContractMatchesSwift
+// 会直接读取 Swift 源码比对，避免两侧各自漂移。
+const sharedDaemonResponsibleSupervisorFlag = "--codex-daemon-supervisor"
+
+// 与 sharedDaemonResolveSupervisorNode 同样的替换点：测试可以在不安装真实
+// Mimi App 的前提下覆盖两种 ProgramArguments 形态。
+var sharedDaemonResolveResponsibleSupervisor = resolveSharedDaemonResponsibleSupervisor
+
+// resolveSharedDaemonResponsibleSupervisor 返回当前 agentd 所在 Mimi App bundle
+// 的主可执行文件。空路径且无错误表示当前确实不是 App 安装；已经命中 App 布局但
+// 主程序不可解析时返回错误，禁止静默降级到没有正确 TCC 责任进程的 node 链。
+//
+// 存在这一层的原因只有一个：macOS 的 TCC 授权按“责任进程”记账。launchd 直接拉起
+// 裸二进制时，责任进程就是它自己——node/codex 没有 Info.plist，永远弹不出授权框，
+// 也就永远拿不到照片图库这类需要显式授权的域（MIM-170 实测：桌面/文稿/下载可读，
+// 照片图库 EPERM）。把 App bundle 主可执行文件放在链条最上层后，责任进程变成
+// com.gaixianggeng.mimi.mac，它有 Info.plist 能弹窗、按 bundle ID 记账（App 升级
+// 或移动都不会失效），授权再沿进程链继承给 node 与 codex。
+//
+// 这确实让 Mimi 重新进入了 MIM-157 刻意断开的责任链，代价是实验模式下 Codex
+// Desktop 的文件访问会归因到 Mimi。但 MIM-157 真正踩的坑是 agentd 这个裸二进制按
+// 路径记账、App 一升级授权就失效；换成 bundle 记账后该问题不复存在。
+//
+// agentd 以 Homebrew 或开发构建等非 App 形态运行时返回空路径和 nil，调用方继续
+// 沿用只有 OpenAI node 的旧 ProgramArguments，不影响既有安装。
+func resolveSharedDaemonResponsibleSupervisor() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("解析 agentd 可执行文件失败：%w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", fmt.Errorf("解析 agentd 真实路径失败：%w", err)
+	}
+	bundle, ok := sharedDaemonAppBundleForResource(canonical)
+	if !ok {
+		return "", nil
+	}
+	supervisor, err := sharedDaemonBundleMainExecutable(bundle)
+	if err != nil {
+		return "", err
+	}
+	return supervisor, nil
+}
+
+// sharedDaemonAppBundleForResource 只认 <X>.app/Contents/Resources/<binary> 这一种
+// 布局。agentd 在 App 内的位置由 embed-agentd.sh 固定，用严格前缀匹配而不是逐级
+// 向上搜索 .app，可以避免把仓库或临时目录里同名路径误判成安装态 App。
+func sharedDaemonAppBundleForResource(binary string) (string, bool) {
+	resources := filepath.Dir(binary)
+	if filepath.Base(resources) != "Resources" {
+		return "", false
+	}
+	contents := filepath.Dir(resources)
+	if filepath.Base(contents) != "Contents" {
+		return "", false
+	}
+	bundle := filepath.Dir(contents)
+	if filepath.Ext(bundle) != ".app" {
+		return "", false
+	}
+	return bundle, true
+}
+
+// sharedDaemonBundleMainExecutable 按 Info.plist 的 CFBundleExecutable 取主程序。
+// Debug App 会在 Contents/MacOS 额外生成 debug/preview dylib，不能按目录内可执行
+// 文件数量猜测；发布包的唯一性仍由 check-macos-installer.sh 单独守住。
+func sharedDaemonBundleMainExecutable(bundle string) (string, error) {
+	infoPlist := filepath.Join(bundle, "Contents", "Info.plist")
+	content, err := os.ReadFile(infoPlist)
+	if err != nil {
+		return "", fmt.Errorf("读取 App Info.plist 失败：%w", err)
+	}
+	executableName := strings.TrimSpace(sharedDaemonPlistStringValue(content, "CFBundleExecutable"))
+	if executableName == "" || executableName != filepath.Base(executableName) || executableName == "." {
+		return "", fmt.Errorf("App Info.plist 的 CFBundleExecutable 无效")
+	}
+	directory := filepath.Join(bundle, "Contents", "MacOS")
+	candidate := filepath.Join(directory, executableName)
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("读取 App 主可执行文件属性失败：%w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("App 主可执行文件不可执行")
+	}
+	// 规范化后再写进 plist，避免 launchd 执行的目标与这里校验过的文件不是同一个。
+	canonical, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("解析 App 主可执行文件失败：%w", err)
+	}
+	canonicalDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil || filepath.Dir(canonical) != canonicalDirectory {
+		return "", fmt.Errorf("App 主可执行文件必须位于 Contents/MacOS")
+	}
+	return canonical, nil
+}
+
+// sharedDaemonLaunchAgentProgramArguments 组装 plist 真正执行的命令。
+//
+// 有 Mimi supervisor 时只向它传 node 与 codex 两个绝对路径，不传 -e 脚本：脚本正文
+// 一旦可以从命令行注入，任何同用户进程都能借 Mimi 的 TCC 授权执行任意 JS，等于把
+// 责任进程做成了权限旁路 gadget。Swift 侧持有自己的脚本副本并逐字段比对参数，
+// 只肯拉起 OpenAI 签名的 node 与 codex。
+//
+// 没有 Mimi supervisor 时（Homebrew / 开发构建）保持原样，由 launchd 直接执行
+// OpenAI 签名的 node supervisor。
+func sharedDaemonLaunchAgentProgramArguments(responsibleBin string, nodePath string, codexPath string) []string {
+	if strings.TrimSpace(responsibleBin) == "" {
+		return sharedDaemonSupervisorProgramArguments(nodePath, codexPath)
+	}
+	return []string{
+		responsibleBin,
+		sharedDaemonResponsibleSupervisorFlag,
+		nodePath,
+		codexPath,
+	}
+}

@@ -75,6 +75,224 @@ func TestAppServerThreadHandoffDelayedCompletionIsCanceledByNewTurn(t *testing.T
 	waitForThreadHandoffEntryCount(t, coordinator, 0)
 }
 
+func TestGatewayDisconnectSchedulesAndReclaimsWriterCandidateHandoff(t *testing.T) {
+	coordinator := &appServerThreadHandoffCoordinator{
+		entries: map[string]*appServerThreadHandoffEntry{},
+		run: func(ctx context.Context, _ string, _ func() bool) (appServerThreadHandoffOutcome, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	}
+	t.Cleanup(coordinator.Close)
+	router := &Router{threadHandoffs: coordinator}
+	policy := &appServerGatewayPolicy{
+		router:               router,
+		runtimeID:            "codex",
+		threadHandoffCapable: true,
+		pendingThreads:       map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-disconnected": {id: "thread-disconnected"},
+		},
+		threadWriterCandidates: map[string]struct{}{},
+		pendingThreadWriters:   map[string]appServerGatewayPendingThreadWriter{},
+	}
+	requestID := json.RawMessage(`"disconnect-resume"`)
+	if !policy.rememberPendingThreadWriter(
+		&requestID,
+		"thread/resume",
+		map[string]any{"threadId": "thread-disconnected"},
+	) {
+		t.Fatal("活动连接应记录已转发的 resume")
+	}
+	if err := policy.forwardClientFrameToUpstream(
+		[]byte(`{"id":"disconnect-resume"}`),
+		func() error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	policy.close()
+	waitForThreadHandoffEntryCount(t, coordinator, 1)
+	if err := router.reclaimCodexThreadHandoff(context.Background(), "thread-disconnected"); err != nil {
+		t.Fatalf("快速重连应取消尚未执行的断链 handoff：%v", err)
+	}
+	waitForThreadHandoffEntryCount(t, coordinator, 0)
+}
+
+func TestGatewayDisconnectHandoffRespectsRuntimeCapabilityAndTransport(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtimeID  string
+		transport  string
+		capable    bool
+		candidates map[string]struct{}
+	}{
+		{name: "missing capability", runtimeID: "codex", capable: false, candidates: map[string]struct{}{"thread-a": {}}},
+		{name: "shared daemon", runtimeID: "codex", transport: "unix", capable: true, candidates: map[string]struct{}{"thread-b": {}}},
+		{name: "claude runtime", runtimeID: "claude", capable: true, candidates: map[string]struct{}{"thread-c": {}}},
+		{name: "read only", runtimeID: "codex", capable: true, candidates: map[string]struct{}{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := &appServerThreadHandoffCoordinator{
+				entries: map[string]*appServerThreadHandoffEntry{},
+				run: func(context.Context, string, func() bool) (appServerThreadHandoffOutcome, error) {
+					return appServerThreadHandoffAlreadyReleased, nil
+				},
+			}
+			t.Cleanup(coordinator.Close)
+			policy := &appServerGatewayPolicy{
+				router: &Router{
+					cfg:            config.Config{AppServer: config.AppServerConfig{Transport: test.transport}},
+					threadHandoffs: coordinator,
+				},
+				runtimeID:              test.runtimeID,
+				threadHandoffCapable:   test.capable,
+				pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
+				threadWriterCandidates: test.candidates,
+			}
+			policy.close()
+			waitForThreadHandoffEntryCount(t, coordinator, 0)
+		})
+	}
+}
+
+func TestGatewayTracksOnlyWriterCreatingThreadMethods(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-turn":     {id: "thread-turn"},
+			"thread-readonly": {id: "thread-readonly", readOnly: true},
+		},
+		threadWriterCandidates: map[string]struct{}{},
+	}
+	readID := json.RawMessage(`"read"`)
+	if !policy.rememberPendingThreadWriter(&readID, "thread/read", map[string]any{"threadId": "thread-read"}) {
+		t.Fatal("普通只读请求不应被拒绝")
+	}
+	if len(policy.threadWriterCandidates) != 0 {
+		t.Fatalf("纯 thread/read 不得成为 writer 候选：%v", policy.threadWriterCandidates)
+	}
+	resumeID := json.RawMessage(`"resume-readonly"`)
+	if !policy.rememberPendingThreadWriter(&resumeID, "thread/resume", map[string]any{"threadId": "thread-readonly"}) {
+		t.Fatal("只读 resume 不应被 close barrier 拒绝")
+	}
+	if len(policy.pendingThreadWriters) != 0 {
+		t.Fatalf("只读 thread/resume 不得成为 writer 候选：%v", policy.pendingThreadWriters)
+	}
+	turnID := json.RawMessage(`"turn"`)
+	if !policy.rememberPendingThreadWriter(&turnID, "turn/start", map[string]any{"threadId": "thread-turn"}) {
+		t.Fatal("活动连接应记录已转发的 turn/start")
+	}
+	pending := policy.pendingThreadWriters[gatewayRequestIDKey(&turnID)]
+	if len(policy.threadWriterCandidates) != 0 || pending.threadID != "thread-turn" || pending.forwarded {
+		t.Fatalf("未收到响应的 turn/start 只能进入 pending：confirmed=%v pending=%v", policy.threadWriterCandidates, policy.pendingThreadWriters)
+	}
+	policy.completePendingThreadWriter(&appServerGatewayFrame{ID: &turnID, Result: json.RawMessage(`{}`)})
+	policy.rememberThreadWriterCandidateLocked("thread/start", "thread-new")
+	if len(policy.threadWriterCandidates) != 2 {
+		t.Fatalf("resume/start 路径应记录 writer 候选：%v", policy.threadWriterCandidates)
+	}
+}
+
+func TestGatewayRejectedWriterRequestDoesNotBecomeConfirmedCandidate(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		allowedThreads:         map[string]appServerGatewayAllowedThread{"desktop-owned": {id: "desktop-owned"}},
+		threadWriterCandidates: map[string]struct{}{},
+		pendingThreadWriters:   map[string]appServerGatewayPendingThreadWriter{},
+	}
+	requestID := json.RawMessage(`"resume-rejected"`)
+	if !policy.rememberPendingThreadWriter(
+		&requestID,
+		"thread/resume",
+		map[string]any{"threadId": "desktop-owned"},
+	) {
+		t.Fatal("活动连接应记录待确认的 resume")
+	}
+	policy.completePendingThreadWriter(&appServerGatewayFrame{
+		ID:    &requestID,
+		Error: json.RawMessage(`{"code":-32600,"message":"already has an active writer"}`),
+	})
+	if len(policy.pendingThreadWriters) != 0 || len(policy.threadWriterCandidates) != 0 {
+		t.Fatalf("明确拒绝的 resume 不得触发断链 handoff：confirmed=%v pending=%v", policy.threadWriterCandidates, policy.pendingThreadWriters)
+	}
+}
+
+func TestGatewayUpstreamWriteFailureDoesNotScheduleDisconnectHandoff(t *testing.T) {
+	coordinator := &appServerThreadHandoffCoordinator{
+		entries: map[string]*appServerThreadHandoffEntry{},
+		run: func(context.Context, string, func() bool) (appServerThreadHandoffOutcome, error) {
+			return appServerThreadHandoffAlreadyReleased, nil
+		},
+	}
+	t.Cleanup(coordinator.Close)
+	policy := &appServerGatewayPolicy{
+		router:               &Router{threadHandoffs: coordinator},
+		runtimeID:            "codex",
+		threadHandoffCapable: true,
+		pendingThreads:       map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-write-failed": {id: "thread-write-failed"},
+		},
+		pendingThreadWriters: map[string]appServerGatewayPendingThreadWriter{},
+	}
+	requestID := json.RawMessage(`"write-failed"`)
+	if !policy.rememberPendingThreadWriter(
+		&requestID,
+		"turn/start",
+		map[string]any{"threadId": "thread-write-failed"},
+	) {
+		t.Fatal("活动连接应暂存待写入的 turn/start")
+	}
+	err := policy.forwardClientFrameToUpstream(
+		[]byte(`{"id":"write-failed"}`),
+		func() error { return errors.New("upstream closed") },
+	)
+	if err == nil {
+		t.Fatal("upstream 写入失败应返回错误")
+	}
+	policy.close()
+	waitForThreadHandoffEntryCount(t, coordinator, 0)
+}
+
+func TestGatewayResumeResponseDoesNotScheduleReadOnlyRelatedThreadHandoff(t *testing.T) {
+	coordinator := &appServerThreadHandoffCoordinator{
+		entries: map[string]*appServerThreadHandoffEntry{},
+		run: func(ctx context.Context, _ string, _ func() bool) (appServerThreadHandoffOutcome, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	}
+	t.Cleanup(coordinator.Close)
+	router := &Router{
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		threadHandoffs: coordinator,
+	}
+	createdAt := time.Now()
+	pending := appServerGatewayPendingThreadRequest{method: "thread/resume", createdAt: createdAt}
+	policy := &appServerGatewayPolicy{
+		router:                 router,
+		runtimeID:              "codex",
+		threadHandoffCapable:   true,
+		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{"resume": pending},
+		allowedThreads:         map[string]appServerGatewayAllowedThread{},
+		threadWriterCandidates: map[string]struct{}{},
+	}
+	policy.completePendingThreadResponse("resume", pending, []appServerGatewayAllowedThread{
+		{id: "thread-parent", scopeID: "scope", runtimeID: "codex"},
+		{id: "thread-child", scopeID: "scope", runtimeID: "codex", readOnly: true},
+	})
+	policy.close()
+
+	waitForThreadHandoffEntryCount(t, coordinator, 1)
+	coordinator.mu.Lock()
+	_, parentScheduled := coordinator.entries["thread-parent"]
+	_, childScheduled := coordinator.entries["thread-child"]
+	coordinator.mu.Unlock()
+	if !parentScheduled || childScheduled {
+		t.Fatalf("断链只应交接可写父线程：parent=%t child=%t", parentScheduled, childScheduled)
+	}
+}
+
 func TestAppServerTurnCompletedNotificationSchedulesTerminalHandoff(t *testing.T) {
 	coordinator := &appServerThreadHandoffCoordinator{
 		entries: map[string]*appServerThreadHandoffEntry{},
@@ -85,16 +303,23 @@ func TestAppServerTurnCompletedNotificationSchedulesTerminalHandoff(t *testing.T
 	}
 	t.Cleanup(coordinator.Close)
 	policy := &appServerGatewayPolicy{
-		router:               &Router{threadHandoffs: coordinator},
-		runtimeID:            "codex",
-		threadHandoffCapable: true,
-		allowedThreads:       map[string]appServerGatewayAllowedThread{"thread-terminal": {id: "thread-terminal"}},
+		router:                 &Router{threadHandoffs: coordinator},
+		runtimeID:              "codex",
+		threadHandoffCapable:   true,
+		allowedThreads:         map[string]appServerGatewayAllowedThread{"thread-terminal": {id: "thread-terminal"}},
+		threadWriterCandidates: map[string]struct{}{"thread-terminal": {}},
+		pendingThreadWriters: map[string]appServerGatewayPendingThreadWriter{
+			"pending-terminal": {threadID: "thread-terminal", forwarded: true},
+		},
 	}
 	payload := []byte(`{"method":"turn/completed","params":{"threadId":"thread-terminal","turnId":"turn-1"}}`)
 
 	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
 	if policyErr != nil || !forward || string(forwarded) != string(payload) {
 		t.Fatalf("turn/completed 应原样透传并调度 handoff，forward=%t err=%+v payload=%s", forward, policyErr, forwarded)
+	}
+	if len(policy.threadWriterCandidates) != 0 || len(policy.pendingThreadWriters) != 0 {
+		t.Fatalf("terminal 已接管调度后必须清理 close-handoff 候选：confirmed=%v pending=%v", policy.threadWriterCandidates, policy.pendingThreadWriters)
 	}
 	coordinator.mu.Lock()
 	entry := coordinator.entries["thread-terminal"]

@@ -2693,6 +2693,25 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.compactWorkspacePath, [.session("session-1")])
     }
 
+    func testWorkbenchSessionDetailWaitsForMatchingStoreSelection() {
+        for source in [WorkbenchRootPage.sessions, .workspaces] {
+            var state = WorkbenchNavigationState(route: source == .sessions ? .sessions : .workspaces)
+
+            _ = state.reduce(
+                .open(.session("session-target"), source: source),
+                usesCompactNavigation: true,
+                selectedSessionID: "session-previous"
+            )
+
+            XCTAssertFalse(
+                state.canPresentSessionDetail(selectedSessionID: "session-previous"),
+                "从 \(source) 进入详情后不得短暂展示上一个会话"
+            )
+            XCTAssertFalse(state.canPresentSessionDetail(selectedSessionID: nil))
+            XCTAssertTrue(state.canPresentSessionDetail(selectedSessionID: "session-target"))
+        }
+    }
+
     func testWorkbenchNavigationPushesSubagentWhileKeepingParentSelected() {
         var state = WorkbenchNavigationState(
             route: .session(id: "parent-thread", source: .sessions)
@@ -2878,6 +2897,20 @@ extension ConversationDataFlowTests {
                 XCTAssertTrue(state.compactWorkspacePath.isEmpty)
             }
         }
+    }
+
+    func testWorkbenchNavigationPreparesCompactWorkspaceBeforeLayoutTransition() {
+        var state = WorkbenchNavigationState(route: .sessions)
+
+        _ = state.reduce(
+            .open(.workspaces, source: nil),
+            usesCompactNavigation: false,
+            selectedSessionID: nil
+        )
+
+        XCTAssertEqual(state.route, .workspaces)
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertTrue(state.compactWorkspacePath.isEmpty)
     }
 
     func testWorkbenchNavigationRestoresSessionIntoItsSourceStack() {

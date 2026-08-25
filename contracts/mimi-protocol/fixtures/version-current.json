@@ -6,11 +6,17 @@
   "protocol_revision": 2,
   "minimum_client_protocol_revision": 1,
   "capabilities": [
-    "file_upload_v1"
+    "file_upload_v1",
+    "codex_remote_full_access_v1"
   ],
   "capability_statuses": [
     {
       "name": "file_upload_v1",
+      "state": "enabled",
+      "reason": "available"
+    },
+    {
+      "name": "codex_remote_full_access_v1",
       "state": "enabled",
       "reason": "available"
     }

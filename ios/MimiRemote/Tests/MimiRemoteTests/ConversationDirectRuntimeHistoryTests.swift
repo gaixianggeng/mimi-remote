@@ -1780,6 +1780,11 @@ extension ConversationDataFlowTests {
         let resumeRequest = try decodeAppServerRequest(resumeMessages[3])
         XCTAssertEqual(resumeRequest.method, "thread/resume", "首次 turn/start 前应先在当前连接 resume thread")
         XCTAssertEqual(resumeRequest.params?["threadId"]?.stringValue, "thr_idle_guard")
+        XCTAssertEqual(resumeRequest.params?["mimiPreserveThreadPermissions"]?.boolValue, true)
+        XCTAssertNil(resumeRequest.params?["approvalPolicy"])
+        XCTAssertNil(resumeRequest.params?["approvalsReviewer"])
+        XCTAssertNil(resumeRequest.params?["permissions"])
+        XCTAssertNil(resumeRequest.params?["sandbox"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"result":{"thread":{"id":"thr_idle_guard","sessionId":"thr_idle_guard","preview":"上次的会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-guard","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"上次的会话","turns":[]}}}"#)
 
         let firstTurnMessages = try await waitForFakeAppServerMessages(transport, count: 5)

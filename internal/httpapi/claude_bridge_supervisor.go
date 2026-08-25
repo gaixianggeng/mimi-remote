@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 )
 
 // claudeBridgeStartTimeout bounds how long we wait for a freshly spawned bridge
@@ -164,7 +166,8 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	}
 
 	cmd := exec.Command(bin, append(append([]string{}, args...), transportArgs...)...)
-	cmd.Env = buildClaudeBridgeEnv(env)
+	bridgeEnvironment := buildClaudeBridgeEnv(env)
+	cmd.Env = bridgeEnvironment
 	configureGatewayCommandProcessGroup(cmd)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -174,7 +177,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 		return fmt.Errorf("启动 Claude bridge 失败：%w", err)
 	}
 	s.startedAt = time.Now().UTC()
-	go captureClaudeBridgeStderr(stderr)
+	go captureClaudeBridgeStderr(stderr, claudeenv.ProxyValues(bridgeEnvironment))
 
 	done := make(chan struct{})
 	s.cmd = cmd

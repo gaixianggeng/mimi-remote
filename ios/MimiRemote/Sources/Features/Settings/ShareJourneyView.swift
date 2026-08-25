@@ -239,7 +239,7 @@ struct ShareJourneyView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
-        .background(.regularMaterial)
+        .background(WorkbenchMaterial.surface)
         .accessibilityIdentifier("shareJourney.share")
     }
 

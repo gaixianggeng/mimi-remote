@@ -374,6 +374,8 @@ struct SessionListView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
+    @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
@@ -482,7 +484,21 @@ struct SessionListView: View {
         // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
         // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
         .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
-        .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
+        // 只有按钮真的浮在内容之上时才多让一段，最后一条会话才能滚到按钮之上被读到。
+        .contentMargins(
+            .bottom,
+            bottomContentMargin
+                + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance),
+            for: .scrollContent
+        )
+        // 与工作区页同一枚按钮。两条边同样只留 20pt——浮动 Tab 栏的避让由容器 safe area 负责，
+        // `bottomContentMargin` 是滚动内容的 inset，叠进浮层会重复计算。
+        .overlay(alignment: .bottomTrailing) {
+            if !hasBottomTabBar {
+                newSessionFab(tokens: tokens)
+                    .padding(WorkspaceSessionFabMetrics.edgeInset)
+            }
+        }
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(
             TapGesture().onEnded {
@@ -505,12 +521,13 @@ struct SessionListView: View {
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .background { SessionSearchPresentationReporter() }
         .sessionListNativeSearchable(
             isEnabled: !showsToolbarSearchField,
             text: $sessionStore.sessionSearchQuery,
             prompt: Text(L10n.text("ui.search_session")),
             tintColor: tokens.primaryText,
-            toolbarSurface: tokens.background,
+            toolbarSurface: tokens.workbenchCanvasBackground,
             colorScheme: colorScheme,
             onSubmit: dismissSessionSearchKeyboard
         )
@@ -529,28 +546,33 @@ struct SessionListView: View {
                 }
             }
             if let manageConnections {
-                ToolbarItem(placement: .topBarLeading) {
+                workbenchChromeToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
                         manageConnections: manageConnections
                     )
+                    .workbenchToolbarChromeCircle(tokens: tokens)
                     .simultaneousGesture(
                         TapGesture().onEnded { dismissSessionSearchKeyboard() }
                     )
                 }
-                // iOS 26+ 用固定间隔拆分玻璃组；旧系统依靠普通工具栏布局即可。
+                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死。
                 if #available(iOS 26.0, *) {
                     ToolbarSpacer(.fixed, placement: .topBarLeading)
                 }
             }
-            // 筛选、刷新合入同一个菜单；加号保持独立，常驻圆形工具按钮固定为两个。
-            ToolbarItem(placement: .topBarTrailing) {
+            // 筛选、刷新合入同一个菜单。
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 filterMenu(tokens: tokens)
                     .simultaneousGesture(
                         TapGesture().onEnded { dismissSessionSearchKeyboard() }
                     )
             }
-            newSessionToolbarItem(tokens: tokens)
+            // 底部浮着 Tab 栏时新建留在顶栏——那个角上不该叠第二层浮动材质；
+            // Tab 栏在顶部（iPadOS 26）时右下角是空的，改用浮起按钮。
+            if hasBottomTabBar {
+                newSessionToolbarItem(tokens: tokens)
+            }
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
@@ -619,9 +641,11 @@ struct SessionListView: View {
                     .transitionSourceID,
                 in: newSessionPresentationNamespace
             )
+            // 按钮自带磨砂圆，系统共享玻璃必须关掉，否则是两层背景。
+            .sharedBackgroundVisibility(.hidden)
         } else {
             // iOS 18–25 保留新建入口，但不注册仅新系统支持的 Toolbar zoom 来源。
-            ToolbarItem(placement: .topBarTrailing) {
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 newSessionToolbarButton(
                     tokens: tokens,
                     source: .sessionsToolbar(hasNamespace: false)
@@ -646,6 +670,60 @@ struct SessionListView: View {
         .accessibilityIdentifier("sessions.newSession")
     }
 
+    /// Tab 栏在顶部时新建改成右下角浮起按钮，与工作区页同款同尺寸。
+    /// zoom 过渡的锚点跟着一起走——`matchedTransitionSource` 本来就作用于普通 View，
+    /// 不是 ToolbarContent 专属，返回时会缩回这颗按钮而不是原来的顶栏位置。
+    @ViewBuilder
+    private func newSessionFab(tokens: ThemeTokens) -> some View {
+        if let newSessionPresentationNamespace, #available(iOS 26.0, *) {
+            newSessionFabButton(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: true)
+            )
+            .matchedTransitionSource(
+                id: NewSessionPresentationSource
+                    .sessionsToolbarNewSession
+                    .transitionSourceID,
+                in: newSessionPresentationNamespace
+            )
+        } else {
+            // iOS 18–25 保留新建入口，但不注册仅新系统支持的 zoom 来源。
+            newSessionFabButton(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: false)
+            )
+        }
+    }
+
+    private func newSessionFabButton(
+        tokens: ThemeTokens,
+        source: NewSessionPresentationSource?
+    ) -> some View {
+        Button {
+            dismissSessionSearchKeyboard()
+            presentNewSession(source: source)
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.primaryActionForeground)
+                .frame(
+                    width: WorkspaceSessionFabMetrics.diameter,
+                    height: WorkspaceSessionFabMetrics.diameter
+                )
+                .background(tokens.primaryAction, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .shadow(
+            color: tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28),
+            radius: 12,
+            y: 5
+        )
+        .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+        .accessibilityIdentifier("sessions.newSession")
+    }
+
     /// 使用系统工具栏按钮，让不同系统版本自行处理材质、按下反馈和命中区域。
     private func sessionListToolbarButton(
         systemImage: String,
@@ -655,7 +733,10 @@ struct SessionListView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 的系统共享玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
         .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)
@@ -1093,6 +1174,7 @@ struct SessionListView: View {
         } label: {
             WorkbenchChromeIcon(systemName: "ellipsis")
                 .foregroundStyle(tokens.secondaryText)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         .accessibilityLabel(
             hasActiveFilters
@@ -1740,5 +1822,27 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+
+/// 把系统搜索框的激活态上报给 `SessionStore`，供 Shell 决定是否收起浮层设备入口。
+///
+/// 只读 `\.isSearching`，**不要**改用 `.searchable(isPresented:)` 的双向绑定：
+/// 那样我们会反向驱动系统的搜索状态，反复激活/取消几次后会卡在已激活，
+/// 表现为顶部 Tab 栏收起后不再还回来。
+private struct SessionSearchPresentationReporter: View {
+    @Environment(\.isSearching) private var isSearching
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onAppear { sessionStore.isSessionSearchPresented = isSearching }
+            .onDisappear { sessionStore.isSessionSearchPresented = false }
+            .onChange(of: isSearching) { _, newValue in
+                sessionStore.isSessionSearchPresented = newValue
+            }
     }
 }

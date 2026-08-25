@@ -832,6 +832,14 @@ extension SessionStore {
             return
         }
         recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
+        if case .permissionProfileUpdated(let profile, let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let profile {
+                activePermissionProfileBySessionID[id] = profile
+            } else {
+                activePermissionProfileBySessionID.removeValue(forKey: id)
+            }
+        }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
         let output = await eventReducer.reduce(
             event,
@@ -842,6 +850,10 @@ extension SessionStore {
         applyEventReducerOutput(output)
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
+            _ = satisfyPendingPermissionTurnBoundary(
+                sessionID: id,
+                clientMessageID: metadata.clientMessageID
+            )
             if let turnID = metadata.turnID {
                 queuedTurnAwaitingStartSessionIDs.remove(id)
                 queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
@@ -856,6 +868,7 @@ extension SessionStore {
                     }
                     queuedRunningTurnsBySessionID[id] = queue
                 }
+                stopQueuedSessionMonitoringIfIdle(sessionID: id)
             }
         }
         if case .turnCompleted(let metadata) = event {
@@ -916,6 +929,7 @@ extension SessionStore {
                         queuedTurnBlockedCompletionIDBySessionID[id] = completedTurnID
                     }
                     dispatchNextQueuedRunningTurnIfIdle(sessionID: id)
+                    stopQueuedSessionMonitoringIfIdle(sessionID: id)
                 }
             }
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: id)
@@ -1214,6 +1228,7 @@ extension SessionStore {
         case .sessionRow(_, let metadata),
              .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
+             .permissionProfileUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
@@ -1370,7 +1385,7 @@ extension SessionStore {
             syncRuntimeActivity(with: session)
         case .sessionRow(let row, _):
             syncRuntimeActivity(with: AgentSession(row: row))
-        case .sessionContext, .goalUpdated, .goalCleared, .unknown:
+        case .sessionContext, .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
             return
         }
     }
@@ -2452,9 +2467,13 @@ extension SessionStore {
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
         composerModelSelectionCache.removeAll()
+        composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         queuedRunningTurnsBySessionID.removeAll()
+        pendingPermissionTurnBoundariesBySessionID.removeAll()
+        permissionTurnRetryRequirementsByClientMessageID.removeAll()
+        latestSatisfiedPermissionTurnBoundary = nil
         queuedTurnStartedIDBySessionID.removeAll()
         queuedTurnAwaitingStartSessionIDs.removeAll()
         queuedTurnBlockedCompletionIDBySessionID.removeAll()
@@ -2573,6 +2592,12 @@ extension SessionStore {
         isUpdatingThreadGoal = false
         appServerModelOptions = []
         appServerModelOptionsLastRefresh = nil
+        appServerPermissionProfiles = []
+        activePermissionProfileBySessionID = [:]
+        permissionProfilesCWD = nil
+        permissionProfilesRefreshGeneration += 1
+        permissionProfilesRefreshRequestedCWD = nil
+        isRefreshingPermissionProfiles = false
         isClaudeRuntimeChannelAvailable = false
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil

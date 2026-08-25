@@ -190,21 +190,22 @@ type controlPanel struct {
 	detailBrush     uintptr
 	statusBrush     uintptr
 
-	titleLabel     uintptr
-	subtitleLabel  uintptr
-	badgeLabel     uintptr
-	statusDotLabel uintptr
-	statusLabel    uintptr
-	summaryLabel   uintptr
-	endpointLabel  uintptr
-	endpointValue  uintptr
-	versionLabel   uintptr
-	versionValue   uintptr
-	networkLabel   uintptr
-	networkValue   uintptr
-	projectsLabel  uintptr
-	projectsValue  uintptr
-	footerLabel    uintptr
+	titleLabel      uintptr
+	appVersionLabel uintptr
+	subtitleLabel   uintptr
+	badgeLabel      uintptr
+	statusDotLabel  uintptr
+	statusLabel     uintptr
+	summaryLabel    uintptr
+	endpointLabel   uintptr
+	endpointValue   uintptr
+	versionLabel    uintptr
+	versionValue    uintptr
+	networkLabel    uintptr
+	networkValue    uintptr
+	projectsLabel   uintptr
+	projectsValue   uintptr
+	footerLabel     uintptr
 
 	refresh   uintptr
 	start     uintptr
@@ -471,7 +472,8 @@ func (p *controlPanel) createFonts() {
 }
 
 func (p *controlPanel) createControls(instance uintptr) error {
-	p.titleLabel = p.createControl(instance, "STATIC", "Mimi Remote", wsChild|wsVisible|ssLeft|ssNoPrefix, 70, 16, 300, 30, 0)
+	p.titleLabel = p.createControl(instance, "STATIC", "Mimi Remote", wsChild|wsVisible|ssLeft|ssNoPrefix, 70, 16, 160, 30, 0)
+	p.appVersionLabel = p.createControl(instance, "STATIC", "应用 "+formatReleaseVersion(releaseVersion), wsChild|wsVisible|ssLeft|ssNoPrefix, 238, 25, 140, 22, 0)
 	p.subtitleLabel = p.createControl(instance, "STATIC", "Windows 控制面板", wsChild|wsVisible|ssLeft|ssNoPrefix, 70, 45, 300, 22, 0)
 	p.badgeLabel = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssCenter|ssNoPrefix, 434, 25, 118, 24, 0)
 	p.statusDotLabel = p.createControl(instance, "STATIC", "●", wsChild|wsVisible|ssCenter|ssNoPrefix, 31, 94, 24, 28, 0)
@@ -480,7 +482,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 
 	p.endpointLabel = p.createControl(instance, "STATIC", "连接地址", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 168, 76, 20, 0)
 	p.endpointValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 168, 144, 20, 0)
-	p.versionLabel = p.createControl(instance, "STATIC", "版本", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 168, 58, 20, 0)
+	p.versionLabel = p.createControl(instance, "STATIC", "服务版本", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 168, 58, 20, 0)
 	p.versionValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 382, 168, 158, 20, 0)
 	p.networkLabel = p.createControl(instance, "STATIC", "网络", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 207, 76, 20, 0)
 	p.networkValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 207, 144, 20, 0)
@@ -508,7 +510,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.pairRefresh = p.createControl(instance, "BUTTON", "刷新二维码", wsChild|wsTabStop|bsOwnerDraw, 392, 366, 160, 50, panelPairRefresh)
 
 	controls := []uintptr{
-		p.titleLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
+		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
@@ -537,7 +539,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 
 func (p *controlPanel) applyFonts() {
 	for _, control := range []uintptr{
-		p.titleLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
+		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
@@ -554,7 +556,7 @@ func (p *controlPanel) applyFonts() {
 	setControlPanelFont(p.versionValue, p.valueFont)
 	setControlPanelFont(p.networkValue, p.valueFont)
 	setControlPanelFont(p.projectsValue, p.valueFont)
-	for _, control := range []uintptr{p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
+	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
 		setControlPanelFont(control, p.smallFont)
 	}
 	for _, control := range []uintptr{p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.pairBack, p.pairCopy, p.pairRefresh} {
@@ -568,7 +570,8 @@ func (p *controlPanel) layoutControls() {
 		x, y, width, height int
 	}
 	for _, item := range []layout{
-		{p.titleLabel, 70, 16, 300, 30},
+		{p.titleLabel, 70, 16, 160, 30},
+		{p.appVersionLabel, 238, 25, 140, 22},
 		{p.subtitleLabel, 70, 45, 300, 22},
 		{p.badgeLabel, 434, 25, 118, 24},
 		{p.statusDotLabel, 31, 94, 24, 28},
@@ -1202,7 +1205,7 @@ func (p *controlPanel) staticTextColor(control uintptr) uint32 {
 
 func (p *controlPanel) staticBackgroundBrush(control uintptr) uintptr {
 	switch control {
-	case p.titleLabel, p.subtitleLabel, p.footerLabel:
+	case p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.footerLabel:
 		return p.backgroundBrush
 	case p.badgeLabel:
 		return p.statusBrush

@@ -15,10 +15,11 @@ const (
 	MinimumServerRevisionHeader    = "X-Mimi-Minimum-Server-Protocol-Revision"
 	ServerRevisionHeader           = "X-Mimi-Server-Protocol-Revision"
 	MinimumClientRevisionHeader    = "X-Mimi-Minimum-Client-Protocol-Revision"
-	SpecSHA256                     = "2158fc83f85e51ab71e7841b167782bef42592131076470db6b8df10b6ff5716"
+	SpecSHA256                     = "3256b2c6e44659390e71cd70036a4656f72fbfed9a74cd82bee3bd28c2438c0c"
 )
 
 var currentCapabilities = []string{
+	"codex_remote_full_access_v1",
 	"file_upload_v1",
 }
 

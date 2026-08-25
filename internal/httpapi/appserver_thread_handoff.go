@@ -31,7 +31,8 @@ const (
 	appServerThreadHandoffLifecycleGrace = 2 * time.Second
 	// completion 后留出一个很短的续问窗口。本地 FIFO 会在这段时间内发出
 	// turn/start 并取消 handoff；无后续输入时仍能在 10 秒验收窗口内释放 writer。
-	appServerTerminalHandoffGrace = 2 * time.Second
+	appServerTerminalHandoffGrace   = 2 * time.Second
+	appServerDisconnectHandoffGrace = 2 * time.Second
 )
 
 var errAppServerThreadHandoffExecuting = errors.New("thread handoff is executing")
@@ -388,7 +389,161 @@ func (p *appServerGatewayPolicy) scheduleThreadHandoffAfterTerminal(frame *appSe
 	if !ok || gatewayThreadRejectsWrites(thread) || p.router.threadHandoffs == nil {
 		return
 	}
+	p.forgetThreadWriterCandidate(threadID)
 	p.router.threadHandoffs.ScheduleAfter(threadID, appServerTerminalHandoffGrace)
+}
+
+func (p *appServerGatewayPolicy) rememberPendingThreadWriter(
+	id *json.RawMessage,
+	method string,
+	params map[string]any,
+) bool {
+	if method != "thread/resume" && method != "turn/start" {
+		return true
+	}
+	threadID, ok := gatewayStringParam(params, "threadId")
+	if !ok {
+		return true
+	}
+	thread, ok := p.allowedThread(threadID)
+	if !ok || gatewayThreadRejectsWrites(thread) {
+		return true
+	}
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	if p.pendingThreadWriters == nil {
+		p.pendingThreadWriters = map[string]appServerGatewayPendingThreadWriter{}
+	}
+	p.pendingThreadWriters[key] = appServerGatewayPendingThreadWriter{threadID: threadID}
+	return true
+}
+
+func (p *appServerGatewayPolicy) forwardClientFrameToUpstream(
+	payload []byte,
+	write func() error,
+) error {
+	p.threadWriterForwardMu.Lock()
+	defer p.threadWriterForwardMu.Unlock()
+	if write == nil {
+		return fmt.Errorf("upstream writer 不能为空")
+	}
+	p.mu.Lock()
+	closed := p.closed
+	if closed {
+		delete(p.pendingThreadWriters, gatewayRequestIDFromPayload(payload))
+	}
+	p.mu.Unlock()
+	if closed {
+		return fmt.Errorf("app-server gateway 连接已关闭")
+	}
+	if err := write(); err != nil {
+		p.forgetPendingThreadWriter(payload)
+		return err
+	}
+	p.markPendingThreadWriterForwarded(payload)
+	return nil
+}
+
+func (p *appServerGatewayPolicy) markPendingThreadWriterForwarded(payload []byte) {
+	key := gatewayRequestIDFromPayload(payload)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	pending, ok := p.pendingThreadWriters[key]
+	if ok && !p.closed {
+		pending.forwarded = true
+		p.pendingThreadWriters[key] = pending
+	}
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) forgetPendingThreadWriter(payload []byte) {
+	key := gatewayRequestIDFromPayload(payload)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	delete(p.pendingThreadWriters, key)
+	p.mu.Unlock()
+}
+
+func gatewayRequestIDFromPayload(payload []byte) string {
+	var frame appServerGatewayFrame
+	if json.Unmarshal(payload, &frame) != nil {
+		return ""
+	}
+	return gatewayRequestIDKey(frame.ID)
+}
+
+func (p *appServerGatewayPolicy) completePendingThreadWriter(frame *appServerGatewayFrame) {
+	if !gatewayFrameIsResponse(frame) {
+		return
+	}
+	key := gatewayRequestIDKey(frame.ID)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pending, ok := p.pendingThreadWriters[key]
+	if !ok {
+		return
+	}
+	delete(p.pendingThreadWriters, key)
+	if p.closed || len(frame.Error) > 0 {
+		return
+	}
+	p.rememberThreadWriterCandidateLocked("turn/start", pending.threadID)
+}
+
+func (p *appServerGatewayPolicy) forgetThreadWriterCandidate(threadID string) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return
+	}
+	p.mu.Lock()
+	delete(p.threadWriterCandidates, threadID)
+	for key, pending := range p.pendingThreadWriters {
+		if pending.threadID == threadID {
+			delete(p.pendingThreadWriters, key)
+		}
+	}
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) rememberThreadWriterCandidateLocked(method string, threadID string) {
+	if method != "thread/start" && method != "thread/resume" && method != "turn/start" {
+		return
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return
+	}
+	if p.threadWriterCandidates == nil {
+		p.threadWriterCandidates = map[string]struct{}{}
+	}
+	p.threadWriterCandidates[threadID] = struct{}{}
+}
+
+func (p *appServerGatewayPolicy) scheduleThreadHandoffsAfterDisconnect(
+	threadIDs []string,
+	handoffCapable bool,
+) {
+	if !handoffCapable || p == nil || p.router == nil || p.router.threadHandoffs == nil ||
+		normalizeAppServerRuntimeID(p.runtimeID) != "codex" || p.router.usesSharedCodexAppServer() {
+		return
+	}
+	for _, threadID := range threadIDs {
+		p.router.threadHandoffs.ScheduleAfter(threadID, appServerDisconnectHandoffGrace)
+	}
 }
 
 func (r *Router) usesSharedCodexAppServer() bool {

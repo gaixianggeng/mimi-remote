@@ -10,9 +10,9 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 )
 
 const claudeBridgePolicyErrorCode = -32081
@@ -784,53 +785,13 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 }
 
 func buildClaudeBridgeEnv(extra map[string]string) []string {
-	keys := []string{"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM"}
-	out := make([]string, 0, len(keys)+len(extra))
-	seen := map[string]struct{}{}
-	for _, key := range keys {
-		value := os.Getenv(key)
-		if value == "" {
-			continue
-		}
-		out = append(out, key+"="+value)
-		seen[key] = struct{}{}
-	}
-	for key, value := range extra {
-		key = strings.TrimSpace(key)
-		if key == "" || strings.Contains(key, "=") {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			for i, item := range out {
-				if strings.HasPrefix(item, key+"=") {
-					out[i] = key + "=" + value
-					break
-				}
-			}
-			continue
-		}
-		out = append(out, key+"="+value)
-	}
-	// 远程 Claude 通道永不允许绕过权限；即使本机配置误设为 true，也在进程边界强制覆盖。
-	const bypassKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
-	foundBypass := false
-	for index, item := range out {
-		if strings.HasPrefix(item, bypassKey+"=") {
-			out[index] = bypassKey + "=false"
-			foundBypass = true
-			break
-		}
-	}
-	if !foundBypass {
-		out = append(out, bypassKey+"=false")
-	}
-	return out
+	return claudeenv.Build(extra)
 }
 
-func captureClaudeBridgeStderr(stderr io.Reader) {
+func captureClaudeBridgeStderr(stderr io.Reader, sensitiveValues []string) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		line := sanitizeGatewayDiagnostic(scanner.Text())
+		line := sanitizeClaudeBridgeDiagnostic(scanner.Text(), sensitiveValues)
 		if line == "" {
 			continue
 		}
@@ -839,6 +800,19 @@ func captureClaudeBridgeStderr(stderr io.Reader) {
 	if err := scanner.Err(); err != nil {
 		log.Printf("claude bridge stderr scanner error err=%v", err)
 	}
+}
+
+var diagnosticURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
+
+func sanitizeClaudeBridgeDiagnostic(value string, sensitiveValues []string) string {
+	line := value
+	for _, sensitive := range sensitiveValues {
+		if sensitive != "" {
+			line = strings.ReplaceAll(line, sensitive, "<redacted proxy>")
+		}
+	}
+	line = diagnosticURLUserinfoPattern.ReplaceAllString(line, `${1}<redacted>@`)
+	return sanitizeGatewayDiagnostic(line)
 }
 
 func sanitizeGatewayDiagnostic(value string) string {

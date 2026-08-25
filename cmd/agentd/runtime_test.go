@@ -4,7 +4,18 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestConfirmedDisableTimeoutCoversLockWaitAndDaemonTransaction(t *testing.T) {
+	const minimumInnerBudget = 15*time.Second + 90*time.Second
+	if confirmedCodexSharingDisableTimeout <= minimumInnerBudget {
+		t.Fatalf(
+			"confirmed disable timeout 必须覆盖锁等待、daemon stop 与后置复核：%s",
+			confirmedCodexSharingDisableTimeout,
+		)
+	}
+}
 
 func TestRuntimeRestartInterlockRejectsMissingConfirmationFlag(t *testing.T) {
 	var stdout bytes.Buffer

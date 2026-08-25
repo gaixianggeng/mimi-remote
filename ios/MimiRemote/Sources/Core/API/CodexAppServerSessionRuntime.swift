@@ -255,6 +255,14 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+                .permissionProfileList(cwd: cwd)
+        )
+        return CodexAppServerPermissionProfileSummary.parseListResult(result)
+    }
+
     func capabilities(path: String?, forceReload: Bool = false) async throws -> CapabilityListResponse {
         let legacyClient = AgentAPIClient(endpoint: endpoint, token: token)
         guard let cwd = path?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
@@ -733,6 +741,7 @@ actor CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
+        emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
         let turnPayload = CodexAppServerTurnPayload(input: payload.input, options: payload.turnOptions)
@@ -930,6 +939,7 @@ actor CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         let session = try agentSession(from: thread, projects: projects, fallbackProject: project)
+        emitActivePermissionProfile(from: result, threadID: session.id)
         contextsBySessionID[session.id] = CodexAppServerSessionContext(
             session: session,
             cwd: session.dir,
@@ -1669,6 +1679,7 @@ actor CodexAppServerSessionRuntime {
              .sessionRow,
              .sessionStatus,
              .sessionContext,
+             .permissionProfileUpdated,
              .goalUpdated,
              .goalCleared,
              .turnStarted,
@@ -2215,12 +2226,17 @@ actor CodexAppServerSessionRuntime {
         connection: CodexAppServerConnection,
         retryThreadHandoffInProgress: Bool = true
     ) async throws {
+        var passiveResumeOptions = CodexAppServerTurnOptions.default
+        // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
+        // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
+        passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
+        let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
         let result: CodexAppServerJSONValue?
         do {
             let request = try builder.threadResume(
                 threadID: sessionID,
                 cwd: cwd,
-                options: runtimeScopedThreadOptions(.default)
+                options: scopedPassiveResumeOptions
             )
             if retryThreadHandoffInProgress {
                 result = try await sendRetryingThreadHandoffInProgress(
@@ -2239,7 +2255,7 @@ actor CodexAppServerSessionRuntime {
                 let request = try builder.threadResume(
                     threadID: sessionID,
                     cwd: cwd,
-                    options: runtimeScopedThreadOptions(.default),
+                    options: scopedPassiveResumeOptions,
                     includeInitialTurnsPage: false
                 )
                 if retryThreadHandoffInProgress {
@@ -2270,6 +2286,7 @@ actor CodexAppServerSessionRuntime {
             projects: (try? projectsFromCache()) ?? [],
             fallbackProject: nil
            ) {
+            emitActivePermissionProfile(from: result, threadID: session.id)
             let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             emit(.session(session))
             if let recoveredTerminalTurn {
@@ -2284,6 +2301,25 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    func emitActivePermissionProfile(from result: CodexAppServerJSONValue?, threadID: SessionID) {
+        guard let object = result?.objectValue else {
+            return
+        }
+        let source: [String: CodexAppServerJSONValue]
+        if object.keys.contains("activePermissionProfile") {
+            source = object
+        } else if let thread = object["thread"]?.objectValue,
+                  thread.keys.contains("activePermissionProfile") {
+            source = thread
+        } else {
+            return
+        }
+        emit(.permissionProfileUpdated(
+            CodexAppServerActivePermissionProfile(value: source["activePermissionProfile"]),
+            metadata(threadID: threadID, turnID: nil)
+        ))
     }
 
     func clearThreadResumeTask(

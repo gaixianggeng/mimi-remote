@@ -16,6 +16,35 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
     }
 
     func testNotionStyleWorkspaceOnIPadMiniPortrait() async throws {
+        try await renderWorkspaceSnapshot(
+            width: 744,
+            height: 1_133,
+            // iPadOS 26 的紧凑 TabView 把 Tab 栏渲染在顶部，右下角空着。
+            hasBottomTabBar: false,
+            testName: "testNotionStyleWorkspaceOnIPadMiniPortrait"
+        )
+    }
+
+    /// 窄屏形态与宽屏是两套头部：Runtime 降级成菜单、分段标题让位、筛选器不并入胶囊行。
+    /// 画布固定在 iPhone 宽度即可覆盖，宿主仍是同一台 M5 iPad，基线不随运行设备漂移。
+    func testCompactWorkspaceRuntimeMenuOnPhoneWidth() async throws {
+        try await renderWorkspaceSnapshot(
+            width: 393,
+            height: 852,
+            // iPhone 的 Tab 栏浮在底部，新建按钮因此回到筛选行右端而不是浮起。
+            // 这个值平时由 UnifiedWorkbenchShell 注入；快照直接渲染根视图，必须显式给，
+            // 否则录出来的是浮起态，测试名和它实际覆盖的形态对不上。
+            hasBottomTabBar: true,
+            testName: "testCompactWorkspaceRuntimeMenuOnPhoneWidth"
+        )
+    }
+
+    private func renderWorkspaceSnapshot(
+        width: CGFloat,
+        height: CGFloat,
+        hasBottomTabBar: Bool,
+        testName: String
+    ) async throws {
         let previousLanguage = UserDefaults.standard.string(forKey: AppLanguage.preferenceKey)
         UserDefaults.standard.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
         defer {
@@ -53,7 +82,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             )
         ]
         let referenceDate = Date(timeIntervalSince1970: 1_785_105_600)
-        let sessions = [
+        let allSessions = [
             AgentSession(
                 id: "workspace-running",
                 projectID: projects[0].id,
@@ -124,6 +153,11 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 )
             )
         ]
+        // iPhone 宽度快照专门保持单一“最近会话”分组，覆盖窄屏不显示分组标题时的计数语义；
+        // iPad 继续保留运行中与最近会话两个分组，锁住宽屏层级。
+        let sessions = hasBottomTabBar
+            ? allSessions.filter { $0.id != "workspace-running" }
+            : allSessions
         let workspaces = projects.enumerated().map { index, project in
             AgentWorkspace(
                 project: project,
@@ -189,13 +223,24 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         themeDefaults.removePersistentDomain(forName: themeDefaultsSuite)
         let themeStore = ThemeStore(defaults: themeDefaults)
         themeStore.applyDeviceDefaultFontScale(
-            isPad: true,
-            screenSize: CGSize(width: 744, height: 1_133)
+            isPad: width >= 700,
+            screenSize: CGSize(width: width, height: height)
         )
+
+        let bottomSafeAreaInset: CGFloat = hasBottomTabBar
+            ? WorkbenchPageLayout.defaultCompactBottomSafeAreaInset
+            : 0
+        let bottomChromeClearance = hasBottomTabBar
+            ? WorkbenchPageLayout.compactBottomChromeClearance(
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
 
         let view = WorkspaceRootView(
             onStartSession: { _, _ in },
             onOpenSession: { _ in },
+            manageConnections: hasBottomTabBar ? {} : nil,
+            embedsNavigationStack: false,
             appearanceStore: appearanceStore,
             initialWorkspaceID: projects[0].id,
             // 固定“当前时间”后，相对分组和右侧时刻不会随测试运行日期漂移。
@@ -205,16 +250,20 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         .environmentObject(sessionStore)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
-        .frame(width: 744, height: 1_133)
+        .environment(\.workbenchHasCompactTabBar, true)
+        .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
+        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
+        .frame(width: width, height: height)
 
         if let failure = verifySnapshot(
             of: view,
             as: .image(
                 drawHierarchyInKeyWindow: true,
                 precision: 0.98,
-                layout: .fixed(width: 744, height: 1_133)
+                layout: .fixed(width: width, height: height)
             ),
-            snapshotDirectory: referenceSnapshotDirectory
+            snapshotDirectory: referenceSnapshotDirectory,
+            testName: testName
         ) {
             XCTFail(failure)
         }

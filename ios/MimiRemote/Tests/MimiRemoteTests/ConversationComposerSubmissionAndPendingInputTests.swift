@@ -736,6 +736,29 @@ extension ConversationDataFlowTests {
 
 @MainActor
 final class ComposerStatusTrayBehaviorTests: XCTestCase {
+    func testTakeoverCapableObservationOffersDisclosure() {
+        let notice = "Takeover is available."
+
+        XCTAssertTrue(
+            makeTray(
+                sessionControlNotice: notice,
+                allowsTakeOver: true
+            ).hasExpandableDetail,
+            "A takeover-capable observation must reveal the existing takeover action"
+        )
+        XCTAssertFalse(
+            makeTray(
+                sessionControlNotice: notice,
+                allowsTakeOver: false
+            ).hasExpandableDetail,
+            "A read-only observation must not reveal an empty disclosure"
+        )
+        XCTAssertFalse(
+            makeTray(allowsTakeOver: true).hasExpandableDetail,
+            "Takeover capability alone must not create an empty disclosure"
+        )
+    }
+
     /// 「仅观察」展开前后没有更多内容时，不应该展示无效的 disclosure。
     func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
         XCTAssertFalse(
@@ -775,12 +798,10 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
 
     func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
         let reducedTransparency = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
             scheme: .light,
             reduceTransparency: true
         )
         let increasedContrast = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
             scheme: .light,
             reduceTransparency: false,
             increasedContrast: true
@@ -796,18 +817,15 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
     func testEmbeddedGoalTrayNeverDrawsIndependentTraySurface() {
         XCTAssertFalse(ComposerStatusTrayPlacement.embedded.usesIndependentSurface)
 
-        for isExpanded in [false, true] {
-            for reduceTransparency in [false, true] {
-                for increasedContrast in [false, true] {
-                    let style = ComposerStatusTraySurfaceStyle.resolve(
-                        isExpanded: isExpanded,
-                        scheme: .light,
-                        reduceTransparency: reduceTransparency,
-                        increasedContrast: increasedContrast
-                    )
-                    XCTAssertEqual(style.materialStrength, .opaque)
-                    XCTAssertEqual(style.surfaceTintOpacity, 1)
-                }
+        for reduceTransparency in [false, true] {
+            for increasedContrast in [false, true] {
+                let style = ComposerStatusTraySurfaceStyle.resolve(
+                    scheme: .light,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: increasedContrast
+                )
+                XCTAssertEqual(style.materialStrength, .opaque)
+                XCTAssertEqual(style.surfaceTintOpacity, 1)
             }
         }
     }
@@ -819,59 +837,47 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
     }
 
-    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
-        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-        let expanded = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: true,
+    /// 展开与收起必须是同一种质感：托盘曾按展开状态在 thin / regular 之间切换，
+    /// 展开时比旁边的输入卡还浓，一屏出现两种模糊浓度。
+    func testGoalTraySurfaceStyleUsesOneMaterialAcrossExpansion() {
+        let style = ComposerStatusTraySurfaceStyle.resolve(
             scheme: .dark,
             reduceTransparency: false
         )
 
-        XCTAssertEqual(collapsed.materialStrength, .thin)
-        XCTAssertEqual(expanded.materialStrength, .regular)
-        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
-        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
-        XCTAssertEqual(collapsed.borderOpacity, 0.58)
-        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+        XCTAssertEqual(style.materialStrength, .frosted)
+        XCTAssertEqual(style.surfaceTintOpacity, 0.46)
+        XCTAssertEqual(style.borderOpacity, 0.58)
     }
 
     func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .light,
-                reduceTransparency: false
-            )
+        let style = ComposerStatusTraySurfaceStyle.resolve(
+            scheme: .light,
+            reduceTransparency: false
+        )
 
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.05)
-        }
+        XCTAssertEqual(style.materialStrength, .opaque)
+        XCTAssertEqual(style.surfaceTintOpacity, 1)
+        XCTAssertEqual(style.borderOpacity, 0.05)
     }
 
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .dark,
-                reduceTransparency: true
-            )
+        let style = ComposerStatusTraySurfaceStyle.resolve(
+            scheme: .dark,
+            reduceTransparency: true
+        )
 
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.58)
-        }
+        XCTAssertEqual(style.materialStrength, .opaque)
+        XCTAssertEqual(style.surfaceTintOpacity, 1)
+        XCTAssertEqual(style.borderOpacity, 0.58)
     }
 
     private func makeTray(
         sessionControlNotice: String? = nil,
         quotaNotice: CodexQuotaNotice? = nil,
         usage: CodexUsageDisplaySummary? = nil,
-        goal: ThreadGoal? = nil
+        goal: ThreadGoal? = nil,
+        allowsTakeOver: Bool = false
     ) -> ComposerStatusTray {
         ComposerStatusTray(
             sessionControlNotice: sessionControlNotice,
@@ -883,7 +889,7 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
             isGoalUpdating: false,
             goalErrorMessage: nil,
             isRefreshDisabled: false,
-            allowsTakeOver: true,
+            allowsTakeOver: allowsTakeOver,
             onTakeOver: {},
             onRefreshUsage: {},
             onEditGoal: {},

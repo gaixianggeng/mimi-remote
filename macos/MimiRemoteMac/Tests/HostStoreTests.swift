@@ -532,24 +532,6 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(store.homebrewLoaded)
     }
 
-    func testTakeoverStopsHomebrewThenStartsBundledAgent() async {
-        let events = EventRecorder()
-        let store = makeStore(
-            configExists: true,
-            homebrewLoaded: true,
-            registerAgent: { events.append("register-mac") },
-            homebrewStop: { events.append("stop-homebrew") }
-        )
-        await store.bootstrap()
-
-        await store.takeOverHomebrew()
-
-        XCTAssertEqual(events.values, ["stop-homebrew", "register-mac"])
-        XCTAssertEqual(store.owner, .macApp)
-        XCTAssertEqual(store.lifecycle, .ready)
-        XCTAssertNotNil(store.pairing)
-    }
-
     func testTakeoverRejectsInvalidAppBeforeStoppingHomebrew() async {
         let events = EventRecorder()
         let message = "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。"
@@ -2133,6 +2115,7 @@ final class HostStoreTests: XCTestCase {
         pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil,
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
         codexDesktop: CodexDesktopIntegrationClient = .noop,
+        photoLibraryAccess: PhotoLibraryAccessClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
@@ -2179,6 +2162,7 @@ final class HostStoreTests: XCTestCase {
                 fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
             ),
             codexDesktop: codexDesktop,
+            photoLibraryAccess: photoLibraryAccess,
             terminateApplication: terminateApplication
         )
     }

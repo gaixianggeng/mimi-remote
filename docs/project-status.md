@@ -32,7 +32,7 @@ iPhone / iPad SwiftUI App
 - 共享 daemon 不等于并发写：Desktop 正在运行的 turn 仍按 external activity 只读；共享模式观测失败时也会 fail-closed 拒绝写入。客户端不能靠 `thread/unsubscribe`、archive/unarchive 或猜测 idle 状态抢占另一个进程。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
-- Codex 默认保持 `approvalPolicy=on-request`、`danger-full-access`、网络关闭；禁止 `approvalPolicy=never` 和默认开网。
+- Codex 默认保持网络关闭；只有用户显式选择 `danger-full-access` 或 `:danger-full-access` 时允许 `approvalPolicy=never`，其它模式继续由 Gateway 收敛审批策略。
 - iPad 只保存外侧 `agentd` Token；访问 loopback app-server 的 capability token 只保存在 Mac。
 - 项目目录、`browse_roots` 内明确打开的目录和 agentd 管理的 Worktree 都要绑定到真实 canonical cwd，不能跨授权根切换。
 - 任意 shell 不是移动端 MVP。远程命令只允许执行配置中的 action，并保留确认、超时和输出截断。

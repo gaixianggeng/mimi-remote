@@ -16,7 +16,10 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
-const AppName = "mimi-remote"
+const (
+	AppName                           = "mimi-remote"
+	DefaultClaudeMaxConcurrentBridges = 3
+)
 
 type Config struct {
 	Listen        string           `json:"listen"`
@@ -299,6 +302,14 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 			cfg.AppServer.Listen = ""
 		}
 	}
+	if cfg.Claude.MaxConcurrentBridges == 0 {
+		// Older setup versions serialized the disabled Claude section from a
+		// zero-value Config, then the tray could enable Claude while preserving
+		// that zero. Treat exactly zero as the legacy default so an upgrade can
+		// still start; negative values remain invalid, and an explicit env
+		// override is applied below and continues to fail validation.
+		cfg.Claude.MaxConcurrentBridges = DefaultClaudeMaxConcurrentBridges
+	}
 
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
@@ -412,6 +423,17 @@ func DefaultAppServerWebSocketListen() string {
 	return defaultAppServerWebSocketListen
 }
 
+func DefaultClaudeConfig() ClaudeConfig {
+	return ClaudeConfig{
+		Enabled:              false,
+		BridgeBin:            "alleycat-claude-bridge",
+		MaxConcurrentBridges: DefaultClaudeMaxConcurrentBridges,
+		Env: map[string]string{
+			"TERM": "xterm-256color",
+		},
+	}
+}
+
 func defaults() Config {
 	return Config{
 		Listen: "127.0.0.1:8787",
@@ -434,14 +456,7 @@ func defaults() Config {
 				"TERM": "xterm-256color",
 			},
 		},
-		Claude: ClaudeConfig{
-			Enabled:              false,
-			BridgeBin:            "alleycat-claude-bridge",
-			MaxConcurrentBridges: 3,
-			Env: map[string]string{
-				"TERM": "xterm-256color",
-			},
-		},
+		Claude: DefaultClaudeConfig(),
 		Session: SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},

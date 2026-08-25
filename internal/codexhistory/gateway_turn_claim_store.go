@@ -220,7 +220,7 @@ func (t *ExternalActivityTracker) ensureGatewayTurnClaimsLoaded(now time.Time) {
 			!validGatewayClaimID(pending.ClientUserMessageID) ||
 			registeredAt.IsZero() ||
 			registeredAt.After(now.Add(gatewayTurnEventClockSkew)) ||
-			now.After(registeredAt.Add(gatewayTurnRegistrationTTL)) {
+			now.After(registeredAt.Add(gatewayTurnRegistrationRetention)) {
 			t.gatewayClaimsDirty = true
 			continue
 		}

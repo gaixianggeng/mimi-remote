@@ -11,7 +11,7 @@
 使用前请确认：
 
 - iPhone 或 iPad 运行 App 支持的系统版本。
-- Mac 运行 macOS 26 或更高版本，并已安装和登录 Codex CLI。
+- Mac 运行 macOS 15 或更高版本，并已安装和登录 Codex CLI。
 - Mac 已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 **Mimi Remote Mac**。
 - 移动设备能够通过局域网、Tailscale 私有网络或用户配置的 HTTPS 地址访问 Mac。
 
@@ -54,7 +54,7 @@ This page provides installation, connection, diagnostics, data-deletion, and con
 Before using the app, confirm that:
 
 - Your iPhone or iPad runs a supported system version.
-- Your Mac runs macOS 26 or later, with Codex CLI installed and signed in.
+- Your Mac runs macOS 15 or later, with Codex CLI installed and signed in.
 - **Mimi Remote Mac** is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running.
 - The mobile device can reach the Mac over a local network, a private Tailscale network, or an HTTPS endpoint you configure.
 

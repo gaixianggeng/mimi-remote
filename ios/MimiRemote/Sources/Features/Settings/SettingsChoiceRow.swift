@@ -224,7 +224,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -315,7 +315,7 @@ struct LanguageSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.language"))
         .navigationBarTitleDisplayMode(.inline)
     }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,64 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	}
 	if !cfg.AppServer.AutoTitle {
 		t.Fatal("新安装默认应启用 Mac 端会话标题生成")
+	}
+}
+
+func TestLoadNormalizesLegacyZeroClaudeBridgeLimit(t *testing.T) {
+	clearAgentdEnv(t)
+	projectDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Claude.Enabled = true
+	cfg.Claude.BridgeBin = executable
+	cfg.Claude.MaxConcurrentBridges = 0
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: projectDir}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy setup config should remain startable after Claude activation: %v", err)
+	}
+	if loaded.Claude.MaxConcurrentBridges != DefaultClaudeMaxConcurrentBridges {
+		t.Fatalf("legacy zero bridge limit was not normalized: got=%d want=%d", loaded.Claude.MaxConcurrentBridges, DefaultClaudeMaxConcurrentBridges)
+	}
+}
+
+func TestLoadRejectsExplicitZeroClaudeBridgeLimitFromEnvironment(t *testing.T) {
+	clearAgentdEnv(t)
+	projectDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Claude.Enabled = true
+	cfg.Claude.BridgeBin = executable
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: projectDir}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTD_CLAUDE_MAX_CONCURRENT_BRIDGES", "0")
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("an explicit zero bridge limit from the environment must remain invalid")
 	}
 }
 

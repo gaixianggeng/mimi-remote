@@ -643,7 +643,7 @@ struct SkillAutocompletePanel: View {
             }
         }
         .padding(8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(WorkbenchMaterial.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(tokens.border.opacity(0.9), lineWidth: 1)

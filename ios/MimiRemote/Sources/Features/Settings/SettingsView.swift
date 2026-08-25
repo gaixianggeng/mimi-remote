@@ -114,6 +114,7 @@ struct SettingsView: View {
                 settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
             }
         }
+        .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
         // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
         // 重建，但不会再销毁负责呈现相机的宿主。
         .fullScreenCover(
@@ -144,6 +145,9 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func settingsContent(tokens: ThemeTokens, resolvedColorScheme: ColorScheme) -> some View {
+        // 顶层“我的”与会话、工作区共用画布；独立设置 sheet 继续保留主题背景。
+        let canvasBackground = showsDoneButton ? tokens.background : tokens.workbenchCanvasBackground
+
         Group {
             if isInitialSetup {
                 InitialPairingView(
@@ -151,10 +155,10 @@ struct SettingsView: View {
                     onRequestProfileRename: { profileRenamePresentation.present($0) }
                 )
             } else {
-                settingsForm(tokens: tokens)
+                settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
-                    .background(tokens.background.ignoresSafeArea())
+                    .background(canvasBackground.ignoresSafeArea())
             }
         }
         // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
@@ -214,7 +218,7 @@ struct SettingsView: View {
         )
     }
 
-    private func settingsForm(tokens: ThemeTokens) -> some View {
+    private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
         let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
 
@@ -418,7 +422,8 @@ struct SettingsView: View {
         // 分组之间靠留白划分，行本身不再套在圆角白卡里。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .listRowBackground(Color.clear)
-        .themedSettingsForm(tokens: tokens)
+        .scrollContentBackground(.hidden)
+        .background(canvasBackground.ignoresSafeArea())
         // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
         .contentMargins(
             .bottom,
@@ -642,6 +647,8 @@ struct SettingsValueLabel: View {
 
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     let onRequestProfileRename: (ConnectionProfile) -> Void
@@ -656,7 +663,13 @@ private struct ConnectionManagementView: View {
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(themeStore.tokens(for: colorScheme).background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
+        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
         .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }
@@ -776,7 +789,7 @@ private struct ConnectionSpeedTestView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.connection_speed_test"))
         .tint(tokens.accent)
     }

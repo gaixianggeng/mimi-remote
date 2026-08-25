@@ -100,6 +100,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"permissionProfile/list":  {},
 	"skills/list":             {},
 	"plugin/installed":        {},
 	"account/rateLimits/read": {},
@@ -249,8 +250,15 @@ type appServerGatewayPolicy struct {
 	// archive 广播与 closed/notLoaded 在不同 upstream 连接上的到达次序没有保证。
 	// 记录已确认由 coordinator 发起的 archive，直到对应 unarchive 到达。
 	threadHandoffLifecycle map[string]time.Time
-	beforePendingRemember  func()
-	beforeManagedComplete  func()
+	// 已向 upstream 转发 resume/turn-start 的 thread 可能已让独立 app-server
+	// 取得 writer。连接异常结束时需要补排 handoff，不能只依赖终态通知。
+	threadWriterCandidates map[string]struct{}
+	// 请求收到明确错误时不能把其他 writer 当成 Mimi 持有；只有成功响应才
+	// 提升为 confirmed，断链时仍把无响应请求作为不确定候选处理。
+	pendingThreadWriters  map[string]appServerGatewayPendingThreadWriter
+	threadWriterForwardMu sync.Mutex
+	beforePendingRemember func()
+	beforeManagedComplete func()
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -265,18 +273,24 @@ type appServerGatewayPendingThreadRequest struct {
 	createdAt           time.Time
 }
 
+type appServerGatewayPendingThreadWriter struct {
+	threadID  string
+	forwarded bool
+}
+
 type appServerGatewayPendingClientRequest struct {
 	method    string
 	createdAt time.Time
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method           string
-	threadID         string
-	turnID           string
-	itemID           string
-	gatewayOwnedTurn bool
-	createdAt        time.Time
+	method               string
+	threadID             string
+	turnID               string
+	itemID               string
+	requestedPermissions map[string]any
+	gatewayOwnedTurn     bool
+	createdAt            time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {
@@ -313,6 +327,7 @@ type appServerGatewayValidatedParams struct {
 	hasCWD                     bool
 	cwdScope                   gatewayScope
 	cwdScopeOK                 bool
+	rewroteLocalImagePath      bool
 	pendingManagedWorktreePath string
 }
 

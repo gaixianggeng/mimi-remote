@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 )
 
 type codexBinResolver func(configured string) (string, error)
@@ -25,6 +28,7 @@ func ResolveCodexBin(configured string) (string, error) {
 func resolveCodexBin(configured string, lookPath executableLookup, platformCandidates []string) (string, error) {
 	candidates := append([]string{strings.TrimSpace(configured), "codex"}, platformCandidates...)
 	seen := map[string]struct{}{}
+	var compatibilityErr error
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -36,7 +40,13 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 		seen[candidate] = struct{}{}
 
 		resolved, err := lookPath(candidate)
-		if err != nil || strings.TrimSpace(resolved) == "" {
+		if err != nil {
+			if compatibilityErr == nil && errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
+				compatibilityErr = err
+			}
+			continue
+		}
+		if strings.TrimSpace(resolved) == "" {
 			continue
 		}
 		absolute, err := filepath.Abs(resolved)
@@ -44,6 +54,9 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 			continue
 		}
 		return filepath.Clean(absolute), nil
+	}
+	if compatibilityErr != nil {
+		return "", compatibilityErr
 	}
 	return "", fmt.Errorf("配置路径、PATH 和桌面 App 中都没有可执行的 Codex CLI")
 }

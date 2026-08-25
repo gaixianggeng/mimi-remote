@@ -664,6 +664,15 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertTrue(widePhone.prefersSessionTableDensity)
     }
 
+    func testFloatingSidebarHidesDuplicateNewSessionButton() {
+        XCTAssertFalse(
+            WorkbenchSidebarFooter.showsNewSessionButton(usesFloatingSurface: true)
+        )
+        XCTAssertTrue(
+            WorkbenchSidebarFooter.showsNewSessionButton(usesFloatingSurface: false)
+        )
+    }
+
     func testSessionTableDensityFallsBackOnlyBelowSlideOverWidth() {
         let slideOverPad = WorkbenchLayout(
             containerWidth: 320,

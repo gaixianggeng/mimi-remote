@@ -20,18 +20,20 @@ import (
 const (
 	externalActivityCandidateLimit = 500
 	maxExternalActivityLineBytes   = 1 << 20
-	// Gateway 登记只需要覆盖 turn/start 到 rollout 写入 user_message 的短窗口。
-	// 有界 TTL 可以避免断线或 upstream 写失败后留下永久“本机发起”证据。
-	gatewayTurnRegistrationTTL   = 2 * time.Minute
-	gatewayTurnRegistrationLimit = 512
-	gatewayTurnRegistrationIDMax = 256
-	gatewayTurnEventClockSkew    = 2 * time.Second
+	// Gateway 证据只允许匹配 turn/start 后短时间内写入的 rollout 用户消息。
+	// 登记本身需要保留更久，因为 iOS 退到后台后可能数分钟不再轮询；恢复时仍应
+	// 根据 rollout 的事件时间认回本机 Turn，而不是根据扫描发生的墙上时间误判为外部活动。
+	gatewayTurnEvidenceTTL           = 2 * time.Minute
+	gatewayTurnRegistrationRetention = gatewayOwnedTurnClaimTTL
+	gatewayTurnRegistrationLimit     = 512
+	gatewayTurnRegistrationIDMax     = 256
+	gatewayTurnEventClockSkew        = 2 * time.Second
 	// gateway 在写入 upstream 前登记；task_started 应很快出现。真实 app-server
 	// 冷启动时 user_message 可能比 task_started 晚十几秒落盘，因此不能再用
 	// 两个 rollout 事件的短间隔判断归属。改为要求 task_started 靠近登记时刻，
-	// 同时保留精确 Thread+client ID 和 2 分钟总 TTL。
+	// 同时保留精确 Thread+client ID 和 2 分钟事件关联窗口。
 	gatewayTurnStartWindow     = 30 * time.Second
-	gatewayTurnLifecycleWindow = gatewayTurnRegistrationTTL
+	gatewayTurnLifecycleWindow = gatewayTurnEvidenceTTL
 )
 
 // ExternalActivity 是允许返回给移动端的最小只读快照。
@@ -73,12 +75,13 @@ type externalRolloutCacheEntry struct {
 	threadSource string
 	active       bool
 	turnID       string
-	// gatewayTurnPending 表示在 task_started 之前到达的 user_message 已与 gateway 登记匹配；
+	// gatewayTurnPending 表示在 task_started 之前到达的用户消息证据已与 gateway 登记匹配；
 	// gatewayOwned 绑定当前 active turn。真实 rollout 可能先写 task_started，也可能先写
-	// user_message，因此两个方向都要支持；新的 task_started 仍必须重新取证。
+	// 用户消息证据，因此两个方向都要支持；新的 task_started 仍必须重新取证。
 	gatewayTurnPending             bool
 	gatewayTurnPendingAt           time.Time
 	gatewayTurnPendingRegisteredAt time.Time
+	gatewayTurnPendingTurnID       string
 	gatewayOwned                   bool
 	turnStartedAt                  time.Time
 }
@@ -102,6 +105,10 @@ type externalRolloutRecord struct {
 		Type         string `json:"type"`
 		TurnID       string `json:"turn_id"`
 		ClientID     string `json:"client_id"`
+		Item         struct {
+			Type     string `json:"type"`
+			ClientID string `json:"client_id"`
+		} `json:"item"`
 	} `json:"payload"`
 }
 
@@ -178,7 +185,7 @@ func (t *ExternalActivityTracker) Diagnostics() ExternalActivityDiagnostics {
 
 // RegisterGatewayTurnStart 登记一个已经通过 agentd gateway 校验的 Codex turn/start。
 // 登记本身不会改变外部活动判断；只有同线程 rollout 随后写出时间相符且 client_id
-// 完全一致的 user_message，才能把紧随其后的 task_started 认定为 iPad 发起。
+// 完全一致的用户消息证据，才能把紧随其后的 task_started 认定为 iPad 发起。
 func (t *ExternalActivityTracker) RegisterGatewayTurnStart(threadID string, clientUserMessageID string) {
 	threadID = strings.TrimSpace(threadID)
 	clientUserMessageID = strings.TrimSpace(clientUserMessageID)
@@ -532,28 +539,15 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 		turnID := strings.TrimSpace(record.Payload.TurnID)
 		switch strings.TrimSpace(record.Payload.Type) {
 		case "user_message":
-			// rollout 的落盘顺序并不固定：当前版本通常先写 task_started，再写
-			// user_message；旧版本或边界窗口也可能相反。精确证据到达时，已有 active
-			// turn 就直接归属本机，否则留给紧随其后的 task_started 消费。
-			evidence, matched := t.consumeGatewayTurnRegistration(
-				entry.metaThreadID,
-				record.Payload.ClientID,
-				record.Timestamp,
-			)
-			clearGatewayTurnPending(entry)
-			if matched &&
-				entry.active &&
-				gatewayTurnEvidenceMatchesTaskStart(evidence, entry.turnStartedAt) {
-				entry.gatewayOwned = true
-				t.setGatewayOwnedTurnClaim(
-					entry.metaThreadID,
-					entry.turnID,
-					evidence.eventAt,
+			t.applyGatewayUserMessageEvidence(entry, record.Payload.ClientID, "", record.Timestamp)
+		case "item_completed":
+			if record.Payload.Item.Type == "UserMessage" && turnID != "" {
+				t.applyGatewayUserMessageEvidence(
+					entry,
+					record.Payload.Item.ClientID,
+					turnID,
+					record.Timestamp,
 				)
-			} else if matched && !entry.active {
-				entry.gatewayTurnPending = true
-				entry.gatewayTurnPendingAt = evidence.eventAt
-				entry.gatewayTurnPendingRegisteredAt = evidence.registeredAt
 			}
 		case "task_started":
 			turnStartedAt, _ := parseExternalRolloutTimestamp(record.Timestamp)
@@ -561,6 +555,7 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 			entry.turnID = turnID
 			entry.turnStartedAt = turnStartedAt
 			pendingOwned := entry.gatewayTurnPending &&
+				(entry.gatewayTurnPendingTurnID == "" || entry.gatewayTurnPendingTurnID == turnID) &&
 				gatewayTurnEvidenceMatchesTaskStart(
 					gatewayTurnEvidence{
 						registeredAt: entry.gatewayTurnPendingRegisteredAt,
@@ -592,15 +587,56 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 				terminalTurnID = entry.turnID
 			}
 			t.removeGatewayOwnedTurnClaim(entry.metaThreadID, terminalTurnID)
+			// evidence 先到时 entry.turnID 仍为空，不能让其他 Turn 的迟到 terminal
+			// 清除已经绑定 Turn 的新版 pending。旧格式没有 pending Turn ID，继续
+			// fail-closed；无 ID terminal 也按不确定边界清理。
+			terminalMatchesPendingTurn := turnID == "" ||
+				entry.gatewayTurnPendingTurnID == "" ||
+				turnID == entry.gatewayTurnPendingTurnID
 			// 旧 turn 的迟到 terminal 不能终止已经开始的新 turn。
 			if turnID == "" || entry.turnID == "" || turnID == entry.turnID {
 				entry.active = false
 				entry.turnID = ""
 				entry.turnStartedAt = time.Time{}
 				entry.gatewayOwned = false
-				clearGatewayTurnPending(entry)
+				if terminalMatchesPendingTurn {
+					clearGatewayTurnPending(entry)
+				}
 			}
 		}
+	}
+}
+
+func (t *ExternalActivityTracker) applyGatewayUserMessageEvidence(
+	entry *externalRolloutCacheEntry,
+	clientUserMessageID string,
+	evidenceTurnID string,
+	rawTimestamp string,
+) {
+	// rollout 的落盘顺序并不固定：当前版本通常先写 task_started，再写用户消息证据；
+	// 旧版本或边界窗口也可能相反。当前格式携带 turn_id，必须与 active 或紧随其后的
+	// task_started 精确一致，避免迟到的旧 iOS 消息误认领新的 Desktop turn。
+	evidence, matched := t.consumeGatewayTurnRegistration(
+		entry.metaThreadID,
+		clientUserMessageID,
+		rawTimestamp,
+	)
+	clearGatewayTurnPending(entry)
+	if matched &&
+		entry.active &&
+		(evidenceTurnID == "" || evidenceTurnID == entry.turnID) &&
+		gatewayTurnEvidenceMatchesTaskStart(evidence, entry.turnStartedAt) {
+		entry.gatewayOwned = true
+		t.setGatewayOwnedTurnClaim(
+			entry.metaThreadID,
+			entry.turnID,
+			evidence.eventAt,
+		)
+	} else if matched && !entry.active {
+		entry.gatewayTurnPending = true
+		entry.gatewayTurnPendingAt = evidence.eventAt
+		entry.gatewayTurnPendingRegisteredAt = evidence.registeredAt
+		entry.gatewayTurnPendingTurnID = evidenceTurnID
 	}
 }
 
@@ -608,6 +644,7 @@ func clearGatewayTurnPending(entry *externalRolloutCacheEntry) {
 	entry.gatewayTurnPending = false
 	entry.gatewayTurnPendingAt = time.Time{}
 	entry.gatewayTurnPendingRegisteredAt = time.Time{}
+	entry.gatewayTurnPendingTurnID = ""
 }
 
 func expireGatewayTurnPending(entry *externalRolloutCacheEntry, now time.Time) bool {
@@ -649,7 +686,7 @@ func (t *ExternalActivityTracker) consumeGatewayTurnRegistration(
 	if eventAt.Before(registration.registeredAt.Add(-gatewayTurnEventClockSkew)) {
 		return gatewayTurnEvidence{}, false
 	}
-	if eventAt.After(registration.registeredAt.Add(gatewayTurnRegistrationTTL)) {
+	if eventAt.After(registration.registeredAt.Add(gatewayTurnEvidenceTTL)) {
 		return gatewayTurnEvidence{}, false
 	}
 	return gatewayTurnEvidence{
@@ -683,7 +720,7 @@ func gatewayTurnEvidenceMatchesTaskStart(evidence gatewayTurnEvidence, turnStart
 
 func (t *ExternalActivityTracker) pruneGatewayTurnRegistrations(now time.Time) {
 	for key, registration := range t.gatewayTurns {
-		if now.After(registration.registeredAt.Add(gatewayTurnRegistrationTTL)) {
+		if now.After(registration.registeredAt.Add(gatewayTurnRegistrationRetention)) {
 			delete(t.gatewayTurns, key)
 			t.gatewayClaimsDirty = true
 		}

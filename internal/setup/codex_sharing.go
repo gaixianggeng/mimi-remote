@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -123,8 +124,10 @@ func DisableCodexSharingAfterDesktopExit(
 	if !platformDefault {
 		// 历史版本允许 custom profile 保存 shared_fallback。这里复用
 		// 普通关闭的 CAS/配置锁语义，不执行只属于平台默认配置的
-		// listener 停止和 LaunchAgent bootout。
-		return ConfigureCodexSharing(ctx, resolvedPath, false)
+		// listener 停止和 LaunchAgent bootout，并保留原来的普通操作上限。
+		customCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		return ConfigureCodexSharing(customCtx, resolvedPath, false)
 	}
 	return disableCodexSharingAfterDesktopExit(
 		ctx,

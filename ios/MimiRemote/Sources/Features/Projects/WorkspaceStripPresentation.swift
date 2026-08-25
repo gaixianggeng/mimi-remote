@@ -17,9 +17,36 @@ enum WorkspaceStripLayout {
     static let maxContentWidth: CGFloat = 920
     /// 非选中项在宽屏下最多露出 64pt 名称。它只增加信息密度，不参与选中态材质高亮。
     static let restingNameWidth: CGFloat = 64
+    /// 行末「添加工作区」虚线胶囊的可见尺寸。刻意比 `chipHeight` 小一圈：
+    /// 它是次级动作，不该和承载工作区身份的项目胶囊等重。命中区仍由外层撑满 44pt。
+    static let addChipVisualSize: CGFloat = 34
+    /// Runtime 筛选器并入胶囊行所需的宽度，单位是扣掉两侧 `horizontalPadding`
+    /// 和设备入口预算后的实际内容宽。
+    ///
+    /// 预算：筛选器 ~158 + 分隔 ~9 + 添加胶囊 52 + 选中胶囊 ~95 + 至少一屏可滑的胶囊余量 ~150。
+    /// 结果：iPad mini 竖屏（744 屏宽 / 696 容器）与更宽的 iPad 进入合并态；
+    /// iPhone 竖屏（393 / 345）、iPad 1/2 与 1/3 分屏落在阈值以下，退回列表上方独立一行。
+    static let inlineRuntimePickerMinimumWidth: CGFloat = 640
 
     static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
         max(0, viewportWidth - horizontalPadding * 2)
+    }
+
+    /// 统一决定 Runtime 是否进入胶囊行，避免 Runtime 布局和行内新建入口分别判断。
+    /// `viewportWidth` 是应用了内边距的外层容器宽，不是设备屏宽。
+    static func usesInlineRuntimePicker(
+        viewportWidth: CGFloat,
+        showsHostSwitcherInStrip: Bool,
+        hasBottomTabBar: Bool
+    ) -> Bool {
+        // 底部 Tab 栏时新建按钮必须留在筛选行，横屏 iPhone 也不能切到 inline 布局。
+        guard !hasBottomTabBar else { return false }
+
+        let hostSwitcherBudget = showsHostSwitcherInStrip
+            ? WorkbenchChromeIconMetrics.minimumHitTarget + chipSpacing
+            : 0
+        let availableContentWidth = minimumContentWidth(viewportWidth: viewportWidth)
+        return availableContentWidth - hostSwitcherBudget >= inlineRuntimePickerMinimumWidth
     }
 
     /// 使用胶囊滚动区的真实宽度，而不是设备宽度。浮动侧栏会持续改变详情区宽度，
@@ -31,8 +58,9 @@ enum WorkspaceStripLayout {
         guard viewportWidth > 0, projectCount > 1 else { return 0 }
 
         let widthProgress = min(max((viewportWidth - 760) / 240, 0), 1)
-        let collapsedWidth = CGFloat(projectCount) * chipHeight
-            + CGFloat(projectCount - 1) * chipSpacing
+        // 行末的「添加工作区」虚线胶囊和项目胶囊同宽同间距，一起占用滚动区预算。
+        let collapsedWidth = CGFloat(projectCount + 1) * chipHeight
+            + CGFloat(projectCount) * chipSpacing
         let selectedNameAllowance: CGFloat = 112
         let remainingWidth = max(
             0,
@@ -41,6 +69,22 @@ enum WorkspaceStripLayout {
         let restingBudget = CGFloat(projectCount - 1) * restingNameWidth
         let budgetProgress = min(max(remainingWidth / restingBudget, 0), 1)
         return min(widthProgress, budgetProgress)
+    }
+}
+
+/// 触觉只跟随用户确实完成的项目选中变化；恢复状态和重复选择保持安静。
+enum WorkspaceSelectionHapticPolicy {
+    static func shouldFire(
+        previousID: String?,
+        selectedID: String?,
+        isExplicitSelection: Bool,
+        isUserPaging: Bool,
+        isSuppressed: Bool
+    ) -> Bool {
+        guard let previousID, let selectedID, previousID != selectedID, !isSuppressed else {
+            return false
+        }
+        return isExplicitSelection || isUserPaging
     }
 }
 

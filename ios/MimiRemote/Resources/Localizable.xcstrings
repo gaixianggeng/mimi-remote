@@ -1760,13 +1760,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Access all files; MCP tools may still ask for approval"
+            "value": "Access all files without approval prompts; use only with trusted hosts"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可访问所有文件；MCP 工具仍可能请求审批"
+            "value": "可访问所有文件且不请求审批；仅用于可信主机"
           }
         }
       }
@@ -2874,19 +2874,19 @@
         }
       }
     },
-    "ui.approvalpolicy_never_is_prohibited": {
+    "ui.approvalpolicy_never_requires_full_access": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never is prohibited"
+            "value": "No-approval mode requires explicit Full Access"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never 被禁止"
+            "value": "无审批模式必须显式选择完全访问"
           }
         }
       }
@@ -7430,19 +7430,19 @@
         }
       }
     },
-    "ui.current_effect": {
+    "ui.permission_status": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Current effect"
+            "value": "Permission status"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前效果"
+            "value": "权限状态"
           }
         }
       }
@@ -8183,13 +8183,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Default run permissions for new input areas and after switching sessions. The permission buttons in the input area will also update this global default value simultaneously."
+            "value": "Default run permissions for new conversations. Existing threads keep their current permissions until you explicitly change them in the input area."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于新输入区和切换会话后的默认运行权限。输入区里的权限按钮也会同步更新这个全局默认值。"
+            "value": "用于新对话的默认运行权限。已有会话会沿用当前权限，直到你在输入区中明确修改。"
           }
         }
       }
@@ -25897,6 +25897,24 @@
         }
       }
     },
+    "ui.running_sessions_count": {
+      "comment": "Accessibility summary for the number of running sessions in one workspace.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running sessions: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行的会话：%@"
+          }
+        }
+      }
+    },
     "ui.sessions_count": {
       "comment": "Plural count used in the localized iOS UI.",
       "extractionState": "stale",
@@ -40357,6 +40375,388 @@
           "stringUnit": {
             "state": "translated",
             "value": "可能已过期"
+          }
+        }
+      }
+    },
+    "ui.experimental_features": {
+      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental Features"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实验功能"
+          }
+        }
+      }
+    },
+    "ui.enable_on_mac": {
+      "comment": "Settings row value explaining that the experiment must be enabled on the paired Mac.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable on Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上开启"
+          }
+        }
+      }
+    },
+    "ui.share_codex_desktop_sessions_experimental": {
+      "comment": "Title of the experimental Codex Desktop shared-session capability.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share Codex Desktop sessions (experimental)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享 Codex Desktop 会话（实验）"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_summary": {
+      "comment": "Summary of what the Codex Desktop shared-session experiment does.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Let Mimi Remote and Codex Desktop use the same local session service, so you can continue an idle session across devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 Mimi Remote 与 Codex Desktop 共用同一个本地会话服务，以便在不同设备间继续空闲会话。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_warning": {
+      "comment": "Risk and concurrency note for the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This feature changes the Codex Desktop launch environment and may change with future Codex versions. A running task remains read-only on the other device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此功能会修改 Codex Desktop 的启动环境，并可能随 Codex 版本变化。正在运行的任务在另一端仍为只读。"
+          }
+        }
+      }
+    },
+    "ui.how_to_enable_on_mac": {
+      "comment": "Section heading for instructions that must be completed on the Mac.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to enable on Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何在 Mac 上开启"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_open_mimi_menu": {
+      "comment": "First step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click the Mimi icon in the Mac menu bar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 菜单栏中点按 Mimi 图标。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_choose_experiments": {
+      "comment": "Second step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Experimental Features…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择“实验功能…”。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_enable_sharing": {
+      "comment": "Third step for enabling the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on Share Codex Desktop sessions (experimental)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启“共享 Codex Desktop 会话（实验）”。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_restart_desktop": {
+      "comment": "Fourth step for enabling the Codex Desktop shared-session experiment. The Mac in-app action is required to commit the daemon migration; manually reopening Codex Desktop is insufficient.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_step_verify_session": {
+      "comment": "Fifth step for verifying the Codex Desktop shared-session experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When the status says Environment configured, continue the same idle session once to verify sharing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_mac_only_note": {
+      "comment": "Explains why the iOS guide does not provide a remote toggle for the Mac experiment.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This setting can only be changed on the Mac running Mimi Remote Mac. This iPhone or iPad cannot restart Codex Desktop for you."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此设置只能在运行 Mimi Remote Mac 的电脑上修改；iPhone 或 iPad 无法代替 Mac 重启 Codex Desktop。"
+          }
+        }
+      }
+    },
+    "ui.codex_experiment_service_note": {
+      "comment": "Explains how stopping the Mac service affects mobile shared sessions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep the Mimi Remote Mac service running. Choosing Quit and Stop Service… disconnects mobile devices; reopen the Mac app or sign in to the Mac again to restart it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请保持 Mimi Remote Mac 服务运行。选择“退出并停止服务…”会断开移动设备；重新打开 Mac App 或再次登录 Mac 后会重启服务。"
+          }
+        }
+      }
+    },
+    "ui.before_you_use_it": {
+      "comment": "Section heading for important notes before using an experimental feature.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Before you use it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用须知"
+          }
+        }
+      }
+    },
+    "ui.current_turn_permission_value": {
+      "comment": "Shows the permission setting that the App Server reports for the current turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Current turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本回合：%@" } }
+      }
+    },
+    "ui.follow_the_current_thread_permissions": {
+      "comment": "Indicates that an existing thread keeps its current App Server permission settings.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use current thread permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "沿用当前会话权限" } }
+      }
+    },
+    "ui.additional_permissions": {
+      "comment": "Heading for extra permissions attached to a command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Additional permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "附加权限" } }
+      }
+    },
+    "ui.agent_requests_network_access": {
+      "comment": "Title for a managed-network command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Agent requests network access" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Agent 请求网络访问" } }
+      }
+    },
+    "ui.file_system": {
+      "comment": "Heading for requested file-system permissions.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File system" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "文件系统" } }
+      }
+    },
+    "ui.host": {
+      "comment": "Label for a network host.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Host" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主机" } }
+      }
+    },
+    "ui.network_access_requested": {
+      "comment": "States that a permission request includes network access.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network access requested" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求网络访问" } }
+      }
+    },
+    "ui.network_request": {
+      "comment": "Heading for managed-network approval context.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network request" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络请求" } }
+      }
+    },
+    "ui.permission_profile_cannot_be_combined_with_legacy_sandbox": {
+      "comment": "Validation error when a named permission profile is sent with legacy sandbox fields.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A permission profile cannot be combined with legacy sandbox settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案不能与旧沙盒设置同时使用。" } }
+      }
+    },
+    "ui.permission_profile_id_is_invalid": {
+      "comment": "Validation error for an invalid named permission profile identifier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The permission profile ID is invalid." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案 ID 无效。" } }
+      }
+    },
+    "ui.permission_profile_wire_value": {
+      "comment": "Technical summary of the permission profile sent to the App Server.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "permissions · %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "permissions · %@" } }
+      }
+    },
+    "ui.advanced_permission_profiles": {
+      "comment": "Section heading for named App Server permission profiles.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Advanced permission profiles" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高级权限档案" } }
+      }
+    },
+    "ui.protocol": {
+      "comment": "Label for a network protocol.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Protocol" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "协议" } }
+      }
+    },
+    "ui.requested_permissions": {
+      "comment": "Heading for the permissions in a runtime approval request.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求的权限" } }
+      }
+    },
+    "ui.next_turn_permission_value": {
+      "comment": "Shows the local permission selection that will be sent with the next turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Next turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "下回合：%@" } }
+      }
+    },
+    "ui.use_named_permission_profile": {
+      "comment": "Accessibility hint for selecting a named permission profile.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use this named permission profile" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用此命名权限档案" } }
+      }
+    },
+    "ui.step_value_value": {
+      "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step %1$@: %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %1$@ 步：%2$@"
           }
         }
       }

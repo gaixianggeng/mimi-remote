@@ -130,6 +130,17 @@ exit 2
 			desktop:     func(context.Context) (bool, error) { return false, errors.New("query failed") },
 			wantMessage: "确认 Codex Desktop 已退出失败",
 		},
+		{
+			name: "desktop reopened before command",
+			desktop: func() func(context.Context) (bool, error) {
+				checks := 0
+				return func(context.Context) (bool, error) {
+					checks++
+					return checks == 2, nil
+				}
+			}(),
+			wantMessage: "重新打开",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -243,7 +254,7 @@ func TestStopUnmanagedSharedDaemonSignalsOneStrictlyMatchedProcess(t *testing.T)
 	}
 }
 
-func TestStopUnmanagedSharedDaemonUsesConfiguredCodexPathForSignedStableOwner(t *testing.T) {
+func TestStopUnmanagedSharedDaemonAcceptsStagedExecutableForSignedStableOwner(t *testing.T) {
 	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
 	configuredLink := filepath.Join(t.TempDir(), "codex-current")
 	if err := os.Symlink(configured, configuredLink); err != nil {
@@ -254,14 +265,15 @@ func TestStopUnmanagedSharedDaemonUsesConfiguredCodexPathForSignedStableOwner(t 
 		t.Fatalf("解析配置 Codex 路径失败：%v", err)
 	}
 	standalone := writeFakeCodexBin(t, t.TempDir(), "standalone-codex")
+	staged := writeFakeCodexBin(t, t.TempDir(), "staged-codex")
 	process := sharedDaemonListenerProcess{
 		PID:        1234,
 		ParentPID:  9876,
 		UID:        os.Getuid(),
 		StartSec:   1786522048,
 		StartUsec:  123,
-		Command:    "codex app-server --listen unix://",
-		Executable: configured,
+		Command:    strings.Join([]string{expected, "app-server", "--listen", "unix://"}, "\x00"),
+		Executable: staged,
 	}
 
 	inspectCalls := 0
@@ -288,7 +300,7 @@ func TestStopUnmanagedSharedDaemonUsesConfiguredCodexPathForSignedStableOwner(t 
 		},
 	)
 	if err != nil {
-		t.Fatalf("签名 stable owner listener 应按 configured CodexBin 允许一次 TERM：%v", err)
+		t.Fatalf("签名 stable owner 的 staged listener 应按原始 Codex argv 允许一次 TERM：%v", err)
 	}
 	if desktopChecks != 2 || inspectCalls != 2 || termCalls != 1 {
 		t.Fatalf("停止必须保留 Desktop 双重检查、listener 双重确认和一次 TERM：desktop=%d inspect=%d term=%d", desktopChecks, inspectCalls, termCalls)
@@ -315,6 +327,39 @@ func TestStopUnmanagedSharedDaemonUsesConfiguredCodexPathForSignedStableOwner(t 
 	}
 }
 
+func TestStopUnmanagedSharedDaemonRejectsStagedListenerWithUnexpectedOriginalArgv(t *testing.T) {
+	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
+	foreign := writeFakeCodexBin(t, t.TempDir(), "foreign-codex")
+	staged := writeFakeCodexBin(t, t.TempDir(), "staged-codex")
+	process := sharedDaemonListenerProcess{
+		PID:        1234,
+		ParentPID:  9876,
+		UID:        os.Getuid(),
+		StartSec:   1786522048,
+		StartUsec:  123,
+		Command:    strings.Join([]string{foreign, "app-server", "--listen", "unix://"}, "\x00"),
+		Executable: staged,
+	}
+	termCalls := 0
+	err := stopUnmanagedSharedDaemonWithExpectedIdentity(
+		context.Background(),
+		"/tmp/app.sock",
+		configured,
+		&process,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) { return false, nil },
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				return process, nil
+			},
+			signalTERM: func(int) error { termCalls++; return nil },
+			currentUID: func() int { return os.Getuid() },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "listener 身份无效") || termCalls != 0 {
+		t.Fatalf("staged listener 的原始 argv 不匹配时必须拒绝 TERM：err=%v term=%d", err, termCalls)
+	}
+}
+
 func TestStopUnmanagedSharedDaemonRejectsListenerChangedAfterSignedIdentityConfirmation(t *testing.T) {
 	configured := writeFakeCodexBin(t, t.TempDir(), "configured-codex")
 	expected := sharedDaemonListenerProcess{
@@ -323,7 +368,7 @@ func TestStopUnmanagedSharedDaemonRejectsListenerChangedAfterSignedIdentityConfi
 		UID:        os.Getuid(),
 		StartSec:   1786522048,
 		StartUsec:  123,
-		Command:    "codex app-server --listen unix://",
+		Command:    strings.Join([]string{configured, "app-server", "--listen", "unix://"}, "\x00"),
 		Executable: configured,
 	}
 	// 模拟 socket 在签名父链验证之后换成另一个 owner。它仍使用同一

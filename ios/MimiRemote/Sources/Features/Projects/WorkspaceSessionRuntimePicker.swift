@@ -48,6 +48,67 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// 窄屏形态：分段控件在竖屏是头顶第二颗灰胶囊，而多数人一天只用一个 Runtime。
+/// 降级成菜单后这一行只剩一处品牌标记加一个 chevron，头顶的等重灰块少一个。
+/// 代价是另一个 Runtime 收进菜单、可发现性降一档，因此只在放不下分段控件时使用。
+struct WorkspaceRuntimeMenuPicker: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    @Binding var selection: WorkspaceSessionRuntimeChoice
+    let claudeChannelAvailable: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Menu {
+            // 菜单项始终列出全部 Runtime；不可用的那个保留为禁用项，
+            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
+            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
+                Button {
+                    selection = choice
+                } label: {
+                    Label {
+                        Text(choice.listTitle)
+                    } icon: {
+                        if choice == selection {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .disabled(choice == .claude && !claudeChannelAvailable)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(selection.brandAssetName)
+                    .resizable()
+                    // 品牌资源自带底色，模板着色会把整张画布染成方块。
+                    .renderingMode(.original)
+                    .scaledToFit()
+                    .frame(width: 15, height: 15)
+                    .accessibilityHidden(true)
+
+                Text(selection.listTitle)
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
+            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .menuOrder(.fixed)
+        .accessibilityLabel(L10n.text("ui.runtime_provider"))
+        .accessibilityValue(selection.listTitle)
+        .accessibilityIdentifier("workspace.sessions.runtimePicker")
+    }
+}
+
 /// 独立子视图保持 Runtime 选择的布局、命中区和辅助功能语义稳定。
 struct WorkspaceRuntimePicker: View {
     @EnvironmentObject private var themeStore: ThemeStore

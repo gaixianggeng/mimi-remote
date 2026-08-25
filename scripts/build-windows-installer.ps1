@@ -68,7 +68,7 @@ try {
     $env:CGO_ENABLED = '0'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
     & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
     if ($LASTEXITCODE -ne 0) { throw 'go build failed.' }
-    & go build -trimpath -ldflags "-s -w -H=windowsgui" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
+    & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.releaseVersion=$Version" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
     if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }
     if ($BridgeBinary) {
         & $BridgeBinary --version

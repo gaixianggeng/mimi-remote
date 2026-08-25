@@ -159,10 +159,7 @@ while true; do sleep 1; done
 }
 
 func TestManagedWebSocketProcessFailsWhenProcessExitsEarly(t *testing.T) {
-	falseBin, err := exec.LookPath("false")
-	if err != nil {
-		t.Skip("系统缺少 false 命令")
-	}
+	falseBin := writeCodexThatExitsEarly(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -180,6 +177,23 @@ func TestManagedWebSocketProcessFailsWhenProcessExitsEarly(t *testing.T) {
 	if !strings.Contains(err.Error(), "启动后立即退出") {
 		t.Fatalf("错误信息应提示立即退出，got=%v", err)
 	}
+}
+
+func writeCodexThatExitsEarly(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(t.TempDir(), "codex-exits-early.cmd")
+		body := "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.149.0\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	falseBin, err := exec.LookPath("false")
+	if err != nil {
+		t.Skip("系统缺少 false 命令")
+	}
+	return falseBin
 }
 
 func TestBuildManagedEnvFiltersDesktopTransportAndOverlaysConfiguredValues(t *testing.T) {

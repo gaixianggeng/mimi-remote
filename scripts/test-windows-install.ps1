@@ -29,8 +29,11 @@ if ($postInstallSource.IndexOf('ConfigurePrivateLanFirewallRule(True)') -gt $pos
     throw 'Unsafe inbound rules must be repaired before the upgraded scheduled task is registered or started.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
-foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)')) {
+foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
+}
+foreach ($expected in @('up --no-pair --wait 30s', 'restart --no-pair --wait 30s')) {
+    if (-not $source.Contains($expected)) { throw "Installer source is missing the extended cold-start readiness window: $expected" }
 }
 $firewallSource = Get-Content -LiteralPath $firewall -Raw
 foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateNetwork')", 'Get-NetConnectionProfile', 'Get-UnmanagedInboundAllowRules', 'Remove-UnmanagedInboundAllowRules', '-Profile Private', '-RemoteAddress LocalSubnet', '-Program $AgentPath', 'Get-NetFirewallApplicationFilter', 'Get-NetFirewallAddressFilter')) {
@@ -44,6 +47,7 @@ if (-not $buildSource.Contains('/DMySignTool=mimi-authenticode')) { throw 'Relea
 if (-not $buildSource.Contains('[switch]$AllowUnsignedRelease')) { throw 'Unsigned release builds must require an explicit switch.' }
 if (-not $buildSource.Contains("'unsigned-release'")) { throw 'Unsigned release builds must record their signing mode in metadata.' }
 if (-not $buildSource.Contains('Mimi-Remote-Setup-$Version-unsigned')) { throw 'Unsigned release filenames must identify that they are unsigned.' }
+if (-not $buildSource.Contains('-X main.releaseVersion=$Version')) { throw 'Windows tray builds must embed the installer and GitHub Release version.' }
 $checkSource = Get-Content -LiteralPath $check -Raw
 if (-not $checkSource.Contains("'unsigned-release'")) { throw 'Installer validation must recognize unsigned release metadata.' }
 $releaseSource = Get-Content -LiteralPath $releaseWorkflow -Raw
