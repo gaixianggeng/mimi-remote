@@ -193,7 +193,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .foregroundStyle(tokens.tertiaryText)
                 .monospacedDigit()
         }
-        .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+        // 标题对齐的是**内容列**，不是容器边缘。左侧 16pt 状态导轨是一条纯扫读用的
+        // gutter——一列圆点必须落在同一条竖轴上才能一眼看出哪几条在跑。
+        // 把小节标题也塞进那条轨道里，等于往扫读列里放了一段无关文字。
+        // 用 separatorInset 之后，小节标题 / 会话标题 / 分隔线起点 / 上方 Runtime
+        // 筛选器共用同一条左边线，整页只剩 gutter 和 content 两个左边缘。
+        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
+        .padding(.trailing, WorkspaceSessionRowMetrics.horizontalPadding)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
     }
@@ -267,9 +273,12 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         VStack(spacing: 0) {
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                 if index > 0 {
+                    // 分隔线是内容的一部分，两端都不该越过内容边距。之前右端一路铺到
+                    // 容器边缘，比最靠右的时间戳还长出一截，扁平之后这截尾巴直接露在画布上。
                     Divider()
                         .overlay(tokens.border.opacity(0.62))
                         .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
+                        .padding(.trailing, WorkspaceSessionRowMetrics.horizontalPadding)
                 }
 
                 Button {
@@ -293,6 +302,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
                 Divider()
                     .overlay(tokens.border.opacity(0.62))
+                    .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
 
                 loadMoreButton(tokens: tokens)
             }
@@ -435,7 +445,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         Text(L10n.text("ui.twelve_hours_ago"))
             .font(themeStore.uiFont(.footnote, weight: .semibold))
             .foregroundStyle(tokens.secondaryText)
-            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
+            .padding(.trailing, WorkspaceSessionRowMetrics.horizontalPadding)
             .padding(.top, WorkspaceSessionRowMetrics.sectionBoundarySpacing)
             .padding(.bottom, WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -527,6 +538,16 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
                     Spacer(minLength: 6)
 
+                    // 未读点放在时间**左侧**。放右侧时它和 6pt 间距一起把时间往里顶了
+                    // 13pt，于是第一行的右缘比第二行、比分隔线都短一截——卡片时代这截
+                    // 被卡片边缘盖住了，扁平之后就是一条毛边。
+                    // 占位仍然保留：未读状态变化不能让时间左右跳。
+                    if unreadHistorySessionIDs.contains(session.id) {
+                        SessionUnreadIndicator()
+                    } else {
+                        Color.clear.frame(width: 7, height: 7)
+                    }
+
                     if showsStatus {
                         Text(status.title)
                             .font(themeStore.uiFont(.caption2, weight: .semibold))
@@ -543,12 +564,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                             .fixedSize()
                     }
 
-                    if unreadHistorySessionIDs.contains(session.id) {
-                        SessionUnreadIndicator()
-                    } else {
-                        // 占位保证未读状态变化不会令时间或状态在右缘跳动。
-                        Color.clear.frame(width: 7, height: 7)
-                    }
                 }
 
                 if hasSecondaryLine {

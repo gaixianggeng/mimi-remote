@@ -131,7 +131,11 @@ enum WorkspaceSessionFabMetrics {
     static let diameter: CGFloat = 54
     /// 回到筛选行里的形态。必须收进 44pt 行高，因此比浮起态小一圈；
     /// 命中区仍由外层 44pt frame 保证。
-    static let inlineDiameter: CGFloat = 36
+    ///
+    /// 列表脱卡之后这一页最重的中间调没有了，一枚 36pt 的实心深紫盘旁边是 13pt 灰字，
+    /// 重量落差大到它成了唯一被看见的东西。它是主操作，该显眼，但不该是"只看得见它"。
+    /// 32pt 少掉约五分之一面积，仍然是全页唯一的实色圆钮。
+    static let inlineDiameter: CGFloat = 32
     /// 距屏幕右下两条边的留白，两个方向取同一个值，按钮才落在视觉上的角上。
     static let edgeInset: CGFloat = 20
     /// 列表底部要额外让出的高度，保证最后一行能滚到浮起按钮**之上**被读到，
