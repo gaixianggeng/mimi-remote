@@ -95,21 +95,16 @@ enum WorkspaceSessionPresentation {
     }
 }
 
-/// 泛型视图不能持有静态存储属性，而每行重建 DateFormatter 又很贵；
-/// 这两个格式化器与具体视图无关，提到文件级共享一份。
-/// 工作区最近会话行的几何。左槽不再放运行时品牌图标：这一屏已经被项目胶囊和
-/// Codex/Claude 筛选器各锁定一次，逐行重复的图标是常量，只会和标题抢横向空间。
-/// 槽位改成状态导轨，正常会话用圆点，等待/错误使用异常图标。
+/// 工作区只保留自己的分组节奏；会话行几何直接使用 `SessionIndexRowDensity`。
 enum WorkspaceSessionRowMetrics {
-    static let horizontalPadding: CGFloat = 14
-    static let railWidth: CGFloat = 16
-    static let railSpacing: CGFloat = 10
-    /// 两行信息保持紧密关联，但用更充足的行间距和上下留白降低长列表压迫感。
-    static let contentSpacing: CGFloat = 5
-    static let verticalPadding: CGFloat = 12
-    /// 标准动态字体下约 68pt；大字体仍由文本自然撑开，不能靠固定高度压缩内容。
-    static let minHeight: CGFloat = 68
-    static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
+    /// Runtime 菜单仍需要自己的标签内边距；它不参与会话行布局。
+    static let horizontalPadding: CGFloat = 8
+    /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
+    /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
+    static let sectionBoundarySpacing: CGFloat = 22
+    /// 小节标题到它所辖第一行之间的留白，明显小于 `sectionBoundarySpacing`，
+    /// 标题才会被读成"属于下面这段"而不是浮在两段中间。
+    static let sectionHeaderBottomSpacing: CGFloat = 6
 }
 
 /// 新建会话按钮浮在列表右下角。它不再与筛选器并排，因此可以画得比原来的 36pt 更实体；
@@ -118,7 +113,11 @@ enum WorkspaceSessionFabMetrics {
     static let diameter: CGFloat = 54
     /// 回到筛选行里的形态。必须收进 44pt 行高，因此比浮起态小一圈；
     /// 命中区仍由外层 44pt frame 保证。
-    static let inlineDiameter: CGFloat = 36
+    ///
+    /// 列表脱卡之后这一页最重的中间调没有了，一枚 36pt 的实心深紫盘旁边是 13pt 灰字，
+    /// 重量落差大到它成了唯一被看见的东西。它是主操作，该显眼，但不该是"只看得见它"。
+    /// 32pt 少掉约五分之一面积，仍然是全页唯一的实色圆钮。
+    static let inlineDiameter: CGFloat = 32
     /// 距屏幕右下两条边的留白，两个方向取同一个值，按钮才落在视觉上的角上。
     static let edgeInset: CGFloat = 20
     /// 列表底部要额外让出的高度，保证最后一行能滚到浮起按钮**之上**被读到，
@@ -127,7 +126,7 @@ enum WorkspaceSessionFabMetrics {
 }
 
 /// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
-/// 卡片内的状态导轨和文案表达，避免把分组背景误读成会话状态。
+/// 复用的会话行表达，避免把分组背景误读成会话状态。
 enum WorkspaceSessionGroup: String, CaseIterable {
     case needsAttention
     case running
@@ -163,57 +162,4 @@ enum WorkspaceRunningCountBadge {
         guard count > 0 else { return nil }
         return count > 9 ? "9+" : String(count)
     }
-}
-
-/// 会话行左槽只表达需要处理的异常状态。正常运行已经由分组标题表达，不再重复画绿点。
-enum WorkspaceSessionRailState: Equatable {
-    case failed
-    case waiting
-
-    static func resolve(status: AgentSessionDisplayStatus) -> WorkspaceSessionRailState? {
-        switch status.tone {
-        case .danger:
-            return .failed
-        case .warning:
-            return .waiting
-        case .active, .complete, .neutral:
-            return nil
-        }
-    }
-
-    func color(tokens: ThemeTokens) -> Color {
-        switch self {
-        case .failed:
-            return .red
-        case .waiting:
-            return tokens.warning
-        }
-    }
-}
-
-/// 分组面板只承担内容归组，不编码会话状态。这样长列表保留一块安静的阅读表面，
-/// 状态差异仍由行内导轨和文案表达，不会重新变成一排排漂浮卡片。
-struct WorkspaceSessionGroupPanel: ViewModifier {
-    let tokens: ThemeTokens
-
-    func body(content: Content) -> some View {
-        content
-            .workbenchSurface(tokens: tokens, role: .groupedPanel)
-    }
-}
-
-enum WorkspaceSessionRowFormatters {
-    static let time: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Hm")
-        return formatter
-    }()
-
-    static let date: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter
-    }()
 }

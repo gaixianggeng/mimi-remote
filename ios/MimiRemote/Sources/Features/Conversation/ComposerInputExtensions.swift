@@ -199,7 +199,6 @@ struct ComposerToolbarControlLabel: View {
     let tint: Color?
     let titleMaxWidth: CGFloat?
     let accessibilityLabel: String
-    var showsRestingSurface = true
     var usesPhoneStyle = false
     var usesCondensedTitle = false
 
@@ -207,8 +206,7 @@ struct ComposerToolbarControlLabel: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let cornerRadius: CGFloat = title == nil ? 22 : (usesPhoneStyle ? 20 : 12)
         let surfaceInset: CGFloat = usesPhoneStyle ? 2 : 4
-        // 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
-        let restingForeground = usesPhoneStyle ? tokens.conversationPrimaryText : tokens.primaryText
+        let restingForeground = restingForeground(tokens: tokens)
         let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? restingForeground)
 
         HStack(spacing: 6) {
@@ -253,19 +251,20 @@ struct ComposerToolbarControlLabel: View {
                 .fill(isSelected ? tokens.accent : Color.clear)
                 .padding(surfaceInset)
         }
-        .modifier(
-            ComposerFlatControlSurface(
-                tokens: tokens,
-                cornerRadius: cornerRadius,
-                isEmphasized: isSelected,
-                showsRestingFill: showsRestingSurface,
-                surfaceInset: surfaceInset,
-                usesNeutralControlSurface: usesPhoneStyle
-            )
-        )
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
+    ///
+    /// 键帽底色去掉之后，iPhone 上唯一的纯文字控件（模型标签）如果继续用正文墨色，
+    /// 就会和右侧实心发送键抢同一档视觉重量——一行里两个"最重"的东西。
+    /// 模型名表达的是"当前用什么"这一上下文，不是与发送并列的动作，压到次级灰；
+    /// 图标按钮本身是动作，保持正文墨色。
+    private func restingForeground(tokens: ThemeTokens) -> Color {
+        guard usesPhoneStyle else { return tokens.primaryText }
+        return usesCondensedTitle ? tokens.conversationSecondaryText : tokens.conversationPrimaryText
     }
 }
 
@@ -322,7 +321,6 @@ struct ComposerPermissionMenu: View {
                 tint: tint,
                 titleMaxWidth: nil,
                 accessibilityLabel: L10n.text("ui.permission_mode"),
-                showsRestingSurface: true,
                 usesPhoneStyle: usesPhoneStyle,
                 usesCondensedTitle: false
             )
@@ -980,15 +978,6 @@ extension ComposerView {
                     .fill(fill)
                     .padding(surfaceInset)
             }
-            .modifier(
-                ComposerFlatControlSurface(
-                    tokens: tokens,
-                    cornerRadius: cornerRadius,
-                    isEmphasized: enabled || usesPhonePrimaryStyle,
-                    surfaceInset: surfaceInset,
-                    usesNeutralControlSurface: usesPhonePrimaryStyle
-                )
-            )
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

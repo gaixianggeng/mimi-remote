@@ -546,9 +546,12 @@ final class MarkdownRenderingTests: XCTestCase {
     func testMarkdownStyleKeepsConversationTypographyReadableAndScaled() {
         let style = MarkdownStyle.make(role: .assistant, colorScheme: .light, fontScale: 1.2)
 
-        XCTAssertEqual(style.blockSpacing, 10)
-        XCTAssertEqual(style.textLineSpacing, 4)
-        XCTAssertEqual(style.scaled(16), 19.2, accuracy: 0.001)
+        // 正文对齐 iOS .body 的 17pt 阅读档；行距与段间距同步上移，
+        // 段落边界仍要比行间距明显一档，否则长回复会糊成一整块。
+        XCTAssertEqual(style.blockSpacing, 12)
+        XCTAssertEqual(style.textLineSpacing, 5)
+        XCTAssertGreaterThan(style.blockSpacing, style.textLineSpacing)
+        XCTAssertEqual(style.scaled(17), 20.4, accuracy: 0.001)
     }
 
     func testStreamingMarkdownPerformanceStaysBoundedForLargeOpenBlocks() {

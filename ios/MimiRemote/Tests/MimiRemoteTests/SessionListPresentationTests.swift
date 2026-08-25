@@ -130,6 +130,192 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(session.preview, original)
     }
 
+    func testDistinctPreviewDropsTheTitlePrefixItRepeats() {
+        // 真实数据：标题和 preview 都由首条用户消息派生，preview 只是多带一段。
+        let session = makeSession(
+            id: "redundant",
+            title: "我在测试 App的权限。",
+            preview: "我在测试 App的权限。 帮我在 Linear 上使用 MCP 查一下"
+        )
+
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: session),
+            "帮我在 Linear 上使用 MCP 查一下"
+        )
+        XCTAssertEqual(session.preview, "我在测试 App的权限。 帮我在 Linear 上使用 MCP 查一下")
+    }
+
+    func testDistinctPreviewIsEmptyWhenItOnlyRepeatsTheTitle() {
+        let identical = makeSession(
+            id: "identical",
+            title: "更新 Windows 安装包部署",
+            preview: "更新 Windows 安装包部署"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: identical), "")
+
+        // 标题被省略号截断时，省略号不该阻止前缀判定。
+        let truncatedTitle = makeSession(
+            id: "truncated-title",
+            title: "嗯，目前 windows 应该还不止…",
+            preview: "嗯，目前 windows 应该还不止"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: truncatedTitle), "")
+
+        // 反向：preview 是更早的截断版本，标题反而更长。
+        let truncatedPreview = makeSession(
+            id: "truncated-preview",
+            title: "清理已经无关的 worktree 分支",
+            preview: "清理已经无关的 worktree…"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: truncatedPreview), "")
+
+        // 去掉标题前缀后只剩标点，第二行没有信息量。
+        let punctuationOnly = makeSession(
+            id: "punctuation",
+            title: "拉取最新代码",
+            preview: "拉取最新代码。"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: punctuationOnly), "")
+    }
+
+    func testDistinctPreviewKeepsGenuinelyDifferentText() {
+        let session = makeSession(
+            id: "distinct",
+            title: "PR #232 CI flow error",
+            preview: "已经定位到 verify-windows 的 shutdown 抖动"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: session),
+            "已经定位到 verify-windows 的 shutdown 抖动"
+        )
+
+        // 前缀太短的"撞头"是巧合，不是重复。
+        let shortStem = makeSession(id: "short", title: "修", preview: "修一下 CI 的超时时间")
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: shortStem),
+            "修一下 CI 的超时时间"
+        )
+
+        // Markdown 清洗规则与 previewDisplayText 保持一致。
+        let markdown = makeSession(id: "markdown", title: "Alpha", preview: " **Beta**\n> `gamma`\t  delta ")
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: markdown),
+            "Beta gamma delta"
+        )
+
+        let missing = makeSession(id: "missing", title: "Alpha", preview: nil)
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: missing), "")
+    }
+
+    func testDistinctPreviewKeepsOrdinaryWordPrefixesInBothDirections() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "Swift",
+                preview: "SwiftUI navigation bug"
+            ),
+            "SwiftUI navigation bug"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话列表需要优化"
+            ),
+            "工作区会话列表需要优化"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "修复输入区布局",
+                preview: "修复"
+            ),
+            "修复"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话列表需要优化",
+                preview: "工作区会话"
+            ),
+            "工作区会话"
+        )
+
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话：列表需要优化"
+            ),
+            "列表需要优化"
+        )
+    }
+
+    func testWorkspaceBranchIdentityOnlyShowsWhenMultipleValidBranchesExist() {
+        XCTAssertNil(SessionListPresentation.branchToDisplay("main", among: ["main", " main ", nil, " "]))
+        XCTAssertEqual(
+            SessionListPresentation.branchToDisplay(" feature/login ", among: ["main", " feature/login ", nil]),
+            "feature/login"
+        )
+        XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
+    }
+
+    func testTimestampTextUsesInjectedNowAndCalendar() {
+        let calendar = makeCalendar(timeZone: "Asia/Shanghai")
+        let now = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 12, minute: 0)
+        let today = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 9, minute: 30)
+        let yesterday = makeDate(calendar, year: 2025, month: 4, day: 8, hour: 23, minute: 59)
+        let earlier = makeDate(calendar, year: 2025, month: 3, day: 1, hour: 10)
+
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: today,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "09:30"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(for: yesterday, now: now, calendar: calendar),
+            L10n.text("ui.yesterday")
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: earlier,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "3/1"
+        )
+        XCTAssertEqual(SessionListPresentation.timestampText(for: nil, now: now, calendar: calendar), "")
+    }
+
+    func testCompactSupplementaryPreviewLineLimitPrioritizesSearchSnippet() {
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .large
+            ),
+            2
+        )
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .large
+            ),
+            1
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+    }
+
     func testSidebarSectionsUsePriorityOrderAndStableDeduplication() {
         let approval = ApprovalSummary(
             id: "approval",
