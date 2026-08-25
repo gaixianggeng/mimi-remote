@@ -18,7 +18,7 @@ $windowsDocs = @(
 )
 foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', '-ServiceHostPath', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
 $postInstallSource = $source.Substring($source.IndexOf('procedure CurStepChanged'))
@@ -29,9 +29,10 @@ if ($postInstallSource.IndexOf('ConfigurePrivateLanFirewallRule(True)') -gt $pos
     throw 'Unsafe inbound rules must be repaired before the upgraded scheduled task is registered or started.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
-foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
+foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $ServiceHostPath', '--service-host', '--service-agent-path', '--service-log-path', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
 }
+if ($registerSource.Contains('New-ScheduledTaskAction -Execute $AgentPath')) { throw 'Task registration must not launch console-subsystem agentd.exe directly.' }
 foreach ($expected in @('up --no-pair --wait 30s', 'restart --no-pair --wait 30s')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing the extended cold-start readiness window: $expected" }
 }

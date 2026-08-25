@@ -91,7 +91,8 @@ begin
   ExtractTemporaryFile('register-service.ps1');
   Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
     Quote(ExpandConstant('{tmp}\register-service.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -LogPath ' +
+    Quote(ExpandConstant('{app}\agentd.exe')) + ' -ServiceHostPath ' +
+    Quote(ExpandConstant('{app}\mimi-remote-tray.exe')) + ' -LogPath ' +
     Quote(ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log')) +
     ' -TaskName ' + Quote(TaskName);
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin

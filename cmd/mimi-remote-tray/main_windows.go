@@ -197,10 +197,21 @@ type trayApplication struct {
 var currentTray *trayApplication
 
 func main() {
-	enablePerMonitorDPIAwareness()
 	pairAfterInstall := flag.Bool("pair", false, "启动后打开本机配对窗口")
 	showAfterStart := flag.Bool("show", false, "启动后打开 Windows 控制面板")
+	serviceHost := flag.Bool("service-host", false, "内部：无窗口托管 Windows agentd 服务")
+	serviceAgentPath := flag.String("service-agent-path", "", "内部：Windows agentd 服务程序路径")
+	serviceLogPath := flag.String("service-log-path", "", "内部：Windows agentd 服务日志路径")
 	flag.Parse()
+	if *serviceHost {
+		if err := runManagedServiceHost(*serviceAgentPath, *serviceLogPath); err != nil {
+			appendManagedServiceHostError(*serviceLogPath, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	enablePerMonitorDPIAwareness()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
