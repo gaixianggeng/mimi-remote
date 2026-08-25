@@ -1,5 +1,5 @@
-//! 回归：turn/start 在发送用户输入前遇到 runtime control 进程退出时，
-//! bridge 只冷启动重试一次，并且用户输入只能发送给健康 generation 一次。
+//! 回归：历史会话重复 resume 后，若 runtime control 导致进程退出，
+//! bridge 的冷重试必须改用启动参数，不能再重复同一条失败控制请求。
 
 mod support;
 
@@ -21,19 +21,20 @@ use support::fake_claude_path;
 const STEP_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[tokio::test]
-async fn pre_turn_control_exit_cold_recovers_without_duplicate_user_envelope() {
+async fn duplicate_resume_control_exit_recovers_with_spawn_time_overrides() {
     let fixture = TempDir::new().expect("fixture");
     let cwd = TempDir::new().expect("cwd");
-    let marker = fixture.path().join("first-control-exited");
     let turn_log = fixture.path().join("turns.log");
-    let _restore_marker = EnvRestore::set("FAKE_CLAUDE_EXIT_ON_CONTROL_ONCE", &marker);
+    let _restore_control_exit =
+        EnvRestore::set("FAKE_CLAUDE_EXIT_ON_CONTROL_ALWAYS", fixture.path());
     let _restore_turn_log = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
 
     let claude_pool = Arc::new(ClaudePool::new(fake_claude_path()));
     let codex_home = TempDir::new().expect("codex home");
-    let thread_index: Arc<dyn ThreadIndexHandle> = ThreadIndex::open_and_hydrate(codex_home.path())
+    let index = ThreadIndex::open_and_hydrate(codex_home.path())
         .await
         .expect("thread index");
+    let thread_index: Arc<dyn ThreadIndexHandle> = index.clone();
     let (client_io, bridge_io) = tokio::io::duplex(64 * 1024);
     let (bridge_reader, bridge_writer) = tokio::io::split(bridge_io);
     let bridge_pool = Arc::clone(&claude_pool);
@@ -72,22 +73,51 @@ async fn pre_turn_control_exit_cold_recovers_without_duplicate_user_envelope() {
         .as_str()
         .expect("thread id")
         .to_string();
+    let transcript = index
+        .lookup(&thread_id)
+        .await
+        .expect("indexed thread")
+        .metadata
+        .claude_session_path;
+    std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
+        .expect("create transcript parent");
+    std::fs::write(&transcript, "").expect("create historical transcript");
+
+    for id in [3, 4] {
+        send(
+            &mut client_writer,
+            id,
+            "thread/resume",
+            json!({
+                "threadId": thread_id,
+                "model": "opus",
+                "excludeTurns": true
+            }),
+        )
+        .await;
+        let resumed = await_response(&mut client_reader, id).await;
+        assert!(
+            resumed.get("error").is_none(),
+            "unexpected resume error: {resumed:#?}"
+        );
+    }
 
     send(
         &mut client_writer,
-        3,
+        5,
         "turn/start",
         json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": "recover exactly once"}],
+            "model": "opus",
             "effort": "high"
         }),
     )
     .await;
-    let messages = collect_turn(&mut client_reader, 3).await;
+    let messages = collect_turn(&mut client_reader, 5).await;
     let response = messages
         .iter()
-        .find(|message| message["id"].as_u64() == Some(3))
+        .find(|message| message["id"].as_u64() == Some(5))
         .expect("turn/start response");
     assert!(
         response.get("error").is_none(),
@@ -98,10 +128,6 @@ async fn pre_turn_control_exit_cold_recovers_without_duplicate_user_envelope() {
         .find(|message| message["method"] == "turn/completed")
         .expect("turn/completed");
     assert_eq!(completed["params"]["turn"]["status"], "completed");
-    assert!(
-        marker.is_file(),
-        "first generation must fail during control"
-    );
     assert_eq!(
         std::fs::read_to_string(&turn_log).expect("turn log"),
         "recover exactly once\n",

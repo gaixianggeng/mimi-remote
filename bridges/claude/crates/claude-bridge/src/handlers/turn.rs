@@ -444,6 +444,8 @@ async fn acquire_turn_process(
     let cwd = resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
     let defaults = state.defaults();
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
+    let effort_level = params.effort.map(native_effort_level).map(str::to_string);
+    let permission_mode = claude_permission_mode(params).to_string();
     // 本地可直接以 transcript 是否存在区分新线程和恢复线程。远程线程仍会在
     // thread/start/resume 预启动；这里的 preview 判断只负责进程意外退出后的兜底。
     let resume = if state.trust_persisted_cwd() {
@@ -458,6 +460,8 @@ async fn acquire_turn_process(
             &cwd,
             resume,
             model,
+            effort_level,
+            Some(permission_mode),
             defaults.system_prompt.clone(),
         )
         .await

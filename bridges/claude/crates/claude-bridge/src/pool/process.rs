@@ -79,6 +79,10 @@ pub struct ClaudeSpawnConfig {
     /// Optional model override (`--model <s>`). Accepts full model ids and the
     /// established `opus` / `sonnet` / `haiku` aliases claude understands directly.
     pub model: Option<String>,
+    /// Optional `--effort <level>` applied before the first user envelope.
+    pub effort_level: Option<String>,
+    /// Optional `--permission-mode <mode>` applied before the first user envelope.
+    pub permission_mode: Option<String>,
     /// Optional `--append-system-prompt <s>`.
     pub append_system_prompt: Option<String>,
     /// True for `thread/resume`: spawn with `--resume <thread_id>` so claude
@@ -314,6 +318,8 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin,
             model,
+            effort_level,
+            permission_mode,
             append_system_prompt,
             resume,
             bypass_permissions,
@@ -336,6 +342,10 @@ impl ClaudeProcessHandle {
             // outbound control_response{...{behavior:"allow"|"deny"}}.
             args.push("--permission-prompt-tool".into());
             args.push("stdio".into());
+            if let Some(mode) = permission_mode.as_deref() {
+                args.push("--permission-mode".into());
+                args.push(mode.into());
+            }
         }
         args.push("--add-dir".into());
         args.push(cwd.clone().into_os_string());
@@ -355,6 +365,10 @@ impl ClaudeProcessHandle {
         if let Some(m) = model.as_deref() {
             args.push("--model".into());
             args.push(m.into());
+        }
+        if let Some(level) = effort_level.as_deref() {
+            args.push("--effort".into());
+            args.push(level.into());
         }
         if let Some(prompt) = append_system_prompt.as_deref() {
             args.push("--append-system-prompt".into());
@@ -400,15 +414,17 @@ impl ClaudeProcessHandle {
         let init_slot: Arc<InitSlot> = Arc::new(InitSlot::default());
         let pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        // Seed runtime_state with whatever was passed at spawn — claude reads
-        // `--model <m>` directly so we know that value is live without ever
-        // sending set_model. Effort / permission mode stay None until
-        // the first apply_runtime_overrides call sets them.
+        // Spawn-time flags are already live. Cache them so cold recovery does
+        // not repeat the same runtime control that retired the prior process.
         let runtime_state = Arc::new(Mutex::new(RuntimeState {
             model: model.clone(),
-            effort_level: None,
+            effort_level: effort_level.clone(),
             effort_level_unsupported: false,
-            permission_mode: None,
+            permission_mode: if bypass_permissions {
+                None
+            } else {
+                permission_mode.clone()
+            },
         }));
 
         let writer = tokio::spawn(writer_task(
