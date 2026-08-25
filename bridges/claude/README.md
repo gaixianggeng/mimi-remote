@@ -35,10 +35,10 @@ command -v alleycat-claude-bridge
 alleycat-claude-bridge --version
 ```
 
-macOS 上主动读取 Claude 用量时，bridge 会复用 Claude Code 的 Keychain 凭据。
-短期 access token 过期后，bridge 通过系统自带的 `/usr/bin/script` 创建 PTY，执行一次
-Claude CLI `/status` 认证路径并重新读取 Keychain；PTY 固定在无业务文件的专用缓存目录，
-不会误信任 launchd 的 `/` 工作目录，也不会自行消费或覆盖 refresh token。
+macOS 上主动读取 Claude 用量时，bridge 会只读复用 Claude Code 的 Keychain 凭据。
+用量查询不会启动隐藏的 Claude CLI，也不会驱动 OAuth 刷新，避免与真正的会话进程
+竞争 refresh token。凭据过期或查询失败时会降级到已观测的 `rate_limit_event`；若其他
+Claude 进程已经轮换凭据，HTTP 401 后只重新读取一次 Keychain 并用新凭据重试。
 
 ## 来源与协议
 
