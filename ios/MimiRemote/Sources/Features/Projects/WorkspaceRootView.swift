@@ -143,9 +143,39 @@ enum WorkspaceSessionBranchPresentation {
         Set(branches.compactMap(normalizedBranch)).count > 1
     }
 
+    /// 这批会话的**基线分支**：出现次数最多、且唯一的那一个。
+    ///
+    /// 分支标签的价值全在"这条和别的不一样"。按整个列表开关（只要出现过两种分支就
+    /// 给每行都挂标签）会让占绝大多数的那个分支重复几十遍——13 行里 11 行写着
+    /// `main`，只因为列表最底下有一条 worktree 分支。那 11 个标签一个字节的区分度
+    /// 都没有，却每个都占着位置。
+    ///
+    /// 众数不唯一时返回 nil：此时没有哪个分支称得上"默认"，全部照常显示。
+    /// 只有一个分支时它就是基线，于是单行列表不会挂一个无从对比的标签。
+    static func baselineBranch(among branches: [String?]) -> String? {
+        let normalized = branches.compactMap(normalizedBranch)
+        guard !normalized.isEmpty else { return nil }
+
+        var counts: [String: Int] = [:]
+        for branch in normalized {
+            counts[branch, default: 0] += 1
+        }
+        guard let maxCount = counts.values.max() else { return nil }
+
+        let leaders = counts.filter { $0.value == maxCount }.map(\.key)
+        guard leaders.count == 1 else { return nil }
+        return leaders[0]
+    }
+
+    /// 分支只在偏离基线时才画。基线由调用方算一次传进来，避免每行重算一遍词频。
+    static func branchToDisplay(_ branch: String?, baseline: String?) -> String? {
+        guard let value = normalizedBranch(branch) else { return nil }
+        guard value != baseline else { return nil }
+        return value
+    }
+
     static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
-        guard shouldShowBranches(branches) else { return nil }
-        return normalizedBranch(branch)
+        branchToDisplay(branch, baseline: baselineBranch(among: branches))
     }
 }
 

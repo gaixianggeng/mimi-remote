@@ -147,7 +147,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         grouped: [WorkspaceSessionGroup: [AgentSession]],
         tokens: ThemeTokens
     ) -> some View {
-        let branchValues = recentSessions.map(\.gitBranchName)
+        // 基线只在这里算一次；逐行去算词频是 O(n²)，而且每次重绘都要重来。
+        let branchBaseline = WorkspaceSessionBranchPresentation.baselineBranch(
+            among: recentSessions.map(\.gitBranchName)
+        )
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
         let showsSectionHeaders = populatedGroups.count > 1
@@ -162,7 +165,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionGroupBody(
                         group,
                         sessions: sessions,
-                        branchValues: branchValues,
+                        branchBaseline: branchBaseline,
                         showsLoadMore: group == populatedGroups.last,
                         tokens: tokens
                     )
@@ -208,7 +211,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
-        branchValues: [String?],
+        branchBaseline: String?,
         showsLoadMore: Bool,
         tokens: ThemeTokens
     ) -> some View {
@@ -233,7 +236,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 if !currentSessions.isEmpty {
                     sessionRowsStack(
                         sessions: currentSessions,
-                        branchValues: branchValues,
+                        branchBaseline: branchBaseline,
                         showsLoadMore: false,
                         tokens: tokens
                     )
@@ -243,7 +246,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
                 sessionRowsStack(
                     sessions: staleSessions,
-                    branchValues: branchValues,
+                    branchBaseline: branchBaseline,
                     showsLoadMore: showsLoadMore,
                     tokens: tokens
                 )
@@ -251,7 +254,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         } else {
             sessionRowsStack(
                 sessions: sessions,
-                branchValues: branchValues,
+                branchBaseline: branchBaseline,
                 showsLoadMore: showsLoadMore,
                 tokens: tokens
             )
@@ -266,7 +269,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 分组改由小节标题和留白承担，与会话 tab 完全同构。
     private func sessionRowsStack(
         sessions: [AgentSession],
-        branchValues: [String?],
+        branchBaseline: String?,
         showsLoadMore: Bool,
         tokens: ThemeTokens
     ) -> some View {
@@ -286,7 +289,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 } label: {
                     recentSessionRow(
                         session,
-                        branchValues: branchValues,
+                        branchBaseline: branchBaseline,
                         tokens: tokens
                     )
                 }
@@ -490,7 +493,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
     private func recentSessionRow(
         _ session: AgentSession,
-        branchValues: [String?],
+        branchBaseline: String?,
         tokens: ThemeTokens
     ) -> some View {
         let status = session.displayStatus(foregroundActivity: nil)
@@ -506,7 +509,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
         let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
             session.gitBranchName,
-            among: branchValues
+            baseline: branchBaseline
         )
         // 两条元信息都没有时不保留第二行的位置，否则标题下方是一段解释不了的空白。
         let hasSecondaryLine = branch != nil || !preview.isEmpty
@@ -580,13 +583,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                                     .truncationMode(.middle)
                             }
-                            // 分支是 worktree 前缀，先按需要拿走它的理想宽度（上限 150pt），
-                            // 剩下的全部让给摘要。
+                            // 不再固定宽度。150pt 那个列是为了让摘要在各行对齐才存在的，
+                            // 代价是 `main` 这种短分支后面空出一大截。分支变成例外标记之后，
+                            // 绝大多数行第二行只有摘要，天然就在同一条左边缘上，不需要占位撑。
                             //
-                            // 之前摘要的 layoutPriority 高于这里，SwiftUI 会先满足摘要，
-                            // 再把分支压到零宽——渲染出来就是一枚孤零零的「…」，
-                            // 既不表达分支也不表达截断，是列表里最刺眼的一处噪声。
-                            .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? 220 : 150, alignment: .leading)
+                            // layoutPriority 必须留着：摘要的优先级高于这里时，SwiftUI 会先
+                            // 满足摘要再把分支压到零宽，渲染出来是一枚既不表达分支也不表达
+                            // 截断的「…」。没有 frame 时 Text 至多取自己的理想宽度，不会
+                            // 反过来吃掉整行。
                             .layoutPriority(1)
                             .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
                             .accessibilityElement(children: .ignore)
