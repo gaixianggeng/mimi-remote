@@ -134,7 +134,6 @@ struct VoiceMicButton: View {
     let isTranscribing: Bool
     let usesRealtimeTranscription: Bool
     let onTap: () -> Void
-    var showsRestingSurface = true
     var usesPhoneStyle = false
 
     var body: some View {
@@ -170,17 +169,6 @@ struct VoiceMicButton: View {
                     : (usesPhoneStyle ? tokens.conversationPrimaryText : tokens.primaryText)
             )
             .frame(width: 44, height: 44)
-            .background(Color.clear, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .modifier(
-                ComposerFlatControlSurface(
-                    tokens: tokens,
-                    cornerRadius: 22,
-                    isEmphasized: false,
-                    showsRestingFill: showsRestingSurface,
-                    surfaceInset: usesPhoneStyle ? 2 : 4,
-                    usesNeutralControlSurface: usesPhoneStyle
-                )
-            )
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -189,75 +177,6 @@ struct VoiceMicButton: View {
         .accessibilityLabel(state.accessibilityTitle)
         .accessibilityValue(state.accessibilityValue)
         .accessibilityHint(state.accessibilityHint(usesRealtimeTranscription: usesRealtimeTranscription))
-    }
-}
-
-/// Composer 控件使用独立的中性实色，在输入卡内部形成安静但明确的操作表面；
-/// 外壳已经是 Material，这里不再叠第二层玻璃。
-struct ComposerFlatControlSurface: ViewModifier {
-    let tokens: ThemeTokens
-    let cornerRadius: CGFloat
-    let isEmphasized: Bool
-    let showsRestingFill: Bool
-    let surfaceInset: CGFloat
-    let usesNeutralControlSurface: Bool
-
-    init(
-        tokens: ThemeTokens,
-        cornerRadius: CGFloat,
-        isEmphasized: Bool,
-        showsRestingFill: Bool = true,
-        surfaceInset: CGFloat = 4,
-        usesNeutralControlSurface: Bool = false
-    ) {
-        self.tokens = tokens
-        self.cornerRadius = cornerRadius
-        self.isEmphasized = isEmphasized
-        self.showsRestingFill = showsRestingFill
-        self.surfaceInset = surfaceInset
-        self.usesNeutralControlSurface = usesNeutralControlSurface
-    }
-
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-    }
-
-    private var restingFill: Color {
-        guard !isEmphasized, showsRestingFill else { return .clear }
-        return usesNeutralControlSurface ? tokens.composerControlSurface : tokens.background
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                // iPhone 可见键帽为 40pt，iPad 保持 36pt；外层命中面积始终不小于 44pt。
-                ZStack {
-                    shape
-                        .fill(restingFill)
-                        // 纯色画布后方没有正文可供 Material 折射时，接触阴影仍能稳定
-                        // 区分键面与 Composer；阴影跟随 40pt 可见面，不放大到 44pt 命中区。
-                        .shadow(
-                            color: usesNeutralControlSurface && !isEmphasized && showsRestingFill
-                                ? Color.black.opacity(0.035)
-                                : .clear,
-                            radius: 2,
-                            y: 1
-                        )
-                        .padding(surfaceInset)
-                    if usesNeutralControlSurface, !isEmphasized, showsRestingFill {
-                        // 玻璃外壳遇到纯色正文背景时仍需保留一档控件轮廓；发丝线只稳定
-                        // 边缘，不把低频按钮重新画成厚重的边框按钮。
-                        shape
-                            .strokeBorder(
-                                tokens.resolvedScheme == .light
-                                    ? Color.black.opacity(0.075)
-                                    : Color.white.opacity(0.06),
-                                lineWidth: 0.75
-                            )
-                            .padding(surfaceInset)
-                    }
-                }
-            }
     }
 }
 

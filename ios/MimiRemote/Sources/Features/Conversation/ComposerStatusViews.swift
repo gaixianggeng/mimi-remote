@@ -423,7 +423,10 @@ struct ComposerStatusTray: View {
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
         .padding(.trailing, 2)
-        .frame(minHeight: 44)
+        // 内嵌托盘是输入卡顶部的一条状态注解，不是一条独立列表行：占满 44pt
+        // 会让一枚 28pt 的 chip 顶着一整行空白，读成"这里少了点什么"。
+        // 命中区靠按钮的 44pt 宽度和 contentShape 保证，高度收进 36pt 的紧凑档。
+        .frame(minHeight: placement.usesEmbeddedStatusChip ? 36 : 44)
     }
 
     @ViewBuilder
@@ -537,7 +540,7 @@ struct ComposerStatusTray: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 12, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: placement.usesEmbeddedStatusChip ? 36 : 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -751,13 +754,6 @@ struct ComposerStatusTray: View {
                 .font(themeStore.uiFont(size: 16, weight: .semibold))
                 .foregroundStyle(isDisabled ? tokens.tertiaryText : tint)
                 .frame(width: 44, height: 44)
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: 12,
-                        isEmphasized: false
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

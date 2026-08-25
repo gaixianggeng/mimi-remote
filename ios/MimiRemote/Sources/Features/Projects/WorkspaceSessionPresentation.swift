@@ -101,7 +101,10 @@ enum WorkspaceSessionPresentation {
 /// Codex/Claude 筛选器各锁定一次，逐行重复的图标是常量，只会和标题抢横向空间。
 /// 槽位改成状态导轨，正常会话用圆点，等待/错误使用异常图标。
 enum WorkspaceSessionRowMetrics {
-    static let horizontalPadding: CGFloat = 14
+    /// 行不再被卡片托着，因此这个值只负责按压高亮和命中区在文字外多出的一点余量，
+    /// 不再需要补偿卡片内边距。14pt 是卡片时代的遗留：脱卡之后它会让整列内容
+    /// 无缘无故地往右缩进一截，和上方筛选行对不齐。
+    static let horizontalPadding: CGFloat = 8
     static let railWidth: CGFloat = 16
     static let railSpacing: CGFloat = 10
     /// 两行信息保持紧密关联，但用更充足的行间距和上下留白降低长列表压迫感。
@@ -109,7 +112,17 @@ enum WorkspaceSessionRowMetrics {
     static let verticalPadding: CGFloat = 12
     /// 标准动态字体下约 68pt；大字体仍由文本自然撑开，不能靠固定高度压缩内容。
     static let minHeight: CGFloat = 68
+    /// 摘要与标题重复、又没有 worktree 分支时，这一行只有标题。
+    /// 继续按两行的 68pt 留位会在标题下方留一段解释不了的空白，
+    /// 因此单行行高单独定义；混合行高本身是正常的列表节奏。
+    static let singleLineMinHeight: CGFloat = 52
     static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
+    /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
+    /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
+    static let sectionBoundarySpacing: CGFloat = 22
+    /// 小节标题到它所辖第一行之间的留白，明显小于 `sectionBoundarySpacing`，
+    /// 标题才会被读成"属于下面这段"而不是浮在两段中间。
+    static let sectionHeaderBottomSpacing: CGFloat = 6
 }
 
 /// 新建会话按钮浮在列表右下角。它不再与筛选器并排，因此可以画得比原来的 36pt 更实体；
@@ -187,17 +200,6 @@ enum WorkspaceSessionRailState {
         case .running:
             return tokens.success
         }
-    }
-}
-
-/// 分组面板只承担内容归组，不编码会话状态。这样长列表保留一块安静的阅读表面，
-/// 状态差异仍由行内导轨和文案表达，不会重新变成一排排漂浮卡片。
-struct WorkspaceSessionGroupPanel: ViewModifier {
-    let tokens: ThemeTokens
-
-    func body(content: Content) -> some View {
-        content
-            .workbenchSurface(tokens: tokens, role: .groupedPanel)
     }
 }
 

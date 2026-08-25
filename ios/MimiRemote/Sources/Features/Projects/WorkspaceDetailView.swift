@@ -123,12 +123,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 } actions: {
                     Button(L10n.text("ui.reload"), action: onRefreshSessions)
                 }
+                // 空态是这段列表的替身，不是另一个模块；列表已经不套卡，它也不该套。
                 .frame(maxWidth: .infinity, minHeight: 150)
-                .workbenchSurface(tokens: tokens, role: .groupedPanel)
             } else if recentSessions.isEmpty {
                 ContentUnavailableView(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right", description: Text(L10n.text("ui.after_a_new_session_is_created_in_this")))
                     .frame(maxWidth: .infinity, minHeight: 150)
-                    .workbenchSurface(tokens: tokens, role: .groupedPanel)
             } else {
                 groupedSessionSections(
                     populatedGroups: populatedGroups,
@@ -139,8 +138,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    /// 需要处理 / 正在运行 / 最近会话三段保留标题与计数；
-    /// 每段使用一张整体卡片，12 小时边界再把“最近会话”拆成上下两张卡片。
+    /// 需要处理 / 正在运行 / 最近会话三段保留标题与计数；12 小时边界再把「最近会话」
+    /// 拆成前后两小节。分段全部由小节标题和留白表达，没有卡片参与。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(
@@ -153,10 +152,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
         let showsSectionHeaders = populatedGroups.count > 1
 
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
             ForEach(populatedGroups, id: \.self) { group in
                 let sessions = grouped[group] ?? []
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing) {
                     if showsSectionHeaders {
                         sectionHeader(group, count: sessions.count, tokens: tokens)
                     }
@@ -178,15 +177,19 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         tokens: ThemeTokens
     ) -> some View {
         // 计数推到行尾，跟系统列表（「最近通话  12」）一致；贴在标题后面会读成标题的一部分。
+        //
+        // 分区标题是给内容分段的路标，不是页面标题。用正文墨色的 15pt 半粗时它和
+        // 会话标题同重，一屏里就出现两级都在喊的文字；计数更只是补充说明。
+        // 两者一起降到 13pt 次级/三级灰，扫读时先看到的仍然是会话本身。
         HStack(spacing: 8) {
             Text(group.title)
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
 
             Spacer(minLength: 8)
 
             Text("\(count)")
-                .font(themeStore.uiFont(.subheadline))
+                .font(themeStore.uiFont(.footnote))
                 .foregroundStyle(tokens.tertiaryText)
                 .monospacedDigit()
         }
@@ -215,11 +218,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             let currentSessions = Array(sessions.prefix(firstStaleIndex))
             let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
 
-            // 12 小时是信息分组边界，不是卡片内部的一条特殊 Divider。
-            // 边界两侧各自形成完整面板，避免时间标签切进白色内容表面。
+            // 12 小时是和「正在运行 / 最近会话」同级的信息分组边界，因此就用同一种小节标题。
+            //
+            // 它曾经是悬在两张卡片之间的一枚挖空标签——那个形态完全是卡片布局逼出来的：
+            // 有了卡，时间标签既不能切进白面，又没有别的地方可去，只好悬空并伪装底色
+            // （伪装色还错了一版）。列表扁平之后这些问题一起消失，标签回到它本来的身份。
             VStack(alignment: .leading, spacing: 0) {
                 if !currentSessions.isEmpty {
-                    sessionGroupPanel(
+                    sessionRowsStack(
                         sessions: currentSessions,
                         branchValues: branchValues,
                         showsLoadMore: false,
@@ -227,9 +233,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     )
                 }
 
-                twelveHourBoundary(tokens: tokens)
+                staleBoundaryHeader(tokens: tokens)
 
-                sessionGroupPanel(
+                sessionRowsStack(
                     sessions: staleSessions,
                     branchValues: branchValues,
                     showsLoadMore: showsLoadMore,
@@ -237,7 +243,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 )
             }
         } else {
-            sessionGroupPanel(
+            sessionRowsStack(
                 sessions: sessions,
                 branchValues: branchValues,
                 showsLoadMore: showsLoadMore,
@@ -246,7 +252,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    private func sessionGroupPanel(
+    /// 会话行直接落在工作台画布上，不再套一张白卡。
+    ///
+    /// 卡片本身没有错，错的是**混用**：会话 tab 已经是扁平行，同一条会话在工作区里
+    /// 换一套外壳，用户学到的规则就作废了。而且这一页真正需要卡片的是 Git 摘要、
+    /// worktree 这些异类模块——会话列表也占一张卡时，白面就不再表达任何层级。
+    /// 分组改由小节标题和留白承担，与会话 tab 完全同构。
+    private func sessionRowsStack(
         sessions: [AgentSession],
         branchValues: [String?],
         showsLoadMore: Bool,
@@ -269,12 +281,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         tokens: tokens
                     )
                 }
-                .buttonStyle(.plain)
+                // 与会话 tab 同一枚样式：没有卡片托着之后，按压反馈是这一行唯一
+                // 还在证明"它是可点的"的东西。
+                .buttonStyle(SessionIndexRowButtonStyle(pressedFill: tokens.selectionFill))
+                .hoverEffect(.highlight)
                 .sessionRowActions(session)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
             }
 
-            // 加载入口只跟随最后一张面板；12 小时边界存在时自然落在旧会话卡片底部。
+            // 加载入口只跟在最后一段的末尾；12 小时边界存在时自然落在旧会话那一段底部。
             if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
                 Divider()
                     .overlay(tokens.border.opacity(0.62))
@@ -282,7 +297,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 loadMoreButton(tokens: tokens)
             }
         }
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
     }
 
     private func loadMoreButton(tokens: ThemeTokens) -> some View {
@@ -339,7 +353,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
             if showsCount {
                 Text("\(recentSessions.count)")
-                    .font(themeStore.uiFont(.subheadline))
+                    .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.tertiaryText)
                     .monospacedDigit()
                     .padding(
@@ -415,25 +429,19 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityIdentifier("workspace.sessions.newSession")
     }
 
-    private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
-        ZStack {
-            // 时间标签位于两张整体卡片之间，横线只帮助扫读，不穿过卡片表面。
-            Rectangle()
-                .fill(tokens.border.opacity(0.62))
-                .frame(height: 0.5)
-
-            Text(L10n.text("ui.twelve_hours_ago"))
-                .font(themeStore.uiFont(.caption2, weight: .medium))
-                .foregroundStyle(tokens.tertiaryText)
-                .padding(.horizontal, 8)
-                // 缺口与页面底色一致，确保标签明确悬在两张卡片之间。
-                .background(tokens.background)
-                .fixedSize()
-        }
-        .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .padding(.vertical, 7)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
+    /// 与 `sectionHeader` 同一档字号与墨色；差别只在它不带计数。
+    /// 上方留白比行距大一档，这段留白就是分组边界本身，不需要再画线。
+    private func staleBoundaryHeader(tokens: ThemeTokens) -> some View {
+        Text(L10n.text("ui.twelve_hours_ago"))
+            .font(themeStore.uiFont(.footnote, weight: .semibold))
+            .foregroundStyle(tokens.secondaryText)
+            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            .padding(.top, WorkspaceSessionRowMetrics.sectionBoundarySpacing)
+            .padding(.bottom, WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
     }
 
     private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
@@ -465,7 +473,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
         }
         .redacted(reason: .placeholder)
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
@@ -484,11 +491,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             isRunning: session.isRunning
         )
 
-        let preview = SessionListPresentation.previewDisplayText(for: session)
+        // 第二行只画标题之外的信息。preview 与 title 同源，重复时这里返回空串。
+        let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
         let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
             session.gitBranchName,
             among: branchValues
         )
+        // 两条元信息都没有时不保留第二行的位置，否则标题下方是一段解释不了的空白。
+        let hasSecondaryLine = branch != nil || !preview.isEmpty
         // 运行中的状态导轨是纯视觉提示并对辅助功能隐藏；把状态补进合并元素的 value，
         // VoiceOver 仍能在不增加第二个可聚焦元素的情况下读到「运行中」。
         let accessibilityValueParts = [
@@ -541,44 +551,55 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     }
                 }
 
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if let branch {
-                        HStack(spacing: 4) {
-                            SessionBranchIcon(size: 10)
-                                .foregroundStyle(tokens.tertiaryText)
-                                .accessibilityHidden(true)
+                if hasSecondaryLine {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if let branch {
+                            HStack(spacing: 4) {
+                                SessionBranchIcon(size: 10)
+                                    .foregroundStyle(tokens.tertiaryText)
+                                    .accessibilityHidden(true)
 
-                            Text(branch)
-                                .font(themeStore.uiFont(.caption2))
-                                .foregroundStyle(tokens.tertiaryText)
-                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                                .truncationMode(.middle)
-                                .layoutPriority(0)
-                        }
-                        // 分支只作为 worktree 前缀；宽度不足时先中间截断，把空间留给摘要。
-                        .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? 220 : 150, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
-                    }
-
-                    if !preview.isEmpty {
-                        Text(preview)
-                            .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .truncationMode(.tail)
+                                Text(branch)
+                                    .font(themeStore.uiFont(.caption2))
+                                    .foregroundStyle(tokens.tertiaryText)
+                                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                                    .truncationMode(.middle)
+                            }
+                            // 分支是 worktree 前缀，先按需要拿走它的理想宽度（上限 150pt），
+                            // 剩下的全部让给摘要。
+                            //
+                            // 之前摘要的 layoutPriority 高于这里，SwiftUI 会先满足摘要，
+                            // 再把分支压到零宽——渲染出来就是一枚孤零零的「…」，
+                            // 既不表达分支也不表达截断，是列表里最刺眼的一处噪声。
+                            .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? 220 : 150, alignment: .leading)
                             .layoutPriority(1)
-                    }
+                            .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
+                        }
 
-                    Spacer(minLength: 0)
+                        if !preview.isEmpty {
+                            Text(preview)
+                                .font(themeStore.uiFont(.footnote))
+                                .foregroundStyle(tokens.secondaryText)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                .truncationMode(.tail)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
         .padding(.vertical, WorkspaceSessionRowMetrics.verticalPadding)
-        .frame(minHeight: WorkspaceSessionRowMetrics.minHeight, alignment: .top)
+        .frame(
+            minHeight: hasSecondaryLine
+                ? WorkspaceSessionRowMetrics.minHeight
+                : WorkspaceSessionRowMetrics.singleLineMinHeight,
+            alignment: .top
+        )
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityValue(accessibilityValueParts.joined(separator: ", "))

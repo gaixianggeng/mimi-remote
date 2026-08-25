@@ -1022,38 +1022,21 @@ struct ComposerView: View {
         shape: RoundedRectangle,
         tokens: ThemeTokens
     ) -> some View {
-        if colorScheme == .light {
-            if reduceTransparency || colorSchemeContrast == .increased {
-                // 增强对比度靠实线边界定义卡片，阴影保持克制，避免和描边叠成脏边。
-                shape
-                    .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-            } else {
-                // 浅色输入卡不再按设备分叉：iPad 之前是纯实色白、iPhone 是材质，
-                // 同一个组件在两块屏上是两种质感，iPad 上底部还成了整屏唯一不透明的一块。
-                //
-                // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
-                // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
-                // 阴影沿用材质路径那一组：半径与偏移刻意收紧，避免在暖底上形成第三圈模糊白色。
-                shape
-                    .fill(WorkbenchMaterial.surface)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(0.14))
-                    }
-                    .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)
-            }
-        } else if reduceTransparency {
-            shape.fill(tokens.elevatedSurface)
-        } else {
-            // 深色输入区继续作为底部唯一的功能材质层，档位与其它表面一致。
-            shape
-                .fill(WorkbenchMaterial.surface)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(0.46))
-                }
-        }
+        // 输入卡是实色面，不是材质层。
+        //
+        // 正文由 `safeAreaInset` 让位，卡片后方压根没有内容可供 Material 采样折射；
+        // 之前那层 Material + tint + 两道阴影只在暖白画布上折射出第三圈模糊白边，
+        // 花了成本却买不到任何虚化。参考实现（Claude iOS）同样是一块实色近白面，
+        // 只靠单层柔和阴影与画布分离，这里对齐同一档质感。
+        let fill = colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+        // 增强对比度时边界交给描边，阴影再压一档，避免和实线描边叠成脏边。
+        let shadowOpacity: Double = colorSchemeContrast == .increased
+            ? 0.05
+            : (colorScheme == .light ? 0.06 : 0.22)
+
+        shape
+            .fill(fill)
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
     }
 
     func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
@@ -1322,20 +1305,20 @@ struct ComposerView: View {
     func compactToolControlsBox() -> AnyView {
         return AnyView(
             CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(showsRestingSurface: true),
-                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: true)
+                optionsControl: compactOptionsControlBox(),
+                microphoneControl: compactMicrophoneControlBox()
             )
         )
     }
 
     @inline(never)
-    func compactOptionsControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(composerOptionsMenu(showsRestingSurface: showsRestingSurface))
+    func compactOptionsControlBox() -> AnyView {
+        AnyView(composerOptionsMenu)
     }
 
     @inline(never)
-    func compactMicrophoneControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(voiceMicControl(showsRestingSurface: showsRestingSurface))
+    func compactMicrophoneControlBox() -> AnyView {
+        AnyView(voiceMicControl)
     }
 
     @inline(never)
@@ -1344,10 +1327,6 @@ struct ComposerView: View {
     }
 
     var composerOptionsMenu: some View {
-        composerOptionsMenu(showsRestingSurface: true)
-    }
-
-    func composerOptionsMenu(showsRestingSurface: Bool) -> some View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
@@ -1378,7 +1357,6 @@ struct ComposerView: View {
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
                 systemImage: "slider.horizontal.3",
                 isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
-                showsRestingSurface: showsRestingSurface,
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
@@ -1409,10 +1387,6 @@ struct ComposerView: View {
     }
 
     var voiceMicControl: some View {
-        voiceMicControl(showsRestingSurface: true)
-    }
-
-    func voiceMicControl(showsRestingSurface: Bool) -> some View {
         VoiceMicButton(
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
@@ -1421,7 +1395,6 @@ struct ComposerView: View {
             onTap: {
                 toggleVoiceInput()
             },
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer
         )
         .layoutPriority(0)
@@ -1587,7 +1560,6 @@ struct ComposerView: View {
         isSelected: Bool = false,
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
-        showsRestingSurface: Bool = true,
         usesCondensedTitle: Bool = false,
         accessibilityLabel: String
     ) -> some View {
@@ -1599,7 +1571,6 @@ struct ComposerView: View {
             tint: tint,
             titleMaxWidth: titleMaxWidth,
             accessibilityLabel: accessibilityLabel,
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer,
             usesCondensedTitle: usesCondensedTitle
         )
@@ -1653,13 +1624,6 @@ struct ComposerView: View {
                         .fill(isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear)
                         .padding(4)
                 }
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: usesCompactComposerMetrics ? 22 : 12,
-                        isEmphasized: isGuidedSelected
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

@@ -186,6 +186,69 @@ enum SessionListPresentation {
         displayTitle(preview ?? "")
     }
 
+    /// 列表行的第二行只应承载**标题之外**的信息。
+    ///
+    /// 会话标题和 preview 都由首条用户消息派生，绝大多数情况下 preview 就是把
+    /// 标题原样重念一遍再往后多带一小段。两行读起来完全一样时，列表看着"乱"
+    /// 不是因为信息多，而是因为同一句话占了两遍位置。
+    ///
+    /// 这里只返回 preview 相对标题**新增**的那一段：完全重复时返回空串，
+    /// 由调用方决定第二行还画不画。原始 `session.preview` 不被修改。
+    static func distinctPreviewDisplayText(for session: AgentSession) -> String {
+        distinctPreviewDisplayText(title: session.title, preview: session.preview)
+    }
+
+    static func distinctPreviewDisplayText(title: String, preview: String?) -> String {
+        let normalizedPreview = displayTitle(preview ?? "")
+        guard !normalizedPreview.isEmpty else { return "" }
+
+        let normalizedTitle = displayTitle(title)
+        guard !normalizedTitle.isEmpty else { return normalizedPreview }
+
+        // 标题本身可能已经是截断摘要，末尾省略号不参与前缀比较。
+        let titleStem = strippingTrailingEllipsis(normalizedTitle)
+        // 前缀太短时任何两句话都可能"撞头"，那不是重复，是巧合。
+        guard titleStem.count >= redundantPreviewMinimumStem else { return normalizedPreview }
+
+        if normalizedPreview.hasPrefix(titleStem) {
+            let remainder = trimmingLeadingSentenceBoundary(
+                String(normalizedPreview.dropFirst(titleStem.count))
+            )
+            // 只剩一两个字或纯标点时第二行没有信息量，留空比留半句更干净。
+            return remainder.count >= 2 ? remainder : ""
+        }
+
+        // 反向包含：preview 是更早的截断版本，标题反而更长，同样是重复。
+        if titleStem.hasPrefix(strippingTrailingEllipsis(normalizedPreview)) {
+            return ""
+        }
+
+        return normalizedPreview
+    }
+
+    private static let redundantPreviewMinimumStem = 4
+
+    /// 句读边界。截掉标题前缀后残留的这些字符属于上一句，不该成为第二行的开头。
+    private static let sentenceBoundaryCharacters: Set<Character> = [
+        " ", "\u{00A0}", "。", "．", ".", "，", ",", "、", "；", ";", "：", ":", "!", "！", "?", "？", "—", "-",
+    ]
+
+    private static func strippingTrailingEllipsis(_ value: String) -> String {
+        var result = Substring(value)
+        while let last = result.last, last == "\u{2026}" || last == "." || last == "。" || last == " " {
+            result = result.dropLast()
+        }
+        return String(result)
+    }
+
+    private static func trimmingLeadingSentenceBoundary(_ value: String) -> String {
+        var result = Substring(value)
+        while let first = result.first, sentenceBoundaryCharacters.contains(first) {
+            result = result.dropFirst()
+        }
+        return String(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// 优先展示 dir 的末段；dir 为空时回退 project。路径无法拆出末段时返回原选择值。
     static func directoryTail(for session: AgentSession) -> String {
         let normalizedDir = session.dir.trimmingCharacters(in: .whitespacesAndNewlines)

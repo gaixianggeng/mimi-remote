@@ -1211,7 +1211,9 @@ struct SessionListView: View {
     }
 }
 
-private struct SessionIndexRowButtonStyle: ButtonStyle {
+/// 会话行的按压反馈。会话 tab 与工作区共用同一套扁平行语言，按压手感也必须是同一份，
+/// 否则同一个对象在两页里连"按下去什么感觉"都不一样。
+struct SessionIndexRowButtonStyle: ButtonStyle {
     let pressedFill: Color
 
     func makeBody(configuration: Configuration) -> some View {
@@ -1330,7 +1332,9 @@ struct SessionIndexRow: View {
                 HStack(spacing: 7) {
                     titleContent(tokens: tokens, compactPinnedBadge: true)
 
-                    let preview = SessionListPresentation.previewDisplayText(for: session)
+                    // 同一行里标题后面接摘要时更不能重复：两段文字紧邻，重念一遍
+                    // 会直接读成"标题被复制了一次"。
+                    let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
                     if !preview.isEmpty {
                         Text(preview)
                             .font(themeStore.uiFont(size: 13, weight: .regular))
