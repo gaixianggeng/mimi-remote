@@ -128,27 +128,6 @@ enum WorkspaceSessionAgeBoundary {
     }
 }
 
-/// 会话页只在分支真正能帮助区分 worktree 时逐行展示它。
-///
-/// 同一页只有一个非空分支时，重复的分支元数据会挤压标题和预览；
-/// 出现多个分支时才保留每行的分支名，让它承担 worktree 区分作用。
-enum WorkspaceSessionBranchPresentation {
-    static func normalizedBranch(_ branch: String?) -> String? {
-        let value = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value, !value.isEmpty else { return nil }
-        return value
-    }
-
-    static func shouldShowBranches(_ branches: [String?]) -> Bool {
-        Set(branches.compactMap(normalizedBranch)).count > 1
-    }
-
-    static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
-        guard shouldShowBranches(branches) else { return nil }
-        return normalizedBranch(branch)
-    }
-}
-
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
 struct WorkspaceSessionLoadInvocationTokens {
     private var latestByKey: [WorkspaceSessionPresentationKey: UUID] = [:]
