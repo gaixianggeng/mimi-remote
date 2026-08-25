@@ -284,6 +284,9 @@ struct WorkspaceRootView: View {
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
     /// 因此可以安全地用来决定要不要把 Runtime 筛选器并进这一行。
     @State private var workspaceStripContainerWidth: CGFloat = 0
+    @State private var pagerSelectionIsUserDriven = false
+    @State private var pendingHapticWorkspaceID: String?
+    @State private var suppressedHapticWorkspaceID: String?
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -589,6 +592,20 @@ struct WorkspaceRootView: View {
         } action: { _, pagePosition in
             pagerTransitionState.update(pagePosition: pagePosition)
         }
+        .onScrollPhaseChange { _, phase in
+            switch phase {
+            case .tracking, .interacting, .decelerating:
+                if !pagerSelectionIsUserDriven {
+                    MimiHaptics.prepare(.snap)
+                }
+                pagerSelectionIsUserDriven = true
+            case .idle:
+                pagerSelectionIsUserDriven = false
+            case .animating:
+                // 系统分页可能在手势后进入动画阶段；保留来源直到真正停止。
+                break
+            }
+        }
         .scrollIndicators(.hidden)
     }
 
@@ -709,6 +726,7 @@ struct WorkspaceRootView: View {
                     workspaceStripViewportWidth = width
                 }
                 .onChange(of: selectedWorkspaceID) { previousID, selectedID in
+                    handleWorkspaceSelectionHaptic(previousID: previousID, selectedID: selectedID)
                     guard let selectedID else { return }
                     // 首次恢复选择直接定位，避免页面刚出现就自行滑动；后续切换与正文分页
                     // 共用同一个临界阻尼 token，快速反向点击会从当前画面连续改向。
@@ -882,16 +900,41 @@ struct WorkspaceRootView: View {
         return motion.allowsSpatialMotion ? motion.animation : nil
     }
     private func selectWorkspace(_ project: AgentProject) {
-        selectWorkspace(id: project.id)
+        selectWorkspace(id: project.id, providesHaptic: true)
     }
-    private func selectWorkspace(id: String) {
+    private func selectWorkspace(id: String, providesHaptic: Bool = false) {
         guard selectedWorkspaceID != id else { return }
+        if providesHaptic {
+            pendingHapticWorkspaceID = id
+            suppressedHapticWorkspaceID = nil
+            MimiHaptics.prepare(.snap)
+        } else {
+            pendingHapticWorkspaceID = nil
+            suppressedHapticWorkspaceID = id
+        }
         withAnimation(workspaceSelectionAnimation) {
             selectedWorkspaceID = id
         }
     }
+    private func handleWorkspaceSelectionHaptic(previousID: String?, selectedID: String?) {
+        let shouldFire = WorkspaceSelectionHapticPolicy.shouldFire(
+            previousID: previousID,
+            selectedID: selectedID,
+            isExplicitSelection: pendingHapticWorkspaceID == selectedID,
+            isUserPaging: pagerSelectionIsUserDriven,
+            isSuppressed: suppressedHapticWorkspaceID == selectedID
+        )
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = nil
+        if shouldFire {
+            MimiHaptics.fire(.snap)
+        }
+    }
     /// 目录恢复和数据同步不代表用户发起了导航；禁止隐式动画，避免首次进入工作区自行滑动。
     private func restoreWorkspaceSelection(_ id: String?) {
+        guard selectedWorkspaceID != id else { return }
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = id
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {

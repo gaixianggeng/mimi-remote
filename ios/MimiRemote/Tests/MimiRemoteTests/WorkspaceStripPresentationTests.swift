@@ -108,4 +108,52 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             )
         )
     }
+
+    func testWorkspaceSelectionHapticOnlyFollowsUserSelectionChanges() {
+        XCTAssertFalse(
+            WorkspaceSelectionHapticPolicy.shouldFire(
+                previousID: nil,
+                selectedID: "project-a",
+                isExplicitSelection: false,
+                isUserPaging: false,
+                isSuppressed: false
+            )
+        )
+        XCTAssertTrue(
+            WorkspaceSelectionHapticPolicy.shouldFire(
+                previousID: "project-a",
+                selectedID: "project-b",
+                isExplicitSelection: true,
+                isUserPaging: false,
+                isSuppressed: false
+            )
+        )
+        XCTAssertTrue(
+            WorkspaceSelectionHapticPolicy.shouldFire(
+                previousID: "project-a",
+                selectedID: "project-b",
+                isExplicitSelection: false,
+                isUserPaging: true,
+                isSuppressed: false
+            )
+        )
+        XCTAssertFalse(
+            WorkspaceSelectionHapticPolicy.shouldFire(
+                previousID: "project-a",
+                selectedID: "project-b",
+                isExplicitSelection: false,
+                isUserPaging: true,
+                isSuppressed: true
+            )
+        )
+        XCTAssertFalse(
+            WorkspaceSelectionHapticPolicy.shouldFire(
+                previousID: "project-a",
+                selectedID: "project-a",
+                isExplicitSelection: true,
+                isUserPaging: true,
+                isSuppressed: false
+            )
+        )
+    }
 }
