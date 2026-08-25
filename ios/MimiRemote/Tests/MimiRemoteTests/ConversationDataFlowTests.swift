@@ -3148,6 +3148,23 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(state.turnOptions.sandboxMode, .dangerFullAccess)
     }
 
+    func testComposerPermissionSelectionCachePreservesPendingNewTurnBoundary() throws {
+        var state = ComposerState()
+        state.applyPermissionMode(.fullAccess)
+        state.markPermissionSelectionRequiresNewTurn()
+
+        let sessionScope = ComposerDraftScopeKey.session("thread-1")
+        var cache = ComposerPermissionSelectionCache()
+        cache.save(state.permissionSelectionSnapshot(), for: sessionScope)
+
+        state.preserveThreadPermissionSettings()
+        XCTAssertFalse(state.permissionSelectionRequiresNewTurn)
+        state.restorePermissionSelectionSnapshot(try XCTUnwrap(cache.snapshot(for: sessionScope)))
+
+        XCTAssertTrue(state.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(state.permissionMode, .fullAccess)
+    }
+
     func testComposerCanInitializeWithGlobalDefaultPermissionMode() {
         let composerState = ComposerState(defaultPermissionMode: .requestApproval)
 

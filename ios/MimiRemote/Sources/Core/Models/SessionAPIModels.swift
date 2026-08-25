@@ -819,6 +819,19 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         return sanitized
     }
 
+    func adjustedForRemoteNoApprovalSupport(_ isSupported: Bool) -> CodexAppServerTurnOptions {
+        guard !isSupported,
+              approvalPolicy == .never,
+              sandboxMode == .dangerFullAccess
+        else { return self }
+        var adjusted = self
+        // 旧 agentd 会拒绝所有 approvalPolicy=never。保留完全文件访问沙盒，
+        // 只把审批策略降级为 on-request，避免新会话在进入 Codex 前直接失败。
+        adjusted.approvalPolicy = .onRequest
+        adjusted.approvalsReviewer = "user"
+        return adjusted
+    }
+
     private mutating func applyStandardComposerPermissionPreset() {
         if preservesThreadPermissionSettings {
             permissionProfileID = nil
