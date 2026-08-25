@@ -72,6 +72,22 @@ enum WorkspaceStripLayout {
     }
 }
 
+/// 触觉只跟随用户确实完成的项目选中变化；恢复状态和重复选择保持安静。
+enum WorkspaceSelectionHapticPolicy {
+    static func shouldFire(
+        previousID: String?,
+        selectedID: String?,
+        isExplicitSelection: Bool,
+        isUserPaging: Bool,
+        isSuppressed: Bool
+    ) -> Bool {
+        guard let previousID, let selectedID, previousID != selectedID, !isSuppressed else {
+            return false
+        }
+        return isExplicitSelection || isUserPaging
+    }
+}
+
 /// 把分页 ScrollView 的像素偏移转换成项目索引空间。顶部胶囊只消费这个连续值，
 /// 因而 25% 的横滑就是 25% 的收缩/展开，不需要等 selection 在中点切换。
 enum WorkspacePagerTransition {
