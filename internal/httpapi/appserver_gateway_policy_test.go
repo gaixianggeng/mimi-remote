@@ -707,7 +707,7 @@ func TestAppServerGatewayKeepsWritableRootsAllowlistWithExternalLocalImage(t *te
 	}
 }
 
-func TestAppServerGatewayAllowsExplicitFullAccessSandbox(t *testing.T) {
+func TestAppServerGatewayAllowsExplicitFullAccessWithoutApproval(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-full-access")
@@ -740,8 +740,8 @@ func TestAppServerGatewayAllowsExplicitFullAccessSandbox(t *testing.T) {
 		if sandbox["type"] != "dangerFullAccess" || sandbox["networkAccess"] != false {
 			t.Fatalf("sandboxPolicy 应允许完全访问但禁用网络：%v", sandbox)
 		}
-		if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" {
-			t.Fatalf("完全访问仍应走用户审批：%v", params)
+		if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" {
+			t.Fatalf("显式完全访问应关闭审批：%v", params)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到合法 full access 帧")
@@ -951,6 +951,7 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 		name           string
 		params         map[string]any
 		workspaceWrite bool
+		fullAccess     bool
 		wantPolicy     string
 		wantReviewer   string
 	}{
@@ -969,6 +970,26 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 			workspaceWrite: true,
 			wantPolicy:     "on-request",
 			wantReviewer:   "auto_review",
+		},
+		{
+			name: "explicit full access without approval",
+			params: map[string]any{
+				"approvalPolicy":    "never",
+				"approvalsReviewer": "user",
+			},
+			fullAccess:   true,
+			wantPolicy:   "never",
+			wantReviewer: "user",
+		},
+		{
+			name: "legacy app full access is normalized without approval",
+			params: map[string]any{
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "user",
+			},
+			fullAccess:   true,
+			wantPolicy:   "never",
+			wantReviewer: "user",
 		},
 		{
 			name: "legacy auto review falls back",
@@ -1013,7 +1034,7 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params, tt.workspaceWrite)
+			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params, tt.workspaceWrite, tt.fullAccess)
 			if gotPolicy != tt.wantPolicy || gotReviewer != tt.wantReviewer {
 				t.Fatalf("got %s/%s, want %s/%s", gotPolicy, gotReviewer, tt.wantPolicy, tt.wantReviewer)
 			}
@@ -1026,24 +1047,28 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 		name          string
 		threadSandbox string
 		turnSandbox   string
+		wantPolicy    string
 		wantReviewer  string
 	}{
 		{
 			name:          "workspace write keeps auto review",
 			threadSandbox: "workspace-write",
 			turnSandbox:   "workspaceWrite",
+			wantPolicy:    "on-request",
 			wantReviewer:  "auto_review",
 		},
 		{
 			name:          "read only requires user review",
 			threadSandbox: "read-only",
 			turnSandbox:   "readOnly",
+			wantPolicy:    "on-request",
 			wantReviewer:  "user",
 		},
 		{
-			name:          "full access requires user review",
+			name:          "explicit full access disables approval",
 			threadSandbox: "danger-full-access",
 			turnSandbox:   "dangerFullAccess",
+			wantPolicy:    "never",
 			wantReviewer:  "user",
 		},
 	}
@@ -1057,7 +1082,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"approvalsReviewer": "auto_review",
 					"sandbox":           tt.threadSandbox,
 				})
-				if threadParams["approvalPolicy"] != "on-request" || threadParams["approvalsReviewer"] != tt.wantReviewer {
+				if threadParams["approvalPolicy"] != tt.wantPolicy || threadParams["approvalsReviewer"] != tt.wantReviewer {
 					t.Fatalf("%s 审批组合异常：%v", method, threadParams)
 				}
 			}
@@ -1071,7 +1096,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"networkAccess": false,
 				},
 			}, "/tmp/project")
-			if turnParams["approvalPolicy"] != "on-request" || turnParams["approvalsReviewer"] != tt.wantReviewer {
+			if turnParams["approvalPolicy"] != tt.wantPolicy || turnParams["approvalsReviewer"] != tt.wantReviewer {
 				t.Fatalf("turn/start 审批组合异常：%v", turnParams)
 			}
 		})
@@ -2065,6 +2090,18 @@ func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testi
 	}
 	if _, exists := params["sandboxPolicy"]; exists {
 		t.Fatalf("命名权限档案不能与 sandboxPolicy 同时发送：%v", params)
+	}
+
+	fullAccess := []byte(fmt.Sprintf(
+		`{"id":1711,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"full access"}],"permissions":":danger-full-access","approvalPolicy":"on-request","approvalsReviewer":"user"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, fullAccess); err != nil {
+		t.Fatal(err)
+	}
+	fullAccessParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	if fullAccessParams["permissions"] != ":danger-full-access" || fullAccessParams["approvalPolicy"] != "never" {
+		t.Fatalf("内建完全访问档案应保留无审批组合：%v", fullAccessParams)
 	}
 
 	conflict := []byte(fmt.Sprintf(

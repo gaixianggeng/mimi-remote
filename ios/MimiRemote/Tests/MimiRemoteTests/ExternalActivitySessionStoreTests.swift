@@ -217,6 +217,74 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageLimits, [20, 1, 20])
     }
 
+    func testExternalActivitySnapshotDrivesProcessingSidebarAndReadOnlyComposerLifecycle() async throws {
+        let project = makeProject(id: "proj_external_activity_presentation")
+        let threadID = "thread-external-presentation"
+        let turnID = "turn-external-presentation"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Desktop session",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])],
+            externalActivityResponses: [
+                ExternalActivityResponse(
+                    activities: [makeExternalActivity(
+                        threadID: threadID,
+                        projectID: project.id,
+                        turnID: turnID,
+                        revision: "rev-external-presentation"
+                    )],
+                    scannedAt: Date()
+                ),
+                ExternalActivityResponse(activities: [], scannedAt: Date())
+            ]
+        )
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+
+        let activeRefresh = await store.refreshExternalActivities(client: client)
+        XCTAssertTrue(activeRefresh)
+
+        let external = try XCTUnwrap(store.sessionsByID[threadID])
+        let externalStatus = external.displayStatus(foregroundActivity: nil)
+        XCTAssertEqual(external.status, SessionStatus.running.rawValue)
+        XCTAssertEqual(external.activeTurnID, turnID)
+        XCTAssertEqual(externalStatus.title, L10n.text("ui.processing"))
+        XCTAssertFalse(externalStatus.showsSpinner)
+        let activeSections = SessionListPresentation.sidebarSections(store.sessions)
+        let runningSection = try XCTUnwrap(activeSections.first(where: { $0.kind == .running }))
+        XCTAssertEqual(runningSection.sessions.map(\.id), [threadID])
+        XCTAssertTrue(store.isExternalReadOnlySession(external))
+        XCTAssertTrue(store.isSelectedSessionObserving)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        XCTAssertFalse(store.selectedSessionAllowsTakeOver)
+        XCTAssertEqual(store.selectedSessionControlNotice, L10n.text("ui.mac_observe_only"))
+
+        let terminalRefresh = await store.refreshExternalActivities(client: client)
+        XCTAssertTrue(terminalRefresh)
+
+        let released = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertEqual(released.status, SessionStatus.history.rawValue)
+        XCTAssertNil(released.activeTurnID)
+        XCTAssertFalse(
+            SessionListPresentation.sidebarSections(store.sessions)
+                .contains(where: { $0.kind == .running && $0.sessions.contains(where: { $0.id == threadID }) })
+        )
+        XCTAssertFalse(store.isExternalReadOnlySession(released))
+        XCTAssertFalse(store.isSelectedSessionObserving)
+        XCTAssertTrue(store.canSendInSelectedSession)
+        XCTAssertNil(store.selectedSessionControlNotice)
+    }
+
     func testExternalActivityRevisionMergesLatestTurnWithoutReplacingLoadedHistoryCursor() async throws {
         let project = makeProject(id: "proj_external_tail_refresh")
         let threadID = "thread-external-tail"

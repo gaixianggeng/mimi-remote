@@ -2,10 +2,31 @@ package setup
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestResolveClaudeBinDoesNotApplyCodexVersionParser(t *testing.T) {
+	// git.exe 提供稳定的非 Codex --version 输出，用来确认 Claude 路径探测只检查
+	// 候选程序可启动，不会套用 codex-cli 的版本格式和最低版本限制。
+	probe, err := exec.LookPath("git.exe")
+	if err != nil {
+		t.Skip("当前 Windows 环境没有可用的非 Codex 版本探测程序")
+	}
+	resolved, err := resolveClaudeBin(probe)
+	if err != nil {
+		t.Fatalf("Claude 路径探测不应要求 codex-cli 版本输出：%v", err)
+	}
+	want, err := filepath.Abs(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameCleanPath(resolved, want) {
+		t.Fatalf("Claude 路径解析异常：got=%q want=%q", resolved, want)
+	}
+}
 
 func TestClaudeExecutableCandidatesIncludesOfficialNativeInstall(t *testing.T) {
 	home := t.TempDir()

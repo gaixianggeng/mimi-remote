@@ -3,6 +3,7 @@ import Combine
 import Security
 import SwiftUI
 import UIKit
+import SnapshotTesting
 @testable import MimiRemote
 
 extension XCTestCase {
@@ -928,6 +929,87 @@ func distanceFromBottom(_ scrollView: UIScrollView) -> CGFloat {
 }
 
 @MainActor
+func isViewEffectivelyVisible(_ view: UIView, within rootView: UIView) -> Bool {
+    var currentView: UIView? = view
+    while let candidate = currentView {
+        if candidate.isHidden || candidate.alpha <= 0.01 || candidate.layer.opacity <= 0.01 {
+            return false
+        }
+        if candidate === rootView {
+            return true
+        }
+        currentView = candidate.superview
+    }
+    return false
+}
+
+@MainActor
+func conversationTimelineIsStabilizing(in rootView: UIView) -> Bool {
+    func findMarker(from view: UIView) -> UIView? {
+        if view.accessibilityIdentifier == ConversationTimelineView.stabilizingCoverAccessibilityIdentifier {
+            return view
+        }
+        for subview in view.subviews {
+            if let marker = findMarker(from: subview) {
+                return marker
+            }
+        }
+        return nil
+    }
+
+    guard let marker = findMarker(from: rootView) else {
+        return false
+    }
+    return isViewEffectivelyVisible(marker, within: rootView)
+}
+
+@MainActor
+func assertStabilizedConversationSnapshot<Content: View>(
+    of view: Content,
+    size: CGSize,
+    precision: Float = 0.98,
+    named: String? = nil,
+    file: StaticString = #filePath,
+    testName: String = #function,
+    line: UInt = #line
+) async throws {
+    let host = UIHostingController(rootView: view)
+    let windowScene = try XCTUnwrap(
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    )
+    let window = UIWindow(windowScene: windowScene)
+    window.frame = CGRect(origin: .zero, size: size)
+    window.rootViewController = host
+    window.makeKeyAndVisible()
+    defer { window.isHidden = true }
+
+    host.view.frame = window.bounds
+    host.view.setNeedsLayout()
+    host.view.layoutIfNeeded()
+    let presentationDeadline = Date().addingTimeInterval(8)
+    while conversationTimelineIsStabilizing(in: host.view),
+          Date() < presentationDeadline {
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 16_000_000)
+    }
+    XCTAssertFalse(
+        conversationTimelineIsStabilizing(in: host.view),
+        "会话快照必须等时间线完成首屏定位后再截图"
+    )
+
+    // 会话快照验证稳定后的内容与样式。先把真实 List 放进窗口并完成首屏定位，
+    // 避免离屏 SwiftUI 快照只截到稳定遮罩。
+    assertSnapshot(
+        of: host.view,
+        as: .image(precision: precision, size: size),
+        named: named,
+        file: file,
+        testName: testName,
+        line: line
+    )
+}
+
+@MainActor
 func waitForConversationTimelineAtBottom(
     in rootView: UIView,
     tolerance: CGFloat = 4,
@@ -940,7 +1022,9 @@ func waitForConversationTimelineAtBottom(
         rootView.layoutIfNeeded()
         if let scrollView = conversationTimelineScrollView(in: rootView) {
             latestScrollView = scrollView
-            if distanceFromBottom(scrollView) <= tolerance {
+            if distanceFromBottom(scrollView) <= tolerance,
+               isViewEffectivelyVisible(scrollView, within: rootView),
+               !conversationTimelineIsStabilizing(in: rootView) {
                 return scrollView
             }
         }

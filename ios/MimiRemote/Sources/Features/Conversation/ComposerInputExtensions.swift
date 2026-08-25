@@ -124,7 +124,6 @@ struct ComposerPermissionMenu: View {
     let selectedMode: ComposerPermissionMode
     let selectedProfileID: String?
     let activeProfileID: String?
-    let permissionWireSummary: String
     let permissionAccessibilityValue: String
     let tint: Color
     let reduceMotion: Bool
@@ -145,7 +144,7 @@ struct ComposerPermissionMenu: View {
                 }
             }
             if !permissionProfiles.isEmpty {
-                Section(L10n.text("ui.permission_profiles")) {
+                Section(L10n.text("ui.advanced_permission_profiles")) {
                     ForEach(permissionProfiles) { profile in
                         Button {
                             onSelectProfile(profile)
@@ -156,9 +155,11 @@ struct ComposerPermissionMenu: View {
                     }
                 }
             }
-            Section(L10n.text("ui.current_effect")) {
-                Text(currentEffectSummary)
-                Text(permissionWireSummary)
+            Section(L10n.text("ui.permission_status")) {
+                if let activeProfileID {
+                    Text(L10n.format("ui.current_turn_permission_value", displayName(for: activeProfileID)))
+                }
+                Text(L10n.format("ui.next_turn_permission_value", selectedPermissionName))
             }
         } label: {
             ComposerToolbarControlLabel(
@@ -187,14 +188,12 @@ struct ComposerPermissionMenu: View {
         selectedProfileID == profile.id ? "checkmark" : "shield.lefthalf.filled"
     }
 
-    private var currentEffectSummary: String {
-        if let activeProfileID {
-            return L10n.format("ui.active_permission_profile_value", activeProfileID)
-        }
-        if let selectedProfileID {
-            return L10n.format("ui.selected_permission_profile_value", selectedProfileID)
-        }
-        return selectedMode.detail
+    private var selectedPermissionName: String {
+        selectedProfileID.map { displayName(for: $0) } ?? selectedMode.title
+    }
+
+    private func displayName(for profileID: String) -> String {
+        ComposerPermissionMode(builtInPermissionProfileID: profileID)?.title ?? profileID
     }
 }
 
@@ -880,22 +879,10 @@ extension ComposerView {
         }
         if let profileID = selectedPermissionProfileID {
             return activePermissionProfile.map {
-                L10n.format("ui.active_permission_profile_value", $0.id)
-            } ?? L10n.format("ui.selected_permission_profile_value", profileID)
+                L10n.format("ui.current_turn_permission_value", $0.id)
+            } ?? L10n.format("ui.next_turn_permission_value", profileID)
         }
         return "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
-    }
-
-    var permissionWireSummary: String {
-        if composerState.turnOptions.preservesThreadPermissionSettings {
-            return activePermissionProfile.map {
-                L10n.format("ui.active_permission_profile_value", $0.id)
-            } ?? L10n.text("ui.follow_the_current_thread_permissions")
-        }
-        if let profileID = selectedPermissionProfileID {
-            return L10n.format("ui.permission_profile_wire_value", profileID)
-        }
-        return "\(composerState.turnOptions.approvalPolicy.rawValue) · \(composerState.turnOptions.approvalsReviewer)"
     }
 
     var permissionTint: Color {

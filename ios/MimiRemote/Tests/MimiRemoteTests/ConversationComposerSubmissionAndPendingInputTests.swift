@@ -736,6 +736,29 @@ extension ConversationDataFlowTests {
 
 @MainActor
 final class ComposerStatusTrayBehaviorTests: XCTestCase {
+    func testTakeoverCapableObservationOffersDisclosure() {
+        let notice = "Takeover is available."
+
+        XCTAssertTrue(
+            makeTray(
+                sessionControlNotice: notice,
+                allowsTakeOver: true
+            ).hasExpandableDetail,
+            "A takeover-capable observation must reveal the existing takeover action"
+        )
+        XCTAssertFalse(
+            makeTray(
+                sessionControlNotice: notice,
+                allowsTakeOver: false
+            ).hasExpandableDetail,
+            "A read-only observation must not reveal an empty disclosure"
+        )
+        XCTAssertFalse(
+            makeTray(allowsTakeOver: true).hasExpandableDetail,
+            "Takeover capability alone must not create an empty disclosure"
+        )
+    }
+
     /// 「仅观察」展开前后没有更多内容时，不应该展示无效的 disclosure。
     func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
         XCTAssertFalse(
@@ -853,7 +876,8 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         sessionControlNotice: String? = nil,
         quotaNotice: CodexQuotaNotice? = nil,
         usage: CodexUsageDisplaySummary? = nil,
-        goal: ThreadGoal? = nil
+        goal: ThreadGoal? = nil,
+        allowsTakeOver: Bool = false
     ) -> ComposerStatusTray {
         ComposerStatusTray(
             sessionControlNotice: sessionControlNotice,
@@ -865,7 +889,7 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
             isGoalUpdating: false,
             goalErrorMessage: nil,
             isRefreshDisabled: false,
-            allowsTakeOver: true,
+            allowsTakeOver: allowsTakeOver,
             onTakeOver: {},
             onRefreshUsage: {},
             onEditGoal: {},

@@ -1590,13 +1590,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Access all files; MCP tools may still ask for approval"
+            "value": "Access all files without approval prompts; use only with trusted hosts"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可访问所有文件；MCP 工具仍可能请求审批"
+            "value": "可访问所有文件且不请求审批；仅用于可信主机"
           }
         }
       }
@@ -2704,19 +2704,19 @@
         }
       }
     },
-    "ui.approvalpolicy_never_is_prohibited": {
+    "ui.approvalpolicy_never_requires_full_access": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never is prohibited"
+            "value": "No-approval mode requires explicit Full Access"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never 被禁止"
+            "value": "无审批模式必须显式选择完全访问"
           }
         }
       }
@@ -7029,19 +7029,19 @@
         }
       }
     },
-    "ui.current_effect": {
+    "ui.permission_status": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Current effect"
+            "value": "Permission status"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前效果"
+            "value": "权限状态"
           }
         }
       }
@@ -24558,6 +24558,24 @@
         }
       }
     },
+    "ui.running_sessions_count": {
+      "comment": "Accessibility summary for the number of running sessions in one workspace.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running sessions: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行的会话：%@"
+          }
+        }
+      }
+    },
     "ui.sessions_count": {
       "comment": "Plural count used in the localized iOS UI.",
       "extractionState": "stale",
@@ -39092,11 +39110,11 @@
         }
       }
     },
-    "ui.active_permission_profile_value": {
-      "comment": "Shows the permission profile that the App Server reports as active.",
+    "ui.current_turn_permission_value": {
+      "comment": "Shows the permission setting that the App Server reports for the current turn.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Active profile: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前生效档案：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Current turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本回合：%@" } }
       }
     },
     "ui.follow_the_current_thread_permissions": {
@@ -39169,11 +39187,11 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "permissions · %@" } }
       }
     },
-    "ui.permission_profiles": {
+    "ui.advanced_permission_profiles": {
       "comment": "Section heading for named App Server permission profiles.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Permission profiles" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Advanced permission profiles" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高级权限档案" } }
       }
     },
     "ui.protocol": {
@@ -39190,11 +39208,11 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求的权限" } }
       }
     },
-    "ui.selected_permission_profile_value": {
-      "comment": "Shows the locally selected permission profile before the App Server confirms it.",
+    "ui.next_turn_permission_value": {
+      "comment": "Shows the local permission selection that will be sent with the next turn.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Selected profile: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选档案：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Next turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "下回合：%@" } }
       }
     },
     "ui.use_named_permission_profile": {

@@ -3,11 +3,14 @@ package setup
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
@@ -53,6 +56,52 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	want, _ := filepath.Abs(embedded)
 	if resolved != filepath.Clean(want) {
 		t.Fatalf("应恢复桌面 App 内置 Codex：%s", resolved)
+	}
+}
+
+func TestResolveCodexBinSkipsUnsafePATHRuntimeForCompatibleDesktopCandidate(t *testing.T) {
+	oldConfigured := filepath.Join(t.TempDir(), "codex-old")
+	desktop := filepath.Join(t.TempDir(), "codex-desktop")
+	lookups := []string{}
+	lookup := func(candidate string) (string, error) {
+		lookups = append(lookups, candidate)
+		switch candidate {
+		case oldConfigured, "codex":
+			return "", fmt.Errorf(
+				"%w: %s version 0.145.0",
+				appserver.ErrIndependentWriterCapabilityUnavailable,
+				oldConfigured,
+			)
+		case desktop:
+			return desktop, nil
+		default:
+			return "", errors.New("missing")
+		}
+	}
+
+	resolved, err := resolveCodexBin(oldConfigured, lookup, []string{desktop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(desktop)
+	if resolved != filepath.Clean(want) {
+		t.Fatalf("compatible Desktop runtime should win after unsafe PATH candidate: got=%q want=%q", resolved, want)
+	}
+	if !reflect.DeepEqual(lookups, []string{oldConfigured, "codex", desktop}) {
+		t.Fatalf("runtime candidates were checked in the wrong order: %v", lookups)
+	}
+}
+
+func TestResolveCodexBinReturnsUnsafeVersionWhenNoCompatibleCandidateExists(t *testing.T) {
+	unsafeErr := fmt.Errorf(
+		"%w: version 0.145.0",
+		appserver.ErrIndependentWriterCapabilityUnavailable,
+	)
+	_, err := resolveCodexBin("codex", func(string) (string, error) {
+		return "", unsafeErr
+	}, nil)
+	if !errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
+		t.Fatalf("unsafe installed runtime should not degrade to a missing CLI error: %v", err)
 	}
 }
 

@@ -46,8 +46,11 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			}
 		}
 	}
-	if hasApprovalPolicyNever(params) {
-		return validated, fmt.Errorf("approvalPolicy=never 不允许远程使用")
+	if hasApprovalPolicyNever(params["config"]) {
+		return validated, fmt.Errorf("approvalPolicy=never 不允许通过 config 使用")
+	}
+	if hasApprovalPolicyNever(params) && !gatewayAllowsNoApproval(runtimeID, method, params) {
+		return validated, fmt.Errorf("approvalPolicy=never 只允许 Codex 显式完全访问使用")
 	}
 	if hasDangerousConfigSandbox(params["config"]) {
 		return validated, fmt.Errorf("dangerFullAccess 不允许通过 config 使用")
@@ -641,6 +644,26 @@ func hasApprovalPolicyNever(value any) bool {
 		}
 	}
 	return false
+}
+
+func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]any) bool {
+	if normalizeAppServerRuntimeID(runtimeID) != "codex" {
+		return false
+	}
+	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+		return strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
+	}
+	switch method {
+	case "thread/start", "thread/resume", "thread/fork":
+		sandbox, ok := gatewayStringParam(params, "sandbox")
+		return ok && normalizePolicyValue(sandbox) == "dangerfullaccess"
+	case "turn/start":
+		sandbox, _ := params["sandboxPolicy"].(map[string]any)
+		sandboxType, ok := gatewayStringParam(sandbox, "type")
+		return ok && normalizePolicyValue(sandboxType) == "dangerfullaccess"
+	default:
+		return false
+	}
 }
 
 func hasNetworkAccessEnabled(value any) bool {
