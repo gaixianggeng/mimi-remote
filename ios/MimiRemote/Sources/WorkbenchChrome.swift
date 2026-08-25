@@ -1146,6 +1146,7 @@ struct RelatedSessionConversationView: View {
     let relation: SessionContextSubagent
     let parentSessionID: SessionID
     let showsCloseButton: Bool
+    var shouldHideTabBar = false
     let onClose: () -> Void
 
     @State private var isLoading = true
@@ -1216,6 +1217,7 @@ struct RelatedSessionConversationView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
         .accessibilityIdentifier("subagent.conversation.\(relation.id)")
         .task(id: relation.id) {
             isLoading = true
@@ -1403,6 +1405,76 @@ enum WorkbenchPageLayout {
         isPhone || (isHorizontallyCompact && !isIOS26OrLater)
     }
 
+    static func usesIndependentCompactNavigationStacks(hasBottomTabBar: Bool) -> Bool {
+        // 底部 Tab 由每个 Tab 自己持有导航栈，根页 toolbar 才有明确宿主；顶部 Tab
+        // 则共用外层栈，让详情覆盖整个 TabView，避免进入与返回时改变顶部布局基准。
+        hasBottomTabBar
+    }
+
+}
+
+/// 会话详情导航层的材质策略。紧凑与宽屏只在降级路径上不同，iOS 26 的正常透明度
+/// 路径共用同一条渐变底衬 + soft scroll edge 语义，让 iPhone、iPad 竖屏和 iPad 横屏
+/// 得到同等的顶部分离。
+struct SessionNavigationMaterialModifier: ViewModifier {
+    let usesCompactNavigation: Bool
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            // 关闭透明度后不做任何采样：紧凑用输入层实色，宽屏继续贴合阅读画布。
+            content
+                .toolbarBackground(
+                    usesCompactNavigation ? tokens.inputBackground : tokens.conversationCanvasBackground,
+                    for: .navigationBar
+                )
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if #available(iOS 26.0, *) {
+            content
+                // 导航栏底板必须保持隐藏。只要给 navigationBar 设了可见 background，系统就不再
+                // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
+                // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
+                // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
+                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if usesCompactNavigation {
+            content
+                // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
+                .toolbarBackground(WorkbenchMaterial.surface, for: .navigationBar)
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else {
+            // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
+            // 全局工作台暖底重新显形，把纸白阅读层切成两种色温。
+            content
+                .toolbarBackground(tokens.conversationCanvasBackground, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        }
+    }
+}
+
+@MainActor
+enum SessionNavigationTitlePresentation {
+    static func pendingSubtitle(session: AgentSession?) -> String {
+        let project = session?.project.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return project.isEmpty ? L10n.text("ui.session") : project
+    }
+
+    static func subtitleFont(layout: WorkbenchLayout, themeStore: ThemeStore) -> Font {
+        if layout.usesCompactPhoneNavigationTypography {
+            // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
+            return themeStore.uiFont(.caption2, weight: .medium)
+        }
+        // 紧凑 iPad 继续使用原有 subheadline；宽屏布局继续使用 caption2。
+        return layout.usesCompactNavigation
+            ? .subheadline.weight(.regular)
+            : .caption2.weight(.medium)
+    }
 }
 
 private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {

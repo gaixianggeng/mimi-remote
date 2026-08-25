@@ -63,6 +63,19 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         XCTAssertEqual(state.compactWorkspacePath, [])
     }
 
+    func testBottomTabBarKeepsIndependentNavigationStacksForRootToolbarOwnership() {
+        XCTAssertTrue(
+            WorkbenchPageLayout.usesIndependentCompactNavigationStacks(
+                hasBottomTabBar: true
+            )
+        )
+        XCTAssertFalse(
+            WorkbenchPageLayout.usesIndependentCompactNavigationStacks(
+                hasBottomTabBar: false
+            )
+        )
+    }
+
     func testBottomTabBarAlwaysKeepsRuntimeMenuAndInlineNewSessionEntry() {
         XCTAssertFalse(
             WorkspaceStripLayout.usesInlineRuntimePicker(

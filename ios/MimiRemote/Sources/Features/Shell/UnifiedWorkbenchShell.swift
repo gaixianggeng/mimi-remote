@@ -248,53 +248,12 @@ struct UnifiedWorkbenchShell: View {
                         && navigationState.compactWorkspacePath.isEmpty
             )
 
-        // 详情必须位于 TabView 之外。这样 push/pop 只切换一个导航容器，系统不会在
-        // 同一转场里再独立改变顶部 Tab 的安全区和导航标题位置。
-        return NavigationStack(
-            path: compactPathBinding(
-                for: navigationState.compactSelectedTab,
-                layout: layout
-            )
-        ) {
-            TabView(selection: compactTabBinding(layout: layout)) {
-                sessionList(
-                    layout: layout,
-                    bottomContentMargin: bottomChromeClearance
-                )
-                .tabItem {
-                    Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
-                        .accessibilityIdentifier("compactTab.sessions")
-                }
-                .tag(CompactWorkbenchTab.sessions)
-
-                workspaces(layout: layout)
-                    .tabItem {
-                        Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
-                            .accessibilityIdentifier("compactTab.workspaces")
-                    }
-                    .tag(CompactWorkbenchTab.workspaces)
-
-                NavigationStack {
-                    SettingsView(
-                        isInitialSetup: false,
-                        showsDoneButton: false,
-                        embedsNavigationStack: false
-                    )
-                }
-                .tabItem {
-                    Label(CompactWorkbenchTab.me.title, systemImage: CompactWorkbenchTab.me.systemImage)
-                        .accessibilityIdentifier("compactTab.me")
-                }
-                .tag(CompactWorkbenchTab.me)
-            }
-            .navigationDestination(for: AppDestination.self) { destination in
-                compactDestination(
-                    destination,
-                    layout: layout,
-                    tokens: tokens
-                )
-            }
-        }
+        return compactNavigationRoot(
+            layout: layout,
+            tokens: tokens,
+            bottomContentMargin: bottomChromeClearance,
+            hasBottomTabBar: hasBottomTabBar
+        )
         .overlay(alignment: .topLeading) {
             if showsTabletHostSwitcher {
                 compactTabletHostSwitcher(layout: layout, tokens: tokens)
@@ -315,6 +274,125 @@ struct UnifiedWorkbenchShell: View {
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
         )
+    }
+
+    @ViewBuilder
+    private func compactNavigationRoot(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomContentMargin: CGFloat,
+        hasBottomTabBar: Bool
+    ) -> some View {
+        let usesIndependentStacks = WorkbenchPageLayout.usesIndependentCompactNavigationStacks(
+            hasBottomTabBar: hasBottomTabBar
+        )
+        if usesIndependentStacks {
+            compactTabs(
+                layout: layout,
+                tokens: tokens,
+                bottomContentMargin: bottomContentMargin,
+                usesIndependentStacks: true
+            )
+        } else {
+            // 顶部 Tab 的详情必须位于 TabView 之外。这样 push/pop 只切换一个导航容器，
+            // 系统不会在同一转场里再独立改变顶部 Tab 的安全区和导航标题位置。
+            NavigationStack(
+                path: compactPathBinding(
+                    for: navigationState.compactSelectedTab,
+                    layout: layout
+                )
+            ) {
+                compactTabs(
+                    layout: layout,
+                    tokens: tokens,
+                    bottomContentMargin: bottomContentMargin,
+                    usesIndependentStacks: false
+                )
+                .navigationDestination(for: AppDestination.self) { destination in
+                    compactDestination(
+                        destination,
+                        layout: layout,
+                        tokens: tokens,
+                        shouldHideTabBar: false
+                    )
+                }
+            }
+        }
+    }
+
+    private func compactTabs(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomContentMargin: CGFloat,
+        usesIndependentStacks: Bool
+    ) -> some View {
+        TabView(selection: compactTabBinding(layout: layout)) {
+            compactTabRoot(
+                for: .sessions,
+                usesIndependentStack: usesIndependentStacks,
+                layout: layout,
+                tokens: tokens
+            ) {
+                sessionList(layout: layout, bottomContentMargin: bottomContentMargin)
+            }
+            .tabItem {
+                Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
+                    .accessibilityIdentifier("compactTab.sessions")
+            }
+            .tag(CompactWorkbenchTab.sessions)
+
+            compactTabRoot(
+                for: .workspaces,
+                usesIndependentStack: usesIndependentStacks,
+                layout: layout,
+                tokens: tokens
+            ) {
+                workspaces(layout: layout)
+            }
+            .tabItem {
+                Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
+                    .accessibilityIdentifier("compactTab.workspaces")
+            }
+            .tag(CompactWorkbenchTab.workspaces)
+
+            NavigationStack {
+                SettingsView(
+                    isInitialSetup: false,
+                    showsDoneButton: false,
+                    embedsNavigationStack: false
+                )
+            }
+            .tabItem {
+                Label(CompactWorkbenchTab.me.title, systemImage: CompactWorkbenchTab.me.systemImage)
+                    .accessibilityIdentifier("compactTab.me")
+            }
+            .tag(CompactWorkbenchTab.me)
+        }
+    }
+
+    @ViewBuilder
+    private func compactTabRoot<Content: View>(
+        for tab: CompactWorkbenchTab,
+        usesIndependentStack: Bool,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if usesIndependentStack {
+            NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
+                content()
+                    .navigationDestination(for: AppDestination.self) { destination in
+                        compactDestination(
+                            destination,
+                            layout: layout,
+                            tokens: tokens,
+                            shouldHideTabBar: true
+                        )
+                    }
+            }
+        } else {
+            content()
+        }
     }
 
     /// TabView 上的自由浮层。命中区域保持 44pt，但磨砂圆按顶栏那档画成 40pt——
@@ -1020,7 +1098,8 @@ struct UnifiedWorkbenchShell: View {
     private func compactDestination(
         _ destination: AppDestination,
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        shouldHideTabBar: Bool
     ) -> some View {
         switch destination {
         case .sessions:
@@ -1037,7 +1116,8 @@ struct UnifiedWorkbenchShell: View {
             sessionDetail(
                 destinationSessionID: sessionID,
                 layout: layout,
-                tokens: tokens
+                tokens: tokens,
+                shouldHideTabBar: shouldHideTabBar
             )
         case .subagent(let parentID, let childID):
             if let relation = selectedRelatedSubagent,
@@ -1047,6 +1127,7 @@ struct UnifiedWorkbenchShell: View {
                     relation: relation,
                     parentSessionID: parentID,
                     showsCloseButton: false,
+                    shouldHideTabBar: shouldHideTabBar,
                     onClose: {}
                 )
             } else {
@@ -1150,7 +1231,8 @@ struct UnifiedWorkbenchShell: View {
     private func sessionDetail(
         destinationSessionID: SessionID? = nil,
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        shouldHideTabBar: Bool = false
     ) -> some View {
         // 紧凑导航的退出页必须保留自己的会话身份。pop 同帧全局 route 已回到根页，
         // 若继续从 route 取 ID，退出中的标题会在转场结束前被替换。
@@ -1296,6 +1378,7 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
+        .toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
         .modifier(
             SessionNavigationMaterialModifier(
                 usesCompactNavigation: layout.usesCompactNavigation,
@@ -1764,7 +1847,7 @@ struct UnifiedWorkbenchShell: View {
         let showsStatus = usesSelectedSessionState && selectedSessionShowsNavigationStatus
         let subtitle = usesSelectedSessionState
             ? sessionTitleSubtitle(now: now)
-            : sessionDetailPendingSubtitle(session: session)
+            : SessionNavigationTitlePresentation.pendingSubtitle(session: session)
         let subtitleColor = usesSelectedSessionState
             ? sessionTitleSubtitleColor(tokens: tokens, now: now)
             : tokens.secondaryText
@@ -1785,7 +1868,12 @@ struct UnifiedWorkbenchShell: View {
                         .accessibilityHidden(true)
                 }
                 Text(subtitle)
-                    .font(sessionDetailNavigationSubtitleFont(layout: layout))
+                    .font(
+                        SessionNavigationTitlePresentation.subtitleFont(
+                            layout: layout,
+                            themeStore: themeStore
+                        )
+                    )
                     .foregroundStyle(subtitleColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1799,22 +1887,6 @@ struct UnifiedWorkbenchShell: View {
             usesSelectedSessionState ? sessionTitleAccessibilityValue(now: now) : subtitle
         )
         .accessibilityIdentifier("sessionDetail.title")
-    }
-
-    private func sessionDetailPendingSubtitle(session: AgentSession?) -> String {
-        let project = session?.project.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return project.isEmpty ? L10n.text("ui.session") : project
-    }
-
-    private func sessionDetailNavigationSubtitleFont(layout: WorkbenchLayout) -> Font {
-        if layout.usesCompactPhoneNavigationTypography {
-            // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
-            return themeStore.uiFont(.caption2, weight: .medium)
-        }
-        // 紧凑 iPad 继续使用原有 subheadline；宽屏布局继续使用 caption2。
-        return layout.usesCompactNavigation
-            ? .subheadline.weight(.regular)
-            : .caption2.weight(.medium)
     }
 
     private func sessionTitleSubtitle(now: Date) -> String {
@@ -1921,51 +1993,6 @@ struct UnifiedWorkbenchShell: View {
         case .failed: return .red
         case .terminated: return .red
         case .disconnected: return tokens.tertiaryText
-        }
-    }
-}
-
-/// 会话详情导航层的材质策略。紧凑与宽屏只在降级路径上不同，iOS 26 的正常透明度
-/// 路径共用同一条渐变底衬 + soft scroll edge 语义，让 iPhone、iPad 竖屏和 iPad 横屏
-/// 得到同等的顶部分离。
-private struct SessionNavigationMaterialModifier: ViewModifier {
-    let usesCompactNavigation: Bool
-    let tokens: ThemeTokens
-    let colorScheme: ColorScheme
-    let reduceTransparency: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if reduceTransparency {
-            // 关闭透明度后不做任何采样：紧凑用输入层实色，宽屏继续贴合阅读画布。
-            content
-                .toolbarBackground(
-                    usesCompactNavigation ? tokens.inputBackground : tokens.conversationCanvasBackground,
-                    for: .navigationBar
-                )
-                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-                .toolbarColorScheme(colorScheme, for: .navigationBar)
-        } else if #available(iOS 26.0, *) {
-            content
-                // 导航栏底板必须保持隐藏。只要给 navigationBar 设了可见 background，系统就不再
-                // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
-                // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
-                // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
-                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
-                .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-                .toolbarColorScheme(colorScheme, for: .navigationBar)
-        } else if usesCompactNavigation {
-            content
-                // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
-                .toolbarBackground(WorkbenchMaterial.surface, for: .navigationBar)
-                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-                .toolbarColorScheme(colorScheme, for: .navigationBar)
-        } else {
-            // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
-            // 全局工作台暖底重新显形，把纸白阅读层切成两种色温。
-            content
-                .toolbarBackground(tokens.conversationCanvasBackground, for: .navigationBar)
-                .toolbarColorScheme(colorScheme, for: .navigationBar)
         }
     }
 }
