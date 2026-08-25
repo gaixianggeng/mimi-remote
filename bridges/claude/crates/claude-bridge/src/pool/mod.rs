@@ -156,6 +156,8 @@ impl ClaudePool {
                 cwd.as_ref(),
                 false,
                 model,
+                None,
+                None,
                 append_system_prompt,
             )
             .await?;
@@ -173,8 +175,16 @@ impl ClaudePool {
         model: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
-        self.spawn_with_capacity_check(thread_id, cwd.as_ref(), true, model, append_system_prompt)
-            .await
+        self.spawn_with_capacity_check(
+            thread_id,
+            cwd.as_ref(),
+            true,
+            model,
+            None,
+            None,
+            append_system_prompt,
+        )
+        .await
     }
 
     /// Get or spawn the process needed by a lazily-created thread. `resume`
@@ -186,10 +196,20 @@ impl ClaudePool {
         cwd: impl AsRef<Path>,
         resume: bool,
         model: Option<String>,
+        effort_level: Option<String>,
+        permission_mode: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
-        self.spawn_with_capacity_check(thread_id, cwd.as_ref(), resume, model, append_system_prompt)
-            .await
+        self.spawn_with_capacity_check(
+            thread_id,
+            cwd.as_ref(),
+            resume,
+            model,
+            effort_level,
+            permission_mode,
+            append_system_prompt,
+        )
+        .await
     }
 
     /// Borrow a claude process for a one-shot, connection-scoped query
@@ -215,7 +235,7 @@ impl ClaudePool {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let synthetic_id = format!("utility_{}", Uuid::now_v7());
-        self.spawn_with_capacity_check(synthetic_id, &cwd, false, None, None)
+        self.spawn_with_capacity_check(synthetic_id, &cwd, false, None, None, None, None)
             .await
     }
 
@@ -298,6 +318,8 @@ impl ClaudePool {
         cwd: &Path,
         resume: bool,
         model: Option<String>,
+        effort_level: Option<String>,
+        permission_mode: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
         let _spawn_guard = self.spawn_lock.lock().await;
@@ -312,6 +334,8 @@ impl ClaudePool {
             cwd: cwd.to_path_buf(),
             claude_bin: self.claude_bin.clone(),
             model,
+            effort_level,
+            permission_mode,
             append_system_prompt,
             resume,
             bypass_permissions: self.policy.bypass_permissions,
