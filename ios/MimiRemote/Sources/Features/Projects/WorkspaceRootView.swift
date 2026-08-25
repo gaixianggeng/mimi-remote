@@ -263,6 +263,9 @@ struct WorkspaceRootView: View {
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
     /// 因此可以安全地用来决定要不要把 Runtime 筛选器并进这一行。
     @State private var workspaceStripContainerWidth: CGFloat = 0
+    @State private var pagerSelectionIsUserDriven = false
+    @State private var pendingHapticWorkspaceID: String?
+    @State private var suppressedHapticWorkspaceID: String?
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -568,6 +571,20 @@ struct WorkspaceRootView: View {
         } action: { _, pagePosition in
             pagerTransitionState.update(pagePosition: pagePosition)
         }
+        .onScrollPhaseChange { _, phase in
+            switch phase {
+            case .tracking, .interacting, .decelerating:
+                if !pagerSelectionIsUserDriven {
+                    MimiHaptics.prepare(.snap)
+                }
+                pagerSelectionIsUserDriven = true
+            case .idle:
+                pagerSelectionIsUserDriven = false
+            case .animating:
+                // 系统分页可能在手势后进入动画阶段；保留来源直到真正停止。
+                break
+            }
+        }
         .scrollIndicators(.hidden)
     }
 
@@ -688,6 +705,7 @@ struct WorkspaceRootView: View {
                     workspaceStripViewportWidth = width
                 }
                 .onChange(of: selectedWorkspaceID) { previousID, selectedID in
+                    handleWorkspaceSelectionHaptic(previousID: previousID, selectedID: selectedID)
                     guard let selectedID else { return }
                     // 首次恢复选择直接定位，避免页面刚出现就自行滑动；后续切换与正文分页
                     // 共用同一个临界阻尼 token，快速反向点击会从当前画面连续改向。
@@ -772,7 +790,7 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: [],
                         unavailableEmoji: [],
                         gitSummary: nil,
-                        hasRunningSession: false,
+                        runningSessionCount: 0,
                         isUnavailable: false,
                         isSelected: index == 0,
                         projectIndex: index,
@@ -826,7 +844,7 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: unavailableCharacterIDs,
                         unavailableEmoji: unavailableEmoji,
                         gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
-                        hasRunningSession: projectSessions.contains(where: \.isRunning),
+                        runningSessionCount: projectSessions.filter(\.isRunning).count,
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         isSelected: selectedWorkspaceID == project.id,
                         projectIndex: projectIndex,
@@ -861,16 +879,41 @@ struct WorkspaceRootView: View {
         return motion.allowsSpatialMotion ? motion.animation : nil
     }
     private func selectWorkspace(_ project: AgentProject) {
-        selectWorkspace(id: project.id)
+        selectWorkspace(id: project.id, providesHaptic: true)
     }
-    private func selectWorkspace(id: String) {
+    private func selectWorkspace(id: String, providesHaptic: Bool = false) {
         guard selectedWorkspaceID != id else { return }
+        if providesHaptic {
+            pendingHapticWorkspaceID = id
+            suppressedHapticWorkspaceID = nil
+            MimiHaptics.prepare(.snap)
+        } else {
+            pendingHapticWorkspaceID = nil
+            suppressedHapticWorkspaceID = id
+        }
         withAnimation(workspaceSelectionAnimation) {
             selectedWorkspaceID = id
         }
     }
+    private func handleWorkspaceSelectionHaptic(previousID: String?, selectedID: String?) {
+        let shouldFire = WorkspaceSelectionHapticPolicy.shouldFire(
+            previousID: previousID,
+            selectedID: selectedID,
+            isExplicitSelection: pendingHapticWorkspaceID == selectedID,
+            isUserPaging: pagerSelectionIsUserDriven,
+            isSuppressed: suppressedHapticWorkspaceID == selectedID
+        )
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = nil
+        if shouldFire {
+            MimiHaptics.fire(.snap)
+        }
+    }
     /// 目录恢复和数据同步不代表用户发起了导航；禁止隐式动画，避免首次进入工作区自行滑动。
     private func restoreWorkspaceSelection(_ id: String?) {
+        guard selectedWorkspaceID != id else { return }
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = id
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -1223,7 +1266,7 @@ private struct WorkspaceProjectChip: View {
     let unavailableEmoji: Set<String>
     /// 胶囊本身不再展示 Git 摘要；这里只用来决定“Git 变更”菜单项是否可用。
     let gitSummary: GitStatusResponse?
-    let hasRunningSession: Bool
+    let runningSessionCount: Int
     let isUnavailable: Bool
     let isSelected: Bool
     let projectIndex: Int
@@ -1386,24 +1429,27 @@ private struct WorkspaceProjectChip: View {
             tokens: tokens
         )
         .overlay(alignment: .topTrailing) {
-            runningIndicator
+            runningCountBadge
         }
         .opacity(isUnavailable ? 0.62 : 1)
     }
 
     @ViewBuilder
-    private var runningIndicator: some View {
-        if hasRunningSession {
-            // 收缩态没有名称也没有状态行，这颗点是“这个工作区有会话在跑”的唯一信号，
-            // 因此用语义绿而不是原卡片上的中性灰——它不与选中态的梅紫争焦点。
-            Circle()
-                .fill(tokens.success)
-                .frame(width: 9, height: 9)
+    private var runningCountBadge: some View {
+        if let badgeText = WorkspaceRunningCountBadge.displayText(for: runningSessionCount) {
+            // 数字明确说明这是工作区内的聚合数量，不再让一颗绿点同时冒充连接和会话状态。
+            Text(badgeText)
+                .font(themeStore.uiFont(size: 9, weight: .bold))
+                .foregroundStyle(runningCountForeground)
+                .monospacedDigit()
+                .frame(minWidth: 14, minHeight: 14)
+                .padding(.horizontal, badgeText.count > 1 ? 1.5 : 0)
+                .background(tokens.success, in: Capsule())
                 .overlay {
-                    Circle()
-                        .stroke(tokens.background, lineWidth: 1.5)
+                    Capsule()
+                        .stroke(tokens.background, lineWidth: 1.25)
                 }
-                .offset(x: 2, y: -2)
+                .offset(x: 3, y: -3)
                 .accessibilityHidden(true)
         }
     }
@@ -1432,10 +1478,20 @@ private struct WorkspaceProjectChip: View {
         }
     }
 
+    private var runningCountForeground: Color {
+        // Gruvbox Light 的暖白压在橄榄绿上只有约 3.22:1；纯黑可提升到约 5.38:1。
+        if tokens.preset == .gruvbox, tokens.resolvedScheme == .light {
+            return .black
+        }
+        return tokens.background
+    }
+
     private var accessibilitySummary: String {
         let statusParts = [
             isUnavailable ? L10n.text("ui.need_to_retry") : nil,
-            hasRunningSession ? L10n.text("ui.running") : nil
+            runningSessionCount > 0
+                ? L10n.format("ui.running_sessions_count", runningSessionCount)
+                : nil
         ].compactMap { $0 }
         let status = statusParts.isEmpty
             ? L10n.text("ui.git_status_unknown")

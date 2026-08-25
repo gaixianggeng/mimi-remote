@@ -131,6 +131,42 @@ pub enum ClaudeProcessError {
     Io(#[from] std::io::Error),
 }
 
+impl ClaudeProcessError {
+    /// Transport failures leave the child lifecycle or runtime state
+    /// uncertain. A turn that has not sent its user envelope yet may safely
+    /// replace the process and retry these failures once.
+    pub(crate) fn is_process_transport_failure(&self) -> bool {
+        match self {
+            Self::WriterClosed(_)
+            | Self::ControlTimeout { .. }
+            | Self::ControlCancelled { .. }
+            | Self::Io(_) => true,
+            Self::RuntimeOverride { source, .. } => source.is_process_transport_failure(),
+            Self::InitTimeout | Self::ControlError { .. } | Self::Json(_) => false,
+        }
+    }
+
+    pub(crate) fn failure_kind(&self) -> &'static str {
+        match self {
+            Self::InitTimeout => "init_timeout",
+            Self::WriterClosed(_) => "writer_closed",
+            Self::ControlTimeout { .. } => "control_timeout",
+            Self::ControlCancelled { .. } => "control_cancelled",
+            Self::ControlError { .. } => "control_error",
+            Self::RuntimeOverride { source, .. } => source.failure_kind(),
+            Self::Json(_) => "json",
+            Self::Io(_) => "io",
+        }
+    }
+
+    pub(crate) fn runtime_field(&self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeOverride { field, .. } => Some(*field),
+            _ => None,
+        }
+    }
+}
+
 // Claude Code versions have used both `subtype:"error"` and a nominally
 // successful control response carrying `{accepted:false}` for rejected
 // setters. Normalize the latter so callers never treat a refused model as
@@ -161,6 +197,9 @@ pub struct ClaudeProcessHandle {
     cwd: PathBuf,
     claude_bin: PathBuf,
     thread_id: String,
+    /// Stable identity for this process instance. A thread can own several
+    /// generations over its lifetime after crash recovery.
+    generation: String,
     pid: Option<u32>,
     /// Sender end of the writer mpsc — closing this is the signal to the
     /// writer task to drop claude's stdin (which makes claude exit cleanly).
@@ -354,6 +393,7 @@ impl ClaudeProcessHandle {
             .take_stderr()
             .ok_or_else(|| anyhow!("claude child has no stderr pipe"))?;
 
+        let generation = Uuid::now_v7().to_string();
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
         let (events_tx, _events_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (exit_tx, _exit_rx) = watch::channel(false);
@@ -371,7 +411,15 @@ impl ClaudeProcessHandle {
             permission_mode: None,
         }));
 
-        let writer = tokio::spawn(writer_task(stdin, writer_rx));
+        let writer = tokio::spawn(writer_task(
+            stdin,
+            writer_rx,
+            pending_controls.clone(),
+            exit_tx.clone(),
+            thread_id.clone(),
+            generation.clone(),
+            pid,
+        ));
         let reader = tokio::spawn(reader_task(
             stdout,
             init_slot.clone(),
@@ -392,6 +440,7 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin,
             thread_id,
+            generation,
             pid,
             writer_tx,
             events_tx,
@@ -419,6 +468,11 @@ impl ClaudeProcessHandle {
         &self.thread_id
     }
 
+    /// Stable identity for this child-process generation.
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+
     /// OS process id (when the spawn surfaced one).
     pub fn pid(&self) -> Option<u32> {
         self.pid
@@ -438,7 +492,7 @@ impl ClaudeProcessHandle {
         self.exit_tx.subscribe()
     }
 
-    /// Whether stdout has closed and the child can no longer serve requests.
+    /// Whether this child generation can no longer serve requests.
     ///
     /// `watch` keeps the terminal value, so callers can reject a dead pooled
     /// handle even when the event driver has not finished its cleanup yet.
@@ -485,6 +539,11 @@ impl ClaudeProcessHandle {
     /// by `turn::handle_turn_start` / `turn/steer` to push a user envelope.
     /// Lines do not include the trailing newline — the writer task adds it.
     pub fn send_line(&self, line: String) -> Result<(), ClaudeProcessError> {
+        if self.has_exited() {
+            return Err(ClaudeProcessError::WriterClosed(
+                "claude process generation is terminal".to_string(),
+            ));
+        }
         self.writer_tx
             .send(line)
             .map_err(|e| ClaudeProcessError::WriterClosed(e.to_string()))
@@ -524,6 +583,14 @@ impl ClaudeProcessHandle {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending_controls.lock().await;
+            // Serialize registration with terminal cleanup. Otherwise a
+            // waiter can be inserted just after cleanup and hang until its
+            // full deadline on a generation that is already dead.
+            if *self.exit_tx.borrow() {
+                return Err(ClaudeProcessError::WriterClosed(
+                    "claude process generation is terminal".to_string(),
+                ));
+            }
             pending.insert(request_id.clone(), tx);
         }
         let envelope = ClaudeInbound::ControlRequest(ControlRequestEnvelope {
@@ -534,6 +601,8 @@ impl ClaudeProcessHandle {
             // Pull the slot back so we don't leak a sender.
             let mut pending = self.pending_controls.lock().await;
             pending.remove(&request_id);
+            drop(pending);
+            mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
             return Err(err);
         }
         match timeout(deadline, rx).await {
@@ -552,11 +621,15 @@ impl ClaudeProcessHandle {
                     message: error,
                 }),
             },
-            Ok(Err(_)) => Err(ClaudeProcessError::ControlCancelled { request_id }),
+            Ok(Err(_)) => {
+                mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
+                Err(ClaudeProcessError::ControlCancelled { request_id })
+            }
             Err(_) => {
-                // Reclaim the slot so a late response doesn't sit in the map.
-                let mut pending = self.pending_controls.lock().await;
-                pending.remove(&request_id);
+                // A timed-out setter leaves both the child lifecycle and its
+                // runtime state uncertain. Retire the whole generation so a
+                // late response cannot make later turns reuse poisoned state.
+                mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
                 Err(ClaudeProcessError::ControlTimeout {
                     request_id,
                     elapsed: deadline,
@@ -687,9 +760,13 @@ impl ClaudeProcessHandle {
     /// Close stdin to signal a clean shutdown, then wait for claude to exit
     /// and reap the child. Idempotent.
     pub async fn shutdown(&self) {
+        // A generation already marked terminal reached shutdown through a
+        // failure path. Keep its eventual exit status visible at the default
+        // production log level; routine eviction remains debug-only.
+        let was_terminal = self.has_exited();
         // 先通知 driver，保证显式 interrupt/release 即使随后 abort reader，
         // 也会把当前 turn 收敛为 Failed，而不是永久停在 InProgress。
-        let _ = self.exit_tx.send(true);
+        mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
         // Aborting the writer task drops its `ChildStdin`, which closes
         // claude's stdin pipe and causes a clean exit.
         if let Some(handle) = self._tasks.writer.lock().await.take() {
@@ -701,8 +778,35 @@ impl ClaudeProcessHandle {
         if let Some(mut child) = self._tasks.child.lock().await.take() {
             // kill is a no-op if the child has already exited via stdin EOF.
             // We still call it as a safety net for stuck children.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            let kill_error = child.kill().await.err();
+            match child.wait().await {
+                Ok(status) if was_terminal => tracing::warn!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    exit_code = ?status.code(),
+                    exit_status = %status,
+                    ?kill_error,
+                    "reaped terminal claude process generation"
+                ),
+                Ok(status) => tracing::debug!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    exit_code = ?status.code(),
+                    exit_status = %status,
+                    ?kill_error,
+                    "reaped claude process generation"
+                ),
+                Err(wait_error) => tracing::warn!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    ?kill_error,
+                    ?wait_error,
+                    "failed to reap claude process generation"
+                ),
+            }
         }
         if let Some(handle) = self._tasks.reader.lock().await.take() {
             handle.abort();
@@ -799,18 +903,64 @@ impl alleycat_bridge_core::pool::PoolMember for ClaudeProcessHandle {
     }
 }
 
-async fn writer_task(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
+async fn mark_process_terminal(
+    pending_controls: &Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
+    exit_tx: &watch::Sender<bool>,
+) -> usize {
+    // Keep the terminal transition and waiter cleanup in one critical
+    // section. request_control checks the watch value while holding this same
+    // lock, so it cannot insert a waiter after cleanup.
+    let mut pending = pending_controls.lock().await;
+    exit_tx.send_replace(true);
+    let cancelled = pending.len();
+    pending.clear();
+    cancelled
+}
+
+async fn writer_task(
+    mut stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
+    exit_tx: watch::Sender<bool>,
+    thread_id: String,
+    generation: String,
+    pid: Option<u32>,
+) {
+    let mut terminal_reason = "writer_channel_closed";
     while let Some(mut line) = rx.recv().await {
         line.push('\n');
         if let Err(err) = stdin.write_all(line.as_bytes()).await {
-            tracing::warn!(?err, "claude writer task: stdin write failed; exiting");
+            terminal_reason = "stdin_write_failed";
+            tracing::warn!(
+                %thread_id,
+                %generation,
+                ?pid,
+                ?err,
+                "claude writer task: stdin write failed; retiring generation"
+            );
             break;
         }
         if let Err(err) = stdin.flush().await {
-            tracing::warn!(?err, "claude writer task: stdin flush failed; exiting");
+            terminal_reason = "stdin_flush_failed";
+            tracing::warn!(
+                %thread_id,
+                %generation,
+                ?pid,
+                ?err,
+                "claude writer task: stdin flush failed; retiring generation"
+            );
             break;
         }
     }
+    let cancelled_controls = mark_process_terminal(&pending_controls, &exit_tx).await;
+    tracing::debug!(
+        %thread_id,
+        %generation,
+        ?pid,
+        terminal_reason,
+        cancelled_controls,
+        "claude writer task entered terminal state"
+    );
     // Dropping `stdin` here closes claude's input pipe, prompting it to exit.
 }
 
@@ -885,10 +1035,7 @@ async fn reader_task(
     }
     // Process exit drains every waiter so they error with ControlCancelled
     // instead of hanging on the deadline.
-    let mut pending = pending_controls.lock().await;
-    pending.clear();
-    drop(pending);
-    let _ = exit_tx.send(true);
+    mark_process_terminal(&pending_controls, &exit_tx).await;
 }
 
 async fn stderr_task(stderr: ChildStderr, pid: Option<u32>) {
@@ -919,6 +1066,7 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin: PathBuf::from("/dev/null"),
             thread_id: "test-thread".into(),
+            generation: "test-generation".into(),
             pid: None,
             writer_tx,
             events_tx,
@@ -1023,6 +1171,9 @@ mod tests {
         let handle =
             ClaudeProcessHandle::__test_dangling(writer_tx, events_tx, PathBuf::from("/tmp"));
         let mut exit_rx = handle.subscribe_exit();
+        let pending = handle.pending_controls_handle();
+        let (waiter_tx, waiter_rx) = oneshot::channel();
+        pending.lock().await.insert("pending".into(), waiter_tx);
 
         handle.shutdown().await;
         exit_rx
@@ -1030,6 +1181,42 @@ mod tests {
             .await
             .expect("exit signal sender remains live");
         assert!(*exit_rx.borrow());
+        assert!(pending.lock().await.is_empty());
+        assert!(waiter_rx.await.is_err(), "shutdown must cancel waiters");
+    }
+
+    #[tokio::test]
+    async fn writer_pipe_failure_marks_generation_terminal_and_cancels_waiters() {
+        let (stdin, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (waiter_tx, waiter_rx) = oneshot::channel();
+        pending.lock().await.insert("pending".into(), waiter_tx);
+        let (exit_tx, mut exit_rx) = watch::channel(false);
+
+        let writer = tokio::spawn(writer_task(
+            Box::new(stdin),
+            writer_rx,
+            pending.clone(),
+            exit_tx,
+            "thread-broken-pipe".into(),
+            "generation-1".into(),
+            Some(42),
+        ));
+        writer_tx.send("queued-control".into()).unwrap();
+
+        timeout(Duration::from_secs(1), exit_rx.changed())
+            .await
+            .expect("writer must signal terminal without waiting for control deadline")
+            .expect("exit sender remains live");
+        assert!(*exit_rx.borrow());
+        assert!(pending.lock().await.is_empty());
+        assert!(
+            waiter_rx.await.is_err(),
+            "writer failure must cancel waiters"
+        );
+        writer.await.expect("writer task");
     }
 
     #[tokio::test]
@@ -1186,9 +1373,15 @@ mod tests {
         let _ = writer_rx.recv().await.unwrap();
         let err = task.await.expect("join").expect_err("timeout expected");
         assert!(matches!(err, ClaudeProcessError::ControlTimeout { .. }));
-        // Slot must be reclaimed so a stray late response doesn't sit in the
-        // map.
+        // A timed-out generation must not accept another control request.
+        assert!(handle.has_exited());
         assert!(pending.lock().await.is_empty());
+        let retry = handle
+            .request_control(ControlRequestBody::Interrupt, Duration::from_secs(1))
+            .await
+            .expect_err("terminal generation must reject a new request");
+        assert!(matches!(retry, ClaudeProcessError::WriterClosed(_)));
+        assert!(writer_rx.try_recv().is_err());
     }
 
     #[tokio::test]

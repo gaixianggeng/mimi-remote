@@ -635,6 +635,8 @@ struct SettingsValueLabel: View {
 
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     let onRequestProfileRename: (ConnectionProfile) -> Void
@@ -650,6 +652,12 @@ private struct ConnectionManagementView: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
+        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
         .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }

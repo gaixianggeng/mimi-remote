@@ -126,7 +126,7 @@ enum WorkspaceSessionFabMetrics {
 }
 
 /// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
-/// 卡片内的状态导轨和文案表达，避免把分组背景误读成会话状态。
+/// 复用的会话行表达，避免把分组背景误读成会话状态。
 enum WorkspaceSessionGroup: String, CaseIterable {
     case needsAttention
     case running
@@ -153,5 +153,13 @@ enum WorkspaceSessionGroup: String, CaseIterable {
 
     static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
         allCases.filter(groups.contains)
+    }
+}
+
+/// 工作区徽标表达聚合数量。个位数保持圆形，十个及以上封顶为 `9+`，避免撑大头像。
+enum WorkspaceRunningCountBadge {
+    static func displayText(for count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count > 9 ? "9+" : String(count)
     }
 }

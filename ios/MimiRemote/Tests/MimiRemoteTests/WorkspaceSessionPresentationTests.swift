@@ -3,6 +3,14 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testWorkspaceRunningCountBadgeShowsAggregateWithoutGrowingUnbounded() {
+        XCTAssertNil(WorkspaceRunningCountBadge.displayText(for: 0))
+        XCTAssertNil(WorkspaceRunningCountBadge.displayText(for: -1))
+        XCTAssertEqual(WorkspaceRunningCountBadge.displayText(for: 1), "1")
+        XCTAssertEqual(WorkspaceRunningCountBadge.displayText(for: 9), "9")
+        XCTAssertEqual(WorkspaceRunningCountBadge.displayText(for: 10), "9+")
+    }
+
     func testWorkspaceNeighborPrefetchWaitsForEachRuntimeSpecificFirstPage() {
         XCTAssertTrue(
             WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: nil),

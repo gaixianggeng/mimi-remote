@@ -238,39 +238,7 @@ pub async fn handle_turn_start(
     let envelope = translate_user_input(&params.input)
         .map_err(|e| TurnError::InputTranslation(e.to_string()))?;
 
-    let handle = match state.claude_pool().get(&params.thread_id).await {
-        Some(handle) => handle,
-        None => {
-            let entry = state
-                .thread_index()
-                .lookup(&params.thread_id)
-                .await
-                .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
-            let cwd =
-                resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
-            let defaults = state.defaults();
-            let model =
-                normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
-            // 本地可直接以 transcript 是否存在区分新线程和恢复线程。远程线程仍会在
-            // thread/start/resume 预启动；这里的 preview 判断只负责进程意外退出后的兜底。
-            let resume = if state.trust_persisted_cwd() {
-                !entry.preview.trim().is_empty() || !state.thread_log(&params.thread_id).is_empty()
-            } else {
-                entry.metadata.claude_session_path.is_file()
-            };
-            state
-                .claude_pool()
-                .acquire_for_thread(
-                    params.thread_id.clone(),
-                    &cwd,
-                    resume,
-                    model,
-                    defaults.system_prompt.clone(),
-                )
-                .await
-                .map_err(|err| TurnError::ClaudeRpc(format!("starting claude process: {err:#}")))?
-        }
-    };
+    let mut handle = acquire_turn_process(state, &params).await?;
 
     // 必须在 runtime overrides 之前拒绝重复 turn/start。否则一次陈旧的客户端
     // 发送会先改掉正在执行轮次的模型/权限，再以内部错误退出。
@@ -296,15 +264,55 @@ pub async fn handle_turn_start(
     let model_override = normalized_model_override.as_deref();
     let effort_override = params.effort.map(native_effort_level);
     let permission_mode = claude_permission_mode(&params);
-    if let Err(err) = handle
-        .apply_runtime_overrides(
-            model_override,
-            effort_override,
-            Some(permission_mode),
-            CONTROL_SET_TIMEOUT,
-        )
-        .await
-    {
+    // Start lifecycle observation before the first control write. A process
+    // can lose stdin during runtime overrides, before a turn exists.
+    let mut driver = ensure_event_driver(state, &params.thread_id, &handle);
+    let mut recovery_attempted = false;
+    loop {
+        let result = handle
+            .apply_runtime_overrides(
+                model_override,
+                effort_override,
+                Some(permission_mode),
+                CONTROL_SET_TIMEOUT,
+            )
+            .await;
+        let Err(err) = result else {
+            break;
+        };
+
+        if err.is_process_transport_failure() {
+            let will_retry = !recovery_attempted;
+            let generation = handle.generation().to_string();
+            let pid = handle.pid();
+            let failure_kind = err.failure_kind();
+            let runtime_field = err.runtime_field().unwrap_or("unknown");
+            let terminal = handle.has_exited();
+            let released = state
+                .claude_pool()
+                .release_if_same(&params.thread_id, &handle)
+                .await;
+            tracing::warn!(
+                thread_id = %params.thread_id,
+                %generation,
+                ?pid,
+                failure_kind,
+                runtime_field,
+                terminal,
+                released,
+                will_retry,
+                error = %err,
+                "claude runtime override transport failure"
+            );
+
+            if will_retry {
+                recovery_attempted = true;
+                handle = acquire_turn_process(state, &params).await?;
+                driver = ensure_event_driver(state, &params.thread_id, &handle);
+                continue;
+            }
+        }
+
         if let Some((model, message)) = explicit_model_rejection(&err) {
             tracing::warn!(
                 thread_id = %params.thread_id,
@@ -321,7 +329,6 @@ pub async fn handle_turn_start(
     }
 
     let turn_id = Uuid::now_v7().to_string();
-    let driver = ensure_event_driver(state, &params.thread_id, &handle);
     state.claude_pool().mark_active(&params.thread_id).await;
 
     let started_at = now_unix_secs();
@@ -419,6 +426,42 @@ pub async fn handle_turn_start(
     spawn_preview_backfill(state, &params.thread_id, &params.input);
 
     Ok(p::TurnStartResponse { turn })
+}
+
+async fn acquire_turn_process(
+    state: &Arc<ConnectionState>,
+    params: &p::TurnStartParams,
+) -> Result<Arc<ClaudeProcessHandle>, TurnError> {
+    if let Some(handle) = state.claude_pool().get(&params.thread_id).await {
+        return Ok(handle);
+    }
+
+    let entry = state
+        .thread_index()
+        .lookup(&params.thread_id)
+        .await
+        .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
+    let cwd = resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
+    let defaults = state.defaults();
+    let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
+    // 本地可直接以 transcript 是否存在区分新线程和恢复线程。远程线程仍会在
+    // thread/start/resume 预启动；这里的 preview 判断只负责进程意外退出后的兜底。
+    let resume = if state.trust_persisted_cwd() {
+        !entry.preview.trim().is_empty() || !state.thread_log(&params.thread_id).is_empty()
+    } else {
+        entry.metadata.claude_session_path.is_file()
+    };
+    state
+        .claude_pool()
+        .acquire_for_thread(
+            params.thread_id.clone(),
+            &cwd,
+            resume,
+            model,
+            defaults.system_prompt.clone(),
+        )
+        .await
+        .map_err(|err| TurnError::ClaudeRpc(format!("starting claude process: {err:#}")))
 }
 
 fn explicit_model_rejection(err: &ClaudeProcessError) -> Option<(String, String)> {
