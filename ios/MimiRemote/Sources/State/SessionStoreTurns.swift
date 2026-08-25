@@ -690,7 +690,8 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         objective: String,
         tokenBudget: Int64? = nil,
-        runningDelivery: RunningTurnDelivery = .queued
+        runningDelivery: RunningTurnDelivery = .queued,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
     ) async -> Bool {
         if let session = selectedSession,
            isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
@@ -712,14 +713,28 @@ extension SessionStore {
             return false
         }
 
-        if let session = selectedSession, session.isRunning {
+        let selectedSessionHasQueuedTurns = selectedSession.map {
+            queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+            pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+            queuedTurnAwaitingStartSessionIDs.contains($0.id)
+        } ?? false
+        if let session = selectedSession,
+           session.isRunning || (runningDelivery == .queued
+                && (selectedSessionHasQueuedTurns
+                    || selectedSessionHasPendingPermissionBoundary
+                    || selectedSessionAwaitsAcceptedTurnStart)) {
             // 排队目标必须把“设置目标 + 启动 turn”作为同一个本地队列项保存；
             // 若在这里提前写远端目标，App 被挂起时会留下“目标已改、任务没发”的半完成状态。
             if runningDelivery == .queued {
                 let sent = await sendTurn(
                     payload,
                     runningDelivery: .queued,
-                    queuedIntent: .goal(objective: normalizedObjective, tokenBudget: tokenBudget)
+                    queuedIntent: .goal(objective: normalizedObjective, tokenBudget: tokenBudget),
+                    permissionSelection: permissionSelection
                 )
                 if sent {
                     setStatusMessage(L10n.text("ui.the_target_task_has_been_added_to_be"))
@@ -738,7 +753,8 @@ extension SessionStore {
             }
             let sent = await sendTurn(
                 payload,
-                runningDelivery: .guided
+                runningDelivery: .guided,
+                permissionSelection: permissionSelection
             )
             if sent {
                 setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -758,6 +774,7 @@ extension SessionStore {
             payload: payload,
             resume: resume,
             clientMessageID: UUID().uuidString,
+            permissionSelection: permissionSelection,
             initialGoalObjective: normalizedObjective,
             replacingLocalDraft: localDraft
         )
@@ -780,7 +797,8 @@ extension SessionStore {
     func sendTurn(
         _ payload: CodexAppServerTurnPayload,
         runningDelivery: RunningTurnDelivery = .queued,
-        queuedIntent: QueuedTurnIntent? = nil
+        queuedIntent: QueuedTurnIntent? = nil,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
     ) async -> Bool {
         guard !payload.isEmpty else {
             return false
@@ -803,6 +821,7 @@ extension SessionStore {
                 payload: payload,
                 resume: nil,
                 clientMessageID: UUID().uuidString,
+                permissionSelection: permissionSelection,
                 replacingLocalDraft: localDraft
             )
         }
@@ -810,8 +829,17 @@ extension SessionStore {
         let selectedSessionHasQueuedTurns = selectedSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
         } ?? false
+        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+            pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+            queuedTurnAwaitingStartSessionIDs.contains($0.id)
+        } ?? false
         if let session = selectedSession,
-           session.isRunning || (runningDelivery == .queued && selectedSessionHasQueuedTurns) {
+           session.isRunning || (runningDelivery == .queued
+                && (selectedSessionHasQueuedTurns
+                    || selectedSessionHasPendingPermissionBoundary
+                    || selectedSessionAwaitsAcceptedTurnStart)) {
             guard canControlSession(session) else {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
@@ -824,16 +852,28 @@ extension SessionStore {
                     return false
                 }
                 let intent = queuedIntent ?? (payload.options.collaborationMode == .plan ? .plan : .standard)
+                let requiresFreshTurn = permissionSelection?.requiresNewTurn == true
                 let item = QueuedTurnEntry(
                     sessionID: session.id,
                     projectID: session.projectID,
                     payload: payload,
                     clientMessageID: clientMessageID,
                     intent: intent,
-                    expectedTurnID: session.activeTurnID
+                    expectedTurnID: session.activeTurnID,
+                    requiresFreshTurn: requiresFreshTurn ? true : nil
                 )
                 guard mutateAndPersistQueuedTurns({
                     queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                    if requiresFreshTurn,
+                       let permissionSelection {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                            sessionID: session.id,
+                            clientMessageID: clientMessageID,
+                            permissionSelection: permissionSelection
+                            )
+                        )
+                    }
                 }) else {
                     return false
                 }
@@ -886,7 +926,13 @@ extension SessionStore {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
         }
-        return await createSession(projectID: projectID, payload: payload, resume: resume, clientMessageID: UUID().uuidString)
+        return await createSession(
+            projectID: projectID,
+            payload: payload,
+            resume: resume,
+            clientMessageID: UUID().uuidString,
+            permissionSelection: permissionSelection
+        )
     }
 
     func interruptSelectedTurn() {
@@ -1003,15 +1049,33 @@ extension SessionStore {
         }
 
         if let session = selectedSession,
-           session.isRunning,
-           let clientMessageID = message.clientMessageID {
+           let clientMessageID = message.clientMessageID,
+           session.isRunning
+            || queuedRunningTurnsBySessionID[session.id]?.isEmpty == false
+            || pendingPermissionTurnBoundariesBySessionID[session.id]?.isEmpty == false
+            || queuedTurnAwaitingStartSessionIDs.contains(session.id) {
             guard canControlSession(session) else {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
             }
             let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
             let resolvedPayload = await payloadResolvingRequiredModel(payload)
-            if let activeTurnID = session.activeTurnID {
+            let persistedRetryRequirement = permissionTurnRetryRequirementsByClientMessageID[clientMessageID]
+            let pendingRetryRequirement = pendingPermissionTurnBoundariesBySessionID[session.id]?
+                .first(where: { $0.clientMessageID == clientMessageID })
+            let cachedPermissionSelection = composerPermissionSelection(for: .session(session.id))
+            let retryPermissionSelection = persistedRetryRequirement?.permissionSelection
+                ?? pendingRetryRequirement?.permissionSelection
+                ?? (cachedPermissionSelection?.requiresNewTurn == true
+                    ? ComposerPermissionSelectionSnapshot(
+                        options: resolvedPayload.options,
+                        requiresNewTurn: true
+                    )
+                    : nil)
+            if session.activeTurnID != nil
+                || queuedRunningTurnsBySessionID[session.id]?.isEmpty == false
+                || pendingPermissionTurnBoundariesBySessionID[session.id]?.isEmpty == false
+                || queuedTurnAwaitingStartSessionIDs.contains(session.id) {
                 let queueCount = queuedRunningTurnsBySessionID[session.id]?.count ?? 0
                 guard queueCount < Self.queuedTurnLimitPerSession else {
                     setErrorMessage(L10n.format("ui.each_session_retains_a_maximum_of_value_messages", Self.queuedTurnLimitPerSession))
@@ -1020,16 +1084,53 @@ extension SessionStore {
                 let intent: QueuedTurnIntent = resolvedPayload.options.collaborationMode == .plan
                     ? .plan
                     : .standard
+                let requiresFreshTurn = retryPermissionSelection != nil
                 let item = QueuedTurnEntry(
                     sessionID: session.id,
                     projectID: session.projectID,
                     payload: resolvedPayload,
                     clientMessageID: clientMessageID,
                     intent: intent,
-                    expectedTurnID: activeTurnID
+                    expectedTurnID: session.activeTurnID,
+                    requiresFreshTurn: requiresFreshTurn ? true : nil
                 )
                 guard mutateAndPersistQueuedTurns({
-                    queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                    var queue = queuedRunningTurnsBySessionID[session.id] ?? []
+                    if let pendingRetryRequirement,
+                       let boundaries = pendingPermissionTurnBoundariesBySessionID[session.id],
+                       let boundaryIndex = boundaries.firstIndex(where: {
+                           $0.clientMessageID == pendingRetryRequirement.clientMessageID
+                       }) {
+                        // uncertain 项离开队列后，重试必须回到原边界位置；否则后续项会挡在
+                        // retained boundary 前面，使 dispatcher 永久无法匹配 FIFO 头部。
+                        let earlierBoundaryIDs = Set(
+                            boundaries[..<boundaryIndex].map(\.clientMessageID)
+                        )
+                        let insertionIndex: Int
+                        if let previousIndex = queue.lastIndex(where: {
+                            earlierBoundaryIDs.contains($0.clientMessageID)
+                        }) {
+                            insertionIndex = previousIndex + 1
+                        } else {
+                            insertionIndex = 0
+                        }
+                        queue.insert(item, at: insertionIndex)
+                    } else {
+                        queue.append(item)
+                    }
+                    queuedRunningTurnsBySessionID[session.id] = queue
+                    permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+                    if requiresFreshTurn,
+                       let retryPermissionSelection,
+                       pendingRetryRequirement == nil {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                                sessionID: session.id,
+                                clientMessageID: clientMessageID,
+                                permissionSelection: retryPermissionSelection
+                            )
+                        )
+                    }
                 }) else {
                     return false
                 }
@@ -1054,11 +1155,39 @@ extension SessionStore {
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
+            let addedPendingBoundary = retryPermissionSelection != nil && pendingRetryRequirement == nil
+            if retryPermissionSelection != nil || persistedRetryRequirement != nil {
+                guard mutateAndPersistQueuedTurns({
+                    permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+                    if addedPendingBoundary, let retryPermissionSelection {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                                sessionID: session.id,
+                                clientMessageID: clientMessageID,
+                                permissionSelection: retryPermissionSelection
+                            )
+                        )
+                    }
+                }) else {
+                    return false
+                }
+            }
             // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
             guard socket.sendTurn(resolvedPayload, clientMessageID: clientMessageID) else {
+                _ = mutateAndPersistQueuedTurns {
+                    if addedPendingBoundary {
+                        _ = removePendingPermissionTurnBoundary(
+                            sessionID: session.id,
+                            clientMessageID: clientMessageID
+                        )
+                    }
+                    if let persistedRetryRequirement {
+                        permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = persistedRetryRequirement
+                    }
+                }
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
@@ -1069,8 +1198,69 @@ extension SessionStore {
             return true
         }
 
-        // 会话已经结束或失败时，沿用普通发送路径重新创建/恢复后端 thread。
-        return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        // 会话已经结束或失败时，普通发送会生成新 ID。权限重试必须先把旧要求原子迁移成
+        // 这次请求的 pending boundary，并继续复用原 client_message_id 等精确 started。
+        guard let clientMessageID = message.clientMessageID else {
+            return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        }
+        let persistedRetryRequirement = permissionTurnRetryRequirementsByClientMessageID[clientMessageID]
+        let originalPendingLocation = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID)
+        guard let retryRequirement = persistedRetryRequirement ?? originalPendingLocation?.boundary else {
+            return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        }
+        let resume = selectedSession
+        guard let projectID = resume?.projectID ?? selectedProjectID else {
+            setErrorMessage(L10n.text("ui.please_select_the_project_first"))
+            return false
+        }
+        let targetSessionID = resume?.id ?? retryRequirement.sessionID
+        let reboundBoundary = PendingPermissionTurnBoundary(
+            sessionID: targetSessionID,
+            clientMessageID: clientMessageID,
+            permissionSelection: retryRequirement.permissionSelection
+        )
+        guard mutateAndPersistQueuedTurns({
+            permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+            if let originalPendingLocation {
+                _ = removePendingPermissionTurnBoundary(
+                    sessionID: originalPendingLocation.sessionID,
+                    clientMessageID: clientMessageID
+                )
+            }
+            pendingPermissionTurnBoundariesBySessionID[targetSessionID, default: []].append(reboundBoundary)
+        }) else {
+            return false
+        }
+
+        let didSend = await createSession(
+            projectID: projectID,
+            payload: message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt),
+            resume: resume,
+            clientMessageID: clientMessageID
+        )
+        guard !didSend else {
+            return true
+        }
+        _ = mutateAndPersistQueuedTurns {
+            if let currentLocation = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID) {
+                _ = removePendingPermissionTurnBoundary(
+                    sessionID: currentLocation.sessionID,
+                    clientMessageID: clientMessageID
+                )
+            }
+            if let originalPendingLocation {
+                var boundaries = pendingPermissionTurnBoundariesBySessionID[originalPendingLocation.sessionID] ?? []
+                boundaries.insert(
+                    originalPendingLocation.boundary,
+                    at: min(originalPendingLocation.index, boundaries.count)
+                )
+                pendingPermissionTurnBoundariesBySessionID[originalPendingLocation.sessionID] = boundaries
+            }
+            if let persistedRetryRequirement {
+                permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = persistedRetryRequirement
+            }
+        }
+        return false
     }
 
     @discardableResult

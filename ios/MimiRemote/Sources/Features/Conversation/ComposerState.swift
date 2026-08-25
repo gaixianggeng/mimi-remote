@@ -345,7 +345,7 @@ enum DefaultModelPreferences {
     }
 }
 
-enum ComposerPermissionMode: String, CaseIterable, Identifiable {
+enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly
     case autoApprove
@@ -483,7 +483,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     private static let autoReviewer = "auto_review"
 }
 
-struct ComposerPermissionSelectionSnapshot: Equatable {
+struct ComposerPermissionSelectionSnapshot: Codable, Equatable {
     var preservesThreadSettings: Bool
     var profileID: String?
     var mode: ComposerPermissionMode
@@ -621,19 +621,22 @@ struct ComposerState {
         ComposerPermissionMode(options: turnOptions)
     }
 
-    mutating func applyPermissionMode(_ mode: ComposerPermissionMode) {
-        updateTurnOptions { options in
+    mutating func applyPermissionMode(
+        _ mode: ComposerPermissionMode,
+        sessionIsRunning: Bool = false
+    ) {
+        updatePermissionSelection(sessionIsRunning: sessionIsRunning) { options in
             mode.apply(to: &options)
         }
     }
 
-    mutating func resetUnavailablePermissionProfile() {
+    mutating func resetUnavailablePermissionProfile(sessionIsRunning: Bool = false) {
         guard turnOptions.permissionProfileID?
             .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty != nil
         else { return }
         // 自定义档案消失时不能只清 ID；底层 sandbox 可能仍是完全访问默认值，
         // 下一次提交会因此升级为无审批。明确回退到受控工作区和用户审批。
-        applyPermissionMode(.requestApproval)
+        applyPermissionMode(.requestApproval, sessionIsRunning: sessionIsRunning)
     }
 
     mutating func updateTurnOptions(_ update: (inout CodexAppServerTurnOptions) -> Void) {
@@ -644,6 +647,18 @@ struct ComposerState {
         }
         // 每次用户操作只发布一个完整 options 快照，避免连续改多个字段导致工具栏多次刷新。
         turnOptions = updatedOptions
+    }
+
+    mutating func updatePermissionSelection(
+        sessionIsRunning: Bool,
+        _ update: (inout CodexAppServerTurnOptions) -> Void
+    ) {
+        let previousSelection = permissionSelectionSnapshot()
+        updateTurnOptions(update)
+        markPermissionSelectionRequiresNewTurnIfChanged(
+            from: previousSelection,
+            sessionIsRunning: sessionIsRunning
+        )
     }
 
     mutating func setSendMode(_ mode: ComposerSendMode) {
@@ -786,12 +801,12 @@ struct ComposerState {
         permissionSelectionRequiresNewTurn = true
     }
 
-    mutating func markPermissionSelectionSubmitted(
-        _ submittedSelection: ComposerPermissionSelectionSnapshot
+    mutating func markPermissionSelectionApplied(
+        _ startedSelection: ComposerPermissionSelectionSnapshot
     ) {
-        // 发送期间用户可能再次修改权限。只有当前选择仍与已提交快照一致时才清除标记，
-        // 避免迟到的成功回调把更新后的下一回合权限错误地当成已经发送。
-        guard permissionSelectionSnapshot() == submittedSelection else {
+        // turn/started 到达前用户可能再次修改权限。只有当前选择仍与已启动快照一致时
+        // 才清除标记，避免迟到事件把更新后的下一回合权限错误地当成已经生效。
+        guard permissionSelectionSnapshot() == startedSelection else {
             return
         }
         permissionSelectionRequiresNewTurn = false

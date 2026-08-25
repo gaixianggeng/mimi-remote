@@ -6,11 +6,19 @@ extension SessionStore {
         guard let session = sessionsByID[sessionID],
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
               session.activeTurnID == nil,
-              let next = queuedRunningTurnsBySessionID[sessionID]?.first,
+              let queue = queuedRunningTurnsBySessionID[sessionID],
+              let next = queue.first,
               next.dispatchState == .waiting,
               next.waitsForAcceptedTurnStart != true,
               next.expectedTurnID == nil
         else {
+            return
+        }
+        if let pendingBoundary = pendingPermissionTurnBoundary(for: sessionID),
+           pendingBoundary.clientMessageID != next.clientMessageID,
+           !queue.contains(where: { $0.clientMessageID == pendingBoundary.clientMessageID }) {
+            // 边界项仍在队列后方时，先发送排在它前面的普通项。只有 ACK 后边界项已离队、
+            // 仍等待精确 started 的 orphan boundary 才能阻止后续消息越过。
             return
         }
         guard canControlSession(session) else {
@@ -119,6 +127,21 @@ extension SessionStore {
         queuedGuidanceDispatchClientMessageIDs.subtract(queued.map(\.clientMessageID))
         _ = mutateAndPersistQueuedTurns {
             setQueuedTurns([], sessionID: sessionID)
+            let waitingIDs = Set(queued.lazy.filter { $0.dispatchState == .waiting }.map(\.clientMessageID))
+            if var boundaries = pendingPermissionTurnBoundariesBySessionID[sessionID] {
+                for boundary in boundaries where waitingIDs.contains(boundary.clientMessageID) {
+                    if markMessagesFailed {
+                        permissionTurnRetryRequirementsByClientMessageID[boundary.clientMessageID] = boundary
+                    }
+                }
+                // 尚未派发的边界随队列一起取消；已派发或结果不确定的边界仍必须等精确 started。
+                boundaries.removeAll { waitingIDs.contains($0.clientMessageID) }
+                if boundaries.isEmpty {
+                    pendingPermissionTurnBoundariesBySessionID.removeValue(forKey: sessionID)
+                } else {
+                    pendingPermissionTurnBoundariesBySessionID[sessionID] = boundaries
+                }
+            }
         }
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
@@ -148,7 +171,8 @@ extension SessionStore {
     }
 
     func ensureQueuedSessionMonitoring(sessionID: SessionID) {
-        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false,
+        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false
+                || queuedTurnAwaitingStartSessionIDs.contains(sessionID),
               connectionTermination == nil,
               !appStore.requiresRePairing,
               appStore.isConfigured,
@@ -272,7 +296,9 @@ extension SessionStore {
     }
 
     func ensureAllQueuedSessionMonitoring() {
-        for sessionID in queuedRunningTurnsBySessionID.keys {
+        let sessionIDs = Set(queuedRunningTurnsBySessionID.keys)
+            .union(queuedTurnAwaitingStartSessionIDs)
+        for sessionID in sessionIDs {
             ensureQueuedSessionMonitoring(sessionID: sessionID)
         }
     }
@@ -283,7 +309,8 @@ extension SessionStore {
     }
 
     func stopQueuedSessionMonitoringIfIdle(sessionID: SessionID) {
-        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false else { return }
+        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false,
+              !queuedTurnAwaitingStartSessionIDs.contains(sessionID) else { return }
         guard queuedSessionSockets[sessionID] != nil || queuedSessionReconnectTasks[sessionID] != nil else {
             return
         }
@@ -305,7 +332,8 @@ extension SessionStore {
 
     func scheduleQueuedSessionReconnect(sessionID: SessionID, generation: Int) {
         guard isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation),
-              queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false else { return }
+              queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false
+                || queuedTurnAwaitingStartSessionIDs.contains(sessionID) else { return }
         markDispatchingQueuedTurnsNeedsConfirmation(
             sessionID: sessionID,
             message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
@@ -339,15 +367,15 @@ extension SessionStore {
         sessionID: SessionID,
         message: String
     ) {
-        // 当前连接退役后，即使 turn/start 已 accepted，也可能错过紧随其后的 started；
-        // 清掉仅属于该连接的门闩，恢复时交给 REST 快照重新判定 active turn。
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         guard queuedRunningTurnsBySessionID[sessionID]?.contains(where: {
             $0.dispatchState == .dispatching
         }) == true else {
             return
         }
+        // 尚未收到 accepted 的 dispatching 项在连接退役后结果不确定，不能继续保留
+        // awaiting-start 门闩；已经 accepted 且已离队的项则由重连继续等待 started。
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         _ = mutateAndPersistQueuedTurns {
             guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
             for index in queue.indices where queue[index].dispatchState == .dispatching {
@@ -396,15 +424,11 @@ extension SessionStore {
             case .awaitingStart(let turnID):
                 let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
                 for index in queue.indices where queue[index].dispatchState == .waiting {
-                    if let turnID {
-                        queue[index].waitsForAcceptedTurnStart = nil
-                        queue[index].blockedCompletionID = nil
-                        queue[index].expectedTurnID = turnID
-                    } else {
-                        queue[index].waitsForAcceptedTurnStart = true
-                        queue[index].blockedCompletionID = blockedCompletionID
-                        queue[index].expectedTurnID = nil
-                    }
+                    // ACK 带 turnID 仍不等于已观察到 started。门闩和精确 ID 必须一起
+                    // 持久化，避免 ACK 后崩溃时重启把 expectedTurnID 当成陈旧状态清掉。
+                    queue[index].waitsForAcceptedTurnStart = true
+                    queue[index].blockedCompletionID = blockedCompletionID
+                    queue[index].expectedTurnID = turnID
                 }
             case .superseded(_, let activeTurnID):
                 for index in queue.indices where queue[index].dispatchState == .waiting {
@@ -433,10 +457,6 @@ extension SessionStore {
         }
         switch disposition {
         case .awaitingStart(let turnID):
-            if turnID != nil {
-                queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-            }
             if wasGuidance, let turnID {
                 // stale guidance 在 RPC 前确认 active turn 缺失后会降级为新的 turn/start。
                 // 只有这一条显式 accepted 路径可以把 ACK 中的新 turn 设为本地权威状态；
@@ -591,7 +611,18 @@ extension SessionStore {
         _ = mutateAndPersistQueuedTurns {
             guard var queue = queuedRunningTurnsBySessionID[sessionID],
                   queue.indices.contains(location.index) else { return }
-            queue.remove(at: location.index)
+            let removed = queue.remove(at: location.index)
+            if let boundary = removePendingPermissionTurnBoundary(
+                sessionID: sessionID,
+                clientMessageID: removed.clientMessageID
+            ) {
+                permissionTurnRetryRequirementsByClientMessageID[removed.clientMessageID] = boundary
+                for index in queue.indices where queue[index].waitsForAcceptedTurnStart == true {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
+                    queue[index].expectedTurnID = sessionsByID[sessionID]?.activeTurnID
+                }
+            }
             setQueuedTurns(queue, sessionID: sessionID)
         }
         conversationStore.updateSendStatus(
@@ -636,12 +667,21 @@ extension SessionStore {
                 }
             }
 
+            let currentQueue = queuedRunningTurnsBySessionID[sessionID] ?? []
+            let queuedClientMessageIDs = Set(currentQueue.map(\.clientMessageID))
             let ambiguousIDs = Set(
-                (queuedRunningTurnsBySessionID[sessionID] ?? [])
+                currentQueue
                     .filter { $0.dispatchState == .needsConfirmation }
                     .map(\.clientMessageID)
             )
-            if !ambiguousIDs.isEmpty,
+            let hasPersistedAcceptedStartBarrier = currentQueue.contains {
+                $0.dispatchState == .waiting && $0.waitsForAcceptedTurnStart == true
+            }
+            let hasOrphanPermissionBoundary = pendingPermissionTurnBoundariesBySessionID[sessionID]?
+                .contains(where: { !queuedClientMessageIDs.contains($0.clientMessageID) }) == true
+            if (!ambiguousIDs.isEmpty
+                    || hasOrphanPermissionBoundary
+                    || hasPersistedAcceptedStartBarrier),
                let page = try? await client.messagesPage(
                     sessionID: sessionID,
                     before: nil,
@@ -649,15 +689,30 @@ extension SessionStore {
                     loadMode: .full
                ) {
                 let deliveredIDs = Set(page.messages.compactMap(\.clientMessageID)).intersection(ambiguousIDs)
-                if !deliveredIDs.isEmpty {
+                let startedTurnIDs = Set(page.messages.compactMap { message -> TurnID? in
+                    guard let turnID = message.turnID?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                          !turnID.isEmpty else { return nil }
+                    return turnID
+                })
+                if !deliveredIDs.isEmpty || !startedTurnIDs.isEmpty {
                     _ = mutateAndPersistQueuedTurns {
-                        guard let queue = queuedRunningTurnsBySessionID[sessionID] else { return }
-                        setQueuedTurns(
-                            queue.filter { !deliveredIDs.contains($0.clientMessageID) },
-                            sessionID: sessionID
-                        )
+                        guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
+                        queue.removeAll { deliveredIDs.contains($0.clientMessageID) }
+                        for index in queue.indices
+                        where queue[index].dispatchState == .waiting
+                            && queue[index].waitsForAcceptedTurnStart == true
+                            && queue[index].expectedTurnID.map(startedTurnIDs.contains) == true {
+                            queue[index].waitsForAcceptedTurnStart = nil
+                            queue[index].blockedCompletionID = nil
+                        }
+                        setQueuedTurns(queue, sessionID: sessionID)
                     }
                 }
+                reconcilePendingPermissionTurnBoundaries(
+                    sessionID: sessionID,
+                    historyMessages: page.messages
+                )
             }
 
             guard let authoritativeSession,

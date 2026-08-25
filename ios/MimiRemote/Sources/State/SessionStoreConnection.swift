@@ -850,6 +850,10 @@ extension SessionStore {
         applyEventReducerOutput(output)
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
+            _ = satisfyPendingPermissionTurnBoundary(
+                sessionID: id,
+                clientMessageID: metadata.clientMessageID
+            )
             if let turnID = metadata.turnID {
                 queuedTurnAwaitingStartSessionIDs.remove(id)
                 queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
@@ -864,6 +868,7 @@ extension SessionStore {
                     }
                     queuedRunningTurnsBySessionID[id] = queue
                 }
+                stopQueuedSessionMonitoringIfIdle(sessionID: id)
             }
         }
         if case .turnCompleted(let metadata) = event {
@@ -924,6 +929,7 @@ extension SessionStore {
                         queuedTurnBlockedCompletionIDBySessionID[id] = completedTurnID
                     }
                     dispatchNextQueuedRunningTurnIfIdle(sessionID: id)
+                    stopQueuedSessionMonitoringIfIdle(sessionID: id)
                 }
             }
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: id)
@@ -2465,6 +2471,9 @@ extension SessionStore {
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         queuedRunningTurnsBySessionID.removeAll()
+        pendingPermissionTurnBoundariesBySessionID.removeAll()
+        permissionTurnRetryRequirementsByClientMessageID.removeAll()
+        latestSatisfiedPermissionTurnBoundary = nil
         queuedTurnStartedIDBySessionID.removeAll()
         queuedTurnAwaitingStartSessionIDs.removeAll()
         queuedTurnBlockedCompletionIDBySessionID.removeAll()

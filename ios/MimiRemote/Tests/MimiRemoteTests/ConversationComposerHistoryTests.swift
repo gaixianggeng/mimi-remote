@@ -155,12 +155,7 @@ extension ConversationDataFlowTests {
 
     func testComposerPermissionChangeRequiresQueuedTurnBeforeGuidanceCanResume() {
         var composerState = ComposerState()
-        let previousSelection = composerState.permissionSelectionSnapshot()
-        composerState.applyPermissionMode(.readOnly)
-        composerState.markPermissionSelectionRequiresNewTurnIfChanged(
-            from: previousSelection,
-            sessionIsRunning: true
-        )
+        composerState.applyPermissionMode(.readOnly, sessionIsRunning: true)
 
         XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
         XCTAssertEqual(
@@ -169,8 +164,8 @@ extension ConversationDataFlowTests {
             "turn/steer 不能携带下一回合权限，必须排队到新的 turn/start"
         )
 
-        let submittedSelection = composerState.permissionSelectionSnapshot()
-        composerState.markPermissionSelectionSubmitted(submittedSelection)
+        let startedSelection = composerState.permissionSelectionSnapshot()
+        composerState.markPermissionSelectionApplied(startedSelection)
 
         XCTAssertFalse(composerState.permissionSelectionRequiresNewTurn)
         XCTAssertEqual(
@@ -179,14 +174,14 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testLatePermissionSubmitAckDoesNotClearNewerSelection() {
+    func testLatePermissionTurnStartDoesNotClearNewerSelection() {
         var composerState = ComposerState()
         composerState.markPermissionSelectionRequiresNewTurn()
-        let submittedSelection = composerState.permissionSelectionSnapshot()
+        let startedSelection = composerState.permissionSelectionSnapshot()
 
         composerState.applyPermissionMode(.readOnly)
         composerState.markPermissionSelectionRequiresNewTurn()
-        composerState.markPermissionSelectionSubmitted(submittedSelection)
+        composerState.markPermissionSelectionApplied(startedSelection)
 
         XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
         XCTAssertEqual(composerState.permissionMode, .readOnly)
