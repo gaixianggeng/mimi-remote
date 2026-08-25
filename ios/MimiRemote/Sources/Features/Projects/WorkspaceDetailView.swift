@@ -17,6 +17,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.calendar) private var calendar
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
@@ -163,6 +166,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
+        let branchValues = recentSessions.map(\.gitBranchName)
         let showsSectionHeaders = populatedGroups.count > 1
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
@@ -180,6 +184,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionGroupBody(
                         group,
                         sessions: sessions,
+                        branchValues: branchValues,
                         showsLoadMore: group == populatedGroups.last,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -222,6 +227,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
+        branchValues: [String?],
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -247,6 +253,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 if !currentSessions.isEmpty {
                     sessionRowsStack(
                         sessions: currentSessions,
+                        branchValues: branchValues,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -257,6 +264,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
                 sessionRowsStack(
                     sessions: staleSessions,
+                    branchValues: branchValues,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
                     tokens: tokens
@@ -265,6 +273,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         } else {
             sessionRowsStack(
                 sessions: sessions,
+                branchValues: branchValues,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
                 tokens: tokens
@@ -280,6 +289,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 分组改由小节标题和留白承担，与会话 tab 完全同构。
     private func sessionRowsStack(
         sessions: [AgentSession],
+        branchValues: [String?],
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -301,7 +311,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                         isUnread: unreadHistorySessionIDs.contains(session.id),
                         density: rowDensity,
-                        drawsDivider: index != sessions.index(before: sessions.endIndex)
+                        branch: SessionListPresentation.branchToDisplay(
+                            session.gitBranchName,
+                            among: branchValues
+                        ),
+                        drawsDivider: index != sessions.index(before: sessions.endIndex),
+                        currentDate: currentDate,
+                        calendar: calendar,
+                        locale: locale,
+                        timeZone: timeZone
                     )
                     .contentShape(Rectangle())
                 }

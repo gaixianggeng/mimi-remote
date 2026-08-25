@@ -1227,6 +1227,10 @@ struct SessionIndexRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.calendar) private var environmentCalendar
+    @Environment(\.locale) private var environmentLocale
+    @Environment(\.timeZone) private var environmentTimeZone
 
     let session: AgentSession
     let foregroundActivity: SessionForegroundActivity?
@@ -1240,16 +1244,33 @@ struct SessionIndexRow: View {
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
     var projectIcon: WorkspaceProjectIconContent? = nil
+    /// 工作区在多分支时注入当前行的 Git 分支；普通会话列表保持 nil，继续显示原身份元数据。
+    var branch: String? = nil
     var showsProjectAnchor = false
     var reservesProjectAnchor = false
     var drawsDivider = false
     var drawsSelectionBackground = true
     var showsNeutralHistoryStatus = false
+    /// 默认读取系统时钟；工作区和确定性快照可注入固定时间，避免行内时间漂移。
+    var currentDate: () -> Date = Date.init
+    var calendar: Calendar? = nil
+    var locale: Locale? = nil
+    var timeZone: TimeZone? = nil
 
     static func metadataDirectoryText(for session: AgentSession) -> String {
         // 同一项目可能同时存在多个 worktree；优先展示真实工作目录，
         // 只有旧数据缺少 dir 时才回退项目名，避免列表行失去区分度。
         session.dir.isEmpty ? session.project : session.dir
+    }
+
+    static func compactSupplementaryPreviewLineLimit(
+        hasSearchSnippet: Bool,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> Int? {
+        if dynamicTypeSize.isAccessibilitySize {
+            return nil
+        }
+        return hasSearchSnippet ? 2 : 1
     }
 
     var body: some View {
@@ -1295,7 +1316,7 @@ struct SessionIndexRow: View {
 
     private func compactContent(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .center, spacing: 7) {
+            HStack(alignment: dynamicTypeSize.isAccessibilitySize ? .top : .center, spacing: 7) {
                 titleContent(tokens: tokens, compactPinnedBadge: true)
                 Spacer(minLength: 8)
                 stableStateIcons(tokens: tokens)
@@ -1307,16 +1328,22 @@ struct SessionIndexRow: View {
 
             HStack(spacing: 6) {
                 compactProjectAnchor(tokens: tokens)
-                directoryText(tokens: tokens)
+                if let branch {
+                    branchIdentityText(branch, tokens: tokens, compact: true)
+                } else {
+                    directoryText(tokens: tokens)
+                }
                 Spacer(minLength: 8)
                 timestamp(tokens: tokens)
             }
 
             if let searchSnippet, !searchSnippet.isEmpty {
-                Text(searchSnippet)
-                    .font(themeStore.uiFont(size: 11, weight: .regular))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(2)
+                supplementaryPreviewText(searchSnippet, tokens: tokens, hasSearchSnippet: true)
+            } else if dynamicTypeSize.isAccessibilitySize {
+                let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
+                if !preview.isEmpty {
+                    supplementaryPreviewText(preview, tokens: tokens, hasSearchSnippet: false)
+                }
             }
         }
     }
@@ -1339,18 +1366,23 @@ struct SessionIndexRow: View {
                         Text(preview)
                             .font(themeStore.uiFont(size: 13, weight: .regular))
                             .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                             .truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 10) {
-                    Text(session.project)
-                        .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if let branch {
+                        branchIdentityText(branch, tokens: tokens, compact: false)
+                    } else {
+                        Text(session.project)
+                            .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
+                            .foregroundStyle(tokens.tertiaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .truncationMode(.middle)
+                    }
                     stableStateIcons(tokens: tokens)
                     Spacer(minLength: 8)
                     animatedStatusLabel(tokens: tokens)
@@ -1384,9 +1416,10 @@ struct SessionIndexRow: View {
             Text(visibleTitle)
                 .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
                 .foregroundStyle(tokens.primaryText)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
+                .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
             Spacer(minLength: 6)
 
@@ -1410,9 +1443,10 @@ struct SessionIndexRow: View {
         Text(visibleTitle)
             .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(tokens.primaryText)
-            .lineLimit(1)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             .truncationMode(.tail)
             .layoutPriority(1)
+            .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
     }
 
     @ViewBuilder
@@ -1457,7 +1491,7 @@ struct SessionIndexRow: View {
         Text(SessionListPresentation.directoryDisplayText(for: session))
             .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
             .foregroundStyle(tokens.tertiaryText)
-            .lineLimit(1)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
             .truncationMode(.tail)
             .accessibilityLabel(
                 L10n.format(
@@ -1466,6 +1500,46 @@ struct SessionIndexRow: View {
                 )
             )
             .layoutPriority(1)
+    }
+
+    private func branchIdentityText(
+        _ branch: String,
+        tokens: ThemeTokens,
+        compact: Bool
+    ) -> some View {
+        HStack(spacing: compact ? 4 : 5) {
+            SessionBranchIcon(size: compact ? 10 : 11)
+                .foregroundStyle(tokens.tertiaryText)
+                .accessibilityHidden(true)
+
+            Text(branch)
+                .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
+                .foregroundStyle(tokens.tertiaryText)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+        }
+        .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
+    }
+
+    private func supplementaryPreviewText(
+        _ text: String,
+        tokens: ThemeTokens,
+        hasSearchSnippet: Bool
+    ) -> some View {
+        Text(text)
+            .font(themeStore.uiFont(size: 11, weight: .regular))
+            .foregroundStyle(tokens.secondaryText)
+            .lineLimit(
+                Self.compactSupplementaryPreviewLineLimit(
+                    hasSearchSnippet: hasSearchSnippet,
+                    dynamicTypeSize: dynamicTypeSize
+                )
+            )
+            .truncationMode(.tail)
+            .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
     }
 
     @ViewBuilder
@@ -1543,29 +1617,32 @@ struct SessionIndexRow: View {
     }
 
     private var timestampText: String {
-        guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
-        if Calendar.current.isDateInToday(date) {
-            return Self.timeFormatter.string(from: date)
-        }
-        if Calendar.current.isDateInYesterday(date) {
-            return L10n.text("ui.yesterday")
-        }
-        return Self.dateFormatter.string(from: date)
+        SessionListPresentation.timestampText(
+            for: session.recencyAt ?? session.updatedAt ?? session.createdAt,
+            now: currentDate(),
+            calendar: resolvedCalendar,
+            locale: resolvedLocale,
+            timeZone: resolvedTimeZone
+        )
     }
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Hm")
-        return formatter
-    }()
+    private var resolvedCalendar: Calendar {
+        var value = calendar ?? environmentCalendar
+        if let timeZone {
+            value.timeZone = timeZone
+        } else if calendar == nil {
+            value.timeZone = environmentTimeZone
+        }
+        return value
+    }
 
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter
-    }()
+    private var resolvedLocale: Locale {
+        locale ?? environmentLocale
+    }
+
+    private var resolvedTimeZone: TimeZone {
+        timeZone ?? resolvedCalendar.timeZone
+    }
 }
 
 private enum SessionReviewScope: String, CaseIterable, Identifiable {

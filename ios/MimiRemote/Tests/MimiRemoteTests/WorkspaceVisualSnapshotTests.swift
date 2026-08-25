@@ -39,11 +39,24 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         )
     }
 
+    func testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview() async throws {
+        try await renderWorkspaceSnapshot(
+            width: 744,
+            height: 1_133,
+            hasBottomTabBar: false,
+            testName: "testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview",
+            dynamicTypeSize: .accessibility5,
+            precision: 1
+        )
+    }
+
     private func renderWorkspaceSnapshot(
         width: CGFloat,
         height: CGFloat,
         hasBottomTabBar: Bool,
-        testName: String
+        testName: String,
+        dynamicTypeSize: DynamicTypeSize = .large,
+        precision: Float = 0.98
     ) async throws {
         let previousLanguage = UserDefaults.standard.string(forKey: AppLanguage.preferenceKey)
         UserDefaults.standard.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
@@ -81,6 +94,11 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 path: "/Users/gaixiaotongxue/code/app-server-lab"
             )
         ]
+        let snapshotLocale = AppLanguage.simplifiedChinese.locale
+        let snapshotTimeZone = TimeZone(identifier: "Asia/Shanghai")!
+        var snapshotCalendar = Calendar(identifier: .gregorian)
+        snapshotCalendar.locale = snapshotLocale
+        snapshotCalendar.timeZone = snapshotTimeZone
         let referenceDate = Date(timeIntervalSince1970: 1_785_105_600)
         let allSessions = [
             AgentSession(
@@ -88,17 +106,25 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 projectID: projects[0].id,
                 project: projects[0].name,
                 dir: projects[0].path,
-                title: "优化 iPad mini 工作区布局",
+                title: dynamicTypeSize.isAccessibilitySize
+                    ? "这是一个用于验证辅助功能字号下标题可以自然换行并完整展示的超长工作区会话标题，其中包含不能被截断的第二行内容"
+                    : "优化 iPad mini 工作区布局",
                 status: SessionStatus.running.rawValue,
                 source: "codex",
                 runtimeProvider: "codex",
                 resumeID: "workspace-running",
                 createdAt: referenceDate.addingTimeInterval(-3_600),
                 updatedAt: referenceDate.addingTimeInterval(-90),
-                preview: "调整项目卡片、Emoji 和 Git 摘要层级。",
+                preview: dynamicTypeSize.isAccessibilitySize
+                    ? "摘要保留：这个更长的摘要用于验证没有 searchSnippet 时仍然显示完整的独立预览文本，并且辅助功能字号不会把摘要固定裁成一行。"
+                    : "调整项目卡片、Emoji 和 Git 摘要层级。",
                 activeTurnID: "turn-workspace-running",
                 context: SessionContextSnapshot(
-                    git: SessionContextGitInfo(branch: "feature/workspace-recent-session-layout")
+                    git: SessionContextGitInfo(
+                        branch: dynamicTypeSize.isAccessibilitySize
+                            ? "feature/workspace/accessibility-long-branch-identity"
+                            : "feature/workspace-recent-session-layout"
+                    )
                 )
             ),
             AgentSession(
@@ -253,13 +279,17 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         .environment(\.workbenchHasCompactTabBar, true)
         .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
+        .environment(\.calendar, snapshotCalendar)
+        .environment(\.locale, snapshotLocale)
+        .environment(\.timeZone, snapshotTimeZone)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: width, height: height)
 
         if let failure = verifySnapshot(
             of: view,
             as: .image(
                 drawHierarchyInKeyWindow: true,
-                precision: 0.98,
+                precision: precision,
                 layout: .fixed(width: width, height: height)
             ),
             snapshotDirectory: referenceSnapshotDirectory,

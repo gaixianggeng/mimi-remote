@@ -205,32 +205,45 @@ enum SessionListPresentation {
         let normalizedTitle = displayTitle(title)
         guard !normalizedTitle.isEmpty else { return normalizedPreview }
 
+        // 完全相同不需要再经过“词法前缀”判断；短标题也应该稳定去重。
+        if normalizedPreview == normalizedTitle {
+            return ""
+        }
+
         // 标题本身可能已经是截断摘要，末尾省略号不参与前缀比较。
         let titleStem = strippingTrailingEllipsis(normalizedTitle)
-        // 前缀太短时任何两句话都可能"撞头"，那不是重复，是巧合。
-        guard titleStem.count >= redundantPreviewMinimumStem else { return normalizedPreview }
 
-        if normalizedPreview.hasPrefix(titleStem) {
-            let remainder = trimmingLeadingSentenceBoundary(
-                String(normalizedPreview.dropFirst(titleStem.count))
-            )
+        if !titleStem.isEmpty, normalizedPreview.hasPrefix(titleStem) {
+            let rawRemainder = String(normalizedPreview.dropFirst(titleStem.count))
+            // 只有标题明确以省略号结束，或后续从空白/句读边界开始，才把标题当作
+            // preview 的重复前缀。`Swift` / `SwiftUI` 这类普通词法前缀必须保留。
+            guard rawRemainder.isEmpty
+                || hasExplicitTrailingEllipsis(normalizedTitle)
+                || startsWithSentenceBoundary(rawRemainder) else {
+                return normalizedPreview
+            }
+
+            let remainder = trimmingLeadingSentenceBoundary(rawRemainder)
             // 只剩一两个字或纯标点时第二行没有信息量，留空比留半句更干净。
             return remainder.count >= 2 ? remainder : ""
         }
 
         // 反向包含：preview 是更早的截断版本，标题反而更长，同样是重复。
-        if titleStem.hasPrefix(strippingTrailingEllipsis(normalizedPreview)) {
-            return ""
+        let previewStem = strippingTrailingEllipsis(normalizedPreview)
+        if !previewStem.isEmpty, titleStem.hasPrefix(previewStem) {
+            let rawRemainder = String(titleStem.dropFirst(previewStem.count))
+            // 反向也必须检查边界：`修复` 不是 `修复输入区布局` 的独立前缀。
+            if hasExplicitTrailingEllipsis(normalizedPreview) || startsWithSentenceBoundary(rawRemainder) {
+                return ""
+            }
         }
 
         return normalizedPreview
     }
 
-    private static let redundantPreviewMinimumStem = 4
-
     /// 句读边界。截掉标题前缀后残留的这些字符属于上一句，不该成为第二行的开头。
     private static let sentenceBoundaryCharacters: Set<Character> = [
-        " ", "\u{00A0}", "。", "．", ".", "，", ",", "、", "；", ";", "：", ":", "!", "！", "?", "？", "—", "-",
+        " ", "\u{00A0}", "。", "．", ".", "\u{FF0C}", ",", "、", "\u{FF1B}", ";", "：", ":", "!", "！", "?", "？", "—", "-",
     ]
 
     private static func strippingTrailingEllipsis(_ value: String) -> String {
@@ -247,6 +260,134 @@ enum SessionListPresentation {
             result = result.dropFirst()
         }
         return String(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func startsWithSentenceBoundary(_ value: String) -> Bool {
+        guard let first = value.first else { return false }
+        return sentenceBoundaryCharacters.contains(first)
+    }
+
+    private static func hasExplicitTrailingEllipsis(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasSuffix("\u{2026}")
+            || trimmed.hasSuffix("...")
+            || trimmed.hasSuffix("\u{3002}\u{3002}\u{3002}")
+    }
+
+    /// 工作区只有在存在多个有效分支时才需要逐行重复展示分支身份。
+    static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
+        let displayBranch = normalizedBranch(branch)
+        let validBranches = Set(branches.compactMap { normalizedBranch($0) })
+        guard validBranches.count > 1 else { return nil }
+        return displayBranch
+    }
+
+    static func normalizedBranch(_ branch: String?) -> String? {
+        guard let branch else { return nil }
+        let normalized = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// 会话行时间使用调用方注入的当前时刻，工作区快照和生产列表共享同一规则。
+    static func timestampText(
+        for date: Date?,
+        now: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent,
+        timeZone: TimeZone? = nil
+    ) -> String {
+        guard let date else { return "" }
+
+        let resolvedTimeZone = timeZone ?? calendar.timeZone
+        var resolvedCalendar = calendar
+        resolvedCalendar.timeZone = resolvedTimeZone
+
+        switch dateBucket(for: date, now: now, calendar: resolvedCalendar) {
+        case .today:
+            return formattedDate(
+                date,
+                calendar: resolvedCalendar,
+                locale: locale,
+                timeZone: resolvedTimeZone,
+                template: "Hm"
+            )
+        case .yesterday:
+            return L10n.text("ui.yesterday")
+        case .thisWeek, .thisMonth, .earlier:
+            return formattedDate(
+                date,
+                calendar: resolvedCalendar,
+                locale: locale,
+                timeZone: resolvedTimeZone,
+                template: "Md"
+            )
+        }
+    }
+
+    private static func formattedDate(
+        _ date: Date,
+        calendar: Calendar,
+        locale: Locale,
+        timeZone: TimeZone,
+        template: String
+    ) -> String {
+        let key = TimestampFormatterKey(
+            calendarIdentifier: String(describing: calendar.identifier),
+            calendarLocaleIdentifier: calendar.locale?.identifier ?? "",
+            localeIdentifier: locale.identifier,
+            timeZoneIdentifier: timeZone.identifier,
+            timeZoneSecondsFromGMT: timeZone.secondsFromGMT(),
+            template: template
+        )
+        return timestampFormatterCache.string(
+            from: date,
+            key: key,
+            calendar: calendar,
+            locale: locale,
+            timeZone: timeZone
+        )
+    }
+
+    private struct TimestampFormatterKey: Hashable {
+        let calendarIdentifier: String
+        let calendarLocaleIdentifier: String
+        let localeIdentifier: String
+        let timeZoneIdentifier: String
+        let timeZoneSecondsFromGMT: Int
+        let template: String
+    }
+
+    /// DateFormatter 是可变引用类型；缓存和实际格式化共用同一把锁，避免并发读取同一实例。
+    private static let timestampFormatterCache = TimestampFormatterCache()
+
+    private final class TimestampFormatterCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var formatters: [TimestampFormatterKey: DateFormatter] = [:]
+
+        func string(
+            from date: Date,
+            key: TimestampFormatterKey,
+            calendar: Calendar,
+            locale: Locale,
+            timeZone: TimeZone
+        ) -> String {
+            lock.lock()
+            defer { lock.unlock() }
+
+            let formatter: DateFormatter
+            if let cached = formatters[key] {
+                formatter = cached
+            } else {
+                let configured = DateFormatter()
+                configured.calendar = calendar
+                configured.locale = locale
+                configured.timeZone = timeZone
+                configured.setLocalizedDateFormatFromTemplate(key.template)
+                formatters[key] = configured
+                formatter = configured
+            }
+            return formatter.string(from: date)
+        }
     }
 
     /// 优先展示 dir 的末段；dir 为空时回退 project。路径无法拆出末段时返回原选择值。

@@ -207,6 +207,115 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: missing), "")
     }
 
+    func testDistinctPreviewKeepsOrdinaryWordPrefixesInBothDirections() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "Swift",
+                preview: "SwiftUI navigation bug"
+            ),
+            "SwiftUI navigation bug"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话列表需要优化"
+            ),
+            "工作区会话列表需要优化"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "修复输入区布局",
+                preview: "修复"
+            ),
+            "修复"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话列表需要优化",
+                preview: "工作区会话"
+            ),
+            "工作区会话"
+        )
+
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话：列表需要优化"
+            ),
+            "列表需要优化"
+        )
+    }
+
+    func testWorkspaceBranchIdentityOnlyShowsWhenMultipleValidBranchesExist() {
+        XCTAssertNil(SessionListPresentation.branchToDisplay("main", among: ["main", " main ", nil, " "]))
+        XCTAssertEqual(
+            SessionListPresentation.branchToDisplay(" feature/login ", among: ["main", " feature/login ", nil]),
+            "feature/login"
+        )
+        XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
+    }
+
+    func testTimestampTextUsesInjectedNowAndCalendar() {
+        let calendar = makeCalendar(timeZone: "Asia/Shanghai")
+        let now = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 12, minute: 0)
+        let today = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 9, minute: 30)
+        let yesterday = makeDate(calendar, year: 2025, month: 4, day: 8, hour: 23, minute: 59)
+        let earlier = makeDate(calendar, year: 2025, month: 3, day: 1, hour: 10)
+
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: today,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "09:30"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(for: yesterday, now: now, calendar: calendar),
+            L10n.text("ui.yesterday")
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: earlier,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "3/1"
+        )
+        XCTAssertEqual(SessionListPresentation.timestampText(for: nil, now: now, calendar: calendar), "")
+    }
+
+    func testCompactSupplementaryPreviewLineLimitPrioritizesSearchSnippet() {
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .large
+            ),
+            2
+        )
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .large
+            ),
+            1
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+    }
+
     func testSidebarSectionsUsePriorityOrderAndStableDeduplication() {
         let approval = ApprovalSummary(
             id: "approval",
