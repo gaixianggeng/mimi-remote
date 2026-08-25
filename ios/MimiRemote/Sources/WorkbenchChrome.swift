@@ -1146,7 +1146,6 @@ struct RelatedSessionConversationView: View {
     let relation: SessionContextSubagent
     let parentSessionID: SessionID
     let showsCloseButton: Bool
-    var shouldHideTabBar = true
     let onClose: () -> Void
 
     @State private var isLoading = true
@@ -1217,7 +1216,6 @@ struct RelatedSessionConversationView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(shouldHideTabBar ? .hidden : .visible, for: .tabBar)
         .accessibilityIdentifier("subagent.conversation.\(relation.id)")
         .task(id: relation.id) {
             isLoading = true
@@ -1405,11 +1403,6 @@ enum WorkbenchPageLayout {
         isPhone || (isHorizontallyCompact && !isIOS26OrLater)
     }
 
-    static func shouldHideSessionDetailTabBar(hasBottomTabBar: Bool) -> Bool {
-        // iPadOS 26 的顶部 Tab 栏一旦在详情页隐藏，会改变返回目标的顶部布局基准；
-        // 只隐藏底部 Tab 栏，既保留正文空间，也让顶部 Tab 的返回路径保持同一锚点。
-        hasBottomTabBar
-    }
 }
 
 private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {

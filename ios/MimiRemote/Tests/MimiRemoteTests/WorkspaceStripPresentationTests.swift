@@ -47,13 +47,20 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
-    func testSessionAndSubagentDetailsOnlyHideBottomTabBar() {
-        XCTAssertTrue(
-            WorkbenchPageLayout.shouldHideSessionDetailTabBar(hasBottomTabBar: true)
+    func testCompactNavigationReturnCommitsRootRouteAndPathTogether() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "session-1", source: .workspaces)
         )
-        XCTAssertFalse(
-            WorkbenchPageLayout.shouldHideSessionDetailTabBar(hasBottomTabBar: false)
+
+        _ = state.reduce(
+            .compactPathChanged(tab: .workspaces, path: []),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-1"
         )
+
+        XCTAssertEqual(state.route, .workspaces)
+        XCTAssertEqual(state.selection, .workspaces)
+        XCTAssertEqual(state.compactWorkspacePath, [])
     }
 
     func testBottomTabBarAlwaysKeepsRuntimeMenuAndInlineNewSessionEntry() {
