@@ -479,18 +479,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
         let showsStatus = shouldShowRecentSessionStatus(status: status)
 
-        let railState = WorkspaceSessionRailState.resolve(
-            status: status,
-            isRunning: session.isRunning
-        )
+        let railState = WorkspaceSessionRailState.resolve(status: status)
 
         let preview = SessionListPresentation.previewDisplayText(for: session)
         let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
             session.gitBranchName,
             among: branchValues
         )
-        // 运行中的状态导轨是纯视觉提示并对辅助功能隐藏；把状态补进合并元素的 value，
-        // VoiceOver 仍能在不增加第二个可聚焦元素的情况下读到「运行中」。
+        // 普通运行不再画状态导轨，但仍把状态补进合并元素的 value，
+        // VoiceOver 可以读到「运行中」，同时等待和失败继续保留明确图标。
         let accessibilityValueParts = [
             session.isRunning && !showsStatus ? L10n.text("ui.running") : nil,
             unreadHistorySessionIDs.contains(session.id) ? L10n.text("ui.unread_result") : nil
@@ -584,8 +581,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityValue(accessibilityValueParts.joined(separator: ", "))
     }
 
-    /// 状态点脱离标题行独立成列，是为了让它落在固定的横坐标上。
-    /// 一列圆点对齐在同一条竖轴上，扫一眼就知道哪几条在跑、哪几条卡住了。
+    /// 异常状态脱离标题行独立成列，让等待和失败图标落在固定横坐标上。
     @ViewBuilder
     private func sessionStateRail(
         _ state: WorkspaceSessionRailState?,
@@ -602,10 +598,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(themeStore.uiFont(size: 12, weight: .semibold))
                         .foregroundStyle(WorkspaceSessionRailState.waiting.color(tokens: tokens))
-                case .running:
-                    Circle()
-                        .fill(WorkspaceSessionRailState.running.color(tokens: tokens))
-                        .frame(width: 7, height: 7)
                 }
             } else {
                 Color.clear
@@ -616,11 +608,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     }
 
     private func shouldShowRecentSessionStatus(status: AgentSessionDisplayStatus) -> Bool {
-        // 正常运行由绿色状态点表达；只有等待、警告、错误才占用右侧文案空间。
+        // 正常运行由所属分组表达；只有等待、警告、错误才占用右侧文案空间。
         status.tone == .warning || status.tone == .danger
     }
 
-    /// 状态文字的颜色跟左端圆点保持同一套语义：等待用户橙、失败红、运行中绿。
+    /// 状态文字和左端异常图标保持同一套语义：等待用户橙、失败红。
     private func recentSessionStatusColor(
         for tone: AgentSessionStatusTone,
         tokens: ThemeTokens

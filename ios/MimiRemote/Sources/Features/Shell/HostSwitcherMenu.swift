@@ -5,6 +5,39 @@ enum HostSwitcherPresentation {
     case toolbar
 }
 
+/// 顶栏空间很小，健康连接不再占用一枚“成功”圆点；只有进行中或异常状态才显示徽标。
+/// 视觉形态与连接状态分开解析，便于测试每种状态而不依赖 SwiftUI 视图检查。
+enum HostToolbarConnectionBadge: Equatable {
+    case hidden
+    case progress
+    case offline
+    case failed
+    case unknown
+
+    static func resolve(
+        isSwitching: Bool,
+        isNetworkUnavailable: Bool,
+        connectionStatus: ConnectionStatus
+    ) -> HostToolbarConnectionBadge {
+        if isSwitching {
+            return .progress
+        }
+        if isNetworkUnavailable {
+            return .offline
+        }
+        switch connectionStatus {
+        case .connected:
+            return .hidden
+        case .testing:
+            return .progress
+        case .failed:
+            return .failed
+        case .idle:
+            return .unknown
+        }
+    }
+}
+
 struct HostSwitcherMenu: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
@@ -158,19 +191,15 @@ struct HostSwitcherMenu: View {
                 HostPlatformGlyph(kind: currentHostIconKind, size: 22)
                     .frame(width: 22, height: 22)
 
-                if isSwitching {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .offset(x: 4, y: 4)
-                } else {
-                    Circle()
-                        .fill(currentConnectionColor)
-                        .frame(width: 6, height: 6)
-                        // 徽标同步外移，避免放大后的品牌图形与连接状态挤在一起。
-                        .offset(x: 4, y: 4)
-                }
+                toolbarConnectionBadge(
+                    HostToolbarConnectionBadge.resolve(
+                        isSwitching: isSwitching,
+                        isNetworkUnavailable: sessionStore.isNetworkUnavailable,
+                        connectionStatus: appStore.connectionStatus
+                    )
+                )
             }
-            // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
+            // 健康连接是页面正常工作的基线，不再叠一枚容易与任务状态混淆的绿点。
             .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
             // 磨砂圆交给调用方：放在导航栏里必须用不参与布局的
             // `workbenchToolbarChromeCircle`，放在自由浮层里才能用带真实尺寸的
@@ -181,6 +210,45 @@ struct HostSwitcherMenu: View {
                 connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
             )))
         }
+    }
+
+    @ViewBuilder
+    private func toolbarConnectionBadge(_ badge: HostToolbarConnectionBadge) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        switch badge {
+        case .hidden:
+            EmptyView()
+        case .progress:
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tokens.primaryAction)
+                .frame(width: 14, height: 14)
+                .background(tokens.background, in: Circle())
+                .offset(x: 5, y: 5)
+                .accessibilityHidden(true)
+        case .offline:
+            toolbarStatusSymbol("wifi.slash", color: tokens.warning, tokens: tokens)
+        case .failed:
+            toolbarStatusSymbol("exclamationmark.circle.fill", color: .red, tokens: tokens)
+        case .unknown:
+            toolbarStatusSymbol("questionmark.circle", color: .secondary, tokens: tokens)
+        }
+    }
+
+    private func toolbarStatusSymbol(
+        _ systemName: String,
+        color: Color,
+        tokens: ThemeTokens
+    ) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(color)
+            .frame(width: 14, height: 14)
+            .background(tokens.background, in: Circle())
+            // 徽标外移，避免覆盖平台图形；触控范围仍由外层 44pt 按钮提供。
+            .offset(x: 5, y: 5)
+            .accessibilityHidden(true)
     }
 
     private var currentHostIconKind: HostPlatformIconKind {

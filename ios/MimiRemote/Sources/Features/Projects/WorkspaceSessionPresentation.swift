@@ -157,24 +157,27 @@ enum WorkspaceSessionGroup: String, CaseIterable {
     }
 }
 
-/// 会话行左槽只表达执行状态，未读改由右端紫点承担，避免同一颗圆点既像状态又像项目色。
-enum WorkspaceSessionRailState {
+/// 工作区徽标表达聚合数量。个位数保持圆形，十个及以上封顶为 `9+`，避免撑大头像。
+enum WorkspaceRunningCountBadge {
+    static func displayText(for count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count > 9 ? "9+" : String(count)
+    }
+}
+
+/// 会话行左槽只表达需要处理的异常状态。正常运行已经由分组标题表达，不再重复画绿点。
+enum WorkspaceSessionRailState: Equatable {
     case failed
     case waiting
-    case running
 
-    static func resolve(
-        status: AgentSessionDisplayStatus,
-        isRunning: Bool
-    ) -> WorkspaceSessionRailState? {
+    static func resolve(status: AgentSessionDisplayStatus) -> WorkspaceSessionRailState? {
         switch status.tone {
         case .danger:
             return .failed
         case .warning:
             return .waiting
         case .active, .complete, .neutral:
-            // 普通历史会话不点圆点：空槽本身表示「不需要你」。
-            return isRunning ? .running : nil
+            return nil
         }
     }
 
@@ -184,8 +187,6 @@ enum WorkspaceSessionRailState {
             return .red
         case .waiting:
             return tokens.warning
-        case .running:
-            return tokens.success
         }
     }
 }
