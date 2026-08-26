@@ -98,17 +98,85 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .classicAlbums).isEmpty)
     }
 
-    func testClassicCharacterPoolKeepsProductOrderAndRepresentative() {
-        let classicIcons = WorkspaceAppearanceStore.characters(for: .classicCharacters)
+    func testCuratedCharacterPoolsKeepDesignedPopularityOrder() {
+        let expectedOrders: [(WorkspaceIconStyle, [String])] = [
+            (
+                .threeKingdoms,
+                [
+                    "three-guan-yu", "three-zhuge-liang", "three-cao-cao", "three-liu-bei",
+                    "three-zhao-yun", "three-zhang-fei", "three-lu-bu", "three-diaochan",
+                    "three-sima-yi", "three-sun-quan"
+                ]
+            ),
+            (
+                .classicCharacters,
+                [
+                    "classic-goku", "classic-vegeta", "classic-piccolo",
+                    "classic-future-trunks", "classic-android-18", "classic-perfect-cell",
+                    "classic-frieza", "classic-krillin", "classic-majin-buu",
+                    "classic-master-roshi"
+                ]
+            ),
+            (
+                .redChamber,
+                [
+                    "red-lin-daiyu", "red-jia-baoyu", "red-xue-baochai", "red-wang-xifeng",
+                    "red-shi-xiangyun", "red-grandmother-jia", "red-qingwen",
+                    "red-jia-tanchun", "red-miaoyu", "red-xiangling"
+                ]
+            ),
+            (
+                .greekMythology,
+                [
+                    "greek-zeus", "greek-athena", "greek-poseidon", "greek-hades",
+                    "greek-aphrodite", "greek-apollo", "greek-artemis", "greek-hera",
+                    "greek-hermes", "greek-ares"
+                ]
+            ),
+            (
+                .sherlockHolmes,
+                [
+                    "sherlock-holmes", "sherlock-watson", "sherlock-moriarty",
+                    "sherlock-irene-adler", "sherlock-mycroft", "sherlock-lestrade",
+                    "sherlock-hudson", "sherlock-morstan", "sherlock-moran",
+                    "sherlock-gregson"
+                ]
+            ),
+            (
+                .aliceWonderland,
+                [
+                    "alice-alice", "alice-cheshire-cat", "alice-mad-hatter",
+                    "alice-white-rabbit", "alice-queen-of-hearts", "alice-caterpillar",
+                    "alice-march-hare", "alice-dormouse", "alice-king-of-hearts",
+                    "alice-duchess"
+                ]
+            ),
+            (
+                .onePiece,
+                [
+                    "one-piece-luffy", "one-piece-zoro", "one-piece-sanji", "one-piece-nami",
+                    "one-piece-robin", "one-piece-chopper", "one-piece-usopp",
+                    "one-piece-brook", "one-piece-jinbe", "one-piece-franky"
+                ]
+            ),
+            (
+                .naruto,
+                [
+                    "naruto-naruto", "naruto-sasuke", "naruto-kakashi", "naruto-itachi",
+                    "naruto-sakura", "naruto-hinata", "naruto-jiraiya", "naruto-gaara",
+                    "naruto-shikamaru", "naruto-tsunade"
+                ]
+            )
+        ]
 
-        XCTAssertEqual(
-            classicIcons.map(\.id),
-            [
-                "classic-goku", "classic-vegeta", "classic-piccolo", "classic-master-roshi",
-                "classic-krillin", "classic-frieza", "classic-majin-buu",
-                "classic-future-trunks", "classic-android-18", "classic-perfect-cell"
-            ]
-        )
+        for (style, expectedOrder) in expectedOrders {
+            XCTAssertEqual(
+                WorkspaceAppearanceStore.characters(for: style).map(\.id),
+                expectedOrder,
+                "\(style.rawValue) 的角色顺序不应意外变化"
+            )
+        }
+
         XCTAssertEqual(
             WorkspaceIconStyle.classicCharacters.representativeAssetName,
             "WorkspaceCharacterClassicGoku"

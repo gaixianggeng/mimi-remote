@@ -309,17 +309,19 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", nameKey: "ui.workspace_character_queen_womens_kingdom")
     ]
 
+    // 角色数组同时决定项目自动头像的固定顺序：先放主题门面与核心主角，
+    // 再综合官方人气投票、大众辨识度和叙事重要性排列其余角色。
     static let threeKingdomsCharacters = [
-        WorkspaceCharacterIcon(id: "three-liu-bei", assetName: "WorkspaceCharacterThreeLiuBei", nameKey: "ui.workspace_character_three_liu_bei"),
         WorkspaceCharacterIcon(id: "three-guan-yu", assetName: "WorkspaceCharacterThreeGuanYu", nameKey: "ui.workspace_character_three_guan_yu"),
-        WorkspaceCharacterIcon(id: "three-zhang-fei", assetName: "WorkspaceCharacterThreeZhangFei", nameKey: "ui.workspace_character_three_zhang_fei"),
         WorkspaceCharacterIcon(id: "three-zhuge-liang", assetName: "WorkspaceCharacterThreeZhugeLiang", nameKey: "ui.workspace_character_three_zhuge_liang"),
         WorkspaceCharacterIcon(id: "three-cao-cao", assetName: "WorkspaceCharacterThreeCaoCao", nameKey: "ui.workspace_character_three_cao_cao"),
-        WorkspaceCharacterIcon(id: "three-sun-quan", assetName: "WorkspaceCharacterThreeSunQuan", nameKey: "ui.workspace_character_three_sun_quan"),
+        WorkspaceCharacterIcon(id: "three-liu-bei", assetName: "WorkspaceCharacterThreeLiuBei", nameKey: "ui.workspace_character_three_liu_bei"),
         WorkspaceCharacterIcon(id: "three-zhao-yun", assetName: "WorkspaceCharacterThreeZhaoYun", nameKey: "ui.workspace_character_three_zhao_yun"),
+        WorkspaceCharacterIcon(id: "three-zhang-fei", assetName: "WorkspaceCharacterThreeZhangFei", nameKey: "ui.workspace_character_three_zhang_fei"),
         WorkspaceCharacterIcon(id: "three-lu-bu", assetName: "WorkspaceCharacterThreeLuBu", nameKey: "ui.workspace_character_three_lu_bu"),
         WorkspaceCharacterIcon(id: "three-diaochan", assetName: "WorkspaceCharacterThreeDiaochan", nameKey: "ui.workspace_character_three_diaochan"),
-        WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi")
+        WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi"),
+        WorkspaceCharacterIcon(id: "three-sun-quan", assetName: "WorkspaceCharacterThreeSunQuan", nameKey: "ui.workspace_character_three_sun_quan")
     ]
 
     /// 七龙珠人物使用统一的编辑插画语法：粗手绘线、暖灰底和胸像裁切；
@@ -329,89 +331,89 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "classic-goku", assetName: "WorkspaceCharacterClassicGoku", nameKey: "ui.workspace_character_classic_goku"),
         WorkspaceCharacterIcon(id: "classic-vegeta", assetName: "WorkspaceCharacterClassicVegeta", nameKey: "ui.workspace_character_classic_vegeta"),
         WorkspaceCharacterIcon(id: "classic-piccolo", assetName: "WorkspaceCharacterClassicPiccolo", nameKey: "ui.workspace_character_classic_piccolo"),
-        WorkspaceCharacterIcon(id: "classic-master-roshi", assetName: "WorkspaceCharacterClassicMasterRoshi", nameKey: "ui.workspace_character_classic_master_roshi"),
-        WorkspaceCharacterIcon(id: "classic-krillin", assetName: "WorkspaceCharacterClassicKrillin", nameKey: "ui.workspace_character_classic_krillin"),
-        WorkspaceCharacterIcon(id: "classic-frieza", assetName: "WorkspaceCharacterClassicFrieza", nameKey: "ui.workspace_character_classic_frieza"),
-        WorkspaceCharacterIcon(id: "classic-majin-buu", assetName: "WorkspaceCharacterClassicMajinBuu", nameKey: "ui.workspace_character_classic_majin_buu"),
         WorkspaceCharacterIcon(id: "classic-future-trunks", assetName: "WorkspaceCharacterClassicFutureTrunks", nameKey: "ui.workspace_character_classic_future_trunks"),
         WorkspaceCharacterIcon(id: "classic-android-18", assetName: "WorkspaceCharacterClassicAndroid18", nameKey: "ui.workspace_character_classic_android_18"),
-        WorkspaceCharacterIcon(id: "classic-perfect-cell", assetName: "WorkspaceCharacterClassicPerfectCell", nameKey: "ui.workspace_character_classic_perfect_cell")
+        WorkspaceCharacterIcon(id: "classic-perfect-cell", assetName: "WorkspaceCharacterClassicPerfectCell", nameKey: "ui.workspace_character_classic_perfect_cell"),
+        WorkspaceCharacterIcon(id: "classic-frieza", assetName: "WorkspaceCharacterClassicFrieza", nameKey: "ui.workspace_character_classic_frieza"),
+        WorkspaceCharacterIcon(id: "classic-krillin", assetName: "WorkspaceCharacterClassicKrillin", nameKey: "ui.workspace_character_classic_krillin"),
+        WorkspaceCharacterIcon(id: "classic-majin-buu", assetName: "WorkspaceCharacterClassicMajinBuu", nameKey: "ui.workspace_character_classic_majin_buu"),
+        WorkspaceCharacterIcon(id: "classic-master-roshi", assetName: "WorkspaceCharacterClassicMasterRoshi", nameKey: "ui.workspace_character_classic_master_roshi")
     ]
 
     static let redChamberCharacters = [
-        WorkspaceCharacterIcon(id: "red-jia-baoyu", assetName: "WorkspaceCharacterRedJiaBaoyu", nameKey: "ui.workspace_character_red_jia_baoyu"),
         WorkspaceCharacterIcon(id: "red-lin-daiyu", assetName: "WorkspaceCharacterRedLinDaiyu", nameKey: "ui.workspace_character_red_lin_daiyu"),
+        WorkspaceCharacterIcon(id: "red-jia-baoyu", assetName: "WorkspaceCharacterRedJiaBaoyu", nameKey: "ui.workspace_character_red_jia_baoyu"),
         WorkspaceCharacterIcon(id: "red-xue-baochai", assetName: "WorkspaceCharacterRedXueBaochai", nameKey: "ui.workspace_character_red_xue_baochai"),
         WorkspaceCharacterIcon(id: "red-wang-xifeng", assetName: "WorkspaceCharacterRedWangXifeng", nameKey: "ui.workspace_character_red_wang_xifeng"),
         WorkspaceCharacterIcon(id: "red-shi-xiangyun", assetName: "WorkspaceCharacterRedShiXiangyun", nameKey: "ui.workspace_character_red_shi_xiangyun"),
-        WorkspaceCharacterIcon(id: "red-miaoyu", assetName: "WorkspaceCharacterRedMiaoyu", nameKey: "ui.workspace_character_red_miaoyu"),
-        WorkspaceCharacterIcon(id: "red-jia-tanchun", assetName: "WorkspaceCharacterRedJiaTanchun", nameKey: "ui.workspace_character_red_jia_tanchun"),
+        WorkspaceCharacterIcon(id: "red-grandmother-jia", assetName: "WorkspaceCharacterRedGrandmotherJia", nameKey: "ui.workspace_character_red_grandmother_jia"),
         WorkspaceCharacterIcon(id: "red-qingwen", assetName: "WorkspaceCharacterRedQingwen", nameKey: "ui.workspace_character_red_qingwen"),
-        WorkspaceCharacterIcon(id: "red-xiangling", assetName: "WorkspaceCharacterRedXiangling", nameKey: "ui.workspace_character_red_xiangling"),
-        WorkspaceCharacterIcon(id: "red-grandmother-jia", assetName: "WorkspaceCharacterRedGrandmotherJia", nameKey: "ui.workspace_character_red_grandmother_jia")
+        WorkspaceCharacterIcon(id: "red-jia-tanchun", assetName: "WorkspaceCharacterRedJiaTanchun", nameKey: "ui.workspace_character_red_jia_tanchun"),
+        WorkspaceCharacterIcon(id: "red-miaoyu", assetName: "WorkspaceCharacterRedMiaoyu", nameKey: "ui.workspace_character_red_miaoyu"),
+        WorkspaceCharacterIcon(id: "red-xiangling", assetName: "WorkspaceCharacterRedXiangling", nameKey: "ui.workspace_character_red_xiangling")
     ]
 
     static let greekMythologyCharacters = [
         WorkspaceCharacterIcon(id: "greek-zeus", assetName: "WorkspaceCharacterGreekZeus", nameKey: "ui.workspace_character_greek_zeus"),
-        WorkspaceCharacterIcon(id: "greek-hera", assetName: "WorkspaceCharacterGreekHera", nameKey: "ui.workspace_character_greek_hera"),
-        WorkspaceCharacterIcon(id: "greek-poseidon", assetName: "WorkspaceCharacterGreekPoseidon", nameKey: "ui.workspace_character_greek_poseidon"),
         WorkspaceCharacterIcon(id: "greek-athena", assetName: "WorkspaceCharacterGreekAthena", nameKey: "ui.workspace_character_greek_athena"),
+        WorkspaceCharacterIcon(id: "greek-poseidon", assetName: "WorkspaceCharacterGreekPoseidon", nameKey: "ui.workspace_character_greek_poseidon"),
+        WorkspaceCharacterIcon(id: "greek-hades", assetName: "WorkspaceCharacterGreekHades", nameKey: "ui.workspace_character_greek_hades"),
+        WorkspaceCharacterIcon(id: "greek-aphrodite", assetName: "WorkspaceCharacterGreekAphrodite", nameKey: "ui.workspace_character_greek_aphrodite"),
         WorkspaceCharacterIcon(id: "greek-apollo", assetName: "WorkspaceCharacterGreekApollo", nameKey: "ui.workspace_character_greek_apollo"),
         WorkspaceCharacterIcon(id: "greek-artemis", assetName: "WorkspaceCharacterGreekArtemis", nameKey: "ui.workspace_character_greek_artemis"),
+        WorkspaceCharacterIcon(id: "greek-hera", assetName: "WorkspaceCharacterGreekHera", nameKey: "ui.workspace_character_greek_hera"),
         WorkspaceCharacterIcon(id: "greek-hermes", assetName: "WorkspaceCharacterGreekHermes", nameKey: "ui.workspace_character_greek_hermes"),
-        WorkspaceCharacterIcon(id: "greek-aphrodite", assetName: "WorkspaceCharacterGreekAphrodite", nameKey: "ui.workspace_character_greek_aphrodite"),
-        WorkspaceCharacterIcon(id: "greek-ares", assetName: "WorkspaceCharacterGreekAres", nameKey: "ui.workspace_character_greek_ares"),
-        WorkspaceCharacterIcon(id: "greek-hades", assetName: "WorkspaceCharacterGreekHades", nameKey: "ui.workspace_character_greek_hades")
+        WorkspaceCharacterIcon(id: "greek-ares", assetName: "WorkspaceCharacterGreekAres", nameKey: "ui.workspace_character_greek_ares")
     ]
 
     static let sherlockHolmesCharacters = [
         WorkspaceCharacterIcon(id: "sherlock-holmes", assetName: "WorkspaceCharacterSherlockHolmes", nameKey: "ui.workspace_character_sherlock_holmes"),
         WorkspaceCharacterIcon(id: "sherlock-watson", assetName: "WorkspaceCharacterSherlockWatson", nameKey: "ui.workspace_character_sherlock_watson"),
-        WorkspaceCharacterIcon(id: "sherlock-irene-adler", assetName: "WorkspaceCharacterSherlockIreneAdler", nameKey: "ui.workspace_character_sherlock_irene_adler"),
         WorkspaceCharacterIcon(id: "sherlock-moriarty", assetName: "WorkspaceCharacterSherlockMoriarty", nameKey: "ui.workspace_character_sherlock_moriarty"),
+        WorkspaceCharacterIcon(id: "sherlock-irene-adler", assetName: "WorkspaceCharacterSherlockIreneAdler", nameKey: "ui.workspace_character_sherlock_irene_adler"),
         WorkspaceCharacterIcon(id: "sherlock-mycroft", assetName: "WorkspaceCharacterSherlockMycroft", nameKey: "ui.workspace_character_sherlock_mycroft"),
         WorkspaceCharacterIcon(id: "sherlock-lestrade", assetName: "WorkspaceCharacterSherlockLestrade", nameKey: "ui.workspace_character_sherlock_lestrade"),
         WorkspaceCharacterIcon(id: "sherlock-hudson", assetName: "WorkspaceCharacterSherlockHudson", nameKey: "ui.workspace_character_sherlock_hudson"),
         WorkspaceCharacterIcon(id: "sherlock-morstan", assetName: "WorkspaceCharacterSherlockMorstan", nameKey: "ui.workspace_character_sherlock_morstan"),
-        WorkspaceCharacterIcon(id: "sherlock-gregson", assetName: "WorkspaceCharacterSherlockGregson", nameKey: "ui.workspace_character_sherlock_gregson"),
-        WorkspaceCharacterIcon(id: "sherlock-moran", assetName: "WorkspaceCharacterSherlockMoran", nameKey: "ui.workspace_character_sherlock_moran")
+        WorkspaceCharacterIcon(id: "sherlock-moran", assetName: "WorkspaceCharacterSherlockMoran", nameKey: "ui.workspace_character_sherlock_moran"),
+        WorkspaceCharacterIcon(id: "sherlock-gregson", assetName: "WorkspaceCharacterSherlockGregson", nameKey: "ui.workspace_character_sherlock_gregson")
     ]
 
     static let aliceWonderlandCharacters = [
         WorkspaceCharacterIcon(id: "alice-alice", assetName: "WorkspaceCharacterAliceAlice", nameKey: "ui.workspace_character_alice_alice"),
-        WorkspaceCharacterIcon(id: "alice-white-rabbit", assetName: "WorkspaceCharacterAliceWhiteRabbit", nameKey: "ui.workspace_character_alice_white_rabbit"),
-        WorkspaceCharacterIcon(id: "alice-mad-hatter", assetName: "WorkspaceCharacterAliceMadHatter", nameKey: "ui.workspace_character_alice_mad_hatter"),
         WorkspaceCharacterIcon(id: "alice-cheshire-cat", assetName: "WorkspaceCharacterAliceCheshireCat", nameKey: "ui.workspace_character_alice_cheshire_cat"),
+        WorkspaceCharacterIcon(id: "alice-mad-hatter", assetName: "WorkspaceCharacterAliceMadHatter", nameKey: "ui.workspace_character_alice_mad_hatter"),
+        WorkspaceCharacterIcon(id: "alice-white-rabbit", assetName: "WorkspaceCharacterAliceWhiteRabbit", nameKey: "ui.workspace_character_alice_white_rabbit"),
         WorkspaceCharacterIcon(id: "alice-queen-of-hearts", assetName: "WorkspaceCharacterAliceQueenOfHearts", nameKey: "ui.workspace_character_alice_queen_of_hearts"),
-        WorkspaceCharacterIcon(id: "alice-king-of-hearts", assetName: "WorkspaceCharacterAliceKingOfHearts", nameKey: "ui.workspace_character_alice_king_of_hearts"),
+        WorkspaceCharacterIcon(id: "alice-caterpillar", assetName: "WorkspaceCharacterAliceCaterpillar", nameKey: "ui.workspace_character_alice_caterpillar"),
         WorkspaceCharacterIcon(id: "alice-march-hare", assetName: "WorkspaceCharacterAliceMarchHare", nameKey: "ui.workspace_character_alice_march_hare"),
         WorkspaceCharacterIcon(id: "alice-dormouse", assetName: "WorkspaceCharacterAliceDormouse", nameKey: "ui.workspace_character_alice_dormouse"),
-        WorkspaceCharacterIcon(id: "alice-caterpillar", assetName: "WorkspaceCharacterAliceCaterpillar", nameKey: "ui.workspace_character_alice_caterpillar"),
+        WorkspaceCharacterIcon(id: "alice-king-of-hearts", assetName: "WorkspaceCharacterAliceKingOfHearts", nameKey: "ui.workspace_character_alice_king_of_hearts"),
         WorkspaceCharacterIcon(id: "alice-duchess", assetName: "WorkspaceCharacterAliceDuchess", nameKey: "ui.workspace_character_alice_duchess")
     ]
 
     static let onePieceCharacters = [
         WorkspaceCharacterIcon(id: "one-piece-luffy", assetName: "WorkspaceCharacterOnePieceLuffy", nameKey: "ui.workspace_character_one_piece_luffy"),
         WorkspaceCharacterIcon(id: "one-piece-zoro", assetName: "WorkspaceCharacterOnePieceZoro", nameKey: "ui.workspace_character_one_piece_zoro"),
-        WorkspaceCharacterIcon(id: "one-piece-nami", assetName: "WorkspaceCharacterOnePieceNami", nameKey: "ui.workspace_character_one_piece_nami"),
-        WorkspaceCharacterIcon(id: "one-piece-usopp", assetName: "WorkspaceCharacterOnePieceUsopp", nameKey: "ui.workspace_character_one_piece_usopp"),
         WorkspaceCharacterIcon(id: "one-piece-sanji", assetName: "WorkspaceCharacterOnePieceSanji", nameKey: "ui.workspace_character_one_piece_sanji"),
-        WorkspaceCharacterIcon(id: "one-piece-chopper", assetName: "WorkspaceCharacterOnePieceChopper", nameKey: "ui.workspace_character_one_piece_chopper"),
+        WorkspaceCharacterIcon(id: "one-piece-nami", assetName: "WorkspaceCharacterOnePieceNami", nameKey: "ui.workspace_character_one_piece_nami"),
         WorkspaceCharacterIcon(id: "one-piece-robin", assetName: "WorkspaceCharacterOnePieceRobin", nameKey: "ui.workspace_character_one_piece_robin"),
-        WorkspaceCharacterIcon(id: "one-piece-franky", assetName: "WorkspaceCharacterOnePieceFranky", nameKey: "ui.workspace_character_one_piece_franky"),
+        WorkspaceCharacterIcon(id: "one-piece-chopper", assetName: "WorkspaceCharacterOnePieceChopper", nameKey: "ui.workspace_character_one_piece_chopper"),
+        WorkspaceCharacterIcon(id: "one-piece-usopp", assetName: "WorkspaceCharacterOnePieceUsopp", nameKey: "ui.workspace_character_one_piece_usopp"),
         WorkspaceCharacterIcon(id: "one-piece-brook", assetName: "WorkspaceCharacterOnePieceBrook", nameKey: "ui.workspace_character_one_piece_brook"),
-        WorkspaceCharacterIcon(id: "one-piece-jinbe", assetName: "WorkspaceCharacterOnePieceJinbe", nameKey: "ui.workspace_character_one_piece_jinbe")
+        WorkspaceCharacterIcon(id: "one-piece-jinbe", assetName: "WorkspaceCharacterOnePieceJinbe", nameKey: "ui.workspace_character_one_piece_jinbe"),
+        WorkspaceCharacterIcon(id: "one-piece-franky", assetName: "WorkspaceCharacterOnePieceFranky", nameKey: "ui.workspace_character_one_piece_franky")
     ]
 
     static let narutoCharacters = [
         WorkspaceCharacterIcon(id: "naruto-naruto", assetName: "WorkspaceCharacterNarutoNaruto", nameKey: "ui.workspace_character_naruto_naruto"),
         WorkspaceCharacterIcon(id: "naruto-sasuke", assetName: "WorkspaceCharacterNarutoSasuke", nameKey: "ui.workspace_character_naruto_sasuke"),
-        WorkspaceCharacterIcon(id: "naruto-sakura", assetName: "WorkspaceCharacterNarutoSakura", nameKey: "ui.workspace_character_naruto_sakura"),
         WorkspaceCharacterIcon(id: "naruto-kakashi", assetName: "WorkspaceCharacterNarutoKakashi", nameKey: "ui.workspace_character_naruto_kakashi"),
-        WorkspaceCharacterIcon(id: "naruto-hinata", assetName: "WorkspaceCharacterNarutoHinata", nameKey: "ui.workspace_character_naruto_hinata"),
-        WorkspaceCharacterIcon(id: "naruto-gaara", assetName: "WorkspaceCharacterNarutoGaara", nameKey: "ui.workspace_character_naruto_gaara"),
         WorkspaceCharacterIcon(id: "naruto-itachi", assetName: "WorkspaceCharacterNarutoItachi", nameKey: "ui.workspace_character_naruto_itachi"),
+        WorkspaceCharacterIcon(id: "naruto-sakura", assetName: "WorkspaceCharacterNarutoSakura", nameKey: "ui.workspace_character_naruto_sakura"),
+        WorkspaceCharacterIcon(id: "naruto-hinata", assetName: "WorkspaceCharacterNarutoHinata", nameKey: "ui.workspace_character_naruto_hinata"),
         WorkspaceCharacterIcon(id: "naruto-jiraiya", assetName: "WorkspaceCharacterNarutoJiraiya", nameKey: "ui.workspace_character_naruto_jiraiya"),
+        WorkspaceCharacterIcon(id: "naruto-gaara", assetName: "WorkspaceCharacterNarutoGaara", nameKey: "ui.workspace_character_naruto_gaara"),
         WorkspaceCharacterIcon(id: "naruto-shikamaru", assetName: "WorkspaceCharacterNarutoShikamaru", nameKey: "ui.workspace_character_naruto_shikamaru"),
         WorkspaceCharacterIcon(id: "naruto-tsunade", assetName: "WorkspaceCharacterNarutoTsunade", nameKey: "ui.workspace_character_naruto_tsunade")
     ]
