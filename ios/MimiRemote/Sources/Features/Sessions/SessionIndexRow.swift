@@ -208,6 +208,14 @@ enum SessionIndexRowLeadingSlot: Equatable {
     case projectIcon
 }
 
+/// 身份槽没有可展示分支时使用什么信息。
+///
+/// 会话 tab 跨项目，项目名是必要身份；工作区已经固定项目，目录末段更能区分不同 worktree。
+enum SessionIndexRowIdentityFallback: Equatable {
+    case project
+    case directory
+}
+
 /// 前导状态字形。
 ///
 /// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 空心环 / 实心点。
@@ -451,13 +459,10 @@ struct SessionIndexRow: View {
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
     var projectIcon: WorkspaceProjectIconContent? = nil
-    /// 工作区在多分支时注入当前行的 Git 分支；为 nil 时身份槽回退项目名。
+    /// 工作区在多分支时注入当前行的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
-    /// 没有分支可展示时，身份槽是否回退项目名。
-    ///
-    /// 工作区内项目恒定，回退只会把同一个字符串逐行重复一遍；那种情况下整列直接不画，
-    /// 把宽度还给摘要。会话 tab 默认跨项目，项目就是区分符，保持 true。
-    var showsProjectIdentity = true
+    /// 会话 tab 默认回退项目名；工作区传 `.directory`，在没有区分价值的分支时展示目录末段。
+    var identityFallback: SessionIndexRowIdentityFallback = .project
     /// 前导槽承载什么。会话 tab 传 `.projectIcon`，工作区保持 `.state`。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
     /// `.state` 槽在无状态时是否画灰环兜底。工作区传 true，让这一列每行都有内容，
@@ -480,6 +485,30 @@ struct SessionIndexRow: View {
         // 同一项目可能同时存在多个 worktree；优先展示真实工作目录，
         // 只有旧数据缺少 dir 时才回退项目名，避免列表行失去区分度。
         session.dir.isEmpty ? session.project : session.dir
+    }
+
+    static func identityFallbackText(
+        for session: AgentSession,
+        fallback: SessionIndexRowIdentityFallback
+    ) -> String {
+        switch fallback {
+        case .project:
+            return session.project
+        case .directory:
+            return SessionListPresentation.directoryDisplayText(for: session)
+        }
+    }
+
+    static func identityFallbackAccessibilityLabel(
+        for session: AgentSession,
+        fallback: SessionIndexRowIdentityFallback
+    ) -> String {
+        switch fallback {
+        case .project:
+            return "\(L10n.text("ui.project")) \(session.project)"
+        case .directory:
+            return L10n.format("ui.directory_value", metadataDirectoryText(for: session))
+        }
     }
 
     static func compactSupplementaryPreviewLineLimit(
@@ -606,12 +635,15 @@ struct SessionIndexRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 第二行末端的身份槽：工作区给分支，会话 tab 回退项目。
+    /// 第二行末端的身份槽：工作区给分支或目录，会话 tab 给项目。
     ///
     /// 定宽 + 右对齐，让它在所有行上形成一条右轨。
     @ViewBuilder
     private func identityColumn(tokens: ThemeTokens) -> some View {
-        if branch != nil || showsProjectIdentity {
+        if branch != nil || !Self.identityFallbackText(
+            for: session,
+            fallback: identityFallback
+        ).isEmpty {
             identityColumnBody(tokens: tokens)
         }
     }
@@ -632,11 +664,16 @@ struct SessionIndexRow: View {
                     // 这一列本来就右对齐，从头部截断也和视觉方向一致。
                     .truncationMode(.head)
             } else {
-                Text(session.project)
-                    .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
+                Text(Self.identityFallbackText(for: session, fallback: identityFallback))
+                    .font(
+                        themeStore.uiFont(
+                            size: density.metadataFontSize,
+                            weight: identityFallback == .project ? .medium : .regular
+                        )
+                    )
                     .foregroundStyle(tokens.tertiaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                    .truncationMode(.head)
+                    .truncationMode(identityFallback == .project ? .head : .tail)
             }
         }
         .frame(width: identityColumnWidth, alignment: .trailing)
@@ -656,7 +693,7 @@ struct SessionIndexRow: View {
         if let branch {
             return "\(L10n.text("ui.branch")) \(branch)"
         }
-        return "\(L10n.text("ui.project")) \(session.project)"
+        return Self.identityFallbackAccessibilityLabel(for: session, fallback: identityFallback)
     }
 
     @ViewBuilder

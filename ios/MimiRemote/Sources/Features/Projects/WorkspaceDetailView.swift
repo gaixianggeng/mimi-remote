@@ -323,8 +323,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                             session.gitBranchName,
                             among: branchValues
                         ),
-                        // 这一页的项目是恒定的，身份槽没有分支可显示时不回退项目名。
-                        showsProjectIdentity: false,
+                        // 这一页的项目是恒定的；没有区分价值的分支时用目录末段区分 worktree。
+                        identityFallback: .directory,
                         // 无状态的行画一枚灰环兜底，让前导列每行都有内容——
                         // 小节标题以这一列为基准线，列不能是稀疏的。
                         showsIdleStateGlyph: true,

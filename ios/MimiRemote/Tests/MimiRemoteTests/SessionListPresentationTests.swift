@@ -255,6 +255,30 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
     }
 
+    func testWorkspaceIdentityFallsBackToDirectoryWithoutChangingGlobalProjectFallback() {
+        let directory = "/Users/me/worktrees/codex-ipad-agent/mim-202"
+        let session = makeSession(
+            id: "directory-fallback",
+            project: "codex-ipad-agent",
+            dir: directory
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.identityFallbackText(for: session, fallback: .directory),
+            "mim-202"
+        )
+        XCTAssertTrue(
+            SessionIndexRow.identityFallbackAccessibilityLabel(
+                for: session,
+                fallback: .directory
+            ).contains(directory)
+        )
+        XCTAssertEqual(
+            SessionIndexRow.identityFallbackText(for: session, fallback: .project),
+            "codex-ipad-agent"
+        )
+    }
+
     func testTimestampTextUsesInjectedNowAndCalendar() {
         let calendar = makeCalendar(timeZone: "Asia/Shanghai")
         let now = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 12, minute: 0)
