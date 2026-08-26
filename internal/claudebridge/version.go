@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	// 0.2.7 新增 thread/list.refreshHistory。旧版 serde 会静默忽略未知字段，
-	// 因此必须整体 fail closed，不能让客户端看到“刷新成功”但仍返回旧索引。
-	MinimumVersion = "0.2.7"
+	// 0.2.8 移除额度查询触发的隐藏 Claude OAuth 刷新。旧 0.2.7 会继续
+	// 启动 /status 并可能竞争 refresh token，因此必须整体 fail closed。
+	MinimumVersion = "0.2.8"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
 	BridgeRepository = "https://github.com/gaixianggeng/mimi-remote.git"
 	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"

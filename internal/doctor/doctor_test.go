@@ -500,7 +500,7 @@ func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
 		wantOK     bool
 		want       string
 	}{
-		{name: "compatible", versionOut: "alleycat-claude-bridge 0.2.7", wantOK: true, want: "0.2.7 可用"},
+		{name: "compatible", versionOut: "alleycat-claude-bridge 0.2.8", wantOK: true, want: "0.2.8 可用"},
 		{name: "too old", versionOut: "alleycat-claude-bridge 0.2.0", wantOK: false, want: "低于最低兼容版本"},
 		{name: "missing standard version", versionOut: "bridge starting", wantOK: false, want: "版本无法解析"},
 	}
@@ -544,9 +544,9 @@ func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
 	if _, err := os.Stat(sibling); err == nil {
 		t.Skip("测试二进制旁已存在同名文件，跳过以免干扰")
 	}
-	body := []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.2.7\\n'\n")
+	body := []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.2.8\\n'\n")
 	if runtime.GOOS == "windows" {
-		body = []byte("@echo off\r\necho alleycat-claude-bridge 0.2.7\r\n")
+		body = []byte("@echo off\r\necho alleycat-claude-bridge 0.2.8\r\n")
 	}
 	if err := os.WriteFile(
 		sibling,
@@ -564,7 +564,7 @@ func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
 		},
 	})
 	check := checker.claudeBridgeCheck(context.Background())
-	if !check.OK || !strings.Contains(check.Message, "0.2.7 可用") {
+	if !check.OK || !strings.Contains(check.Message, "0.2.8 可用") {
 		t.Fatalf("Doctor 应回退检查 Mac App 随包 bridge：%+v", check)
 	}
 }

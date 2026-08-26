@@ -100,11 +100,11 @@ pub(crate) async fn fetch_rate_limit_snapshot(
 
     let response = match query_usage(&credentials.access_token).await {
         Err(OAuthUsageError::HTTPStatus(401)) => {
-            // 只被动读取一次可能已被其他 Claude 进程轮换的凭据；bridge 不消费
-            // refresh token，也不启动 Claude CLI 竞争认证状态。
-            let latest = match load_credentials().await {
-                Ok(latest) if can_retry_with_reloaded_credentials(&credentials, &latest) => latest,
-                _ => return Err(OAuthUsageError::HTTPStatus(401)),
+            // macOS 上 Keychain 才是 Claude Code 的凭据事实来源。401 后先检查
+            // Keychain，避免旧凭据文件遮住其他 Claude 进程刚完成的轮换；其他
+            // 平台或 Keychain 未变化时再检查文件。整个过程只读且只执行一轮。
+            let Some(latest) = reload_credentials_after_unauthorized(&credentials).await? else {
+                return Err(OAuthUsageError::HTTPStatus(401));
             };
             credentials = latest;
             query_usage(&credentials.access_token).await?
@@ -124,6 +124,28 @@ fn can_retry_with_reloaded_credentials(
     latest: &OAuthCredentials,
 ) -> bool {
     credentials_changed(previous, latest) && validate_credentials(latest).is_ok()
+}
+
+async fn reload_credentials_after_unauthorized(
+    previous: &OAuthCredentials,
+) -> Result<Option<OAuthCredentials>, OAuthUsageError> {
+    let keychain = read_keychain_credentials().await?;
+    if let Some(latest) = select_reloaded_credentials(previous, keychain, None) {
+        return Ok(Some(latest));
+    }
+    let file = read_credentials_file().await?;
+    Ok(select_reloaded_credentials(previous, None, file))
+}
+
+fn select_reloaded_credentials(
+    previous: &OAuthCredentials,
+    keychain: Option<OAuthCredentials>,
+    file: Option<OAuthCredentials>,
+) -> Option<OAuthCredentials> {
+    keychain
+        .into_iter()
+        .chain(file)
+        .find(|latest| can_retry_with_reloaded_credentials(previous, latest))
 }
 
 async fn load_credentials() -> Result<OAuthCredentials, OAuthUsageError> {
@@ -457,5 +479,10 @@ mod tests {
             validate_credentials(&expired),
             Err(OAuthUsageError::CredentialsExpired)
         ));
+
+        let reloaded =
+            select_reloaded_credentials(&previous, Some(rotated), Some(previous.clone()))
+                .expect("已轮换的 Keychain 凭据应优先于未变化的凭据文件");
+        assert_eq!(reloaded.access_token, "new-token");
     }
 }

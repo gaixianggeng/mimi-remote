@@ -32,13 +32,13 @@ func TestIsSupported(t *testing.T) {
 	if IsSupported("0.2.0") {
 		t.Fatal("0.2.0 不应通过最低版本门禁")
 	}
-	if IsSupported("0.2.6") {
-		t.Fatal("0.2.6 会静默忽略 refreshHistory，不应通过最低版本门禁")
+	if IsSupported("0.2.7") {
+		t.Fatal("0.2.7 会主动触发隐藏 OAuth 刷新，不应通过最低版本门禁")
 	}
-	if !IsSupported("0.2.7") || !IsSupported("1.0.0") {
-		t.Fatal("0.2.7 及更高版本应通过最低版本门禁")
+	if !IsSupported("0.2.8") || !IsSupported("1.0.0") {
+		t.Fatal("0.2.8 及更高版本应通过最低版本门禁")
 	}
-	if IsSupported("0.2.7-beta.1") {
+	if IsSupported("0.2.8-beta.1") {
 		t.Fatal("最低正式版门禁不能被预发布版本绕过")
 	}
 }
