@@ -1095,6 +1095,13 @@ func TestStatusRuntimeEnrichmentRequiresJSON(t *testing.T) {
 	}
 }
 
+func TestStatusRuntimeRefreshRequiresRuntimeJSON(t *testing.T) {
+	err := runStatus([]string{"status", "--json", "--runtime-refresh"})
+	if err == nil || !strings.Contains(err.Error(), "--runtime --json") {
+		t.Fatalf("status --runtime-refresh 必须要求 --runtime --json：%v", err)
+	}
+}
+
 func TestStatusNetworkPolicyInspectionRequiresJSON(t *testing.T) {
 	err := runStatus([]string{"status", "--network-policy"})
 	if err == nil || !strings.Contains(err.Error(), "--json") {
@@ -1109,6 +1116,7 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	const token = "status-runtime-opt-in-token-0123456789"
 	var runtimeRequests atomic.Int32
+	var runtimeRefreshRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/healthz":
@@ -1123,6 +1131,9 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			})
 		case "/api/runtime/status":
 			runtimeRequests.Add(1)
+			if req.URL.Query().Get("refresh") == "wait" {
+				runtimeRefreshRequests.Add(1)
+			}
 			if req.Header.Get("Authorization") != "Bearer "+token {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -1202,11 +1213,23 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if runtimeRequests.Load() != 1 {
 		t.Fatalf("显式 --runtime 应只请求一次缓存接口：requests=%d", runtimeRequests.Load())
 	}
+	if runtimeRefreshRequests.Load() != 0 {
+		t.Fatalf("普通 --runtime 不得强制刷新：requests=%d", runtimeRefreshRequests.Load())
+	}
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+	}); err != nil {
+		t.Fatalf("runtime force-refresh status 失败：%v", err)
+	}
+	if runtimeRequests.Load() != 2 || runtimeRefreshRequests.Load() != 1 {
+		t.Fatalf("--runtime-refresh 必须只请求一次强制刷新接口：requests=%d refresh=%d", runtimeRequests.Load(), runtimeRefreshRequests.Load())
+	}
 }
 
 func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	const token = "runtime-status-secret"
 	var requests atomic.Int32
+	var refreshRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests.Add(1)
 		if req.URL.Path != "/api/runtime/status" {
@@ -1216,11 +1239,14 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if req.URL.Query().Get("refresh") == "wait" {
+			refreshRequests.Add(1)
+		}
 		_, _ = w.Write([]byte(`{"checked_at":"2026-07-27T12:00:00Z","runtimes":[{"id":"codex","title":"Codex","enabled":true,"state":"connected"}]}`))
 	}))
 	defer server.Close()
 
-	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second)
+	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1230,8 +1256,14 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("runtime status 应只请求一次：requests=%d", requests.Load())
 	}
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true); err != nil {
+		t.Fatal(err)
+	}
+	if refreshRequests.Load() != 1 {
+		t.Fatalf("强制刷新必须请求 refresh=wait：requests=%d", refreshRequests.Load())
+	}
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
 	}
@@ -1243,7 +1275,7 @@ func TestFetchServiceRuntimeStatusRejectsTrailingJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "多个 JSON 值") {
 		t.Fatalf("runtime status 必须拒绝尾随 JSON：%v", err)
 	}
@@ -1255,7 +1287,7 @@ func TestFetchServiceRuntimeStatusRejectsMissingRequiredShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "缺少 runtimes") {
 		t.Fatalf("runtime status 必须拒绝缺少最小结构的 200 响应：%v", err)
 	}

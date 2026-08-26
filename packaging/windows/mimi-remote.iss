@@ -285,8 +285,10 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopTrayApp;
+  // Stop agentd gracefully before replacing files. The managed agent owns a
+  // kill-on-close Job Object, so an unexpected exit also removes descendants.
   StopManagedService;
+  StopTrayApp;
   // Keep the existing task registered while files are replaced. The
   // registration script uses Register-ScheduledTask -Force, so an upgrade
   // updates the task in place and Inno's file rollback can still leave the
@@ -342,8 +344,8 @@ var
   FirewallMarker: Cardinal;
 begin
   if CurUninstallStep = usUninstall then begin
-    StopTrayApp;
     StopManagedService;
+    StopTrayApp;
     RemoveScheduledTask;
     if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and
        (FirewallMarker = 1) then begin
