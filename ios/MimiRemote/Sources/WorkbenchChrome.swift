@@ -660,9 +660,10 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
-        // 会话行只按可用宽度选密度，不按设备类型：iPhone 竖屏与 iPad 竖屏读的是同一批对象，
-        // 没有理由把项目锚点在手机上缩成 12pt。只有 Slide Over 这类真正窄的窗口才回退 compact。
-        prefersSessionTableDensity = containerWidth >= 360
+        // 会话行只按可用宽度选密度，不按设备类型。阈值必须复用 SessionIndexRowDensity 持有的
+        // 那一个：这里只是会话页测量到自身宽度之前的种子值，和工作区各写一个字面量时，
+        // 同一台设备会先按一档渲染再翻成另一档。
+        prefersSessionTableDensity = containerWidth >= SessionIndexRowDensity.tableWidthThreshold
     }
 }
 
