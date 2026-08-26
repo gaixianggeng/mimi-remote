@@ -31,7 +31,10 @@ final class LockScreenApprovalStore: ObservableObject {
         static let deviceID = "lockScreenApproval.deviceID"
         static let installation = "lockScreenApproval.installation"
         static let consentedHost = "lockScreenApproval.consentedHost"
-        static let ticketExpiresAt = "lockScreenApproval.ticketExpiresAt"
+		static let ticketExpiresAt = "lockScreenApproval.ticketExpiresAt"
+		static let registeredProfileID = "lockScreenApproval.registeredProfileID"
+		static let registeredProviderURL = "lockScreenApproval.registeredProviderURL"
+		static let deviceTokenFingerprint = "lockScreenApproval.deviceTokenFingerprint"
     }
 
     @Published private(set) var status: Status = .off
@@ -74,7 +77,9 @@ final class LockScreenApprovalStore: ObservableObject {
     }
 
     var deviceID: String { stableIdentifier(forKey: Key.deviceID, prefix: "dev") }
-    var installationID: String { stableIdentifier(forKey: Key.installation, prefix: "ins") }
+	var installationID: String { stableIdentifier(forKey: Key.installation, prefix: "ins") }
+	var registeredProfileID: String? { defaults.string(forKey: Key.registeredProfileID) }
+	var registeredProviderURL: String? { defaults.string(forKey: Key.registeredProviderURL) }
 
     // MARK: - 状态刷新
 
@@ -108,12 +113,15 @@ final class LockScreenApprovalStore: ObservableObject {
         defaults.set(host, forKey: Key.consentedHost)
     }
 
-    func enable(client: AgentAPIClient) async {
-        guard hostSupportsPush, let baseURL = providerBaseURL else {
+	func enable(client: AgentAPIClient, profileID: String, providerURL: String? = nil) async {
+		let wasEnabled = isEnabled
+		guard let baseURL = providerURL ?? providerBaseURL,
+			  hostSupportsPush || providerURL != nil else {
             status = .unavailableOnHost
             return
         }
-        guard hasConsented else {
+		let provider = PushProviderClient(baseURL: baseURL)
+		guard defaults.string(forKey: Key.consentedHost) == provider.host else {
             status = .failed(message: L10n.text("ui.push_consent_required"))
             return
         }
@@ -128,43 +136,68 @@ final class LockScreenApprovalStore: ObservableObject {
             }
             LockScreenApprovalCategory.register(on: center)
             let token = try await obtainDeviceToken()
-            let provider = PushProviderClient(baseURL: baseURL)
-            let ticket = try await provider.issueTicket(
-                deviceToken: token,
-                installation: installationID,
-                environment: environment
-            )
-            try ticketStore.save(ticket.value)
-            _ = try await client.registerPushDevice(
-                deviceID: deviceID,
-                ticket: ticket.value,
-                expiresAt: ticket.expiresAt,
-                platform: Self.currentPlatform
-            )
-            defaults.set(true, forKey: Key.enabled)
-            defaults.set(ticket.expiresAt, forKey: Key.ticketExpiresAt)
-            status = .active(expiresAt: ticket.expiresAt)
-        } catch {
-            defaults.set(false, forKey: Key.enabled)
-            status = .failed(message: error.localizedDescription)
+			let ticket = try await provider.issueTicket(
+				deviceToken: token,
+				installation: installationID,
+				environment: environment
+			)
+			let previousTicket = ticketStore.load()
+			let previousProviderURL = defaults.string(forKey: Key.registeredProviderURL)
+			try ticketStore.save(ticket.value)
+			do {
+				_ = try await client.registerPushDevice(
+					deviceID: deviceID,
+					ticket: ticket.value,
+					expiresAt: ticket.expiresAt,
+					platform: Self.currentPlatform
+				)
+			} catch {
+				if let previousTicket {
+					try? ticketStore.save(previousTicket)
+				} else {
+					try? ticketStore.delete()
+				}
+				try? await provider.revokeTicket(ticket.value)
+				throw error
+			}
+			defaults.set(true, forKey: Key.enabled)
+			defaults.set(ticket.expiresAt, forKey: Key.ticketExpiresAt)
+			defaults.set(profileID, forKey: Key.registeredProfileID)
+			defaults.set(baseURL, forKey: Key.registeredProviderURL)
+			defaults.set(Self.deviceTokenFingerprint(token), forKey: Key.deviceTokenFingerprint)
+			status = .active(expiresAt: ticket.expiresAt)
+			if let previousTicket, previousTicket != ticket.value {
+				try? await PushProviderClient(baseURL: previousProviderURL ?? baseURL)
+					.revokeTicket(previousTicket)
+			}
+		} catch {
+			defaults.set(wasEnabled, forKey: Key.enabled)
+			status = .failed(message: error.localizedDescription)
         }
     }
 
     /// 关闭等价于撤销：删除本地 Ticket、让 agentd 忘记这台设备、请求 Provider
     /// 把 Ticket ID 加入撤销表，并注销远程通知。
-    func disable(client: AgentAPIClient?) async {
-        defaults.set(false, forKey: Key.enabled)
-        defaults.removeObject(forKey: Key.ticketExpiresAt)
-        let ticket = ticketStore.load()
-        try? ticketStore.delete()
-        status = .off
-
-        if let client {
-            try? await client.unregisterPushDevice(deviceID: deviceID)
-        }
-        if let ticket, let baseURL = providerBaseURL {
-            try? await PushProviderClient(baseURL: baseURL).revokeTicket(ticket)
-        }
+	func disable(client: AgentAPIClient?) async {
+		let ticket = ticketStore.load()
+		let registeredProviderURL = defaults.string(forKey: Key.registeredProviderURL) ?? providerBaseURL
+		do {
+			if let client {
+				try await client.unregisterPushDevice(deviceID: deviceID)
+			}
+			if let ticket, let registeredProviderURL {
+				try await PushProviderClient(baseURL: registeredProviderURL).revokeTicket(ticket)
+			}
+			try ticketStore.delete()
+		} catch {
+			status = .failed(message: error.localizedDescription)
+			return
+		}
+		defaults.set(false, forKey: Key.enabled)
+		for key in [Key.ticketExpiresAt, Key.registeredProfileID, Key.registeredProviderURL, Key.deviceTokenFingerprint] {
+			defaults.removeObject(forKey: key)
+		}
+		status = .off
         #if canImport(UIKit)
         UIApplication.shared.unregisterForRemoteNotifications()
         #endif
@@ -172,24 +205,34 @@ final class LockScreenApprovalStore: ObservableObject {
     }
 
     /// Ticket 剩余不足一周时在前台刷新，而不是等它过期后悄悄失去提醒能力。
-    func refreshTicketIfNeeded(client: AgentAPIClient) async {
-        guard isEnabled, hostSupportsPush else { return }
+	func refreshTicketIfNeeded(client: AgentAPIClient, profileID: String) async {
+		let canRefreshRegisteredHost = registeredProfileID == profileID && registeredProviderURL != nil
+		guard isEnabled, hostSupportsPush || canRefreshRegisteredHost else { return }
         guard let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date else { return }
         guard expiry.timeIntervalSinceNow < 7 * 24 * 60 * 60 else { return }
-        await enable(client: client)
+		await enable(
+			client: client,
+			profileID: profileID,
+			providerURL: registeredProfileID == profileID ? registeredProviderURL : nil
+		)
     }
 
     // MARK: - Device Token
 
-    func handleDeviceToken(_ token: Data) {
-        let hex = token.map { String(format: "%02x", $0) }.joined()
-        cachedDeviceToken = hex
+	@discardableResult
+	func handleDeviceToken(_ token: Data) -> Bool {
+		let hex = token.map { String(format: "%02x", $0) }.joined()
+		let fingerprint = Self.deviceTokenFingerprint(hex)
+		let shouldRefresh = isEnabled && status != .registering &&
+			defaults.string(forKey: Key.deviceTokenFingerprint) != fingerprint
+		cachedDeviceToken = hex
         let waiting = deviceTokenContinuations
         deviceTokenContinuations = []
-        for continuation in waiting {
-            continuation.resume(returning: hex)
-        }
-    }
+		for continuation in waiting {
+			continuation.resume(returning: hex)
+		}
+		return shouldRefresh
+	}
 
     func handleDeviceTokenFailure(_ error: Error) {
         let waiting = deviceTokenContinuations
@@ -202,16 +245,16 @@ final class LockScreenApprovalStore: ObservableObject {
     // MARK: - 锁屏决策
 
     /// 提交锁屏上的允许/拒绝。结果未知时如实说未知，不猜测成功。
-    func submitDecision(
+	func submitDecision(
         _ decision: LockScreenApprovalDecision,
         for notification: LockScreenApprovalNotification,
         client: AgentAPIClient
     ) async {
-        guard notification.kind.isActionableFromLockScreen else {
-            lastDecisionMessage = L10n.text("ui.push_approval_open_app_to_handle")
-            return
-        }
-        guard !notification.isExpired() else {
+		guard notification.kind.isActionableFromLockScreen else {
+			lastDecisionMessage = L10n.text("ui.push_approval_open_app_to_handle")
+			return
+		}
+		guard !notification.isExpired() else {
             lastDecisionMessage = L10n.text("ui.push_approval_expired")
             await removeNotification(identifier: notification.notificationIdentifier)
             return
@@ -234,8 +277,16 @@ final class LockScreenApprovalStore: ObservableObject {
         } catch {
             // 真正联系不上时才说未知，而且不自动重试「允许」。
             lastDecisionMessage = L10n.text("ui.push_approval_result_unknown")
-        }
-    }
+		}
+	}
+
+	func markDecisionUnknown() {
+		lastDecisionMessage = L10n.text("ui.push_approval_result_unknown")
+	}
+
+	func markRegistrationFailed() {
+		status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
+	}
 
     /// 只有 agentd 明确回答过的状态才算确定；确定之后那张通知不再可操作，应当撤下。
     static func isDefinitive(_ error: AgentAPIError) -> Bool {
@@ -314,14 +365,18 @@ final class LockScreenApprovalStore: ObservableObject {
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
-    private func stableIdentifier(forKey key: String, prefix: String) -> String {
+	private func stableIdentifier(forKey key: String, prefix: String) -> String {
         if let stored = defaults.string(forKey: key), !stored.isEmpty {
             return stored
         }
         let minted = prefix + "-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         defaults.set(minted, forKey: key)
-        return minted
-    }
+		return minted
+	}
+
+	private static func deviceTokenFingerprint(_ token: String) -> String {
+		connectionCredentialFingerprint(token)
+	}
 
     static var currentPlatform: String {
         #if canImport(UIKit)

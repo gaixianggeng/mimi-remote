@@ -333,12 +333,23 @@ func TestUnregisteredDeviceIsRemoved(t *testing.T) {
 	provider.unregisterFor["device-a"] = true
 	provider.mu.Unlock()
 
-	manager.NotifyPending(t.Context(), codexApproval())
+	action, _ := manager.NotifyPending(t.Context(), codexApproval())
 	if _, ok := manager.devices.Get("device-a"); ok {
 		t.Fatal("失效设备应被删除")
 	}
 	if _, ok := manager.devices.Get("device-b"); !ok {
 		t.Fatal("正常设备不应受影响")
+	}
+	if _, outcome, _ := manager.Decide(t.Context(), action.ID, "device-a", DecisionAllow,
+		func(context.Context, Action, Decision) error {
+			t.Fatal("失效设备不能再执行已签发的句柄")
+			return nil
+		}); outcome != OutcomeForbidden {
+		t.Fatalf("失效设备的旧句柄应被拒绝：%s", outcome)
+	}
+	if _, outcome, err := manager.Decide(t.Context(), action.ID, "device-b", DecisionAllow,
+		func(context.Context, Action, Decision) error { return nil }); err != nil || outcome != OutcomeProceed {
+		t.Fatalf("正常设备仍应能处理同一审批：outcome=%s err=%v", outcome, err)
 	}
 }
 
@@ -370,6 +381,44 @@ func TestDeviceStorePersistsAndRotatesTicket(t *testing.T) {
 	}
 	if len(reloaded.Active()) != 1 {
 		t.Fatalf("同一 device_id 重复注册应是刷新而不是新增，got=%d", len(reloaded.Active()))
+	}
+}
+
+func TestDeviceStoreRollsBackMemoryWhenPersistenceFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "push-devices.json")
+	store, err := NewDeviceStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(Device{
+		ID: "device-a", Ticket: "ticket-old", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 把状态文件本身当成目录，稳定制造 MkdirAll/saveLocked 失败。
+	store.path = filepath.Join(path, "child.json")
+	if _, err := store.Register(Device{
+		ID: "device-b", Ticket: "ticket-b", ExpiresAt: time.Now().Add(time.Hour),
+	}); err == nil {
+		t.Fatal("持久化失败时注册必须失败")
+	}
+	if _, ok := store.Get("device-b"); ok {
+		t.Fatal("新增设备不能只留在内存中")
+	}
+	if _, err := store.Register(Device{
+		ID: "device-a", Ticket: "ticket-new", ExpiresAt: time.Now().Add(time.Hour),
+	}); err == nil {
+		t.Fatal("持久化失败时刷新必须失败")
+	}
+	if device, ok := store.Get("device-a"); !ok || device.Ticket != "ticket-old" {
+		t.Fatalf("刷新失败后应恢复旧 Ticket：ok=%v device=%+v", ok, device)
+	}
+	if _, removed, err := store.Remove("device-a"); err == nil || removed {
+		t.Fatalf("持久化失败时删除不能报告成功：removed=%v err=%v", removed, err)
+	}
+	if _, ok := store.Get("device-a"); !ok {
+		t.Fatal("删除失败后设备必须仍在内存中")
 	}
 }
 

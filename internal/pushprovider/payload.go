@@ -17,7 +17,6 @@ const (
 	ApprovalCategory  = "MIMI_APPROVAL"
 	approvalTitleKey  = "push.approval.title"
 	approvalBodyKey   = "push.approval.body"
-	resolvedTitleKey  = "push.approval.resolved.title"
 	approvalPushEvent = "approval.pending"
 	resolvedPushEvent = "approval.resolved"
 )
@@ -146,12 +145,11 @@ func validateTag(field string, value string) error {
 
 // BuildAPNsPayload 由 Provider 单方面组装。调用方给不了任何自由文本。
 func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
-	aps := map[string]any{
-		"thread-id":          n.SessionTag,
-		"interruption-level": "time-sensitive",
-	}
+	aps := map[string]any{}
 	switch n.Event {
 	case approvalPushEvent:
+		aps["thread-id"] = n.SessionTag
+		aps["interruption-level"] = "time-sensitive"
 		aps["category"] = ApprovalCategory
 		aps["alert"] = map[string]any{
 			"title-loc-key":  approvalTitleKey + "." + n.Runtime,
@@ -161,11 +159,7 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 		}
 		aps["mutable-content"] = 1
 	case resolvedPushEvent:
-		// 其它设备已经处理完毕：静默更新，不再打扰用户，只让 App 清理旧通知。
-		aps["alert"] = map[string]any{
-			"title-loc-key":  resolvedTitleKey,
-			"title-loc-args": []string{n.HostTag},
-		}
+		// 其它设备已经处理完毕：只唤醒 App 清理旧通知，不再打扰用户。
 		aps["content-available"] = 1
 	}
 	payload := map[string]any{

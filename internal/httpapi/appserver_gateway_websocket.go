@@ -22,7 +22,7 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	defer policy.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor, nil)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor, nil, nil)
 	}()
 	go func() {
 		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
@@ -51,6 +51,7 @@ func newAppServerGatewayPolicy(r *Router, runtimeID string) *appServerGatewayPol
 		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
 		pendingClientRequests:  map[string]appServerGatewayPendingClientRequest{},
 		pendingServerRequests:  map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:      map[string]struct{}{},
 		pendingHistory:         map[string]appServerGatewayPendingHistoryRequest{},
 		historyBudgets:         map[string]appServerGatewayHistoryBudget{},
 		allowedThreads:         map[string]appServerGatewayAllowedThread{},
@@ -91,7 +92,11 @@ func pingGatewayConnection(ctx context.Context, conn *websocket.Conn, writeMu *s
 // 返回 handled=true 表示这一帧不再转发；response 非空时直接回给客户端。
 type clientFrameInterceptor func(payload []byte) (handled bool, response []byte)
 
-func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, intercept clientFrameInterceptor) string {
+// clientFrameForwardTracker 在帧写入前登记 broker 必须保留的生命周期状态。
+// 返回的 rollback 只在上游写入失败时调用。
+type clientFrameForwardTracker func(messageType int, payload []byte) (rollback func())
+
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
@@ -130,10 +135,19 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			continue
 		}
 		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
+		var rollbackForward func()
+		if trackForward != nil {
+			// 必须先登记再写上游；否则极快的 turn/started 或 turn/completed
+			// 可能先被 broker 读到，留下反向的生命周期竞态。
+			rollbackForward = trackForward(messageType, forwardPayload)
+		}
 		writeStart := time.Now()
 		if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
 			return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
 		}); err != nil {
+			if rollbackForward != nil {
+				rollbackForward()
+			}
 			monitor.cancelRPCRequest(requestID)
 			return gatewayCloseReason("upstream_write", err)
 		}

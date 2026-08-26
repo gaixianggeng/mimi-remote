@@ -66,6 +66,7 @@
 		2EE9AF7AEF490C9B6832C118 /* ConversationTurnQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23CF7E66AAB73235912C1990 /* ConversationTurnQueueTests.swift */; };
 		300D1F45B3554C6DBBD6B42B /* SubagentSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A21AAEB96727E4907BCCB3 /* SubagentSessionTests.swift */; };
 		305ECB04E77553124786333E /* WorkspaceStripPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E71EF316D7633A27E8BFED9C /* WorkspaceStripPresentation.swift */; };
+		30EF9ADAA2F542CB67A057BD /* LockScreenApprovalRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 272ADBEBA366C0760E9F95DB /* LockScreenApprovalRouting.swift */; };
 		31B351EE974251896BA43252 /* SessionStoreHostSwitching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3369A709F1AC9D2CF790753C /* SessionStoreHostSwitching.swift */; };
 		32DBDC8F3CD7A4D20095C805 /* SessionStoreWorkspaceRuntimePagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = D430A72C9700460B5B2D8E3B /* SessionStoreWorkspaceRuntimePagination.swift */; };
 		33116B709F470CF6E9B74FCC /* LockScreenApprovalSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C072B1CE2B49728C35D2BAE4 /* LockScreenApprovalSettingsView.swift */; };
@@ -167,6 +168,7 @@
 		8C027A403C453281A5BD7812 /* WorkspaceRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D283CD0291735DA4425D91A4 /* WorkspaceRootView.swift */; };
 		8CF275290562942710A21717 /* SessionListPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E5219F30FB1F37F4EE868FF /* SessionListPresentationTests.swift */; };
 		8D054BA1EEC76A1C436CF8BA /* testEmptyConversationShowsCurrentDirectoryAcrossAppearances.iphone-long-path-light.png in Resources */ = {isa = PBXBuildFile; fileRef = 4FCDE6ACD44D941797C6186A /* testEmptyConversationShowsCurrentDirectoryAcrossAppearances.iphone-long-path-light.png */; };
+		8E170E7635D6973BC280CD96 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 47C248AF3269FCB2C74A1925 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png */; };
 		8E1EFC445812FE5E01BB85C9 /* LockScreenApprovalNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001126768C40E81F1BDA0FCC /* LockScreenApprovalNotification.swift */; };
 		8EEEC2243F3EE20F96B3B62D /* direct_app_server_approval_stream.jsonl in Resources */ = {isa = PBXBuildFile; fileRef = 5591601BA7CA64C8C0CF7931 /* direct_app_server_approval_stream.jsonl */; };
 		8F03A9837B537D6CBA7D532A /* TailscaleStableHostnameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0B86402960D3109AD10CE7 /* TailscaleStableHostnameTests.swift */; };
@@ -397,6 +399,7 @@
 		266B02E274C8B9B137FF4ACB /* APIResponses.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIResponses.swift; sourceTree = "<group>"; };
 		26A567B589D55867F71467D4 /* terms-of-use.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = "terms-of-use.md"; path = "../../../docs/terms-of-use.md"; sourceTree = "<group>"; };
 		26D33D121E5B1B664D27BCCD /* testUnifiedWorkbenchSidebarNavigationChrome.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testUnifiedWorkbenchSidebarNavigationChrome.1.png; sourceTree = "<group>"; };
+		272ADBEBA366C0760E9F95DB /* LockScreenApprovalRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalRouting.swift; sourceTree = "<group>"; };
 		28A0993ABBFEC6F4A3517090 /* LockScreenApprovalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalStore.swift; sourceTree = "<group>"; };
 		28D9D8852662655DFC4D9FA0 /* HostInstallationSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostInstallationSetupView.swift; sourceTree = "<group>"; };
 		28FAD5B8DE8A8FD7FC216867 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
@@ -436,6 +439,7 @@
 		433E75D8BEEA45B9D02DDDCE /* testSessionRuntimeBadgesInConversationList.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testSessionRuntimeBadgesInConversationList.1.png; sourceTree = "<group>"; };
 		469FD622125F7CE507C2607E /* CodexAppServerSessionClients.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerSessionClients.swift; sourceTree = "<group>"; };
 		476737709E01875A7992BABB /* SkillModelPickerSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillModelPickerSnapshotTests.swift; sourceTree = "<group>"; };
+		47C248AF3269FCB2C74A1925 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png; sourceTree = "<group>"; };
 		485CC79160188BE6A5022A81 /* DiffPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPanelView.swift; sourceTree = "<group>"; };
 		495CF4F9BDB35ED685F879F7 /* testComposerStatusTrayIPadMiniLandscapeDetailWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayIPadMiniLandscapeDetailWidth.1.png; sourceTree = "<group>"; };
 		49C11E96B7F25325104F641F /* ConversationProcessGroupRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationProcessGroupRow.swift; sourceTree = "<group>"; };
@@ -865,6 +869,7 @@
 		4FEC845CC57921452C38B45D /* WorkspaceVisualSnapshotTests */ = {
 			isa = PBXGroup;
 			children = (
+				47C248AF3269FCB2C74A1925 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png */,
 				4F93698AE10EA771676747F8 /* testCompactWorkspaceRuntimeMenuOnPhoneWidth.1.png */,
 				EE33DEF260CD695897B70FB8 /* testNotionStyleWorkspaceOnIPadMiniPortrait.1.png */,
 			);
@@ -1251,6 +1256,7 @@
 				31112285F03CBD9AE20AD0C8 /* HostScope.swift */,
 				80F8AA2ABA18C212AEAA34E1 /* HostStatusStore.swift */,
 				9804C07B29195A66638EE42E /* HostWarmSnapshot.swift */,
+				272ADBEBA366C0760E9F95DB /* LockScreenApprovalRouting.swift */,
 				28A0993ABBFEC6F4A3517090 /* LockScreenApprovalStore.swift */,
 				88A2FAA4C2526405C2DDB750 /* LogStore.swift */,
 				B9CAFB1927C976C000C9E026 /* MessageStore.swift */,
@@ -1440,6 +1446,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8EEEC2243F3EE20F96B3B62D /* direct_app_server_approval_stream.jsonl in Resources */,
+				8E170E7635D6973BC280CD96 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png in Resources */,
 				439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */,
 				7D7B8E54D821EA6FD3240307 /* testCollapsedWorkGroupRendering.1.png in Resources */,
 				CD0CC06D483B428F053D1EAF /* testCommentaryAndTrailingProcessRendering.1.png in Resources */,
@@ -1705,6 +1712,7 @@
 				989A79A5E10B23D829C8ABC8 /* LockScreenApprovalCategory.swift in Sources */,
 				AAD4650F3B46B0D9F6A31DAA /* LockScreenApprovalDelivery.swift in Sources */,
 				8E1EFC445812FE5E01BB85C9 /* LockScreenApprovalNotification.swift in Sources */,
+				30EF9ADAA2F542CB67A057BD /* LockScreenApprovalRouting.swift in Sources */,
 				33116B709F470CF6E9B74FCC /* LockScreenApprovalSettingsView.swift in Sources */,
 				7C78932BFFABD34BB21B9DC6 /* LockScreenApprovalStore.swift in Sources */,
 				78BE6068CC6C12DA79A00B6D /* LogPanelView.swift in Sources */,

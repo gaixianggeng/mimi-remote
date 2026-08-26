@@ -82,6 +82,14 @@ final class LockScreenApprovalTests: XCTestCase {
         XCTAssertNotEqual(first.notificationIdentifier, other.notificationIdentifier)
     }
 
+	@MainActor
+	func testProfileTagMatchesAgentdRoutingTag() {
+		XCTAssertEqual(
+			LockScreenApprovalRouting.profileTag(installationID: "installation-1"),
+			"358829f722fb8e21"
+		)
+	}
+
     /// 两个动作都必须要求系统身份验证：仅凭锁屏访问既不能放行命令，
     /// 也不该能中断别人正在跑的任务。
     func testBothActionsRequireDeviceAuthentication() throws {
@@ -211,7 +219,7 @@ final class LockScreenApprovalTests: XCTestCase {
         }
     }
 
-    /// Provider 只发本地化 key。App 里少一条，锁屏上就会出现裸 key。
+    /// Provider 的可见提醒只发本地化 key。App 里少一条，锁屏上就会出现裸 key。
     func testPushNotificationLocalizationKeysExist() {
         let keys = [
             "push.approval.title.codex",
@@ -221,7 +229,6 @@ final class LockScreenApprovalTests: XCTestCase {
             "push.approval.body.permission",
             "push.approval.body.user_input",
             "push.approval.body.elicitation",
-            "push.approval.resolved.title",
         ]
         for key in keys {
             for language in [AppLanguage.simplifiedChinese, .english] {

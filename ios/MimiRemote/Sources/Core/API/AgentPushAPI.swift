@@ -59,3 +59,15 @@ struct PushDecisionResponse: Decodable, Equatable {
     let runtime: String?
     let reason: String?
 }
+
+struct PushActionRouteResponse: Decodable, Equatable {
+	let runtime: String
+	let threadID: String
+	let projectID: String
+
+	enum CodingKeys: String, CodingKey {
+		case runtime
+		case threadID = "thread_id"
+		case projectID = "project_id"
+	}
+}

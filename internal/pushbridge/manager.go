@@ -86,6 +86,7 @@ type ApprovalRequest struct {
 	Runtime    string
 	SessionKey string
 	ThreadID   string
+	ProjectID  string
 	RequestID  string
 	Method     string
 }
@@ -113,6 +114,7 @@ func (m *Manager) NotifyPending(ctx context.Context, request ApprovalRequest) (A
 		Runtime:    request.Runtime,
 		SessionKey: request.SessionKey,
 		ThreadID:   request.ThreadID,
+		ProjectID:  request.ProjectID,
 		RequestID:  request.RequestID,
 		Method:     request.Method,
 		Kind:       kind,
@@ -228,8 +230,10 @@ func (m *Manager) fanout(ctx context.Context, action Action, event string, devic
 		}
 		if err := m.notifyer(ctx, notification); err != nil {
 			if errors.Is(err, ErrDeviceUnregistered) {
-				if _, _, removeErr := m.devices.Remove(device.ID); removeErr != nil {
+				if _, removed, removeErr := m.devices.Remove(device.ID); removeErr != nil {
 					log.Printf("push bridge 删除失效设备失败 err=%v", removeErr)
+				} else if removed {
+					m.actions.RevokeDevice(device.ID)
 				}
 				continue
 			}

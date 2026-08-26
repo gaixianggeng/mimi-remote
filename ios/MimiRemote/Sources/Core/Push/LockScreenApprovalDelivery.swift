@@ -10,9 +10,19 @@ struct LockScreenApprovalDelivery: Equatable, Identifiable {
     let notification: LockScreenApprovalNotification
     let decision: LockScreenApprovalDecision?
 
-    var id: String {
+	var id: String {
         notification.actionID + "|" + (decision?.rawValue ?? "open")
-    }
+	}
+
+	init?(userInfo: [AnyHashable: Any], actionIdentifier: String) {
+		guard let notification = LockScreenApprovalNotification(userInfo: userInfo) else {
+			return nil
+		}
+		self.notification = notification
+		self.decision = notification.event == .pending
+			? LockScreenApprovalCategory.decision(forActionIdentifier: actionIdentifier)
+			: nil
+	}
 }
 
 /// 系统回调只负责严格解码并入队，真正的网络动作在视图层执行——这与既有的会话
@@ -23,21 +33,14 @@ final class LockScreenApprovalInbox: ObservableObject {
 
     @discardableResult
     func receive(userInfo: [AnyHashable: Any], actionIdentifier: String) -> Bool {
-        guard let notification = LockScreenApprovalNotification(userInfo: userInfo) else {
-            return false
-        }
-        switch notification.event {
-        case .resolved:
-            // 「已处理」是静默更新，只用于清理旧通知，不产生用户动作。
-            pending = LockScreenApprovalDelivery(notification: notification, decision: nil)
-            return true
-        case .pending:
-            pending = LockScreenApprovalDelivery(
-                notification: notification,
-                decision: LockScreenApprovalCategory.decision(forActionIdentifier: actionIdentifier)
-            )
-            return true
-        }
+		guard let delivery = LockScreenApprovalDelivery(
+			userInfo: userInfo,
+			actionIdentifier: actionIdentifier
+		) else {
+			return false
+		}
+		pending = delivery
+		return true
     }
 
     func consume(_ delivery: LockScreenApprovalDelivery) {

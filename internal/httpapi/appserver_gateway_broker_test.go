@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,6 +208,80 @@ func TestCodexGatewayBrokerSurvivesClientDetachAndReplaysApproval(t *testing.T) 
 	}
 	if got := up.connections.Load(); got != 1 {
 		t.Fatalf("重连不应重新拨号上游，upstream connections = %d", got)
+	}
+}
+
+// 用户可能在 turn/start 已写入上游、但 turn/started 尚未返回时立刻锁屏。
+// 这段窗口内 broker 也必须保留上游，否则任务只会在 App 重连后继续。
+func TestCodexGatewayBrokerSurvivesDetachBeforeTurnStarted(t *testing.T) {
+	up := newBrokerUpstream(t)
+	handler, router, projectDir := buildAppServerGatewayFixture(t, up.url, func(cfg *config.Config) {
+		cfg.AppServer.ApprovalBroker = true
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	client := brokerDial(t, server, brokerTestSession)
+	upstream := up.accept(t)
+	broker := waitForBroker(t, router, brokerTestSession, true)
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目目录应命中 gateway scope")
+	}
+	broker.policy.allowThread(appServerGatewayAllowedThread{
+		id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
+	})
+	turnStart := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":"turn-start-1","method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"需要审批"}],"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	)
+	if err := client.WriteMessage(websocket.TextMessage, []byte(turnStart)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case forwarded := <-up.frames:
+		var frame appServerGatewayFrame
+		if json.Unmarshal(forwarded, &frame) != nil || frame.Method != "turn/start" {
+			t.Fatalf("上游没有收到 turn/start：%s", forwarded)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("上游没有收到 turn/start")
+	}
+
+	// 在上游来得及发 turn/started 前锁屏断线。
+	_ = client.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		broker.mu.Lock()
+		detached := broker.sink == nil
+		closed := broker.closed
+		broker.mu.Unlock()
+		if detached {
+			if closed {
+				t.Fatal("turn/start 已转发但 turn/started 未到达时，broker 不应回收上游")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("客户端断开后 broker 没有进入 detached 状态")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 上游在客户端离线后才确认 turn 并发出审批。
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	up.emit(t, upstream, brokerApprovalFrame)
+	waitForPendingCount(t, broker, 1, "turn/started 前断线后到达的审批没有被 broker 接住")
+}
+
+func TestCodexGatewayBrokerClearsStartingTurnWhenUpstreamRejectsStart(t *testing.T) {
+	b := &codexGatewayBroker{startingTurns: map[string]string{"thread-1": `"turn-start-1"`}}
+	b.observeLifecycle(websocket.TextMessage, []byte(
+		`{"jsonrpc":"2.0","id":"turn-start-1","error":{"code":-32602,"message":"invalid params"}}`,
+	))
+	if len(b.startingTurns) != 0 {
+		t.Fatalf("上游明确拒绝 turn/start 后应撤销启动占位：%v", b.startingTurns)
 	}
 }
 
@@ -431,5 +506,30 @@ func TestCodexGatewayBrokerAnswersRepeatInitializeLocally(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		// 上游安静，符合预期。
+	}
+}
+
+func TestCodexGatewayBrokerRewritesInitializeResponseForReplacementSink(t *testing.T) {
+	broker := &codexGatewayBroker{}
+	first := []byte(`{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}`)
+	if handled, _ := broker.interceptClientFrame(first); handled {
+		t.Fatal("首次 initialize 必须发给上游")
+	}
+	second := []byte(`{"jsonrpc":"2.0","id":"init-2","method":"initialize","params":{}}`)
+	if handled, response := broker.interceptClientFrame(second); !handled || len(response) != 0 {
+		t.Fatalf("上游响应飞行期间的重复 initialize 应被本地吞掉：handled=%v response=%s", handled, response)
+	}
+	rewritten := broker.rewriteInitializeResponse(
+		[]byte(`{"jsonrpc":"2.0","id":"init-1","result":{"userAgent":"broker-test"}}`),
+	)
+	var frame struct {
+		ID     string          `json:"id"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.ID != "init-2" || !bytes.Contains(frame.Result, []byte("broker-test")) {
+		t.Fatalf("首次响应必须改写给替换后的 sink：%s", rewritten)
 	}
 }

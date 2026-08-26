@@ -76,6 +76,11 @@ func (r *Router) startClaudeApprovalObserver(
 		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	activeTurns, pendingRequests := policy.approvalObservationSnapshot()
+	pending := make(map[string]string, len(pendingRequests))
+	for requestID, request := range pendingRequests {
+		pending[requestID] = request.threadID
+	}
 	observer := &claudeApprovalObserver{
 		router:      r,
 		sessionKey:  sessionKey,
@@ -85,14 +90,20 @@ func (r *Router) startClaudeApprovalObserver(
 		policy:      policy,
 		cancel:      cancel,
 		startedAt:   time.Now(),
-		activeTurns: map[string]struct{}{},
-		pending:     map[string]string{},
+		activeTurns: activeTurns,
+		pending:     pending,
 	}
 	r.claudeObservers[sessionKey] = observer
 	r.claudeObserverMu.Unlock()
 
 	go observer.pump(ctx)
 	go observer.sweep(ctx)
+	// 客户端离开时已经可见但尚未回答的审批也需要提醒。Manager 会按 runtime、
+	// session 与 request id 去重，不会和先前的投递堆出重复通知。
+	for requestID, request := range pendingRequests {
+		r.notifyPendingApproval("claude", sessionKey, request.threadID,
+			policy.projectIDForThread(request.threadID), requestID, request.method)
+	}
 	return true
 }
 
@@ -167,7 +178,7 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 		o.pending[requestID] = threadID
 		o.mu.Unlock()
 		if !known {
-			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, requestID, method)
+			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, o.policy.projectIDForThread(threadID), requestID, method)
 		}
 		return
 	}
@@ -237,7 +248,7 @@ func (o *claudeApprovalObserver) submit(ctx context.Context, payload []byte) err
 	if closed {
 		return errors.New("Claude 会话观察已结束")
 	}
-	forwarded, policyErr := o.policy.validateClientFrameContext(ctx, websocket.TextMessage, payload)
+	forwarded, rollback, policyErr := o.policy.validatePushApprovalFrame(ctx, payload)
 	if policyErr != nil {
 		return errors.New(policyErr.message)
 	}
@@ -245,6 +256,7 @@ func (o *claudeApprovalObserver) submit(ctx context.Context, payload []byte) err
 	defer o.writeMu.Unlock()
 	_ = o.conn.SetWriteDeadline(time.Now().Add(appServerGatewayWriteWindow))
 	if _, err := o.conn.Write(append(forwarded, '\n')); err != nil {
+		rollback()
 		return err
 	}
 	return nil

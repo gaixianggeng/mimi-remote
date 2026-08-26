@@ -334,6 +334,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
 	mux.Handle("/api/push/status", authed(http.HandlerFunc(r.pushStatusHandler)))
 	mux.Handle("/api/push/devices", authed(http.HandlerFunc(r.pushDeviceHandler)))
+	mux.Handle("/api/push/actions/route", authed(http.HandlerFunc(r.pushActionRouteHandler)))
 	mux.Handle("/api/push/actions/decide", authed(http.HandlerFunc(r.pushDecideHandler)))
 	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))
 	mux.Handle("/api/actions/run", authed(http.HandlerFunc(r.commandActionRunHandler)))

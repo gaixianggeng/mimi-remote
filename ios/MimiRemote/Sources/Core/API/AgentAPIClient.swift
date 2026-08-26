@@ -580,7 +580,7 @@ struct AgentAPIClient {
         )
     }
 
-    func submitPushDecision(
+	func submitPushDecision(
         actionID: String,
         deviceID: String,
         decision: LockScreenApprovalDecision,
@@ -591,12 +591,12 @@ struct AgentAPIClient {
             let deviceID: String
             let decision: String
 
-            enum CodingKeys: String, CodingKey {
-                case actionID = "action_id"
-                case deviceID = "device_id"
-                case decision
-            }
-        }
+			enum CodingKeys: String, CodingKey {
+				case actionID = "action_id"
+				case deviceID = "device_id"
+				case decision
+			}
+		}
         let body = try JSONEncoder().encode(Body(
             actionID: actionID,
             deviceID: deviceID,
@@ -607,8 +607,23 @@ struct AgentAPIClient {
             method: "POST",
             body: body,
             timeout: timeout
-        )
-    }
+		)
+	}
+
+	func pushActionRoute(
+		actionID: String,
+		deviceID: String,
+		timeout: TimeInterval = 10
+	) async throws -> PushActionRouteResponse {
+		let action = actionID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? actionID
+		let device = deviceID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceID
+		return try await request(
+			path: "/api/push/actions/route?action_id=\(action)&device_id=\(device)",
+			method: "GET",
+			body: Optional<Data>.none,
+			timeout: timeout
+		)
+	}
 
     private func request<T: Decodable>(
         path: String,

@@ -240,10 +240,13 @@ type appServerGatewayPolicy struct {
 	pendingThreads        map[string]appServerGatewayPendingThreadRequest
 	pendingClientRequests map[string]appServerGatewayPendingClientRequest
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
-	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
-	historyBudgets        map[string]appServerGatewayHistoryBudget
-	allowedThreads        map[string]appServerGatewayAllowedThread
-	globalListCursors     map[string]string
+	// activeServerTurns 让 Claude 观察者在客户端断开时继承真实运行态，避免把仍在
+	// 执行、尚未产生审批的 turn 误判为空闲并提前关闭 bridge 读端。
+	activeServerTurns map[string]struct{}
+	pendingHistory    map[string]appServerGatewayPendingHistoryRequest
+	historyBudgets    map[string]appServerGatewayHistoryBudget
+	allowedThreads    map[string]appServerGatewayAllowedThread
+	globalListCursors map[string]string
 	// 旧版 iOS 不会在 auto-handoff 后清理本地 resume binding。只有显式声明
 	// 私有 capability 的新版客户端才能启用 turn/completed 自动交接。
 	threadHandoffCapable bool

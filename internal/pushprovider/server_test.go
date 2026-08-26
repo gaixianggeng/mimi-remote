@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -321,6 +322,37 @@ func TestProviderAutoRevokesUnregisteredToken(t *testing.T) {
 	}
 }
 
+func TestProviderKeepsTicketForRecoverableAPNsRejection(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "BadDeviceToken", reason: "BadDeviceToken"},
+		{name: "DeviceTokenNotForTopic", reason: "DeviceTokenNotForTopic"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeAPNs(t)
+			_, httpServer := newTestServer(t, fake)
+			ticket := issueTestTicket(t, httpServer.URL)
+
+			fake.setResponse(http.StatusBadRequest, test.reason)
+			status, body := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+			if status != http.StatusOK || body["delivered"] != false {
+				t.Fatalf("APNs 400 应返回 delivered:false，status=%d body=%v", status, body)
+			}
+			if body["reason"] != test.reason || body["apns_status"] != float64(http.StatusBadRequest) {
+				t.Fatalf("必须保留 APNs 拒绝原因：%v", body)
+			}
+
+			fake.setResponse(http.StatusOK, "")
+			status, body = postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+			if status != http.StatusOK || body["delivered"] != true {
+				t.Fatalf("400 拒绝不能永久撤销 Ticket，status=%d body=%v", status, body)
+			}
+		})
+	}
+}
+
 // 已处理事件走静默更新：它只让其它设备清理旧通知，不能再震一次用户。
 func TestProviderResolvedEventIsSilent(t *testing.T) {
 	fake := newFakeAPNs(t)
@@ -334,6 +366,9 @@ func TestProviderResolvedEventIsSilent(t *testing.T) {
 		t.Fatalf("投递失败 status=%d body=%v", status, body)
 	}
 	request := fake.last(t)
+	if request.PushType != "background" {
+		t.Fatalf("状态更新应使用后台推送类型，got=%q", request.PushType)
+	}
 	if request.Priority != "5" {
 		t.Fatalf("状态更新应使用低优先级，got=%q", request.Priority)
 	}
@@ -343,6 +378,11 @@ func TestProviderResolvedEventIsSilent(t *testing.T) {
 	}
 	if aps["content-available"] != float64(1) {
 		t.Fatalf("状态更新应是静默推送：%v", aps)
+	}
+	for _, forbidden := range []string{"alert", "sound", "badge"} {
+		if _, present := aps[forbidden]; present {
+			t.Fatalf("状态更新不能包含 %q：%v", forbidden, aps)
+		}
 	}
 }
 
@@ -463,5 +503,29 @@ func TestProviderReportsAPNsRejectionWithoutFiveXX(t *testing.T) {
 	}
 	if body["reason"] != "InvalidProviderToken" || body["apns_status"] != float64(http.StatusForbidden) {
 		t.Fatalf("必须保留 APNs 原因用于排障：%v", body)
+	}
+}
+
+func TestProviderTransportErrorRedactsDeviceToken(t *testing.T) {
+	fake := newFakeAPNs(t)
+	_, httpServer := newTestServer(t, fake)
+	ticket := issueTestTicket(t, httpServer.URL)
+	token := strings.Repeat("ab", 32)
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	fake.server.Close()
+	status, _ := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+	if status != http.StatusBadGateway {
+		t.Fatalf("APNs 传输错误应回 502，got=%d", status)
+	}
+	if strings.Contains(logs.String(), token) || strings.Contains(logs.String(), "/3/device/"+token) {
+		t.Fatalf("传输错误日志泄漏 Device Token：%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "env=production") {
+		t.Fatalf("传输错误日志应保留环境：%s", logs.String())
 	}
 }

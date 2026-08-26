@@ -74,7 +74,8 @@ struct SessionNotificationRoute: Equatable, Hashable {
 final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var pendingRoute: SessionNotificationRoute?
     /// 锁屏审批走独立收件箱：它的动作要提交决策，而不是打开某个会话。
-    let approvalInbox = LockScreenApprovalInbox()
+	let approvalInbox = LockScreenApprovalInbox()
+	var handleApprovalAction: ((LockScreenApprovalDelivery) async -> Void)?
     private var visibleSessionRoutesByScene: [UUID: SessionNotificationRoute] = [:]
 
     @discardableResult
@@ -122,16 +123,27 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
     ) {
         let userInfo = response.notification.request.content.userInfo
         let actionIdentifier = response.actionIdentifier
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            // 锁屏审批通知与会话通知的 payload 互斥；先按审批解码，解不出来再走会话路由。
-            if self.approvalInbox.receive(userInfo: userInfo, actionIdentifier: actionIdentifier) {
-                return
-            }
-            _ = self.receive(userInfo: userInfo)
-        }
-        // 系统回调不等待网络或会话加载，避免通知点击处理超时。
-        completionHandler()
+		Task { @MainActor [weak self] in
+			defer { completionHandler() }
+			guard let self else { return }
+			// 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
+			// 在 agentd 返回后才调用，App 即使没有进入前台也能提交决策。
+			if let delivery = LockScreenApprovalDelivery(
+				userInfo: userInfo,
+				actionIdentifier: actionIdentifier
+			) {
+				if delivery.decision != nil, let handleApprovalAction {
+					await handleApprovalAction(delivery)
+				} else {
+					_ = self.approvalInbox.receive(
+						userInfo: userInfo,
+						actionIdentifier: actionIdentifier
+					)
+				}
+				return
+			}
+			_ = self.receive(userInfo: userInfo)
+		}
     }
 
     nonisolated func userNotificationCenter(
@@ -216,13 +228,45 @@ struct MimiRemoteApp: App {
         _workspaceAppearanceStore = StateObject(wrappedValue: workspaceAppearanceStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
-        let lockScreenApprovalStore = LockScreenApprovalStore()
-        _lockScreenApprovalStore = StateObject(wrappedValue: lockScreenApprovalStore)
+		let lockScreenApprovalStore = LockScreenApprovalStore()
+		_lockScreenApprovalStore = StateObject(wrappedValue: lockScreenApprovalStore)
+		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore] delivery in
+			guard let appStore, let lockScreenApprovalStore, let decision = delivery.decision else { return }
+			do {
+				let source = try await LockScreenApprovalRouting.sourceClient(
+					for: delivery.notification,
+					appStore: appStore
+				)
+				await lockScreenApprovalStore.submitDecision(
+					decision,
+					for: delivery.notification,
+					client: source.client
+				)
+			} catch {
+				lockScreenApprovalStore.markDecisionUnknown()
+			}
+		}
         _sessionStore = StateObject(wrappedValue: sessionStore)
         // 桥接必须在 delegate 可能回调之前装好，否则冷启动拿到的 Token 会被丢弃。
-        PushDeviceTokenBridge.onToken = { [weak lockScreenApprovalStore] token in
-            lockScreenApprovalStore?.handleDeviceToken(token)
-        }
+		PushDeviceTokenBridge.onToken = { [weak appStore, weak lockScreenApprovalStore] token in
+			guard let appStore, let lockScreenApprovalStore,
+				  lockScreenApprovalStore.handleDeviceToken(token),
+				  let profileID = lockScreenApprovalStore.registeredProfileID else { return }
+			Task { @MainActor in
+				guard let client = try? await LockScreenApprovalRouting.client(
+					profileID: profileID,
+					appStore: appStore
+				) else {
+					lockScreenApprovalStore.markRegistrationFailed()
+					return
+				}
+				await lockScreenApprovalStore.enable(
+					client: client,
+					profileID: profileID,
+					providerURL: lockScreenApprovalStore.registeredProviderURL
+				)
+			}
+		}
         PushDeviceTokenBridge.onFailure = { [weak lockScreenApprovalStore] error in
             lockScreenApprovalStore?.handleDeviceTokenFailure(error)
         }

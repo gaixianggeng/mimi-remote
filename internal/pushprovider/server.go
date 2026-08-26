@@ -229,13 +229,16 @@ func (s *Server) handleNotify(w http.ResponseWriter, req *http.Request) {
 		expiry = ticketExpiry
 	}
 	priority := 10
+	pushType := apnsPushTypeAlert
 	if body.Event == resolvedPushEvent {
 		priority = 5
+		pushType = apnsPushTypeBackground
 	}
 	start := now
 	result, err := client.Push(req.Context(), APNsRequest{
 		DeviceToken: claims.DeviceToken,
 		Topic:       claims.Topic,
+		PushType:    pushType,
 		CollapseID:  CollapseID(body.ActionID),
 		Expiration:  expiry,
 		Priority:    priority,

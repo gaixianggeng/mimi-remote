@@ -80,10 +80,15 @@ struct LockScreenApprovalSettingsView: View {
         .navigationTitle(L10n.text("ui.push_lock_screen_approval"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.lockScreenApproval.detail")
-        .task {
-            guard let client = try? appStore.client() else { return }
-            await store.refreshHostSupport(client: client)
-            await store.refreshTicketIfNeeded(client: client)
+		.task {
+			guard let client = try? appStore.client() else { return }
+			await store.refreshHostSupport(client: client)
+			if let profileID = store.registeredProfileID ?? appStore.activeConnectionProfileID,
+			   let refreshClient = profileID == appStore.activeConnectionProfileID
+				? client
+				: try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore) {
+				await store.refreshTicketIfNeeded(client: refreshClient, profileID: profileID)
+			}
         }
         .sheet(isPresented: $showsConsent) {
             LockScreenApprovalConsentSheet(
@@ -121,15 +126,23 @@ struct LockScreenApprovalSettingsView: View {
     private func enable() async {
         isBusy = true
         defer { isBusy = false }
-        guard let client = try? appStore.client() else { return }
-        await store.enable(client: client)
+		guard let client = try? appStore.client(),
+			  let profileID = appStore.activeConnectionProfileID else { return }
+		await store.enable(client: client, profileID: profileID)
     }
 
-    private func disable() async {
-        isBusy = true
-        defer { isBusy = false }
-        await store.disable(client: try? appStore.client())
-    }
+	private func disable() async {
+		isBusy = true
+		defer { isBusy = false }
+		let client: AgentAPIClient?
+		if let profileID = store.registeredProfileID,
+		   profileID != appStore.activeConnectionProfileID {
+			client = try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
+		} else {
+			client = try? appStore.client()
+		}
+		await store.disable(client: client)
+	}
 
     private var statusIsProblem: Bool {
         switch store.status {

@@ -61,6 +61,7 @@ type Action struct {
 	Runtime    string
 	SessionKey string
 	ThreadID   string
+	ProjectID  string
 	RequestID  string
 	Method     string
 	Kind       string
@@ -238,6 +239,31 @@ func (s *ActionStore) RevokeThread(runtime string, sessionKey string, threadID s
 		revoked = append(revoked, *action)
 	}
 	return revoked
+}
+
+// RevokeDevice 让已经注销的设备立即失去所有未完成句柄。DeviceIDs 是签发时的
+// 快照；如果不主动移除，注销设备仍能在 Action TTL 内提交旧通知里的 action_id。
+func (s *ActionStore) RevokeDevice(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, action := range s.actions {
+		if action.Terminal() {
+			continue
+		}
+		kept := action.DeviceIDs[:0]
+		for _, allowed := range action.DeviceIDs {
+			if allowed != deviceID {
+				kept = append(kept, allowed)
+			}
+		}
+		action.DeviceIDs = kept
+		if len(kept) == 0 {
+			action.State = StateRevoked
+		}
+	}
 }
 
 func (s *ActionStore) Get(actionID string) (Action, bool) {

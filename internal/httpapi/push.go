@@ -50,7 +50,7 @@ func (r *Router) pushEnabled() bool {
 
 // notifyPendingApproval 只在客户端确实离线时推送。App 在前台且连接正常时，
 // 审批卡片本来就会实时出现，再推一条只会重复打扰。
-func (r *Router) notifyPendingApproval(runtime string, sessionKey string, threadID string, requestID string, method string) {
+func (r *Router) notifyPendingApproval(runtime string, sessionKey string, threadID string, projectID string, requestID string, method string) {
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" {
 		return
 	}
@@ -61,6 +61,7 @@ func (r *Router) notifyPendingApproval(runtime string, sessionKey string, thread
 			Runtime:    runtime,
 			SessionKey: sessionKey,
 			ThreadID:   threadID,
+			ProjectID:  projectID,
 			RequestID:  requestID,
 			Method:     method,
 		})
@@ -152,9 +153,11 @@ func (r *Router) pushUnregisterDevice(w http.ResponseWriter, req *http.Request) 
 		writeError(w, http.StatusBadRequest, "device_id 必填")
 		return
 	}
-	if _, _, err := r.push.Devices().Remove(deviceID); err != nil {
+	if _, removed, err := r.push.Devices().Remove(deviceID); err != nil {
 		writeError(w, http.StatusInternalServerError, "删除设备失败")
 		return
+	} else if removed {
+		r.push.Actions().RevokeDevice(deviceID)
 	}
 	// 句柄绑定的设备已经消失，剩余待审批动作对它不再有效。
 	writeJSON(w, http.StatusOK, map[string]any{"removed": true})
@@ -193,6 +196,40 @@ type pushDecideRequest struct {
 	ActionID string `json:"action_id"`
 	DeviceID string `json:"device_id"`
 	Decision string `json:"decision"`
+}
+
+func (r *Router) pushActionRouteHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if !r.pushEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "锁屏审批提醒未启用")
+		return
+	}
+	actionID := strings.TrimSpace(req.URL.Query().Get("action_id"))
+	deviceID := strings.TrimSpace(req.URL.Query().Get("device_id"))
+	action, ok := r.push.Actions().Get(actionID)
+	if !ok || action.Terminal() {
+		writeError(w, http.StatusGone, "审批已结束或已过期")
+		return
+	}
+	allowed := false
+	for _, candidate := range action.DeviceIDs {
+		if candidate == deviceID {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "设备无权查看该审批")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runtime":    action.Runtime,
+		"thread_id":  action.ThreadID,
+		"project_id": action.ProjectID,
+	})
 }
 
 func (r *Router) pushDecideHandler(w http.ResponseWriter, req *http.Request) {
@@ -301,11 +338,15 @@ func (r *Router) submitCodexApprovalDecision(ctx context.Context, action pushbri
 		// 会话已经回收：runtime 侧的请求要么已被处理，要么已随 turn 结束作废。
 		return fmt.Errorf("会话已结束，请打开 App 查看最新状态")
 	}
-	forwarded, policyErr := broker.policy.validateClientFrameContext(ctx, websocket.TextMessage, payload)
+	forwarded, rollback, policyErr := broker.policy.validatePushApprovalFrame(ctx, payload)
 	if policyErr != nil {
 		return fmt.Errorf("%s", policyErr.message)
 	}
-	return writeWebSocketFrame(broker.upstream, &broker.upstreamWriteMu, websocket.TextMessage, forwarded)
+	if err := writeWebSocketFrame(broker.upstream, &broker.upstreamWriteMu, websocket.TextMessage, forwarded); err != nil {
+		rollback()
+		return err
+	}
+	return nil
 }
 
 func (r *Router) submitClaudeApprovalDecision(ctx context.Context, action pushbridge.Action, payload []byte) error {
@@ -314,6 +355,27 @@ func (r *Router) submitClaudeApprovalDecision(ctx context.Context, action pushbr
 		return fmt.Errorf("会话已结束，请打开 App 查看最新状态")
 	}
 	return observer.submit(ctx, payload)
+}
+
+// validatePushApprovalFrame 只服务锁屏审批写回。policy 会在验证成功时消费 pending；
+// 如果随后的 runtime 写入失败，rollback 必须恢复同一条记录，Action 才能安全重试。
+func (p *appServerGatewayPolicy) validatePushApprovalFrame(
+	ctx context.Context,
+	payload []byte,
+) ([]byte, func(), *appServerGatewayPolicyError) {
+	var frame appServerGatewayFrame
+	if err := json.Unmarshal(payload, &frame); err != nil || frame.ID == nil {
+		return nil, func() {}, &appServerGatewayPolicyError{message: "JSON-RPC response 无效"}
+	}
+	pending, ok := p.pendingServerRequest(frame.ID)
+	if !ok {
+		return nil, func() {}, &appServerGatewayPolicyError{message: "JSON-RPC response id 未由 app-server 发起"}
+	}
+	forwarded, policyErr := p.validateClientFrameContext(ctx, websocket.TextMessage, payload)
+	if policyErr != nil {
+		return nil, func() {}, policyErr
+	}
+	return forwarded, func() { p.restorePendingServerRequest(frame.ID, pending) }, nil
 }
 
 // pushDeviceStorePath 把设备注册表放在 agentd 自己的配置目录下，权限 0600。

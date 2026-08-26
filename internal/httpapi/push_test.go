@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gorilla/websocket"
 )
 
 const pushTestSession = "mimi-push-test-codex"
@@ -144,6 +145,27 @@ func postDecide(t *testing.T, server *httptest.Server, actionID string, deviceID
 	return resp.StatusCode, decoded
 }
 
+func getPushActionRoute(t *testing.T, server *httptest.Server, actionID string, deviceID string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(
+		http.MethodGet,
+		server.URL+"/api/push/actions/route?action_id="+actionID+"&device_id="+deviceID,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var decoded map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&decoded)
+	return resp.StatusCode, decoded
+}
+
 // MIM-112 的完整闭环：App 退到后台后到达的审批请求触发提醒，用户在锁屏放行，
 // 决策原路回到 runtime。
 func TestApprovalArrivingWhileClientOfflineNotifiesAndCanBeDecided(t *testing.T) {
@@ -181,6 +203,10 @@ func TestApprovalArrivingWhileClientOfflineNotifiesAndCanBeDecided(t *testing.T)
 	if actionID == "" {
 		t.Fatalf("推送缺少 action_id：%v", notification)
 	}
+	status, route := getPushActionRoute(t, server, actionID, "device-a")
+	if status != http.StatusOK || route["runtime"] != "codex" || route["thread_id"] != "thread-1" {
+		t.Fatalf("查看详情路由不正确 status=%d body=%v", status, route)
+	}
 
 	status, body := postDecide(t, server, actionID, "device-a", "allow")
 	if status != http.StatusOK {
@@ -188,6 +214,9 @@ func TestApprovalArrivingWhileClientOfflineNotifiesAndCanBeDecided(t *testing.T)
 	}
 	if body["state"] != "approved" {
 		t.Fatalf("放行后状态应为 approved：%v", body)
+	}
+	if status, _ := getPushActionRoute(t, server, actionID, "device-a"); status != http.StatusGone {
+		t.Fatalf("审批完成后查看详情句柄应失效，got=%d", status)
 	}
 
 	// 决策必须真的回到 runtime，而不是只在 agentd 内部落定。
@@ -344,6 +373,60 @@ func TestApprovalResponseFrameMatchesClientShape(t *testing.T) {
 	}
 	if _, err := buildApprovalResponseFrame("", "allow"); err == nil {
 		t.Fatal("缺少请求 id 时必须失败")
+	}
+}
+
+func TestPushApprovalValidationCanRestorePendingAfterWriteFailure(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	router.cfg.AppServer.Transport = "ws"
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:     map[string]struct{}{},
+	}
+	request := []byte(`{"id":"approval-retry","method":"execCommandApproval","params":{"conversationId":"thread-1","callId":"call-1","command":["ls"]}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("审批请求登记失败 forward=%t err=%+v", forward, policyErr)
+	}
+	response := []byte(`{"id":"approval-retry","result":{"decision":"accept"}}`)
+	forwarded, rollback, policyErr := policy.validatePushApprovalFrame(t.Context(), response)
+	if policyErr != nil || !bytes.Equal(forwarded, response) {
+		t.Fatalf("锁屏响应验证失败 forwarded=%s err=%+v", forwarded, policyErr)
+	}
+	id := json.RawMessage(`"approval-retry"`)
+	if _, ok := policy.pendingServerRequest(&id); ok {
+		t.Fatal("验证成功后应暂时消费 pending")
+	}
+	rollback()
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("runtime 写失败后必须恢复 pending 供安全重试")
+	}
+}
+
+func TestApprovalObservationSnapshotKeepsActiveTurnAndPendingRequest(t *testing.T) {
+	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "claude",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:     map[string]struct{}{},
+	}
+	started := []byte(`{"method":"turn/started","params":{"threadId":"thread-1","turnId":"turn-1"}}`)
+	if _, _, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, started); policyErr != nil {
+		t.Fatalf("记录活跃 turn 失败：%+v", policyErr)
+	}
+	request := []byte(`{"id":"claude-approval","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+		t.Fatalf("记录 Claude 审批失败 forward=%t err=%+v", forward, policyErr)
+	}
+
+	active, pending := policy.approvalObservationSnapshot()
+	if _, ok := active["thread-1"]; !ok {
+		t.Fatal("observer 接管前必须继承活跃 turn，不能立即按 idle 回收")
+	}
+	if item, ok := pending[`"claude-approval"`]; !ok || item.threadID != "thread-1" {
+		t.Fatalf("observer 接管前必须继承待审批请求：ok=%v pending=%+v", ok, item)
 	}
 }
 

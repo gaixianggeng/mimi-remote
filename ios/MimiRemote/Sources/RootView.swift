@@ -212,26 +212,64 @@ struct RootView: View {
 
     /// 锁屏动作只做两件事：把决策交给自己的 agentd，或者打开 App 看详情。
     /// 结果未知时如实展示未知——把超时当成已允许是这条链路上最危险的错误。
-    private func handleLockScreenApproval(_ delivery: LockScreenApprovalDelivery) async {
-        guard let decision = delivery.decision else {
-            if delivery.notification.event == .resolved {
-                await lockScreenApprovalStore.handleResolved(delivery.notification)
-            }
-            return
-        }
-        guard let client = try? appStore.client() else {
-            notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
-            return
-        }
+	private func handleLockScreenApproval(_ delivery: LockScreenApprovalDelivery) async {
+		guard let decision = delivery.decision else {
+			if delivery.notification.event == .resolved {
+				await lockScreenApprovalStore.handleResolved(delivery.notification)
+			} else {
+				await openLockScreenApprovalDetails(delivery.notification)
+			}
+			return
+		}
+		guard let source = try? await LockScreenApprovalRouting.sourceClient(
+			for: delivery.notification,
+			appStore: appStore
+		) else {
+			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+			return
+		}
         await lockScreenApprovalStore.submitDecision(
             decision,
             for: delivery.notification,
-            client: client
+			client: source.client
         )
-        if let message = lockScreenApprovalStore.lastDecisionMessage {
-            notificationRouteAlertMessage = message
-        }
-    }
+		if let message = lockScreenApprovalStore.lastDecisionMessage {
+			notificationRouteAlertMessage = message
+		}
+	}
+
+	private func openLockScreenApprovalDetails(
+		_ notification: LockScreenApprovalNotification
+	) async {
+		do {
+			let source = try await LockScreenApprovalRouting.sourceClient(
+				for: notification,
+				appStore: appStore
+			)
+			let destination = try await source.client.pushActionRoute(
+				actionID: notification.actionID,
+				deviceID: notification.deviceID
+			)
+			if appStore.activeConnectionProfileID != source.profileID {
+				_ = try await sessionStore.switchConnectionProfile(id: source.profileID)
+				await sessionStore.bootstrap()
+			}
+			let projectID = destination.projectID.isEmpty
+				? sessionStore.sessions.first(where: { $0.id == destination.threadID })?.projectID
+				: destination.projectID
+			guard let projectID else {
+				throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+			}
+			let route = SessionNotificationRoute.current(
+				profileID: appStore.notificationRoutingProfileID,
+				projectID: projectID,
+				sessionID: destination.threadID
+			)
+			await handleNotificationRoute(route, ifCurrent: sessionStore.currentSelectionLease())
+		} catch {
+			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+		}
+	}
 
     private func handleNotificationRoute(
         _ route: SessionNotificationRoute,

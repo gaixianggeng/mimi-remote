@@ -26,7 +26,10 @@ const (
 	APNsProductionHost = "https://api.push.apple.com"
 	APNsSandboxHost    = "https://api.sandbox.push.apple.com"
 	// Apple 要求 provider token 至少每小时重建一次，且不得快于每 20 分钟一次。
-	apnsTokenLifetime = 45 * time.Minute
+	apnsTokenLifetime      = 45 * time.Minute
+	maxTransportError      = 256
+	apnsPushTypeAlert      = "alert"
+	apnsPushTypeBackground = "background"
 )
 
 // APNsCredentials 只在 Provider 进程内存在。私钥来自部署平台的 Secret Store 或
@@ -92,7 +95,7 @@ type APNsResult struct {
 // Unregistered 表示设备 Token 已失效，调用方应当撤销对应 Ticket 而不是重试。
 func (r APNsResult) Unregistered() bool {
 	return r.StatusCode == http.StatusGone ||
-		r.Reason == "Unregistered" || r.Reason == "BadDeviceToken"
+		r.Reason == "Unregistered"
 }
 
 func (r APNsResult) OK() bool { return r.StatusCode == http.StatusOK }
@@ -102,6 +105,7 @@ func (r APNsResult) OK() bool { return r.StatusCode == http.StatusOK }
 type APNsRequest struct {
 	DeviceToken string
 	Topic       string
+	PushType    string
 	CollapseID  string
 	Expiration  time.Time
 	Priority    int
@@ -111,16 +115,24 @@ type APNsRequest struct {
 func (c *APNsClient) Push(ctx context.Context, request APNsRequest) (APNsResult, error) {
 	token, err := c.providerToken()
 	if err != nil {
-		return APNsResult{}, err
+		return APNsResult{}, safeTransportError(err, request.DeviceToken)
 	}
 	url := c.host + "/3/device/" + request.DeviceToken
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(request.Payload))
 	if err != nil {
-		return APNsResult{}, err
+		return APNsResult{}, safeTransportError(err, request.DeviceToken)
+	}
+	pushType := request.PushType
+	if pushType == "" {
+		// 保持直接调用 APNsClient 的旧行为；Provider 业务路径会显式选择类型。
+		pushType = apnsPushTypeAlert
+	}
+	if pushType != apnsPushTypeAlert && pushType != apnsPushTypeBackground {
+		return APNsResult{}, fmt.Errorf("invalid APNs push type %q", pushType)
 	}
 	req.Header.Set("authorization", "bearer "+token)
 	req.Header.Set("apns-topic", request.Topic)
-	req.Header.Set("apns-push-type", "alert")
+	req.Header.Set("apns-push-type", pushType)
 	if request.Priority > 0 {
 		req.Header.Set("apns-priority", strconv.Itoa(request.Priority))
 	}
@@ -132,7 +144,7 @@ func (c *APNsClient) Push(ctx context.Context, request APNsRequest) (APNsResult,
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return APNsResult{}, err
+		return APNsResult{}, safeTransportError(err, request.DeviceToken)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
@@ -150,6 +162,27 @@ func (c *APNsClient) Push(ctx context.Context, request APNsRequest) (APNsResult,
 		c.invalidateToken()
 	}
 	return result, nil
+}
+
+// safeTransportError 保留有限的网络诊断，但移除错误字符串中可能被 net/http
+// 拼入的 Device Token。返回值不包装原始 error，避免调用方
+// 通过 Unwrap 或格式化原始错误再次泄漏敏感标识。
+func safeTransportError(err error, deviceToken string) error {
+	if err == nil {
+		return nil
+	}
+	diagnostic := strings.TrimSpace(err.Error())
+	if deviceToken != "" {
+		diagnostic = strings.ReplaceAll(diagnostic, deviceToken, "[REDACTED]")
+		diagnostic = strings.ReplaceAll(diagnostic, strings.ToUpper(deviceToken), "[REDACTED]")
+	}
+	if len(diagnostic) > maxTransportError {
+		diagnostic = diagnostic[:maxTransportError-len("...")] + "..."
+	}
+	if diagnostic == "" {
+		diagnostic = "unknown transport error"
+	}
+	return errors.New(diagnostic)
 }
 
 func (c *APNsClient) providerToken() (string, error) {

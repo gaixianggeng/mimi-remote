@@ -120,6 +120,11 @@ func (s *DeviceStore) Register(device Device) (Device, error) {
 	device.RefreshedAt = now
 	s.devices[device.ID] = device
 	if err := s.saveLocked(); err != nil {
+		if exists {
+			s.devices[device.ID] = existing
+		} else {
+			delete(s.devices, device.ID)
+		}
 		return Device{}, err
 	}
 	return device, nil
@@ -136,6 +141,7 @@ func (s *DeviceStore) Remove(deviceID string) (Device, bool, error) {
 	}
 	delete(s.devices, deviceID)
 	if err := s.saveLocked(); err != nil {
+		s.devices[deviceID] = device
 		return Device{}, false, err
 	}
 	return device, true, nil

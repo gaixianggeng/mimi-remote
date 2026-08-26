@@ -279,6 +279,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
 		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:     map[string]struct{}{},
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
 	defer func() {
@@ -290,8 +291,9 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	go func() {
 		done <- copyClientFramesToClaudeBridge(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
+	upstreamReaderDone := make(chan string, 1)
 	go func() {
-		done <- copyClaudeBridgeFrames(
+		readerReason := copyClaudeBridgeFrames(
 			ctx,
 			reader,
 			client,
@@ -302,6 +304,8 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			sessionKey,
 			bridgeCursorEpoch,
 		)
+		upstreamReaderDone <- readerReason
+		done <- readerReason
 	}()
 	go func() {
 		pingClientGateway(ctx, client, &clientWriteMu)
@@ -311,9 +315,19 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	reason := <-done
 	cancel()
 	_ = client.Close()
+	// 取消 context 不能中断已经阻塞在 net.Conn.Read 的旧 goroutine。先用一次性
+	// deadline 唤醒它并确认退出，再把同一个 bufio.Reader 交给 observer。
+	_ = upstream.SetReadDeadline(time.Now())
+	readerReleased := false
+	select {
+	case <-upstreamReaderDone:
+		readerReleased = true
+	case <-time.After(2 * time.Second):
+	}
+	_ = upstream.SetReadDeadline(time.Time{})
 	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
 	// 离线期间到达的审批请求并触发提醒。
-	if r.startClaudeApprovalObserver(sessionKey, upstream, &upstreamWriteMu, reader, policy) {
+	if readerReleased && r.startClaudeApprovalObserver(sessionKey, upstream, &upstreamWriteMu, reader, policy) {
 		upstreamOwnedByObserver = true
 	} else {
 		_ = upstream.Close()
