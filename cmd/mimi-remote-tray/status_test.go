@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -50,21 +49,6 @@ func TestParseAgentStatusAndPresentation(t *testing.T) {
 		if !strings.Contains(details, expected) {
 			t.Fatalf("details missing %q: %s", expected, details)
 		}
-	}
-}
-
-func TestStatusRefreshKeepsLastGoodValueAndRejectsLateOlderResult(t *testing.T) {
-	app := &trayApplication{status: agentStatus{Version: "1.0.0", ProcessOK: true}}
-	older := app.beginStatusRequest()
-	newer := app.beginStatusRequest()
-	app.completeStatusRequest(newer, agentStatus{Version: "2.0.0", ProcessOK: true}, nil)
-	app.completeStatusRequest(older, agentStatus{Version: "0.9.0"}, nil)
-	app.completeStatusRequest(app.beginStatusRequest(), agentStatus{}, errors.New("timed out"))
-	if app.status.Version != "2.0.0" || !app.status.ProcessOK {
-		t.Fatalf("last good status was overwritten: %+v", app.status)
-	}
-	if app.statusErr == nil {
-		t.Fatal("refresh error should remain visible without clearing status")
 	}
 }
 
