@@ -16,10 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
 const (
-	runtimeStatusRefreshTimeout = 9 * time.Second
+	runtimeStatusRefreshTimeout = runtimebudget.ProbeGenerationTimeout
 	runtimeStatusSuccessTTL     = 5 * time.Minute
 	runtimeStatusFailureTTL     = 15 * time.Second
 	runtimeQuotaFallbackTTL     = 15 * time.Minute

@@ -1102,6 +1102,29 @@ func TestStatusRuntimeRefreshRequiresRuntimeJSON(t *testing.T) {
 	}
 }
 
+func TestAttachRuntimeStatusPropagatesOnlyForcedRefreshFailure(t *testing.T) {
+	status := map[string]any{"version": "1.2.3"}
+	fetchErr := errors.New("runtime status HTTP 500")
+	if err := attachRuntimeStatus(status, runtimeStatusResult{err: fetchErr}, false); err != nil {
+		t.Fatalf("cached runtime enrichment must remain compatible with an old service: %v", err)
+	}
+	if _, exists := status["runtime_status"]; exists {
+		t.Fatalf("failed cached enrichment must not attach an empty runtime status: %v", status)
+	}
+	if err := attachRuntimeStatus(status, runtimeStatusResult{err: fetchErr}, true); err == nil ||
+		!strings.Contains(err.Error(), "强制刷新运行时状态失败") {
+		t.Fatalf("forced refresh failure must reach the tray as a non-zero error: %v", err)
+	}
+
+	payload := map[string]any{"runtimes": []any{}}
+	if err := attachRuntimeStatus(status, runtimeStatusResult{payload: payload}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(status["runtime_status"], payload) {
+		t.Fatalf("successful runtime status was not attached: %v", status)
+	}
+}
+
 func TestStatusNetworkPolicyInspectionRequiresJSON(t *testing.T) {
 	err := runStatus([]string{"status", "--network-policy"})
 	if err == nil || !strings.Contains(err.Error(), "--json") {
@@ -1117,6 +1140,7 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	const token = "status-runtime-opt-in-token-0123456789"
 	var runtimeRequests atomic.Int32
 	var runtimeRefreshRequests atomic.Int32
+	var runtimeFailure atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/healthz":
@@ -1136,6 +1160,17 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			}
 			if req.Header.Get("Authorization") != "Bearer "+token {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			switch runtimeFailure.Load() {
+			case 1:
+				w.WriteHeader(http.StatusNotFound)
+				return
+			case 2:
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			case 3:
+				_, _ = w.Write([]byte(`{"runtimes":`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"refreshing":false,"stale":false,"runtimes":[]}`))
@@ -1224,6 +1259,14 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if runtimeRequests.Load() != 2 || runtimeRefreshRequests.Load() != 1 {
 		t.Fatalf("--runtime-refresh 必须只请求一次强制刷新接口：requests=%d refresh=%d", runtimeRequests.Load(), runtimeRefreshRequests.Load())
 	}
+	for mode, want := range map[int32]string{1: "HTTP 404", 2: "HTTP 500", 3: "不是有效 JSON"} {
+		runtimeFailure.Store(mode)
+		if _, _, err := captureMainCommandOutput(t, func() error {
+			return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+		}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("forced runtime failure mode %d = %v, want substring %q", mode, err, want)
+		}
+	}
 }
 
 func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
@@ -1266,6 +1309,38 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
+	}
+}
+
+func TestFetchServiceRuntimeStatusReportsRefreshFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		want    string
+		timeout time.Duration
+	}{
+		{name: "old endpoint", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}, want: "HTTP 404", timeout: time.Second},
+		{name: "server error", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}, want: "HTTP 500", timeout: time.Second},
+		{name: "malformed JSON", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"runtimes":`))
+		}, want: "不是有效 JSON", timeout: time.Second},
+		{name: "timeout", handler: func(w http.ResponseWriter, req *http.Request) {
+			<-req.Context().Done()
+		}, want: "deadline exceeded", timeout: 20 * time.Millisecond},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(test.handler)
+			defer server.Close()
+			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("refresh failure = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 

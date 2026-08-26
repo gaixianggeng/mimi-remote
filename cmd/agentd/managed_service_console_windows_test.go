@@ -3,11 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestManagedServiceRequested(t *testing.T) {
@@ -88,6 +90,55 @@ func TestAppendManagedServiceFailureUsesBoundedFallback(t *testing.T) {
 	text := string(raw)
 	if strings.Contains(text, "first failure") || !strings.Contains(text, "second failure") {
 		t.Fatalf("fallback should retain only the latest failure: %q", text)
+	}
+}
+
+func TestAppendManagedServiceFailureBoundsFallbackBytes(t *testing.T) {
+	root := t.TempDir()
+	primaryPath := filepath.Join(root, "primary-as-directory")
+	if err := os.MkdirAll(primaryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fallbackPath := filepath.Join(root, "fallback", "agentd.last-error.log")
+	previous := managedServiceFailureFallbackPath
+	managedServiceFailureFallbackPath = func() (string, error) { return fallbackPath, nil }
+	t.Cleanup(func() { managedServiceFailureFallbackPath = previous })
+
+	message := strings.Repeat("\n路径故障\\", managedServiceDiagnosticMaxBytes) + "final-cause"
+	appendManagedServiceFailure(
+		[]string{"agentd.exe", "serve", "--managed-service", "--log-file", primaryPath},
+		errors.New(message),
+	)
+	raw, err := os.ReadFile(fallbackPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > managedServiceDiagnosticMaxBytes {
+		t.Fatalf("fallback exceeded byte limit: got=%d limit=%d", len(raw), managedServiceDiagnosticMaxBytes)
+	}
+	if !utf8.Valid(raw) || !bytes.Contains(raw, []byte("final-cause")) {
+		t.Fatalf("fallback must keep a valid UTF-8 diagnostic tail: %q", raw)
+	}
+}
+
+func TestAppendManagedServiceFailureRotatesEarlyPrimaryLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "agentd.log")
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), int(defaultManagedLogMaxBytes)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendManagedServiceFailure(
+		[]string{"agentd.exe", "serve", "--managed-service", "--log-file", logPath},
+		errors.New("startup failure after full log"),
+	)
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(raw)) > defaultManagedLogMaxBytes || !bytes.Contains(raw, []byte("startup failure after full log")) {
+		t.Fatalf("primary log was not rotated before the early failure: size=%d text=%q", len(raw), raw)
+	}
+	if info, err := os.Stat(logPath + ".previous"); err != nil || info.Size() != defaultManagedLogMaxBytes {
+		t.Fatalf("previous log was not retained at the configured limit: info=%v err=%v", info, err)
 	}
 }
 

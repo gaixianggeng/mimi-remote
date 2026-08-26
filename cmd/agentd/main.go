@@ -449,10 +449,6 @@ func runStatus(args []string) error {
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
 	loopbackEndpoint := loopbackServiceEndpoint(result.Endpoint)
-	type runtimeStatusResult struct {
-		payload map[string]any
-		err     error
-	}
 	networkStatus := configuredAgentNetworkStatus(cfg)
 	var networkStatusCh chan agentNetworkStatus
 	if *inspectNetworkPolicy {
@@ -467,19 +463,11 @@ func runStatus(args []string) error {
 	if *includeRuntime {
 		runtimeStatusCh = make(chan runtimeStatusResult, 1)
 		go func() {
-			timeout := 2 * time.Second
-			if *refreshRuntime {
-				// 服务端探测窗口为 9 秒；手动刷新必须给它留出完整完成时间。
-				timeout = 10 * time.Second
-			}
-			payload, fetchErr := fetchServiceRuntimeStatus(
-				context.Background(),
+			runtimeStatusCh <- fetchRuntimeStatusForCommand(
 				loopbackEndpoint,
 				result.Token,
-				timeout,
 				*refreshRuntime,
 			)
-			runtimeStatusCh <- runtimeStatusResult{payload: payload, err: fetchErr}
 		}()
 	}
 	serviceStatus := probeAgentServiceStatus(
@@ -534,10 +522,10 @@ func runStatus(args []string) error {
 	status["doctor"] = doctorResults
 	status["network_status"] = networkStatus
 	status["pair_expires"] = result.PairExpiresAt
-	// 旧版本 agentd 没有 runtime status endpoint。升级/接管过程中保持 status
-	// 兼容，只在成功拿到脱敏快照时附加字段，不让展示增强阻断服务状态。
-	if runtimeStatusCh != nil && runtimeStatus.err == nil {
-		status["runtime_status"] = runtimeStatus.payload
+	if runtimeStatusCh != nil {
+		if err := attachRuntimeStatus(status, runtimeStatus, *refreshRuntime); err != nil {
+			return err
+		}
 	}
 	if *asJSON {
 		return printJSON(status)
