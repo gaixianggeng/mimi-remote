@@ -15,6 +15,7 @@ struct SubmittedComposerDraft {
     let text: String
     let attachments: [CodexAppServerUserInput]
     let payload: CodexAppServerTurnPayload
+    let permissionSelection: ComposerPermissionSelectionSnapshot
     let voiceDraftNeedsReview: Bool
     // 发送清空后的内容版本。异步失败返回时，只有版本未变化才允许恢复，
     // 避免覆盖用户在等待期间输入的下一条消息。
@@ -344,7 +345,7 @@ enum DefaultModelPreferences {
     }
 }
 
-enum ComposerPermissionMode: String, CaseIterable, Identifiable {
+enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly
     case autoApprove
@@ -482,16 +483,18 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     private static let autoReviewer = "auto_review"
 }
 
-struct ComposerPermissionSelectionSnapshot: Equatable {
+struct ComposerPermissionSelectionSnapshot: Codable, Equatable {
     var preservesThreadSettings: Bool
     var profileID: String?
     var mode: ComposerPermissionMode
+    var requiresNewTurn: Bool
 
-    init(options: CodexAppServerTurnOptions) {
+    init(options: CodexAppServerTurnOptions, requiresNewTurn: Bool = false) {
         preservesThreadSettings = options.preservesThreadPermissionSettings
         profileID = options.permissionProfileID?
             .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
         mode = ComposerPermissionMode(options: options)
+        self.requiresNewTurn = requiresNewTurn
     }
 
     func apply(to options: inout CodexAppServerTurnOptions) {
@@ -594,6 +597,7 @@ struct ComposerState {
     }
     var turnOptions: CodexAppServerTurnOptions = .default
     var sendMode: ComposerSendMode = .standard
+    private(set) var permissionSelectionRequiresNewTurn = false
     private(set) var hasNonWhitespaceDraft = false
     private(set) var voiceDraftNeedsReview = false
     private(set) var contentRevision: UInt64 = 0
@@ -617,19 +621,22 @@ struct ComposerState {
         ComposerPermissionMode(options: turnOptions)
     }
 
-    mutating func applyPermissionMode(_ mode: ComposerPermissionMode) {
-        updateTurnOptions { options in
+    mutating func applyPermissionMode(
+        _ mode: ComposerPermissionMode,
+        sessionIsRunning: Bool = false
+    ) {
+        updatePermissionSelection(sessionIsRunning: sessionIsRunning) { options in
             mode.apply(to: &options)
         }
     }
 
-    mutating func resetUnavailablePermissionProfile() {
+    mutating func resetUnavailablePermissionProfile(sessionIsRunning: Bool = false) {
         guard turnOptions.permissionProfileID?
             .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty != nil
         else { return }
         // 自定义档案消失时不能只清 ID；底层 sandbox 可能仍是完全访问默认值，
         // 下一次提交会因此升级为无审批。明确回退到受控工作区和用户审批。
-        applyPermissionMode(.requestApproval)
+        applyPermissionMode(.requestApproval, sessionIsRunning: sessionIsRunning)
     }
 
     mutating func updateTurnOptions(_ update: (inout CodexAppServerTurnOptions) -> Void) {
@@ -640,6 +647,18 @@ struct ComposerState {
         }
         // 每次用户操作只发布一个完整 options 快照，避免连续改多个字段导致工具栏多次刷新。
         turnOptions = updatedOptions
+    }
+
+    mutating func updatePermissionSelection(
+        sessionIsRunning: Bool,
+        _ update: (inout CodexAppServerTurnOptions) -> Void
+    ) {
+        let previousSelection = permissionSelectionSnapshot()
+        updateTurnOptions(update)
+        markPermissionSelectionRequiresNewTurnIfChanged(
+            from: previousSelection,
+            sessionIsRunning: sessionIsRunning
+        )
     }
 
     mutating func setSendMode(_ mode: ComposerSendMode) {
@@ -676,9 +695,9 @@ struct ComposerState {
     }
 
     func runningTurnDelivery(canUseGuidedFollowUp: Bool, guidedFollowUpEnabled: Bool) -> RunningTurnDelivery {
-        // 目标/计划都必须启动一个新的 turn：目标要先写 thread 级元数据，计划模式要把
-        // collaborationMode 放进 turn/start。turn/steer 只补充当前 turn 的输入，会丢掉这些启动参数。
-        guard sendMode == .standard else {
+        // 目标、计划和待应用权限都必须启动新的 turn。turn/steer 只补充当前 turn 的输入，
+        // 不接收 collaborationMode、sandbox 或 approval 等 turn/start 参数。
+        guard sendMode == .standard, !permissionSelectionRequiresNewTurn else {
             return .queued
         }
         return canUseGuidedFollowUp && guidedFollowUpEnabled ? .guided : .queued
@@ -706,6 +725,7 @@ struct ComposerState {
             text: text,
             attachments: sentAttachments,
             payload: payload,
+            permissionSelection: permissionSelectionSnapshot(),
             voiceDraftNeedsReview: submittedVoiceDraftNeedsReview,
             clearedContentRevision: contentRevision
         )
@@ -758,11 +778,38 @@ struct ComposerState {
     }
 
     func permissionSelectionSnapshot() -> ComposerPermissionSelectionSnapshot {
-        ComposerPermissionSelectionSnapshot(options: turnOptions)
+        ComposerPermissionSelectionSnapshot(
+            options: turnOptions,
+            requiresNewTurn: permissionSelectionRequiresNewTurn
+        )
     }
 
     mutating func restorePermissionSelectionSnapshot(_ snapshot: ComposerPermissionSelectionSnapshot) {
         snapshot.apply(to: &turnOptions)
+        permissionSelectionRequiresNewTurn = snapshot.requiresNewTurn
+    }
+
+    mutating func markPermissionSelectionRequiresNewTurn() {
+        permissionSelectionRequiresNewTurn = true
+    }
+
+    mutating func markPermissionSelectionRequiresNewTurnIfChanged(
+        from previousSelection: ComposerPermissionSelectionSnapshot,
+        sessionIsRunning: Bool
+    ) {
+        guard sessionIsRunning, permissionSelectionSnapshot() != previousSelection else { return }
+        permissionSelectionRequiresNewTurn = true
+    }
+
+    mutating func markPermissionSelectionApplied(
+        _ startedSelection: ComposerPermissionSelectionSnapshot
+    ) {
+        // turn/started 到达前用户可能再次修改权限。只有当前选择仍与已启动快照一致时
+        // 才清除标记，避免迟到事件把更新后的下一回合权限错误地当成已经生效。
+        guard permissionSelectionSnapshot() == startedSelection else {
+            return
+        }
+        permissionSelectionRequiresNewTurn = false
     }
 
     mutating func preserveThreadPermissionSettings() {
@@ -771,6 +818,7 @@ struct ComposerState {
             options.permissionProfileID = nil
             options.networkAccess = false
         }
+        permissionSelectionRequiresNewTurn = false
     }
 
     mutating func addAttachment(_ input: CodexAppServerUserInput) {

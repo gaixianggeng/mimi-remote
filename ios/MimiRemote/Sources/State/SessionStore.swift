@@ -209,6 +209,12 @@ final class SessionStore: ObservableObject {
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
+    /// 同一 Session 可连续提交多次权限变更；必须按提交顺序逐条等待精确 turn/started。
+    @Published var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:]
+    /// 明确拒绝的消息离开队列后，仍持久化重试所需的 fresh-turn 权限快照。
+    @Published var permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary] = [:]
+    /// 用于让当前 Composer 收到“哪个已提交快照真正开始”的通知；非当前会话仍先更新 cache。
+    @Published var latestSatisfiedPermissionTurnBoundary: PendingPermissionTurnBoundary?
     @Published var queuedTurnStorageErrorMessage: String?
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
@@ -855,6 +861,186 @@ final class SessionStore: ObservableObject {
         composerPermissionSelectionCache.remove(scope: scope)
     }
 
+    func pendingPermissionTurnBoundary(for sessionID: SessionID) -> PendingPermissionTurnBoundary? {
+        pendingPermissionTurnBoundariesBySessionID[sessionID]?.first
+    }
+
+    func latestPendingPermissionTurnBoundary(for sessionID: SessionID) -> PendingPermissionTurnBoundary? {
+        pendingPermissionTurnBoundariesBySessionID[sessionID]?.last
+    }
+
+    func pendingPermissionTurnBoundaryLocation(
+        clientMessageID: ClientMessageID
+    ) -> (sessionID: SessionID, index: Int, boundary: PendingPermissionTurnBoundary)? {
+        for (sessionID, boundaries) in pendingPermissionTurnBoundariesBySessionID {
+            if let index = boundaries.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                return (sessionID, index, boundaries[index])
+            }
+        }
+        return nil
+    }
+
+    var hasPendingPermissionTurnBoundaryForSelectedSession: Bool {
+        guard let selectedSessionID else { return false }
+        return pendingPermissionTurnBoundariesBySessionID[selectedSessionID]?.isEmpty == false
+    }
+
+    var selectedSessionRequiresFreshPermissionTurn: Bool {
+        guard let selectedSession else { return false }
+        return selectedSession.isRunning
+            || queuedRunningTurnsBySessionID[selectedSession.id]?.isEmpty == false
+            || pendingPermissionTurnBoundariesBySessionID[selectedSession.id]?.isEmpty == false
+            || queuedTurnAwaitingStartSessionIDs.contains(selectedSession.id)
+    }
+
+    @discardableResult
+    func satisfyPendingPermissionTurnBoundary(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID?
+    ) -> Bool {
+        // nil 或错误 ID 都不是这条权限提交的权威 started，不能解除边界。
+        guard let clientMessageID,
+              let pending = pendingPermissionTurnBoundariesBySessionID[sessionID]?.first,
+              pending.sessionID == sessionID,
+              pending.clientMessageID == clientMessageID
+        else {
+            return false
+        }
+        guard mutateAndPersistQueuedTurns({
+            var boundaries = pendingPermissionTurnBoundariesBySessionID[sessionID] ?? []
+            guard boundaries.first?.clientMessageID == clientMessageID else { return }
+            boundaries.removeFirst()
+            if var queue = queuedRunningTurnsBySessionID[sessionID],
+               let index = queue.firstIndex(where: { $0.clientMessageID == pending.clientMessageID }) {
+                queue[index].requiresFreshTurn = nil
+                queuedRunningTurnsBySessionID[sessionID] = queue
+            }
+
+            // 同一权限快照的后续消息已被这次 started 覆盖，不再强制额外创建 Turn。
+            while boundaries.first?.permissionSelection == pending.permissionSelection {
+                let covered = boundaries.removeFirst()
+                if var queue = queuedRunningTurnsBySessionID[sessionID],
+                   let index = queue.firstIndex(where: { $0.clientMessageID == covered.clientMessageID }) {
+                    queue[index].requiresFreshTurn = nil
+                    queuedRunningTurnsBySessionID[sessionID] = queue
+                }
+            }
+            if boundaries.isEmpty {
+                pendingPermissionTurnBoundariesBySessionID.removeValue(forKey: sessionID)
+            } else {
+                pendingPermissionTurnBoundariesBySessionID[sessionID] = boundaries
+            }
+        }) else {
+            return false
+        }
+
+        // 还有更新的权限边界时，旧 started 只推进 FIFO，不能清理当前 Composer 标记。
+        guard pendingPermissionTurnBoundariesBySessionID[sessionID]?.isEmpty != false else {
+            return true
+        }
+
+        let scope = ComposerDraftScopeKey.session(sessionID)
+        if let cached = composerPermissionSelectionCache.snapshot(for: scope),
+           cached == pending.permissionSelection {
+            var satisfied = cached
+            satisfied.requiresNewTurn = false
+            composerPermissionSelectionCache.save(satisfied, for: scope)
+        }
+        latestSatisfiedPermissionTurnBoundary = pending
+        return true
+    }
+
+    func reconcilePendingPermissionTurnBoundaries(
+        sessionID: SessionID,
+        historyMessages: [CodexHistoryMessage]
+    ) {
+        let startedClientMessageIDs = Set(historyMessages.compactMap { message -> ClientMessageID? in
+            guard let clientMessageID = message.clientMessageID,
+                  let turnID = message.turnID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !turnID.isEmpty
+            else {
+                return nil
+            }
+            return clientMessageID
+        })
+
+        // App 可能在服务端 started 后、实时事件落地前退出。权威历史只能按 FIFO 头部
+        // 解除边界，避免较新的历史消息越过尚未证明开始的权限提交。
+        var didAdvanceBoundary = false
+        while let pending = pendingPermissionTurnBoundary(for: sessionID),
+              startedClientMessageIDs.contains(pending.clientMessageID) {
+            guard satisfyPendingPermissionTurnBoundary(
+                sessionID: sessionID,
+                clientMessageID: pending.clientMessageID
+            ) else {
+                break
+            }
+            didAdvanceBoundary = true
+        }
+        if didAdvanceBoundary,
+           sessionsByID[sessionID]?.activeTurnID == nil {
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
+    }
+
+    /// 仅删除已明确不会再 started 的边界；结果不确定的派发必须保留。
+    @discardableResult
+    func removePendingPermissionTurnBoundary(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) -> PendingPermissionTurnBoundary? {
+        guard var boundaries = pendingPermissionTurnBoundariesBySessionID[sessionID],
+              let index = boundaries.firstIndex(where: { $0.clientMessageID == clientMessageID })
+        else {
+            return nil
+        }
+        let removed = boundaries.remove(at: index)
+        if boundaries.isEmpty {
+            pendingPermissionTurnBoundariesBySessionID.removeValue(forKey: sessionID)
+        } else {
+            pendingPermissionTurnBoundariesBySessionID[sessionID] = boundaries
+        }
+        return removed
+    }
+
+    func preservePermissionTurnRetryRequirementAfterRejection(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) {
+        _ = mutateAndPersistQueuedTurns {
+            guard let boundary = removePendingPermissionTurnBoundary(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            ) else {
+                return
+            }
+            permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = boundary
+        }
+    }
+
+    func migratePendingPermissionTurnBoundary(
+        clientMessageID: ClientMessageID,
+        to sessionID: SessionID
+    ) {
+        guard let location = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID),
+              location.sessionID != sessionID else {
+            return
+        }
+        _ = mutateAndPersistQueuedTurns {
+            _ = removePendingPermissionTurnBoundary(
+                sessionID: location.sessionID,
+                clientMessageID: clientMessageID
+            )
+            pendingPermissionTurnBoundariesBySessionID[sessionID, default: []].append(
+                PendingPermissionTurnBoundary(
+                    sessionID: sessionID,
+                    clientMessageID: clientMessageID,
+                    permissionSelection: location.boundary.permissionSelection
+                )
+            )
+        }
+    }
+
     func composerSendModeForScopeActivation(
         previousScope: ComposerDraftScopeKey,
         nextScope: ComposerDraftScopeKey,
@@ -922,7 +1108,19 @@ final class SessionStore: ObservableObject {
         let didPersist = mutateAndPersistQueuedTurns {
             guard var queue = queuedRunningTurnsBySessionID[location.sessionID],
                   queue.indices.contains(location.index) else { return }
-            queue.remove(at: location.index)
+            let removed = queue.remove(at: location.index)
+            if removed.dispatchState == .waiting,
+               removePendingPermissionTurnBoundary(
+                   sessionID: location.sessionID,
+                   clientMessageID: removed.clientMessageID
+               ) != nil {
+                // 删除尚未开始的边界项后，后续等待项不能永久继承 accepted-but-not-started 门闩。
+                for index in queue.indices where queue[index].waitsForAcceptedTurnStart == true {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
+                    queue[index].expectedTurnID = sessionsByID[location.sessionID]?.activeTurnID
+                }
+            }
             setQueuedTurns(queue, sessionID: location.sessionID)
         }
         if didPersist {
@@ -958,9 +1156,22 @@ final class SessionStore: ObservableObject {
         guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
               location.sessionID == selectedSessionID,
               let session = selectedSession,
-              let item = queuedRunningTurnsBySessionID[location.sessionID]?[location.index],
-              item.dispatchState == .waiting,
+              let queue = queuedRunningTurnsBySessionID[location.sessionID],
+              queue.indices.contains(location.index)
+        else {
+            setErrorMessage(L10n.text("ui.there_are_currently_no_active_rounds_to_boot"))
+            return false
+        }
+        let item = queue[location.index]
+        let hasEarlierFreshTurnBoundary = queue[..<location.index].contains {
+            $0.requiresFreshTurn == true
+        }
+        guard item.dispatchState == .waiting,
               item.intent.canGuideCurrentTurn,
+              item.requiresFreshTurn != true,
+              !hasEarlierFreshTurnBoundary,
+              pendingPermissionTurnBoundariesBySessionID[location.sessionID]?.isEmpty != false,
+              item.waitsForAcceptedTurnStart != true,
               let activeTurnID = session.activeTurnID,
               let socket = readyWebSocket(for: session)
         else {
@@ -1007,11 +1218,17 @@ final class SessionStore: ObservableObject {
     func moveSelectedQueuedTurns(fromOffsets: IndexSet, toOffset: Int) -> Bool {
         guard let selectedSessionID,
               var queue = queuedRunningTurnsBySessionID[selectedSessionID],
-              queue.allSatisfy({ $0.dispatchState != .dispatching })
+              queue.allSatisfy({ $0.dispatchState == .waiting })
         else {
             return false
         }
-        let previous = queuedRunningTurnsBySessionID
+        let boundaryIDs = Set(
+            (pendingPermissionTurnBoundariesBySessionID[selectedSessionID] ?? []).map(\.clientMessageID)
+        )
+        guard boundaryIDs.isSubset(of: Set(queue.map(\.clientMessageID))) else {
+            // 已离开队列的 uncertain 边界没有可见拖动位置，不能让等待项跨过它。
+            return false
+        }
         let moving = fromOffsets.sorted().compactMap { queue.indices.contains($0) ? queue[$0] : nil }
         for index in fromOffsets.sorted(by: >) where queue.indices.contains(index) {
             queue.remove(at: index)
@@ -1019,15 +1236,15 @@ final class SessionStore: ObservableObject {
         let removedBeforeDestination = fromOffsets.filter { $0 < toOffset }.count
         let destination = min(max(0, toOffset - removedBeforeDestination), queue.count)
         queue.insert(contentsOf: moving, at: destination)
-        queuedRunningTurnsBySessionID[selectedSessionID] = queue
-        do {
-            try persistQueuedTurns()
-            queuedTurnStorageErrorMessage = nil
-            return true
-        } catch {
-            queuedRunningTurnsBySessionID = previous
-            reportQueuedTurnStorageError(error)
-            return false
+        return mutateAndPersistQueuedTurns {
+            queuedRunningTurnsBySessionID[selectedSessionID] = queue
+            guard let boundaries = pendingPermissionTurnBoundariesBySessionID[selectedSessionID] else {
+                return
+            }
+            let boundaryByID = Dictionary(uniqueKeysWithValues: boundaries.map { ($0.clientMessageID, $0) })
+            pendingPermissionTurnBoundariesBySessionID[selectedSessionID] = queue.compactMap {
+                boundaryByID[$0.clientMessageID]
+            }
         }
     }
 
@@ -1049,6 +1266,8 @@ final class SessionStore: ObservableObject {
                 snapshot.queuesBySessionID[sessionID] = queue
             }
             queuedRunningTurnsBySessionID = snapshot.queuesBySessionID.filter { !$0.value.isEmpty }
+            pendingPermissionTurnBoundariesBySessionID = snapshot.pendingPermissionTurnBoundariesBySessionID
+            permissionTurnRetryRequirementsByClientMessageID = snapshot.permissionTurnRetryRequirementsByClientMessageID
             if didRecoverAmbiguousDispatch {
                 try queuedTurnStore.save(snapshot)
             }
@@ -1056,6 +1275,8 @@ final class SessionStore: ObservableObject {
         } catch {
             // 解码失败不覆盖原文件；否则一次版本不兼容会把待发指令静默清空。
             queuedRunningTurnsBySessionID = [:]
+            pendingPermissionTurnBoundariesBySessionID = [:]
+            permissionTurnRetryRequirementsByClientMessageID = [:]
             reportQueuedTurnStorageError(error)
         }
     }
@@ -1064,7 +1285,9 @@ final class SessionStore: ObservableObject {
         let profileID = currentQueuedTurnProfileID ?? appStore.notificationRoutingProfileID
         let snapshot = QueuedTurnProfileSnapshot(
             profileID: profileID,
-            queuesBySessionID: queuedRunningTurnsBySessionID.filter { !$0.value.isEmpty }
+            queuesBySessionID: queuedRunningTurnsBySessionID.filter { !$0.value.isEmpty },
+            pendingPermissionTurnBoundariesBySessionID: pendingPermissionTurnBoundariesBySessionID,
+            permissionTurnRetryRequirementsByClientMessageID: permissionTurnRetryRequirementsByClientMessageID
         )
         try queuedTurnStore.save(snapshot)
     }
@@ -1072,6 +1295,8 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func mutateAndPersistQueuedTurns(_ mutation: () -> Void) -> Bool {
         let previous = queuedRunningTurnsBySessionID
+        let previousPermissionBoundaries = pendingPermissionTurnBoundariesBySessionID
+        let previousRetryRequirements = permissionTurnRetryRequirementsByClientMessageID
         mutation()
         do {
             try persistQueuedTurns()
@@ -1079,6 +1304,8 @@ final class SessionStore: ObservableObject {
             return true
         } catch {
             queuedRunningTurnsBySessionID = previous
+            pendingPermissionTurnBoundariesBySessionID = previousPermissionBoundaries
+            permissionTurnRetryRequirementsByClientMessageID = previousRetryRequirements
             reportQueuedTurnStorageError(error)
             return false
         }

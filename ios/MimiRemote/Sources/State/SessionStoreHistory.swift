@@ -23,6 +23,7 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         resume: AgentSession?,
         clientMessageID: ClientMessageID? = nil,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
@@ -74,6 +75,39 @@ extension SessionStore {
             clientMessageID: clientMessageID,
             prompt: prompt
         )
+        var registeredPermissionBoundaryClientMessageID: ClientMessageID?
+        if permissionSelection?.requiresNewTurn == true,
+           let permissionSelection,
+           let clientMessageID,
+           let optimisticSessionID {
+            guard mutateAndPersistQueuedTurns({
+                pendingPermissionTurnBoundariesBySessionID[optimisticSessionID, default: []].append(
+                    PendingPermissionTurnBoundary(
+                        sessionID: optimisticSessionID,
+                        clientMessageID: clientMessageID,
+                        permissionSelection: permissionSelection
+                    )
+                )
+            }) else {
+                return false
+            }
+            registeredPermissionBoundaryClientMessageID = clientMessageID
+        }
+        defer {
+            if let registeredPermissionBoundaryClientMessageID {
+                _ = mutateAndPersistQueuedTurns {
+                    guard let location = pendingPermissionTurnBoundaryLocation(
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    ) else {
+                        return
+                    }
+                    _ = removePendingPermissionTurnBoundary(
+                        sessionID: location.sessionID,
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    )
+                }
+            }
+        }
         var optimisticSelectionLease: SessionSelectionLease?
         if let optimisticSessionID {
             // 本地草稿或带首轮输入的新会话先发布运行态占位；服务端确认后再用
@@ -118,6 +152,12 @@ extension SessionStore {
                 clientMessageID: clientMessageID
             ))
             let responseSession = self.session(response.session, in: workspace)
+            if let clientMessageID {
+                migratePendingPermissionTurnBoundary(
+                    clientMessageID: clientMessageID,
+                    to: responseSession.id
+                )
+            }
 
             if let optimisticSessionID,
                optimisticSessionID != responseSession.id {
@@ -236,6 +276,7 @@ extension SessionStore {
                 setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
                 setErrorMessage(nil)
             }
+            registeredPermissionBoundaryClientMessageID = nil
             return true
         } catch {
             if case CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -1204,6 +1245,10 @@ extension SessionStore {
             page.messages,
             sessionID: sessionID,
             authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+        )
+        reconcilePendingPermissionTurnBoundaries(
+            sessionID: sessionID,
+            historyMessages: page.messages
         )
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }

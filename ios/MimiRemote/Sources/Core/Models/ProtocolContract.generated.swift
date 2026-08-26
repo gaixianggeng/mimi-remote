@@ -15,8 +15,9 @@ enum MimiProtocolContract {
     static let minimumServerRevisionHeader = "X-Mimi-Minimum-Server-Protocol-Revision"
     static let serverRevisionHeader = "X-Mimi-Server-Protocol-Revision"
     static let minimumClientRevisionHeader = "X-Mimi-Minimum-Client-Protocol-Revision"
-    static let specSHA256 = "2158fc83f85e51ab71e7841b167782bef42592131076470db6b8df10b6ff5716"
+    static let specSHA256 = "3256b2c6e44659390e71cd70036a4656f72fbfed9a74cd82bee3bd28c2438c0c"
     static let declaredCapabilities: Set<String> = [
+        "codex_remote_full_access_v1",
         "file_upload_v1",
     ]
 

@@ -1286,6 +1286,14 @@ enum QueuedTurnDispatchState: String, Codable, Equatable {
     case needsConfirmation
 }
 
+/// 权限选择改变后，必须等同一条消息真正开始新的 turn 才能解除边界。
+/// 只保存提交时的快照，迟到的旧事件不能清掉用户后来选择的权限。
+struct PendingPermissionTurnBoundary: Codable, Equatable {
+    let sessionID: SessionID
+    let clientMessageID: ClientMessageID
+    let permissionSelection: ComposerPermissionSelectionSnapshot
+}
+
 struct QueuedTurnEntry: Codable, Equatable, Identifiable {
     var id: ClientMessageID { clientMessageID }
 
@@ -1297,6 +1305,9 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
     let createdAt: Date
     var dispatchState: QueuedTurnDispatchState
     var expectedTurnID: TurnID?
+    // true 表示该队列项不能被 steer 到旧 turn，必须作为新的 turn/start 派发。
+    // Optional 保持旧 v1 队列 JSON 缺少该字段时仍可解码。
+    var requiresFreshTurn: Bool?
     // 上一条 turn/start 已获接受、但 started 事件尚未到达时，后续项必须跨重启继续等待；
     // blockedCompletionID 用来识别并忽略触发上一条派发的重复 completed 事件。
     var waitsForAcceptedTurnStart: Bool?
@@ -1313,6 +1324,7 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         createdAt: Date = Date(),
         dispatchState: QueuedTurnDispatchState = .waiting,
         expectedTurnID: TurnID? = nil,
+        requiresFreshTurn: Bool? = nil,
         waitsForAcceptedTurnStart: Bool? = nil,
         blockedCompletionID: TurnID? = nil,
         lastAttemptAt: Date? = nil,
@@ -1326,6 +1338,7 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.dispatchState = dispatchState
         self.expectedTurnID = expectedTurnID
+        self.requiresFreshTurn = requiresFreshTurn
         self.waitsForAcceptedTurnStart = waitsForAcceptedTurnStart
         self.blockedCompletionID = blockedCompletionID
         self.lastAttemptAt = lastAttemptAt
@@ -1354,6 +1367,74 @@ struct QueuedTurnProfileSnapshot: Codable, Equatable {
     var version = Self.schemaVersion
     let profileID: String
     var queuesBySessionID: [SessionID: [QueuedTurnEntry]]
+    var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]]
+    /// 明确拒绝的权限消息已离开队列，但重试时仍必须恢复 fresh-turn 约束。
+    var permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary]
+
+    init(
+        version: Int = Self.schemaVersion,
+        profileID: String,
+        queuesBySessionID: [SessionID: [QueuedTurnEntry]],
+        pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:],
+        permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary] = [:]
+    ) {
+        self.version = version
+        self.profileID = profileID
+        self.queuesBySessionID = queuesBySessionID
+        self.pendingPermissionTurnBoundariesBySessionID = pendingPermissionTurnBoundariesBySessionID
+        self.permissionTurnRetryRequirementsByClientMessageID = permissionTurnRetryRequirementsByClientMessageID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case profileID
+        case queuesBySessionID
+        case pendingPermissionTurnBoundariesBySessionID
+        case permissionTurnRetryRequirementsByClientMessageID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        profileID = try container.decode(String.self, forKey: .profileID)
+        queuesBySessionID = try container.decode(
+            [SessionID: [QueuedTurnEntry]].self,
+            forKey: .queuesBySessionID
+        )
+        // 已发布的 v1 文件没有这些字段。早期 MIM-189 开发版还把每个 Session 编码成单条边界。
+        if let boundaries = try? container.decode(
+            [SessionID: [PendingPermissionTurnBoundary]].self,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        ) {
+            pendingPermissionTurnBoundariesBySessionID = boundaries
+        } else if let legacyBoundaries = try? container.decode(
+            [SessionID: PendingPermissionTurnBoundary].self,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        ) {
+            pendingPermissionTurnBoundariesBySessionID = legacyBoundaries.mapValues { [$0] }
+        } else {
+            pendingPermissionTurnBoundariesBySessionID = [:]
+        }
+        permissionTurnRetryRequirementsByClientMessageID = try container.decodeIfPresent(
+            [ClientMessageID: PendingPermissionTurnBoundary].self,
+            forKey: .permissionTurnRetryRequirementsByClientMessageID
+        ) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(profileID, forKey: .profileID)
+        try container.encode(queuesBySessionID, forKey: .queuesBySessionID)
+        try container.encode(
+            pendingPermissionTurnBoundariesBySessionID,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        )
+        try container.encode(
+            permissionTurnRetryRequirementsByClientMessageID,
+            forKey: .permissionTurnRetryRequirementsByClientMessageID
+        )
+    }
 }
 
 enum QueuedTurnStoreError: LocalizedError {

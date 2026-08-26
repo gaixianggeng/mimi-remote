@@ -298,6 +298,17 @@ struct ComposerView: View {
                 guidedFollowUpEnabled = false
             }
         }
+        .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
+            guard let boundary,
+                  activeComposerDraftScope == .session(boundary.sessionID) else {
+                return
+            }
+            composerState.markPermissionSelectionApplied(boundary.permissionSelection)
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+        }
         .onChange(of: sessionStore.selectedSessionID) { _, _ in
             // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后恢复安全的
             // 默认排队，避免把上一条会话的发送意图意外带到另一条运行中会话。
@@ -387,15 +398,17 @@ struct ComposerView: View {
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
-            let accepted = await sessionStore.sendTurn(submitted.payload, runningDelivery: runningDelivery)
+            let accepted = await sessionStore.sendTurn(
+                submitted.payload,
+                runningDelivery: runningDelivery,
+                permissionSelection: submitted.permissionSelection
+            )
             if !accepted {
                 await MainActor.run {
                     restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
                 }
             } else {
                 await MainActor.run {
-                    // 提交时已经同步清过对应 cache。这里不能再次删除，否则发送期间
-                    // 输入的下一条草稿会被成功回调误删。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -432,7 +445,8 @@ struct ComposerView: View {
             let accepted = await sessionStore.startGoalTurn(
                 payload: submitted.payload,
                 objective: objective,
-                runningDelivery: runningDelivery
+                runningDelivery: runningDelivery,
+                permissionSelection: submitted.permissionSelection
             )
             if !accepted {
                 await MainActor.run {
@@ -440,7 +454,6 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    // 与普通发送保持一致：成功回调不二次触碰草稿 cache。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -550,6 +563,10 @@ struct ComposerView: View {
         if let snapshot = sessionStore.composerPermissionSelection(for: scope) {
             composerState.restorePermissionSelectionSnapshot(snapshot)
         } else if case .session(let sessionID) = scope,
+                  let boundary = sessionStore.latestPendingPermissionTurnBoundary(for: sessionID) {
+            // 重启后恢复最后一次提交的选择；FIFO 仍由 SessionStore 从第一条边界开始推进。
+            composerState.restorePermissionSelectionSnapshot(boundary.permissionSelection)
+        } else if case .session(let sessionID) = scope,
                   !sessionID.hasPrefix("local:"),
                   selectedSessionRuntimeProviderForModelMenu != "claude" {
             composerState.preserveThreadPermissionSettings()
@@ -636,10 +653,11 @@ struct ComposerView: View {
     }
 
     var canUseGuidedFollowUp: Bool {
-        guard let session = sessionStore.selectedSession else {
-            return false
-        }
-        return canChooseRunningFollowUpDelivery && session.activeTurnID != nil
+        guard let session = sessionStore.selectedSession else { return false }
+        return canChooseRunningFollowUpDelivery
+            && session.activeTurnID != nil
+            && !composerState.permissionSelectionRequiresNewTurn
+            && !sessionStore.hasPendingPermissionTurnBoundaryForSelectedSession
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -1022,38 +1040,21 @@ struct ComposerView: View {
         shape: RoundedRectangle,
         tokens: ThemeTokens
     ) -> some View {
-        if colorScheme == .light {
-            if reduceTransparency || colorSchemeContrast == .increased {
-                // 增强对比度靠实线边界定义卡片，阴影保持克制，避免和描边叠成脏边。
-                shape
-                    .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-            } else {
-                // 浅色输入卡不再按设备分叉：iPad 之前是纯实色白、iPhone 是材质，
-                // 同一个组件在两块屏上是两种质感，iPad 上底部还成了整屏唯一不透明的一块。
-                //
-                // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
-                // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
-                // 阴影沿用材质路径那一组：半径与偏移刻意收紧，避免在暖底上形成第三圈模糊白色。
-                shape
-                    .fill(WorkbenchMaterial.surface)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(0.14))
-                    }
-                    .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)
-            }
-        } else if reduceTransparency {
-            shape.fill(tokens.elevatedSurface)
-        } else {
-            // 深色输入区继续作为底部唯一的功能材质层，档位与其它表面一致。
-            shape
-                .fill(WorkbenchMaterial.surface)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(0.46))
-                }
-        }
+        // 输入卡是实色面，不是材质层。
+        //
+        // 正文由 `safeAreaInset` 让位，卡片后方压根没有内容可供 Material 采样折射；
+        // 之前那层 Material + tint + 两道阴影只在暖白画布上折射出第三圈模糊白边，
+        // 花了成本却买不到任何虚化。参考实现（Claude iOS）同样是一块实色近白面，
+        // 只靠单层柔和阴影与画布分离，这里对齐同一档质感。
+        let fill = colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+        // 增强对比度时边界交给描边，阴影再压一档，避免和实线描边叠成脏边。
+        let shadowOpacity: Double = colorSchemeContrast == .increased
+            ? 0.05
+            : (colorScheme == .light ? 0.06 : 0.22)
+
+        shape
+            .fill(fill)
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
     }
 
     func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
@@ -1322,20 +1323,20 @@ struct ComposerView: View {
     func compactToolControlsBox() -> AnyView {
         return AnyView(
             CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(showsRestingSurface: true),
-                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: true)
+                optionsControl: compactOptionsControlBox(),
+                microphoneControl: compactMicrophoneControlBox()
             )
         )
     }
 
     @inline(never)
-    func compactOptionsControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(composerOptionsMenu(showsRestingSurface: showsRestingSurface))
+    func compactOptionsControlBox() -> AnyView {
+        AnyView(composerOptionsMenu)
     }
 
     @inline(never)
-    func compactMicrophoneControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(voiceMicControl(showsRestingSurface: showsRestingSurface))
+    func compactMicrophoneControlBox() -> AnyView {
+        AnyView(voiceMicControl)
     }
 
     @inline(never)
@@ -1344,10 +1345,6 @@ struct ComposerView: View {
     }
 
     var composerOptionsMenu: some View {
-        composerOptionsMenu(showsRestingSurface: true)
-    }
-
-    func composerOptionsMenu(showsRestingSurface: Bool) -> some View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
@@ -1378,7 +1375,6 @@ struct ComposerView: View {
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
                 systemImage: "slider.horizontal.3",
                 isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
-                showsRestingSurface: showsRestingSurface,
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
@@ -1409,10 +1405,6 @@ struct ComposerView: View {
     }
 
     var voiceMicControl: some View {
-        voiceMicControl(showsRestingSurface: true)
-    }
-
-    func voiceMicControl(showsRestingSurface: Bool) -> some View {
         VoiceMicButton(
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
@@ -1421,7 +1413,6 @@ struct ComposerView: View {
             onTap: {
                 toggleVoiceInput()
             },
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer
         )
         .layoutPriority(0)
@@ -1587,7 +1578,6 @@ struct ComposerView: View {
         isSelected: Bool = false,
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
-        showsRestingSurface: Bool = true,
         usesCondensedTitle: Bool = false,
         accessibilityLabel: String
     ) -> some View {
@@ -1599,7 +1589,6 @@ struct ComposerView: View {
             tint: tint,
             titleMaxWidth: titleMaxWidth,
             accessibilityLabel: accessibilityLabel,
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer,
             usesCondensedTitle: usesCondensedTitle
         )
@@ -1653,13 +1642,6 @@ struct ComposerView: View {
                         .fill(isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear)
                         .padding(4)
                 }
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: usesCompactComposerMetrics ? 22 : 12,
-                        isEmphasized: isGuidedSelected
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1847,138 +1829,6 @@ struct ComposerView: View {
         }
         .fixedSize(horizontal: true, vertical: false)
         .transition(.scale(scale: 0.9).combined(with: .opacity))
-    }
-
-    func applyDefaultPermissionMode() {
-        let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
-        composerState.applyPermissionMode(safePermissionMode(stored))
-        sessionStore.saveComposerPermissionSelection(
-            composerState.permissionSelectionSnapshot(),
-            for: activeComposerDraftScope
-        )
-    }
-
-    func applyDefaultPermissionModeForActiveScope() {
-        // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
-        // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
-        switch activeComposerDraftScope {
-        case .newSession:
-            applyDefaultPermissionMode()
-        case .session(let sessionID) where sessionID.hasPrefix("local:"):
-            applyDefaultPermissionMode()
-        case .none, .session:
-            break
-        }
-    }
-
-    func setPermissionMode(_ mode: ComposerPermissionMode) {
-        let safeMode = safePermissionMode(mode)
-        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
-        if selectedSessionRuntimeProviderForModelMenu != "claude" {
-            defaultPermissionModeID = safeMode.rawValue
-        }
-        composerState.applyPermissionMode(safeMode)
-        sessionStore.saveComposerPermissionSelection(
-            composerState.permissionSelectionSnapshot(),
-            for: activeComposerDraftScope
-        )
-    }
-
-    func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
-        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: profile.id) {
-            setPermissionMode(builtInMode)
-            return
-        }
-        composerState.updateTurnOptions { options in
-            options.preservesThreadPermissionSettings = false
-            options.permissionProfileID = profile.id
-            options.approvalPolicy = .forPermissionProfileID(profile.id)
-            options.approvalsReviewer = "user"
-            options.networkAccess = false
-        }
-        sessionStore.saveComposerPermissionSelection(
-            composerState.permissionSelectionSnapshot(),
-            for: activeComposerDraftScope
-        )
-    }
-
-    var permissionProfileCWD: String? {
-        let path = sessionStore.selectedSession?.dir ?? sessionStore.selectedProject?.path
-        return path?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
-    }
-
-    var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
-        guard selectedSessionRuntimeProviderForModelMenu != "claude",
-              sessionStore.permissionProfilesCWD == permissionProfileCWD
-        else {
-            return []
-        }
-        // 三个内建档案与上方用户权限模式完全重复，只把真正的自定义档案放进高级入口。
-        return sessionStore.appServerPermissionProfiles.filter {
-            ComposerPermissionMode(builtInPermissionProfileID: $0.id) == nil
-        }
-    }
-
-    var selectedPermissionProfileID: String? {
-        if let profileID = composerState.turnOptions.permissionProfileID?
-            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty {
-            return profileID
-        }
-        return composerState.turnOptions.preservesThreadPermissionSettings
-            ? activePermissionProfile?.id
-            : nil
-    }
-
-    var activePermissionProfile: CodexAppServerActivePermissionProfile? {
-        guard let sessionID = sessionStore.selectedSessionID else {
-            return nil
-        }
-        return sessionStore.activePermissionProfileBySessionID[sessionID]
-    }
-
-    func clampPermissionProfileToAvailableOptions() {
-        guard let explicitProfileID = composerState.turnOptions.permissionProfileID?
-            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty else { return }
-        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: explicitProfileID) {
-            composerState.applyPermissionMode(builtInMode)
-            sessionStore.saveComposerPermissionSelection(
-                composerState.permissionSelectionSnapshot(),
-                for: activeComposerDraftScope
-            )
-            return
-        }
-        guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
-            composerState.resetUnavailablePermissionProfile()
-            sessionStore.saveComposerPermissionSelection(
-                composerState.permissionSelectionSnapshot(),
-                for: activeComposerDraftScope
-            )
-            return
-        }
-    }
-
-    var availablePermissionModes: [ComposerPermissionMode] {
-        if selectedSessionRuntimeProviderForModelMenu == "claude" {
-            return [.requestApproval, .readOnly, .autoApprove]
-        }
-        return ComposerPermissionMode.allCases
-    }
-
-    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
-        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
-        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
-        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
-        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .autoApprove
-            : mode
-    }
-
-    func clampPermissionSelectionToSelectedSessionRuntime() {
-        let safeMode = safePermissionMode(composerState.permissionMode)
-        guard safeMode != composerState.permissionMode else {
-            return
-        }
-        composerState.applyPermissionMode(safeMode)
     }
 
 }
