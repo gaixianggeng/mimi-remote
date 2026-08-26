@@ -656,6 +656,59 @@ func TestRuntimeStatusManualRefreshBypassesFreshTTL(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusManualRefreshRunsAfterInflightBackgroundProbe(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var probes atomic.Int32
+	var accountState atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probe := probes.Add(1)
+			observed := accountState.Load()
+			if probe == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			state := runtimeStateSignedOut
+			if observed == 1 {
+				state = runtimeStateConnected
+			}
+			checkedAt := time.Now().UTC()
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: state,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	defer cache.Close()
+
+	_ = cache.Snapshot()
+	<-firstStarted
+	accountState.Store(1)
+	result := make(chan runtimeStatusResponse, 1)
+	go func() { result <- cache.Refresh(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	if got := probes.Load(); got != 1 {
+		t.Fatalf("manual refresh must wait for the in-flight probe before its follow-up: probes=%d", got)
+	}
+	close(releaseFirst)
+
+	select {
+	case response := <-result:
+		if got := probes.Load(); got != 2 {
+			t.Fatalf("manual refresh must run one follow-up probe: probes=%d", got)
+		}
+		if len(response.Runtimes) != 1 || response.Runtimes[0].State != runtimeStateConnected {
+			t.Fatalf("manual refresh returned the pre-click sample: %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual refresh did not finish after the follow-up probe")
+	}
+}
+
 func TestRuntimeStatusHandlerWaitRefreshBypassesCache(t *testing.T) {
 	checkedAt := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
 	var probes atomic.Int32

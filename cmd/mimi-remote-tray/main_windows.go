@@ -185,6 +185,8 @@ type trayApplication struct {
 	mu             sync.RWMutex
 	status         agentStatus
 	statusErr      error
+	statusRequest  uint64
+	statusApplied  uint64
 	busy           bool
 	pairingBusy    bool
 	quitting       bool
@@ -197,21 +199,11 @@ type trayApplication struct {
 var currentTray *trayApplication
 
 func main() {
+	enablePerMonitorDPIAwareness()
+
 	pairAfterInstall := flag.Bool("pair", false, "启动后打开本机配对窗口")
 	showAfterStart := flag.Bool("show", false, "启动后打开 Windows 控制面板")
-	serviceHost := flag.Bool("service-host", false, "内部：无窗口托管 Windows agentd 服务")
-	serviceAgentPath := flag.String("service-agent-path", "", "内部：Windows agentd 服务程序路径")
-	serviceLogPath := flag.String("service-log-path", "", "内部：Windows agentd 服务日志路径")
 	flag.Parse()
-	if *serviceHost {
-		if err := runManagedServiceHost(*serviceAgentPath, *serviceLogPath); err != nil {
-			appendManagedServiceHostError(*serviceLogPath, err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	enablePerMonitorDPIAwareness()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -580,14 +572,32 @@ func (a *trayApplication) refreshStatus() {
 }
 
 func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
+	request := a.beginStatusRequest()
 	ctx, cancel := statusContext()
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
-	a.mu.Lock()
-	a.status = status
-	a.statusErr = err
-	a.mu.Unlock()
+	a.completeStatusRequest(request, status, err)
 	procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+}
+
+func (a *trayApplication) beginStatusRequest() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.statusRequest++
+	return a.statusRequest
+}
+
+func (a *trayApplication) completeStatusRequest(request uint64, status agentStatus, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if request < a.statusApplied {
+		return
+	}
+	a.statusApplied = request
+	if err == nil {
+		a.status = status
+	}
+	a.statusErr = err
 }
 
 func (a *trayApplication) showMenu() {
@@ -609,7 +619,11 @@ func (a *trayApplication) showMenu() {
 		header = "状态：正在检查"
 	}
 	if statusErr != nil {
-		header = "状态：服务不可用"
+		if status.Version == "" {
+			header = "状态：服务不可用"
+		} else {
+			header += "（刷新失败）"
+		}
 	}
 	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
 	appendMenu(menu, mfSeparator, 0, "")

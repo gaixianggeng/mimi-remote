@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -78,7 +77,8 @@ func (p *terminalProcess) Wait() error {
 
 type agentController struct {
 	agentPath          string
-	statusMu           sync.Mutex
+	statusGate         chan struct{}
+	statusRunner       func(context.Context, ...string) ([]byte, error)
 	cachedNetwork      *networkStatus
 	networkLastChecked time.Time
 }
@@ -105,19 +105,37 @@ func newAgentController() (*agentController, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("安装目录中缺少 agentd.exe：%s", agentPath)
 	}
-	return &agentController{agentPath: agentPath}, nil
+	return &agentController{agentPath: agentPath, statusGate: make(chan struct{}, 1)}, nil
 }
 
 func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agentStatus, error) {
-	// Serialize refreshes so startup retries, the periodic ticker, and a manual
-	// refresh cannot launch multiple expensive Windows firewall inspections.
-	c.statusMu.Lock()
-	defer c.statusMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case c.statusGate <- struct{}{}:
+		defer func() { <-c.statusGate }()
+	case <-ctx.Done():
+		return agentStatus{}, ctx.Err()
+	}
+
+	// 排队与执行使用独立预算。手动刷新取得执行权后，必须完整覆盖
+	// runtime 的 10 秒探测以及计划任务、配置和网络状态读取。
+	timeout := backgroundStatusCommandTimeout
+	if refreshRuntime {
+		timeout = manualStatusCommandTimeout
+	}
+	commandCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	inspectNetwork := c.cachedNetwork == nil ||
 		time.Since(c.networkLastChecked) >= networkPolicyRefreshInterval
 	args := statusArguments(refreshRuntime, inspectNetwork)
-	payload, err := c.runHidden(ctx, args...)
+	runner := c.statusRunner
+	if runner == nil {
+		runner = c.runHidden
+	}
+	payload, err := runner(commandCtx, args...)
 	if err != nil {
 		return agentStatus{}, err
 	}
@@ -328,8 +346,14 @@ func trayLogf(format string, args ...any) {
 	_, _ = fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 }
 
+const (
+	statusQueueTimeout             = 25 * time.Second
+	backgroundStatusCommandTimeout = 12 * time.Second
+	manualStatusCommandTimeout     = 20 * time.Second
+)
+
 func statusContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 12*time.Second)
+	return context.WithTimeout(context.Background(), statusQueueTimeout)
 }
 
 func actionContext() (context.Context, context.CancelFunc) {

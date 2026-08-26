@@ -18,7 +18,7 @@ $windowsDocs = @(
 )
 foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', '-ServiceHostPath', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
 $prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'), $source.IndexOf('procedure CurStepChanged') - $source.IndexOf('function PrepareToInstall'))
@@ -37,10 +37,9 @@ if ($postInstallSource.IndexOf('ConfigurePrivateLanFirewallRule(True)') -gt $pos
     throw 'Unsafe inbound rules must be repaired before the upgraded scheduled task is registered or started.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
-foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $ServiceHostPath', '--service-host', '--service-agent-path', '--service-log-path', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
+foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $AgentPath', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
 }
-if ($registerSource.Contains('New-ScheduledTaskAction -Execute $AgentPath')) { throw 'Task registration must not launch console-subsystem agentd.exe directly.' }
 $registerBytes = [IO.File]::ReadAllBytes($register)
 $registerHasUtf8Bom = $registerBytes.Length -ge 3 -and $registerBytes[0] -eq 0xEF -and $registerBytes[1] -eq 0xBB -and $registerBytes[2] -eq 0xBF
 if (-not $registerHasUtf8Bom -and $registerBytes.Where({ $_ -gt 0x7F }, 'First').Count -gt 0) {
@@ -61,10 +60,12 @@ if ($errors.Count -gt 0) {
 $assignment = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        $node.Left.Extent.Text -eq '$serviceArguments'
+        $node.Left.Extent.Text -eq '$action'
 }, $true)
-if (-not $assignment) {
-    [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the service-host argument assignment.')
+if (-not $assignment -or
+    -not $assignment.Right.Extent.Text.Contains('$AgentPath') -or
+    -not $assignment.Right.Extent.Text.Contains('--managed-service')) {
+    [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the direct managed-service action.')
     exit 1
 }
 '@

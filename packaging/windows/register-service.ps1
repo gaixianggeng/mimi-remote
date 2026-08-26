@@ -1,14 +1,12 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AgentPath,
-    [Parameter(Mandatory = $true)][string]$ServiceHostPath,
     [Parameter(Mandatory = $true)][string]$LogPath,
     [string]$TaskName = 'Mimi Remote agentd'
 )
 
 $ErrorActionPreference = 'Stop'
 $AgentPath = (Resolve-Path -LiteralPath $AgentPath).Path
-$ServiceHostPath = (Resolve-Path -LiteralPath $ServiceHostPath).Path
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 # agentd removes its PID file before Task Scheduler necessarily transitions the
@@ -29,11 +27,7 @@ if ($existing -and $existing.State -in @('Running', 'Queued')) {
     }
 }
 
-# agentd.exe 是控制台子系统程序。计划任务直接启动它时，用户从控制面板
-# 启动或重启服务会看到终端窗口。改由 windowsgui 托盘程序作为无窗口宿主，
-# 同步等待 agentd 退出，让 Task Scheduler 继续准确跟踪服务生命周期。
-$serviceArguments = "--service-host --service-agent-path `"$AgentPath`" --service-log-path `"$LogPath`""
-$action = New-ScheduledTaskAction -Execute $ServiceHostPath -Argument $serviceArguments
+$action = New-ScheduledTaskAction -Execute $AgentPath -Argument "serve --managed-service --log-file `"$LogPath`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `

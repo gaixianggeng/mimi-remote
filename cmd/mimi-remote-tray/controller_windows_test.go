@@ -3,8 +3,10 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMenuPairCommandIDIsStable(t *testing.T) {
@@ -66,6 +68,47 @@ func TestStatusArgumentsOnlyForceRuntimeForManualRefresh(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("manual status arguments missing %s: %#v", expected, manual)
 		}
+	}
+}
+
+func TestManualStatusGetsFullExecutionBudgetAfterQueueWait(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondBudget := make(chan time.Duration, 1)
+	controller := &agentController{statusGate: make(chan struct{}, 1)}
+	call := 0
+	controller.statusRunner = func(ctx context.Context, _ ...string) ([]byte, error) {
+		call++
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		} else if deadline, ok := ctx.Deadline(); ok {
+			secondBudget <- time.Until(deadline)
+		}
+		return []byte(`{"version":"1.2.3"}`), nil
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := controller.status(context.Background(), false)
+		firstDone <- err
+	}()
+	<-firstStarted
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := controller.status(context.Background(), true)
+		secondDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if budget := <-secondBudget; budget < manualStatusCommandTimeout-time.Second {
+		t.Fatalf("manual execution budget was consumed while queued: %s", budget)
 	}
 }
 

@@ -932,7 +932,7 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 		FixEnabled:       !busy,
 		LogsEnabled:      !busy,
 	}
-	if statusErr != nil {
+	if statusErr != nil && status.Version == "" {
 		presentation.StateTitle = "无法读取服务状态"
 		presentation.StateBadge = "不可用"
 		presentation.StateSummary = compactControlPanelError(statusErr)
@@ -974,6 +974,9 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 			presentation.StateSummary = "点击“启动服务”即可恢复连接。"
 			presentation.StatusColor = rgbColor(184, 42, 50)
 			presentation.StatusBackground = rgbColor(255, 239, 240)
+		}
+		if statusErr != nil {
+			presentation.StateSummary = "刷新失败，当前显示上次状态：" + compactControlPanelError(statusErr)
 		}
 	}
 	if busy {

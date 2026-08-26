@@ -173,6 +173,17 @@ func TestControlPanelPresentationHandlesPairingAndStatusErrors(t *testing.T) {
 	}
 }
 
+func TestControlPanelPresentationKeepsLastGoodStatusAfterRefreshError(t *testing.T) {
+	status := agentStatus{Version: "1.2.3", ProcessOK: true, ServiceOK: true, DoctorOK: true}
+	presentation := makeControlPanelPresentation(status, errors.New("refresh timed out"), false, false)
+	if presentation.StateTitle != "服务运行正常" || presentation.StartEnabled || !presentation.StopEnabled {
+		t.Fatalf("refresh error replaced the last good service state: %#v", presentation)
+	}
+	if !strings.Contains(presentation.StateSummary, "当前显示上次状态") {
+		t.Fatalf("refresh warning is missing: %q", presentation.StateSummary)
+	}
+}
+
 func TestCompactControlPanelNetworkUsesShortWindowsLabels(t *testing.T) {
 	status := &networkStatus{
 		Mode:            "lan",

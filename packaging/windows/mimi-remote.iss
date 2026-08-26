@@ -91,8 +91,7 @@ begin
   ExtractTemporaryFile('register-service.ps1');
   Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
     Quote(ExpandConstant('{tmp}\register-service.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -ServiceHostPath ' +
-    Quote(ExpandConstant('{app}\mimi-remote-tray.exe')) + ' -LogPath ' +
+    Quote(ExpandConstant('{app}\agentd.exe')) + ' -LogPath ' +
     Quote(ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log')) +
     ' -TaskName ' + Quote(TaskName);
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
@@ -286,8 +285,8 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  // The service host uses the tray image name. Stop agentd gracefully before
-  // taskkill closes either host; the Job Object then removes any descendants.
+  // Stop agentd gracefully before replacing files. The managed agent owns a
+  // kill-on-close Job Object, so an unexpected exit also removes descendants.
   StopManagedService;
   StopTrayApp;
   // Keep the existing task registered while files are replaced. The

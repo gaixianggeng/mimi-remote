@@ -48,6 +48,7 @@ const (
 func main() {
 	if err := run(os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
+		appendManagedServiceFailure(os.Args, err)
 		os.Exit(1)
 	}
 }
@@ -57,6 +58,9 @@ func run(args []string) error {
 	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 		cmd = args[1]
 		args = append([]string{args[0]}, args[2:]...)
+	}
+	if cmd == "serve" {
+		hideStandaloneManagedServiceConsole(args)
 	}
 	if cmd != "version" {
 		if err := ensureProcessUserEnvironment(); err != nil {
