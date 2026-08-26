@@ -682,24 +682,28 @@ func TestStopLegacyPIDBackendWithoutReportedPIDUsesStrictFallback(t *testing.T) 
 		Secure:    true,
 		Label:     SharedDaemonLaunchAgentLabel,
 	}
-	stopCalls := 0
+	signalCalls := 0
 	validateCalls := 0
+	listener := sharedDaemonListenerProcess{PID: 4321}
 	handled, err := stopLegacyPIDBackendWithoutReportedPID(
 		context.Background(),
 		LocalDaemonOptions{},
 		owner,
 		lifecycle,
-		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) error {
+		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) (sharedDaemonListenerProcess, error) {
 			validateCalls++
-			return nil
+			return listener, nil
 		},
-		func(context.Context, LocalDaemonOptions) error {
-			stopCalls++
+		func(pid int) error {
+			signalCalls++
+			if pid != listener.PID {
+				t.Fatalf("优雅排空目标 PID 错误：%d", pid)
+			}
 			return nil
 		},
 	)
-	if err != nil || !handled || validateCalls != 1 || stopCalls != 1 {
-		t.Fatalf("旧 pid backend 应严格取证后调用官方 stop：handled=%t validate=%d stop=%d err=%v", handled, validateCalls, stopCalls, err)
+	if err != nil || !handled || validateCalls != 1 || signalCalls != 1 {
+		t.Fatalf("旧 pid backend 应严格取证后只发送一次 SIGHUP：handled=%t validate=%d signal=%d err=%v", handled, validateCalls, signalCalls, err)
 	}
 
 	owner.Loaded = false
@@ -708,17 +712,86 @@ func TestStopLegacyPIDBackendWithoutReportedPIDUsesStrictFallback(t *testing.T) 
 		LocalDaemonOptions{},
 		owner,
 		lifecycle,
-		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) error {
+		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) (sharedDaemonListenerProcess, error) {
 			validateCalls++
-			return nil
+			return listener, nil
 		},
-		func(context.Context, LocalDaemonOptions) error {
-			stopCalls++
+		func(int) error {
+			signalCalls++
 			return nil
 		},
 	)
-	if !handled || err == nil || validateCalls != 1 || stopCalls != 1 {
-		t.Fatalf("缺少 stable owner 时必须 fail closed：handled=%t validate=%d stop=%d err=%v", handled, validateCalls, stopCalls, err)
+	if !handled || err == nil || validateCalls != 1 || signalCalls != 1 {
+		t.Fatalf("缺少 stable owner 时必须 fail closed：handled=%t validate=%d signal=%d err=%v", handled, validateCalls, signalCalls, err)
+	}
+}
+
+func TestStopLegacyPIDBackendWithoutReportedPIDRejectsUnsafeSignalPID(t *testing.T) {
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{Backend: &backend}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	signalCalls := 0
+
+	handled, err := stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(context.Context, LocalDaemonOptions, LocalDaemonLifecycleStatus) (sharedDaemonListenerProcess, error) {
+			return sharedDaemonListenerProcess{PID: 1}, nil
+		},
+		func(int) error {
+			signalCalls++
+			return nil
+		},
+	)
+	if !handled || err == nil || signalCalls != 0 {
+		t.Fatalf("旧 pid backend 必须在发信号前拒绝 PID 1：handled=%t signal=%d err=%v", handled, signalCalls, err)
+	}
+}
+
+func TestStopLegacyPIDBackendWithoutReportedPIDRejectsFinalDesktopSwap(t *testing.T) {
+	backend := "pid"
+	lifecycle := LocalDaemonLifecycleStatus{Backend: &backend}
+	owner := SharedDaemonOwnerStatus{
+		Installed: true,
+		Loaded:    true,
+		Secure:    true,
+		Label:     SharedDaemonLaunchAgentLabel,
+	}
+	first := sharedDaemonListenerProcess{PID: 4321, UID: 501, StartSec: 10}
+	replacement := first
+	replacement.PID++
+	replacement.StartSec++
+	signalCalls := 0
+
+	handled, err := stopLegacyPIDBackendWithoutReportedPID(
+		context.Background(),
+		LocalDaemonOptions{},
+		owner,
+		lifecycle,
+		func(ctx context.Context, _ LocalDaemonOptions, _ LocalDaemonLifecycleStatus) (sharedDaemonListenerProcess, error) {
+			return rebindSharedDaemonListenerAfterDesktop(
+				ctx,
+				"/tmp/app.sock",
+				first,
+				func(context.Context, string) (sharedDaemonListenerProcess, error) {
+					return replacement, nil
+				},
+			)
+		},
+		func(int) error {
+			signalCalls++
+			return nil
+		},
+	)
+	if !handled || err == nil || !strings.Contains(err.Error(), "Desktop 复核后") || signalCalls != 0 {
+		t.Fatalf("旧 pid backend 在最终 Desktop 探测期间换主时不得发送 SIGHUP：handled=%t signal=%d err=%v", handled, signalCalls, err)
 	}
 }
 
@@ -744,15 +817,15 @@ func TestStopLegacyPIDBackendWithoutReportedPIDRejectsABASwapAroundSignedIdentit
 	b.Executable = "/private/tmp/b/codex"
 	captureCalls := 0
 	inspectCalls := 0
-	stopCalls := 0
+	signalCalls := 0
 
 	handled, err := stopLegacyPIDBackendWithoutReportedPID(
 		context.Background(),
 		LocalDaemonOptions{},
 		owner,
 		lifecycle,
-		func(ctx context.Context, options LocalDaemonOptions, _ LocalDaemonLifecycleStatus) error {
-			_, captureErr := captureStableSignedSharedDaemonListenerIdentity(
+		func(ctx context.Context, options LocalDaemonOptions, _ LocalDaemonLifecycleStatus) (sharedDaemonListenerProcess, error) {
+			return captureStableSignedSharedDaemonListenerIdentity(
 				ctx,
 				options,
 				"/tmp/app.sock",
@@ -767,18 +840,17 @@ func TestStopLegacyPIDBackendWithoutReportedPIDRejectsABASwapAroundSignedIdentit
 					return b, nil
 				},
 			)
-			return captureErr
 		},
-		func(context.Context, LocalDaemonOptions) error {
-			stopCalls++
+		func(int) error {
+			signalCalls++
 			return nil
 		},
 	)
 	if !handled || err == nil || !strings.Contains(err.Error(), "socket owner 与已验签 listener 身份不一致") {
 		t.Fatalf("ABA 换主时必须 fail closed：handled=%t err=%v", handled, err)
 	}
-	if captureCalls != 1 || inspectCalls != 2 || stopCalls != 0 {
-		t.Fatalf("ABA 换主后不得停止：capture=%d inspect=%d stop=%d", captureCalls, inspectCalls, stopCalls)
+	if captureCalls != 1 || inspectCalls != 2 || signalCalls != 0 {
+		t.Fatalf("ABA 换主后不得发送信号：capture=%d inspect=%d signal=%d", captureCalls, inspectCalls, signalCalls)
 	}
 }
 

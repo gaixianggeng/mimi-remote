@@ -732,6 +732,11 @@ func (r *Router) releaseIdleCodexThread(
 	if status != "idle" && status != "systemError" {
 		return "", fmt.Errorf("thread 在交接前恢复为非空闲状态：%s", status)
 	}
+	release, err := r.acquireMimiOwnedSharedDaemonFence(ctx)
+	if err != nil {
+		return "", fmt.Errorf("共享 Codex 服务正在切换：%w", err)
+	}
+	defer release()
 	if r.threadHandoffRecovery == nil {
 		return "", fmt.Errorf("thread handoff 恢复日志未初始化")
 	}
@@ -767,6 +772,11 @@ func (r *Router) releaseIdleCodexThread(
 }
 
 func (r *Router) recoverCodexThreadHandoff(ctx context.Context, threadID string) (appServerThreadHandoffOutcome, error) {
+	release, err := r.acquireMimiOwnedSharedDaemonFence(ctx)
+	if err != nil {
+		return "", fmt.Errorf("共享 Codex 服务正在切换：%w", err)
+	}
+	defer release()
 	rpc, closeConnection, err := r.openThreadHandoffRPC(ctx)
 	if err != nil {
 		return "", err

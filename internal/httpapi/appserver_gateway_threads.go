@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1064,11 +1065,15 @@ func (p *appServerGatewayPolicy) close() {
 	}
 	p.threadWriterCandidates = nil
 	p.pendingThreadWriters = nil
+	reservations := p.takeClientRPCReservationsLocked()
 	handoffCapable := p.threadHandoffCapable
 	p.mu.Unlock()
 	p.threadWriterForwardMu.Unlock()
 	for _, path := range paths {
 		p.router.releaseManagedWorktreePendingUse(path)
+	}
+	for _, reservation := range reservations {
+		reservation.release()
 	}
 	p.scheduleThreadHandoffsAfterDisconnect(writerCandidates, handoffCapable)
 }
@@ -1423,10 +1428,25 @@ func gatewayThreadCacheExpired(thread appServerGatewayAllowedThread, now time.Ti
 }
 
 func gatewayRequestIDKey(id *json.RawMessage) string {
-	if id == nil || len(bytes.TrimSpace(*id)) == 0 {
+	if id == nil {
 		return ""
 	}
-	return string(bytes.TrimSpace(*id))
+	raw := bytes.TrimSpace(*id)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return ""
+		}
+		return "s:" + value
+	}
+	value, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		return ""
+	}
+	return "i:" + strconv.FormatInt(value, 10)
 }
 
 func decodeGatewayParams(raw json.RawMessage) (map[string]any, error) {

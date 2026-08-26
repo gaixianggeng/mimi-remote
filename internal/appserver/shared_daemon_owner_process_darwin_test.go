@@ -69,52 +69,7 @@ func TestWaitForSharedDaemonStoppedRetriesTransientDarwinExitEIO(t *testing.T) {
 	}
 }
 
-func TestStopSharedDaemonManagedBackendChecksDesktopBeforeOfficialStop(t *testing.T) {
-	home := sharedDaemonTestHome(t)
-	codexHome := filepath.Join(home, ".codex")
-	socketPath, err := LocalDaemonSocketPath(map[string]string{"CODEX_HOME": codexHome})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-
-	stopMarker := filepath.Join(t.TempDir(), "official-stop-called")
-	bin := filepath.Join(t.TempDir(), "codex")
-	lifecycleJSON := fmt.Sprintf(
-		`{"status":"running","backend":"pid","socketPath":%q,"appServerVersion":"0.147.0"}`,
-		socketPath,
-	)
-	script := fmt.Sprintf(`#!/bin/sh
-if [ "$3" = "version" ]; then
-  printf '%%s\n' '%s'
-  exit 0
-fi
-if [ "$3" = "stop" ]; then
-  touch '%s'
-  exit 0
-fi
-exit 2
-`, lifecycleJSON, stopMarker)
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	options := LocalDaemonOptions{
-		CodexBin: bin,
-		Env:      map[string]string{"CODEX_HOME": codexHome},
-	}
-	owner := SharedDaemonOwnerStatus{
-		Installed: true,
-		Loaded:    true,
-		Secure:    true,
-	}
-
+func TestRequireManagedSharedDaemonIdleForStopChecksDesktop(t *testing.T) {
 	tests := []struct {
 		name        string
 		desktop     func(context.Context) (bool, error)
@@ -130,31 +85,27 @@ exit 2
 			desktop:     func(context.Context) (bool, error) { return false, errors.New("query failed") },
 			wantMessage: "确认 Codex Desktop 已退出失败",
 		},
-		{
-			name: "desktop reopened before command",
-			desktop: func() func(context.Context) (bool, error) {
-				checks := 0
-				return func(context.Context) (bool, error) {
-					checks++
-					return checks == 2, nil
-				}
-			}(),
-			wantMessage: "重新打开",
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_ = os.Remove(stopMarker)
 			originalDesktop := sharedDaemonDesktopRunning
+			originalRequireIdle := sharedDaemonRequireIdle
 			sharedDaemonDesktopRunning = test.desktop
-			t.Cleanup(func() { sharedDaemonDesktopRunning = originalDesktop })
+			sharedDaemonRequireIdle = func(context.Context, string) error { return nil }
+			t.Cleanup(func() {
+				sharedDaemonDesktopRunning = originalDesktop
+				sharedDaemonRequireIdle = originalRequireIdle
+			})
 
-			err := stopSharedDaemon(context.Background(), options, owner)
+			err := requireManagedSharedDaemonIdleForStop(
+				context.Background(),
+				LocalDaemonOptions{},
+				"/tmp/app.sock",
+				LocalDaemonLifecycleStatus{},
+				nil,
+			)
 			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
-				t.Fatalf("官方 stop 前必须 fail closed：%v", err)
-			}
-			if _, statErr := os.Stat(stopMarker); !os.IsNotExist(statErr) {
-				t.Fatalf("Desktop guard 失败时不能执行官方 stop：%v", statErr)
+				t.Fatalf("优雅排空前必须 fail closed：%v", err)
 			}
 		})
 	}
@@ -200,7 +151,7 @@ func TestWaitForSharedDaemonStoppedResetsConfirmationAfterReconnect(t *testing.T
 }
 
 func TestStopUnmanagedSharedDaemonRequiresDesktopStopped(t *testing.T) {
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithHooks(
 		context.Background(),
 		"/tmp/app.sock",
@@ -211,12 +162,12 @@ func TestStopUnmanagedSharedDaemonRequiresDesktopStopped(t *testing.T) {
 				t.Fatal("Desktop 运行时不应读取或终止 socket owner")
 				return sharedDaemonListenerProcess{}, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return 501 },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "仍在运行") || termCalls != 0 {
-		t.Fatalf("Desktop 未退出必须 fail closed：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "仍在运行") || signalCalls != 0 {
+		t.Fatalf("Desktop 未退出必须 fail closed：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -242,15 +193,60 @@ func TestStopUnmanagedSharedDaemonSignalsOneStrictlyMatchedProcess(t *testing.T)
 				inspectCalls++
 				return process, nil
 			},
-			signalTERM: func(pid int) error { signaled = append(signaled, pid); return nil },
-			currentUID: func() int { return 501 },
+			signalGraceful: func(pid int) error { signaled = append(signaled, pid); return nil },
+			currentUID:     func() int { return 501 },
 		},
 	)
 	if err != nil {
-		t.Fatalf("严格匹配的原生 SSH daemon 应允许一次 TERM：%v", err)
+		t.Fatalf("严格匹配的原生 SSH daemon 应允许一次 SIGHUP：%v", err)
 	}
-	if desktopChecks != 2 || inspectCalls != 2 || len(signaled) != 1 || signaled[0] != process.PID {
-		t.Fatalf("接管必须两次确认 Desktop、双重确认 PID 且只 TERM 一次：desktop=%d inspect=%d signaled=%v", desktopChecks, inspectCalls, signaled)
+	if desktopChecks != 2 || inspectCalls != 3 || len(signaled) != 1 || signaled[0] != process.PID {
+		t.Fatalf("接管必须两次确认 Desktop、最终确认 PID 且只 SIGHUP 一次：desktop=%d inspect=%d signaled=%v", desktopChecks, inspectCalls, signaled)
+	}
+}
+
+func TestStopUnmanagedSharedDaemonRejectsSwapDuringFinalDesktopCheck(t *testing.T) {
+	first := sharedDaemonListenerProcess{
+		PID:        1234,
+		UID:        501,
+		StartSec:   1786522048,
+		StartUsec:  123,
+		Command:    "codex app-server --listen unix://",
+		Executable: "/tmp/codex-real",
+	}
+	replacement := first
+	replacement.PID = 5678
+	replacement.StartUsec++
+	swapped := false
+	desktopChecks := 0
+	inspectCalls := 0
+	signalCalls := 0
+
+	err := stopUnmanagedSharedDaemonWithHooks(
+		context.Background(),
+		"/tmp/app.sock",
+		first.Executable,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: func(context.Context) (bool, error) {
+				desktopChecks++
+				if desktopChecks == 2 {
+					swapped = true
+				}
+				return false, nil
+			},
+			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
+				inspectCalls++
+				if swapped {
+					return replacement, nil
+				}
+				return first, nil
+			},
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return 501 },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "Desktop 复核后") || signalCalls != 0 {
+		t.Fatalf("Desktop 探测期间换主必须在 SIGHUP 前 fail closed：desktop=%d inspect=%d signal=%d err=%v", desktopChecks, inspectCalls, signalCalls, err)
 	}
 }
 
@@ -278,9 +274,9 @@ func TestStopUnmanagedSharedDaemonAcceptsStagedExecutableForSignedStableOwner(t 
 
 	inspectCalls := 0
 	desktopChecks := 0
-	termCalls := 0
+	signalCalls := 0
 	// sharedDaemonValidateSignedRuntime 已在上层完成签名 node supervisor 父链
-	// 验证；这里把同一完整 identity 绑定到最终 TERM helper。
+	// 验证；这里把同一完整 identity 绑定到最终 SIGHUP helper。
 	err = stopUnmanagedSharedDaemonWithExpectedIdentity(
 		context.Background(),
 		"/tmp/app.sock",
@@ -295,20 +291,20 @@ func TestStopUnmanagedSharedDaemonAcceptsStagedExecutableForSignedStableOwner(t 
 				inspectCalls++
 				return process, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return os.Getuid() },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return os.Getuid() },
 		},
 	)
 	if err != nil {
-		t.Fatalf("签名 stable owner 的 staged listener 应按原始 Codex argv 允许一次 TERM：%v", err)
+		t.Fatalf("签名 stable owner 的 staged listener 应按原始 Codex argv 允许一次 SIGHUP：%v", err)
 	}
-	if desktopChecks != 2 || inspectCalls != 2 || termCalls != 1 {
-		t.Fatalf("停止必须保留 Desktop 双重检查、listener 双重确认和一次 TERM：desktop=%d inspect=%d term=%d", desktopChecks, inspectCalls, termCalls)
+	if desktopChecks != 2 || inspectCalls != 3 || signalCalls != 1 {
+		t.Fatalf("停止必须保留 Desktop 双重检查、listener 最终确认和一次 SIGHUP：desktop=%d inspect=%d signal=%d", desktopChecks, inspectCalls, signalCalls)
 	}
 
 	// 同一 listener 若按 lifecycle 的 standalone 路径判断，必须继续拒绝；
 	// 这保证旧式 unmanaged SSH listener 的路径边界没有被放宽。
-	termCalls = 0
+	signalCalls = 0
 	err = stopUnmanagedSharedDaemonWithHooks(
 		context.Background(),
 		"/tmp/app.sock",
@@ -318,12 +314,12 @@ func TestStopUnmanagedSharedDaemonAcceptsStagedExecutableForSignedStableOwner(t 
 			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
 				return process, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return os.Getuid() },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return os.Getuid() },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || termCalls != 0 {
-		t.Fatalf("legacy unmanaged 路径必须继续要求 standalone executable：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || signalCalls != 0 {
+		t.Fatalf("legacy unmanaged 路径必须继续要求 standalone executable：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -340,7 +336,7 @@ func TestStopUnmanagedSharedDaemonRejectsStagedListenerWithUnexpectedOriginalArg
 		Command:    strings.Join([]string{foreign, "app-server", "--listen", "unix://"}, "\x00"),
 		Executable: staged,
 	}
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithExpectedIdentity(
 		context.Background(),
 		"/tmp/app.sock",
@@ -351,12 +347,12 @@ func TestStopUnmanagedSharedDaemonRejectsStagedListenerWithUnexpectedOriginalArg
 			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
 				return process, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return os.Getuid() },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return os.Getuid() },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "listener 身份无效") || termCalls != 0 {
-		t.Fatalf("staged listener 的原始 argv 不匹配时必须拒绝 TERM：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "listener 身份无效") || signalCalls != 0 {
+		t.Fatalf("staged listener 的原始 argv 不匹配时必须拒绝 SIGHUP：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -373,10 +369,10 @@ func TestStopUnmanagedSharedDaemonRejectsListenerChangedAfterSignedIdentityConfi
 	}
 	// 模拟 socket 在签名父链验证之后换成另一个 owner。它仍使用同一
 	// configured executable、UID 和 argv，但父 PID 已变化；完整 identity
-	// 绑定必须在任何 TERM 前 fail closed。
+	// 绑定必须在任何 SIGHUP 前 fail closed。
 	replacement := expected
 	replacement.ParentPID = 9877
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithExpectedIdentity(
 		context.Background(),
 		"/tmp/app.sock",
@@ -387,12 +383,12 @@ func TestStopUnmanagedSharedDaemonRejectsListenerChangedAfterSignedIdentityConfi
 			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
 				return replacement, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return os.Getuid() },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return os.Getuid() },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "与已验证身份不一致") || termCalls != 0 {
-		t.Fatalf("签名确认后 listener identity 变化必须拒绝 TERM：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "与已验证身份不一致") || signalCalls != 0 {
+		t.Fatalf("签名确认后 listener identity 变化必须拒绝 SIGHUP：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -406,7 +402,7 @@ func TestStopUnmanagedSharedDaemonRejectsExecutableDifferentFromConfiguredCodexP
 		Command:    "codex app-server --listen unix://",
 		Executable: foreign,
 	}
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithExpectedPath(
 		context.Background(),
 		"/tmp/app.sock",
@@ -416,12 +412,12 @@ func TestStopUnmanagedSharedDaemonRejectsExecutableDifferentFromConfiguredCodexP
 			inspect: func(context.Context, string) (sharedDaemonListenerProcess, error) {
 				return process, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return os.Getuid() },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return os.Getuid() },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || termCalls != 0 {
-		t.Fatalf("configured CodexBin 之外的 executable 必须 fail closed：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "不是官方 managed standalone") || signalCalls != 0 {
+		t.Fatalf("configured CodexBin 之外的 executable 必须 fail closed：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -435,7 +431,7 @@ func TestStopUnmanagedSharedDaemonRejectsDesktopReopenedBeforeSignal(t *testing.
 		Executable: "/tmp/codex-real",
 	}
 	desktopChecks := 0
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithHooks(
 		context.Background(),
 		"/tmp/app.sock",
@@ -445,13 +441,13 @@ func TestStopUnmanagedSharedDaemonRejectsDesktopReopenedBeforeSignal(t *testing.
 				desktopChecks++
 				return desktopChecks == 2, nil
 			},
-			inspect:    func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
+			inspect:        func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return 501 },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "重新打开") || desktopChecks != 2 || termCalls != 0 {
-		t.Fatalf("Desktop 在信号前重开时必须 fail closed：err=%v checks=%d term=%d", err, desktopChecks, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "重新打开") || desktopChecks != 2 || signalCalls != 0 {
+		t.Fatalf("Desktop 在信号前重开时必须 fail closed：err=%v checks=%d signal=%d", err, desktopChecks, signalCalls)
 	}
 }
 
@@ -465,7 +461,7 @@ func TestStopUnmanagedSharedDaemonRejectsFinalDesktopCheckFailure(t *testing.T) 
 		Executable: "/tmp/codex-real",
 	}
 	desktopChecks := 0
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithHooks(
 		context.Background(),
 		"/tmp/app.sock",
@@ -478,13 +474,13 @@ func TestStopUnmanagedSharedDaemonRejectsFinalDesktopCheckFailure(t *testing.T) 
 				}
 				return false, nil
 			},
-			inspect:    func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
+			inspect:        func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return 501 },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "信号前再次确认") || termCalls != 0 {
-		t.Fatalf("Desktop 最终检查失败时必须 fail closed：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "信号前再次确认") || signalCalls != 0 {
+		t.Fatalf("Desktop 最终检查失败时必须 fail closed：err=%v signal=%d", err, signalCalls)
 	}
 }
 
@@ -510,7 +506,7 @@ func TestStopUnmanagedSharedDaemonRejectsUnsafeListener(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			process := base
 			test.mutate(&process)
-			termCalls := 0
+			signalCalls := 0
 			err := stopUnmanagedSharedDaemonWithHooks(
 				context.Background(),
 				"/tmp/app.sock",
@@ -518,12 +514,12 @@ func TestStopUnmanagedSharedDaemonRejectsUnsafeListener(t *testing.T) {
 				unmanagedSharedDaemonHooks{
 					desktopRunning: func(context.Context) (bool, error) { return false, nil },
 					inspect:        func(context.Context, string) (sharedDaemonListenerProcess, error) { return process, nil },
-					signalTERM:     func(int) error { termCalls++; return nil },
+					signalGraceful: func(int) error { signalCalls++; return nil },
 					currentUID:     func() int { return 501 },
 				},
 			)
-			if err == nil || !strings.Contains(err.Error(), test.message) || termCalls != 0 {
-				t.Fatalf("不安全 listener 必须拒绝：err=%v term=%d", err, termCalls)
+			if err == nil || !strings.Contains(err.Error(), test.message) || signalCalls != 0 {
+				t.Fatalf("不安全 listener 必须拒绝：err=%v signal=%d", err, signalCalls)
 			}
 		})
 	}
@@ -541,7 +537,7 @@ func TestStopUnmanagedSharedDaemonRejectsPIDReuseBeforeSignal(t *testing.T) {
 	second := first
 	second.StartSec++
 	inspectCalls := 0
-	termCalls := 0
+	signalCalls := 0
 	err := stopUnmanagedSharedDaemonWithHooks(
 		context.Background(),
 		"/tmp/app.sock",
@@ -555,12 +551,12 @@ func TestStopUnmanagedSharedDaemonRejectsPIDReuseBeforeSignal(t *testing.T) {
 				}
 				return second, nil
 			},
-			signalTERM: func(int) error { termCalls++; return nil },
-			currentUID: func() int { return 501 },
+			signalGraceful: func(int) error { signalCalls++; return nil },
+			currentUID:     func() int { return 501 },
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "发生变化") || termCalls != 0 {
-		t.Fatalf("PID/start-time 复用必须在 TERM 前停止：err=%v term=%d", err, termCalls)
+	if err == nil || !strings.Contains(err.Error(), "发生变化") || signalCalls != 0 {
+		t.Fatalf("PID/start-time 复用必须在 SIGHUP 前停止：err=%v signal=%d", err, signalCalls)
 	}
 }
 

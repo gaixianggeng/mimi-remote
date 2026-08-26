@@ -257,6 +257,8 @@ type appServerGatewayPolicy struct {
 	// 提升为 confirmed，断链时仍把无响应请求作为不确定候选处理。
 	pendingThreadWriters  map[string]appServerGatewayPendingThreadWriter
 	threadWriterForwardMu sync.Mutex
+	clientRPCReservations map[string]*appServerGatewayClientRPCReservation
+	acquireDaemonFence    func(context.Context) (func(), error)
 	beforePendingRemember func()
 	beforeManagedComplete func()
 }

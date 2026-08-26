@@ -83,9 +83,24 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			return gatewayCloseReason("client_read", err)
 		}
 		policyStart := time.Now()
-		forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
+		reservation, policyErr := policy.reserveClientRPC(payload)
+		if policyErr != nil {
+			policyDuration := time.Since(policyStart)
+			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
+				return "client_policy_error_write_failed"
+			}
+			continue
+		}
+		forwardPayload, policyErr := policy.validateClientFrameContextWithReservation(
+			ctx,
+			messageType,
+			payload,
+			reservation,
+		)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
+			reservation.release()
 			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
 			if policyErr.historyBudgetRejected {
 				monitor.recordHistoryBudgetRejected()
@@ -101,6 +116,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, cachedPayload); err != nil {
 				return gatewayCloseReason("client_cache_write", err)
 			}
+			reservation.release()
 			monitor.recordForward("upstream_to_client", len(cachedPayload), len(cachedPayload), policyDuration, time.Since(writeStart), cachedPayload)
 			continue
 		}
@@ -146,6 +162,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
+			policy.releaseClientRPCReservationForResponsePayload(payload)
 			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
 			if policyErr.historyResponseBlocked {
 				monitor.recordHistoryResponseBlocked(len(payload), payload)
@@ -160,6 +177,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			continue
 		}
 		if !forward {
+			policy.releaseClientRPCReservationForResponsePayload(payload)
 			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
 			continue
 		}
@@ -167,6 +185,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		if err := writeWebSocketFrame(to, toWriteMu, messageType, forwardPayload); err != nil {
 			return gatewayCloseReason("client_write", err)
 		}
+		policy.releaseClientRPCReservationForResponsePayload(payload)
 		monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
 	}
 }

@@ -455,7 +455,7 @@ func stopSharedDaemonForConfirmedDisable(
 		owner,
 		lifecycle,
 		validateLegacyPIDBackendListener,
-		stopManagedSharedDaemonCommand,
+		sharedDaemonSignalGraceful,
 	); handled {
 		return stopErr
 	}
@@ -514,7 +514,8 @@ func stopSharedDaemonForConfirmedDisable(
 		unmanagedSharedDaemonHooks{
 			desktopRunning: sharedDaemonDesktopRunning,
 			inspect:        inspectSharedDaemonListenerProcess,
-			signalTERM:     signalSharedDaemonProcessTERM,
+			requireIdle:    sharedDaemonRequireIdle,
+			signalGraceful: sharedDaemonSignalGraceful,
 			currentUID:     os.Getuid,
 		},
 	)
@@ -524,9 +525,9 @@ type legacyPIDBackendValidateFunc func(
 	context.Context,
 	LocalDaemonOptions,
 	LocalDaemonLifecycleStatus,
-) error
+) (sharedDaemonListenerProcess, error)
 
-type legacyPIDBackendStopFunc func(context.Context, LocalDaemonOptions) error
+type sharedDaemonGracefulSignalFunc func(int) error
 
 type sharedDaemonSignedRuntimeCaptureFunc func(
 	context.Context,
@@ -572,7 +573,7 @@ func captureStableSignedSharedDaemonListenerIdentity(
 
 // captureStableManagedSharedDaemonListenerIdentity 把官方 pid backend 报告的
 // PID、调用方已确认的 identity，以及本次实际完成验签的 socket owner 绑定。
-// official stop 不接收 expected identity，因此每次停止前都必须重新完成这组取证。
+// 每次发送优雅排空信号前都必须重新完成这组取证。
 func captureStableManagedSharedDaemonListenerIdentity(
 	ctx context.Context,
 	options LocalDaemonOptions,
@@ -603,14 +604,14 @@ func captureStableManagedSharedDaemonListenerIdentity(
 }
 
 // 旧版 daemon version 会报告 backend=pid，但不返回 PID。此时不能进入依赖
-// lifecycle.PID 的普通路径；先严格验证真实 socket peer，再继续调用官方 stop。
+// lifecycle.PID 的普通路径；先严格验证真实 socket peer，再向该 PID 发送 SIGHUP。
 func stopLegacyPIDBackendWithoutReportedPID(
 	ctx context.Context,
 	options LocalDaemonOptions,
 	owner SharedDaemonOwnerStatus,
 	lifecycle LocalDaemonLifecycleStatus,
 	validate legacyPIDBackendValidateFunc,
-	stop legacyPIDBackendStopFunc,
+	signal sharedDaemonGracefulSignalFunc,
 ) (bool, error) {
 	if lifecycle.Backend == nil || lifecycle.PID != nil ||
 		!strings.EqualFold(strings.TrimSpace(*lifecycle.Backend), "pid") {
@@ -619,38 +620,45 @@ func stopLegacyPIDBackendWithoutReportedPID(
 	if !sharedDaemonLoadedOwnerEvidence(owner) {
 		return true, fmt.Errorf("旧 pid backend 没有已确认的 Mimi stable owner，拒绝停止")
 	}
-	if validate == nil || stop == nil {
-		return true, fmt.Errorf("旧 pid backend 缺少安全取证或官方停止实现")
+	if validate == nil || signal == nil {
+		return true, fmt.Errorf("旧 pid backend 缺少安全取证或优雅排空实现")
 	}
-	if err := validate(ctx, options, lifecycle); err != nil {
+	listener, err := validate(ctx, options, lifecycle)
+	if err != nil {
 		return true, err
 	}
-	return true, stop(ctx, options)
+	if err := validateSharedDaemonSignalTargetPID(listener.PID); err != nil {
+		return true, err
+	}
+	if err := signal(listener.PID); err != nil {
+		return true, fmt.Errorf("请求旧 pid backend 优雅排空失败：%w", err)
+	}
+	return true, nil
 }
 
 func validateLegacyPIDBackendListener(
 	ctx context.Context,
 	options LocalDaemonOptions,
 	lifecycle LocalDaemonLifecycleStatus,
-) error {
+) (sharedDaemonListenerProcess, error) {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
 	if err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	probeCtx, cancelProbe := context.WithTimeout(ctx, localDaemonProbeTimeout)
 	probe, err := ProbeLocalDaemonInfo(probeCtx, socketPath)
 	cancelProbe()
 	if err != nil {
-		return fmt.Errorf("无法确认旧 pid backend：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("无法确认旧 pid backend：%w", err)
 	}
 	if err := ValidateLocalDaemonLifecycle(lifecycle, socketPath); err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	if err := ValidateLocalDaemonProbeVersion(lifecycle, probe.Version); err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	if err := validatePrivateSharedDaemonSocket(socketPath, os.Getuid()); err != nil {
-		return err
+		return sharedDaemonListenerProcess{}, err
 	}
 	listener, err := captureStableSignedSharedDaemonListenerIdentity(
 		ctx,
@@ -660,11 +668,11 @@ func validateLegacyPIDBackendListener(
 		inspectSharedDaemonListenerProcess,
 	)
 	if err != nil {
-		return fmt.Errorf("确认旧 pid backend listener 身份失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("确认旧 pid backend listener 身份失败：%w", err)
 	}
 	expectedCodexPath, err := resolveSharedDaemonCodexBin(options.CodexBin)
 	if err != nil {
-		return fmt.Errorf("解析旧 pid backend Codex 可执行文件失败：%w", err)
+		return sharedDaemonListenerProcess{}, fmt.Errorf("解析旧 pid backend Codex 可执行文件失败：%w", err)
 	}
 	_, err = validateUnmanagedSharedDaemonWithExpectedIdentity(
 		ctx,
@@ -677,5 +685,34 @@ func validateLegacyPIDBackendListener(
 			currentUID:     os.Getuid,
 		},
 	)
-	return err
+	if err != nil {
+		return sharedDaemonListenerProcess{}, err
+	}
+	if err := sharedDaemonRequireIdle(ctx, socketPath); err != nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("停止旧 pid backend 前活动检查失败：%w", err)
+	}
+	confirmed, err := validateUnmanagedSharedDaemonWithExpectedIdentity(
+		ctx,
+		socketPath,
+		expectedCodexPath,
+		&listener,
+		unmanagedSharedDaemonHooks{
+			desktopRunning: sharedDaemonDesktopRunning,
+			inspect:        inspectSharedDaemonListenerProcess,
+			currentUID:     os.Getuid,
+		},
+	)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, err
+	}
+	finalListener, err := rebindSharedDaemonListenerAfterDesktop(
+		ctx,
+		socketPath,
+		confirmed,
+		inspectSharedDaemonListenerProcess,
+	)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("信号前最终确认旧 pid backend owner 失败：%w", err)
+	}
+	return finalListener, nil
 }

@@ -31,6 +31,15 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 }
 
 func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context, messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
+	return p.validateClientFrameContextWithReservation(ctx, messageType, payload, nil)
+}
+
+func (p *appServerGatewayPolicy) validateClientFrameContextWithReservation(
+	ctx context.Context,
+	messageType int,
+	payload []byte,
+	reservation *appServerGatewayClientRPCReservation,
+) ([]byte, *appServerGatewayPolicyError) {
 	if p.isClosed() {
 		return nil, &appServerGatewayPolicyError{message: "app-server gateway 连接已关闭"}
 	}
@@ -40,6 +49,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	var frame appServerGatewayFrame
 	if err := json.Unmarshal(payload, &frame); err != nil {
 		return nil, &appServerGatewayPolicyError{message: "JSON-RPC frame 无效"}
+	}
+	if frame.ID != nil && gatewayRequestIDKey(frame.ID) == "" {
+		return nil, &appServerGatewayPolicyError{
+			message: "app-server request id 必须是字符串或 int64 整数",
+		}
 	}
 	method := strings.TrimSpace(frame.Method)
 	if method == "" {
@@ -148,6 +162,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.cancelPendingHistoryRequest(frame.ID)
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
+	}
+	if policyErr := reservation.attachSharedDaemonFence(ctx, rewritten); policyErr != nil {
+		p.cancelPendingHistoryRequest(frame.ID)
+		p.forgetPending(frame.ID)
+		return nil, policyErr
 	}
 	if !p.rememberPendingThreadWriter(frame.ID, method, params) {
 		p.cancelPendingHistoryRequest(frame.ID)

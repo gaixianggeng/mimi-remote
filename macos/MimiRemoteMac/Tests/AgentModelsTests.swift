@@ -165,7 +165,15 @@ final class AgentModelsTests: XCTestCase {
             rateLimits: nil,
             transport: "unix",
             shared: true,
-            daemonRestartRequired: true
+            daemonRestartRequired: true,
+            sharedDaemon: AgentRuntimeSharedDaemonStatus(
+                listenerPID: 4242,
+                listenerStartedAt: "2026-07-27T08:15:00Z",
+                openFileDescriptors: 612,
+                directChildProcesses: 2,
+                ownerState: "stable",
+                resourceState: "healthy"
+            )
         )
         let decodedShared = try JSONDecoder().decode(
             AgentRuntimeStatus.self,
@@ -174,12 +182,58 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertEqual(decodedShared.transport, "unix")
         XCTAssertEqual(decodedShared.shared, true)
         XCTAssertEqual(decodedShared.daemonRestartRequired, true)
+        XCTAssertEqual(decodedShared.sharedDaemon?.listenerPID, 4242)
+        XCTAssertEqual(decodedShared.sharedDaemon?.ownerState, "stable")
 
         let sharing = try JSONDecoder().decode(
             CodexSharingConfigurationResult.self,
             from: Data(#"{"enabled":true,"changed":true,"restart_required":true,"transport":"unix","codex_home":"/Users/test/.codex","message":"ready"}"#.utf8)
         )
         XCTAssertEqual(sharing.codexHome, "/Users/test/.codex")
+    }
+
+    func testSharedDaemonStatusDecodesAndRoundTripsSanitizedDiagnostics() throws {
+        let raw = Data(#"""
+        {
+          "listener_pid": 4242,
+          "listener_started_at": "2026-07-27T08:15:00Z",
+          "open_file_descriptors": 612,
+          "direct_child_processes": 2,
+          "owner_target_fd_soft_limit": 8192,
+          "effective_fd_soft_limit": 8192,
+          "fd_usage_percent": 7.470703125,
+          "owner_state": "stable",
+          "resource_state": "healthy"
+        }
+        """#.utf8)
+
+        let daemon = try JSONDecoder().decode(AgentRuntimeSharedDaemonStatus.self, from: raw)
+
+        XCTAssertEqual(daemon.listenerPID, 4242)
+        XCTAssertEqual(daemon.listenerStartedDate, ISO8601DateFormatter().date(from: "2026-07-27T08:15:00Z"))
+        XCTAssertEqual(daemon.openFileDescriptors, 612)
+        XCTAssertEqual(daemon.directChildProcesses, 2)
+        XCTAssertEqual(daemon.ownerTargetFDSoftLimit, 8192)
+        XCTAssertEqual(daemon.effectiveFDSoftLimit, 8192)
+        XCTAssertEqual(daemon.fdUsagePercent, 7.470703125)
+        XCTAssertEqual(daemon.ownerState, "stable")
+        XCTAssertEqual(daemon.resourceState, "healthy")
+
+        let encoded = try JSONEncoder().encode(daemon)
+        let decoded = try JSONDecoder().decode(AgentRuntimeSharedDaemonStatus.self, from: encoded)
+        XCTAssertEqual(decoded, daemon)
+    }
+
+    func testSharedDaemonStatusMissingFieldsRemainsDecodableForUnknownPresentation() throws {
+        let partial = try JSONDecoder().decode(
+            AgentRuntimeSharedDaemonStatus.self,
+            from: Data(#"{"listener_pid":0}"#.utf8)
+        )
+
+        XCTAssertEqual(partial.listenerPID, 0)
+        XCTAssertEqual(partial.ownerState, "unknown")
+        XCTAssertEqual(partial.resourceState, "unknown")
+        XCTAssertNil(partial.listenerStartedDate)
     }
 
     func testUnknownRuntimeStateFailsClosedWithoutBreakingAgentStatusDecode() throws {

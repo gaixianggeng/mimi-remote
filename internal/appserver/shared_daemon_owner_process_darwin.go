@@ -18,13 +18,22 @@ import (
 )
 
 // 本文件只负责从真实 Unix socket peer 取证外部 listener，并在 UID、路径、
-// argv、启动时间与 Desktop 状态全部匹配时发送一次普通 TERM。owner 的安装、
+// argv、启动时间与 Desktop 状态全部匹配时发送一次 graceful-only SIGHUP。owner 的安装、
 // 两阶段迁移与 launchctl 编排仍保留在 shared_daemon_owner_darwin.go。
 
 func stopUnmanagedSharedDaemon(
 	ctx context.Context,
 	options LocalDaemonOptions,
 	lifecycle LocalDaemonLifecycleStatus,
+) error {
+	return stopUnmanagedSharedDaemonWithLifecycleIdentity(ctx, options, lifecycle, nil)
+}
+
+func stopUnmanagedSharedDaemonWithLifecycleIdentity(
+	ctx context.Context,
+	options LocalDaemonOptions,
+	lifecycle LocalDaemonLifecycleStatus,
+	expectedIdentity *sharedDaemonListenerProcess,
 ) error {
 	socketPath, err := LocalDaemonSocketPath(options.Env)
 	if err != nil {
@@ -46,14 +55,16 @@ func stopUnmanagedSharedDaemon(
 		return err
 	}
 
-	return stopUnmanagedSharedDaemonWithHooks(
+	return stopUnmanagedSharedDaemonWithExpectedIdentity(
 		ctx,
 		socketPath,
 		lifecycle.ManagedCodexPath,
+		expectedIdentity,
 		unmanagedSharedDaemonHooks{
 			desktopRunning: sharedDaemonDesktopRunning,
 			inspect:        inspectSharedDaemonListenerProcess,
-			signalTERM:     signalSharedDaemonProcessTERM,
+			requireIdle:    sharedDaemonRequireIdle,
+			signalGraceful: sharedDaemonSignalGraceful,
 			currentUID:     os.Getuid,
 		},
 	)
@@ -93,7 +104,7 @@ func stopUnmanagedSharedDaemonWithExpectedPath(
 	)
 }
 
-// stopUnmanagedSharedDaemonWithExpectedIdentity 在发送 TERM 前把当前 socket
+// stopUnmanagedSharedDaemonWithExpectedIdentity 在发送 SIGHUP 前把当前 socket
 // owner 与上层已经完成签名父链验证的 identity 绑定。expectedIdentity 为空时
 // 表示旧式 unmanaged SSH listener，仍只按 lifecycle.ManagedCodexPath 校验；
 // 非空时表示 stable owner 已完成动态签名与 supervisor 父链验证，因此允许
@@ -115,15 +126,54 @@ func stopUnmanagedSharedDaemonWithExpectedIdentity(
 	if err != nil {
 		return err
 	}
-	if err := hooks.signalTERM(listener.PID); err != nil {
-		return fmt.Errorf("正常终止旧 Codex app-server 失败：%w", err)
+	if hooks.requireIdle != nil {
+		if err := hooks.requireIdle(ctx, socketPath); err != nil {
+			return fmt.Errorf("停止非 daemon 管理的 Codex app-server 前活动检查失败：%w", err)
+		}
+		confirmed, validateErr := validateUnmanagedSharedDaemonWithExpectedIdentity(
+			ctx,
+			socketPath,
+			expectedCodexPath,
+			expectedIdentity,
+			hooks,
+		)
+		if validateErr != nil {
+			return validateErr
+		}
+		// 首轮取证完成后绑定同一完整进程身份。即使旧式 SSH listener
+		// 没有上层 expected，活动检查期间替换进来的进程也不能收到信号。
+		if confirmed != listener {
+			return fmt.Errorf("Codex app-server owner 与活动检查前身份不一致，已停止迁移")
+		}
+		listener = confirmed
+	}
+	// validate 的最后一步是 Desktop 进程枚举。它也会产生调度窗口，必须在
+	// 其后再从真实 socket 绑定一次 owner，避免向退出或被替换的旧 PID 发信号。
+	finalListener, err := rebindSharedDaemonListenerAfterDesktop(
+		ctx,
+		socketPath,
+		listener,
+		hooks.inspect,
+	)
+	if err != nil {
+		return fmt.Errorf("信号前最终确认 Codex app-server owner 失败：%w", err)
+	}
+	listener = finalListener
+	if err := validateSharedDaemonSignalTargetPID(listener.PID); err != nil {
+		return err
+	}
+	if hooks.signalGraceful == nil {
+		return fmt.Errorf("停止非 daemon 管理的 Codex app-server 缺少优雅排空实现")
+	}
+	if err := hooks.signalGraceful(listener.PID); err != nil {
+		return fmt.Errorf("请求旧 Codex app-server 优雅排空失败：%w", err)
 	}
 	return nil
 }
 
 // validateUnmanagedSharedDaemonWithExpectedIdentity 只完成最终 listener 取证，
-// 不执行停止动作。旧 pid backend 用它验证真实 socket peer 后仍调用官方 stop，
-// 普通 unmanaged 路径则由上层对返回的同一 PID 发送一次 TERM。
+// 不执行停止动作。旧 pid backend 和普通 unmanaged 路径都由上层对返回的
+// 同一 PID 发送一次 SIGHUP。
 func validateUnmanagedSharedDaemonWithExpectedIdentity(
 	ctx context.Context,
 	socketPath string,
@@ -174,9 +224,8 @@ func validateUnmanagedSharedDaemonWithExpectedIdentity(
 	if confirmed != listener {
 		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex app-server owner 在接管前发生变化，已停止迁移")
 	}
-	// 用户可能在首次检查后从 Dock 重新打开 Desktop。信号前必须
-	// 再按 bundle id 查一次；读取失败也 fail closed，不能凭旧快照
-	// 终止已经被新 Desktop 重新使用的 backend。
+	// 用户可能在首次检查后从 Dock 重新打开 Desktop。读取失败也 fail closed。
+	// 调用方会在这次进程枚举后再次绑定真实 socket owner，再发送信号。
 	running, err = hooks.desktopRunning(ctx)
 	if err != nil {
 		return sharedDaemonListenerProcess{}, fmt.Errorf("信号前再次确认 Codex Desktop 已退出失败：%w", err)
@@ -398,10 +447,39 @@ func validatePrivateSharedDaemonSocket(socketPath string, currentUID int) error 
 	return nil
 }
 
-func signalSharedDaemonProcessTERM(pid int) error {
+func signalSharedDaemonProcessGraceful(pid int) error {
+	if err := validateSharedDaemonSignalTargetPID(pid); err != nil {
+		return err
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
-	return process.Signal(syscall.SIGTERM)
+	return process.Signal(syscall.SIGHUP)
+}
+
+func validateSharedDaemonSignalTargetPID(pid int) error {
+	if pid <= 1 {
+		return fmt.Errorf("Codex app-server listener PID %d 不可作为信号目标", pid)
+	}
+	return nil
+}
+
+func rebindSharedDaemonListenerAfterDesktop(
+	ctx context.Context,
+	socketPath string,
+	expected sharedDaemonListenerProcess,
+	inspect sharedDaemonListenerInspectFunc,
+) (sharedDaemonListenerProcess, error) {
+	if inspect == nil {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("缺少最终 listener 取证实现")
+	}
+	listener, err := inspect(ctx, socketPath)
+	if err != nil {
+		return sharedDaemonListenerProcess{}, err
+	}
+	if listener != expected {
+		return sharedDaemonListenerProcess{}, fmt.Errorf("Codex app-server owner 在 Desktop 复核后发生变化")
+	}
+	return listener, nil
 }

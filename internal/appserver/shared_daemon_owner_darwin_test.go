@@ -2402,7 +2402,7 @@ func TestStopSharedDaemonAlreadyDisconnectedCanResumeWithoutSecondSignal(t *test
 		t.Fatal(err)
 	}
 	// 故意传入不存在的 CLI；如果代码仍调用 lifecycle version，
-	// 本测试必然失败。无 listener 表示上一次的唯一 TERM 已经
+	// 本测试必然失败。无 listener 表示上一次的 SIGHUP 已经
 	// 完成，重试只应进入稳定断开确认，不再 stop/signal。
 	options := LocalDaemonOptions{
 		CodexBin: filepath.Join(t.TempDir(), "missing-codex"),

@@ -2530,9 +2530,11 @@ func TestPendingGatewayThreadLeaseLifecycleGuards(t *testing.T) {
 	}
 
 	policy.mu.Lock()
-	pending := policy.pendingThreads["903"]
+	pendingID := json.RawMessage(`903`)
+	pendingKey := gatewayRequestIDKey(&pendingID)
+	pending := policy.pendingThreads[pendingKey]
 	pending.createdAt = time.Now().Add(-appServerGatewayPendingThreadTTL - time.Minute)
-	policy.pendingThreads["903"] = pending
+	policy.pendingThreads[pendingKey] = pending
 	policy.mu.Unlock()
 	if !policy.hasPendingThreadResponses() || pendingCount() != 1 {
 		t.Fatal("managed pending-use 不得因 30s TTL 自动释放")

@@ -1,5 +1,25 @@
 import Foundation
 
+enum MenuSharedDaemonSeverity: String, Equatable, Sendable {
+    case normal
+    case migrationPending
+    case needsCheck
+    case resourceDegraded
+    case resourceCritical
+    case unknown
+}
+
+struct MenuSharedDaemonPresentation: Equatable, Sendable {
+    let title: String
+    let statusText: String
+    let detailText: String
+    let severity: MenuSharedDaemonSeverity
+
+    var accessibilityText: String {
+        "\(title)：\(statusText)。\(detailText)"
+    }
+}
+
 enum MenuRuntimeUsageTintRole: Equatable {
     case codexLong
     case claudeLong
@@ -28,6 +48,41 @@ struct MenuRuntimeUsageSlot: Equatable, Identifiable {
 }
 
 enum MenuRuntimePresentation {
+    static func sharedDaemonPresentation(
+        for daemon: AgentRuntimeSharedDaemonStatus?,
+        at now: Date = Date()
+    ) -> MenuSharedDaemonPresentation {
+        guard let daemon else {
+            return MenuSharedDaemonPresentation(
+                title: "共享服务",
+                statusText: "状态未知",
+                detailText: "PID 未知 · 运行时长未知",
+                severity: .unknown
+            )
+        }
+
+        let severity: MenuSharedDaemonSeverity
+        if daemon.listenerPID <= 0 || daemon.openFileDescriptors < 0 || daemon.directChildProcesses < 0 {
+            severity = .unknown
+        } else {
+            severity = sharedDaemonSeverity(
+                ownerState: daemon.ownerState,
+                resourceState: daemon.resourceState
+            )
+        }
+        var detail = "\(pidText(for: daemon)) · \(listenerUptimeText(for: daemon, at: now))"
+        if severity == .resourceDegraded || severity == .resourceCritical {
+            detail += " · \(fileDescriptorDetail(for: daemon))"
+        }
+
+        return MenuSharedDaemonPresentation(
+            title: "共享服务",
+            statusText: sharedDaemonStatusText(for: severity),
+            detailText: detail,
+            severity: severity
+        )
+    }
+
     static func versionText(for runtime: AgentRuntimeStatus?) -> String? {
         guard let runtime,
               let version = runtime.version?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -190,6 +245,93 @@ enum MenuRuntimePresentation {
     private struct UsageCandidate {
         let slot: String
         let window: AgentRuntimeRateLimitWindow
+    }
+
+    private static func sharedDaemonSeverity(
+        ownerState: String,
+        resourceState: String
+    ) -> MenuSharedDaemonSeverity {
+        let owner = ownerState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let resource = resourceState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch owner {
+        case "stable":
+            switch resource {
+            case "healthy", "unknown": return .normal
+            case "degraded": return .resourceDegraded
+            case "critical": return .resourceCritical
+            default: return .unknown
+            }
+        case "migration_pending":
+            return .migrationPending
+        case "external", "owner_claimed_unverified", "unmanaged_listener", "listener_mismatch", "owner_unavailable":
+            return .needsCheck
+        default:
+            return .unknown
+        }
+    }
+
+    private static func sharedDaemonStatusText(
+        for severity: MenuSharedDaemonSeverity
+    ) -> String {
+        switch severity {
+        case .normal: return "运行正常"
+        case .migrationPending: return "等待迁移"
+        case .needsCheck: return "需要检查"
+        case .resourceDegraded: return "资源偏高"
+        case .resourceCritical: return "资源紧张"
+        case .unknown: return "状态未知"
+        }
+    }
+
+    private static func pidText(for daemon: AgentRuntimeSharedDaemonStatus) -> String {
+        daemon.listenerPID > 0 ? "PID \(daemon.listenerPID)" : "PID 未知"
+    }
+
+    private static func listenerUptimeText(
+        for daemon: AgentRuntimeSharedDaemonStatus,
+        at now: Date
+    ) -> String {
+        guard let startedAt = daemon.listenerStartedDate,
+              startedAt <= now.addingTimeInterval(60)
+        else {
+            return "运行时长未知"
+        }
+
+        let totalMinutes = max(0, Int(now.timeIntervalSince(startedAt) / 60))
+        if totalMinutes == 0 {
+            return "已运行不足 1 分钟"
+        }
+
+        let days = totalMinutes / (24 * 60)
+        let hours = totalMinutes % (24 * 60) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0
+                ? "已运行 \(days)天 \(hours)小时"
+                : "已运行 \(days)天"
+        }
+        if hours > 0 {
+            return minutes > 0
+                ? "已运行 \(hours)小时 \(minutes)分钟"
+                : "已运行 \(hours)小时"
+        }
+        return "已运行 \(minutes)分钟"
+    }
+
+    private static func fileDescriptorDetail(
+        for daemon: AgentRuntimeSharedDaemonStatus
+    ) -> String {
+        if let usage = daemon.fdUsagePercent, usage.isFinite, usage >= 0 {
+            let rounded = usage.rounded()
+            let value = abs(rounded - usage) < 0.0001
+                ? "\(Int(rounded))%"
+                : String(format: "%.1f%%", usage)
+            return "FD 使用率 \(value)"
+        }
+        return daemon.openFileDescriptors > 0
+            ? "FD \(daemon.openFileDescriptors)"
+            : "FD 数量未知"
     }
 
     private static func longWindow(in runtime: AgentRuntimeStatus) -> UsageCandidate? {

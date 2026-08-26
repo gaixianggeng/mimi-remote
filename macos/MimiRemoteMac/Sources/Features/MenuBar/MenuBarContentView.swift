@@ -479,6 +479,10 @@ private struct MenuRuntimeSummary: View {
                 missingDetail: missingDetail
             )
 
+            if codex?.shared == true {
+                MenuSharedDaemonRow(daemon: codex?.sharedDaemon)
+            }
+
             MenuRuntimeRow(
                 runtime: claude,
                 fallbackTitle: "Claude",
@@ -757,6 +761,71 @@ private struct MenuRuntimeRow: View {
         case "business": return "Business"
         case "enterprise": return "Enterprise"
         default: return value
+        }
+    }
+}
+
+private struct MenuSharedDaemonRow: View {
+    let daemon: AgentRuntimeSharedDaemonStatus?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let presentation = MenuRuntimePresentation.sharedDaemonPresentation(
+                for: daemon,
+                at: context.date
+            )
+
+            HStack(alignment: .top, spacing: MenuBarLayout.symbolTextSpacing) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(stateColor(for: presentation.severity))
+                    .frame(width: MenuBarLayout.symbolColumnWidth, height: 19)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(presentation.title)
+                            .font(.callout.weight(.semibold))
+
+                        Spacer(minLength: 4)
+
+                        Circle()
+                            .fill(stateColor(for: presentation.severity))
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+
+                        Text(presentation.statusText)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(stateTextColor(for: presentation.severity))
+                    }
+
+                    Text(presentation.detailText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.horizontal, MenuBarLayout.sectionInset)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(presentation.accessibilityText)
+        }
+    }
+
+    private func stateColor(for severity: MenuSharedDaemonSeverity) -> Color {
+        switch severity {
+        case .normal: return Color.mimiPrimary
+        case .migrationPending, .needsCheck, .resourceDegraded: return .orange
+        case .resourceCritical: return .red
+        case .unknown: return .secondary
+        }
+    }
+
+    private func stateTextColor(for severity: MenuSharedDaemonSeverity) -> Color {
+        switch severity {
+        case .normal, .unknown: return .secondary
+        case .migrationPending, .needsCheck, .resourceDegraded: return Color.orange.opacity(0.85)
+        case .resourceCritical: return Color.red.opacity(0.85)
         }
     }
 }

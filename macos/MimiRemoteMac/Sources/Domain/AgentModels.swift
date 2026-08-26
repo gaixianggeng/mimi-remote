@@ -293,6 +293,8 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     /// Mimi-owned launchd owner 已安装，但现有 daemon 尚未在用户确认后迁移。
     let daemonRestartRequired: Bool?
     let codexHome: String?
+    /// 共享 Codex App Server 的 listener 与 owner 诊断。旧版 agentd 不返回此字段。
+    let sharedDaemon: AgentRuntimeSharedDaemonStatus?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -309,6 +311,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case shared
         case daemonRestartRequired = "daemon_restart_required"
         case codexHome = "codex_home"
+        case sharedDaemon = "shared_daemon"
     }
 
     init(
@@ -325,7 +328,8 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         transport: String? = nil,
         shared: Bool? = nil,
         daemonRestartRequired: Bool? = nil,
-        codexHome: String? = nil
+        codexHome: String? = nil,
+        sharedDaemon: AgentRuntimeSharedDaemonStatus? = nil
     ) {
         self.id = id
         self.title = title
@@ -341,6 +345,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.shared = shared
         self.daemonRestartRequired = daemonRestartRequired
         self.codexHome = codexHome
+        self.sharedDaemon = sharedDaemon
     }
 
     var effectivePlanType: String? {
@@ -352,6 +357,75 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: startedAt) ?? ISO8601DateFormatter().date(from: startedAt)
+    }
+}
+
+/// 共享 Codex App Server 只返回用于定位 listener、owner 和资源状态的脱敏字段。
+/// 数值字段按协议为必填；解码缺失字段时使用不可用的零值，让菜单仍能显示“状态未知”。
+struct AgentRuntimeSharedDaemonStatus: Codable, Equatable, Sendable {
+    let listenerPID: Int
+    let listenerStartedAt: String?
+    let openFileDescriptors: Int
+    let directChildProcesses: Int
+    let ownerTargetFDSoftLimit: Int?
+    let effectiveFDSoftLimit: Int?
+    let fdUsagePercent: Double?
+    let ownerState: String
+    let resourceState: String
+
+    enum CodingKeys: String, CodingKey {
+        case listenerPID = "listener_pid"
+        case listenerStartedAt = "listener_started_at"
+        case openFileDescriptors = "open_file_descriptors"
+        case directChildProcesses = "direct_child_processes"
+        case ownerTargetFDSoftLimit = "owner_target_fd_soft_limit"
+        case effectiveFDSoftLimit = "effective_fd_soft_limit"
+        case fdUsagePercent = "fd_usage_percent"
+        case ownerState = "owner_state"
+        case resourceState = "resource_state"
+    }
+
+    init(
+        listenerPID: Int = 0,
+        listenerStartedAt: String? = nil,
+        openFileDescriptors: Int = 0,
+        directChildProcesses: Int = 0,
+        ownerTargetFDSoftLimit: Int? = nil,
+        effectiveFDSoftLimit: Int? = nil,
+        fdUsagePercent: Double? = nil,
+        ownerState: String = "unknown",
+        resourceState: String = "unknown"
+    ) {
+        self.listenerPID = listenerPID
+        self.listenerStartedAt = listenerStartedAt
+        self.openFileDescriptors = openFileDescriptors
+        self.directChildProcesses = directChildProcesses
+        self.ownerTargetFDSoftLimit = ownerTargetFDSoftLimit
+        self.effectiveFDSoftLimit = effectiveFDSoftLimit
+        self.fdUsagePercent = fdUsagePercent
+        self.ownerState = ownerState
+        self.resourceState = resourceState
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 部分版本可能只返回 shared_daemon 的一部分；不要因此丢掉整个运行时快照。
+        listenerPID = try container.decodeIfPresent(Int.self, forKey: .listenerPID) ?? 0
+        listenerStartedAt = try container.decodeIfPresent(String.self, forKey: .listenerStartedAt)
+        openFileDescriptors = try container.decodeIfPresent(Int.self, forKey: .openFileDescriptors) ?? 0
+        directChildProcesses = try container.decodeIfPresent(Int.self, forKey: .directChildProcesses) ?? 0
+        ownerTargetFDSoftLimit = try container.decodeIfPresent(Int.self, forKey: .ownerTargetFDSoftLimit)
+        effectiveFDSoftLimit = try container.decodeIfPresent(Int.self, forKey: .effectiveFDSoftLimit)
+        fdUsagePercent = try container.decodeIfPresent(Double.self, forKey: .fdUsagePercent)
+        ownerState = try container.decodeIfPresent(String.self, forKey: .ownerState) ?? "unknown"
+        resourceState = try container.decodeIfPresent(String.self, forKey: .resourceState) ?? "unknown"
+    }
+
+    var listenerStartedDate: Date? {
+        guard let listenerStartedAt = listenerStartedAt?.trimmedNonEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: listenerStartedAt) ?? ISO8601DateFormatter().date(from: listenerStartedAt)
     }
 }
 

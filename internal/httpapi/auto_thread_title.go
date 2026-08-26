@@ -177,6 +177,11 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 	if g == nil || g.router == nil {
 		return "", false, errors.New("auto title generator 未配置")
 	}
+	release, err := g.router.acquireMimiOwnedSharedDaemonFence(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("共享 Codex 服务正在切换：%w", err)
+	}
+	defer release()
 	upstreamURL, err := g.router.appServerUpstreamWebSocketURL()
 	if err != nil {
 		return "", false, err
