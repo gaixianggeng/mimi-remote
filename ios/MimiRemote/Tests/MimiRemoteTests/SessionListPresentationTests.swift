@@ -637,6 +637,40 @@ final class SessionListPresentationTests: XCTestCase {
         )
     }
 
+    func testSessionRowAccessibilityValueKeepsHiddenStatusAndUnreadSemantics() {
+        let completed = AgentSessionDisplayStatus(
+            title: "Completed",
+            systemImage: "checkmark.circle",
+            tone: .complete,
+            showsSpinner: false
+        )
+        let active = AgentSessionDisplayStatus(
+            title: "Running",
+            systemImage: "circle",
+            tone: .active,
+            showsSpinner: false
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: completed,
+                sessionStatus: SessionStatus.completed.rawValue,
+                isUnread: true,
+                showsNeutralHistoryStatus: false
+            ),
+            "Completed, \(L10n.text("ui.unread_result"))"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: active,
+                sessionStatus: SessionStatus.running.rawValue,
+                isUnread: false,
+                showsNeutralHistoryStatus: false
+            ),
+            ""
+        )
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",

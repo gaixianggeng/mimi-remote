@@ -48,8 +48,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
         GeometryReader { geometry in
             // 与会话页使用同一条可用宽度规则；工作区不能再按页面身份选择另一套行密度。
+            // 阈值由 SessionIndexRowDensity 单独持有，不在这里内联字面量：
+            // 两处各写一个数字时，改了一处另一处会静默保持旧行为。
             let rowDensity = SessionIndexRowDensity.resolved(
-                prefersTable: geometry.size.width >= 360,
+                availableWidth: geometry.size.width,
                 dynamicTypeSize: dynamicTypeSize
             )
 
@@ -217,7 +219,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .foregroundStyle(tokens.tertiaryText)
                 .monospacedDigit()
         }
-        // 小节标题与复用后的会话行消费同一份横向内边距，避免页面再维护第二条左边线。
+        // 小节标题对齐前导状态列的左缘。这一列有了灰环兜底之后每行都有内容，
+        // 才有资格当基准线；没有兜底时对齐它，整段完成态会话会让标题悬在空白左边。
         .padding(.horizontal, rowDensity.horizontalPadding)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
@@ -294,28 +297,37 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        // 行与行之间不再画分隔线，只靠留白分开——逐行横线会把列表读成一张表格。
+        // 线只保留在分组边界（小节标题上方的留白）和"显示更多"入口之前。
         VStack(spacing: 0) {
-            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+            ForEach(sessions, id: \.id) { session in
+                let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
+                let isUnread = unreadHistorySessionIDs.contains(session.id)
+
                 Button {
                     onOpenSession(session)
                 } label: {
                     // 工作区只负责提供会话数据和点击行为；行内信息层级由会话页组件统一维护。
                     SessionIndexRow(
                         session: session,
-                        foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+                        foregroundActivity: foregroundActivity,
                         isSelected: session.id == sessionStore.selectedSessionID,
                         isPinned: sessionStore.isSessionPinned(session.id),
                         isArchived: sessionStore.isSessionArchived(session.id),
                         reminder: sessionStore.sessionReminder(for: session.id),
                         isObserving: sessionStore.isSessionObserving(session),
                         isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-                        isUnread: unreadHistorySessionIDs.contains(session.id),
+                        isUnread: isUnread,
                         density: rowDensity,
                         branch: SessionListPresentation.branchToDisplay(
                             session.gitBranchName,
                             among: branchValues
                         ),
-                        drawsDivider: index != sessions.index(before: sessions.endIndex),
+                        // 这一页的项目是恒定的，身份槽没有分支可显示时不回退项目名。
+                        showsProjectIdentity: false,
+                        // 无状态的行画一枚灰环兜底，让前导列每行都有内容——
+                        // 小节标题以这一列为基准线，列不能是稀疏的。
+                        showsIdleStateGlyph: true,
                         currentDate: currentDate,
                         calendar: calendar,
                         locale: locale,
@@ -327,9 +339,12 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .hoverEffect(.highlight)
                 .accessibilityElement(children: .combine)
                 .accessibilityValue(
-                    unreadHistorySessionIDs.contains(session.id)
-                        ? L10n.text("ui.unread_result")
-                        : ""
+                    SessionIndexRow.accessibilityValue(
+                        status: session.displayStatus(foregroundActivity: foregroundActivity),
+                        sessionStatus: session.status,
+                        isUnread: isUnread,
+                        showsNeutralHistoryStatus: false
+                    )
                 )
                 .sessionRowActions(session)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
@@ -500,7 +515,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         tokens: ThemeTokens
     ) -> some View {
         VStack(spacing: 0) {
-            ForEach(0..<3, id: \.self) { index in
+            ForEach(0..<3, id: \.self) { _ in
                 HStack {
                     VStack(alignment: .leading, spacing: 8) {
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -514,14 +529,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .padding(.horizontal, rowDensity.horizontalPadding)
                 .frame(minHeight: rowDensity.minimumHeight)
-                .overlay(alignment: .bottom) {
-                    if index < 2 {
-                        Rectangle()
-                            .fill(tokens.border.opacity(0.46))
-                            .frame(height: 0.5)
-                            .padding(.leading, rowDensity.horizontalPadding)
-                    }
-                }
             }
         }
         .redacted(reason: .placeholder)
