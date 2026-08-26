@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
 
-const swHide = 0
+const (
+	swHide                           = 0
+	managedServiceDiagnosticMaxBytes = 16 * 1024
+)
 
 var (
 	managedConsoleKernel32            = syscall.NewLazyDLL("kernel32.dll")
@@ -63,11 +68,7 @@ func appendManagedServiceFailure(args []string, serviceErr error) {
 	if logPath == "" {
 		return
 	}
-	line := fmt.Sprintf(
-		"%s managed_service_error=%q\n",
-		time.Now().UTC().Format(time.RFC3339),
-		sanitizeManagedServiceDiagnostic(serviceErr.Error()),
-	)
+	line := formatManagedServiceFailureLine(time.Now(), serviceErr.Error())
 	if appendManagedServiceDiagnostic(logPath, line, false) == nil {
 		return
 	}
@@ -81,20 +82,64 @@ func appendManagedServiceFailure(args []string, serviceErr error) {
 }
 
 func appendManagedServiceDiagnostic(path, line string, replace bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if replace {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		logFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		defer logFile.Close()
+		_, err = logFile.WriteString(line)
 		return err
 	}
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	if replace {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	}
-	logFile, err := os.OpenFile(path, flags, 0o600)
+	// configureServeFileLogging 尚未建立时也复用同一 5 MiB 轮转规则，
+	// 避免错误配置被计划任务反复重试后无界追加主日志。
+	logFile, err := newRotatingLogWriter(path, defaultManagedLogMaxBytes)
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
-	_, err = logFile.WriteString(line)
-	return err
+	_, writeErr := logFile.Write([]byte(line))
+	closeErr := logFile.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
+func formatManagedServiceFailureLine(now time.Time, value string) string {
+	prefix := fmt.Sprintf("%s managed_service_error=", now.UTC().Format(time.RFC3339))
+	value = strings.ToValidUTF8(sanitizeManagedServiceDiagnostic(value), "�")
+	line := prefix + strconv.Quote(value) + "\n"
+	if len(line) <= managedServiceDiagnosticMaxBytes {
+		return line
+	}
+
+	const marker = "[truncated] "
+	tail := managedServiceDiagnosticTail(value, managedServiceDiagnosticMaxBytes-len(prefix)-len(marker)-3)
+	for {
+		line = prefix + strconv.Quote(marker+tail) + "\n"
+		if len(line) <= managedServiceDiagnosticMaxBytes || tail == "" {
+			return line
+		}
+		_, size := utf8.DecodeRuneInString(tail)
+		tail = tail[size:]
+	}
+}
+
+func managedServiceDiagnosticTail(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	start := len(value) - maxBytes
+	for start < len(value) && !utf8.RuneStart(value[start]) {
+		start++
+	}
+	return value[start:]
 }
 
 func sanitizeManagedServiceDiagnostic(value string) string {

@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
 const (
@@ -349,7 +351,7 @@ func trayLogf(format string, args ...any) {
 const (
 	statusQueueTimeout             = 25 * time.Second
 	backgroundStatusCommandTimeout = 12 * time.Second
-	manualStatusCommandTimeout     = 20 * time.Second
+	manualStatusCommandTimeout     = runtimebudget.ManualCommandTimeout
 )
 
 func statusContext() (context.Context, context.CancelFunc) {
