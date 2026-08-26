@@ -56,13 +56,14 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	hasResult  bool
-	snapshot   runtimeStatusResponse
-	refreshing bool
-	closed     bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	hasResult   bool
+	snapshot    runtimeStatusResponse
+	refreshing  bool
+	refreshDone chan struct{}
+	closed      bool
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -102,11 +103,7 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 			}
 		}
 	}
-	if !c.refreshing && !c.closed {
-		c.refreshing = true
-		c.wg.Add(1)
-		go c.refresh()
-	}
+	c.startRefreshLocked()
 	if c.hasResult {
 		response := c.snapshot
 		response.Refreshing = c.refreshing
@@ -118,6 +115,49 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 	return response
 }
 
+// Refresh bypasses the TTL and waits for the current single-flight probe. A
+// manual tray refresh therefore reports a newly observed state instead of the
+// five-minute background cache. If the caller times out, the old result is
+// explicitly marked stale while the shared probe finishes in the background.
+func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusResponse {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	c.startRefreshLocked()
+	done := c.refreshDone
+	c.mu.Unlock()
+
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hasResult {
+		response := c.snapshot
+		response.Refreshing = c.refreshing
+		response.Stale = c.refreshing
+		return response
+	}
+	response := c.placeholder()
+	response.Refreshing = c.refreshing
+	return response
+}
+
+func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
+	if c.refreshing || c.closed {
+		return
+	}
+	c.refreshing = true
+	c.refreshDone = make(chan struct{})
+	c.wg.Add(1)
+	go c.refresh()
+}
+
 func (c *runtimeStatusSnapshotCache) refresh() {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
@@ -127,11 +167,14 @@ func (c *runtimeStatusSnapshotCache) refresh() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.refreshing = false
-	if c.closed || c.ctx.Err() != nil {
-		return
+	if !c.closed && c.ctx.Err() == nil {
+		c.snapshot = response
+		c.hasResult = true
 	}
-	c.snapshot = response
-	c.hasResult = true
+	if c.refreshDone != nil {
+		close(c.refreshDone)
+		c.refreshDone = nil
+	}
 }
 
 func (c *runtimeStatusSnapshotCache) Close() {
@@ -305,7 +348,17 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(r.runtimeStatus.Snapshot()))
+	var response runtimeStatusResponse
+	switch req.URL.Query().Get("refresh") {
+	case "":
+		response = r.runtimeStatus.Snapshot()
+	case "wait":
+		response = r.runtimeStatus.Refresh(req.Context())
+	default:
+		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(response))
 }
 
 func (r *Router) withLiveSharedDaemonMigrationStatus(response runtimeStatusResponse) runtimeStatusResponse {

@@ -108,18 +108,15 @@ func newAgentController() (*agentController, error) {
 	return &agentController{agentPath: agentPath}, nil
 }
 
-func (c *agentController) status(ctx context.Context) (agentStatus, error) {
+func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agentStatus, error) {
 	// Serialize refreshes so startup retries, the periodic ticker, and a manual
 	// refresh cannot launch multiple expensive Windows firewall inspections.
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 
-	args := []string{"status", "--json", "--runtime"}
 	inspectNetwork := c.cachedNetwork == nil ||
 		time.Since(c.networkLastChecked) >= networkPolicyRefreshInterval
-	if inspectNetwork {
-		args = append(args, "--network-policy")
-	}
+	args := statusArguments(refreshRuntime, inspectNetwork)
 	payload, err := c.runHidden(ctx, args...)
 	if err != nil {
 		return agentStatus{}, err
@@ -144,6 +141,17 @@ func (c *agentController) status(ctx context.Context) (agentStatus, error) {
 		c.networkLastChecked = time.Time{}
 	}
 	return status, nil
+}
+
+func statusArguments(refreshRuntime bool, inspectNetwork bool) []string {
+	arguments := []string{"status", "--json", "--runtime"}
+	if refreshRuntime {
+		arguments = append(arguments, "--runtime-refresh")
+	}
+	if inspectNetwork {
+		arguments = append(arguments, "--network-policy")
+	}
+	return arguments
 }
 
 func (c *agentController) action(ctx context.Context, action string) error {

@@ -949,8 +949,8 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 		presentation.VersionValue = fallbackText(firstNonEmpty(status.ServerVersion, status.Version), "未知")
 		presentation.NetworkValue = compactControlPanelNetwork(status.NetworkStatus)
 		presentation.ProjectsValue = fmt.Sprintf("%d", status.Projects)
-		codex := makeControlPanelRuntimePresentation(status.RuntimeStatus, "codex", status.ServiceOK)
-		claude := makeControlPanelRuntimePresentation(status.RuntimeStatus, "claude", status.ServiceOK)
+		codex := makeControlPanelRuntimePresentation(status.RuntimeStatus, "codex", status.ProcessOK)
+		claude := makeControlPanelRuntimePresentation(status.RuntimeStatus, "claude", status.ProcessOK)
 		presentation.CodexValue = codex.Value
 		presentation.CodexColor = codex.Color
 		presentation.ClaudeValue = claude.Value
@@ -992,13 +992,21 @@ type controlPanelRuntimePresentation struct {
 
 // 只使用 agentd 返回的脱敏运行时快照。available 只表示运行时可用，
 // 不能提升为“已连接”；Claude 关闭时用“未配置”说明用户仍需完成设置。
-func makeControlPanelRuntimePresentation(snapshot *runtimeStatus, runtimeID string, serviceAvailable bool) controlPanelRuntimePresentation {
+func makeControlPanelRuntimePresentation(snapshot *runtimeStatus, runtimeID string, processAvailable bool) controlPanelRuntimePresentation {
 	neutral := controlPanelRuntimePresentation{Value: "暂不可用", Color: rgbColor(101, 101, 110)}
-	if !serviceAvailable {
+	if !processAvailable {
 		return controlPanelRuntimePresentation{Value: "不可用", Color: rgbColor(184, 42, 50)}
 	}
 	if snapshot == nil {
 		return neutral
+	}
+	// 过期状态不能继续显示成确定的“已连接”或“未配置”。手动刷新会
+	// 等待新探测；定时刷新期间则明确告诉用户旧快照正在被替换。
+	if snapshot.Stale {
+		if snapshot.Refreshing {
+			return controlPanelRuntimePresentation{Value: "正在刷新", Color: neutral.Color}
+		}
+		return controlPanelRuntimePresentation{Value: "状态已过期", Color: rgbColor(154, 91, 0)}
 	}
 	var selected *runtimeEntry
 	for index := range snapshot.Runtimes {
@@ -1012,9 +1020,6 @@ func makeControlPanelRuntimePresentation(snapshot *runtimeStatus, runtimeID stri
 	}
 	if !selected.Enabled || strings.EqualFold(strings.TrimSpace(selected.State), "disabled") {
 		return controlPanelRuntimePresentation{Value: "未配置", Color: neutral.Color}
-	}
-	if snapshot.Stale && !snapshot.Refreshing {
-		return controlPanelRuntimePresentation{Value: "状态已过期", Color: rgbColor(154, 91, 0)}
 	}
 	if snapshot.Refreshing && strings.EqualFold(strings.TrimSpace(selected.Reason), "refresh_in_progress") {
 		return controlPanelRuntimePresentation{Value: "正在检查", Color: neutral.Color}

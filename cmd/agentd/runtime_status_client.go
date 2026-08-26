@@ -21,10 +21,14 @@ func fetchServiceRuntimeStatus(
 	endpoint string,
 	token string,
 	timeout time.Duration,
+	refresh bool,
 ) (map[string]any, error) {
 	target, err := runtimeStatusURL(endpoint)
 	if err != nil {
 		return nil, err
+	}
+	if refresh {
+		target += "?refresh=wait"
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

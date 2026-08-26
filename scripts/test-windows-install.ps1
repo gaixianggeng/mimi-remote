@@ -21,6 +21,14 @@ $source = Get-Content -LiteralPath $iss -Raw
 foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', '-ServiceHostPath', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
+$prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'), $source.IndexOf('procedure CurStepChanged') - $source.IndexOf('function PrepareToInstall'))
+if ($prepareSource.IndexOf('StopManagedService;') -gt $prepareSource.IndexOf('StopTrayApp;')) {
+    throw 'Upgrade must stop the managed service gracefully before terminating the shared tray image.'
+}
+$uninstallSource = $source.Substring($source.IndexOf('procedure CurUninstallStepChanged'))
+if ($uninstallSource.IndexOf('StopManagedService;') -gt $uninstallSource.IndexOf('StopTrayApp;')) {
+    throw 'Uninstall must stop the managed service gracefully before terminating the shared tray image.'
+}
 $postInstallSource = $source.Substring($source.IndexOf('procedure CurStepChanged'))
 if ($postInstallSource.IndexOf('PrivateLanNetworkProfileIsReady') -gt $postInstallSource.IndexOf('RegisterScheduledTask;')) {
     throw 'Private-network validation must run before the upgraded scheduled task is registered or started.'

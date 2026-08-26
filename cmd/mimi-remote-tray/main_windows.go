@@ -519,7 +519,7 @@ func (a *trayApplication) bootstrap() {
 	// start look necessary. Retry the initial handshake a few times instead.
 	for attempt := 0; attempt < 3; attempt++ {
 		ctx, cancel := statusContext()
-		status, err := a.controller.status(ctx)
+		status, err := a.controller.status(ctx, false)
 		cancel()
 		if err != nil {
 			trayLogf("bootstrap status check %d failed: %v", attempt+1, err)
@@ -576,8 +576,12 @@ func (a *trayApplication) refreshLoop() {
 }
 
 func (a *trayApplication) refreshStatus() {
+	a.refreshStatusWithRuntimeRefresh(false)
+}
+
+func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 	ctx, cancel := statusContext()
-	status, err := a.controller.status(ctx)
+	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
 	a.mu.Lock()
 	a.status = status
@@ -690,7 +694,7 @@ func (a *trayApplication) refreshStatusInteractive() {
 	}
 	go func() {
 		defer a.endBusy()
-		a.refreshStatus()
+		a.refreshStatusWithRuntimeRefresh(true)
 	}()
 }
 

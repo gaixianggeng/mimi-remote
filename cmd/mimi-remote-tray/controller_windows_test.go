@@ -55,6 +55,20 @@ func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	}
 }
 
+func TestStatusArgumentsOnlyForceRuntimeForManualRefresh(t *testing.T) {
+	background := statusArguments(false, false)
+	if strings.Contains(strings.Join(background, " "), "--runtime-refresh") {
+		t.Fatalf("background status arguments = %#v", background)
+	}
+	manual := statusArguments(true, true)
+	joined := strings.Join(manual, " ")
+	for _, expected := range []string{"--runtime", "--runtime-refresh", "--network-policy"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("manual status arguments missing %s: %#v", expected, manual)
+		}
+	}
+}
+
 func TestPairingArgumentsRequestSafeJSONWithoutTerminalOutput(t *testing.T) {
 	arguments := pairingArguments()
 	want := []string{"pair", "--qr-only", "--json"}
