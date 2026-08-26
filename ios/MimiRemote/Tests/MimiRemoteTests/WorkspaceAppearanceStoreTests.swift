@@ -141,7 +141,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(Set(artworks.map(\.assetName)).count, 10)
     }
 
-    func testEveryCuratedStyleAssignsOneProjectPerAvailableIconStably() {
+    func testEveryCuratedStyleAssignsProjectsInProductOrder() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let curatedStyles: [WorkspaceIconStyle] = [
             .threeKingdoms,
@@ -156,7 +156,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         ]
 
         for style in curatedStyles {
-            let iconCount = WorkspaceAppearanceStore.characters(for: style).count
+            let icons = WorkspaceAppearanceStore.characters(for: style)
+            let iconCount = icons.count
             let projectIDs = (0..<iconCount).map { "project-\($0)" }
             let assignments = store.characterAssignments(
                 style: style,
@@ -166,15 +167,19 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
 
             XCTAssertEqual(assignments.count, iconCount)
             XCTAssertEqual(Set(assignments.values.map(\.id)).count, iconCount)
-            XCTAssertEqual(
-                store.characterAssignments(
-                    style: style,
-                    profileID: "mac-a",
-                    projectIDs: Array(projectIDs.reversed())
-                ),
-                assignments,
-                "\(style.rawValue) 不应因项目输入顺序变化重新洗牌"
+            for (index, projectID) in projectIDs.enumerated() {
+                XCTAssertEqual(assignments[projectID]?.id, icons[index].id)
+            }
+
+            let reversedProjectIDs = Array(projectIDs.reversed())
+            let reversedAssignments = store.characterAssignments(
+                style: style,
+                profileID: "mac-a",
+                projectIDs: reversedProjectIDs
             )
+            for (index, projectID) in reversedProjectIDs.enumerated() {
+                XCTAssertEqual(reversedAssignments[projectID]?.id, icons[index].id)
+            }
         }
     }
 
@@ -463,58 +468,64 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(store.style(profileID: "mac-b"), .journey)
     }
 
-    func testDefaultCharacterIsStableForProfileAndProject() {
-        let first = WorkspaceAppearanceStore(defaults: defaults)
-        let value = first.defaultCharacterID(profileID: "mac-a", projectID: "project-1")
+    func testDefaultCharacterUsesFirstRoleInSelectedTheme() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
 
-        let restored = WorkspaceAppearanceStore(defaults: defaults)
         XCTAssertEqual(
-            restored.defaultCharacterID(profileID: "mac-a", projectID: "project-1"),
-            value
+            store.defaultCharacterID(profileID: "mac-a", projectID: "project-1"),
+            "sun-wukong"
         )
-        XCTAssertTrue(WorkspaceAppearanceStore.builtInCharacters.map(\.id).contains(value))
+        XCTAssertEqual(
+            store.defaultCharacterID(
+                style: .threeKingdoms,
+                profileID: "mac-b",
+                projectID: "another-project"
+            ),
+            "three-liu-bei"
+        )
     }
 
-    func testProjectCharacterIconStaysStableWhenCollidingCatalogArrives() throws {
+    func testProjectCharacterIconsFollowDirectoryOrder() throws {
         let store = WorkspaceAppearanceStore(defaults: defaults)
-        // 这两个项目的默认哈希都落在同一角色；旧实现会在批量目录补齐后
-        // 把 project-6 从如来佛祖换成玉皇大帝。
-        let initial = store.projectIconContent(profileID: "mac-a", projectID: "project-6")
-        let expanded = store.projectIconContents(
+        let assignments = store.projectIconContents(
             profileID: "mac-a",
-            projectIDs: ["project-5", "project-6"]
+            projectIDs: ["project-z", "project-a", "project-b"]
         )
 
-        XCTAssertEqual(try XCTUnwrap(expanded["project-6"]), initial)
-        let characterIDs = expanded.values.compactMap { content -> String? in
-            guard case let .character(character) = content else { return nil }
+        let characterIDs = try ["project-z", "project-a", "project-b"].map { projectID in
+            let content = try XCTUnwrap(assignments[projectID])
+            guard case let .character(character) = content else {
+                XCTFail("项目应使用角色图标")
+                return ""
+            }
             return character.id
         }
-        XCTAssertEqual(Set(characterIDs).count, 2, "增量稳定后仍应优先避免项目头像重复")
+        XCTAssertEqual(characterIDs, ["sun-wukong", "tang-sanzang", "zhu-bajie"])
     }
 
-    func testProjectEmojiStaysStableWhenCollidingCatalogArrives() throws {
+    func testProjectEmojiFollowsDirectoryOrder() throws {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         store.setStyle(.emoji, profileID: "mac-a")
-        // project-2 / project-5 的默认 Emoji 都是 📮，用于覆盖首帧 fallback
-        // 与工作区批量避碰结果不一致的真实路径。
-        let initial = store.projectIconContent(profileID: "mac-a", projectID: "project-5")
-        let expanded = store.projectIconContents(
+        let assignments = store.projectIconContents(
             profileID: "mac-a",
-            projectIDs: ["project-2", "project-5"]
+            projectIDs: ["project-z", "project-a", "project-b"]
         )
 
-        XCTAssertEqual(try XCTUnwrap(expanded["project-5"]), initial)
-        let emoji = expanded.values.compactMap { content -> String? in
-            guard case let .emoji(value) = content else { return nil }
+        let emoji = try ["project-z", "project-a", "project-b"].map { projectID in
+            let content = try XCTUnwrap(assignments[projectID])
+            guard case let .emoji(value) = content else {
+                XCTFail("Emoji 主题应使用 Emoji 图标")
+                return ""
+            }
             return value
         }
-        XCTAssertEqual(Set(emoji).count, 2)
+        XCTAssertEqual(emoji, Array(WorkspaceAppearanceStore.builtInEmoji.prefix(3)))
     }
 
-    func testCharacterAssignmentsStayUniqueWhilePoolHasCapacity() {
+    func testCharacterAssignmentsFollowInputOrderWhilePoolHasCapacity() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
-        let projectIDs = (0..<WorkspaceAppearanceStore.builtInCharacters.count)
+        let icons = WorkspaceAppearanceStore.builtInCharacters
+        let projectIDs = (0..<icons.count)
             .map { "project-\($0)" }
 
         let assignments = store.characterAssignments(
@@ -523,15 +534,18 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(assignments.count, projectIDs.count)
-        XCTAssertEqual(
-            Set(assignments.values.map(\.id)).count,
-            WorkspaceAppearanceStore.builtInCharacters.count
+        for (index, projectID) in projectIDs.enumerated() {
+            XCTAssertEqual(assignments[projectID]?.id, icons[index].id)
+        }
+
+        let reversedProjectIDs = Array(projectIDs.reversed())
+        let reversedAssignments = store.characterAssignments(
+            profileID: "mac-a",
+            projectIDs: reversedProjectIDs
         )
-        XCTAssertEqual(
-            store.characterAssignments(profileID: "mac-a", projectIDs: Array(projectIDs.reversed())),
-            assignments,
-            "项目输入顺序变化不应导致头像重新洗牌"
-        )
+        for (index, projectID) in reversedProjectIDs.enumerated() {
+            XCTAssertEqual(reversedAssignments[projectID]?.id, icons[index].id)
+        }
     }
 
     func testRetiredStylesMigrateToCurrentReplacementThemes() throws {
@@ -576,7 +590,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
-    func testCharacterAssignmentsReserveCustomChoiceBeforeAutomaticAllocation() {
+    func testCustomCharacterDoesNotShiftAutomaticOrder() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let projectIDs = (0..<10).map { "project-\($0)" }
         store.setCustomCharacterID(
@@ -591,10 +605,12 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(assignments[projectIDs[4]]?.id, "sun-wukong")
-        XCTAssertEqual(Set(assignments.values.map(\.id)).count, projectIDs.count)
+        XCTAssertEqual(assignments[projectIDs[0]]?.id, "sun-wukong")
+        XCTAssertEqual(assignments[projectIDs[1]]?.id, "tang-sanzang")
+        XCTAssertEqual(assignments[projectIDs[5]]?.id, "guanyin")
     }
 
-    func testCharacterAssignmentsRepairDuplicateHistoricalCustomChoices() {
+    func testCharacterAssignmentsPreserveDuplicateHistoricalCustomChoices() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let projectIDs = ["project-a", "project-b", "project-c"]
         store.setCustomCharacterID("red-boy", profileID: "mac-a", projectID: projectIDs[0])
@@ -606,8 +622,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(assignments[projectIDs[0]]?.id, "red-boy")
-        XCTAssertNotEqual(assignments[projectIDs[1]]?.id, "red-boy")
-        XCTAssertEqual(Set(assignments.values.map(\.id)).count, projectIDs.count)
+        XCTAssertEqual(assignments[projectIDs[1]]?.id, "red-boy")
+        XCTAssertEqual(assignments[projectIDs[2]]?.id, "zhu-bajie")
     }
 
     func testCharacterAssignmentsRepeatOnlyAfterPoolIsExhausted() {
@@ -625,9 +641,13 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             Set(assignments.values.map(\.id)).count,
             WorkspaceAppearanceStore.builtInCharacters.count
         )
+        XCTAssertEqual(
+            assignments[projectIDs[WorkspaceAppearanceStore.builtInCharacters.count]]?.id,
+            "sun-wukong"
+        )
     }
 
-    func testEmojiAssignmentsStayUniqueWhilePoolHasCapacity() {
+    func testEmojiAssignmentsFollowInputOrderWhilePoolHasCapacity() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let projectIDs = (0..<WorkspaceAppearanceStore.builtInEmoji.count)
             .map { "project-\($0)" }
@@ -642,11 +662,33 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             Set(assignments.values).count,
             WorkspaceAppearanceStore.builtInEmoji.count
         )
-        XCTAssertEqual(
-            store.emojiAssignments(profileID: "mac-a", projectIDs: Array(projectIDs.reversed())),
-            assignments,
-            "项目输入顺序变化不应导致 Emoji 重新洗牌"
+        for (index, projectID) in projectIDs.enumerated() {
+            XCTAssertEqual(assignments[projectID], WorkspaceAppearanceStore.builtInEmoji[index])
+        }
+
+        let reversedProjectIDs = Array(projectIDs.reversed())
+        let reversedAssignments = store.emojiAssignments(
+            profileID: "mac-a",
+            projectIDs: reversedProjectIDs
         )
+        for (index, projectID) in reversedProjectIDs.enumerated() {
+            XCTAssertEqual(
+                reversedAssignments[projectID],
+                WorkspaceAppearanceStore.builtInEmoji[index]
+            )
+        }
+    }
+
+    func testCustomEmojiDoesNotShiftAutomaticOrder() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let projectIDs = ["project-a", "project-b", "project-c"]
+        store.setCustomEmoji("🌈", profileID: "mac-a", projectID: projectIDs[1])
+
+        let assignments = store.emojiAssignments(profileID: "mac-a", projectIDs: projectIDs)
+
+        XCTAssertEqual(assignments[projectIDs[0]], "🐱")
+        XCTAssertEqual(assignments[projectIDs[1]], "🌈")
+        XCTAssertEqual(assignments[projectIDs[2]], "🦧")
     }
 
     func testCustomCharacterPersistsAndStaysScopedToProfileAndProject() {
@@ -796,22 +838,19 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertNil(store.customEmoji(profileID: profileID, projectID: oldID))
     }
 
-    func testWorkspaceIdentityMigrationKeepsAutomaticIconDuringCurrentRun() throws {
+    func testWorkspaceIdentityMigrationKeepsPositionBasedAutomaticIcon() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let profileID = "mac-a"
         let oldID = "legacy-project"
-        let oldDefaultID = store.defaultCharacterID(profileID: profileID, projectID: oldID)
-        let newID = try XCTUnwrap(
-            (0..<100)
-                .map { "canonical-project-\($0)" }
-                .first {
-                    store.defaultCharacterID(profileID: profileID, projectID: $0) != oldDefaultID
-                }
-        )
-        let initial = store.projectIconContent(profileID: profileID, projectID: oldID)
+        let newID = "canonical-project"
 
         store.migrateProjectIdentity(profileID: profileID, from: oldID, to: newID)
 
-        XCTAssertEqual(store.projectIconContent(profileID: profileID, projectID: newID), initial)
+        let assignments = store.characterAssignments(
+            profileID: profileID,
+            projectIDs: [newID, "second-project"]
+        )
+        XCTAssertEqual(assignments[newID]?.id, "sun-wukong")
+        XCTAssertEqual(assignments["second-project"]?.id, "tang-sanzang")
     }
 }
