@@ -41,6 +41,45 @@ foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskP
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
 }
 if ($registerSource.Contains('New-ScheduledTaskAction -Execute $AgentPath')) { throw 'Task registration must not launch console-subsystem agentd.exe directly.' }
+$registerBytes = [IO.File]::ReadAllBytes($register)
+$registerHasUtf8Bom = $registerBytes.Length -ge 3 -and $registerBytes[0] -eq 0xEF -and $registerBytes[1] -eq 0xBB -and $registerBytes[2] -eq 0xBF
+if (-not $registerHasUtf8Bom -and $registerBytes.Where({ $_ -gt 0x7F }, 'First').Count -gt 0) {
+    throw 'Windows PowerShell 5.1 scripts with non-ASCII text must include a UTF-8 BOM.'
+}
+if ($env:OS -eq 'Windows_NT') {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $previousRegisterScript = $env:MIMI_REGISTER_SCRIPT
+    $env:MIMI_REGISTER_SCRIPT = $register
+    $parserProbe = @'
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:MIMI_REGISTER_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) {
+    $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
+    exit 1
+}
+$assignment = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -eq '$serviceArguments'
+}, $true)
+if (-not $assignment) {
+    [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the service-host argument assignment.')
+    exit 1
+}
+'@
+    $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($parserProbe))
+    try {
+        & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -EncodedCommand $encodedProbe
+        if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 compatibility probe failed.' }
+    } finally {
+        if ($null -eq $previousRegisterScript) {
+            Remove-Item Env:MIMI_REGISTER_SCRIPT -ErrorAction SilentlyContinue
+        } else {
+            $env:MIMI_REGISTER_SCRIPT = $previousRegisterScript
+        }
+    }
+}
 foreach ($expected in @('up --no-pair --wait 30s', 'restart --no-pair --wait 30s')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing the extended cold-start readiness window: $expected" }
 }
