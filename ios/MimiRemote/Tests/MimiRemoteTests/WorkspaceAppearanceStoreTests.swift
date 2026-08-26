@@ -549,7 +549,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 profileID: "mac-b",
                 projectID: "another-project"
             ),
-            "three-liu-bei"
+            "three-guan-yu"
         )
     }
 
