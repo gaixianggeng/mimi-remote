@@ -623,6 +623,132 @@ func TestRuntimeStatusSuccessfulSnapshotStaysFreshForFiveMinutes(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusManualRefreshBypassesFreshTTL(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 8, 0, 0, 0, time.UTC)
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probes.Add(1)
+			checkedAt := now
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: runtimeStateConnected,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	cache.now = func() time.Time { return now }
+	defer cache.Close()
+
+	first := cache.Refresh(context.Background())
+	if first.Refreshing || first.Stale || probes.Load() != 1 {
+		t.Fatalf("首次手动刷新结果异常：snapshot=%+v probes=%d", first, probes.Load())
+	}
+	now = now.Add(time.Minute)
+	second := cache.Refresh(context.Background())
+	if second.CheckedAt == nil || !second.CheckedAt.Equal(now) || second.Refreshing || second.Stale {
+		t.Fatalf("五分钟 TTL 内的手动刷新仍应返回新快照：%+v", second)
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("手动刷新必须绕过成功 TTL：probes=%d", probes.Load())
+	}
+}
+
+func TestRuntimeStatusManualRefreshRunsAfterInflightBackgroundProbe(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var probes atomic.Int32
+	var accountState atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probe := probes.Add(1)
+			observed := accountState.Load()
+			if probe == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			state := runtimeStateSignedOut
+			if observed == 1 {
+				state = runtimeStateConnected
+			}
+			checkedAt := time.Now().UTC()
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: state,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	defer cache.Close()
+
+	_ = cache.Snapshot()
+	<-firstStarted
+	accountState.Store(1)
+	result := make(chan runtimeStatusResponse, 1)
+	go func() { result <- cache.Refresh(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	if got := probes.Load(); got != 1 {
+		t.Fatalf("manual refresh must wait for the in-flight probe before its follow-up: probes=%d", got)
+	}
+	close(releaseFirst)
+
+	select {
+	case response := <-result:
+		if got := probes.Load(); got != 2 {
+			t.Fatalf("manual refresh must run one follow-up probe: probes=%d", got)
+		}
+		if len(response.Runtimes) != 1 || response.Runtimes[0].State != runtimeStateConnected {
+			t.Fatalf("manual refresh returned the pre-click sample: %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual refresh did not finish after the follow-up probe")
+	}
+}
+
+func TestRuntimeStatusHandlerWaitRefreshBypassesCache(t *testing.T) {
+	checkedAt := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probes.Add(1)
+			current := checkedAt
+			return runtimeStatusResponse{
+				CheckedAt: &current,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: runtimeStateConnected,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	defer cache.Close()
+	_ = cache.Refresh(context.Background())
+	checkedAt = checkedAt.Add(time.Minute)
+
+	router := &Router{runtimeStatus: cache}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/runtime/status?refresh=wait", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	router.runtimeStatusHandler(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("强制刷新 HTTP 状态 = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response runtimeStatusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.CheckedAt == nil || !response.CheckedAt.Equal(checkedAt) || response.Refreshing || response.Stale {
+		t.Fatalf("强制刷新端点未等待新快照：%+v", response)
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("强制刷新端点必须绕过缓存：probes=%d", probes.Load())
+	}
+}
+
 func TestRuntimeStatusUnavailableQuotaUsesFailureTTL(t *testing.T) {
 	response := runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{{

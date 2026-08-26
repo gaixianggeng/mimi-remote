@@ -16,10 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
 const (
-	runtimeStatusRefreshTimeout = 9 * time.Second
+	runtimeStatusRefreshTimeout = runtimebudget.ProbeGenerationTimeout
 	runtimeStatusSuccessTTL     = 5 * time.Minute
 	runtimeStatusFailureTTL     = 15 * time.Second
 	runtimeQuotaFallbackTTL     = 15 * time.Minute
@@ -56,13 +57,16 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	hasResult  bool
-	snapshot   runtimeStatusResponse
-	refreshing bool
-	closed     bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	hasResult   bool
+	snapshot    runtimeStatusResponse
+	refreshing  bool
+	refreshGen  uint64
+	refreshDone map[uint64]chan struct{}
+	forceNext   bool
+	closed      bool
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -77,6 +81,7 @@ func newRuntimeStatusSnapshotCache(
 		timeout:     runtimeStatusRefreshTimeout,
 		successTTL:  runtimeStatusSuccessTTL,
 		failureTTL:  runtimeStatusFailureTTL,
+		refreshDone: make(map[uint64]chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -102,11 +107,7 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 			}
 		}
 	}
-	if !c.refreshing && !c.closed {
-		c.refreshing = true
-		c.wg.Add(1)
-		go c.refresh()
-	}
+	c.startRefreshLocked()
 	if c.hasResult {
 		response := c.snapshot
 		response.Refreshing = c.refreshing
@@ -118,7 +119,62 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 	return response
 }
 
-func (c *runtimeStatusSnapshotCache) refresh() {
+// Refresh bypasses the TTL and waits for a probe that starts after this call.
+// If a background probe is already running, manual callers share one follow-up
+// generation. If the caller times out, the old result remains explicitly stale.
+func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusResponse {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	var target uint64
+	if c.refreshing {
+		// The running probe started before this request. Queue exactly one
+		// follow-up generation so the returned sample is later than the click.
+		target = c.refreshGen + 1
+		c.forceNext = true
+	} else {
+		c.startRefreshLocked()
+		target = c.refreshGen
+	}
+	done := c.refreshDoneLocked(target)
+	c.mu.Unlock()
+
+	completed := false
+	if done != nil {
+		select {
+		case <-done:
+			completed = true
+		case <-ctx.Done():
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hasResult {
+		response := c.snapshot
+		response.Refreshing = c.refreshing
+		response.Stale = c.refreshing && !completed
+		return response
+	}
+	response := c.placeholder()
+	response.Refreshing = c.refreshing
+	return response
+}
+
+func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
+	if c.refreshing || c.closed {
+		return
+	}
+	c.refreshing = true
+	c.refreshGen++
+	generation := c.refreshGen
+	c.refreshDoneLocked(generation)
+	c.wg.Add(1)
+	go c.refresh(generation)
+}
+
+func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 	response := c.probe(ctx)
@@ -126,12 +182,41 @@ func (c *runtimeStatusSnapshotCache) refresh() {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.closed && c.ctx.Err() == nil {
+		c.snapshot = response
+		c.hasResult = true
+	}
+	c.closeRefreshDoneLocked(generation)
 	c.refreshing = false
-	if c.closed || c.ctx.Err() != nil {
+	if !c.closed && c.forceNext {
+		c.forceNext = false
+		c.startRefreshLocked()
+	} else if c.closed {
+		for pendingGeneration := range c.refreshDone {
+			c.closeRefreshDoneLocked(pendingGeneration)
+		}
+	}
+}
+
+func (c *runtimeStatusSnapshotCache) refreshDoneLocked(generation uint64) chan struct{} {
+	if generation == 0 || c.closed {
+		return nil
+	}
+	done := c.refreshDone[generation]
+	if done == nil {
+		done = make(chan struct{})
+		c.refreshDone[generation] = done
+	}
+	return done
+}
+
+func (c *runtimeStatusSnapshotCache) closeRefreshDoneLocked(generation uint64) {
+	done := c.refreshDone[generation]
+	if done == nil {
 		return
 	}
-	c.snapshot = response
-	c.hasResult = true
+	close(done)
+	delete(c.refreshDone, generation)
 }
 
 func (c *runtimeStatusSnapshotCache) Close() {
@@ -305,7 +390,17 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(r.runtimeStatus.Snapshot()))
+	var response runtimeStatusResponse
+	switch req.URL.Query().Get("refresh") {
+	case "":
+		response = r.runtimeStatus.Snapshot()
+	case "wait":
+		response = r.runtimeStatus.Refresh(req.Context())
+	default:
+		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(response))
 }
 
 func (r *Router) withLiveSharedDaemonMigrationStatus(response runtimeStatusResponse) runtimeStatusResponse {
