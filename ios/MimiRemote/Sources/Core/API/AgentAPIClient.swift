@@ -606,8 +606,9 @@ struct AgentAPIClient {
             path: "/api/push/actions/decide",
             method: "POST",
             body: body,
-            timeout: timeout
-		)
+            timeout: timeout,
+            rejectedSuccessStatuses: [202]
+        )
 	}
 
 	func pushActionRoute(
@@ -631,7 +632,8 @@ struct AgentAPIClient {
         requiresAuth: Bool = true,
         headers: [String: String] = [:],
         body: Data?,
-        timeout: TimeInterval = 20
+        timeout: TimeInterval = 20,
+        rejectedSuccessStatuses: Set<Int> = []
     ) async throws -> T {
         // ATS 为兼容 Tailscale 裸 IP 需要允许 HTTP；每次真正发请求前仍由应用层策略重新校验，避免未来调用点绕过设置页。
         let baseURL = try EndpointTransportPolicy.validatedURL(endpoint)
@@ -670,6 +672,11 @@ struct AgentAPIClient {
                 )
             }
             throw AgentAPIError.server(status: http.statusCode, message: message)
+        }
+		// 202 表示 agentd 已接收但仍在处理。决策请求必须把它视为可重试的服务端结果，
+		// 不能当成终态清理通知。
+        if rejectedSuccessStatuses.contains(http.statusCode) {
+            throw AgentAPIError.server(status: http.statusCode, message: decodeError(data))
         }
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T

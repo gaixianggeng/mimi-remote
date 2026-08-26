@@ -91,20 +91,33 @@ type ApprovalRequest struct {
 	Method     string
 }
 
+// PreparedDelivery 只包含 Provider 网络投递。ActionStore 的签发或撤销已经在
+// Prepare* 返回前同步完成，调用方因此可以先建立确定的状态顺序，再异步执行网络。
+type PreparedDelivery func(context.Context)
+
 // NotifyPending 在待审批请求出现时签发一次性句柄并向已注册设备推送提醒。
 // 它必须永不阻塞 runtime：Provider 或 APNs 不可用时只记录有界错误。
 func (m *Manager) NotifyPending(ctx context.Context, request ApprovalRequest) (Action, bool) {
+	action, delivery, created := m.PreparePending(request)
+	if delivery != nil {
+		delivery(ctx)
+	}
+	return action, created
+}
+
+// PreparePending 同步签发 Action，只把可能阻塞的 Provider 投递留给返回的闭包。
+func (m *Manager) PreparePending(request ApprovalRequest) (Action, PreparedDelivery, bool) {
 	if !m.Enabled() {
-		return Action{}, false
+		return Action{}, nil, false
 	}
 	kind, ok := ApprovalKindForMethod(request.Method)
 	if !ok {
 		// 未登记的审批方法不推送：宁可少一条提醒，也不把未知语义推上锁屏。
-		return Action{}, false
+		return Action{}, nil, false
 	}
 	devices := m.devices.Active()
 	if len(devices) == 0 {
-		return Action{}, false
+		return Action{}, nil, false
 	}
 	deviceIDs := make([]string, 0, len(devices))
 	for _, device := range devices {
@@ -121,29 +134,39 @@ func (m *Manager) NotifyPending(ctx context.Context, request ApprovalRequest) (A
 	}, deviceIDs)
 	if err != nil {
 		log.Printf("push bridge 无法签发审批动作 runtime=%s err=%v", request.Runtime, err)
-		return Action{}, false
+		return Action{}, nil, false
 	}
 	if !created {
 		// 已经推送过的同一请求不再重复打扰。
-		return action, false
+		return action, nil, false
 	}
-	m.fanout(ctx, action, EventApprovalPending, devices)
-	return action, true
+	return action, func(ctx context.Context) {
+		m.fanout(ctx, action, EventApprovalPending, devices)
+	}, true
 }
 
 // Resolve 在审批被处理（无论来自前台、另一台设备还是 runtime 超时）后作废句柄，
 // 并尽力向其余设备发送静默状态更新，让它们清理已经不可操作的通知。
 func (m *Manager) Resolve(ctx context.Context, runtime string, sessionKey string, requestID string) {
+	if delivery := m.PrepareResolve(runtime, sessionKey, requestID); delivery != nil {
+		delivery(ctx)
+	}
+}
+
+// PrepareResolve 同步撤销句柄，只把静默清理通知留给返回的闭包。
+func (m *Manager) PrepareResolve(runtime string, sessionKey string, requestID string) PreparedDelivery {
 	if !m.Enabled() {
-		return
+		return nil
 	}
 	revoked := m.actions.Revoke(runtime, sessionKey, requestID)
 	if len(revoked) == 0 {
-		return
+		return nil
 	}
 	devices := m.devices.Active()
-	for _, action := range revoked {
-		m.fanout(ctx, action, EventApprovalResolved, devices)
+	return func(ctx context.Context) {
+		for _, action := range revoked {
+			m.fanout(ctx, action, EventApprovalResolved, devices)
+		}
 	}
 }
 
@@ -156,16 +179,25 @@ func (m *Manager) ResolveSession(ctx context.Context, runtime string, sessionKey
 // ResolveThread 用于 turn 结束、thread 关闭这类只影响单个 thread 的事件。
 // 一个 gateway 会话覆盖多个 thread，按会话作废会误伤其它线程上的待审批。
 func (m *Manager) ResolveThread(ctx context.Context, runtime string, sessionKey string, threadID string) {
+	if delivery := m.PrepareResolveThread(runtime, sessionKey, threadID); delivery != nil {
+		delivery(ctx)
+	}
+}
+
+// PrepareResolveThread 是 ResolveThread 的同步状态阶段。
+func (m *Manager) PrepareResolveThread(runtime string, sessionKey string, threadID string) PreparedDelivery {
 	if !m.Enabled() || strings.TrimSpace(threadID) == "" {
-		return
+		return nil
 	}
 	revoked := m.actions.RevokeThread(runtime, sessionKey, threadID)
 	if len(revoked) == 0 {
-		return
+		return nil
 	}
 	devices := m.devices.Active()
-	for _, action := range revoked {
-		m.fanout(ctx, action, EventApprovalResolved, devices)
+	return func(ctx context.Context) {
+		for _, action := range revoked {
+			m.fanout(ctx, action, EventApprovalResolved, devices)
+		}
 	}
 }
 

@@ -121,8 +121,11 @@ type Router struct {
 	push *pushbridge.Manager
 	// claudeObservers 让 Claude bridge 会话在移动端离线后仍被观察；否则 agentd
 	// 看不到期间到达的审批请求，也就无从提醒。
-	claudeObserverMu              sync.Mutex
-	claudeObservers               map[string]*claudeApprovalObserver
+	claudeObserverMu sync.Mutex
+	claudeObservers  map[string]*claudeApprovalObserver
+	// claudeObserverEpochs 让前台 attach 与断线 observer 安装共享同一个代际门。
+	// 新连接先递增代际，旧 handler 随后到达时就不能再发布 observer。
+	claudeObserverEpochs          map[string]uint64
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex

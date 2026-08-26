@@ -433,10 +433,11 @@ func TestApprovalObservationSnapshotKeepsActiveTurnAndPendingRequest(t *testing.
 // 配置文件不一定叫 config.json。按文件名裁剪会拼出既不报错也不正确的路径，
 // 设备注册表就会落在一个谁也找不到的地方。
 func TestPushDeviceStorePathFollowsConfigDirectory(t *testing.T) {
+	root := t.TempDir()
 	cases := map[string]string{
-		"/Users/me/.config/mimi/config.json": "/Users/me/.config/mimi/push-devices.json",
-		"/etc/mimi/agentd.json":              "/etc/mimi/push-devices.json",
-		"/opt/mimi/custom-name.json":         "/opt/mimi/push-devices.json",
+		filepath.Join(root, ".config", "mimi", "config.json"):  filepath.Join(root, ".config", "mimi", "push-devices.json"),
+		filepath.Join(root, "etc", "mimi", "agentd.json"):      filepath.Join(root, "etc", "mimi", "push-devices.json"),
+		filepath.Join(root, "opt", "mimi", "custom-name.json"): filepath.Join(root, "opt", "mimi", "push-devices.json"),
 	}
 	for configPath, want := range cases {
 		if got := pushDeviceStorePath(configPath); got != want {

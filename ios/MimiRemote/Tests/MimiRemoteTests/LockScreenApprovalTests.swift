@@ -75,11 +75,11 @@ final class LockScreenApprovalTests: XCTestCase {
     func testSameApprovalCollapsesOntoOneNotification() throws {
         let first = try XCTUnwrap(LockScreenApprovalNotification(userInfo: payload()))
         let second = try XCTUnwrap(LockScreenApprovalNotification(userInfo: payload()))
-        XCTAssertEqual(first.notificationIdentifier, second.notificationIdentifier)
+        XCTAssertEqual(first.approvalIdentifier, second.approvalIdentifier)
         let other = try XCTUnwrap(
             LockScreenApprovalNotification(userInfo: payload(overrides: ["action_id": "act-other"]))
         )
-        XCTAssertNotEqual(first.notificationIdentifier, other.notificationIdentifier)
+        XCTAssertNotEqual(first.approvalIdentifier, other.approvalIdentifier)
     }
 
 	@MainActor
@@ -95,8 +95,8 @@ final class LockScreenApprovalTests: XCTestCase {
     func testBothActionsRequireDeviceAuthentication() throws {
         let category = LockScreenApprovalCategory.makeCategory()
         XCTAssertEqual(category.identifier, LockScreenApprovalCategory.identifier)
-        XCTAssertEqual(category.actions.count, 2, "锁屏最多展示两个自定义动作，查看详情用点击通知完成")
-        for action in category.actions {
+        XCTAssertEqual(category.actions.count, 3, "可操作审批保留允许、拒绝和查看详情")
+        for action in category.actions.filter({ $0.identifier != LockScreenApprovalCategory.detailsActionID }) {
             XCTAssertTrue(
                 action.options.contains(.authenticationRequired),
                 "\(action.identifier) 必须要求解锁"
@@ -104,6 +104,14 @@ final class LockScreenApprovalTests: XCTestCase {
         }
         let deny = try XCTUnwrap(category.actions.first { $0.identifier == LockScreenApprovalCategory.denyActionID })
         XCTAssertTrue(deny.options.contains(.destructive))
+        let details = try XCTUnwrap(
+            category.actions.first { $0.identifier == LockScreenApprovalCategory.detailsActionID }
+        )
+        XCTAssertTrue(details.options.contains(.foreground))
+
+        let detailsCategory = LockScreenApprovalCategory.makeDetailsCategory()
+        XCTAssertEqual(detailsCategory.identifier, LockScreenApprovalCategory.detailsIdentifier)
+        XCTAssertEqual(detailsCategory.actions.map(\.identifier), [LockScreenApprovalCategory.detailsActionID])
     }
 
     func testDecisionMapping() {
@@ -127,6 +135,7 @@ final class LockScreenApprovalTests: XCTestCase {
             actionIdentifier: LockScreenApprovalCategory.allowActionID
         ))
         XCTAssertEqual(inbox.pending?.decision, .allow)
+        XCTAssertEqual(inbox.pending?.requestIdentifier, nil)
 
         XCTAssertTrue(inbox.receive(
             userInfo: payload(),
@@ -141,6 +150,20 @@ final class LockScreenApprovalTests: XCTestCase {
         ))
         XCTAssertEqual(inbox.pending?.notification.event, .resolved)
         XCTAssertNil(inbox.pending?.decision)
+
+        XCTAssertTrue(inbox.receive(
+            userInfo: payload(),
+            actionIdentifier: LockScreenApprovalCategory.allowActionID,
+            requestIdentifier: "system-request-42"
+        ))
+        XCTAssertEqual(inbox.pending?.requestIdentifier, "system-request-42")
+
+        XCTAssertTrue(inbox.receive(
+            userInfo: payload(overrides: ["approval_kind": "permission"]),
+            actionIdentifier: LockScreenApprovalCategory.allowActionID,
+            requestIdentifier: "system-request-43"
+        ))
+        XCTAssertNil(inbox.pending?.decision, "不可锁屏处理的类型不能被伪造动作放行")
 
         // 会话通知的 payload 不该被误认成审批。
         XCTAssertFalse(inbox.receive(
@@ -239,6 +262,67 @@ final class LockScreenApprovalTests: XCTestCase {
         }
     }
 
+	/// disable 入队前构造的 client 只能操作当时绑定的 Profile。等待期间绑定切换后，
+	/// 旧操作必须在发出网络请求前失败，并保留当前绑定。
+	@MainActor
+	func testDisableRejectsClientForStaleProfile() async throws {
+		let suiteName = "LockScreenApprovalTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+		defaults.set(true, forKey: "lockScreenApproval.enabled")
+		defaults.set("profile-current", forKey: "lockScreenApproval.registeredProfileID")
+		defaults.set(Date().addingTimeInterval(3600), forKey: "lockScreenApproval.ticketExpiresAt")
+
+		NoLockScreenApprovalRequestURLProtocol.reset()
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [NoLockScreenApprovalRequestURLProtocol.self]
+		let client = AgentAPIClient(
+			endpoint: "https://agentd.example",
+			token: "test-token",
+			session: URLSession(configuration: configuration)
+		)
+		let store = LockScreenApprovalStore(
+			defaults: defaults,
+			ticketStore: PushTicketStore(keychain: TestKeychainOperations())
+		)
+
+		await store.disable(client: client, profileID: "profile-stale")
+
+		XCTAssertEqual(NoLockScreenApprovalRequestURLProtocol.requestCount, 0)
+		XCTAssertTrue(store.isEnabled)
+		XCTAssertEqual(store.registeredProfileID, "profile-current")
+		guard case .failed = store.status else {
+			return XCTFail("旧 Profile 的 disable 应 fail closed")
+		}
+	}
+
+	/// 两个 Profile 的 push/status 可以并发返回，Provider 身份必须按 Profile 保存，
+	/// 不能让最后完成的响应覆盖另一条连接的收件主机。
+	@MainActor
+	func testHostSupportIsScopedToProfile() async throws {
+		let suiteName = "LockScreenApprovalTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [ProfilePushStatusURLProtocol.self]
+		let session = URLSession(configuration: configuration)
+		let store = LockScreenApprovalStore(
+			defaults: defaults,
+			ticketStore: PushTicketStore(keychain: TestKeychainOperations())
+		)
+		let clientA = AgentAPIClient(endpoint: "https://profile-a.example", token: "a", session: session)
+		let clientB = AgentAPIClient(endpoint: "https://profile-b.example", token: "b", session: session)
+
+		async let refreshA: Void = store.refreshHostSupport(client: clientA, profileID: "profile-a")
+		async let refreshB: Void = store.refreshHostSupport(client: clientB, profileID: "profile-b")
+		_ = await (refreshA, refreshB)
+
+		XCTAssertEqual(store.providerHost(for: "profile-a"), "provider-a.example")
+		XCTAssertEqual(store.providerHost(for: "profile-b"), "provider-b.example")
+		XCTAssertTrue(store.hostSupportsPush(for: "profile-a"))
+		XCTAssertTrue(store.hostSupportsPush(for: "profile-b"))
+	}
+
     private static func makeProvisioningProfile(apsEnvironment: String) -> Data? {
         let plist: [String: Any] = ["Entitlements": ["aps-environment": apsEnvironment]]
         guard let encoded = try? PropertyListSerialization.data(
@@ -254,6 +338,65 @@ final class LockScreenApprovalTests: XCTestCase {
         envelope.append(Data("SIGNATURE-SUFFIX".utf8))
         return envelope
     }
+}
+
+private final class NoLockScreenApprovalRequestURLProtocol: URLProtocol {
+	private static let lock = NSLock()
+	private static var requestCountStorage = 0
+
+	static var requestCount: Int {
+		lock.lock()
+		defer { lock.unlock() }
+		return requestCountStorage
+	}
+
+	static func reset() {
+		lock.lock()
+		requestCountStorage = 0
+		lock.unlock()
+	}
+
+	override class func canInit(with request: URLRequest) -> Bool { true }
+	override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+	override func startLoading() {
+		Self.lock.lock()
+		Self.requestCountStorage += 1
+		Self.lock.unlock()
+		client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+	}
+
+	override func stopLoading() {}
+}
+
+private final class ProfilePushStatusURLProtocol: URLProtocol {
+	override class func canInit(with request: URLRequest) -> Bool { true }
+	override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+	override func startLoading() {
+		guard let url = request.url,
+		      let sourceHost = url.host,
+		      let response = HTTPURLResponse(
+				url: url,
+				statusCode: 200,
+				httpVersion: "HTTP/1.1",
+				headerFields: ["Content-Type": "application/json"]
+		      ) else {
+			client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+			return
+		}
+		let providerHost = sourceHost == "profile-a.example"
+			? "provider-a.example"
+			: "provider-b.example"
+		let body = """
+		{"enabled":true,"provider_configured":true,"provider_url":"https://\(providerHost)/mimi-push"}
+		"""
+		client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+		client?.urlProtocol(self, didLoad: Data(body.utf8))
+		client?.urlProtocolDidFinishLoading(self)
+	}
+
+	override func stopLoading() {}
 }
 
 extension LockScreenApprovalTests {
@@ -286,6 +429,7 @@ extension LockScreenApprovalTests {
             )
         }
         XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.server(status: 502, message: "")))
+        XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.server(status: 202, message: "busy")))
         XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.invalidResponse))
     }
 }

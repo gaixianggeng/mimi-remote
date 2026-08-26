@@ -106,13 +106,16 @@ Provider 只接受固定 Schema，不接受调用方传入任意标题、正文�
   "event": "approval.pending",
   "action_id": "128-bit-random-opaque-id",
   "device_id": "random-installation-id",
-  "profile_id": "local-random-profile-id",
+  "profile_id": "installation-derived-16-hex-tag",
   "host_tag": "A1C3",
   "session_tag": "7D92",
   "approval_kind": "command",
   "expires_at": "2026-08-09T06:15:00Z"
 }
 ```
+
+`profile_id` 是 `installationID` 经带域前缀的 SHA-256 摘要截断得到的 16 位十六进制标签。
+它不是 Connection Profile 的原始 ID，也不包含主机名或账号信息。
 
 Provider 根据枚举生成本地化 APNs Payload：
 
@@ -269,11 +272,9 @@ JSON-RPC response，再交给 gateway 既有的 `validateClientFrameContext`：�
 - 撤销表：`/var/lib/mimi-push-provider/revocations.db`，每小时清理已自然到期的记录。
 
 已验证：健康检查、Ticket 签发/撤销、非法枚举拒绝、限速、撤销后拒绝，以及 Codex 与
-Claude 两条 runtime 的真实载荷经公网到达 APNs（当前为占位密钥，Apple 返回
-`InvalidProviderToken`，证明链路与请求格式成立）。
-
-**待补**：真实 APNs Auth Key（`.p8` + Key ID）。替换 `/etc/mimi-push-provider/apns.p8`
-与 env 里的 `MIMI_PUSH_APNS_KEY_ID` 后重启即可切到真实投递。
+Claude 两条 runtime 的载荷经公网到达 APNs。真实 APNs Auth Key 已部署；用伪造的
+Device Token 验证时 Apple 返回 `BadDeviceToken`，说明 Provider 鉴权已经通过。真机成功
+投递仍按下文两条触发路径分别记录，不能用伪造 Token 的鉴权检查代替。
 
 ### iOS 侧的两条边界
 

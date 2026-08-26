@@ -124,20 +124,23 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         let userInfo = response.notification.request.content.userInfo
         let actionIdentifier = response.actionIdentifier
 		Task { @MainActor [weak self] in
-			defer { completionHandler() }
-			guard let self else { return }
-			// 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
+				defer { completionHandler() }
+				guard let self else { return }
+				let requestIdentifier = response.notification.request.identifier
+				// 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
 			// 在 agentd 返回后才调用，App 即使没有进入前台也能提交决策。
-			if let delivery = LockScreenApprovalDelivery(
-				userInfo: userInfo,
-				actionIdentifier: actionIdentifier
-			) {
+				if let delivery = LockScreenApprovalDelivery(
+					userInfo: userInfo,
+					actionIdentifier: actionIdentifier,
+					requestIdentifier: requestIdentifier
+				) {
 				if delivery.decision != nil, let handleApprovalAction {
 					await handleApprovalAction(delivery)
 				} else {
-					_ = self.approvalInbox.receive(
-						userInfo: userInfo,
-						actionIdentifier: actionIdentifier
+						_ = self.approvalInbox.receive(
+							userInfo: userInfo,
+							actionIdentifier: actionIdentifier,
+							requestIdentifier: requestIdentifier
 					)
 				}
 				return
@@ -240,7 +243,8 @@ struct MimiRemoteApp: App {
 				await lockScreenApprovalStore.submitDecision(
 					decision,
 					for: delivery.notification,
-					client: source.client
+					client: source.client,
+					notificationRequestIdentifier: delivery.requestIdentifier
 				)
 			} catch {
 				lockScreenApprovalStore.markDecisionUnknown()
@@ -260,10 +264,9 @@ struct MimiRemoteApp: App {
 					lockScreenApprovalStore.markRegistrationFailed()
 					return
 				}
-				await lockScreenApprovalStore.enable(
+				await lockScreenApprovalStore.refreshRegistrationAfterDeviceTokenChange(
 					client: client,
-					profileID: profileID,
-					providerURL: lockScreenApprovalStore.registeredProviderURL
+					profileID: profileID
 				)
 			}
 		}
@@ -272,8 +275,12 @@ struct MimiRemoteApp: App {
         }
         PushDeviceTokenBridge.onSilentPayload = { [weak lockScreenApprovalStore] userInfo in
             guard let payload = LockScreenApprovalNotification(userInfo: userInfo) else { return }
-            Task { await lockScreenApprovalStore?.handleResolved(payload) }
+            await lockScreenApprovalStore?.handleResolved(payload)
         }
+		// 先安装桥接回调，再触发 APNs 注册，避免冷启动立即返回的 Token 丢失。
+		if lockScreenApprovalStore.isEnabled {
+			lockScreenApprovalStore.registerNotificationInfrastructure()
+		}
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
     }

@@ -54,17 +54,21 @@ func (r *Router) notifyPendingApproval(runtime string, sessionKey string, thread
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
+	_, delivery, _ := r.push.PreparePending(pushbridge.ApprovalRequest{
+		Runtime:    runtime,
+		SessionKey: sessionKey,
+		ThreadID:   threadID,
+		ProjectID:  projectID,
+		RequestID:  requestID,
+		Method:     method,
+	})
+	if delivery == nil {
+		return
+	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
 		defer cancel()
-		r.push.NotifyPending(ctx, pushbridge.ApprovalRequest{
-			Runtime:    runtime,
-			SessionKey: sessionKey,
-			ThreadID:   threadID,
-			ProjectID:  projectID,
-			RequestID:  requestID,
-			Method:     method,
-		})
+		delivery(ctx)
 	}()
 }
 
@@ -75,10 +79,14 @@ func (r *Router) resolveApprovalNotificationsForThread(runtime string, sessionKe
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" || strings.TrimSpace(threadID) == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
+	delivery := r.push.PrepareResolveThread(runtime, sessionKey, threadID)
+	if delivery == nil {
+		return
+	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
 		defer cancel()
-		r.push.ResolveThread(ctx, runtime, sessionKey, threadID)
+		delivery(ctx)
 	}()
 }
 
@@ -86,10 +94,14 @@ func (r *Router) resolveApprovalNotifications(runtime string, sessionKey string,
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
+	delivery := r.push.PrepareResolve(runtime, sessionKey, requestID)
+	if delivery == nil {
+		return
+	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
 		defer cancel()
-		r.push.Resolve(ctx, runtime, sessionKey, requestID)
+		delivery(ctx)
 	}()
 }
 

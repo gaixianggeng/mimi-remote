@@ -40,6 +40,7 @@ type claudeApprovalObserver struct {
 	reader     *bufio.Reader
 	policy     *appServerGatewayPolicy
 	cancel     context.CancelFunc
+	epoch      uint64
 
 	mu          sync.Mutex
 	closed      bool
@@ -58,21 +59,9 @@ func (r *Router) startClaudeApprovalObserver(
 	writeMu *sync.Mutex,
 	reader *bufio.Reader,
 	policy *appServerGatewayPolicy,
+	expectedEpoch uint64,
 ) bool {
 	if !r.pushEnabled() || strings.TrimSpace(sessionKey) == "" || conn == nil || reader == nil {
-		return false
-	}
-	r.claudeObserverMu.Lock()
-	if r.claudeObservers == nil {
-		r.claudeObservers = map[string]*claudeApprovalObserver{}
-	}
-	if existing := r.claudeObservers[sessionKey]; existing != nil {
-		r.claudeObserverMu.Unlock()
-		existing.close("observer_replaced")
-		r.claudeObserverMu.Lock()
-	}
-	if len(r.claudeObservers) >= claudeObserverMax {
-		r.claudeObserverMu.Unlock()
 		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,35 +78,84 @@ func (r *Router) startClaudeApprovalObserver(
 		reader:      reader,
 		policy:      policy,
 		cancel:      cancel,
+		epoch:       expectedEpoch,
 		startedAt:   time.Now(),
 		activeTurns: activeTurns,
 		pending:     pending,
 	}
-	r.claudeObservers[sessionKey] = observer
-	r.claudeObserverMu.Unlock()
+	existing, installed := r.installClaudeApprovalObserver(observer, expectedEpoch)
+	if !installed {
+		cancel()
+		return false
+	}
+	if existing != nil {
+		// 新 generation 已原子发布。旧 observer 关闭时只撤销没有被当前
+		// generation 继承的请求，不能按 session 误伤仍可处理的 Action。
+		existing.close("observer_replaced")
+	}
 
 	go observer.pump(ctx)
 	go observer.sweep(ctx)
 	// 客户端离开时已经可见但尚未回答的审批也需要提醒。Manager 会按 runtime、
 	// session 与 request id 去重，不会和先前的投递堆出重复通知。
 	for requestID, request := range pendingRequests {
-		r.notifyPendingApproval("claude", sessionKey, request.threadID,
-			policy.projectIDForThread(request.threadID), requestID, request.method)
+		observer.notifyPendingIfCurrent(requestID, request.threadID, request.method)
 	}
 	return true
 }
 
-// stopClaudeApprovalObserver 在新客户端接入同名会话时让位：新连接会自己 attach
-// 到同一个 bridge 会话并拿到 serverRequest/replay。
-func (r *Router) stopClaudeApprovalObserver(sessionKey string) {
-	if strings.TrimSpace(sessionKey) == "" {
-		return
+// installClaudeApprovalObserver 在一把 map 锁内完成容量判定和 generation 替换。
+// 两个并发断线即使同时尝试接管同一 session，也只会留下最后发布的 observer。
+func (r *Router) installClaudeApprovalObserver(observer *claudeApprovalObserver, expectedEpoch uint64) (*claudeApprovalObserver, bool) {
+	if r == nil || observer == nil || strings.TrimSpace(observer.sessionKey) == "" {
+		return nil, false
 	}
 	r.claudeObserverMu.Lock()
+	defer r.claudeObserverMu.Unlock()
+	if r.claudeObserverEpochs == nil || r.claudeObserverEpochs[observer.sessionKey] != expectedEpoch {
+		return nil, false
+	}
+	if r.claudeObservers == nil {
+		r.claudeObservers = map[string]*claudeApprovalObserver{}
+	}
+	existing := r.claudeObservers[observer.sessionKey]
+	if existing == nil && len(r.claudeObservers) >= claudeObserverMax {
+		return nil, false
+	}
+	observer.epoch = expectedEpoch
+	r.claudeObservers[observer.sessionKey] = observer
+	return existing, true
+}
+
+// stopClaudeApprovalObserver 在新客户端接入同名会话时让位：新连接会自己 attach
+// 到同一个 bridge 会话并拿到 serverRequest/replay。
+// 返回值是这条前台连接独占的代际；只有持有该代际的断线 handler 才能安装 observer。
+func (r *Router) stopClaudeApprovalObserver(sessionKey string) uint64 {
+	if strings.TrimSpace(sessionKey) == "" {
+		return 0
+	}
+	r.claudeObserverMu.Lock()
+	if r.claudeObserverEpochs == nil {
+		r.claudeObserverEpochs = map[string]uint64{}
+	}
+	r.claudeObserverEpochs[sessionKey]++
+	epoch := r.claudeObserverEpochs[sessionKey]
 	observer := r.claudeObservers[sessionKey]
 	r.claudeObserverMu.Unlock()
 	if observer != nil {
 		observer.close("client_reattached")
+	}
+	return epoch
+}
+
+func (r *Router) releaseClaudeApprovalObserverEpoch(sessionKey string, epoch uint64) {
+	if strings.TrimSpace(sessionKey) == "" || epoch == 0 {
+		return
+	}
+	r.claudeObserverMu.Lock()
+	defer r.claudeObserverMu.Unlock()
+	if r.claudeObserverEpochs[sessionKey] == epoch && r.claudeObservers[sessionKey] == nil {
+		delete(r.claudeObserverEpochs, sessionKey)
 	}
 }
 
@@ -174,18 +212,26 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 			return
 		}
 		o.mu.Lock()
+		if o.closed {
+			o.mu.Unlock()
+			return
+		}
 		_, known := o.pending[requestID]
 		o.pending[requestID] = threadID
-		o.mu.Unlock()
 		if !known {
 			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, o.policy.projectIDForThread(threadID), requestID, method)
 		}
+		o.mu.Unlock()
 		return
 	}
 	switch method {
 	case "turn/started":
 		if threadID != "" {
 			o.mu.Lock()
+			if o.closed {
+				o.mu.Unlock()
+				return
+			}
 			o.activeTurns[threadID] = struct{}{}
 			o.mu.Unlock()
 		}
@@ -200,6 +246,27 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 		o.mu.Unlock()
 		o.forgetPendingForThread(threadID)
 	}
+}
+
+// notifyPendingIfCurrent 把 observer 存活检查、pending 检查和 Action 签发放在
+// 同一临界区。close() 只能在签发完成后撤销，不能留下迟到的旧 Action。
+func (o *claudeApprovalObserver) notifyPendingIfCurrent(requestID string, threadID string, method string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return
+	}
+	if _, ok := o.pending[requestID]; !ok {
+		return
+	}
+	o.router.notifyPendingApproval(
+		"claude",
+		o.sessionKey,
+		threadID,
+		o.policy.projectIDForThread(threadID),
+		requestID,
+		method,
+	)
 }
 
 func (o *claudeApprovalObserver) forgetResolved(params json.RawMessage) {
@@ -242,15 +309,24 @@ func (o *claudeApprovalObserver) forgetPendingForThread(threadID string) {
 
 // submit 把锁屏决策写回 bridge。它走与前台完全相同的客户端帧校验链路。
 func (o *claudeApprovalObserver) submit(ctx context.Context, payload []byte) error {
-	o.mu.Lock()
-	closed := o.closed
-	o.mu.Unlock()
-	if closed {
-		return errors.New("Claude 会话观察已结束")
-	}
 	forwarded, rollback, policyErr := o.policy.validatePushApprovalFrame(ctx, payload)
 	if policyErr != nil {
 		return errors.New(policyErr.message)
+	}
+	// generation 检查与 runtime 写入共用 map 锁。replacement 要先取得同一把锁，
+	// 因此新 observer 发布后，旧对象不可能再越过这里写入旧 bridge。
+	o.router.claudeObserverMu.Lock()
+	defer o.router.claudeObserverMu.Unlock()
+	if current := o.router.claudeObservers[o.sessionKey]; current != o {
+		rollback()
+		return errors.New("Claude 会话观察已被替换")
+	}
+	o.mu.Lock()
+	closed := o.closed
+	o.mu.Unlock()
+	if closed || o.writeMu == nil {
+		rollback()
+		return errors.New("Claude 会话观察已结束")
 	}
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
@@ -293,6 +369,10 @@ func (o *claudeApprovalObserver) close(reason string) {
 		return
 	}
 	o.closed = true
+	pending := make([]string, 0, len(o.pending))
+	for requestID := range o.pending {
+		pending = append(pending, requestID)
+	}
 	o.mu.Unlock()
 
 	if o.cancel != nil {
@@ -301,12 +381,35 @@ func (o *claudeApprovalObserver) close(reason string) {
 	_ = o.conn.Close()
 	o.policy.close()
 	o.router.claudeObserverMu.Lock()
+	wasCurrent := false
+	inherited := map[string]struct{}{}
 	if current, ok := o.router.claudeObservers[o.sessionKey]; ok && current == o {
 		delete(o.router.claudeObservers, o.sessionKey)
+		if o.router.claudeObserverEpochs[o.sessionKey] == o.epoch {
+			delete(o.router.claudeObserverEpochs, o.sessionKey)
+		}
+		wasCurrent = true
+	} else if reason == "observer_replaced" {
+		if current := o.router.claudeObservers[o.sessionKey]; current != nil {
+			current.mu.Lock()
+			for requestID := range current.pending {
+				inherited[requestID] = struct{}{}
+			}
+			current.mu.Unlock()
+		}
 	}
 	o.router.claudeObserverMu.Unlock()
-	// 会话观察结束意味着没人能再代替用户回答；作废剩余句柄并撤下旧通知。
-	o.router.resolveApprovalNotifications("claude", o.sessionKey, "")
+	if wasCurrent {
+		// 当前 generation 结束意味着没人能再代替用户回答任何请求。
+		o.router.resolveApprovalNotifications("claude", o.sessionKey, "")
+	} else if reason == "observer_replaced" {
+		// 被替换 generation 只撤销当前 generation 没有继承的旧请求。
+		for _, requestID := range pending {
+			if _, ok := inherited[requestID]; !ok {
+				o.router.resolveApprovalNotifications("claude", o.sessionKey, requestID)
+			}
+		}
+	}
 	log.Printf("claude approval observer 结束 session=%s reason=%s",
 		sanitizeGatewayDiagnostic(o.sessionKey), reason)
 }

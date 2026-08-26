@@ -72,7 +72,7 @@ sudo install -o root -g root -m 0755 /tmp/mimi-push-provider /opt/mimi-push-prov
 **这把 key 与 CatName 共用。** 轮换它会同时影响两个服务，动手前先确认另一侧也准备好了。
 Apple 每个团队最多只能同时存在 2 把 APNs Auth Key，目前已用 1 把。
 
-私钥原件在服务器的 `/home/ubuntu/secure/AuthKey_NXU86Q978A.p8`，Provider 用的副本在
+私钥原件在服务器的通用受限目录（例如 `/path/to/secure/AuthKey_NXU86Q978A.p8`），Provider 用的副本在
 `/etc/mimi-push-provider/apns.p8`（`0640 root:mimi-push`）。Apple 只允许下载一次，
 别删原件。
 

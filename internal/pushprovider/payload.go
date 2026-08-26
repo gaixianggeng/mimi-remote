@@ -14,11 +14,13 @@ import (
 // 全部用 App 包内的本地化 key 渲染，因此 Provider 既不知道也不能泄漏命令、
 // 文件路径、Prompt 或模型输出。
 const (
-	ApprovalCategory  = "MIMI_APPROVAL"
-	approvalTitleKey  = "push.approval.title"
-	approvalBodyKey   = "push.approval.body"
-	approvalPushEvent = "approval.pending"
-	resolvedPushEvent = "approval.resolved"
+	// 只有 command 与 patch 可以在锁屏直接处理；其余类型只能打开 App 查看详情。
+	ApprovalCategory        = "MIMI_APPROVAL"
+	ApprovalDetailsCategory = "MIMI_APPROVAL_DETAILS"
+	approvalTitleKey        = "push.approval.title"
+	approvalBodyKey         = "push.approval.body"
+	approvalPushEvent       = "approval.pending"
+	resolvedPushEvent       = "approval.resolved"
 )
 
 // Runtime 与 ApprovalKind 是 Codex 与 Claude Code 两条链路共用的枚举。任何一端
@@ -150,7 +152,7 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 	case approvalPushEvent:
 		aps["thread-id"] = n.SessionTag
 		aps["interruption-level"] = "time-sensitive"
-		aps["category"] = ApprovalCategory
+		aps["category"] = approvalCategoryForKind(n.ApprovalKind)
 		aps["alert"] = map[string]any{
 			"title-loc-key":  approvalTitleKey + "." + n.Runtime,
 			"title-loc-args": []string{n.HostTag},
@@ -178,6 +180,17 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 		},
 	}
 	return json.Marshal(payload)
+}
+
+// permission、user_input 和 elicitation 必须打开 App 处理。独立 category
+// 可以避免异常或未来版本的客户端为这些类型错误暴露允许/拒绝动作。
+func approvalCategoryForKind(kind string) string {
+	switch kind {
+	case "command", "patch":
+		return ApprovalCategory
+	default:
+		return ApprovalDetailsCategory
+	}
 }
 
 // CollapseID 让同一个审批的重复投递只产生一张卡片。它是 action_id 的摘要，

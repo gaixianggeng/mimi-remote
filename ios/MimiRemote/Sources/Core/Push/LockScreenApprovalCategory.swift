@@ -2,15 +2,17 @@ import UserNotifications
 
 /// 锁屏审批通知的动作类别。
 ///
-/// Apple 在锁屏与通知中心空间有限时最多展示两个自定义动作，因此这两个位置留给
-/// 「允许」与「拒绝」；「查看详情」用点击通知本身完成，不再占一个按钮。
+/// 可在锁屏执行的审批保留「允许」与「拒绝」，并提供需要打开 App 的「查看详情」。
+/// 不可在锁屏执行的请求使用只含「查看详情」的独立 category。
 enum LockScreenApprovalCategory {
     static let identifier = "MIMI_APPROVAL"
+    static let detailsIdentifier = "MIMI_APPROVAL_DETAILS"
     static let allowActionID = "MIMI_APPROVAL_ALLOW"
     static let denyActionID = "MIMI_APPROVAL_DENY"
+    static let detailsActionID = "MIMI_APPROVAL_DETAILS_OPEN"
 
     static func register(on center: UNUserNotificationCenter = .current()) {
-        center.setNotificationCategories([makeCategory()])
+        center.setNotificationCategories([makeCategory(), makeDetailsCategory()])
     }
 
     static func makeCategory() -> UNNotificationCategory {
@@ -29,9 +31,26 @@ enum LockScreenApprovalCategory {
         )
         return UNNotificationCategory(
             identifier: identifier,
-            actions: [allow, deny],
+            actions: [allow, deny, makeDetailsAction()],
             intentIdentifiers: [],
             options: [.hiddenPreviewsShowTitle]
+        )
+    }
+
+    static func makeDetailsCategory() -> UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: detailsIdentifier,
+            actions: [makeDetailsAction()],
+            intentIdentifiers: [],
+            options: [.hiddenPreviewsShowTitle]
+        )
+    }
+
+    private static func makeDetailsAction() -> UNNotificationAction {
+        UNNotificationAction(
+            identifier: detailsActionID,
+            title: L10n.text("ui.open_details"),
+            options: [.foreground]
         )
     }
 

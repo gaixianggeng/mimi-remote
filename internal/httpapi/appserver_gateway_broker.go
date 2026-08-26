@@ -76,8 +76,11 @@ type codexGatewayBroker struct {
 	upstream *websocket.Conn
 	// upstreamWriteMu 跨客户端连接存活。它保护的是上游连接，不是某次会话。
 	upstreamWriteMu sync.Mutex
-	policy          *appServerGatewayPolicy
-	cancel          context.CancelFunc
+	// clientFrameMu 把一条客户端帧的策略校验和上游写入，与 sink 接管串成一个
+	// 原子边界。新 sink 发布后，旧连接不能再消费 policy 状态或写入 runtime。
+	clientFrameMu sync.Mutex
+	policy        *appServerGatewayPolicy
+	cancel        context.CancelFunc
 
 	mu          sync.Mutex
 	sink        *codexGatewaySink
@@ -106,6 +109,7 @@ type codexGatewayBroker struct {
 	initializeResult     json.RawMessage
 	initializeRequestID  string
 	initializeResponseID string
+	initializedForwarded bool
 }
 
 // codexGatewayBrokerKey 读取客户端声明的具名会话。iOS 已经在 gateway URL 上带
@@ -242,9 +246,11 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	if b == nil || sink == nil {
 		return false
 	}
+	b.clientFrameMu.Lock()
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
+		b.clientFrameMu.Unlock()
 		return false
 	}
 	previous := b.sink
@@ -259,6 +265,7 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 		}
 	}
 	b.mu.Unlock()
+	b.clientFrameMu.Unlock()
 
 	if previous != nil && previous != sink {
 		previous.finish("broker_sink_replaced")
@@ -271,8 +278,8 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 
 // interceptClientFrame 在帧到达上游之前处理握手。
 //
-// 第一次 initialize 照常放行并记下它的 id，好在响应回来时缓存结果；此后每次
-// 重连的 initialize 都由 broker 用缓存结果本地应答，initialized 通知直接吞掉。
+// 第一次 initialize 与 initialized 照常放行，完成上游握手；此后每次重连的
+// initialize 都由 broker 用缓存结果本地应答，重复 initialized 才由 broker 吞掉。
 func (b *codexGatewayBroker) interceptClientFrame(payload []byte) (bool, []byte) {
 	var frame appServerGatewayFrame
 	if json.Unmarshal(payload, &frame) != nil {
@@ -316,10 +323,19 @@ func (b *codexGatewayBroker) interceptClientFrame(payload []byte) (bool, []byte)
 		return true, response
 	case "initialized":
 		b.mu.Lock()
-		initialized := b.initializeRequestID != "" || len(b.initializeResult) > 0
+		if b.initializeRequestID == "" {
+			b.mu.Unlock()
+			// 让上游按协议拒绝乱序通知，broker 不伪造握手状态。
+			return false, nil
+		}
+		if !b.initializedForwarded {
+			b.mu.Unlock()
+			// 第一次 initialized 是完整握手的一部分，必须送到上游。
+			return false, nil
+		}
 		b.mu.Unlock()
-		// 上游已经收过 initialized，重复发送同样会被判为协议错误。
-		return initialized, nil
+		// 上游已经收过 initialized，重连后的重复通知由 broker 吞掉。
+		return true, nil
 	default:
 		return false, nil
 	}
@@ -422,10 +438,34 @@ func (b *codexGatewayBroker) notifyPendingApprovalsAfterDetach() {
 		if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
 			continue
 		}
-		threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
-		b.router.notifyPendingApproval("codex", b.key, threadID, b.policy.projectIDForThread(threadID),
-			gatewayRequestIDKey(frame.ID), strings.TrimSpace(frame.Method))
+		b.notifyPendingApprovalIfDetached(frame)
 	}
+}
+
+// notifyPendingApprovalIfDetached 把 broker 状态检查与 Action 签发放在同一临界区。
+// close() 只能在签发完成后撤销，快速 resolved/close 不会留下迟到的旧 Action。
+func (b *codexGatewayBroker) notifyPendingApprovalIfDetached(frame appServerGatewayFrame) {
+	requestID := gatewayRequestIDKey(frame.ID)
+	if requestID == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed || b.sink != nil {
+		return
+	}
+	if _, ok := b.pending[requestID]; !ok {
+		return
+	}
+	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+	b.router.notifyPendingApproval(
+		"codex",
+		b.key,
+		threadID,
+		b.policy.projectIDForThread(threadID),
+		requestID,
+		strings.TrimSpace(frame.Method),
+	)
 }
 
 func (b *codexGatewayBroker) pendingCount() int {
@@ -438,6 +478,15 @@ func (b *codexGatewayBroker) currentSink() *codexGatewaySink {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.sink
+}
+
+func (b *codexGatewayBroker) acceptsClientFrame(sink *codexGatewaySink) bool {
+	if b == nil || sink == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.closed && b.sink == sink
 }
 
 func (b *codexGatewayBroker) close(reason string) {
@@ -563,25 +612,32 @@ func (b *codexGatewayBroker) sweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			b.mu.Lock()
-			detached := b.sink == nil && !b.closed
-			expired := detached && !b.detachedAt.IsZero() && now.Sub(b.detachedAt) > codexGatewayBrokerDetachTTL
-			if detached && !expired {
-				b.prunePendingLocked()
-				idle := len(b.startingTurns) == 0 && len(b.activeTurns) == 0 && len(b.pendingOrder) == 0
-				b.mu.Unlock()
-				if idle {
-					b.close("broker_idle_expired")
-					return
-				}
-				continue
-			}
-			if expired {
-				b.close("broker_detach_ttl")
+			if reason := b.sweepCloseReason(now); reason != "" {
+				// close() 会再次获取 b.mu，必须在 sweepCloseReason 释放锁后调用。
+				b.close(reason)
 				return
 			}
 		}
 	}
+}
+
+func (b *codexGatewayBroker) sweepCloseReason(now time.Time) string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed || b.sink != nil {
+		return ""
+	}
+	if !b.detachedAt.IsZero() && now.Sub(b.detachedAt) > codexGatewayBrokerDetachTTL {
+		return "broker_detach_ttl"
+	}
+	b.prunePendingLocked()
+	if len(b.startingTurns) == 0 && len(b.activeTurns) == 0 && len(b.pendingOrder) == 0 {
+		return "broker_idle_expired"
+	}
+	return ""
 }
 
 // observeLifecycle 记录重放所需的最小状态：待审批请求原帧与活跃 turn。
@@ -603,11 +659,10 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 	}
 	if method != "" && frame.ID != nil {
 		created := b.rememberServerRequestFrame(frame.ID, payload)
-		if created && b.currentSink() == nil {
+		if created {
 			// 只在客户端确实离线时提醒。App 在前台时审批卡片本来就会实时出现，
 			// 再推一条只是重复打扰。
-			threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
-			b.router.notifyPendingApproval("codex", b.key, threadID, b.policy.projectIDForThread(threadID), gatewayRequestIDKey(frame.ID), method)
+			b.notifyPendingApprovalIfDetached(frame)
 		}
 		return
 	}
@@ -626,7 +681,6 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 	case "turn/completed", "thread/closed", "error":
 		// turn 结束后该 thread 的旧审批不可能再被应答，锁屏卡片必须撤掉。
 		// 只按 thread 作废：同一个 gateway 会话下还有别的 thread 在跑。
-		b.router.resolveApprovalNotificationsForThread("codex", b.key, threadID)
 		b.mu.Lock()
 		if threadID != "" {
 			delete(b.startingTurns, threadID)
@@ -639,6 +693,9 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 		}
 		b.prunePendingLocked()
 		b.mu.Unlock()
+		// 先在 broker 锁内移除 pending，再同步撤销 Action。并发 detach 只能在
+		// “先签发后撤销”与“发现已移除而不签发”两种安全顺序中二选一。
+		b.router.resolveApprovalNotificationsForThread("codex", b.key, threadID)
 	case "serverRequest/resolved":
 		b.mu.Lock()
 		b.prunePendingLocked()
@@ -657,7 +714,26 @@ func (b *codexGatewayBroker) trackClientFrameForward(messageType int, payload []
 		return nil
 	}
 	var frame appServerGatewayFrame
-	if json.Unmarshal(payload, &frame) != nil || strings.TrimSpace(frame.Method) != "turn/start" || frame.ID == nil {
+	if json.Unmarshal(payload, &frame) != nil {
+		return nil
+	}
+	method := strings.TrimSpace(frame.Method)
+	if method == "initialized" {
+		b.mu.Lock()
+		if b.initializeRequestID == "" {
+			b.mu.Unlock()
+			return nil
+		}
+		previous := b.initializedForwarded
+		b.initializedForwarded = true
+		b.mu.Unlock()
+		return func() {
+			b.mu.Lock()
+			b.initializedForwarded = previous
+			b.mu.Unlock()
+		}
+	}
+	if method != "turn/start" || frame.ID == nil {
 		return nil
 	}
 	params, err := decodeGatewayParams(frame.Params)
@@ -824,7 +900,9 @@ func (r *Router) runCodexGatewayBrokerClient(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		sink.finish(r.copyClientFramesToAppServer(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor, broker.interceptClientFrame, broker.trackClientFrameForward))
+		sink.finish(r.copyClientFramesToAppServer(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor, &broker.clientFrameMu, func() bool {
+			return broker.acceptsClientFrame(sink)
+		}, broker.interceptClientFrame, broker.trackClientFrameForward))
 	}()
 	go func() {
 		sink.finish(pingGatewayConnection(ctx, client, clientWriteMu, "client_ping_write"))

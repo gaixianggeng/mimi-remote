@@ -9,33 +9,46 @@ import UIKit
 struct LockScreenApprovalDelivery: Equatable, Identifiable {
     let notification: LockScreenApprovalNotification
     let decision: LockScreenApprovalDecision?
+    /// 系统回调给出的真实 UNNotificationRequest.identifier。
+    /// 静默推送没有这个回调值，Store 会从 deliveredNotifications() 反查。
+    let requestIdentifier: String?
 
 	var id: String {
-        notification.actionID + "|" + (decision?.rawValue ?? "open")
+		notification.approvalIdentifier + "|" + (decision?.rawValue ?? "open")
 	}
 
-	init?(userInfo: [AnyHashable: Any], actionIdentifier: String) {
+	init?(
+		userInfo: [AnyHashable: Any],
+		actionIdentifier: String,
+		requestIdentifier: String? = nil
+	) {
 		guard let notification = LockScreenApprovalNotification(userInfo: userInfo) else {
 			return nil
 		}
 		self.notification = notification
-		self.decision = notification.event == .pending
+		self.decision = notification.event == .pending && notification.kind.isActionableFromLockScreen
 			? LockScreenApprovalCategory.decision(forActionIdentifier: actionIdentifier)
 			: nil
+		self.requestIdentifier = requestIdentifier
 	}
 }
 
-/// 系统回调只负责严格解码并入队，真正的网络动作在视图层执行——这与既有的会话
-/// 通知路由保持同一套结构：回调不等待网络，避免通知处理超时被系统终止。
+/// 系统回调只负责严格解码并入队，真正的网络动作在视图层执行。静默推送只等待
+/// 本地通知清理完成，不等待网络请求。
 @MainActor
 final class LockScreenApprovalInbox: ObservableObject {
     @Published private(set) var pending: LockScreenApprovalDelivery?
 
-    @discardableResult
-    func receive(userInfo: [AnyHashable: Any], actionIdentifier: String) -> Bool {
+	@discardableResult
+	func receive(
+		userInfo: [AnyHashable: Any],
+		actionIdentifier: String,
+		requestIdentifier: String? = nil
+	) -> Bool {
 		guard let delivery = LockScreenApprovalDelivery(
 			userInfo: userInfo,
-			actionIdentifier: actionIdentifier
+			actionIdentifier: actionIdentifier,
+			requestIdentifier: requestIdentifier
 		) else {
 			return false
 		}
@@ -53,10 +66,10 @@ final class LockScreenApprovalInbox: ObservableObject {
 /// 这些回调。这个桥接把它们转交给 Store，同时保证 App 不持有 delegate 生命周期。
 @MainActor
 enum PushDeviceTokenBridge {
-    static var onToken: ((Data) -> Void)?
-    static var onFailure: ((Error) -> Void)?
-    /// 静默的「已处理」推送不会经过通知点击回调，只能在这里拿到。
-    static var onSilentPayload: (([AnyHashable: Any]) -> Void)?
+	static var onToken: ((Data) -> Void)?
+	static var onFailure: ((Error) -> Void)?
+	/// 静默的「已处理」推送不会经过通知点击回调，只能在这里拿到。
+	static var onSilentPayload: (([AnyHashable: Any]) async -> Void)?
 }
 
 #if canImport(UIKit)
@@ -85,7 +98,9 @@ final class PushApplicationDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            PushDeviceTokenBridge.onSilentPayload?(userInfo)
+            // 系统只有在这个 completion 返回后才会认为后台清理完成；必须等待
+            // Store 反查并删除真实 delivered request，而不是 fire-and-forget。
+            await PushDeviceTokenBridge.onSilentPayload?(userInfo)
             completionHandler(.noData)
         }
     }

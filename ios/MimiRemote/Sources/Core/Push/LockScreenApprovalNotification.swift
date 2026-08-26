@@ -77,8 +77,19 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
         self.expiresAt = expiresAt
     }
 
-    /// 同一个审批的重复投递必须落在同一个通知上，否则锁屏会堆出多张已失效卡片。
-    var notificationIdentifier: String { "mimi.approval.\(actionID)" }
+    /// 用于把不同事件里的同一审批关联起来。它不是
+    /// `UNNotificationRequest.identifier`，不能传给通知中心删除 API。
+    var approvalIdentifier: String { "mimi.approval.\(actionID)" }
+
+    /// 兼容旧的调用方。删除通知时必须使用系统回调或 delivered 列表里的真实请求 ID。
+    @available(*, deprecated, message: "仅用于逻辑关联，不是 UNNotificationRequest.identifier")
+    var notificationIdentifier: String { approvalIdentifier }
+
+    func identifiesSameApproval(as other: LockScreenApprovalNotification) -> Bool {
+        actionID == other.actionID
+            && deviceID == other.deviceID
+            && profileID == other.profileID
+    }
 
     func isExpired(at moment: Date = Date()) -> Bool { expiresAt <= moment }
 

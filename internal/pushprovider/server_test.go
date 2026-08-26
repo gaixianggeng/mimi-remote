@@ -231,6 +231,36 @@ func TestProviderDeliversApprovalWithoutContent(t *testing.T) {
 	}
 }
 
+func TestProviderUsesDetailsCategoryForNonActionableKinds(t *testing.T) {
+	for _, kind := range []string{"permission", "user_input", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			payload, err := BuildAPNsPayload(ApprovalNotification{
+				Version:      1,
+				Event:        approvalPushEvent,
+				ActionID:     "action-1",
+				DeviceID:     "device-1",
+				ProfileID:    "profile-1",
+				Runtime:      "codex",
+				ApprovalKind: kind,
+				HostTag:      "A1C3",
+				SessionTag:   "7D92",
+				ExpiresAt:    time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(payload, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			aps, _ := decoded["aps"].(map[string]any)
+			if got := aps["category"]; got != ApprovalDetailsCategory {
+				t.Fatalf("不可在锁屏处理的类型必须使用详情 category，got=%v", got)
+			}
+		})
+	}
+}
+
 func TestProviderRejectsUnknownEnumsAndFreeText(t *testing.T) {
 	fake := newFakeAPNs(t)
 	_, httpServer := newTestServer(t, fake)

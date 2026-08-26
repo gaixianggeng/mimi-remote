@@ -22,7 +22,7 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	defer policy.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor, nil, nil)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor, nil, nil, nil, nil)
 	}()
 	go func() {
 		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
@@ -96,78 +96,99 @@ type clientFrameInterceptor func(payload []byte) (handled bool, response []byte)
 // 返回的 rollback 只在上游写入失败时调用。
 type clientFrameForwardTracker func(messageType int, payload []byte) (rollback func())
 
-func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker) string {
+// clientFrameAuthorizer 在策略校验前确认当前连接仍有上游写权限。broker 用同一把
+// frameMu 串行化接管与整帧处理，避免旧连接先消费审批状态、随后才发现自己已被替换。
+type clientFrameAuthorizer func() bool
+
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, frameMu *sync.Mutex, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
 			return gatewayCloseReason("client_read", err)
 		}
-		if intercept != nil && messageType == websocket.TextMessage {
-			if handled, response := intercept(payload); handled {
-				if len(response) > 0 {
-					if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, response); err != nil {
-						return gatewayCloseReason("client_intercept_write", err)
-					}
-				}
-				continue
-			}
+		if frameMu != nil {
+			frameMu.Lock()
 		}
-		policyStart := time.Now()
-		forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
-		policyDuration := time.Since(policyStart)
-		if policyErr != nil {
-			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
-			if policyErr.historyBudgetRejected {
-				monitor.recordHistoryBudgetRejected()
-			}
-			// 非法请求只回 JSON-RPC error，不把高危帧送到 app-server。
-			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
-				return "client_policy_error_write_failed"
-			}
-			continue
+		reason, stop := r.processClientFrameToAppServer(ctx, client, upstream, clientWriteMu, upstreamWriteMu, policy, monitor, authorize, intercept, trackForward, messageType, payload)
+		if frameMu != nil {
+			frameMu.Unlock()
 		}
-		if cachedPayload, ok := policy.cachedAccountTokenUsageResponse(payload, time.Now()); ok {
-			writeStart := time.Now()
-			if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, cachedPayload); err != nil {
-				return gatewayCloseReason("client_cache_write", err)
-			}
-			monitor.recordForward("upstream_to_client", len(cachedPayload), len(cachedPayload), policyDuration, time.Since(writeStart), cachedPayload)
-			continue
+		if stop {
+			return reason
 		}
-		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
-		var rollbackForward func()
-		if trackForward != nil {
-			// 必须先登记再写上游；否则极快的 turn/started 或 turn/completed
-			// 可能先被 broker 读到，留下反向的生命周期竞态。
-			rollbackForward = trackForward(messageType, forwardPayload)
-		}
-		writeStart := time.Now()
-		if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
-			return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
-		}); err != nil {
-			if rollbackForward != nil {
-				rollbackForward()
-			}
-			monitor.cancelRPCRequest(requestID)
-			return gatewayCloseReason("upstream_write", err)
-		}
-		monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
-		r.scheduleAutoThreadTitleFromTurn(forwardPayload, policy, func(threadID string, title string) {
-			// thread/name/set 由独立 loopback 连接执行，它产生的 notification 只回到
-			// 那条连接；这里给发起会话的移动端补发同形通知，让 UI 无需轮询即可更新。
-			notification, err := json.Marshal(map[string]any{
-				"method": "thread/name/updated",
-				"params": map[string]any{
-					"threadId":   threadID,
-					"threadName": title,
-				},
-			})
-			if err != nil {
-				return
-			}
-			_ = writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, notification)
-		})
 	}
+}
+
+func (r *Router) processClientFrameToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker, messageType int, payload []byte) (string, bool) {
+	if authorize != nil && !authorize() {
+		return "broker_sink_replaced", true
+	}
+	if intercept != nil && messageType == websocket.TextMessage {
+		if handled, response := intercept(payload); handled {
+			if len(response) > 0 {
+				if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, response); err != nil {
+					return gatewayCloseReason("client_intercept_write", err), true
+				}
+			}
+			return "", false
+		}
+	}
+	policyStart := time.Now()
+	forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
+	policyDuration := time.Since(policyStart)
+	if policyErr != nil {
+		monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+		if policyErr.historyBudgetRejected {
+			monitor.recordHistoryBudgetRejected()
+		}
+		// 非法请求只回 JSON-RPC error，不把高危帧送到 app-server。
+		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
+			return "client_policy_error_write_failed", true
+		}
+		return "", false
+	}
+	if cachedPayload, ok := policy.cachedAccountTokenUsageResponse(payload, time.Now()); ok {
+		writeStart := time.Now()
+		if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, cachedPayload); err != nil {
+			return gatewayCloseReason("client_cache_write", err), true
+		}
+		monitor.recordForward("upstream_to_client", len(cachedPayload), len(cachedPayload), policyDuration, time.Since(writeStart), cachedPayload)
+		return "", false
+	}
+	requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
+	var rollbackForward func()
+	if trackForward != nil {
+		// 必须先登记再写上游；否则极快的 turn/started 或 turn/completed
+		// 可能先被 broker 读到，留下反向的生命周期竞态。
+		rollbackForward = trackForward(messageType, forwardPayload)
+	}
+	writeStart := time.Now()
+	if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
+		return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
+	}); err != nil {
+		if rollbackForward != nil {
+			rollbackForward()
+		}
+		monitor.cancelRPCRequest(requestID)
+		return gatewayCloseReason("upstream_write", err), true
+	}
+	monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
+	r.scheduleAutoThreadTitleFromTurn(forwardPayload, policy, func(threadID string, title string) {
+		// thread/name/set 由独立 loopback 连接执行，它产生的 notification 只回到
+		// 那条连接；这里给发起会话的移动端补发同形通知，让 UI 无需轮询即可更新。
+		notification, err := json.Marshal(map[string]any{
+			"method": "thread/name/updated",
+			"params": map[string]any{
+				"threadId":   threadID,
+				"threadName": title,
+			},
+		})
+		if err != nil {
+			return
+		}
+		_ = writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, notification)
+	})
+	return "", false
 }
 
 func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, fromWriteMu *sync.Mutex, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {

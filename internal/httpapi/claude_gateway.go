@@ -236,7 +236,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	sessionKey := claudeGatewaySessionKey(req)
 	// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
 	// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
-	r.stopClaudeApprovalObserver(sessionKey)
+	observerEpoch := r.stopClaudeApprovalObserver(sessionKey)
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
 	if sessionKey != "" {
@@ -327,9 +327,18 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	_ = upstream.SetReadDeadline(time.Time{})
 	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
 	// 离线期间到达的审批请求并触发提醒。
-	if readerReleased && r.startClaudeApprovalObserver(sessionKey, upstream, &upstreamWriteMu, reader, policy) {
+	observerStarted := readerReleased && r.startClaudeApprovalObserver(
+		sessionKey,
+		upstream,
+		&upstreamWriteMu,
+		reader,
+		policy,
+		observerEpoch,
+	)
+	if observerStarted {
 		upstreamOwnedByObserver = true
 	} else {
+		r.releaseClaudeApprovalObserverEpoch(sessionKey, observerEpoch)
 		_ = upstream.Close()
 	}
 	if monitor != nil {

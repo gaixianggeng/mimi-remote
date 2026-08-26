@@ -167,6 +167,37 @@ func TestNotifyPendingIsIdempotentPerRequest(t *testing.T) {
 	}
 }
 
+// Action 状态必须在网络 goroutine 启动前落定。否则快速 resolved 可能先执行，
+// 随后迟到的 pending goroutine 又签发一条已经无人能处理的旧句柄。
+func TestPreparedPendingCanBeSynchronouslyRevokedBeforeDelivery(t *testing.T) {
+	manager, provider := newTestManager(t, true, "device-a")
+
+	action, pendingDelivery, created := manager.PreparePending(codexApproval())
+	if !created || pendingDelivery == nil {
+		t.Fatal("应同步签发待审批 Action")
+	}
+	resolvedDelivery := manager.PrepareResolve("codex", "session-1", "req-1")
+	if resolvedDelivery == nil {
+		t.Fatal("应同步撤销刚签发的 Action")
+	}
+	resolved, ok := manager.Actions().Get(action.ID)
+	if !ok || resolved.State != StateRevoked {
+		t.Fatalf("网络投递前 Action 就应为 revoked：ok=%v state=%s", ok, resolved.State)
+	}
+	if got := len(provider.events(EventApprovalPending)); got != 0 {
+		t.Fatalf("Prepare 阶段不得执行 Provider 网络投递，got=%d", got)
+	}
+
+	pendingDelivery(t.Context())
+	resolvedDelivery(t.Context())
+	if got := len(provider.events(EventApprovalPending)); got != 1 {
+		t.Fatalf("pending delivery 应只执行一次，got=%d", got)
+	}
+	if got := len(provider.events(EventApprovalResolved)); got != 1 {
+		t.Fatalf("resolved delivery 应只执行一次，got=%d", got)
+	}
+}
+
 func TestDecideAllowsOnceAndReplaysIdempotently(t *testing.T) {
 	manager, _ := newTestManager(t, true, "device-a")
 	action, _ := manager.NotifyPending(t.Context(), codexApproval())

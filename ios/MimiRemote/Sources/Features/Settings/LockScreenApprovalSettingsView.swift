@@ -29,7 +29,7 @@ struct LockScreenApprovalSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .disabled(isBusy || !store.hostSupportsPush)
+				.disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
                 .accessibilityIdentifier("settings.lockScreenApproval.toggle")
             } header: {
                 Text(L10n.text("ui.experimental_features"))
@@ -38,7 +38,7 @@ struct LockScreenApprovalSettingsView: View {
                 Text(L10n.text("ui.push_lock_screen_approval_summary"))
             }
 
-            if !store.hostSupportsPush {
+			if !store.hostSupportsPush(for: appStore.activeConnectionProfileID) {
                 Section {
                     Label {
                         Text(L10n.text("ui.push_host_not_configured"))
@@ -81,22 +81,22 @@ struct LockScreenApprovalSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.lockScreenApproval.detail")
 		.task {
-			guard let client = try? appStore.client() else { return }
-			await store.refreshHostSupport(client: client)
-			if let profileID = store.registeredProfileID ?? appStore.activeConnectionProfileID,
-			   let refreshClient = profileID == appStore.activeConnectionProfileID
-				? client
-				: try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore) {
+			guard let client = try? appStore.client(),
+			      let activeProfileID = appStore.activeConnectionProfileID else { return }
+			await store.refreshHostSupport(client: client, profileID: activeProfileID)
+			if let profileID = store.registeredProfileID,
+			   profileID == appStore.activeConnectionProfileID {
+				let refreshClient = client
 				await store.refreshTicketIfNeeded(client: refreshClient, profileID: profileID)
 			}
         }
         .sheet(isPresented: $showsConsent) {
             LockScreenApprovalConsentSheet(
-                providerHost: store.providerHost ?? "",
-                isOfficialService: store.providerIsOfficial,
+				providerHost: store.providerHost(for: appStore.activeConnectionProfileID) ?? "",
+				isOfficialService: store.providerIsOfficial(for: appStore.activeConnectionProfileID),
                 onAgree: {
                     showsConsent = false
-                    store.recordConsent()
+					store.recordConsent(for: appStore.activeConnectionProfileID)
                     Task { await enable() }
                 },
                 onCancel: { showsConsent = false }
@@ -105,13 +105,13 @@ struct LockScreenApprovalSettingsView: View {
     }
 
     private var toggleBinding: Binding<Bool> {
-        Binding(
-            get: { store.isEnabled },
+		Binding(
+			get: { store.isEnabled(for: appStore.activeConnectionProfileID) },
             set: { desired in
                 guard !isBusy else { return }
                 if desired {
                     // 没同意过当前收件主机就先弹披露；同意本身就是开启动作的一部分。
-                    if store.hasConsented {
+					if store.hasConsented(for: appStore.activeConnectionProfileID) {
                         Task { await enable() }
                     } else {
                         showsConsent = true
@@ -123,25 +123,45 @@ struct LockScreenApprovalSettingsView: View {
         )
     }
 
-    private func enable() async {
+	private func enable() async {
         isBusy = true
         defer { isBusy = false }
 		guard let client = try? appStore.client(),
 			  let profileID = appStore.activeConnectionProfileID else { return }
-		await store.enable(client: client, profileID: profileID)
-    }
+		let previousClient: AgentAPIClient?
+		let previousClientProfileID: String?
+		if let previousProfileID = store.registeredProfileID,
+		   previousProfileID != profileID {
+			// Store 会在 B 注册前注销 A；构造失败时传 nil，Store 保留 A 的本地绑定并报错。
+			previousClient = try? await LockScreenApprovalRouting.client(
+				profileID: previousProfileID,
+				appStore: appStore
+			)
+			previousClientProfileID = previousProfileID
+		} else {
+			previousClient = nil
+			previousClientProfileID = nil
+		}
+		await store.enable(
+			client: client,
+			profileID: profileID,
+			previousClient: previousClient,
+			previousClientProfileID: previousClientProfileID
+		)
+	}
 
 	private func disable() async {
 		isBusy = true
 		defer { isBusy = false }
 		let client: AgentAPIClient?
-		if let profileID = store.registeredProfileID,
+		let registeredProfileID = store.registeredProfileID
+		if let profileID = registeredProfileID,
 		   profileID != appStore.activeConnectionProfileID {
 			client = try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
 		} else {
 			client = try? appStore.client()
 		}
-		await store.disable(client: client)
+		await store.disable(client: client, profileID: registeredProfileID)
 	}
 
     private var statusIsProblem: Bool {
@@ -154,6 +174,10 @@ struct LockScreenApprovalSettingsView: View {
     }
 
     private var statusDescription: String {
+        if !store.isEnabled(for: appStore.activeConnectionProfileID),
+           case .active = store.status {
+            return L10n.text("ui.push_status_off")
+        }
         switch store.status {
         case .off:
             return L10n.text("ui.push_status_off")
@@ -171,10 +195,10 @@ struct LockScreenApprovalSettingsView: View {
     }
 
     private var receiverDescription: String {
-        guard let host = store.providerHost, !host.isEmpty else {
-            return L10n.text("ui.push_receiver_unknown")
-        }
-        return store.providerIsOfficial
+		guard let host = store.providerHost(for: appStore.activeConnectionProfileID), !host.isEmpty else {
+			return L10n.text("ui.push_receiver_unknown")
+		}
+		return store.providerIsOfficial(for: appStore.activeConnectionProfileID)
             ? L10n.format("ui.push_receiver_official_value", host)
             : L10n.format("ui.push_receiver_custom_value", host)
     }

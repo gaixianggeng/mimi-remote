@@ -382,6 +382,81 @@ func TestCodexGatewayBrokerReplacesPreviousSink(t *testing.T) {
 	}
 }
 
+func TestCodexGatewayBrokerSerializesSinkReplacementWithClientFrame(t *testing.T) {
+	oldSink := &codexGatewaySink{done: make(chan string, 1)}
+	newSink := &codexGatewaySink{done: make(chan string, 1)}
+	broker := &codexGatewayBroker{
+		sink:             oldSink,
+		pending:          map[string][]byte{},
+		pendingDelivered: map[string]*codexGatewaySink{},
+	}
+
+	// 模拟旧连接已经读到一帧并开始处理。接管必须等这帧完成，之后旧连接的
+	// authorizer 必须稳定失败，不能在 replay 期间继续消费 policy 或写上游。
+	broker.clientFrameMu.Lock()
+	attached := make(chan bool, 1)
+	go func() { attached <- broker.attach(newSink) }()
+	select {
+	case <-attached:
+		t.Fatal("sink 接管不能越过仍在处理的旧客户端帧")
+	case <-time.After(100 * time.Millisecond):
+	}
+	broker.clientFrameMu.Unlock()
+
+	select {
+	case ok := <-attached:
+		if !ok {
+			t.Fatal("新 sink 应成功接管")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("旧客户端帧结束后 sink 接管没有完成")
+	}
+	if broker.acceptsClientFrame(oldSink) {
+		t.Fatal("新 sink 发布后旧 sink 不得保留上游写权限")
+	}
+	if !broker.acceptsClientFrame(newSink) {
+		t.Fatal("新 sink 应取得上游写权限")
+	}
+}
+
+func TestCodexGatewayBrokerSweepDecisionAlwaysReleasesLock(t *testing.T) {
+	attached := &codexGatewayBroker{sink: &codexGatewaySink{}}
+	if reason := attached.sweepCloseReason(time.Now()); reason != "" {
+		t.Fatalf("在线 broker 不应被 sweep 回收：%s", reason)
+	}
+	lockAvailable := make(chan struct{})
+	go func() {
+		attached.mu.Lock()
+		attached.mu.Unlock()
+		close(lockAvailable)
+	}()
+	select {
+	case <-lockAvailable:
+	case <-time.After(time.Second):
+		t.Fatal("在线 broker 执行 sweep 后泄漏了 b.mu")
+	}
+
+	expired := &codexGatewayBroker{detachedAt: time.Now().Add(-codexGatewayBrokerDetachTTL - time.Second)}
+	if reason := expired.sweepCloseReason(time.Now()); reason != "broker_detach_ttl" {
+		t.Fatalf("超时 broker close reason = %q", reason)
+	}
+	expired.mu.Lock()
+	expired.mu.Unlock()
+
+	idle := &codexGatewayBroker{
+		detachedAt:       time.Now(),
+		startingTurns:    map[string]string{},
+		activeTurns:      map[string]struct{}{},
+		pending:          map[string][]byte{},
+		pendingDelivered: map[string]*codexGatewaySink{},
+	}
+	if reason := idle.sweepCloseReason(time.Now()); reason != "broker_idle_expired" {
+		t.Fatalf("空闲 broker close reason = %q", reason)
+	}
+	idle.mu.Lock()
+	idle.mu.Unlock()
+}
+
 // waitForUpstreamFrame 等待上游收到满足条件的客户端帧。
 func (u *brokerUpstream) waitForUpstreamFrame(t *testing.T, match func([]byte) bool, timeout time.Duration) []byte {
 	t.Helper()
@@ -468,6 +543,16 @@ func TestCodexGatewayBrokerAnswersRepeatInitializeLocally(t *testing.T) {
 			break
 		}
 	}
+	if err := first.WriteMessage(websocket.TextMessage,
+		[]byte(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	up.waitForUpstreamFrame(t, func(payload []byte) bool {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		return json.Unmarshal(payload, &frame) == nil && frame.Method == "initialized"
+	}, 3*time.Second)
 	_ = first.Close()
 
 	// 重连后重发握手：必须由 broker 本地应答，上游不能再看到第二次 initialize。
@@ -495,17 +580,45 @@ func TestCodexGatewayBrokerAnswersRepeatInitializeLocally(t *testing.T) {
 		}
 		break
 	}
+	if err := second.WriteMessage(websocket.TextMessage,
+		[]byte(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case payload := <-up.frames:
 		var frame struct {
 			Method string `json:"method"`
 		}
-		if json.Unmarshal(payload, &frame) == nil && frame.Method == "initialize" {
-			t.Fatal("上游不能收到第二次 initialize —— 这正是 already initialized 的来源")
+		if json.Unmarshal(payload, &frame) == nil && (frame.Method == "initialize" || frame.Method == "initialized") {
+			t.Fatalf("上游不能收到重连后的重复握手帧：%s", payload)
 		}
 	case <-time.After(500 * time.Millisecond):
 		// 上游安静，符合预期。
+	}
+}
+
+func TestCodexGatewayBrokerForwardsFirstInitializedOnly(t *testing.T) {
+	broker := &codexGatewayBroker{}
+	if handled, _ := broker.interceptClientFrame(
+		[]byte(`{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{}}`),
+	); handled {
+		t.Fatal("首次 initialize 必须发给上游")
+	}
+	initialized := []byte(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
+	if handled, _ := broker.interceptClientFrame(initialized); handled {
+		t.Fatal("首次 initialized 是上游握手的一部分，不能被 broker 吞掉")
+	}
+	rollback := broker.trackClientFrameForward(websocket.TextMessage, initialized)
+	if rollback == nil {
+		t.Fatal("首次 initialized 写入前必须登记握手状态")
+	}
+	if handled, _ := broker.interceptClientFrame(initialized); !handled {
+		t.Fatal("上游握手完成后，重连的重复 initialized 必须由 broker 吞掉")
+	}
+	rollback()
+	if handled, _ := broker.interceptClientFrame(initialized); handled {
+		t.Fatal("initialized 写入失败回滚后必须允许重试")
 	}
 }
 
