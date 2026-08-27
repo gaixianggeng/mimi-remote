@@ -116,16 +116,16 @@ final class LocalizationTests: XCTestCase {
         let expectedEnglish = [
             "Click the Mimi icon in the Mac menu bar.",
             "Choose Experimental Features…",
-            "Turn on Share Codex Desktop sessions (experimental).",
-            "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm.",
-            "When the status says Environment configured, continue the same idle session once to verify sharing.",
+            "Turn on Sync Codex Desktop sessions (experimental).",
+            "Check that the Mac experiment window shows Desktop build 7119 and a ready IPC connection.",
+            "Continue the same idle session once to verify the cross-device sync.",
         ]
         let expectedChinese = [
             "在 Mac 菜单栏中点按 Mimi 图标。",
             "选择“实验功能…”。",
-            "开启“共享 Codex Desktop 会话（实验）”。",
-            "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。",
-            "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。",
+            "开启“同步 Codex Desktop 会话（实验）”。",
+            "在 Mac 的实验功能窗口确认 Desktop build 为 7119 且 IPC 状态为“可用”。",
+            "用同一条空闲会话完成一次跨端同步验证。",
         ]
 
         XCTAssertEqual(CodexDesktopExperimentGuide.stepKeys.count, 5)
@@ -145,12 +145,12 @@ final class LocalizationTests: XCTestCase {
 
     func testActiveWriterConflictExplainsBothRecoveryActions() {
         XCTAssertEqual(
-            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .english),
-            "This session is in use by Codex Desktop. Fully quit Codex Desktop, or enable sharing in Experimental Features on the Mac and follow the restart prompt. Closing only the session does not release it."
+            L10n.text("ui.codex_active_writer_conflict_requires_desktop_sync", language: .english),
+            "This session is currently owned by Codex Desktop. Enable Desktop session sync on the Mac, then retry."
         )
         XCTAssertEqual(
-            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .simplifiedChinese),
-            "此会话被 Codex Desktop 占用。请完全退出 Codex Desktop，或在 Mac 的“实验功能”中开启共享并按提示重启。仅关闭会话页面不会释放占用。"
+            L10n.text("ui.codex_active_writer_conflict_requires_desktop_sync", language: .simplifiedChinese),
+            "此会话当前由 Codex Desktop 占用。请在 Mac 的“实验功能”中开启会话同步，然后重试。"
         )
     }
 

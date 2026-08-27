@@ -6,93 +6,97 @@ enum ExperimentMenuRouting {
 }
 
 /// 实验功能窗口与菜单入口共用的展示规则。
-///
-/// 这里仅描述已有 HostStore 状态，不保存或推导第二份配置；这样菜单、设置导航
-/// 和实验功能窗口始终从同一个事实源渲染，也能在不依赖 SwiftUI 的情况下测试文案。
 enum ExperimentPresentation {
-    static func codexStatusTitle(for state: CodexDesktopStatusState) -> String {
+    static func codexStatusTitle(for state: CodexDesktopSyncState) -> String {
         switch state {
         case .disabled:
             "已关闭"
         case .notInstalled:
             "未安装"
-        case .backendNotShared:
-            "后端未确认共享"
-        case .pendingRestart:
-            "需要重启"
+        case .desktopNotRunning:
+            "Desktop 未运行"
+        case .connecting:
+            "连接中"
         case .ready:
-            "环境已配置"
-        case .failed:
-            "配置失败"
-        case .externalConflict:
-            "外部配置冲突"
+            "可用"
+        case .unsupportedBuild:
+            "版本不支持"
+        case .socketUnavailable:
+            "IPC 不可用"
+        case .protocolError:
+            "协议错误"
+        case .legacyCleanupRequired:
+            "需要清理旧配置"
         }
     }
 
     static func codexStatusDetail(
-        for state: CodexDesktopStatusState,
-        error: String? = nil
+        for state: CodexDesktopSyncState,
+        error: String? = nil,
+        version: String? = nil,
+        build: String? = nil
     ) -> String {
         let detail: String
         switch state {
         case .disabled:
-            detail = "共享已关闭。Mimi Remote 仍使用独立服务；如果两端同时打开同一会话，可能发生写入冲突。"
+            detail = "同步已关闭。Mimi Remote 继续使用独立 App Server。"
         case .notInstalled:
-            detail = "未检测到 Codex Desktop。请先安装后再启用共享。"
-        case .backendNotShared:
-            detail = "共享尚未生效。请先修复配置并确认 agentd 的共享服务；同一会话可能无法在两端打开。"
-        case .pendingRestart:
-            detail = "保存任务后应用设置并完全重启 Codex Desktop。"
+            detail = "未检测到 Codex Desktop。安装后可开启同步。"
+        case .desktopNotRunning:
+            detail = "请打开 Codex Desktop；Mimi 不会替你退出或重启 Desktop。"
+        case .connecting:
+            detail = "正在连接 Codex Desktop IPC。"
         case .ready:
-            detail = "环境已配置，待用同一空闲会话跨端验证；正在运行的任务仍只读。"
-        case .failed:
-            detail = "共享尚未生效，配置失败。请先修复配置后再重试；同一会话可能无法在两端打开。"
-        case .externalConflict:
-            detail = "共享尚未生效，检测到外部配置冲突。请先修复配置；同一会话可能无法在两端打开。"
+            detail = "Codex Desktop IPC 已连接，可继续已明确归属的会话。"
+        case .unsupportedBuild:
+            let detected = [version, build].compactMap { $0 }.joined(separator: " / ")
+            detail = detected.isEmpty
+                ? "当前 Codex Desktop build 不在验证白名单内。首版只支持 26.820.60940 (7119)。"
+                : "当前版本（\(detected)）不在验证白名单内。首版只支持 26.820.60940 (7119)。"
+        case .socketUnavailable:
+            detail = "Codex Desktop IPC 不可用。请确认 Desktop 正在运行并重试。"
+        case .protocolError:
+            detail = "Codex Desktop IPC 协议不兼容。请更新到支持的 Desktop build。"
+        case .legacyCleanupRequired:
+            detail = "检测到旧共享配置。确认 Codex Desktop 已退出后，执行一次遗留清理。"
         }
 
-        guard state == .pendingRestart || state == .failed || state == .externalConflict,
-              let diagnostic = sanitizedDiagnostic(error)
+        guard let diagnostic = sanitizedDiagnostic(error),
+              state == .protocolError || state == .socketUnavailable || state == .legacyCleanupRequired
         else {
             return detail
         }
         return detail + " 详情：" + diagnostic
     }
 
-    static func codexToggleDescription(
-        isEnabled: Bool,
-        isPending: Bool = false
-    ) -> String {
-        if isPending {
-            return isEnabled
-                ? "待应用：重启后，Mimi Remote 与 Codex Desktop 将共享同一个服务。"
-                : "待应用：当前仍使用共享服务；重启后将切换到独立服务。"
-        }
-        if isEnabled {
-            return "已开启：Mimi Remote 与 Codex Desktop 将尝试共享同一空闲会话；正在运行的任务仍只读。"
-        }
-        return "已关闭：Mimi Remote 仍使用独立服务；如果两端同时打开同一会话，可能发生写入冲突。"
+    static func codexToggleDescription(isEnabled: Bool) -> String {
+        isEnabled
+            ? "已开启：Mimi Remote 通过 Desktop IPC 同步会话；未验证的 build 会自动阻断。"
+            : "已关闭：Mimi Remote 使用独立 App Server，不影响 Codex Desktop。"
     }
 
-    /// 菜单入口只显示少量可行动的摘要；详细状态始终在实验功能窗口内查看。
     static func menuStatusText(
         owner: ServiceOwner,
-        codexState: CodexDesktopStatusState
+        codexState: CodexDesktopSyncState
     ) -> String? {
         guard owner == .macApp else { return "不可管理" }
         switch codexState {
-        case .pendingRestart:
-            return "需要重启"
         case .ready:
-            return "已启用"
-        case .disabled, .notInstalled, .backendNotShared, .failed, .externalConflict:
+            return "已连接"
+        case .connecting:
+            return "连接中"
+        case .unsupportedBuild:
+            return "版本不支持"
+        case .legacyCleanupRequired:
+            return "需清理"
+        case .disabled, .notInstalled, .desktopNotRunning, .socketUnavailable, .protocolError:
             return nil
         }
     }
 
     static func menuAccessibilityLabel(
         owner: ServiceOwner,
-        codexState: CodexDesktopStatusState
+        codexState: CodexDesktopSyncState
     ) -> String {
         let title = "实验功能"
         guard let status = menuStatusText(owner: owner, codexState: codexState) else {
@@ -103,22 +107,7 @@ enum ExperimentPresentation {
 
     private static func sanitizedDiagnostic(_ error: String?) -> String? {
         guard let error else { return nil }
-        var value = error.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-
-        // 保留失败原因对诊断的价值，但把协议码和英文 writer 术语转成平静的
-        // 用户文案，避免把底层 JSON-RPC 错误直接当作界面提示。
-        value = value.replacingOccurrences(of: "-32600", with: "会话写入冲突")
-        value = value.replacingOccurrences(
-            of: "already has an active writer",
-            with: "同一会话正在被其他端占用",
-            options: [.caseInsensitive]
-        )
-        value = value.replacingOccurrences(
-            of: "active writer",
-            with: "同一会话占用",
-            options: [.caseInsensitive]
-        )
-        return value
+        let value = error.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }

@@ -1422,14 +1422,14 @@ private extension DefaultModelRuntime {
     }
 }
 
-/// iOS 只能说明和引导，不能伪装成能够修改 Mac launchd 环境的远程开关。
-/// 真正的启用入口继续由 Mimi Remote Mac 持有，确保配置、Desktop 重启与失败回滚在同一台电脑完成。
+/// iOS 只说明和引导，不提供远程开关。启用入口由 Mac 持有，避免在移动端
+/// 伪造 Desktop IPC 的本机权限或状态。
 enum CodexDesktopExperimentGuide {
     static let stepKeys = [
         "ui.codex_experiment_step_open_mimi_menu",
         "ui.codex_experiment_step_choose_experiments",
-        "ui.codex_experiment_step_enable_sharing",
-        "ui.codex_experiment_step_restart_desktop",
+        "ui.codex_experiment_step_enable_sync",
+        "ui.codex_experiment_step_check_build",
         "ui.codex_experiment_step_verify_session",
     ]
 }
@@ -1445,7 +1445,7 @@ struct ExperimentalFeaturesSettingsView: View {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Label {
-                        Text(L10n.text("ui.share_codex_desktop_sessions_experimental"))
+                        Text(L10n.text("ui.sync_codex_desktop_sessions_experimental"))
                             .font(themeStore.uiFont(.headline, weight: .semibold))
                             .foregroundStyle(tokens.primaryText)
                     } icon: {
@@ -1453,16 +1453,16 @@ struct ExperimentalFeaturesSettingsView: View {
                             .foregroundStyle(tokens.accent)
                     }
 
-                    Text(L10n.text("ui.codex_experiment_summary"))
+                    Text(L10n.text("ui.codex_desktop_sync_summary"))
                         .font(themeStore.uiFont(.subheadline))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 8)
                 .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("settings.experimentalFeatures.codexSharing")
+                .accessibilityIdentifier("settings.experimentalFeatures.codexDesktopSync")
             } footer: {
-                Text(L10n.text("ui.codex_experiment_warning"))
+                Text(L10n.text("ui.codex_desktop_sync_warning"))
             }
 
             Section {
@@ -1496,12 +1496,12 @@ struct ExperimentalFeaturesSettingsView: View {
                 Text(L10n.text("ui.how_to_enable_on_mac"))
                     .textCase(nil)
             } footer: {
-                Text(L10n.text("ui.codex_experiment_mac_only_note"))
+                Text(L10n.text("ui.codex_desktop_sync_mac_note"))
             }
 
             Section {
                 Label {
-                    Text(L10n.text("ui.codex_experiment_service_note"))
+                    Text(L10n.text("ui.codex_desktop_sync_service_note"))
                         .font(themeStore.uiFont(.subheadline))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)

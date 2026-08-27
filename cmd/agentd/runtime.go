@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	codexSharingMutationTimeout         = 45 * time.Second
-	confirmedCodexSharingDisableTimeout = 110 * time.Second
+	codexDesktopSyncMutationTimeout = 45 * time.Second
 )
 
 func runRuntime(args []string) error {
@@ -26,17 +25,11 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("runtime", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
-	codexSharing := fs.String("codex-sharing", "", "Codex Desktop 共享 app-server：enabled 或 disabled")
-	codexSharingDisableConfirmed := fs.Bool(
-		"codex-sharing-disable-confirmed",
+	codexDesktopSync := fs.String("codex-desktop-sync", "", "Codex Desktop 会话同步：enabled 或 disabled")
+	cleanupLegacySharingConfirmed := fs.Bool(
+		"cleanup-legacy-sharing-confirmed",
 		false,
-		"防误触 interlock：确认 Codex Desktop 已退出后关闭共享 daemon",
-	)
-	codexSharingRestart := fs.Bool("codex-sharing-restart", false, "防误触 interlock：应用待处理的共享 Codex daemon 迁移")
-	codexSharingRestartConfirmed := fs.Bool(
-		"codex-sharing-restart-confirmed",
-		false,
-		"防误触 interlock：调用方确认 Desktop 已正常退出或本来未运行（不是身份鉴权）",
+		"确认 Codex Desktop 已退出后清理旧共享 daemon 配置",
 	)
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -44,50 +37,34 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
-	hasCodexSharing := strings.TrimSpace(*codexSharing) != ""
-	hasCodexSharingRestart := *codexSharingRestart
-	if *codexSharingRestartConfirmed && !hasCodexSharingRestart {
-		return fmt.Errorf("--codex-sharing-restart-confirmed 只能与内部迁移入口一起使用")
-	}
-	if *codexSharingDisableConfirmed && !hasCodexSharing {
-		return fmt.Errorf("--codex-sharing-disable-confirmed 只能与 --codex-sharing=disabled 一起使用")
+	hasCodexDesktopSync := strings.TrimSpace(*codexDesktopSync) != ""
+	if *cleanupLegacySharingConfirmed && !hasCodexDesktopSync {
+		return fmt.Errorf("--cleanup-legacy-sharing-confirmed 只能与 --codex-desktop-sync 一起使用")
 	}
 	operationCount := 0
-	for _, selected := range []bool{hasClaude, hasCodexSharing, hasCodexSharingRestart} {
+	for _, selected := range []bool{hasClaude, hasCodexDesktopSync} {
 		if selected {
 			operationCount++
 		}
 	}
 	if operationCount != 1 {
-		return fmt.Errorf("必须且只能传入 --claude、--codex-sharing 或 --codex-sharing-restart 其中一项")
-	}
-	if hasCodexSharingRestart && !*codexSharingRestartConfirmed {
-		return fmt.Errorf("共享 daemon 迁移必须同时传入确认防误触开关；该开关不构成调用方鉴权")
+		return fmt.Errorf("必须且只能传入 --claude 或 --codex-desktop-sync 其中一项")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	if hasCodexSharing {
-		enabled, err := parseEnabledDisabled(*codexSharing)
+	if hasCodexDesktopSync {
+		enabled, err := parseEnabledDisabled(*codexDesktopSync)
 		if err != nil {
 			return err
 		}
-		if *codexSharingDisableConfirmed && enabled {
-			return fmt.Errorf("--codex-sharing-disable-confirmed 只能与 --codex-sharing=disabled 一起使用")
-		}
-		configureTimeout := codexSharingMutationTimeout
-		if *codexSharingDisableConfirmed {
-			// 内层会分别给跨进程锁等待和关闭事务分配预算。这里覆盖两段预算
-			// 以及命令收尾，避免锁竞争侵蚀官方 daemon 的 graceful drain 时间。
-			configureTimeout = confirmedCodexSharingDisableTimeout
-		}
-		configureCtx, cancel := context.WithTimeout(context.Background(), configureTimeout)
-		var result agentsetup.CodexSharingConfigurationResult
-		if *codexSharingDisableConfirmed {
-			result, err = agentsetup.DisableCodexSharingAfterDesktopExit(configureCtx, *configPath)
-		} else {
-			result, err = agentsetup.ConfigureCodexSharing(configureCtx, *configPath, enabled)
-		}
+		configureCtx, cancel := context.WithTimeout(context.Background(), codexDesktopSyncMutationTimeout)
+		result, err := agentsetup.ConfigureCodexDesktopSync(
+			configureCtx,
+			*configPath,
+			enabled,
+			*cleanupLegacySharingConfirmed,
+		)
 		cancel()
 		if err != nil {
 			return err
@@ -98,20 +75,6 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, result.Message)
 		return nil
 	}
-	if hasCodexSharingRestart {
-		restartCtx, cancel := context.WithTimeout(context.Background(), codexSharingMutationTimeout)
-		result, err := agentsetup.RestartCodexSharingDaemon(restartCtx, *configPath)
-		cancel()
-		if err != nil {
-			return err
-		}
-		if *asJSON {
-			return printJSONTo(stdout, result)
-		}
-		fmt.Fprintln(stdout, result.Message)
-		return nil
-	}
-
 	preference, err := agentsetup.ParseClaudeActivationPreference(*claudePreference)
 	if err != nil {
 		return err
@@ -156,6 +119,6 @@ func parseEnabledDisabled(raw string) (bool, error) {
 	case "disabled", "false", "0":
 		return false, nil
 	default:
-		return false, fmt.Errorf("--codex-sharing 只支持 enabled 或 disabled")
+		return false, fmt.Errorf("--codex-desktop-sync 只支持 enabled 或 disabled")
 	}
 }

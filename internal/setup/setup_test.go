@@ -505,8 +505,8 @@ func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
 
 func clearSetupEnv(t *testing.T) {
 	t.Helper()
-	// setup 的并发提交现在会取得用户级 shared-daemon 锁。每个测试使用独立
-	// HOME，既避免碰到开发机真实 LaunchAgent，也防止并行用例互相串锁。
+	// setup 的并发提交使用用户级配置锁。每个测试使用独立 HOME，避免并行
+	// 用例共享锁文件或碰到开发机配置。
 	t.Setenv("HOME", t.TempDir())
 	for _, key := range []string{
 		"AGENTD_CONFIG",

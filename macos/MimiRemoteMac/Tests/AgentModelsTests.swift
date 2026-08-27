@@ -137,7 +137,7 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertEqual(runtimes[1].state, .disabled)
     }
 
-    func testRuntimeSharingFieldsAreOptionalForLegacyAgentStatus() throws {
+    func testDesktopSyncStatusDecodesWithoutPrivateTransportDetails() throws {
         let legacy = AgentRuntimeStatus(
             id: "codex",
             title: "Codex",
@@ -150,11 +150,9 @@ final class AgentModelsTests: XCTestCase {
         )
         let legacyData = try JSONEncoder().encode(legacy)
         let decodedLegacy = try JSONDecoder().decode(AgentRuntimeStatus.self, from: legacyData)
-        XCTAssertNil(decodedLegacy.transport)
-        XCTAssertNil(decodedLegacy.shared)
-        XCTAssertNil(decodedLegacy.daemonRestartRequired)
+        XCTAssertNil(decodedLegacy.desktopSync)
 
-        let shared = AgentRuntimeStatus(
+        let sync = AgentRuntimeStatus(
             id: "codex",
             title: "Codex",
             enabled: true,
@@ -163,23 +161,28 @@ final class AgentModelsTests: XCTestCase {
             planType: "plus",
             reason: nil,
             rateLimits: nil,
-            transport: "unix",
-            shared: true,
-            daemonRestartRequired: true
+            desktopSync: CodexDesktopSyncStatus(
+                enabled: true,
+                state: .ready,
+                transport: "desktop_ipc",
+                desktopVersion: "26.820.60940",
+                desktopBuild: "7119",
+                profile: "desktop-7119"
+            )
         )
-        let decodedShared = try JSONDecoder().decode(
+        let decodedSync = try JSONDecoder().decode(
             AgentRuntimeStatus.self,
-            from: JSONEncoder().encode(shared)
+            from: JSONEncoder().encode(sync)
         )
-        XCTAssertEqual(decodedShared.transport, "unix")
-        XCTAssertEqual(decodedShared.shared, true)
-        XCTAssertEqual(decodedShared.daemonRestartRequired, true)
+        XCTAssertEqual(decodedSync.desktopSync?.state, .ready)
+        XCTAssertEqual(decodedSync.desktopSync?.desktopBuild, "7119")
 
-        let sharing = try JSONDecoder().decode(
-            CodexSharingConfigurationResult.self,
-            from: Data(#"{"enabled":true,"changed":true,"restart_required":true,"transport":"unix","codex_home":"/Users/test/.codex","message":"ready"}"#.utf8)
+        let result = try JSONDecoder().decode(
+            CodexDesktopSyncConfigurationResult.self,
+            from: Data(#"{"enabled":true,"changed":true,"service_restart_required":true,"legacy_cleanup_required":false,"message":"ready"}"#.utf8)
         )
-        XCTAssertEqual(sharing.codexHome, "/Users/test/.codex")
+        XCTAssertTrue(result.serviceRestartRequired)
+        XCTAssertFalse(result.legacyCleanupRequired)
     }
 
     func testUnknownRuntimeStateFailsClosedWithoutBreakingAgentStatusDecode() throws {

@@ -50,6 +50,15 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
 | `Simple Icons Linux / Tux SVG` | `16.27.0` | iOS 运行时资源 |
 
+## Remodex 投影逻辑
+
+Mimi 的 Codex Desktop IPC overlay 借鉴并实质改编了 [Remodex](https://github.com/Emanuele-web04/remodex)
+固定提交 `8105e25038ad07443da01cda6c21e5f77ec61cd5` 中的会话状态投影与 owner/follower
+路由思路。该仓库以 Apache-2.0 许可证发布；本项目仅移植和改编相关实现思路，不复制 Remodex 的品牌资源。
+
+Apache-2.0 许可证全文见该固定提交中的许可证文件：
+[Remodex LICENSE](https://github.com/Emanuele-web04/remodex/blob/8105e25038ad07443da01cda6c21e5f77ec61cd5/LICENSE)。
+
 ## 公共领域视觉素材
 
 ### 目标

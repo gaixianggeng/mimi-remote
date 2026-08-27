@@ -413,7 +413,7 @@ extension SessionStore {
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
             // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
-            // Mac 侧共享入口，避免把结构性冲突伪装成短暂网络波动。
+            // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动。
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
                 && !policyRejected
                 && !activeWriterConflict
@@ -436,7 +436,7 @@ extension SessionStore {
             } else {
                 setWebSocketStatus(.failed(message))
                 if activeWriterConflict {
-                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_shared_service"))
+                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_desktop_sync"))
                 } else {
                     setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
                 }
@@ -599,8 +599,8 @@ extension SessionStore {
     }
 
     func shouldAutoReconnectWebSocket(sessionID: SessionID) -> Bool {
-        // 不再要求 isRunning：状态可能刚被瞬时 idle 误读降级。共享模式会恢复订阅，
-        // 独立模式只恢复页面连接并保持持久化历史可读。
+        // 状态可能刚被瞬时 idle 误读降级，但 gateway 连接本身仍可重连；只有明确的
+        // 外部只读会话才停止重连。
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
@@ -722,7 +722,7 @@ extension SessionStore {
             return
         }
         // 快照可能在上游刚恢复时把运行中的 turn 误读成 idle；不能据此一次性放弃重连。
-        // 共享模式会 resume 并用权威状态纠正；独立模式保持只读，等待轮询或首次发送。
+        // 连接会在发送前由 gateway 按当前 owner 重新建立写入路径；此处只保留只读恢复。
         connectWebSocket(refreshedSession, isReconnectAttempt: true, allowNonRunning: true)
     }
 
@@ -2415,7 +2415,7 @@ extension SessionStore {
         // 避免不同传输路径泄漏原始 -32600 协议错误。
         let userFacingValue: String?
         if let value, Self.isCodexActiveWriterConflict(value) {
-            userFacingValue = L10n.text("ui.codex_active_writer_conflict_requires_shared_service")
+            userFacingValue = L10n.text("ui.codex_active_writer_conflict_requires_desktop_sync")
         } else {
             userFacingValue = value
         }

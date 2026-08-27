@@ -182,7 +182,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		return validateSetupConfigSnapshot(cfgPath, configExisted, originalConfig)
 	}
 	commitFiles := func() error {
-		// 两个文件的备份、rename 与目录同步都在配置提交锁内完成。sharing、
+		// 两个文件的备份、rename 与目录同步都在配置提交锁内完成。Desktop sync、
 		// Claude、network 和 setup --force 因而不会在各自 CAS 与 rename 之间互相覆盖。
 		return withConfigCommitLock(ctx, cfgPath, func() error {
 			if err := validateOriginal(); err != nil {
@@ -197,9 +197,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			)
 		})
 	}
-	// setup 的新文档不包含 Mimi shared_fallback；即使原配置损坏或已经丢失，
-	// 只要还残留 Mimi owner/marker，也必须在同一 daemon lock 内先清理。
-	if err := commitConfigReplacingOwnedSharedDaemon(ctx, cfgPath, validateOriginal, commitFiles); err != nil {
+	if err := commitFiles(); err != nil {
 		return Result{}, fmt.Errorf("原子写入 setup 配置失败：%w", err)
 	}
 	filesCommitted = true

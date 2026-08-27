@@ -4944,19 +4944,19 @@
         }
       }
     },
-    "ui.codex_active_writer_conflict_requires_shared_service": {
+    "ui.codex_active_writer_conflict_requires_desktop_sync": {
       "comment": "Shown when another Codex app-server owns the session writer. Explain the recovery path without exposing the raw JSON-RPC error.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session is in use by Codex Desktop. Fully quit Codex Desktop, or enable sharing in Experimental Features on the Mac and follow the restart prompt. Closing only the session does not release it."
+            "value": "This session is currently owned by Codex Desktop. Enable Desktop session sync on the Mac, then retry."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话被 Codex Desktop 占用。请完全退出 Codex Desktop，或在 Mac 的“实验功能”中开启共享并按提示重启。仅关闭会话页面不会释放占用。"
+            "value": "此会话当前由 Codex Desktop 占用。请在 Mac 的“实验功能”中开启会话同步，然后重试。"
           }
         }
       }
@@ -38894,56 +38894,56 @@
         }
       }
     },
-    "ui.share_codex_desktop_sessions_experimental": {
-      "comment": "Title of the experimental Codex Desktop shared-session capability.",
+    "ui.sync_codex_desktop_sessions_experimental": {
+      "comment": "Title of the experimental Codex Desktop session-sync capability.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Share Codex Desktop sessions (experimental)"
+            "value": "Sync Codex Desktop sessions (experimental)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "共享 Codex Desktop 会话（实验）"
+            "value": "同步 Codex Desktop 会话（实验）"
           }
         }
       }
     },
-    "ui.codex_experiment_summary": {
-      "comment": "Summary of what the Codex Desktop shared-session experiment does.",
+    "ui.codex_desktop_sync_summary": {
+      "comment": "Summary of what the Codex Desktop session-sync experiment does.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Let Mimi Remote and Codex Desktop use the same local session service, so you can continue an idle session across devices."
+            "value": "Let Mimi Remote and Codex Desktop sync the same session through the verified Desktop IPC overlay."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "让 Mimi Remote 与 Codex Desktop 共用同一个本地会话服务，以便在不同设备间继续空闲会话。"
+            "value": "让 Mimi Remote 与 Codex Desktop 通过已验证的 Desktop IPC overlay 同步同一会话。"
           }
         }
       }
     },
-    "ui.codex_experiment_warning": {
-      "comment": "Risk and concurrency note for the Codex Desktop shared-session experiment.",
+    "ui.codex_desktop_sync_warning": {
+      "comment": "Risk and version note for the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This feature changes the Codex Desktop launch environment and may change with future Codex versions. A running task remains read-only on the other device."
+            "value": "This feature uses a private Codex Desktop IPC contract and may change with future Codex versions. Unsupported builds remain blocked."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此功能会修改 Codex Desktop 的启动环境，并可能随 Codex 版本变化。正在运行的任务在另一端仍为只读。"
+            "value": "此功能使用 Codex Desktop 的私有 IPC 契约，并可能随未来版本变化。未验证的 build 会保持阻断。"
           }
         }
       }
@@ -38967,7 +38967,7 @@
       }
     },
     "ui.codex_experiment_step_open_mimi_menu": {
-      "comment": "First step for enabling the Codex Desktop shared-session experiment.",
+      "comment": "First step for enabling the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -38985,7 +38985,7 @@
       }
     },
     "ui.codex_experiment_step_choose_experiments": {
-      "comment": "Second step for enabling the Codex Desktop shared-session experiment.",
+      "comment": "Second step for enabling the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -39002,92 +39002,92 @@
         }
       }
     },
-    "ui.codex_experiment_step_enable_sharing": {
-      "comment": "Third step for enabling the Codex Desktop shared-session experiment.",
+    "ui.codex_experiment_step_enable_sync": {
+      "comment": "Third step for enabling the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn on Share Codex Desktop sessions (experimental)."
+            "value": "Turn on Sync Codex Desktop sessions (experimental)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开启“共享 Codex Desktop 会话（实验）”。"
+            "value": "开启“同步 Codex Desktop 会话（实验）”。"
           }
         }
       }
     },
-    "ui.codex_experiment_step_restart_desktop": {
-      "comment": "Fourth step for enabling the Codex Desktop shared-session experiment. The Mac in-app action is required to commit the daemon migration; manually reopening Codex Desktop is insufficient.",
+    "ui.codex_experiment_step_check_build": {
+      "comment": "Fourth step for enabling the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm."
+            "value": "Check that the Mac experiment window shows Desktop build 7119 and a ready IPC connection."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。"
+            "value": "在 Mac 的实验功能窗口确认 Desktop build 为 7119 且 IPC 状态为“可用”。"
           }
         }
       }
     },
     "ui.codex_experiment_step_verify_session": {
-      "comment": "Fifth step for verifying the Codex Desktop shared-session experiment.",
+      "comment": "Fifth step for verifying the Codex Desktop session-sync experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When the status says Environment configured, continue the same idle session once to verify sharing."
+            "value": "Continue the same idle session once to verify the cross-device sync."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。"
+            "value": "用同一条空闲会话完成一次跨端同步验证。"
           }
         }
       }
     },
-    "ui.codex_experiment_mac_only_note": {
+    "ui.codex_desktop_sync_mac_note": {
       "comment": "Explains why the iOS guide does not provide a remote toggle for the Mac experiment.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This setting can only be changed on the Mac running Mimi Remote Mac. This iPhone or iPad cannot restart Codex Desktop for you."
+            "value": "This setting can only be changed on the Mac running Mimi Remote Mac. Check the sync status there; the iPhone or iPad cannot access the local IPC socket."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此设置只能在运行 Mimi Remote Mac 的电脑上修改；iPhone 或 iPad 无法代替 Mac 重启 Codex Desktop。"
+            "value": "此设置只能在运行 Mimi Remote Mac 的电脑上修改；请在 Mac 查看同步状态，iPhone 或 iPad 不能访问本机 IPC socket。"
           }
         }
       }
     },
-    "ui.codex_experiment_service_note": {
-      "comment": "Explains how stopping the Mac service affects mobile shared sessions.",
+    "ui.codex_desktop_sync_service_note": {
+      "comment": "Explains how the Mac service affects mobile session sync.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keep the Mimi Remote Mac service running. Choosing Quit and Stop Service… disconnects mobile devices; reopen the Mac app or sign in to the Mac again to restart it."
+            "value": "Keep the Mimi Remote Mac service running. The independent App Server remains the mobile data path; reconnect after restarting the Mac service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请保持 Mimi Remote Mac 服务运行。选择“退出并停止服务…”会断开移动设备；重新打开 Mac App 或再次登录 Mac 后会重启服务。"
+            "value": "请保持 Mimi Remote Mac 服务运行。独立 App Server 仍是移动端主链路；重启 Mac 服务后重新连接即可。"
           }
         }
       }

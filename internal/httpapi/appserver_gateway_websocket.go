@@ -12,31 +12,31 @@ import (
 func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan string, 4)
+	done := make(chan string, 5)
 	var clientWriteMu sync.Mutex
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
 	policy := &appServerGatewayPolicy{
-		router:                 r,
-		runtimeID:              "codex",
-		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests:  map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests:  map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:         map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:         map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:         map[string]appServerGatewayAllowedThread{},
-		threadWriterCandidates: map[string]struct{}{},
-		pendingThreadWriters:   map[string]appServerGatewayPendingThreadWriter{},
+		router:                r,
+		runtimeID:             "codex",
+		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
 	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
+	overlay := newDesktopIPCGatewayOverlay(r.desktopIPC, policy, upstream, &upstreamWriteMu)
+	defer overlay.close()
 
 	go func() {
-		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
+		done <- r.copyClientFramesToAppServer(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu, policy, overlay, monitor)
 	}()
 	go func() {
-		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
+		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, overlay, monitor)
 	}()
 	// 两端各自保活，避免 client 与 upstream 的慢速大帧锁等待在同一个 ping loop 中串联。
 	go func() {
@@ -44,6 +44,9 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	}()
 	go func() {
 		done <- pingGatewayConnection(ctx, upstream, &upstreamWriteMu, "upstream_ping_write")
+	}()
+	go func() {
+		done <- overlay.forwardEvents(ctx, client, &clientWriteMu, monitor)
 	}()
 
 	reason := <-done
@@ -76,7 +79,7 @@ func pingGatewayConnection(ctx context.Context, conn *websocket.Conn, writeMu *s
 	}
 }
 
-func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
+func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, overlay *desktopIPCGatewayOverlay, monitor *relayGatewayConnMonitor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
@@ -104,11 +107,36 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			monitor.recordForward("upstream_to_client", len(cachedPayload), len(cachedPayload), policyDuration, time.Since(writeStart), cachedPayload)
 			continue
 		}
+		handled, desktopPayload, desktopPolicyErr := overlay.routeClientFrame(ctx, forwardPayload)
+		if desktopPolicyErr != nil {
+			monitor.recordPolicyError("client_to_desktop_ipc", len(payload), policyDuration)
+			if !writeGatewayPolicyError(client, clientWriteMu, desktopPolicyErr) {
+				return "desktop_ipc_policy_error_write_failed"
+			}
+			continue
+		}
+		if handled {
+			if len(desktopPayload) == 0 {
+				continue
+			}
+			observed, forward, observeErr := policy.observeUpstreamFrame(websocket.TextMessage, desktopPayload)
+			if observeErr != nil {
+				if !writeGatewayPolicyError(client, clientWriteMu, observeErr) {
+					return "desktop_ipc_response_policy_error_write_failed"
+				}
+				continue
+			}
+			if forward {
+				if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, observed); err != nil {
+					return gatewayCloseReason("desktop_ipc_client_write", err)
+				}
+			}
+			continue
+		}
 		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
 		writeStart := time.Now()
-		if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
-			return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
-		}); err != nil {
+		overlay.observeClientForward(forwardPayload)
+		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {
 			monitor.cancelRPCRequest(requestID)
 			return gatewayCloseReason("upstream_write", err)
 		}
@@ -131,7 +159,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 	}
 }
 
-func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, fromWriteMu *sync.Mutex, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
+func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, fromWriteMu *sync.Mutex, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy, overlay *desktopIPCGatewayOverlay, monitor *relayGatewayConnMonitor) string {
 	for {
 		select {
 		case <-ctx.Done():
@@ -141,6 +169,9 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		messageType, payload, err := from.ReadMessage()
 		if err != nil {
 			return gatewayCloseReason("upstream_read", err)
+		}
+		if overlay.consumeInternalUpstreamResponse(messageType, payload) {
+			continue
 		}
 		policyStart := time.Now()
 		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
@@ -163,6 +194,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
 			continue
 		}
+		overlay.observeAcceptedUpstreamFrame(forwardPayload)
 		writeStart := time.Now()
 		if err := writeWebSocketFrame(to, toWriteMu, messageType, forwardPayload); err != nil {
 			return gatewayCloseReason("client_write", err)

@@ -845,7 +845,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -857,7 +857,7 @@ extension ConversationDataFlowTests {
         assertInitializeEnablesExperimentalAPI(initialize)
         transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
         let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
-        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_delta_guidance","sessionId":"thr_delta_guidance","preview":"delta 回填","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/delta-guidance","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"delta 回填","turns":[]}],"nextCursor":null}"#)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_delta_guidance","sessionId":"thr_delta_guidance","preview":"delta 回填","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/delta-guidance","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"delta 回填","turns":[]}],"nextCursor":null}"#)
         _ = try await listTask.value
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
@@ -2169,7 +2169,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -2186,7 +2186,7 @@ extension ConversationDataFlowTests {
         let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let read = try decodeAppServerRequest(readMessages[2])
         XCTAssertEqual(read.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
         _ = try await sessionTask.value
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
@@ -2199,7 +2199,7 @@ extension ConversationDataFlowTests {
         let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
         let resume = try decodeAppServerRequest(resumeMessages[3])
         XCTAssertEqual(resume.method, "thread/resume")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
 
         for _ in 0..<200 where !statuses.contains(.connected) {
             try await Task.sleep(nanoseconds: 10_000_000)

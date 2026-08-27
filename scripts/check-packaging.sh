@@ -183,10 +183,10 @@ grep -Fq 'com.apple.security.personal-information.photos-library' \
   || fail "Mac App 没有声明照片图库 entitlement。"
 grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
   || fail "Mac App 没有声明照片图库用途说明。"
-grep -Fq -- '--codex-daemon-supervisor' macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift \
-  || fail "Mac App 缺少共享 daemon 的 TCC 责任进程入口。"
-grep -Fq 'CodexDaemonSupervisorInvocation.parse' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \
-  || fail "Mac App 主入口没有在触碰 SwiftUI 之前分叉 supervisor 模式。"
+[[ ! -e macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift ]] \
+  || fail "Mac App 仍包含已移除的 Codex shared daemon supervisor。"
+grep -Fq -- '--codex-desktop-sync' macos/MimiRemoteMac/Sources/Infrastructure/AgentCommandClient.swift \
+  || fail "Mac App 没有调用 Desktop IPC 实验开关。"
 grep -Fq 'main_executable_count' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Contents/MacOS 主可执行文件唯一性。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \

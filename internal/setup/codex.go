@@ -180,20 +180,14 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 			}
 			return nil
 		}
-		// codex.bin 是 stable-owner 身份的一部分。先取得 daemon operation
-		// lock，再以同一 raw snapshot CAS 提交。auto owner 可由新 agentd
-		// 按新路径重建；manual pending 必须保留，Doctor 不能替用户确认迁移。
-		// 当前 daemon 不会被停止，原生 Codex 流程不受影响。
 		commitCtx, cancelCommit := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancelCommit()
-		writeErr = commitConfigRepairingOwnedSharedDaemonIdentity(
-			commitCtx,
-			cfgPath,
-			validateOriginal,
-			func() error {
-				return writePrivateFileAtomicallyCAS(cfgPath, original, updated)
-			},
-		)
+		writeErr = withConfigCommitLock(commitCtx, cfgPath, func() error {
+			if err := validateOriginal(); err != nil {
+				return err
+			}
+			return writePrivateFileAtomicallyCAS(cfgPath, original, updated)
+		})
 	} else {
 		writeErr = writeConfig(cfgPath, updated)
 	}

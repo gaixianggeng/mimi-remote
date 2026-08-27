@@ -25,32 +25,9 @@ type Checker struct {
 	cfg                        config.Config
 	registry                   *projects.Registry
 	configPath                 string
-	sharedDaemonDiagnostics    func(context.Context, appserver.LocalDaemonOptions) (appserver.SharedDaemonDiagnostics, error)
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
-	sharedDaemonReconcile      Check
-}
-
-const sharedDaemonReconcileName = "codex-shared-daemon-reconcile"
-
-// SetSharedDaemonReconcile 记录独立 WS 模式启动时对残留 Mimi 共享 daemon 的
-// 结论。只有需要用户介入的状态才写入；正常情况下这个 check 不出现在 readyz 里。
-func (c *Checker) SetSharedDaemonReconcile(message string, fix string) {
-	c.fileAccessMu.Lock()
-	defer c.fileAccessMu.Unlock()
-	c.sharedDaemonReconcile = Check{
-		Name:    sharedDaemonReconcileName,
-		OK:      false,
-		Message: message,
-		Fix:     fix,
-	}
-}
-
-func (c *Checker) sharedDaemonReconcileCheck() Check {
-	c.fileAccessMu.RLock()
-	defer c.fileAccessMu.RUnlock()
-	return c.sharedDaemonReconcile
 }
 
 type Results struct {
@@ -73,10 +50,9 @@ type Check struct {
 
 func NewChecker(version string, cfg config.Config, registry *projects.Registry, configPath ...string) *Checker {
 	checker := &Checker{
-		version:                 version,
-		cfg:                     cfg,
-		registry:                registry,
-		sharedDaemonDiagnostics: appserver.InspectSharedDaemonDiagnostics,
+		version:  version,
+		cfg:      cfg,
+		registry: registry,
 	}
 	// variadic 参数保持现有嵌入方兼容；CLI 传入真实路径后才启用配置文件权限检查。
 	if len(configPath) > 0 {
@@ -119,9 +95,6 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.fileAccessPreflightCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
-	if check := c.sharedDaemonReconcileCheck(); check.Name != "" {
-		checks = append(checks, check)
-	}
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -133,15 +106,6 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	}
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx))
-	}
-	if check := c.localDaemonLifecycleCheck(ctx); check.Name != "" {
-		checks = append(checks, check)
-	}
-	if check := c.sharedDaemonOwnerCheck(ctx); check.Name != "" {
-		checks = append(checks, check)
-	}
-	if check := c.sharedDaemonRuntimeCheck(ctx); check.Name != "" {
-		checks = append(checks, check)
 	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
@@ -167,9 +131,6 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		{Name: "token", OK: tokenOK, Message: tokenMessage, Fix: "执行 agentd setup 生成随机 token，或设置 AGENTD_TOKEN"},
 		{Name: "projects", OK: projectsCount > 0, Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
 		c.runtimeCheck(),
-	}
-	if check := c.sharedDaemonReconcileCheck(); check.Name != "" {
-		checks = append(checks, check)
 	}
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
@@ -205,8 +166,7 @@ func (c *Checker) results(checks []Check) Results {
 
 func isWarningOnlyCheck(name string) bool {
 	switch name {
-	case "tailscale", "macos-code-signing", "file-access-preflight", "codex-daemon-lifecycle-external",
-		sharedDaemonReconcileName:
+	case "tailscale", "macos-code-signing", "file-access-preflight":
 		return true
 	default:
 		return false
@@ -369,28 +329,8 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 			Message: "Codex app-server 不应暴露到非 loopback 网络",
 			Fix:     "将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
 		}
-	case "unix":
-		if listen := strings.TrimSpace(c.cfg.AppServer.Listen); listen != "" && listen != appserver.LocalDaemonListen {
-			return Check{Name: "app-server", OK: false, Message: "共享 Codex daemon 地址无效", Fix: "将 app_server.listen 设置为 unix://"}
-		}
-		socketPath, err := appserver.LocalDaemonSocketPath(c.cfg.Codex.Env)
-		if err != nil {
-			return Check{Name: "app-server", OK: false, Message: "共享 Codex daemon 路径不可用", Fix: err.Error()}
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		probe, err := appserver.ProbeLocalDaemonInfo(probeCtx, socketPath)
-		cancel()
-		if err != nil {
-			return Check{
-				Name:    "app-server",
-				OK:      false,
-				Message: "共享 Codex daemon 当前不可连接",
-				Fix:     "先在 Mac 设置中重新启用共享服务；若提示 standalone 缺失，请安装官方 Codex 命令行工具",
-			}
-		}
-		return Check{Name: "app-server", OK: true, Message: "Codex Desktop 与 Mimi 使用同一私有 Unix app-server（" + probe.Version + "）"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=unix 或 ws"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=ws"}
 	}
 }
 
@@ -424,215 +364,13 @@ func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
 		return Check{Name: "codex-app-server", OK: false, Message: "Codex CLI 不支持 app-server 命令", Fix: "升级 Codex CLI，然后重新执行 agentd doctor"}
 	}
 	help := string(out)
-	requiredFlags := []string{"--listen"}
-	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
-		requiredFlags = append(requiredFlags, "--ws-auth", "--ws-token-file")
-	}
+	requiredFlags := []string{"--listen", "--ws-auth", "--ws-token-file"}
 	for _, flag := range requiredFlags {
 		if !strings.Contains(help, flag) {
-			return Check{Name: "codex-app-server", OK: false, Message: "Codex app-server 缺少必要 transport 参数", Fix: "升级 Codex CLI 到支持共享 app-server 的版本"}
+			return Check{Name: "codex-app-server", OK: false, Message: "Codex app-server 缺少必要 transport 参数", Fix: "升级 Codex CLI 到支持 WebSocket transport 的版本"}
 		}
-	}
-	if strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
-		daemonCtx, daemonCancel := context.WithTimeout(ctx, 3*time.Second)
-		defer daemonCancel()
-		if output, err := exec.CommandContext(daemonCtx, c.cfg.Codex.Bin, "app-server", "daemon", "start", "--help").CombinedOutput(); err != nil || !strings.Contains(string(output), "local app server daemon") {
-			return Check{Name: "codex-app-server", OK: false, Message: "Codex CLI 不支持 local daemon", Fix: "升级 Codex CLI 后重新运行 agentd doctor"}
-		}
-		return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server Unix daemon 能力可用"}
 	}
 	return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server WebSocket 能力可用" + versionSummary}
-}
-
-func (c *Checker) localDaemonLifecycleCheck(ctx context.Context) Check {
-	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
-		return Check{}
-	}
-	checkName := "codex-daemon-lifecycle"
-	if !c.cfg.AppServer.Managed {
-		// 外部 Unix upstream 的生命周期由部署方负责；doctor 仍报告风险，但不
-		// 应替外部 owner 宣布服务不可用。
-		checkName = "codex-daemon-lifecycle-external"
-	}
-	check := Check{
-		Name: checkName,
-		Fix:  "安装官方 standalone Codex 命令行工具，确保 Mac 重启后 local daemon 仍可自动恢复",
-	}
-	runCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	status, err := appserver.InspectLocalDaemonLifecycle(runCtx, appserver.LocalDaemonOptions{
-		CodexBin: c.cfg.Codex.Bin,
-		Env:      c.cfg.Codex.Env,
-	})
-	cancel()
-	if err != nil {
-		check.Message = "共享 daemon 当前可由 socket 检查，但官方生命周期状态不可用"
-		return check
-	}
-	expectedSocket, err := appserver.LocalDaemonSocketPath(c.cfg.Codex.Env)
-	if err != nil {
-		check.Message = "无法解析共享 daemon 的 CODEX_HOME"
-		return check
-	}
-	if err := appserver.ValidateLocalDaemonLifecycle(status, expectedSocket); err != nil {
-		check.Message = "当前共享 daemon 可用，但冷启动恢复条件不完整：" + err.Error()
-		return check
-	}
-	check.OK = true
-	check.Message = "官方 Codex daemon 生命周期可恢复（" + status.AppServerVersion + "）"
-	return check
-}
-
-func (c *Checker) sharedDaemonOwnerCheck(ctx context.Context) Check {
-	if !usesStableSharedDaemonOwner(c.cfg.AppServer) {
-		return Check{}
-	}
-	status, err := appserver.InspectSharedDaemonOwner(ctx)
-	if err != nil {
-		return sharedDaemonOwnerInspectionFailureCheck(err)
-	}
-	if !status.Supported {
-		return Check{}
-	}
-	check := Check{
-		Name: "codex-daemon-owner",
-		Fix:  "在 Mimi Remote Mac 中关闭后重新开启共享；若提示需要迁移，请保存任务后点击“应用待处理设置”并确认",
-	}
-	switch {
-	case !status.Installed:
-		check.Message = "共享 Codex daemon 缺少稳定 LaunchAgent owner"
-	case !status.Secure:
-		check.Message = "共享 Codex daemon LaunchAgent 权限过宽，可能暴露运行环境"
-	case !status.Loaded:
-		check.Message = "共享 Codex daemon LaunchAgent 已安装但未加载"
-	case status.MigrationRequired:
-		check.Message = "共享 Codex daemon 的稳定 owner 迁移尚未完成，等待显式应用"
-	default:
-		check.OK = true
-		check.Message = "共享 Codex daemon 的稳定 LaunchAgent owner 已安装；TCC 归因仍需签名 App 运行态验收"
-		check.Fix = ""
-	}
-	return check
-}
-
-// 共享 owner 检查的底层错误可能包含 LaunchAgent 或 socket 绝对路径；Doctor
-// 结果会进入状态接口和远端 UI，因此只返回固定的可执行提示，不传播原始错误。
-func sharedDaemonOwnerInspectionFailureCheck(_ error) Check {
-	return Check{
-		Name:    "codex-daemon-owner",
-		OK:      false,
-		Message: "无法检查共享 Codex daemon 的 launchd owner",
-		Fix:     "确认共享 Codex daemon 已启用，并检查当前用户对 LaunchAgent 和进程信息的读取权限后重试",
-	}
-}
-
-func (c *Checker) sharedDaemonRuntimeCheck(ctx context.Context) Check {
-	if !strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
-		return Check{}
-	}
-	inspect := c.sharedDaemonDiagnostics
-	if inspect == nil {
-		inspect = appserver.InspectSharedDaemonDiagnostics
-	}
-	status, err := inspect(ctx, appserver.LocalDaemonOptions{
-		CodexBin:    c.cfg.Codex.Bin,
-		Env:         c.cfg.Codex.Env,
-		StableOwner: usesStableSharedDaemonOwner(c.cfg.AppServer),
-	})
-	return sharedDaemonRuntimeDiagnosticCheck(status, err)
-}
-
-// shared_fallback 只记录 Mimi 曾保存过的旧 transport，不能单独证明当前
-// Unix listener 仍由 Mimi 托管。managed=false 明确表示生命周期归外部 owner；
-// 此时 Doctor 只能做外部 listener 的只读诊断，不能检查 Mimi LaunchAgent。
-func usesStableSharedDaemonOwner(cfg config.AppServerConfig) bool {
-	return strings.EqualFold(strings.TrimSpace(cfg.Transport), "unix") &&
-		cfg.Managed &&
-		cfg.SharedFallback != nil
-}
-
-func sharedDaemonRuntimeDiagnosticCheck(
-	status appserver.SharedDaemonDiagnostics,
-	err error,
-) Check {
-	check := Check{
-		Name: "codex-daemon-resources",
-		Fix:  "先保存所有活跃任务；若资源继续上涨，使用受控迁移恢复 owner，不要直接强杀进程",
-	}
-	if err != nil {
-		check.Level = "warning"
-		check.Message = "无法读取共享 Codex daemon 的 FD / 子进程水位"
-		// 底层 Unix dial 错误可能包含 CODEX_HOME/socket 绝对路径；Doctor
-		// 只返回固定操作建议，不把原始错误扩大到状态输出或日志。
-		check.Fix = "确认共享 Codex daemon 正在运行，并允许 Mimi 读取当前用户的进程信息"
-		return check
-	}
-	if !status.Supported {
-		return Check{}
-	}
-	summary := sharedDaemonResourceSummary(status)
-	switch status.OwnerState {
-	case appserver.SharedDaemonOwnerStateExternal:
-		check.OK = true
-		check.Message = "共享 daemon 由外部 owner 管理；" + summary + "；FD soft limit 由外部 owner 负责"
-		check.Fix = ""
-	case appserver.SharedDaemonOwnerStateStable:
-		switch status.ResourceState {
-		case appserver.SharedDaemonResourceStateHealthy:
-			check.OK = true
-			check.Message = "共享 daemon 资源水位正常；" + summary
-			check.Fix = ""
-		case appserver.SharedDaemonResourceStateDegraded:
-			check.Level = "warning"
-			check.Message = "共享 daemon FD 水位偏高；" + summary
-		case appserver.SharedDaemonResourceStateCritical:
-			check.Message = "共享 daemon FD 接近耗尽；" + summary
-		default:
-			// macOS 没有可靠的非特权接口读取另一个进程的 RLIMIT_NOFILE。
-			// 已验证稳定 owner 时保留事实提示，但不制造一条用户永远无法消除的 WARN；
-			// 真正的迁移、owner 不匹配和已取证的高水位仍由其他分支告警。
-			check.OK = true
-			check.Message = "共享 daemon owner 正常；FD soft limit 尚不可独立确认；" + summary
-			check.Fix = ""
-		}
-	case appserver.SharedDaemonOwnerStateMigrationPending:
-		check.Message = "共享 daemon 正在等待显式迁移，新 FD 上限尚未作用于当前 listener；" + summary
-		check.Fix = "保存任务后，在 Mimi Remote Mac 中点击“应用待处理设置”并确认"
-	case appserver.SharedDaemonOwnerStateUnavailable:
-		check.Message = "共享 daemon listener 可用，但稳定 LaunchAgent owner 不可用；" + summary
-		check.Fix = "在 Mimi Remote Mac 中关闭后重新开启共享，恢复稳定 owner"
-	case appserver.SharedDaemonOwnerStateClaimedUnverified:
-		check.Level = "warning"
-		check.Message = "共享 daemon 的稳定 owner 已提交，但官方 lifecycle 未返回 listener PID；" + summary
-		check.Fix = "继续观察真实 FD 与子进程水位；不要仅凭 owner 配置推测当前进程上限"
-	case appserver.SharedDaemonOwnerStateUnmanagedListener:
-		check.Message = "共享 daemon listener 尚未由官方 pid daemon 管理；" + summary
-		check.Fix = "保存任务并退出 Codex Desktop 后，在 Mimi Remote Mac 中应用待处理设置"
-	case appserver.SharedDaemonOwnerStateListenerMismatch:
-		check.Message = "共享 daemon lifecycle PID 与真实 socket listener 不一致；" + summary
-		check.Fix = "不要直接终止进程；保存任务后使用显式受控迁移重新对账 owner"
-	default:
-		check.Level = "warning"
-		check.Message = "共享 daemon owner 状态暂时无法确认；" + summary
-	}
-	return check
-}
-
-func sharedDaemonResourceSummary(status appserver.SharedDaemonDiagnostics) string {
-	fd := fmt.Sprintf("打开 FD %d", status.OpenFileDescriptors)
-	if status.EffectiveFDSoftLimit != nil {
-		fd = fmt.Sprintf("打开 FD %d/%d", status.OpenFileDescriptors, *status.EffectiveFDSoftLimit)
-		if status.FDUsagePercent != nil {
-			fd += fmt.Sprintf("（%.1f%%）", *status.FDUsagePercent)
-		}
-	} else if status.OwnerTargetFDSoftLimit != nil {
-		fd += fmt.Sprintf("；owner 目标上限 %d（当前进程未验证）", *status.OwnerTargetFDSoftLimit)
-	}
-	return fmt.Sprintf(
-		"listener PID %d，%s，直接子进程 %d",
-		status.ListenerPID,
-		fd,
-		status.DirectChildProcesses,
-	)
 }
 
 func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {

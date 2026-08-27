@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -115,6 +114,7 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 	"execCommandApproval":                   {},
 	"item/commandExecution/requestApproval": {},
 	"item/fileChange/requestApproval":       {},
+	"item/fileRead/requestApproval":         {},
 	"item/permissions/requestApproval":      {},
 	"item/tool/requestUserInput":            {},
 	"mcpServer/elicitation/request":         {},
@@ -244,19 +244,6 @@ type appServerGatewayPolicy struct {
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
 	globalListCursors     map[string]string
-	// 旧版 iOS 不会在 auto-handoff 后清理本地 resume binding。只有显式声明
-	// 私有 capability 的新版客户端才能启用 turn/completed 自动交接。
-	threadHandoffCapable bool
-	// archive 广播与 closed/notLoaded 在不同 upstream 连接上的到达次序没有保证。
-	// 记录已确认由 coordinator 发起的 archive，直到对应 unarchive 到达。
-	threadHandoffLifecycle map[string]time.Time
-	// 已向 upstream 转发 resume/turn-start 的 thread 可能已让独立 app-server
-	// 取得 writer。连接异常结束时需要补排 handoff，不能只依赖终态通知。
-	threadWriterCandidates map[string]struct{}
-	// 请求收到明确错误时不能把其他 writer 当成 Mimi 持有；只有成功响应才
-	// 提升为 confirmed，断链时仍把无响应请求作为不确定候选处理。
-	pendingThreadWriters  map[string]appServerGatewayPendingThreadWriter
-	threadWriterForwardMu sync.Mutex
 	beforePendingRemember func()
 	beforeManagedComplete func()
 }
@@ -271,11 +258,6 @@ type appServerGatewayPendingThreadRequest struct {
 	threadID            string
 	managedWorktreePath string
 	createdAt           time.Time
-}
-
-type appServerGatewayPendingThreadWriter struct {
-	threadID  string
-	forwarded bool
 }
 
 type appServerGatewayPendingClientRequest struct {
@@ -622,20 +604,6 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	dialStart := time.Now()
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
 	dialDuration := time.Since(dialStart)
-	if err != nil && r.recoverSharedCodexDaemon != nil {
-		// 只在一次真实客户端连接失败后恢复，避免 readyz 轮询不停拉进程。恢复仍
-		// 走 appserver.EnsureLocalDaemon -> launchd owner，绝不由 HTTP handler spawn。
-		recoverCtx, cancel := context.WithTimeout(req.Context(), 35*time.Second)
-		recoverErr := r.recoverSharedCodexDaemon(recoverCtx)
-		cancel()
-		if recoverErr == nil {
-			dialStart = time.Now()
-			upstream, _, err = dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
-			dialDuration = time.Since(dialStart)
-		} else {
-			log.Printf("shared Codex daemon recovery failed: %v", recoverErr)
-		}
-	}
 	if err != nil {
 		r.monitor.recordGatewayDialFailure(dialDuration, err)
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")
@@ -683,12 +651,6 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		if _, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); err != nil {
-			return "", err
-		}
-		return appserver.LocalDaemonHandshakeURL(), nil
-	}
 	raw := strings.TrimSpace(r.cfg.AppServer.Listen)
 	if raw == "" {
 		return "", fmt.Errorf("app_server.listen 未配置，无法启用 app-server raw gateway")
@@ -734,10 +696,6 @@ func isLoopbackGatewayHost(host string) bool {
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		// Unix socket 由 0700 目录 + 0600 socket 约束同一用户，不使用 WebSocket Bearer。
-		return nil, nil
-	}
 	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
 	if tokenFile == "" {
 		if r.cfg.AppServer.Managed {
@@ -760,12 +718,5 @@ func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 }
 
 func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		socketPath, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env)
-		if err != nil {
-			return websocket.Dialer{}, err
-		}
-		return appserver.LocalDaemonWebSocketDialer(socketPath, timeout), nil
-	}
 	return websocket.Dialer{HandshakeTimeout: timeout}, nil
 }

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,9 +39,6 @@ var managedServicePlatform = runtime.GOOS
 const (
 	serveHTTPDrainTimeout       = 5 * time.Second
 	serveRuntimeShutdownTimeout = 3 * time.Second
-	// 停止残留共享 daemon 要走 stop + 退出确认窗口 + bootout 复核；预算取得比
-	// 单步超时宽，但仍要保证启动不会被一个卡住的 launchctl 长期挂起。
-	sharedDaemonReconcileTimeout = 30 * time.Second
 )
 
 func main() {
@@ -111,7 +107,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server 地址；默认使用独立 loopback WS，共享 daemon 需显式启用")
+	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server 地址；默认使用独立 loopback WS")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
@@ -1029,111 +1025,21 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
-	var sharedDaemonStatus appserver.LocalDaemonStatus
-	appServerTransport := strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport))
-	mimiOwnedSharedDaemon := appServerTransport == "unix" &&
-		cfg.AppServer.Managed && cfg.AppServer.SharedFallback != nil
-	configPath := strings.TrimSpace(checker.ConfigPath())
-	if mimiOwnedSharedDaemon {
-		if !appserver.SupportsStableSharedDaemonOwner() {
-			return fmt.Errorf("Codex 完整共享 daemon owner 当前仅支持 macOS")
-		}
-		if !config.IsPlatformDefaultPath(configPath) {
-			return fmt.Errorf("Mimi 管理的共享 Codex daemon 只能由平台默认配置启动：%s", config.PlatformDefaultPath())
-		}
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ws") {
+		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
 	}
-	if !mimiOwnedSharedDaemon {
-		// 用户全局 LaunchAgent 只归平台默认配置所有。前台运行自定义 profile
-		// 时不得清理默认服务的 owner。
-		if config.IsPlatformDefaultPath(configPath) {
-			// 磁盘 owner 清理之前先收掉仍在运行的 Mimi 共享 daemon：它会一直
-			// 持有此前加载过的每个 thread 的 writer lock，独立 app-server 再
-			// resume 这些会话只会拿到 -32600 already has an active writer。
-			if appServerTransport == "ws" {
-				if err := reconcileRunningSharedDaemonForIndependentMode(cfg, configPath, checker); err != nil {
-					return err
-				}
-			}
-			artifactsPresent, artifactsErr := appserver.SharedDaemonOwnerArtifactsPresent()
-			if artifactsErr != nil {
-				log.Printf("agentd independent mode could not inspect leftover shared daemon owner: %v", artifactsErr)
-				setSharedDaemonCleanupWarning(checker)
-			} else if artifactsPresent {
-				if configPath == "" {
-					log.Printf("agentd independent mode cannot clean leftover shared daemon owner without a reviewable config path")
-					setSharedDaemonCleanupWarning(checker)
-				} else {
-					expectedBin := cfg.Codex.Bin
-					expectedEnv := maps.Clone(cfg.Codex.Env)
-					var ownershipErr error
-					cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 15*time.Second)
-					cleanupErr := appserver.ReconcileDisabledSharedDaemonOwner(cleanupCtx, func() error {
-						ownershipErr = config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
-						return ownershipErr
-					})
-					cancelCleanup()
-					if ownershipErr != nil {
-						// 配置已切回共享或 Codex 身份发生变化时，旧 WS 进程继续启动会与
-						// 新 owner 竞争。此类所有权错误仍必须阻断，不能降级为普通清理告警。
-						return fmt.Errorf("复核残留共享 daemon owner 清理权失败：%w", ownershipErr)
-					}
-					if cleanupErr != nil {
-						log.Printf("agentd independent mode could not clean leftover shared daemon owner: %v", cleanupErr)
-						setSharedDaemonCleanupWarning(checker)
-					}
-				}
-			}
-		}
+	if strings.TrimSpace(cfg.AppServer.Listen) == "" {
+		return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
 	}
-	switch appServerTransport {
-	case "unix":
-		if cfg.AppServer.Managed {
-			// launchd 启动和官方 daemon 初始化都是异步的；外层覆盖最慢的冷启动。
-			ensureCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			mimiOwned := cfg.AppServer.SharedFallback != nil
-			options := appserver.LocalDaemonOptions{
-				CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env, StableOwner: mimiOwned, AttachOnly: !mimiOwned,
-			}
-			if mimiOwned {
-				if configPath == "" {
-					cancel()
-					return fmt.Errorf("共享 Codex daemon 缺少可复核的配置路径")
-				}
-				expectedBin := cfg.Codex.Bin
-				expectedEnv := maps.Clone(cfg.Codex.Env)
-				options.ValidateStableOwner = func() error {
-					return config.ValidateSharedDaemonRecoveryOwnership(configPath, expectedBin, expectedEnv)
-				}
-			}
-			status, ensureErr := appserver.EnsureLocalDaemon(ensureCtx, options)
-			cancel()
-			if ensureErr != nil {
-				return fmt.Errorf("准备共享 Codex local daemon 失败：%w", ensureErr)
-			}
-			if mimiOwned && !status.LifecycleValidated {
-				return fmt.Errorf("共享 Codex local daemon 未完成稳定 owner 生命周期校验")
-			}
-			sharedDaemonStatus = status
-			log.Printf("agentd Codex local daemon ready started=%t mimi_owned=%t", status.Started, mimiOwned)
-		} else {
-			log.Printf("agentd external Codex local daemon upstream configured")
+	if cfg.AppServer.Managed {
+		process, err := startManagedAppServerWebSocket(cfg)
+		if err != nil {
+			return err
 		}
-	case "ws":
-		if strings.TrimSpace(cfg.AppServer.Listen) == "" {
-			return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
-		}
-		if cfg.AppServer.Managed {
-			process, err := startManagedIndependentAppServerWebSocket(cfg, configPath)
-			if err != nil {
-				return err
-			}
-			appServerWSProcess = process
-			log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
-		} else {
-			log.Printf("agentd app-server ws upstream=%s", cfg.AppServer.Listen)
-		}
-	default:
-		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=unix 或 ws")
+		appServerWSProcess = process
+		log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
+	} else {
+		log.Printf("agentd app-server ws upstream=%s", cfg.AppServer.Listen)
 	}
 	manager := session.NewManager(session.Options{
 		CodexBin:     cfg.Codex.Bin,
@@ -1153,7 +1059,6 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		return fmt.Errorf("解析 agentd 私有状态目录失败：%w", err)
 	}
 	gatewayTurnClaimStorePath := filepath.Join(configDir, "state", "gateway-turn-claims.json")
-	threadHandoffRecoveryStorePath := filepath.Join(configDir, "state", "thread-handoff-recovery.json")
 	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg,
 		registry,
@@ -1163,16 +1068,13 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		nil,
 		httpapi.RouterOptions{
-			ConfigPath:                     checker.ConfigPath(),
-			GatewayTurnClaimStorePath:      gatewayTurnClaimStorePath,
-			ThreadHandoffRecoveryStorePath: threadHandoffRecoveryStorePath,
+			ConfigPath:                checker.ConfigPath(),
+			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()
 	if appServerWSProcess != nil {
 		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
-	} else if !sharedDaemonStatus.StartedAt.IsZero() {
-		apiRouter.SetCodexRuntimeStartedAt(sharedDaemonStatus.StartedAt)
 	}
 	server := &http.Server{
 		Addr:              cfg.Listen,
@@ -1332,64 +1234,6 @@ func shutdownServeResources(manager *session.Manager, appServerWSProcess *appser
 		return err
 	}
 	return nil
-}
-
-// reconcileRunningSharedDaemonForIndependentMode 在独立 WS 模式启动时收掉仍在
-// 运行的 Mimi 共享 daemon。普通探测/清理失败不阻断控制面，只写入 readyz；
-// 但磁盘已切回 shared 或 Codex 身份变化时必须阻断旧 WS 进程继续启动。
-func reconcileRunningSharedDaemonForIndependentMode(
-	cfg config.Config,
-	configPath string,
-	checker *doctor.Checker,
-) error {
-	if strings.TrimSpace(configPath) == "" {
-		return fmt.Errorf("复核独立模式共享 daemon 清理权缺少配置路径")
-	}
-	expectedBin := cfg.Codex.Bin
-	expectedEnv := maps.Clone(cfg.Codex.Env)
-	var ownershipErr error
-	ctx, cancel := context.WithTimeout(context.Background(), sharedDaemonReconcileTimeout)
-	defer cancel()
-	outcome, err := appserver.ReconcileRunningSharedDaemonForIndependentMode(ctx, appserver.LocalDaemonOptions{
-		CodexBin:    cfg.Codex.Bin,
-		Env:         cfg.Codex.Env,
-		StableOwner: true,
-	}, func() error {
-		ownershipErr = config.ValidateSharedDaemonDisabledOwnership(configPath, expectedBin, expectedEnv)
-		return ownershipErr
-	})
-	if ownershipErr != nil {
-		return fmt.Errorf("复核独立模式共享 daemon 清理权失败：%w", ownershipErr)
-	}
-	if err != nil {
-		log.Printf("agentd independent mode shared daemon reconcile failed: %v", err)
-		checker.SetSharedDaemonReconcile(
-			"关闭共享后 Mimi 的 Codex 共享 daemon 可能仍在运行，历史会话可能无法发送",
-			"完全退出 Codex Desktop 后重启 agentd；或在 Mac 的“实验功能”中重新开启并关闭一次共享",
-		)
-		return nil
-	}
-	switch outcome {
-	case appserver.SharedDaemonReconcileStopped:
-		log.Printf("agentd independent mode stopped leftover shared Codex daemon")
-	case appserver.SharedDaemonReconcilePendingDesktopExit:
-		// 这是用户最容易踩到的状态：共享已关掉，但旧 daemon 还攥着 writer lock。
-		log.Printf("agentd independent mode leftover shared Codex daemon still running; Codex Desktop must exit first")
-		checker.SetSharedDaemonReconcile(
-			"Mimi 的 Codex 共享 daemon 仍在运行并占用会话 writer；独立模式下历史会话无法发送",
-			"完全退出 Codex Desktop 后重启 agentd，Mimi 会自动停止该 daemon",
-		)
-	case appserver.SharedDaemonReconcileForeign:
-		log.Printf("agentd independent mode left external Codex Unix backend untouched")
-	}
-	return nil
-}
-
-func setSharedDaemonCleanupWarning(checker *doctor.Checker) {
-	checker.SetSharedDaemonReconcile(
-		"关闭共享后 Mimi 的 Codex 共享 daemon owner 未完全清理，历史会话可能无法发送",
-		"完全退出 Codex Desktop 后重启 agentd；或在 Mac 的“实验功能”中重新开启并关闭一次共享",
-	)
 }
 
 func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSocketProcess, error) {

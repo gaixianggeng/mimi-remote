@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -85,4 +86,21 @@ func codexVersionAtLeast(version string, minimum string) bool {
 		return true
 	}
 	return rightPre || !leftPre
+}
+
+func daemonVersionParts(version string) ([3]int, bool, bool) {
+	var result [3]int
+	base, suffix, _ := strings.Cut(strings.TrimSpace(version), "-")
+	parts := strings.Split(base, ".")
+	if len(parts) != len(result) {
+		return result, suffix != "", false
+	}
+	for index, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return result, suffix != "", false
+		}
+		result[index] = value
+	}
+	return result, suffix != "", true
 }

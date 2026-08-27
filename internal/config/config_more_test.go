@@ -1,11 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -79,7 +79,7 @@ func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
 	clearAgentdEnv(t)
 
 	// 旧配置（pty + stdio，且没有 listen）不能再让 Load/Validate 直接失败，
-	// 必须平滑迁移到兼容的 legacy WS transport；共享 daemon 只能显式启用。
+	// 必须平滑迁移到独立 WebSocket transport。
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("旧 stdio 配置应平滑迁移而不是报错：%v", err)
@@ -92,33 +92,6 @@ func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
 	}
 	if cfg.AppServer.Listen != DefaultAppServerWebSocketListen() {
 		t.Fatalf("迁移后缺失的 listen 应补 legacy ws upstream，实际 %q", cfg.AppServer.Listen)
-	}
-}
-
-func TestLoadFillsUnixListenWhenConfigOmitsIt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 不支持 Unix daemon")
-	}
-	projectDir := t.TempDir()
-	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	raw, err := json.Marshal(map[string]any{
-		"auth":       AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		"app_server": map[string]any{"transport": "unix", "managed": true},
-		"projects":   []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	clearAgentdEnv(t)
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatalf("省略 listen 的 unix 配置应补官方默认值：%v", err)
-	}
-	if cfg.AppServer.Listen != "unix://" {
-		t.Fatalf("unix 配置不应继承 WS 默认 listen：%q", cfg.AppServer.Listen)
 	}
 }
 
@@ -321,47 +294,6 @@ func TestValidateRejectsUnsafeAppServerListen(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsUnrecoverableSharedFallback(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 不支持 shared Unix transport")
-	}
-	cfg := defaults()
-	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
-	cfg.Runtime.Type = "codex_app_server"
-	cfg.AppServer.Transport = "unix"
-	cfg.AppServer.Listen = "unix://"
-	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
-
-	cfg.AppServer.SharedFallback = &AppServerFallbackConfig{
-		Transport: "unix",
-		Managed:   true,
-		Listen:    "unix://",
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("共享 fallback 必须是可恢复的 WS transport")
-	}
-
-	cfg.AppServer.SharedFallback = &AppServerFallbackConfig{
-		Transport: "ws",
-		Managed:   true,
-		Listen:    "ws://0.0.0.0:4222",
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("共享 fallback 的 WS endpoint 必须是 loopback")
-	}
-
-	cfg.AppServer.SharedFallback.Listen = "ws://127.0.0.1:4222"
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("合法 shared fallback 应可验证并用于回滚：%v", err)
-	}
-
-	cfg.AppServer.Transport = "ws"
-	cfg.AppServer.Listen = "ws://127.0.0.1:4222"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("恢复为 WS 后不能遗留 shared_fallback 账本")
-	}
-}
-
 func TestValidateAcceptsSafeActions(t *testing.T) {
 	cfg := defaults()
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
@@ -409,6 +341,42 @@ func TestValidateRejectsUnsafeActions(t *testing.T) {
 				t.Fatalf("不安全 action 应被拒绝：%+v", cfg.Actions)
 			}
 		})
+	}
+}
+
+func TestLoadRunsStableWSButMarksLegacySharingForCleanup(t *testing.T) {
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth": AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		"app_server": map[string]any{
+			"transport": "unix", "managed": false, "listen": "/tmp/old.sock",
+			"shared_fallback": map[string]any{
+				"transport": "ws", "managed": true, "listen": "ws://127.0.0.1:4555", "custom": "preserved-on-disk",
+			},
+		},
+		"projects": []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearAgentdEnv(t)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppServer.Transport != "ws" || cfg.AppServer.Listen != "ws://127.0.0.1:4555" || !cfg.AppServer.Managed {
+		t.Fatalf("legacy config must use its independent WS fallback in memory: %+v", cfg.AppServer)
+	}
+	if !cfg.AppServer.LegacyCleanupRequired {
+		t.Fatal("legacy sharing must remain visible to runtime status until one-time cleanup")
+	}
+	stored, err := os.ReadFile(cfgPath)
+	if err != nil || !bytes.Contains(stored, []byte(`"shared_fallback"`)) {
+		t.Fatalf("read-only load must not mutate the legacy file: err=%v raw=%s", err, stored)
 	}
 }
 

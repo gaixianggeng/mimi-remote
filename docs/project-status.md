@@ -18,8 +18,8 @@ Mimi Remote 的目标是让 iPhone / iPad 安全连接用户自己的 Mac，在�
 iPhone / iPad SwiftUI App
   -> Mac Tailscale 或同一局域网 Endpoint:8787
   -> agentd Bearer 鉴权、工作区授权和 JSON-RPC 安全校验
-  -> 显式启用时：官方 Codex local daemon Unix socket（与 Codex Desktop 共用）
-  -> 默认/回滚时：managed loopback codex app-server WebSocket:4222
+  -> 默认：managed loopback codex app-server WebSocket:4222
+  -> macOS 实验叠加层：已验证 Codex Desktop IPC（Desktop-owned thread 才路由回 Desktop）
   -> 本机 Codex 凭证、线程状态和项目目录
 ```
 
@@ -28,8 +28,8 @@ iPhone / iPad SwiftUI App
 ### 已确定的边界
 
 - `agentd` 是薄网关，不复制一套 Codex 业务协议。
-- macOS 可显式启用官方 local daemon，让 Desktop 与移动端共用同一个 thread writer；daemon 由 Mimi 安装的用户 LaunchAgent 直接调用官方 CLI 创建，agentd 不再成为它的直接启动者。既有 daemon 只记录待迁移状态，必须由用户确认才会中断并切换 owner；外部 Unix backend 永远只 attach、不接管。Desktop 只有打开但没有运行 turn 时，移动端可以在原 thread 继续，不创建 fork。启用失败时不改配置，关闭时恢复原 WS 配置并卸载 Mimi 的 owner job。
-- 共享 daemon 不等于并发写：Desktop 正在运行的 turn 仍按 external activity 只读；共享模式观测失败时也会 fail-closed 拒绝写入。客户端不能靠 `thread/unsubscribe`、archive/unarchive 或猜测 idle 状态抢占另一个进程。
+- macOS 实验开关只启用 Desktop IPC overlay，不创建、签名、恢复或诊断共享 daemon。Mimi 的独立 App Server 始终保留为稳定主链路；Desktop-owned thread 的读写才通过已验证的 owner/follower IPC 路由，Mimi-owned thread 继续由 App Server 执行。
+- IPC 不在官方 App Server 公开契约内，因此首版只放行 Codex Desktop `26.820.60940 (7119)`。未知 build、socket 不可用、协议错误或所有权不明确时保持只读/明确失败，不能回退为本地重复写入。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
 - Codex 默认保持网络关闭；只有用户显式选择 `danger-full-access` 或 `:danger-full-access` 时允许 `approvalPolicy=never`，其它模式继续由 Gateway 收敛审批策略。

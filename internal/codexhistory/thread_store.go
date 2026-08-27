@@ -23,8 +23,8 @@ func defaultThreadStore() ThreadStore {
 	return NewThreadStore(filepath.Join(homeDir(), ".codex", "state_5.sqlite"))
 }
 
-// ExternalActivityDatabasePath 与 Codex app-server/desktop 使用同一套
-// CODEX_HOME 优先级。共享 daemon 可以由配置显式覆盖 CODEX_HOME；这里若仍固定
+// ExternalActivityDatabasePath 与 Codex app-server/Desktop 使用同一套
+// CODEX_HOME 优先级。Mimi 可以由配置显式覆盖 CODEX_HOME；这里若仍固定
 // 读取 ~/.codex，会漏掉 Desktop 的 active turn，移动端就可能在对方执行中继续写入。
 func ExternalActivityDatabasePath(extraEnv map[string]string) string {
 	codexHome := extraEnv["CODEX_HOME"]

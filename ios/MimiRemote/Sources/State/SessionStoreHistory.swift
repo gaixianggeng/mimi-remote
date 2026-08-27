@@ -335,7 +335,7 @@ extension SessionStore {
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
                 if Self.isCodexActiveWriterConflict(error.localizedDescription) {
-                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_shared_service"))
+                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_desktop_sync"))
                 } else {
                     setErrorMessage(error.localizedDescription)
                 }
@@ -2239,8 +2239,8 @@ extension SessionStore {
                 disconnectWebSocket()
             }
         } else if autoAttach {
-            // 非运行会话回前台仍恢复页面连接。共享模式会 resume 纠正误判；独立模式只读
-            // 持久化历史，不提前取得 writer。期间完成的输出由静默补拉兜底。
+            // 非运行会话回前台仍恢复页面连接。连接只读取持久化历史；发送时再由 gateway
+            // 按当前 owner 建立写入路径，期间完成的输出由静默补拉兜底。
             connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
             scheduleQuietHistoryRefresh(for: session)
         } else if connectedSessionID != nil {

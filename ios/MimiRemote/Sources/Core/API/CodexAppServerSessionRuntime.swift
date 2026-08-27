@@ -176,9 +176,6 @@ actor CodexAppServerSessionRuntime {
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
     let turnInterruptRecoveryDelaysNanoseconds: [UInt64]
-    // archive→unarchive 释放 resident writer 期间，app-server 会明确拒绝尚未转发的
-    // thread/resume/turn/start。只对这一种结构化拒绝做短暂重试，避免把普通协议错误吞掉。
-    let threadHandoffRetryDelaysNanoseconds: [UInt64]
     let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
@@ -200,7 +197,6 @@ actor CodexAppServerSessionRuntime {
         longRunningRequestTimeout: TimeInterval = 60,
         gatewayDefaults: UserDefaults = .standard,
         turnInterruptRecoveryDelaysNanoseconds: [UInt64] = [400_000_000, 1_000_000_000, 2_000_000_000],
-        threadHandoffRetryDelaysNanoseconds: [UInt64] = Array(repeating: 250_000_000, count: 9),
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -211,7 +207,6 @@ actor CodexAppServerSessionRuntime {
         self.requestTimeout = requestTimeout
         self.longRunningRequestTimeout = longRunningRequestTimeout
         self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
-        self.threadHandoffRetryDelaysNanoseconds = threadHandoffRetryDelaysNanoseconds
         self.gatewayDefaults = gatewayDefaults
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
@@ -841,7 +836,7 @@ actor CodexAppServerSessionRuntime {
         threadsResumedOnConnection.remove(threadID)
         guard hadResumeBinding else {
             // 独立模式查看空闲历史时从未订阅上游。不要发送多余 unsubscribe，
-            // 更不能让随后的 writer handoff 把一次纯文件读取升级成 archive/unarchive。
+            // 也不要让一次纯文件读取触发额外的写入路径。
             return .notSubscribed
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
@@ -875,22 +870,6 @@ actor CodexAppServerSessionRuntime {
             )
         }
         return result?.objectValue?["status"]?.stringValue.flatMap(CodexAppServerThreadUnsubscribeStatus.init(rawValue:))
-    }
-
-    /// 清理 iOS 侧订阅后，请 agentd 在 thread 空闲时释放 resident app-server 的 writer lock。
-    /// `thread/unsubscribe` 只取消订阅、清除 lease/resume 状态，并不会释放 writer；两步必须按此顺序执行。
-    @discardableResult
-    func releaseThreadWriterWhenIdle(threadID: SessionID) async throws -> ThreadHandoffResponse {
-        let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
-            || threadResumeTasksBySessionID[threadID] != nil
-        // unsubscribe 失败时仍继续发送 handoff：后台/切会话路径是 best-effort，且
-        // agentd 会自行等待 active turn 变 idle，不应因一次旧连接 RPC 失败阻断释放。
-        _ = try? await unsubscribeThread(threadID: threadID)
-        guard hadResumeBinding else {
-            return ThreadHandoffResponse(threadID: threadID, status: .alreadyReleased)
-        }
-        return try await AgentAPIClient(endpoint: endpoint, token: token)
-            .releaseThreadWriterWhenIdle(threadID: threadID)
     }
 
     @discardableResult
@@ -1778,8 +1757,9 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
         }
-        // 共享 daemon 或运行中 thread 需要 resume 建立 live listener；thread/read/list 只能做
-        // hydration。独立模式的 idle 历史已在上方延迟到首次发送，不会走到这里。
+        // Desktop IPC overlay-owned 或运行中 thread 需要 resume 建立 live listener；
+        // thread/read/list 只能做 hydration。独立模式的 idle 历史已在上方延迟到首次发送，
+        // 不会走到这里。
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
@@ -1810,12 +1790,11 @@ actor CodexAppServerSessionRuntime {
         guard runtimeProvider == "codex" else {
             return true
         }
-        let transport = config.runtime.transport
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        // Unix 表示 Codex Desktop 与 Mimi 共用同一个 daemon；打开即绑定不会产生
-        // 跨进程 writer 冲突。独立 WS 只为运行中状态恢复绑定，空闲历史延迟到发送。
-        return transport == "unix" || session.isRunning
+        // agentd 统一通过独立 WebSocket gateway 暴露 App Server。空闲历史不提前取得
+        // writer；Desktop-owned 会话的 owner 判定与请求路由由 gateway 完成，发送时再建立
+        // 对应的事件监听。
+        _ = config
+        return session.isRunning
     }
 
     func replaceThreadSubscriptionLease(
@@ -1944,7 +1923,6 @@ actor CodexAppServerSessionRuntime {
         let result: CodexAppServerJSONValue?
         var responseObservation: CodexAppServerPendingTurnStartObservation?
         var didRetryAfterStaleInitialization = false
-        var threadHandoffRetryIndex = 0
         while true {
             try Task.checkCancellation()
             let connection = try await ensureConnection()
@@ -1954,8 +1932,7 @@ actor CodexAppServerSessionRuntime {
                     sessionID: sessionID,
                     cwd: context.cwd,
                     builder: builder,
-                    connection: connection,
-                    retryThreadHandoffInProgress: false
+                    connection: connection
                 )
                 try Task.checkCancellation()
                 if let activeTurnID = contextsBySessionID[sessionID]?.activeTurnID {
@@ -1986,18 +1963,6 @@ actor CodexAppServerSessionRuntime {
                         sessionID: sessionID,
                         attemptID: activeAttemptID
                     )
-                }
-                if isRetryableThreadHandoffInProgress(error),
-                   threadHandoffRetryDelaysNanoseconds.indices.contains(threadHandoffRetryIndex) {
-                    let delay = threadHandoffRetryDelaysNanoseconds[threadHandoffRetryIndex]
-                    threadHandoffRetryIndex += 1
-                    // 结构化拒绝说明旧 frame 没有被转发；清掉本地 resume 绑定后，下一轮
-                    // 会在同一条连接上发全新的 thread/resume，再发全新的 turn/start。
-                    threadsResumedOnConnection.remove(sessionID)
-                    try Task.checkCancellation()
-                    // Task.sleep 可被取消；取消后不会再创建下一轮 RPC。
-                    try await Task.sleep(nanoseconds: delay)
-                    continue
                 }
                 if !didRetryAfterStaleInitialization,
                    await recoverConnectionAfterStaleInitialization(connection, error: error) {
@@ -2180,8 +2145,7 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection,
-        retryThreadHandoffInProgress: Bool = true
+        connection: CodexAppServerConnection
     ) async throws {
         guard !threadsResumedOnConnection.contains(sessionID) else {
             return
@@ -2201,8 +2165,7 @@ actor CodexAppServerSessionRuntime {
                 sessionID: sessionID,
                 cwd: cwd,
                 builder: builder,
-                connection: connection,
-                retryThreadHandoffInProgress: retryThreadHandoffInProgress
+                connection: connection
             )
         }
         threadResumeTasksBySessionID[sessionID] = CodexAppServerThreadResumeTask(
@@ -2223,8 +2186,7 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection,
-        retryThreadHandoffInProgress: Bool = true
+        connection: CodexAppServerConnection
     ) async throws {
         var passiveResumeOptions = CodexAppServerTurnOptions.default
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
@@ -2238,18 +2200,7 @@ actor CodexAppServerSessionRuntime {
                 cwd: cwd,
                 options: scopedPassiveResumeOptions
             )
-            if retryThreadHandoffInProgress {
-                result = try await sendRetryingThreadHandoffInProgress(
-                    request,
-                    connection: connection,
-                    timeout: longRunningRequestTimeout
-                )
-            } else {
-                // startTurn 的外层循环统一管理 resume 与 turn/start 的 handoff 预算，
-                // 不能在这里再开启一套 9 次内部重试，避免最坏耗时叠加超过 60 秒。
-                try Task.checkCancellation()
-                result = try await connection.send(request, timeout: longRunningRequestTimeout)
-            }
+            result = try await connection.send(request, timeout: longRunningRequestTimeout)
         } catch {
             if shouldFallbackFromInitialTurnsPage(error) {
                 let request = try builder.threadResume(
@@ -2258,16 +2209,7 @@ actor CodexAppServerSessionRuntime {
                     options: scopedPassiveResumeOptions,
                     includeInitialTurnsPage: false
                 )
-                if retryThreadHandoffInProgress {
-                    result = try await sendRetryingThreadHandoffInProgress(
-                        request,
-                        connection: connection,
-                        timeout: longRunningRequestTimeout
-                    )
-                } else {
-                    try Task.checkCancellation()
-                    result = try await connection.send(request, timeout: longRunningRequestTimeout)
-                }
+                result = try await connection.send(request, timeout: longRunningRequestTimeout)
             } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
                 // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
@@ -2898,45 +2840,6 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    /// resume 在 archive→unarchive 的 writer handoff 窗口内不会转发新 RPC，而是返回
-    /// accepted=false/retryable=true/reason=thread_handoff_in_progress。此时连接仍然
-    /// 有效，必须复用原连接发送一个新的 resume 请求；turn/start 由外层流程负责重新
-    /// resume 后再发送，不能在这里裸重发。
-    func sendRetryingThreadHandoffInProgress(
-        _ request: CodexAppServerRequestSpec,
-        connection: CodexAppServerConnection,
-        timeout: TimeInterval?
-    ) async throws -> CodexAppServerJSONValue? {
-        var retryIndex = 0
-        while true {
-            try Task.checkCancellation()
-            do {
-                return try await connection.send(request, timeout: timeout)
-            } catch {
-                guard isRetryableThreadHandoffInProgress(error),
-                      threadHandoffRetryDelaysNanoseconds.indices.contains(retryIndex) else {
-                    // 保留原始 app-server error，调用方仍可读取 rejected/accepted/reason 等 data。
-                    throw error
-                }
-                let delay = threadHandoffRetryDelaysNanoseconds[retryIndex]
-                retryIndex += 1
-                // Task.sleep 会响应取消；取消不会再发出下一次 RPC。
-                try await Task.sleep(nanoseconds: delay)
-            }
-        }
-    }
-
-    func isRetryableThreadHandoffInProgress(_ error: Error) -> Bool {
-        guard case CodexAppServerConnectionError.appServer(let appError) = error,
-              let data = appError.data?.objectValue,
-              data["accepted"]?.boolValue == false,
-              data["retryable"]?.boolValue == true,
-              data["reason"]?.stringValue == "thread_handoff_in_progress" else {
-            return false
-        }
-        return true
-    }
-
     func recoverConnectionAfterStaleInitialization(_ stale: CodexAppServerConnection, error: Error) async -> Bool {
         guard isStaleInitializationError(error) else {
             return false
@@ -3070,14 +2973,10 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    /// agentd 的 idle auto-handoff 会在 turn/completed 后 archive→unarchive，并由 gateway
-    /// 将它自己的 thread/closed 或 notLoaded 改写为私有 lifecycle。无论公共状态通知还是
-    /// 私有控制帧，这里只清理当前连接的 resume binding，避免下一次 turn/start 短路旧绑定。
-    /// 这里只清理当前连接的 resume 绑定，不动 contexts/history，也不额外触发 handoff。
+    /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前
+    /// 连接的 resume binding，让下一次发送重新建立监听；不修改会话历史或所有权。
     func invalidateThreadResumeBinding(from notification: CodexAppServerNotification) {
-        let isPrivateThreadHandoffLifecycle = notification.method == "_mimi/threadHandoff/lifecycle"
-        guard isPrivateThreadHandoffLifecycle
-                || notification.method == "thread/closed"
+        guard notification.method == "thread/closed"
                 || notification.method == "thread/status/changed" else {
             return
         }
@@ -3085,7 +2984,7 @@ actor CodexAppServerSessionRuntime {
         guard let threadID = firstString(in: params, keys: ["threadId", "threadID", "thread_id"]) else {
             return
         }
-        if !isPrivateThreadHandoffLifecycle, notification.method == "thread/status/changed" {
+        if notification.method == "thread/status/changed" {
             let statusType = params["status"]?.objectValue?["type"]?.stringValue
                 ?? params["status"]?.stringValue
             guard statusType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "notloaded" else {
@@ -3093,8 +2992,6 @@ actor CodexAppServerSessionRuntime {
             }
         }
         threadsResumedOnConnection.remove(threadID)
-        // 自动 handoff 可能与一次正在等待 ACK 的 resume 交错。这里只移除 marker，不能
-        // 取消 pending task：该任务负责接住结构化拒绝并按有界策略发出新的 resume。
     }
 
     func handle(_ notification: CodexAppServerNotification) {
@@ -3115,13 +3012,6 @@ actor CodexAppServerSessionRuntime {
                 runtimeProvider: runtimeProvider,
                 defaults: gatewayDefaults
             )
-            return
-        }
-        // handoff coordinator 产生的生命周期通知是 gateway 私有控制帧：它只代表当前
-        // 连接上的 thread binding 已失效，不能按普通 thread/closed 走 terminal barrier、
-        // pending interaction 清理或 projector，否则会把仍可继续发送的会话误标为 closed。
-        if notification.method == "_mimi/threadHandoff/lifecycle" {
-            invalidateThreadResumeBinding(from: notification)
             return
         }
         updateTerminalInteractionBarrier(from: notification)

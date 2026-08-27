@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/desktopipc"
 	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
@@ -295,35 +295,18 @@ func (r *Router) storeClaudeRuntimeQuota(limits *runtimeRateLimits) {
 // runtimeAccountStatus 只包含菜单栏需要的脱敏状态。账号邮箱、Token、Keychain
 // 内容和上游原始错误都不能进入这个结构，避免 status CLI 或日志扩大凭据暴露面。
 type runtimeAccountStatus struct {
-	ID                    string                     `json:"id"`
-	Title                 string                     `json:"title"`
-	Enabled               bool                       `json:"enabled"`
-	State                 runtimeConnectionState     `json:"state"`
-	Transport             string                     `json:"transport,omitempty"`
-	Shared                bool                       `json:"shared,omitempty"`
-	DaemonRestartRequired *bool                      `json:"daemon_restart_required,omitempty"`
-	CodexHome             string                     `json:"codex_home,omitempty"`
-	Version               string                     `json:"version,omitempty"`
-	StartedAt             *time.Time                 `json:"started_at,omitempty"`
-	AuthMode              string                     `json:"auth_mode,omitempty"`
-	PlanType              string                     `json:"plan_type,omitempty"`
-	Reason                string                     `json:"reason,omitempty"`
-	RateLimits            *runtimeRateLimits         `json:"rate_limits,omitempty"`
-	SharedDaemon          *runtimeSharedDaemonStatus `json:"shared_daemon,omitempty"`
-}
-
-// runtimeSharedDaemonStatus 只提供定位资源耗尽所需的数值与枚举。命令行、环境、
-// socket/owner 路径均不进入本机状态接口，避免为了可观测性扩大敏感信息面。
-type runtimeSharedDaemonStatus struct {
-	ListenerPID            int        `json:"listener_pid"`
-	ListenerStartedAt      *time.Time `json:"listener_started_at,omitempty"`
-	OpenFileDescriptors    int        `json:"open_file_descriptors"`
-	DirectChildProcesses   int        `json:"direct_child_processes"`
-	OwnerTargetFDSoftLimit *int       `json:"owner_target_fd_soft_limit,omitempty"`
-	EffectiveFDSoftLimit   *int       `json:"effective_fd_soft_limit,omitempty"`
-	FDUsagePercent         *float64   `json:"fd_usage_percent,omitempty"`
-	OwnerState             string     `json:"owner_state"`
-	ResourceState          string     `json:"resource_state"`
+	ID          string                 `json:"id"`
+	Title       string                 `json:"title"`
+	Enabled     bool                   `json:"enabled"`
+	State       runtimeConnectionState `json:"state"`
+	Transport   string                 `json:"transport,omitempty"`
+	Version     string                 `json:"version,omitempty"`
+	StartedAt   *time.Time             `json:"started_at,omitempty"`
+	AuthMode    string                 `json:"auth_mode,omitempty"`
+	PlanType    string                 `json:"plan_type,omitempty"`
+	Reason      string                 `json:"reason,omitempty"`
+	RateLimits  *runtimeRateLimits     `json:"rate_limits,omitempty"`
+	DesktopSync *desktopipc.Status     `json:"desktop_sync,omitempty"`
 }
 
 type runtimeRateLimits struct {
@@ -400,27 +383,7 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(response))
-}
-
-func (r *Router) withLiveSharedDaemonMigrationStatus(response runtimeStatusResponse) runtimeStatusResponse {
-	if r.sharedDaemonMigrationRequired == nil {
-		return response
-	}
-	required, err := r.sharedDaemonMigrationRequired()
-	if err != nil {
-		// 读取失败时保持 nil（未知），不能错误授权一次会中断客户端的迁移。
-		return response
-	}
-	response.Runtimes = append([]runtimeAccountStatus(nil), response.Runtimes...)
-	for index := range response.Runtimes {
-		if strings.EqualFold(response.Runtimes[index].ID, "codex") {
-			value := required
-			response.Runtimes[index].DaemonRestartRequired = &value
-			break
-		}
-	}
-	return response
+	writeJSON(w, http.StatusOK, response)
 }
 
 // SetCodexRuntimeStartedAt 连接 serve 层托管的 resident Codex 进程与本机状态接口。
@@ -485,14 +448,14 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	return runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
 			{
-				ID:        "codex",
-				Title:     "Codex",
-				Enabled:   true,
-				State:     runtimeStateUnavailable,
-				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
-				StartedAt: r.codexRuntimeStartTime(),
-				Reason:    "refresh_in_progress",
+				ID:          "codex",
+				Title:       "Codex",
+				Enabled:     true,
+				State:       runtimeStateUnavailable,
+				Transport:   strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+				StartedAt:   r.codexRuntimeStartTime(),
+				Reason:      "refresh_in_progress",
+				DesktopSync: r.desktopSyncStatus(),
 			},
 			claude,
 		},
@@ -511,31 +474,14 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
 	status = runtimeAccountStatus{
-		ID:        "codex",
-		Title:     "Codex",
-		Enabled:   true,
-		State:     runtimeStateUnavailable,
-		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-		Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
-		StartedAt: r.codexRuntimeStartTime(),
-		Reason:    "upstream_unavailable",
-	}
-	var diagnostics <-chan sharedDaemonDiagnosticsResult
-	if status.Shared && r.sharedDaemonDiagnostics != nil {
-		result := make(chan sharedDaemonDiagnosticsResult, 1)
-		diagnostics = result
-		go func() {
-			value, err := r.sharedDaemonDiagnostics(ctx)
-			result <- sharedDaemonDiagnosticsResult{value: value, err: err}
-		}()
-		defer func() {
-			status.SharedDaemon = awaitRuntimeSharedDaemonDiagnostics(ctx, diagnostics)
-		}()
-	}
-	if status.Shared {
-		if socketPath, pathErr := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); pathErr == nil {
-			status.CodexHome = filepath.Dir(filepath.Dir(socketPath))
-		}
+		ID:          "codex",
+		Title:       "Codex",
+		Enabled:     true,
+		State:       runtimeStateUnavailable,
+		Transport:   strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		StartedAt:   r.codexRuntimeStartTime(),
+		Reason:      "upstream_unavailable",
+		DesktopSync: r.desktopSyncStatus(),
 	}
 	upstreamURL, err := r.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -593,52 +539,13 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 	return status
 }
 
-type sharedDaemonDiagnosticsResult struct {
-	value appserver.SharedDaemonDiagnostics
-	err   error
-}
-
-func awaitRuntimeSharedDaemonDiagnostics(
-	ctx context.Context,
-	results <-chan sharedDaemonDiagnosticsResult,
-) *runtimeSharedDaemonStatus {
-	if results == nil {
-		return nil
+func (r *Router) desktopSyncStatus() *desktopipc.Status {
+	if r == nil || r.desktopIPC == nil {
+		status := desktopipc.DisabledStatus()
+		return &status
 	}
-	// 账号和资源探测并行执行；这里只给内核/launchctl 取证一个很短的收尾窗口，
-	// 不能让可选诊断拖垮原有 runtime 状态刷新。
-	timer := time.NewTimer(500 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case result := <-results:
-		if result.err != nil || !result.value.Supported {
-			return nil
-		}
-		return newRuntimeSharedDaemonStatus(result.value)
-	case <-ctx.Done():
-		return nil
-	case <-timer.C:
-		return nil
-	}
-}
-
-func newRuntimeSharedDaemonStatus(value appserver.SharedDaemonDiagnostics) *runtimeSharedDaemonStatus {
-	var startedAt *time.Time
-	if !value.ListenerStartedAt.IsZero() {
-		copy := value.ListenerStartedAt.UTC()
-		startedAt = &copy
-	}
-	return &runtimeSharedDaemonStatus{
-		ListenerPID:            value.ListenerPID,
-		ListenerStartedAt:      startedAt,
-		OpenFileDescriptors:    value.OpenFileDescriptors,
-		DirectChildProcesses:   value.DirectChildProcesses,
-		OwnerTargetFDSoftLimit: value.OwnerTargetFDSoftLimit,
-		EffectiveFDSoftLimit:   value.EffectiveFDSoftLimit,
-		FDUsagePercent:         value.FDUsagePercent,
-		OwnerState:             string(value.OwnerState),
-		ResourceState:          string(value.ResourceState),
-	}
+	status := r.desktopIPC.Status()
+	return &status
 }
 
 func applyCodexAccount(status *runtimeAccountStatus, response runtimeAccountResponse) {

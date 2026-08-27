@@ -143,7 +143,7 @@ The mobile images above are the same current assets used by the Mimi Remote webs
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
     Gateway["Your Mac<br/>agentd secure gateway"]
-    Codex["Codex<br/>shared daemon or managed app-server"]
+    Codex["Codex<br/>managed App Server + Desktop IPC overlay"]
     Claude["Claude Code<br/>experimental bridge"]
 
     Mobile <-->|"LAN or Tailscale<br/>live sessions and approvals"| Gateway
@@ -154,11 +154,11 @@ flowchart LR
 This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own Mac, so project files, session history, and runtime credentials stay on the host.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
-- **A real session handoff:** Codex can opt into the official local daemon shared with Codex Desktop, so an idle Mac thread can continue on mobile without a fork; the managed app-server remains the default and fallback.
+- **A real session handoff:** Codex keeps the managed App Server as its stable mobile path and can opt into a version-gated Desktop IPC overlay for a Desktop-owned thread; no shared daemon is created.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
 - **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the Mac. The Mac must remain awake and privately reachable.
 
-For protocol details and exact capability boundaries, see [project status](docs/project-status.md), [Codex shared daemon](docs/codex-shared-daemon.md), and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
+For protocol details and exact capability boundaries, see [project status](docs/project-status.md), [Codex Desktop IPC](docs/codex-desktop-ipc.md), [MIM-148 acceptance matrix](docs/mim-148-acceptance-matrix.md), and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
 
 ## Prerequisites
 
@@ -228,7 +228,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` creates private local configuration and separate tokens, starts the service, waits for the configured app-server transport, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. The shared Codex Desktop daemon is opt-in; see [Codex Desktop shared daemon (Chinese)](docs/codex-shared-daemon.md) for requirements, rollback, and verification.
+`agentd up` creates private local configuration and separate tokens, starts the service, waits for the configured App Server transport, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. Desktop session sync is opt-in and uses a version-gated local IPC overlay; see [Codex Desktop IPC](docs/codex-desktop-ipc.md) for the capability boundary, one-time legacy cleanup, and verification.
 
 Useful commands:
 

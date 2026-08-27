@@ -569,9 +569,13 @@ extension ConversationDataFlowTests {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
+            runtimeProvider: "claude",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(
+                    project: project,
+                    channels: [makeClaudeChannelMetadata()]
+                )
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -633,9 +637,13 @@ extension ConversationDataFlowTests {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
+            runtimeProvider: "claude",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(
+                    project: project,
+                    channels: [makeClaudeChannelMetadata()]
+                )
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -927,7 +935,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transportPool.make() },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -1140,7 +1148,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -1366,7 +1374,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
 
@@ -1376,7 +1384,7 @@ extension ConversationDataFlowTests {
         let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
         transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
         let listRequest = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
-        transportResponse(transport, id: listRequest.id, result: #"{"data":[{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490801,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#)
+        transportResponse(transport, id: listRequest.id, result: #"{"data":[{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490801,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#)
         _ = try await pageTask.value
 
         async let first: Void = runtime.connectForEvents(sessionID: "thr_resume_singleflight")
@@ -1389,7 +1397,7 @@ extension ConversationDataFlowTests {
             .count
         XCTAssertEqual(resumeCount, 1)
 
-        transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490802,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}}"#)
+        transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490802,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}}"#)
         try await first
         try await second
     }
@@ -1764,14 +1772,6 @@ extension ConversationDataFlowTests {
             requestsAfterOpen.contains { $0.method == "thread/resume" },
             "独立模式查看 idle 历史不能提前取得 writer"
         )
-        let release = try await runtime.releaseThreadWriterWhenIdle(threadID: "thr_idle_guard")
-        XCTAssertEqual(release.status, .alreadyReleased)
-        let requestsAfterRelease = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
-        XCTAssertFalse(
-            requestsAfterRelease.contains { $0.method == "thread/unsubscribe" },
-            "未 resume 的纯历史读取不应触发 unsubscribe 或 archive/unarchive handoff"
-        )
-
         // 第一次直连发送：startTurn 必须先 thread/resume，再 turn/start。
         let firstTurnTask = Task {
             try await runtime.startTurn(sessionID: "thr_idle_guard", prompt: "继续上次", clientMessageID: nil)
