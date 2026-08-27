@@ -25,14 +25,16 @@
 | 移动端断线 | Turn 运行中断开并恢复 iOS WebSocket | 恢复后加载完整快照或从明确 revision 继续，不重放 `turn/start` |
 | agentd 重启 | Turn 运行中重启 agentd | Desktop-owned 状态不被猜测；连接恢复后重新请求完整历史 |
 | Desktop 重启 | Desktop 退出并重新打开 | socket 断开期间保持只读；重新握手、build gate 和完整快照通过后恢复 |
+| Desktop 保持关闭 | 退出 Desktop，等待状态变为 `desktop_not_running`，再从 Mimi 新建并继续 Thread | IPC overlay 不参与请求；独立 App Server 正常读写，不需要重启 agentd |
 | 长历史 | 使用大量消息、Reasoning、工具项和附件的 Thread | 首个完整快照可加载，patch 缺口自动回完整历史，内容不截断为错误状态 |
 
 ## 阻断路径
 
 | 用例 | 条件 | 预期 |
 | --- | --- | --- |
-| 未知 build | Desktop build 不是 7119 | `unsupported_build`，不建立写入路径 |
-| Desktop 未运行 | Desktop 未启动或 socket 不存在 | `desktop_not_running` 或 `socket_unavailable`，不将请求本地重跑 |
+| 未知 build | Desktop 正在运行且 build 不是 7119 | `unsupported_build`，所有写操作暂停；关闭 Desktop 后独立 App Server 恢复 |
+| Desktop 未运行 | Desktop 已关闭并经过下一次进程检查 | `desktop_not_running`；IPC overlay 退出，独立 App Server 正常读写 |
+| Desktop 运行但 socket 不可用 | Desktop 进程存在，但 socket 尚未建立或异常 | `socket_unavailable`，所有写操作暂停，不将请求本地重跑 |
 | 协议错误 | initialize、revision 或 follower 响应不符合 build 7119 | `protocol_error`，返回可重试且交付状态不确定的错误 |
 | owner 不明确 | Desktop 和 Mimi 均无法证明 Thread ownership | 只读；不向任一 writer 猜测转发 |
 | 旧配置 | 检测到旧 shared fallback、plist 或迁移标记 | `legacy_cleanup_required`；确认 Desktop 已退出后才允许一次性清理 |

@@ -84,7 +84,7 @@ func ProjectionMessages(threadID string, previous *Projection, next Projection) 
 				delta.Params["turnId"] = turnID
 				delta.Params["itemId"] = itemID
 				messages = append(messages, delta)
-			} else {
+			} else if !itemTerminal(previousItem) && itemTerminal(nextItem) {
 				messages = append(messages, itemCompletedMessage(threadID, turnID, nextItem))
 			}
 		}
@@ -158,10 +158,11 @@ func notification(method string, params map[string]any) AppServerMessage {
 
 func itemTerminal(item map[string]any) bool {
 	switch normalizeToken(stringValue(item["status"])) {
-	case "inprogress", "running", "active", "processing", "pending", "queued":
-		return false
-	default:
+	case "completed", "succeeded", "success", "failed", "error", "interrupted",
+		"cancelled", "canceled", "rejected", "denied":
 		return true
+	default:
+		return false
 	}
 }
 

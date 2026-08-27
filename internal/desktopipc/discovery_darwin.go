@@ -22,6 +22,24 @@ func inspectDesktop(codexBin string, env map[string]string) (DesktopInfo, error)
 	if bundle == "" {
 		return DesktopInfo{}, nil
 	}
+	info, err := inspectDesktopBundle(bundle)
+	if err != nil {
+		return DesktopInfo{}, err
+	}
+	codexHome, err := resolveCodexHome(env)
+	if err != nil {
+		return DesktopInfo{}, err
+	}
+	running, err := desktopProcessRunning()
+	if err != nil {
+		return DesktopInfo{}, err
+	}
+	info.Running = running
+	info.Socket = filepath.Join(codexHome, "ipc", "ipc.sock")
+	return info, nil
+}
+
+func inspectDesktopBundle(bundle string) (DesktopInfo, error) {
 	infoPath := filepath.Join(bundle, "Contents", "Info.plist")
 	if info, err := os.Lstat(infoPath); errors.Is(err, os.ErrNotExist) {
 		return DesktopInfo{}, nil
@@ -49,17 +67,8 @@ func inspectDesktop(codexBin string, env map[string]string) (DesktopInfo, error)
 	if err != nil {
 		return DesktopInfo{}, fmt.Errorf("read Desktop build: %w", err)
 	}
-	codexHome, err := resolveCodexHome(env)
-	if err != nil {
-		return DesktopInfo{}, err
-	}
-	running, err := desktopProcessRunning()
-	if err != nil {
-		return DesktopInfo{}, err
-	}
 	return DesktopInfo{
-		Installed: true, Running: running, Version: version, Build: build,
-		Bundle: bundle, Socket: filepath.Join(codexHome, "ipc", "ipc.sock"),
+		Installed: true, Version: version, Build: build, Bundle: bundle,
 	}, nil
 }
 

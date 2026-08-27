@@ -137,6 +137,18 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	return rewritten, nil
 }
 
+// Desktop overlay 在公共 Gateway policy 放行后仍可能拒绝请求。
+// 此时必须释放请求级状态，避免后续请求被误判为仍在处理。
+func (p *appServerGatewayPolicy) abortValidatedRequest(payload []byte) {
+	var frame appServerGatewayFrame
+	if json.Unmarshal(payload, &frame) != nil || strings.TrimSpace(frame.Method) == "" || frame.ID == nil {
+		return
+	}
+	p.cancelPendingHistoryRequest(frame.ID)
+	p.forgetPending(frame.ID)
+	_, _ = p.consumePendingClientRequest(frame.ID)
+}
+
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
 	_, ok := appServerAllowedMethodsForRuntime(p.runtimeID)[method]
 	return ok
@@ -1435,7 +1447,15 @@ func gatewayPreservesThreadPermissionSettings(params map[string]any) bool {
 }
 
 func sanitizedGatewayTurnSteerParams(params map[string]any) map[string]any {
-	return copyGatewayParams(params, "threadId", "input", "clientUserMessageId", "expectedTurnId")
+	return copyGatewayParams(
+		params,
+		"threadId",
+		"input",
+		"clientUserMessageId",
+		"expectedTurnId",
+		"additionalContext",
+		"responsesapiClientMetadata",
+	)
 }
 
 func logGatewayForwardedClientTurnSummary(method string, payload []byte) {

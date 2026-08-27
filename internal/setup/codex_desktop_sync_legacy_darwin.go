@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -67,17 +68,21 @@ func cleanupDesktopSyncLegacyArtifacts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := restoreOwnedLegacyDesktopEnvironment(ctx, ledger); err != nil {
+	ownershipMatches, err := legacyDesktopOwnershipMatches(ctx, ledger)
+	if err != nil {
+		return err
+	}
+	paths, err := desktopSyncLegacyPaths()
+	if err != nil {
+		return err
+	}
+	if err := validateDesktopSyncLegacyFiles(paths, ownershipMatches); err != nil {
 		return err
 	}
 	jobTarget := fmt.Sprintf("gui/%d/%s", os.Getuid(), legacyLaunchAgentLabel)
 	if output, err := runDesktopSyncLegacyCommand(ctx, "/bin/launchctl", "bootout", jobTarget); err != nil &&
 		!legacyLaunchctlMissing(string(output)) {
 		return fmt.Errorf("卸载旧共享 daemon LaunchAgent 失败")
-	}
-	paths, err := desktopSyncLegacyPaths()
-	if err != nil {
-		return err
 	}
 	for _, path := range paths {
 		info, statErr := os.Lstat(path)
@@ -93,6 +98,11 @@ func cleanupDesktopSyncLegacyArtifacts(ctx context.Context) error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("删除旧共享 daemon 文件失败：%w", err)
 		}
+	}
+	// 最后恢复 launchctl。这样 bootout 或删除文件失败时，ownership epoch
+	// 仍然匹配，用户可以安全地重复执行清理。
+	if err := restoreOwnedLegacyDesktopEnvironment(ctx, ledger); err != nil {
+		return err
 	}
 	for _, key := range legacyDesktopPreferenceKeys() {
 		_, _ = runDesktopSyncLegacyCommand(ctx, "/usr/bin/defaults", "delete", legacyDefaultsDomain, key)
@@ -146,13 +156,16 @@ func readLegacyDesktopLedger(ctx context.Context) (legacyDesktopLedger, error) {
 }
 
 func restoreOwnedLegacyDesktopEnvironment(ctx context.Context, ledger legacyDesktopLedger) error {
-	currentDaemon := launchctlGetenv(ctx, legacyDaemonEnvKey)
-	currentHome := launchctlGetenv(ctx, legacyCodexHomeEnvKey)
-	currentEpoch := launchctlGetenv(ctx, legacyEpochEnvKey)
-	ownershipMatches := ledger.ownsEpoch && ledger.writtenEpoch != "" && currentEpoch == ledger.writtenEpoch
+	ownershipMatches, err := legacyDesktopOwnershipMatches(ctx, ledger)
+	if err != nil {
+		return err
+	}
 	if !ownershipMatches {
 		return nil
 	}
+	currentDaemon := launchctlGetenv(ctx, legacyDaemonEnvKey)
+	currentHome := launchctlGetenv(ctx, legacyCodexHomeEnvKey)
+	currentEpoch := launchctlGetenv(ctx, legacyEpochEnvKey)
 	if ledger.ownsDaemon && ledger.writtenDaemon != "" && currentDaemon == ledger.writtenDaemon {
 		if err := restoreLaunchctlValue(ctx, legacyDaemonEnvKey, ledger.previousDaemon); err != nil {
 			return err
@@ -166,6 +179,59 @@ func restoreOwnedLegacyDesktopEnvironment(ctx context.Context, ledger legacyDesk
 	if currentEpoch == ledger.writtenEpoch {
 		if err := restoreLaunchctlValue(ctx, legacyEpochEnvKey, ""); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func legacyDesktopOwnershipMatches(ctx context.Context, ledger legacyDesktopLedger) (bool, error) {
+	owned := ledger.ownsDaemon || ledger.ownsHome || ledger.ownsEpoch
+	if !owned {
+		return false, nil
+	}
+	currentEpoch := launchctlGetenv(ctx, legacyEpochEnvKey)
+	if !ledger.ownsEpoch || ledger.writtenEpoch == "" || currentEpoch != ledger.writtenEpoch {
+		return false, fmt.Errorf("无法确认旧共享 daemon 环境变量仍由 Mimi 持有；已保留 ownership 账本和遗留文件")
+	}
+	return true, nil
+}
+
+func validateDesktopSyncLegacyFiles(paths []string, ownershipMatches bool) error {
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("旧共享 daemon 文件 ownership 无法确认：%s", filepath.Base(path))
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Getuid()) {
+			return fmt.Errorf("旧共享 daemon 文件不属于当前用户：%s", filepath.Base(path))
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("读取旧共享 daemon 文件失败：%w", err)
+		}
+		switch filepath.Base(path) {
+		case legacyLaunchAgentLabel + ".plist":
+			text := string(payload)
+			if !strings.Contains(text, "<string>"+legacyLaunchAgentLabel+"</string>") ||
+				!strings.Contains(text, "<string>--codex-daemon-supervisor</string>") {
+				return fmt.Errorf("旧共享 daemon plist 已被替换，拒绝删除")
+			}
+		case "codex-shared-daemon-migration-required":
+			if string(payload) != "restart-required\n" {
+				return fmt.Errorf("旧共享 daemon 迁移标记已被替换，拒绝删除")
+			}
+		case "codex-shared-daemon-enable-prepared":
+			if string(payload) != "enable-prepared\n" {
+				return fmt.Errorf("旧共享 daemon 启用标记已被替换，拒绝删除")
+			}
+		case "codex-shared-daemon.log":
+			if !ownershipMatches {
+				return fmt.Errorf("缺少匹配的 ownership 账本，拒绝删除旧共享 daemon 日志")
+			}
 		}
 	}
 	return nil

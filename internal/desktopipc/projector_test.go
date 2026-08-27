@@ -102,3 +102,36 @@ func TestProjectConversationStateReadsCanonicalTurnHistory(t *testing.T) {
 		t.Fatalf("canonical history was not projected in order: %#v", projection)
 	}
 }
+
+func TestProjectConversationStateUsesExplicitMobileItemSchema(t *testing.T) {
+	projection, err := ProjectConversationState("thread-private", map[string]any{
+		"turns": []any{map[string]any{
+			"id": "turn-1", "status": "completed", "items": []any{
+				map[string]any{"id": "hook", "type": "hookPrompt", "prompt": "internal prompt"},
+				map[string]any{"id": "user", "type": "userMessage", "content": []any{
+					map[string]any{"type": "developerContext", "instructions": "secret"},
+					map[string]any{"type": "text", "text": "visible"},
+				}},
+				map[string]any{
+					"id": "tool", "type": "mcpToolCall", "status": "completed", "name": "browser",
+					"output": "done", "privatePrompt": "secret", "socketPath": "/private/ipc.sock",
+				},
+			},
+		}},
+	}, time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := projection.Turns[0].(map[string]any)["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("private Desktop item types must be dropped: %#v", items)
+	}
+	user := items[0].(map[string]any)
+	if content := user["content"].([]any); len(content) != 1 {
+		t.Fatalf("structured hidden user context reached the mobile projection: %#v", content)
+	}
+	tool := items[1].(map[string]any)
+	if tool["privatePrompt"] != nil || tool["socketPath"] != nil || tool["output"] != "done" {
+		t.Fatalf("tool projection did not enforce the allowlist: %#v", tool)
+	}
+}

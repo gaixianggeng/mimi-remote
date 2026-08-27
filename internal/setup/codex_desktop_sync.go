@@ -46,6 +46,7 @@ func ConfigureCodexDesktopSync(
 	if err != nil {
 		return CodexDesktopSyncConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}
+	initial := append([]byte(nil), original...)
 	document, codexDocument, appServerDocument, err := decodeDesktopSyncConfig(original)
 	if err != nil {
 		return CodexDesktopSyncConfigurationResult{}, err
@@ -59,7 +60,8 @@ func ConfigureCodexDesktopSync(
 	if err != nil {
 		return CodexDesktopSyncConfigurationResult{}, err
 	}
-	legacyRequired := legacyConfig || legacyArtifacts
+	legacyPending := decodeRawBool(codexDocument["desktop_sync_legacy_cleanup_pending"])
+	legacyRequired := legacyConfig || legacyArtifacts || legacyPending
 	result := CodexDesktopSyncConfigurationResult{
 		Enabled:               currentEnabled,
 		LegacyCleanupRequired: legacyRequired,
@@ -73,15 +75,34 @@ func ConfigureCodexDesktopSync(
 		if runtime.GOOS != "darwin" {
 			return result, fmt.Errorf("共享 daemon 遗留清理只支持 macOS")
 		}
-		if err := removeDesktopSyncLegacyArtifacts(ctx); err != nil {
-			return result, err
-		}
 		restoreLegacyAppServer(appServerDocument)
 		encodedAppServer, marshalErr := json.Marshal(appServerDocument)
 		if marshalErr != nil {
 			return result, fmt.Errorf("编码 app_server 配置失败：%w", marshalErr)
 		}
 		document["app_server"] = encodedAppServer
+		codexDocument["desktop_sync_enabled"] = json.RawMessage(`false`)
+		codexDocument["desktop_sync_legacy_cleanup_pending"] = json.RawMessage(`true`)
+		encodedCodex, marshalErr := json.Marshal(codexDocument)
+		if marshalErr != nil {
+			return result, fmt.Errorf("编码 codex 配置失败：%w", marshalErr)
+		}
+		document["codex"] = encodedCodex
+		prepared, marshalErr := json.MarshalIndent(document, "", "  ")
+		if marshalErr != nil {
+			return result, fmt.Errorf("编码配置文件失败：%w", marshalErr)
+		}
+		prepared = append(prepared, '\n')
+		if !bytes.Equal(prepared, original) {
+			if err := writePrivateFileAtomicallyCAS(path, original, prepared); err != nil {
+				return result, fmt.Errorf("写入遗留清理迁移标记失败：%w", err)
+			}
+			original = prepared
+		}
+		if err := removeDesktopSyncLegacyArtifacts(ctx); err != nil {
+			return result, err
+		}
+		delete(codexDocument, "desktop_sync_legacy_cleanup_pending")
 		legacyRequired = false
 	}
 
@@ -100,8 +121,8 @@ func ConfigureCodexDesktopSync(
 		return result, fmt.Errorf("编码配置文件失败：%w", err)
 	}
 	updated = append(updated, '\n')
-	changed := !bytes.Equal(updated, original)
-	if changed {
+	changed := !bytes.Equal(updated, initial)
+	if !bytes.Equal(updated, original) {
 		if err := writePrivateFileAtomicallyCAS(path, original, updated); err != nil {
 			return result, fmt.Errorf("原子更新配置文件失败：%w", err)
 		}
@@ -116,6 +137,11 @@ func ConfigureCodexDesktopSync(
 		result.Message = "Codex Desktop 会话同步已关闭；重载 agentd 后生效。"
 	}
 	return result, nil
+}
+
+func decodeRawBool(raw json.RawMessage) bool {
+	var value bool
+	return len(raw) > 0 && json.Unmarshal(raw, &value) == nil && value
 }
 
 func decodeDesktopSyncConfig(raw []byte) (

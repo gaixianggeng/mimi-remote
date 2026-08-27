@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -86,6 +87,32 @@ func TestConfigureCodexDesktopSyncCleanupRestoresIndependentWS(t *testing.T) {
 	}
 	if _, exists := appServer["shared_fallback"]; exists || appServer["future"] != "keep" {
 		t.Fatalf("legacy field was not removed cleanly: %#v", appServer)
+	}
+}
+
+func TestConfigureCodexDesktopSyncCleanupFailureLeavesRecoverableJournal(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("legacy cleanup is macOS-only")
+	}
+	path := writeDesktopSyncFixture(t, map[string]any{
+		"codex": map[string]any{"desktop_sync_enabled": true},
+		"app_server": map[string]any{
+			"transport":       "unix",
+			"shared_fallback": map[string]any{"transport": "ws", "managed": true, "listen": "ws://127.0.0.1:4999"},
+		},
+	})
+	withDesktopSyncLegacyHooks(t, true, func(context.Context) error { return errors.New("cleanup failed") })
+	if _, err := ConfigureCodexDesktopSync(context.Background(), path, true, true); err == nil {
+		t.Fatal("cleanup failure was not reported")
+	}
+	document := readDesktopSyncFixture(t, path)
+	codex := document["codex"].(map[string]any)
+	appServer := document["app_server"].(map[string]any)
+	if codex["desktop_sync_enabled"] != false || codex["desktop_sync_legacy_cleanup_pending"] != true {
+		t.Fatalf("cleanup journal was not preserved: %#v", codex)
+	}
+	if appServer["transport"] != "ws" {
+		t.Fatalf("independent App Server was not restored before external cleanup: %#v", appServer)
 	}
 }
 

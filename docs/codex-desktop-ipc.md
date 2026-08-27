@@ -15,7 +15,15 @@ agentd runtime --codex-desktop-sync=enabled --json
 agentd runtime --codex-desktop-sync=disabled --json
 ```
 
-首版只支持 macOS 上的 Codex Desktop `26.820.60940 (7119)`，配置 profile 为 `desktop-7119`。Windows 和未知 build 继续使用独立 App Server。
+首版只支持 macOS 上的 Codex Desktop `26.820.60940 (7119)`，配置 profile 为 `desktop-7119`。Windows 始终使用独立 App Server。
+
+开关开启后，overlay 仍以 Desktop 进程状态为触发条件：
+
+- Desktop 已关闭：状态为 `desktop_not_running`，overlay 不参与请求，Mimi 完整使用独立 App Server。
+- Desktop 正在运行且状态为 `ready`：启用 owner/follower，并按 Thread 的明确 owner 路由。
+- Desktop 正在运行但连接中、build 不支持、socket 不可用或协议异常：暂停写操作，不向独立 App Server 猜测重跑；读请求仍可读取独立 App Server 中已有的历史。
+
+Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查确认 Desktop 已关闭后，状态转为 `desktop_not_running`，独立 App Server 自动恢复正常读写，不需要重启 agentd。
 
 ## 传输和安全边界
 

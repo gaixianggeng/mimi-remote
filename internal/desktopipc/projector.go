@@ -11,13 +11,12 @@ import (
 var nonTokenCharacter = regexp.MustCompile(`[^a-z0-9]+`)
 
 var supportedItemTypes = map[string]bool{
-	"usermessage": true, "automaticapprovalreview": true, "hookprompt": true,
+	"usermessage":  true,
 	"agentmessage": true, "assistantmessage": true, "message": true,
 	"plan": true, "todolist": true, "reasoning": true, "commandexecution": true,
 	"filechange": true, "toolcall": true, "mcptoolcall": true, "dynamictoolcall": true,
 	"collabagenttoolcall": true, "collabtoolcall": true, "websearch": true,
-	"imageview": true, "imagegeneration": true, "enteredreviewmode": true,
-	"exitedreviewmode": true, "contextcompaction": true,
+	"imageview": true, "imagegeneration": true,
 }
 
 var mobileItemType = map[string]string{
@@ -29,7 +28,6 @@ var mobileItemType = map[string]string{
 	"dynamictoolcall": "dynamicToolCall", "collabagenttoolcall": "collabAgentToolCall",
 	"collabtoolcall": "collabAgentToolCall", "websearch": "webSearch",
 	"imageview": "imageView", "imagegeneration": "imageGeneration",
-	"automaticapprovalreview": "automaticApprovalReview",
 }
 
 type Projection struct {
@@ -172,10 +170,7 @@ func projectItem(raw map[string]any) map[string]any {
 	if !supportedItemTypes[typeToken] {
 		return nil
 	}
-	copy, err := cloneObject(raw)
-	if err != nil {
-		return nil
-	}
+	copy := projectAllowedItemFields(raw, typeToken)
 	if typeToken == "usermessage" {
 		content := sanitizeUserContent(anySlice(copy["content"]))
 		if len(content) == 0 {
@@ -199,6 +194,41 @@ func projectItem(raw map[string]any) map[string]any {
 	return copy
 }
 
+func projectAllowedItemFields(raw map[string]any, typeToken string) map[string]any {
+	fields := []string{
+		"id", "itemId", "item_id", "status", "error", "createdAt", "created_at",
+		"updatedAt", "updated_at", "startedAt", "started_at", "completedAt", "completed_at", "durationMs", "duration_ms",
+	}
+	switch typeToken {
+	case "usermessage":
+		fields = append(fields, "content")
+	case "agentmessage", "assistantmessage", "message":
+		fields = append(fields, "text", "message", "content", "phase")
+	case "plan", "todolist":
+		fields = append(fields, "text", "content", "plan", "steps", "items")
+	case "reasoning":
+		fields = append(fields, "text", "content", "summary", "summaryText", "summary_text")
+	case "commandexecution":
+		fields = append(fields, "command", "cwd", "aggregatedOutput", "aggregated_output", "output", "stdout", "stderr", "exitCode", "exit_code")
+	case "filechange":
+		fields = append(fields, "changes", "diff", "patch", "output")
+	case "toolcall", "mcptoolcall", "dynamictoolcall", "collabagenttoolcall", "collabtoolcall":
+		fields = append(fields, "name", "server", "tool", "arguments", "input", "output", "result", "response")
+	case "websearch":
+		fields = append(fields, "query", "action", "url", "results", "output")
+	case "imageview", "imagegeneration":
+		fields = append(fields, "path", "url", "imageUrl", "image_url", "alt", "text", "output")
+	}
+	projected := make(map[string]any, len(fields)+2)
+	for _, key := range fields {
+		if value, exists := raw[key]; exists {
+			projected[key] = cloneValue(value)
+		}
+	}
+	projected["type"] = raw["type"]
+	return projected
+}
+
 func sanitizeUserContent(content []any) []any {
 	visible := make([]any, 0, len(content))
 	for _, entry := range content {
@@ -216,7 +246,9 @@ func sanitizeUserContent(content []any) []any {
 				}
 			}
 			if textKey == "" {
-				visible = append(visible, cloneValue(value))
+				if safe := safeStructuredUserContent(value); safe != nil {
+					visible = append(visible, safe)
+				}
 				continue
 			}
 			text := visibleUserText(stringValue(value[textKey]))
@@ -229,6 +261,24 @@ func sanitizeUserContent(content []any) []any {
 		}
 	}
 	return visible
+}
+
+func safeStructuredUserContent(value map[string]any) map[string]any {
+	typeToken := normalizeToken(stringValue(value["type"]))
+	if typeToken != "image" && typeToken != "inputimage" && typeToken != "localimage" {
+		return nil
+	}
+	allowed := []string{"type", "path", "url", "imageUrl", "image_url", "name", "mimeType", "mime_type"}
+	result := make(map[string]any, len(allowed))
+	for _, key := range allowed {
+		if field, exists := value[key]; exists {
+			result[key] = cloneValue(field)
+		}
+	}
+	if len(result) <= 1 {
+		return nil
+	}
+	return result
 }
 
 func visibleUserSignature(content []any) string {

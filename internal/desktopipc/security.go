@@ -26,6 +26,6 @@ func VerifySocket(path string) error {
 
 // VerifyPeer is implemented per platform. macOS validates the connected peer;
 // unsupported systems reject Desktop IPC before protocol traffic starts.
-func VerifyPeer(conn net.Conn) error {
+func VerifyPeer(conn net.Conn) (DesktopInfo, error) {
 	return verifyPeer(conn)
 }

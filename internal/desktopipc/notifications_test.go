@@ -29,3 +29,24 @@ func TestProjectionMessagesEmitsLifecycleAndAssistantDelta(t *testing.T) {
 		t.Fatalf("turn completion was not emitted: %#v", messages)
 	}
 }
+
+func TestProjectionMessagesDoesNotCompleteRunningToolOnNonAppendUpdate(t *testing.T) {
+	previous := Projection{Turns: []any{map[string]any{
+		"id": "turn-1", "status": "inProgress", "items": []any{map[string]any{
+			"id": "tool-1", "type": "mcpToolCall", "status": "inProgress", "output": "one",
+		}},
+	}}, ActiveTurnID: "turn-1"}
+	next := Projection{Turns: []any{map[string]any{
+		"id": "turn-1", "status": "inProgress", "items": []any{map[string]any{
+			"id": "tool-1", "type": "mcpToolCall", "status": "inProgress", "output": "rewritten",
+		}},
+	}}, ActiveTurnID: "turn-1"}
+	if messages := ProjectionMessages("thread-1", &previous, next); len(messages) != 0 {
+		t.Fatalf("running tool update must not synthesize completion: %#v", messages)
+	}
+	next.Turns[0].(map[string]any)["items"].([]any)[0].(map[string]any)["status"] = "completed"
+	messages := ProjectionMessages("thread-1", &previous, next)
+	if len(messages) != 1 || messages[0].Method != "item/completed" {
+		t.Fatalf("terminal transition must complete exactly once: %#v", messages)
+	}
+}

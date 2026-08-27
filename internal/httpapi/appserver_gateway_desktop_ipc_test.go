@@ -91,7 +91,9 @@ func newReadyGatewayBridge(t *testing.T, fake *gatewayFakeDesktopIPC, requestTim
 	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
 		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: desktopipc.SupportedBuild,
 		ClientOptions: desktopipc.ClientOptions{
-			DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: func(net.Conn) error { return nil },
+			DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: func(net.Conn) (desktopipc.DesktopInfo, error) {
+				return desktopipc.DesktopInfo{Version: desktopipc.SupportedVersion, Build: desktopipc.SupportedBuild}, nil
+			},
 			RequestTimeout: requestTimeout, ReconnectDelay: time.Second,
 		},
 	})
@@ -113,8 +115,14 @@ func newReadyGatewayBridge(t *testing.T, fake *gatewayFakeDesktopIPC, requestTim
 
 func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *testing.T) {
 	fake := &gatewayFakeDesktopIPC{}
+	steerParams := make(chan map[string]any, 1)
 	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
 		switch request.Method {
+		case "thread-owner-discovery":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{}, "handledByClientId": "desktop-owner",
+			})
 		case "thread-stream-following-changed":
 			fake.write(conn, map[string]any{
 				"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
@@ -126,24 +134,28 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 					}},
 				},
 			})
-		case "thread-owner-discovery":
-			fake.write(conn, map[string]any{
-				"type": "response", "requestId": json.RawMessage(request.RequestID),
-				"resultType": "success", "result": map[string]any{}, "handledByClientId": "desktop-owner",
-			})
 		case "thread-follower-load-complete-history":
 			fake.write(conn, map[string]any{
 				"type": "response", "requestId": json.RawMessage(request.RequestID),
-				"resultType": "success", "result": map[string]any{"revision": 1},
+				"resultType": "success", "result": map[string]any{"revision": 1}, "handledByClientId": "desktop-owner",
 			})
 		case "thread-follower-update-thread-settings":
 			fake.write(conn, map[string]any{
-				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success", "result": map[string]any{},
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success", "result": map[string]any{}, "handledByClientId": "desktop-owner",
 			})
 		case "thread-follower-start-turn":
 			fake.write(conn, map[string]any{
 				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
-				"result": map[string]any{"result": map[string]any{"turn": map[string]any{"id": "turn-desktop"}}},
+				"handledByClientId": "desktop-owner",
+				"result":            map[string]any{"result": map[string]any{"turn": map[string]any{"id": "turn-desktop"}}},
+			})
+		case "thread-follower-steer-turn":
+			var params map[string]any
+			_ = json.Unmarshal(request.Params, &params)
+			steerParams <- params
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{}, "handledByClientId": "desktop-owner",
 			})
 		}
 	}
@@ -164,9 +176,24 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 	if turn["id"] != "turn-desktop" {
 		t.Fatalf("unexpected follower result: %s", response)
 	}
+	handled, _, policyErr = overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":8,"method":"turn/steer","params":{"threadId":"thread-desktop","expectedTurnId":"turn-desktop","input":[],"attachments":[],"additionalContext":{"source":"ipad"}}
+	}`))
+	if policyErr != nil || !handled {
+		t.Fatalf("Desktop-owned steer was not routed: handled=%v err=%+v", handled, policyErr)
+	}
+	select {
+	case params := <-steerParams:
+		if params["conversationId"] != "thread-desktop" || params["expectedTurnId"] != "turn-desktop" ||
+			params["input"] == nil || len(params) != 3 {
+			t.Fatalf("Desktop-owned steer fields were lost: %#v", params)
+		}
+	default:
+		t.Fatal("Desktop follower steer was not delivered")
+	}
 	for _, method := range []string{
 		"thread-stream-following-changed", "thread-follower-load-complete-history",
-		"thread-follower-update-thread-settings", "thread-follower-start-turn",
+		"thread-follower-update-thread-settings", "thread-follower-start-turn", "thread-follower-steer-turn",
 	} {
 		if fake.methodCount(method) != 1 {
 			t.Fatalf("expected one %s request, methods=%v", method, fake.methods)
@@ -178,6 +205,11 @@ func TestDesktopIPCOverlayTimeoutNeverFallsBackToAppServer(t *testing.T) {
 	fake := &gatewayFakeDesktopIPC{}
 	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
 		switch request.Method {
+		case "thread-owner-discovery":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{}, "handledByClientId": "desktop-owner",
+			})
 		case "thread-stream-following-changed":
 			fake.write(conn, map[string]any{
 				"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
@@ -186,15 +218,10 @@ func TestDesktopIPCOverlayTimeoutNeverFallsBackToAppServer(t *testing.T) {
 					"type": "snapshot", "revision": 1, "conversationState": map[string]any{"turns": []any{}},
 				}},
 			})
-		case "thread-owner-discovery":
-			fake.write(conn, map[string]any{
-				"type": "response", "requestId": json.RawMessage(request.RequestID),
-				"resultType": "success", "result": map[string]any{}, "handledByClientId": "desktop-owner",
-			})
 		case "thread-follower-load-complete-history":
 			fake.write(conn, map[string]any{
 				"type": "response", "requestId": json.RawMessage(request.RequestID),
-				"resultType": "success", "result": map[string]any{"revision": 1},
+				"resultType": "success", "result": map[string]any{"revision": 1}, "handledByClientId": "desktop-owner",
 			})
 		}
 	}
@@ -208,6 +235,46 @@ func TestDesktopIPCOverlayTimeoutNeverFallsBackToAppServer(t *testing.T) {
 	}
 	if policyErr.data["reason"] != "desktop_sync_delivery_uncertain" || policyErr.data["accepted"] != nil {
 		t.Fatalf("unexpected delivery metadata: %#v", policyErr.data)
+	}
+}
+
+func TestDesktopIPCOverlayRejectsStartWhileDesktopTurnIsActive(t *testing.T) {
+	fake := &gatewayFakeDesktopIPC{}
+	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
+		switch request.Method {
+		case "thread-owner-discovery":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{}, "handledByClientId": "desktop-owner",
+			})
+		case "thread-stream-following-changed":
+			fake.write(conn, map[string]any{
+				"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
+				"sourceClientId": "desktop-owner",
+				"params": map[string]any{
+					"conversationId": "thread-active",
+					"change": map[string]any{"type": "snapshot", "revision": 1, "conversationState": map[string]any{
+						"cwd": "/tmp", "turns": []any{map[string]any{"id": "turn-active", "status": "inProgress", "items": []any{}}},
+					}},
+				},
+			})
+		case "thread-follower-load-complete-history":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{"revision": 1}, "handledByClientId": "desktop-owner",
+			})
+		}
+	}
+	bridge := newReadyGatewayBridge(t, fake, time.Second)
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":9,"method":"turn/start","params":{"threadId":"thread-active","input":[]}
+	}`))
+	if !handled || len(response) != 0 || policyErr == nil || policyErr.data["reason"] != "desktop_sync_active_turn" || policyErr.data["accepted"] != false {
+		t.Fatalf("active Desktop turn was not failed closed: handled=%v response=%s err=%+v", handled, response, policyErr)
+	}
+	if fake.methodCount("thread-follower-start-turn") != 0 {
+		t.Fatal("active Desktop turn received a duplicate follower start")
 	}
 }
 
@@ -253,9 +320,17 @@ func TestDesktopIPCOverlayKeepsUnknownOwnershipReadOnlyWhileConnecting(t *testin
 	}
 }
 
-func TestDesktopIPCOverlayIsInactiveForUnsupportedBuild(t *testing.T) {
+func TestDesktopIPCOverlayBlocksWritesForRunningUnsupportedBuild(t *testing.T) {
+	fake := &gatewayFakeDesktopIPC{}
 	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
-		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: "future-build",
+		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: desktopipc.SupportedBuild,
+		ClientOptions: desktopipc.ClientOptions{
+			DialContext: fake.dial, VerifySocket: func(string) error { return nil },
+			VerifyPeer: func(net.Conn) (desktopipc.DesktopInfo, error) {
+				return desktopipc.DesktopInfo{Version: desktopipc.SupportedVersion, Build: "future-build"}, nil
+			},
+			ReconnectDelay: time.Hour,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,12 +342,38 @@ func TestDesktopIPCOverlayIsInactiveForUnsupportedBuild(t *testing.T) {
 	for bridge.Status().State != desktopipc.StateUnsupportedBuild && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
+	var localWriterCalled atomic.Bool
+	if err := bridge.ClaimLocalOwner("thread-stable", "existing-mimi-owner", func(context.Context, string, json.RawMessage) (any, error) {
+		localWriterCalled.Store(true)
+		return map[string]any{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
 	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
 		"id":11,"method":"turn/start","params":{"threadId":"thread-stable","input":[]}
 	}`))
+	if !handled || len(response) != 0 || policyErr == nil || policyErr.data["reason"] != "desktop_sync_owner_unknown" {
+		t.Fatalf("running unsupported Desktop must block an uncoordinated writer: handled=%v response=%s err=%+v", handled, response, policyErr)
+	}
+	if localWriterCalled.Load() {
+		t.Fatal("running unsupported Desktop must also pause an existing Mimi writer")
+	}
+}
+
+func TestDesktopIPCOverlayIsInactiveWhenDesktopIsNotRunning(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, InitialState: desktopipc.StateDesktopNotRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":12,"method":"turn/start","params":{"threadId":"thread-stable","input":[]}
+	}`))
 	if handled || len(response) != 0 || policyErr != nil {
-		t.Fatalf("unsupported build must leave stable App Server path untouched: handled=%v response=%s err=%+v", handled, response, policyErr)
+		t.Fatalf("closed Desktop must leave the independent App Server path untouched: handled=%v response=%s err=%+v", handled, response, policyErr)
 	}
 }
 
@@ -280,6 +381,7 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 	var projectDir string
 	var turnStarts atomic.Int64
 	turnParams := make(chan map[string]any, 1)
+	steerParams := make(chan map[string]any, 1)
 	upstreamURL, _, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
 		var frame appServerGatewayFrame
 		if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
@@ -296,6 +398,9 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 			turnStarts.Add(1)
 			turnParams <- params
 			result = map[string]any{"turn": map[string]any{"id": "turn-local"}}
+		case "turn/steer":
+			steerParams <- params
+			result = map[string]any{}
 		default:
 			return
 		}
@@ -374,6 +479,7 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 		t.Fatal("App Server did not receive the follower turn")
 	}
 	deadline := time.Now().Add(time.Second)
+	projected := false
 	for time.Now().Before(deadline) {
 		projection, ok := bridge.LocalProjection("thread-local")
 		if ok && len(projection.Turns) == 1 {
@@ -386,11 +492,32 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 			if len(content) != 1 || content[0].(map[string]any)["text"] != "from Desktop" {
 				t.Fatalf("Desktop prompt was not attached to the canonical App Server turn: %#v", turn)
 			}
-			return
+			projected = true
+			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("turn/started was not projected to Desktop state")
+	if !projected {
+		t.Fatal("turn/started was not projected to Desktop state")
+	}
+	_, err = bridge.RequestLocalOwner(context.Background(), "thread-local", "thread-follower-steer-turn", map[string]any{
+		"conversationId": "thread-local", "expectedTurnId": "turn-local",
+		"input":               []any{map[string]any{"type": "text", "text": "adjust"}},
+		"clientUserMessageId": "client-steer", "additionalContext": map[string]any{"source": "desktop"},
+		"responsesapiClientMetadata": map[string]any{"source": "desktop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case params := <-steerParams:
+		if params["expectedTurnId"] != "turn-local" || params["clientUserMessageId"] != "client-steer" ||
+			params["additionalContext"] == nil || params["responsesapiClientMetadata"] == nil {
+			t.Fatalf("Desktop follower steer fields were lost: %#v", params)
+		}
+	default:
+		t.Fatal("App Server did not receive the Desktop follower steer")
+	}
 }
 
 func TestDesktopFollowerPermissionDecisionRestoresRequestedGrant(t *testing.T) {
@@ -407,6 +534,28 @@ func TestDesktopFollowerPermissionDecisionRestoresRequestedGrant(t *testing.T) {
 	declinedPermissions, _ := declined["permissions"].(map[string]any)
 	if declined["scope"] != "turn" || len(declinedPermissions) != 0 {
 		t.Fatalf("permission decline must return an empty turn grant: %#v", declined)
+	}
+}
+
+func TestDesktopIPCOverlayErrorReleasesValidatedRequestState(t *testing.T) {
+	id := json.RawMessage(`"desktop-error"`)
+	key := gatewayRequestIDKey(&id)
+	policy := &appServerGatewayPolicy{
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{
+			key: {method: "thread/read", threadID: "thread-1"},
+		},
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{
+			key: {method: "thread/read", threadID: "thread-1"},
+		},
+		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{
+			key: {method: "account/usage/read"},
+		},
+	}
+	payload := []byte(`{"id":"desktop-error","method":"thread/read","params":{"threadId":"thread-1"}}`)
+	policy.abortValidatedRequest(payload)
+	if len(policy.pendingThreads) != 0 || len(policy.pendingHistory) != 0 || len(policy.pendingClientRequests) != 0 {
+		t.Fatalf("Desktop overlay error leaked request state: threads=%d history=%d clients=%d",
+			len(policy.pendingThreads), len(policy.pendingHistory), len(policy.pendingClientRequests))
 	}
 }
 

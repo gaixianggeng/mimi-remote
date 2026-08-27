@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -15,6 +16,10 @@ type fakeDesktopIPC struct {
 	listeners []net.Conn
 	requests  []envelope
 	respond   func(net.Conn, envelope)
+}
+
+func supportedTestPeer(net.Conn) (DesktopInfo, error) {
+	return DesktopInfo{Version: SupportedVersion, Build: SupportedBuild}, nil
 }
 
 func (f *fakeDesktopIPC) dial(context.Context, string, string) (net.Conn, error) {
@@ -62,7 +67,7 @@ func newStartedTestClient(t *testing.T, fake *fakeDesktopIPC, timeout time.Durat
 	t.Helper()
 	client, err := NewClient(ClientOptions{
 		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
-		DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: func(net.Conn) error { return nil },
+		DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: supportedTestPeer,
 		RequestTimeout: timeout, ReconnectDelay: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -132,7 +137,7 @@ func TestClientTargetsDiscoveredOwner(t *testing.T) {
 	fake.respond = func(conn net.Conn, request envelope) {
 		writeTestEnvelope(conn, map[string]any{
 			"type": "response", "requestId": json.RawMessage(request.RequestID),
-			"resultType": "success", "result": map[string]any{},
+			"resultType": "success", "result": map[string]any{}, "handledByClientId": "desktop-owner",
 		})
 	}
 	client := newStartedTestClient(t, fake, time.Second)
@@ -148,6 +153,22 @@ func TestClientTargetsDiscoveredOwner(t *testing.T) {
 		}
 	}
 	t.Fatal("follower request was not pinned to the discovered owner")
+}
+
+func TestClientRejectsResponseFromWrongLogicalHandler(t *testing.T) {
+	fake := &fakeDesktopIPC{}
+	fake.respond = func(conn net.Conn, request envelope) {
+		writeTestEnvelope(conn, map[string]any{
+			"type": "response", "requestId": json.RawMessage(request.RequestID),
+			"resultType": "success", "result": map[string]any{}, "handledByClientId": "other-client",
+		})
+	}
+	client := newStartedTestClient(t, fake, time.Second)
+	_, err := client.RequestTo(context.Background(), "desktop-owner", "thread-follower-start-turn", map[string]any{})
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || requestErr.Delivery != DeliveryUncertain {
+		t.Fatalf("wrong logical handler must fail closed: %v", err)
+	}
 }
 
 func TestSupportedMethodVersionsMatchDesktop7119(t *testing.T) {
@@ -175,7 +196,7 @@ func TestClientOnlyNoClientFoundAllowsFallback(t *testing.T) {
 	fake.respond = func(conn net.Conn, request envelope) {
 		writeTestEnvelope(conn, map[string]any{
 			"type": "response", "requestId": json.RawMessage(request.RequestID),
-			"resultType": "error", "error": "no-client-found: owner unavailable",
+			"resultType": "error", "error": "no-client-found",
 		})
 	}
 	client := newStartedTestClient(t, fake, time.Second)
@@ -200,12 +221,15 @@ func TestNoClientFoundClassifierRejectsOtherRemoteFailures(t *testing.T) {
 		"no-client-found",
 		"No Codex IPC client can handle thread-follower-load-complete-history.",
 	} {
-		if !isNoClientFound(value) {
+		if !isNoClientFound(value, "thread-follower-load-complete-history") {
 			t.Fatalf("explicit no-client result was not recognized: %q", value)
 		}
 	}
-	for _, value := range []string{"target disconnected", "request timed out", "permission denied"} {
-		if isNoClientFound(value) {
+	for _, value := range []string{
+		"target disconnected", "request timed out", "permission denied",
+		"no-client-found: owner unavailable", "operation failed because no-client-found was not returned",
+	} {
+		if isNoClientFound(value, "thread-follower-load-complete-history") {
 			t.Fatalf("uncertain failure must not allow fallback: %q", value)
 		}
 	}
@@ -226,25 +250,103 @@ func TestClientKeepsIdleConnectionAfterInitializeTimeout(t *testing.T) {
 	}
 }
 
-func TestClientRejectsUnknownBuildBeforeDial(t *testing.T) {
+func TestClientRejectsUnknownConnectedPeerBuildBeforeInitialize(t *testing.T) {
+	fake := &fakeDesktopIPC{}
 	dialed := false
 	client, err := NewClient(ClientOptions{
-		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: "9999",
+		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
 		DialContext: func(context.Context, string, string) (net.Conn, error) {
 			dialed = true
-			return nil, errors.New("unexpected")
+			return fake.dial(context.Background(), "unix", "test")
 		},
+		VerifySocket: func(string) error { return nil },
+		VerifyPeer: func(net.Conn) (DesktopInfo, error) {
+			return DesktopInfo{Version: SupportedVersion, Build: "9999"}, nil
+		},
+		ReconnectDelay: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.Start(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	client.Start(ctx)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && client.Status().State != StateUnsupportedBuild {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
 	client.Close()
-	if dialed {
-		t.Fatal("unknown build must be rejected before connecting")
+	if !dialed {
+		t.Fatal("peer build gate must inspect the connected socket owner")
 	}
 	if client.Status().State != StateUnsupportedBuild {
 		t.Fatalf("unexpected state: %s", client.Status().State)
+	}
+}
+
+func TestClientDoesNotDialWhileDesktopIsNotRunning(t *testing.T) {
+	var dials atomic.Int64
+	client, err := NewClient(ClientOptions{
+		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
+		Preflight: func() (State, error) { return StateDesktopNotRunning, nil },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("unexpected dial")
+		},
+		VerifySocket:   func(string) error { return nil },
+		ReconnectDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	client.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	client.Close()
+	if status := client.Status(); status.State != StateDesktopNotRunning {
+		t.Fatalf("unexpected inactive Desktop state: %#v", status)
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("Desktop IPC dialed while Desktop was closed: %d", dials.Load())
+	}
+}
+
+func TestClientRechecksPeerBuildOnReconnect(t *testing.T) {
+	fake := &fakeDesktopIPC{}
+	var inspections atomic.Int64
+	client, err := NewClient(ClientOptions{
+		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
+		DialContext: fake.dial, VerifySocket: func(string) error { return nil },
+		VerifyPeer: func(net.Conn) (DesktopInfo, error) {
+			if inspections.Add(1) == 1 {
+				return DesktopInfo{Version: SupportedVersion, Build: SupportedBuild}, nil
+			}
+			return DesktopInfo{Version: SupportedVersion, Build: "future-build"}, nil
+		},
+		RequestTimeout: time.Second, ReconnectDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	client.Start(ctx)
+	t.Cleanup(func() { cancel(); client.Close() })
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readyCancel()
+	if err := client.WaitReady(readyCtx); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	server := fake.listeners[0]
+	fake.mu.Unlock()
+	_ = server.Close()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && client.Status().State != StateUnsupportedBuild {
+		time.Sleep(time.Millisecond)
+	}
+	if status := client.Status(); status.State != StateUnsupportedBuild || status.DesktopBuild != "future-build" {
+		t.Fatalf("reconnected peer bypassed the build gate: %#v", status)
 	}
 }
 
@@ -253,7 +355,7 @@ func TestClientHandlesNestedDiscoveryAndFollowerRequest(t *testing.T) {
 	handled := make(chan IncomingRequest, 1)
 	client, err := NewClient(ClientOptions{
 		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
-		DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: func(net.Conn) error { return nil },
+		DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: supportedTestPeer,
 		RequestTimeout: time.Second, ReconnectDelay: time.Second,
 		CanHandle: func(request IncomingRequest) bool {
 			return request.Method == "thread-follower-start-turn"

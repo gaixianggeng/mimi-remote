@@ -57,7 +57,7 @@ type RequestHandler func(context.Context, IncomingRequest) (any, error)
 
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type VerifySocketFunc func(string) error
-type VerifyPeerFunc func(net.Conn) error
+type VerifyPeerFunc func(net.Conn) (DesktopInfo, error)
 
 type ClientOptions struct {
 	Enabled        bool
@@ -71,14 +71,17 @@ type ClientOptions struct {
 	RequestTimeout time.Duration
 	ReconnectDelay time.Duration
 	OnBroadcast    func(Broadcast)
-	OnReady        func()
+	OnReady        func(uint64)
+	OnDisconnect   func(uint64)
 	CanHandle      func(IncomingRequest) bool
 	HandleRequest  RequestHandler
 }
 
 type pendingResponse struct {
-	method string
-	result chan requestResult
+	method         string
+	targetClientID string
+	generation     uint64
+	result         chan requestResult
 }
 
 type requestResult struct {
@@ -93,12 +96,14 @@ type Client struct {
 	status *statusStore
 	nextID atomic.Uint64
 
-	mu       sync.RWMutex
-	conn     net.Conn
-	clientID string
-	pending  map[string]pendingResponse
-	ready    chan struct{}
-	started  bool
+	mu             sync.RWMutex
+	conn           net.Conn
+	clientID       string
+	generation     uint64
+	nextGeneration uint64
+	pending        map[string]pendingResponse
+	ready          chan struct{}
+	started        bool
 
 	writeMu sync.Mutex
 	stop    context.CancelFunc
@@ -174,6 +179,12 @@ func (c *Client) Close() {
 
 func (c *Client) Status() Status { return c.status.get() }
 
+func (c *Client) ConnectionGeneration() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.generation
+}
+
 func (c *Client) WaitReady(ctx context.Context) error {
 	c.mu.RLock()
 	ready := c.ready
@@ -209,7 +220,7 @@ func (c *Client) FindHandler(ctx context.Context, method string, params any) (st
 func (c *Client) request(ctx context.Context, targetClientID, method string, params any) (json.RawMessage, string, error) {
 	requestID := fmt.Sprintf("mimi-%d", c.nextID.Add(1))
 	c.mu.RLock()
-	conn, clientID := c.conn, c.clientID
+	conn, clientID, generation := c.conn, c.clientID, c.generation
 	c.mu.RUnlock()
 	if conn == nil || clientID == "" {
 		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("not connected")}
@@ -218,9 +229,12 @@ func (c *Client) request(ctx context.Context, targetClientID, method string, par
 	if err != nil {
 		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: err}
 	}
-	waiter := pendingResponse{method: method, result: make(chan requestResult, 1)}
+	waiter := pendingResponse{
+		method: method, targetClientID: targetClientID, generation: generation,
+		result: make(chan requestResult, 1),
+	}
 	c.mu.Lock()
-	if c.conn != conn || c.clientID == "" {
+	if c.conn != conn || c.clientID == "" || c.generation != waiter.generation {
 		c.mu.Unlock()
 		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection changed")}
 	}
@@ -263,11 +277,6 @@ func (c *Client) Broadcast(method string, params any) error {
 
 func (c *Client) run(ctx context.Context) {
 	defer close(c.done)
-	if c.opts.DesktopVersion != SupportedVersion || c.opts.DesktopBuild != SupportedBuild {
-		c.status.update(func(status *Status) { status.State = StateUnsupportedBuild })
-		c.signalReady()
-		return
-	}
 	for ctx.Err() == nil {
 		if c.opts.Preflight != nil {
 			state, err := c.opts.Preflight()
@@ -294,8 +303,13 @@ func (c *Client) run(ctx context.Context) {
 		state := StateProtocolError
 		if errors.Is(err, errSocketUnavailable) {
 			state = StateSocketUnavailable
+		} else if errors.Is(err, errUnsupportedBuild) {
+			state = StateUnsupportedBuild
 		}
 		c.status.update(func(status *Status) { status.State = state })
+		if state == StateUnsupportedBuild {
+			c.signalReady()
+		}
 		if !c.waitReconnect(ctx) {
 			break
 		}
@@ -315,6 +329,7 @@ func (c *Client) waitReconnect(ctx context.Context) bool {
 }
 
 var errSocketUnavailable = errors.New("Desktop IPC socket unavailable")
+var errUnsupportedBuild = errors.New("Desktop IPC peer build is unsupported")
 
 func (c *Client) connectAndServe(ctx context.Context) error {
 	if err := c.opts.VerifySocket(c.opts.SocketPath); err != nil {
@@ -324,9 +339,22 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", errSocketUnavailable, err)
 	}
-	if err := c.opts.VerifyPeer(conn); err != nil {
+	peer, err := c.opts.VerifyPeer(conn)
+	if err != nil {
 		_ = conn.Close()
 		return err
+	}
+	c.status.update(func(status *Status) {
+		status.DesktopVersion = peer.Version
+		status.DesktopBuild = peer.Build
+		status.Profile = ""
+		if peer.Version == SupportedVersion && peer.Build == SupportedBuild {
+			status.Profile = SupportedProfile
+		}
+	})
+	if peer.Version != SupportedVersion || peer.Build != SupportedBuild {
+		_ = conn.Close()
+		return errUnsupportedBuild
 	}
 	connectionDone := make(chan struct{})
 	defer close(connectionDone)
@@ -381,6 +409,8 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 		}
 		c.mu.Lock()
 		c.clientID = result.ClientID
+		c.nextGeneration++
+		c.generation = c.nextGeneration
 		c.mu.Unlock()
 		break
 	}
@@ -389,8 +419,11 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	}
 	c.status.update(func(status *Status) { status.State = StateReady })
 	c.signalReady()
+	c.mu.RLock()
+	generation := c.generation
+	c.mu.RUnlock()
 	if c.opts.OnReady != nil {
-		c.opts.OnReady()
+		c.opts.OnReady(generation)
 	}
 	for {
 		frame, err := ReadFrame(conn)
@@ -419,17 +452,31 @@ func (c *Client) dispatch(conn net.Conn, incoming envelope) {
 		if ok {
 			delete(c.pending, requestID)
 		}
+		generation := c.generation
+		currentConn := c.conn
 		c.mu.Unlock()
 		if !ok {
 			return
 		}
+		if currentConn != conn || waiter.generation != generation {
+			waiter.result <- requestResult{err: &RequestError{
+				Method: waiter.method, Delivery: DeliveryUncertain, Cause: errors.New("response came from a stale connection"),
+			}}
+			return
+		}
 		if incoming.ResultType == "error" {
 			delivery := DeliveryUncertain
-			if isNoClientFound(incoming.Error) {
+			if isNoClientFound(incoming.Error, waiter.method) {
 				delivery = DeliveryNoClient
 			}
 			waiter.result <- requestResult{err: &RequestError{
 				Method: waiter.method, Delivery: delivery, Cause: errors.New("remote request failed"),
+			}}
+			return
+		}
+		if waiter.targetClientID != "" && strings.TrimSpace(incoming.HandledByClientID) != waiter.targetClientID {
+			waiter.result <- requestResult{err: &RequestError{
+				Method: waiter.method, Delivery: DeliveryUncertain, Cause: errors.New("response handler did not match the targeted Desktop owner"),
 			}}
 			return
 		}
@@ -446,9 +493,13 @@ func (c *Client) dispatch(conn net.Conn, incoming envelope) {
 		if incoming.Request != nil {
 			candidate = *incoming.Request
 		}
+		sourceClientID := strings.TrimSpace(candidate.SourceClientID)
+		if sourceClientID == "" {
+			sourceClientID = strings.TrimSpace(incoming.SourceClientID)
+		}
 		request := IncomingRequest{
 			RequestID: candidate.RequestID, Method: candidate.Method, Version: candidate.Version,
-			SourceClientID: candidate.SourceClientID, Params: candidate.Params,
+			SourceClientID: sourceClientID, Params: candidate.Params,
 		}
 		canHandle := requestVersionMatches(request) && c.opts.CanHandle != nil && c.opts.CanHandle(request)
 		c.writeJSON(conn, map[string]any{
@@ -460,10 +511,10 @@ func (c *Client) dispatch(conn net.Conn, incoming envelope) {
 	}
 }
 
-func isNoClientFound(value string) bool {
+func isNoClientFound(value, method string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(value))
-	return strings.Contains(normalized, "no-client-found") ||
-		strings.HasPrefix(normalized, "no codex ipc client can handle ")
+	explicitHandlerMiss := "no codex ipc client can handle " + strings.ToLower(strings.TrimSpace(method)) + "."
+	return normalized == "no-client-found" || normalized == explicitHandlerMiss
 }
 
 func (c *Client) handleIncomingRequest(conn net.Conn, incoming envelope) {
@@ -519,8 +570,10 @@ func (c *Client) write(conn net.Conn, payload []byte) error {
 func (c *Client) disconnect(cause error) {
 	c.mu.Lock()
 	conn := c.conn
+	generation := c.generation
 	c.conn = nil
 	c.clientID = ""
+	c.generation = 0
 	pending := c.pending
 	c.pending = make(map[string]pendingResponse)
 	c.mu.Unlock()
@@ -529,6 +582,9 @@ func (c *Client) disconnect(cause error) {
 	}
 	for _, waiter := range pending {
 		waiter.result <- requestResult{err: &RequestError{Method: waiter.method, Delivery: DeliveryUncertain, Cause: cause}}
+	}
+	if conn != nil && generation != 0 && c.opts.OnDisconnect != nil {
+		c.opts.OnDisconnect(generation)
 	}
 }
 

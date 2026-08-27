@@ -109,6 +109,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 		}
 		handled, desktopPayload, desktopPolicyErr := overlay.routeClientFrame(ctx, forwardPayload)
 		if desktopPolicyErr != nil {
+			policy.abortValidatedRequest(forwardPayload)
 			monitor.recordPolicyError("client_to_desktop_ipc", len(payload), policyDuration)
 			if !writeGatewayPolicyError(client, clientWriteMu, desktopPolicyErr) {
 				return "desktop_ipc_policy_error_write_failed"

@@ -85,7 +85,7 @@ func (o *desktopIPCGatewayOverlay) enabled() bool {
 	}
 	switch status.State {
 	case desktopipc.StateDisabled, desktopipc.StateNotInstalled,
-		desktopipc.StateUnsupportedBuild, desktopipc.StateLegacyCleanupRequired:
+		desktopipc.StateDesktopNotRunning, desktopipc.StateLegacyCleanupRequired:
 		return false
 	default:
 		return true
@@ -128,6 +128,9 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 	threadID, _ := gatewayStringParam(params, "threadId")
 	if threadID == "" {
 		return false, nil, nil
+	}
+	if status.State != desktopipc.StateReady && desktopIPCMethodWritesThread(method) {
+		return true, nil, desktopIPCOwnerUnknownError(frame.ID, nil)
 	}
 	if o.bridge.HasLocalOwner(threadID) {
 		return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
@@ -176,10 +179,13 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 		if projection.Thread == nil {
 			return true, nil, desktopIPCSnapshotUnavailableError(frame.ID)
 		}
-		return o.syntheticResult(frame.ID, desktopTurnsListResult(projection.Turns, params))
+		return true, nil, desktopIPCTurnsListUnsupportedError(frame.ID)
 	case "thread/unsubscribe":
 		return o.syntheticResult(frame.ID, map[string]any{})
 	case "turn/start":
+		if projection.ActiveTurnID != "" {
+			return true, nil, desktopIPCActiveTurnError(frame.ID, projection.ActiveTurnID)
+		}
 		if err := o.syncDesktopThreadSettings(ctx, threadID, params); err != nil {
 			if desktopipc.SafeToFallback(err) {
 				return o.fallbackToLocalOwner(threadID, frame.ID)
@@ -194,14 +200,12 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 			},
 		})
 	case "turn/steer":
+		// build 7119 的私有 follower 方法只验证过这三个业务字段。
+		// 附件仍通过 input 传递，不向 Desktop 猜测发送 App Server 私有扩展字段。
 		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-steer-turn", map[string]any{
-			"conversationId":      threadID,
-			"input":               params["input"],
-			"restoreMessage":      params["restoreMessage"],
-			"serviceTier":         firstAny(params, "serviceTier", "service_tier"),
-			"attachments":         params["attachments"],
-			"clientUserMessageId": params["clientUserMessageId"],
-			"additionalContext":   params["additionalContext"],
+			"conversationId": threadID,
+			"expectedTurnId": params["expectedTurnId"],
+			"input":          params["input"],
 		})
 	case "turn/interrupt":
 		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-interrupt-turn", map[string]any{
@@ -313,7 +317,16 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 	if method == "thread/unsubscribe" {
 		return o.syntheticResult(id, map[string]any{})
 	}
-	if method == "thread/read" || method == "thread/resume" || method == "thread/turns/list" || method == "thread/goal/get" {
+	if method == "thread/turns/list" {
+		result, err := o.bridge.RequestLocalOwner(ctx, threadID, desktopIPCLocalForwardMethod, map[string]any{
+			"conversationId": threadID, "method": method, "params": params,
+		})
+		if err != nil {
+			return true, nil, desktopIPCPolicyError(id, err)
+		}
+		return o.syntheticResult(id, result)
+	}
+	if method == "thread/read" || method == "thread/resume" || method == "thread/goal/get" {
 		projection, ok := o.bridge.LocalProjection(threadID)
 		if !ok {
 			if _, err := o.bridge.RequestLocalOwner(ctx, threadID, "thread-follower-load-complete-history", map[string]any{
@@ -330,8 +343,6 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 			}
 		}
 		switch method {
-		case "thread/turns/list":
-			return o.syntheticResult(id, desktopTurnsListResult(projection.Turns, params))
 		case "thread/goal/get":
 			return o.syntheticResult(id, map[string]any{"goal": nil})
 		default:
@@ -375,10 +386,9 @@ func localFollowerRoute(method, threadID string, params map[string]any, id *json
 		}, true
 	case "turn/steer":
 		return "thread-follower-steer-turn", map[string]any{
-			"conversationId": threadID, "input": params["input"],
-			"restoreMessage": params["restoreMessage"], "serviceTier": firstAny(params, "serviceTier", "service_tier"),
-			"attachments": params["attachments"], "clientUserMessageId": params["clientUserMessageId"],
-			"additionalContext": params["additionalContext"],
+			"conversationId": threadID, "expectedTurnId": params["expectedTurnId"], "input": params["input"],
+			"clientUserMessageId": params["clientUserMessageId"], "additionalContext": params["additionalContext"],
+			"responsesapiClientMetadata": params["responsesapiClientMetadata"],
 		}, true
 	case "turn/interrupt":
 		return "thread-follower-interrupt-turn", map[string]any{
@@ -476,7 +486,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 	case desktopIPCLocalForwardMethod:
 		forwardMethod := firstStringFromAnyMap(params, "method")
 		forwardParams, _ := params["params"].(map[string]any)
-		if !desktopIPCMethodWritesThread(forwardMethod) {
+		if !desktopIPCMethodWritesThread(forwardMethod) && forwardMethod != "thread/turns/list" {
 			return nil, fmt.Errorf("unsupported local owner method %q", forwardMethod)
 		}
 		result, err := o.requestUpstream(ctx, forwardMethod, cloneAnyMap(forwardParams))
@@ -528,6 +538,8 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 	case "thread-follower-steer-turn":
 		return o.requestUpstreamDecoded(ctx, "turn/steer", map[string]any{
 			"threadId": threadID, "input": params["input"], "expectedTurnId": params["expectedTurnId"],
+			"clientUserMessageId": params["clientUserMessageId"], "additionalContext": params["additionalContext"],
+			"responsesapiClientMetadata": params["responsesapiClientMetadata"],
 		})
 	case "thread-follower-interrupt-turn":
 		return o.requestUpstreamDecoded(ctx, "turn/interrupt", map[string]any{
@@ -983,7 +995,18 @@ func (o *desktopIPCGatewayOverlay) forwardEvents(
 			if _, allowed := o.policy.allowedThread(event.ThreadID); !allowed {
 				continue
 			}
-			messages := desktopipc.ProjectionMessages(event.ThreadID, event.Previous, event.Projection)
+			messages := []desktopipc.AppServerMessage(nil)
+			if event.Stale {
+				messages = append(messages, desktopipc.AppServerMessage{
+					Method: "thread/status/changed",
+					Params: map[string]any{
+						"threadId": event.ThreadID, "status": map[string]any{"type": "notLoaded"},
+						"mimiDesktopIPCMirror": true,
+					},
+				})
+			} else {
+				messages = desktopipc.ProjectionMessages(event.ThreadID, event.Previous, event.Projection)
+			}
 			messages = append(messages, o.syncServerRequests(event)...)
 			for _, message := range messages {
 				payload, err := desktopipc.MarshalAppServerMessage(message)
@@ -1036,28 +1059,6 @@ func (o *desktopIPCGatewayOverlay) syncServerRequests(event desktopipc.ThreadEve
 	return messages
 }
 
-func desktopTurnsListResult(turns []any, params map[string]any) map[string]any {
-	ordered := append([]any(nil), turns...)
-	direction := strings.ToLower(firstStringFromAnyMap(params, "sortDirection"))
-	if direction != "asc" {
-		for left, right := 0, len(ordered)-1; left < right; left, right = left+1, right-1 {
-			ordered[left], ordered[right] = ordered[right], ordered[left]
-		}
-	}
-	limit := appServerGatewayThreadTurnsDefaultLimit
-	if number, ok := params["limit"].(json.Number); ok {
-		if value, err := number.Int64(); err == nil && value > 0 {
-			limit = int(value)
-		}
-	} else if number, ok := params["limit"].(float64); ok && number > 0 {
-		limit = int(number)
-	}
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
-	}
-	return map[string]any{"data": ordered, "nextCursor": nil, "hasMore": false, "mimiDesktopIPCMirror": true}
-}
-
 func desktopIPCPolicyError(id *json.RawMessage, err error) *appServerGatewayPolicyError {
 	delivery := desktopipc.DeliveryUncertain
 	var requestErr *desktopipc.RequestError
@@ -1069,6 +1070,26 @@ func desktopIPCPolicyError(id *json.RawMessage, err error) *appServerGatewayPoli
 		data: map[string]any{
 			"reason": "desktop_sync_delivery_uncertain", "accepted": nil, "retryable": true,
 			"delivery": string(delivery),
+		},
+	}
+}
+
+func desktopIPCActiveTurnError(id *json.RawMessage, activeTurnID string) *appServerGatewayPolicyError {
+	return &appServerGatewayPolicyError{
+		id: id, message: "Codex Desktop 当前 Turn 仍在运行；请等待完成或使用调整方向", target: "client",
+		data: map[string]any{
+			"reason": "desktop_sync_active_turn", "accepted": false, "retryable": true,
+			"active_turn_id": activeTurnID,
+		},
+	}
+}
+
+func desktopIPCTurnsListUnsupportedError(id *json.RawMessage) *appServerGatewayPolicyError {
+	return &appServerGatewayPolicyError{
+		id: id, message: "thread/turns/list is not supported by Desktop sync；请回退 thread/read", target: "client",
+		data: map[string]any{
+			"reason": "desktop_sync_method_unsupported", "accepted": false, "retryable": false,
+			"method": "thread/turns/list",
 		},
 	}
 }

@@ -23,14 +23,25 @@ func TestCleanupDesktopSyncLegacyArtifactsRestoresOwnedEnvironmentAndFixedFiles(
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte("legacy"), 0o600); err != nil {
+		content := []byte("legacy")
+		switch filepath.Base(path) {
+		case legacyLaunchAgentLabel + ".plist":
+			content = []byte("<plist><string>" + legacyLaunchAgentLabel + "</string><string>--codex-daemon-supervisor</string></plist>")
+		case "codex-shared-daemon-migration-required":
+			content = []byte("restart-required\n")
+		case "codex-shared-daemon-enable-prepared":
+			content = []byte("enable-prepared\n")
+		}
+		if err := os.WriteFile(path, content, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	oldRunner := runDesktopSyncLegacyCommand
 	var environmentWrites []string
+	commandIndex, bootoutIndex, firstEnvironmentWriteIndex := 0, 0, 0
 	runDesktopSyncLegacyCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		commandIndex++
 		joined := name + " " + strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "lsappinfo find"):
@@ -58,7 +69,13 @@ func TestCleanupDesktopSyncLegacyArtifactsRestoresOwnedEnvironmentAndFixedFiles(
 		case strings.Contains(joined, "launchctl getenv "+legacyEpochEnvKey):
 			return []byte("epoch-1"), nil
 		case strings.Contains(joined, "launchctl setenv") || strings.Contains(joined, "launchctl unsetenv"):
+			if firstEnvironmentWriteIndex == 0 {
+				firstEnvironmentWriteIndex = commandIndex
+			}
 			environmentWrites = append(environmentWrites, strings.Join(args, " "))
+			return nil, nil
+		case strings.Contains(joined, "launchctl bootout"):
+			bootoutIndex = commandIndex
 			return nil, nil
 		default:
 			return nil, nil
@@ -82,6 +99,9 @@ func TestCleanupDesktopSyncLegacyArtifactsRestoresOwnedEnvironmentAndFixedFiles(
 	if !reflect.DeepEqual(environmentWrites, want) {
 		t.Fatalf("ownership-matched environment restore mismatch:\n got=%v\nwant=%v", environmentWrites, want)
 	}
+	if bootoutIndex == 0 || firstEnvironmentWriteIndex <= bootoutIndex {
+		t.Fatalf("launchctl environment was restored before LaunchAgent cleanup: bootout=%d restore=%d", bootoutIndex, firstEnvironmentWriteIndex)
+	}
 }
 
 func TestRestoreOwnedLegacyDesktopEnvironmentIgnoresMismatchedEpoch(t *testing.T) {
@@ -104,8 +124,8 @@ func TestRestoreOwnedLegacyDesktopEnvironmentIgnoresMismatchedEpoch(t *testing.T
 		previousHome: "/previous", writtenHome: "mimi-value", ownsHome: true,
 		writtenEpoch: "old-owner", ownsEpoch: true,
 	}
-	if err := restoreOwnedLegacyDesktopEnvironment(context.Background(), ledger); err != nil {
-		t.Fatal(err)
+	if err := restoreOwnedLegacyDesktopEnvironment(context.Background(), ledger); err == nil {
+		t.Fatal("mismatched ownership epoch must block cleanup and preserve the ledger")
 	}
 	if writes != 0 {
 		t.Fatalf("mismatched ownership epoch must not change launchctl environment: writes=%d", writes)
@@ -125,5 +145,35 @@ func TestCleanupDesktopSyncLegacyArtifactsRequiresDesktopExit(t *testing.T) {
 	err := cleanupDesktopSyncLegacyArtifacts(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "仍在运行") {
 		t.Fatalf("running Desktop must block cleanup: %v", err)
+	}
+}
+
+func TestCleanupDesktopSyncLegacyArtifactsRejectsReplacedPlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	paths, err := desktopSyncLegacyPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := paths[0]
+	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plist, []byte("user managed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldRunner := runDesktopSyncLegacyCommand
+	runDesktopSyncLegacyCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if strings.Contains(name+" "+strings.Join(args, " "), "lsappinfo find") {
+			return nil, nil
+		}
+		return nil, errors.New("missing")
+	}
+	t.Cleanup(func() { runDesktopSyncLegacyCommand = oldRunner })
+	if err := cleanupDesktopSyncLegacyArtifacts(context.Background()); err == nil || !strings.Contains(err.Error(), "拒绝删除") {
+		t.Fatalf("replaced plist was not blocked: %v", err)
+	}
+	if _, err := os.Lstat(plist); err != nil {
+		t.Fatalf("replaced plist was removed: %v", err)
 	}
 }
