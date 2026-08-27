@@ -33,6 +33,7 @@ type desktopIPCGatewayOverlay struct {
 
 	mu                  sync.Mutex
 	pendingActions      map[string]desktopipc.ServerRequest
+	uncertainActions    map[string]bool
 	pendingUpstream     map[string]chan desktopIPCUpstreamResult
 	forwardedClient     map[string]desktopIPCForwardedClientRequest
 	localServerRequests map[string]desktopIPCServerRequest
@@ -68,6 +69,7 @@ func newDesktopIPCGatewayOverlay(
 		bridge: bridge, policy: policy, upstream: upstream, upstreamWriteMu: upstreamWriteMu,
 		ownerID: fmt.Sprintf("gateway-%p", policy), local: desktopipc.NewLocalConversation(),
 		pendingActions:      make(map[string]desktopipc.ServerRequest),
+		uncertainActions:    make(map[string]bool),
 		pendingUpstream:     make(map[string]chan desktopIPCUpstreamResult),
 		forwardedClient:     make(map[string]desktopIPCForwardedClientRequest),
 		localServerRequests: make(map[string]desktopIPCServerRequest),
@@ -92,6 +94,14 @@ func (o *desktopIPCGatewayOverlay) enabled() bool {
 	}
 }
 
+func (o *desktopIPCGatewayOverlay) trackingEnabled() bool {
+	if o == nil || o.bridge == nil {
+		return false
+	}
+	status := o.bridge.Status()
+	return status.Enabled && status.State != desktopipc.StateLegacyCleanupRequired
+}
+
 func (o *desktopIPCGatewayOverlay) close() {
 	if o == nil || o.bridge == nil {
 		return
@@ -109,17 +119,37 @@ func (o *desktopIPCGatewayOverlay) close() {
 }
 
 func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload []byte) (bool, []byte, *appServerGatewayPolicyError) {
-	if !o.enabled() {
-		return false, nil, nil
-	}
-	status := o.bridge.Status()
 	var frame appServerGatewayFrame
 	if json.Unmarshal(payload, &frame) != nil {
 		return false, nil, nil
 	}
 	if strings.TrimSpace(frame.Method) == "" && frame.ID != nil {
+		key := gatewayRequestIDKey(frame.ID)
+		o.mu.Lock()
+		action, pendingDesktopResponse := o.pendingActions[key]
+		o.mu.Unlock()
+		if pendingDesktopResponse && !o.enabled() {
+			o.restorePolicyPendingAction(action)
+			o.mu.Lock()
+			delete(o.uncertainActions, key)
+			o.mu.Unlock()
+			return true, nil, &appServerGatewayPolicyError{
+				id: frame.ID, message: "Codex Desktop 会话暂时不可用，审批响应未发送", target: "client",
+				data: map[string]any{
+					"reason": "desktop_sync_owner_unknown", "accepted": false, "retryable": true,
+					"response_to_server_request": true,
+				},
+			}
+		}
+		if !o.enabled() {
+			return false, nil, nil
+		}
 		return o.routeServerRequestResponse(ctx, frame, payload)
 	}
+	if !o.enabled() {
+		return false, nil, nil
+	}
+	status := o.bridge.Status()
 	method := strings.TrimSpace(frame.Method)
 	params, err := decodeGatewayParams(frame.Params)
 	if err != nil {
@@ -162,8 +192,14 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 					data: map[string]any{"reason": "desktop_sync_owner_conflict", "accepted": false, "retryable": true},
 				}
 			}
+			if o.bridge.LocalOwnerNeedsRecovery(threadID) {
+				return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+			}
 		}
 		return false, nil, nil
+	}
+	if desktopIPCMethodWritesThread(method) && projection.Thread == nil {
+		return true, nil, desktopIPCSnapshotUnavailableError(frame.ID)
 	}
 
 	switch method {
@@ -186,32 +222,37 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 		if projection.ActiveTurnID != "" {
 			return true, nil, desktopIPCActiveTurnError(frame.ID, projection.ActiveTurnID)
 		}
-		if err := o.syncDesktopThreadSettings(ctx, threadID, params); err != nil {
-			if desktopipc.SafeToFallback(err) {
-				return o.fallbackToLocalOwner(threadID, frame.ID)
-			}
-			return true, nil, desktopIPCPolicyError(frame.ID, err)
-		}
-		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-start-turn", map[string]any{
+		startParams := map[string]any{
 			"conversationId": threadID,
 			"turnStart": map[string]any{
 				"request": params,
 				"context": map[string]any{"inheritThreadSettings": true},
 			},
-		})
+		}
+		result, err := o.bridge.RequestDesktopTurnStart(ctx, map[string]any{
+			"conversationId": threadID, "threadSettings": desktopThreadSettings(params),
+		}, startParams)
+		return o.desktopFollowerResponse(frame.ID, "thread-follower-start-turn", startParams, result, err)
 	case "turn/steer":
-		// build 7119 的私有 follower 方法只验证过这三个业务字段。
-		// 附件仍通过 input 传递，不向 Desktop 猜测发送 App Server 私有扩展字段。
-		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-steer-turn", map[string]any{
-			"conversationId": threadID,
-			"expectedTurnId": params["expectedTurnId"],
-			"input":          params["input"],
-		})
+		requestedTurnID := strings.TrimSpace(firstStringFromAnyMap(params, "expectedTurnId"))
+		if !projection.ActiveTurnIDTrusted || requestedTurnID == "" || requestedTurnID != projection.ActiveTurnID {
+			return true, nil, desktopIPCActiveTurnUnconfirmedError(frame.ID)
+		}
+		return o.desktopFollowerResult(
+			ctx,
+			frame.ID,
+			"thread-follower-steer-turn",
+			o.desktopSteerFollowerParams(threadID, params, projection),
+		)
 	case "turn/interrupt":
+		requestedTurnID := strings.TrimSpace(firstStringFromAnyMap(params, "turnId"))
+		if !projection.ActiveTurnIDTrusted || requestedTurnID == "" || requestedTurnID != projection.ActiveTurnID {
+			return true, nil, desktopIPCActiveTurnUnconfirmedError(frame.ID)
+		}
 		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-interrupt-turn", map[string]any{
 			"conversationId": threadID,
 			"mode":           "user-stop",
-			"expectedTurnId": params["turnId"],
+			"expectedTurnId": projection.ActiveTurnID,
 		})
 	case "thread/compact/start":
 		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-compact-thread", map[string]any{
@@ -232,6 +273,57 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 	}
 }
 
+// Desktop 7119 在处理 follower Steer 时会用 restoreMessage 创建本地待发送消息。
+// 只传 App Server 的 input 会让 Desktop 在读取 restoreMessage.cwd 时直接拒绝请求。
+func (o *desktopIPCGatewayOverlay) desktopSteerFollowerParams(
+	threadID string,
+	params map[string]any,
+	projection desktopipc.Projection,
+) map[string]any {
+	cwd := strings.TrimSpace(firstStringFromAnyMap(projection.Thread, "cwd"))
+	if cwd == "" {
+		cwd = "/"
+	}
+	prompt := desktopIPCSteerPrompt(params["input"])
+	clientUserMessageID := strings.TrimSpace(firstStringFromAnyMap(params, "clientUserMessageId"))
+	restoreID := clientUserMessageID
+	if restoreID == "" {
+		restoreID = fmt.Sprintf("mimi-steer-%d-%d", time.Now().UnixMilli(), o.nextRequestID.Add(1))
+	}
+	followerParams := map[string]any{
+		"conversationId": threadID,
+		"input":          params["input"],
+		"serviceTier":    projection.Thread["serviceTier"],
+		"attachments":    []any{},
+		"restoreMessage": map[string]any{
+			"id": restoreID, "text": prompt, "cwd": cwd, "createdAt": time.Now().UnixMilli(),
+			"context": map[string]any{
+				"prompt": prompt, "addedFiles": []any{}, "fileAttachments": []any{},
+				"ideContext": nil, "imageAttachments": []any{}, "workspaceRoots": []any{cwd},
+			},
+		},
+	}
+	if clientUserMessageID != "" {
+		followerParams["clientUserMessageId"] = clientUserMessageID
+	}
+	return followerParams
+}
+
+func desktopIPCSteerPrompt(raw any) string {
+	input, _ := raw.([]any)
+	parts := make([]string, 0, len(input))
+	for _, rawItem := range input {
+		item, _ := rawItem.(map[string]any)
+		if !strings.EqualFold(strings.TrimSpace(firstStringFromAnyMap(item, "type")), "text") {
+			continue
+		}
+		if text := strings.TrimSpace(firstStringFromAnyMap(item, "text")); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, threadID string) (desktopipc.Projection, bool, error) {
 	if err := o.bridge.FollowThread(ctx, threadID); err != nil {
 		return desktopipc.Projection{}, false, err
@@ -246,7 +338,6 @@ func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, thr
 			return desktopipc.Projection{}, false, err
 		}
 		if !owned {
-			o.bridge.ReleaseDesktopOwner(threadID)
 			return desktopipc.Projection{}, false, nil
 		}
 	}
@@ -255,7 +346,6 @@ func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, thr
 	})
 	if err != nil {
 		if desktopipc.SafeToFallback(err) {
-			o.bridge.ReleaseDesktopOwner(threadID)
 			return desktopipc.Projection{}, false, nil
 		}
 		return desktopipc.Projection{}, false, err
@@ -269,7 +359,7 @@ func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, thr
 	waitCtx, cancel := context.WithTimeout(ctx, desktopIPCProjectionWait)
 	projection, ok := o.bridge.WaitDesktopProjectionRevision(waitCtx, threadID, complete.Revision)
 	cancel()
-	if ok {
+	if ok && o.bridge.ConfirmDesktopHistory(threadID, complete.Revision) {
 		return projection, true, nil
 	}
 	// A positive discovery is enough to route writes. Reads still require the
@@ -281,7 +371,6 @@ func (o *desktopIPCGatewayOverlay) fallbackToLocalOwner(
 	threadID string,
 	id *json.RawMessage,
 ) (bool, []byte, *appServerGatewayPolicyError) {
-	o.bridge.ReleaseDesktopOwner(threadID)
 	if err := o.ensureLocalOwner(threadID); err != nil {
 		return true, nil, &appServerGatewayPolicyError{
 			id: id, message: err.Error(), target: "client",
@@ -418,7 +507,20 @@ func (o *desktopIPCGatewayOverlay) desktopFollowerResult(
 	params map[string]any,
 ) (bool, []byte, *appServerGatewayPolicyError) {
 	result, err := o.bridge.RequestDesktopOwner(ctx, method, params)
+	return o.desktopFollowerResponse(id, method, params, result, err)
+}
+
+func (o *desktopIPCGatewayOverlay) desktopFollowerResponse(
+	id *json.RawMessage,
+	method string,
+	params map[string]any,
+	result json.RawMessage,
+	err error,
+) (bool, []byte, *appServerGatewayPolicyError) {
 	if err != nil {
+		if errors.Is(err, desktopipc.ErrDesktopStartInFlight) {
+			return true, nil, desktopIPCActiveTurnUnconfirmedError(id)
+		}
 		if desktopipc.SafeToFallback(err) {
 			return o.fallbackToLocalOwner(firstStringFromAnyMap(params, "conversationId"), id)
 		}
@@ -443,11 +545,7 @@ func (o *desktopIPCGatewayOverlay) desktopFollowerResult(
 	return o.syntheticResult(id, decoded)
 }
 
-func (o *desktopIPCGatewayOverlay) syncDesktopThreadSettings(
-	ctx context.Context,
-	threadID string,
-	params map[string]any,
-) error {
+func desktopThreadSettings(params map[string]any) map[string]any {
 	settings := map[string]any{"serviceTier": nil}
 	if model := firstStringFromAnyMap(params, "model"); model != "" {
 		settings["model"] = model
@@ -463,10 +561,7 @@ func (o *desktopIPCGatewayOverlay) syncDesktopThreadSettings(
 	if collaborationMode, exists := params["collaborationMode"]; exists {
 		settings["collaborationMode"] = collaborationMode
 	}
-	_, err := o.bridge.RequestDesktopOwner(ctx, "thread-follower-update-thread-settings", map[string]any{
-		"conversationId": threadID, "threadSettings": settings,
-	})
-	return err
+	return settings
 }
 
 func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
@@ -510,7 +605,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 			if seedErr != nil {
 				return nil, seedErr
 			}
-			revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, state)
+			revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, o.ownerID, state)
 			if publishErr != nil {
 				return nil, publishErr
 			}
@@ -520,7 +615,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 		if !ok {
 			return nil, err
 		}
-		revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, state)
+		revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, o.ownerID, state)
 		return map[string]any{"revision": revision}, publishErr
 	case "thread-follower-start-turn":
 		turnStart, _ := params["turnStart"].(map[string]any)
@@ -536,14 +631,30 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 		}
 		return map[string]any{"result": decodeRawGatewayResult(result)}, nil
 	case "thread-follower-steer-turn":
+		state, ok := o.local.State(threadID)
+		if !ok {
+			return nil, fmt.Errorf("Mimi owner state is unavailable")
+		}
+		activeTurnID, ok := desktopipc.RealActiveTurnID(state)
+		if !ok {
+			return nil, fmt.Errorf("Mimi owner has no verified active Turn")
+		}
 		return o.requestUpstreamDecoded(ctx, "turn/steer", map[string]any{
-			"threadId": threadID, "input": params["input"], "expectedTurnId": params["expectedTurnId"],
+			"threadId": threadID, "input": params["input"], "expectedTurnId": activeTurnID,
 			"clientUserMessageId": params["clientUserMessageId"], "additionalContext": params["additionalContext"],
 			"responsesapiClientMetadata": params["responsesapiClientMetadata"],
 		})
 	case "thread-follower-interrupt-turn":
+		state, ok := o.local.State(threadID)
+		if !ok {
+			return nil, fmt.Errorf("Mimi owner state is unavailable")
+		}
+		activeTurnID, ok := desktopipc.RealActiveTurnID(state)
+		if !ok || activeTurnID != firstStringFromAnyMap(params, "expectedTurnId") {
+			return nil, fmt.Errorf("Mimi owner active Turn does not match the interrupt request")
+		}
 		return o.requestUpstreamDecoded(ctx, "turn/interrupt", map[string]any{
-			"threadId": threadID, "turnId": params["expectedTurnId"],
+			"threadId": threadID, "turnId": activeTurnID,
 		})
 	case "thread-follower-compact-thread":
 		return o.requestUpstreamDecoded(ctx, "thread/compact/start", map[string]any{"threadId": threadID})
@@ -552,19 +663,23 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 		o.rememberLocalSettings(threadID, settings)
 		return map[string]any{}, nil
 	case "thread-follower-command-approval-decision":
-		return o.forwardDesktopServerRequestResponse(threadID, params, map[string]any{"decision": params["decision"]})
+		return o.forwardDesktopServerRequestResponse(ctx, threadID, params, map[string]any{"decision": params["decision"]})
 	case "thread-follower-file-approval-decision":
-		return o.forwardDesktopServerRequestResponse(threadID, params, map[string]any{"decision": params["decision"]})
+		return o.forwardDesktopServerRequestResponse(ctx, threadID, params, map[string]any{"decision": params["decision"]})
 	case "thread-follower-permissions-request-approval-response",
 		"thread-follower-submit-user-input", "thread-follower-submit-mcp-server-elicitation-response":
 		response, _ := params["response"].(map[string]any)
-		return o.forwardDesktopServerRequestResponse(threadID, params, response)
+		return o.forwardDesktopServerRequestResponse(ctx, threadID, params, response)
 	default:
 		return nil, fmt.Errorf("unsupported Desktop follower request %q", method)
 	}
 }
 
 func (o *desktopIPCGatewayOverlay) requestUpstream(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
+	threadID := firstStringFromAnyMap(params, "threadId", "thread_id")
+	if err := o.bridge.ValidateLocalOwnerLease(ctx, threadID); err != nil {
+		return nil, err
+	}
 	id := fmt.Sprintf("mimi-desktop-owner-%d", o.nextRequestID.Add(1))
 	idJSON, _ := json.Marshal(id)
 	idRaw := json.RawMessage(idJSON)
@@ -577,16 +692,16 @@ func (o *desktopIPCGatewayOverlay) requestUpstream(ctx context.Context, method s
 	if policyErr != nil {
 		return nil, fmt.Errorf("Gateway policy rejected Desktop follower request: %s", policyErr.message)
 	}
+	if err := o.bridge.ValidateLocalOwnerLease(ctx, threadID); err != nil {
+		o.policy.abortValidatedRequest(payload)
+		return nil, err
+	}
 	waiter := make(chan desktopIPCUpstreamResult, 1)
 	o.mu.Lock()
 	o.pendingUpstream[idKey] = waiter
 	o.mu.Unlock()
 	if err := writeWebSocketFrame(o.upstream, o.upstreamWriteMu, websocket.TextMessage, payload); err != nil {
-		o.mu.Lock()
-		delete(o.pendingUpstream, idKey)
-		o.mu.Unlock()
-		o.policy.cancelPendingHistoryRequest(&idRaw)
-		o.policy.forgetPending(&idRaw)
+		o.retirePendingUpstreamLater(idKey, waiter, &idRaw)
 		return nil, err
 	}
 	select {
@@ -595,21 +710,29 @@ func (o *desktopIPCGatewayOverlay) requestUpstream(ctx context.Context, method s
 	case <-ctx.Done():
 		// Delivery is uncertain. Keep a short-lived tombstone so a late App Server
 		// response is consumed instead of leaking to the mobile JSON-RPC client.
-		time.AfterFunc(desktopIPCUpstreamLateResponseWindow, func() {
-			o.mu.Lock()
-			removed := false
-			if o.pendingUpstream[idKey] == waiter {
-				delete(o.pendingUpstream, idKey)
-				removed = true
-			}
-			o.mu.Unlock()
-			if removed {
-				o.policy.cancelPendingHistoryRequest(&idRaw)
-				o.policy.forgetPending(&idRaw)
-			}
-		})
+		o.retirePendingUpstreamLater(idKey, waiter, &idRaw)
 		return nil, ctx.Err()
 	}
+}
+
+func (o *desktopIPCGatewayOverlay) retirePendingUpstreamLater(
+	idKey string,
+	waiter chan desktopIPCUpstreamResult,
+	id *json.RawMessage,
+) {
+	time.AfterFunc(desktopIPCUpstreamLateResponseWindow, func() {
+		o.mu.Lock()
+		removed := false
+		if o.pendingUpstream[idKey] == waiter {
+			delete(o.pendingUpstream, idKey)
+			removed = true
+		}
+		o.mu.Unlock()
+		if removed {
+			o.policy.cancelPendingHistoryRequest(id)
+			o.policy.forgetPending(id)
+		}
+	})
 }
 
 func (o *desktopIPCGatewayOverlay) requestUpstreamDecoded(ctx context.Context, method string, params map[string]any) (any, error) {
@@ -621,10 +744,14 @@ func (o *desktopIPCGatewayOverlay) requestUpstreamDecoded(ctx context.Context, m
 }
 
 func (o *desktopIPCGatewayOverlay) forwardDesktopServerRequestResponse(
+	ctx context.Context,
 	threadID string,
 	params map[string]any,
 	response map[string]any,
 ) (any, error) {
+	if err := o.bridge.ValidateLocalOwnerLease(ctx, threadID); err != nil {
+		return nil, err
+	}
 	requestID := params["requestId"]
 	key := scalarRequestIDKey(requestID)
 	o.mu.Lock()
@@ -638,24 +765,42 @@ func (o *desktopIPCGatewayOverlay) forwardDesktopServerRequestResponse(
 	if err != nil {
 		return nil, err
 	}
-	payload, policyErr := o.policy.validateClientFrameContext(context.Background(), websocket.TextMessage, payload)
+	payload, policyErr := o.policy.validateClientFrameContext(ctx, websocket.TextMessage, payload)
 	if policyErr != nil {
 		return nil, fmt.Errorf("Gateway policy rejected Desktop follower response: %s", policyErr.message)
 	}
+	if err := o.bridge.ValidateLocalOwnerLease(ctx, threadID); err != nil {
+		o.restorePolicyLocalServerRequest(pending)
+		return nil, err
+	}
 	if err := writeWebSocketFrame(o.upstream, o.upstreamWriteMu, websocket.TextMessage, payload); err != nil {
-		pendingID, _ := json.Marshal(pending.id)
-		pendingIDRaw := json.RawMessage(pendingID)
-		pendingParams, _ := json.Marshal(pending.params)
-		_ = o.policy.rememberPendingServerRequest(&pendingIDRaw, pending.method, pendingParams)
+		// A failed WebSocket write can still have reached App Server. Do not restore
+		// the response token; the Bridge blocks further writes until full history.
+		o.mu.Lock()
+		delete(o.localServerRequests, key)
+		o.mu.Unlock()
 		return nil, err
 	}
 	o.mu.Lock()
 	delete(o.localServerRequests, key)
 	o.mu.Unlock()
 	if state, changed := o.local.ResolveRequest(threadID, pending.id); changed {
-		_ = o.bridge.PublishLocalConversation(threadID, state)
+		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
 	}
 	return map[string]any{}, nil
+}
+
+func (o *desktopIPCGatewayOverlay) restorePolicyLocalServerRequest(pending desktopIPCServerRequest) {
+	pendingID, err := json.Marshal(pending.id)
+	if err != nil {
+		return
+	}
+	pendingParams, err := json.Marshal(pending.params)
+	if err != nil {
+		return
+	}
+	pendingIDRaw := json.RawMessage(pendingID)
+	_ = o.policy.rememberPendingServerRequest(&pendingIDRaw, pending.method, pendingParams)
 }
 
 func desktopFollowerServerResponse(pending desktopIPCServerRequest, response map[string]any) map[string]any {
@@ -710,6 +855,10 @@ func (o *desktopIPCGatewayOverlay) routeServerRequestResponse(
 	}
 	var response map[string]any
 	if json.Unmarshal(payload, &response) != nil || response["error"] != nil {
+		o.restorePolicyPendingAction(action)
+		o.mu.Lock()
+		delete(o.uncertainActions, key)
+		o.mu.Unlock()
 		return true, nil, &appServerGatewayPolicyError{
 			id: frame.ID, message: "Desktop sync 不接受失败的审批响应", target: "client",
 			data: map[string]any{"reason": "desktop_sync_response_unsupported", "accepted": false},
@@ -717,21 +866,49 @@ func (o *desktopIPCGatewayOverlay) routeServerRequestResponse(
 	}
 	method, params, err := desktopFollowerResponse(action, response["result"])
 	if err != nil {
+		o.restorePolicyPendingAction(action)
+		o.mu.Lock()
+		delete(o.uncertainActions, key)
+		o.mu.Unlock()
 		return true, nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error(), target: "client"}
 	}
 	_, requestErr := o.bridge.RequestDesktopOwner(ctx, method, params)
 	if requestErr != nil {
-		actionParams, _ := json.Marshal(action.Params)
-		actionID, _ := json.Marshal(action.ID)
-		actionIDRaw := json.RawMessage(actionID)
-		_ = o.policy.rememberPendingServerRequest(&actionIDRaw, action.Method, actionParams)
+		var ipcRequestErr *desktopipc.RequestError
+		if errors.As(requestErr, &ipcRequestErr) && ipcRequestErr.Delivery == desktopipc.DeliveryUncertain {
+			o.mu.Lock()
+			o.uncertainActions[key] = true
+			o.mu.Unlock()
+		} else {
+			o.restorePolicyPendingAction(action)
+			o.mu.Lock()
+			delete(o.uncertainActions, key)
+			o.mu.Unlock()
+		}
 		return true, nil, desktopIPCPolicyError(frame.ID, requestErr)
 	}
 	o.mu.Lock()
 	delete(o.pendingActions, key)
+	delete(o.uncertainActions, key)
 	o.mu.Unlock()
 	// Responses to server requests are fire-and-forget on the App Server wire.
 	return true, nil, nil
+}
+
+func (o *desktopIPCGatewayOverlay) restorePolicyPendingAction(action desktopipc.ServerRequest) bool {
+	if o == nil || o.policy == nil {
+		return false
+	}
+	actionParams, err := json.Marshal(action.Params)
+	if err != nil {
+		return false
+	}
+	actionID, err := json.Marshal(action.ID)
+	if err != nil {
+		return false
+	}
+	actionIDRaw := json.RawMessage(actionID)
+	return o.policy.rememberPendingServerRequest(&actionIDRaw, action.Method, actionParams) == nil
 }
 
 func desktopFollowerResponse(action desktopipc.ServerRequest, result any) (string, map[string]any, error) {
@@ -760,7 +937,7 @@ func desktopFollowerResponse(action desktopipc.ServerRequest, result any) (strin
 }
 
 func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
-	if !o.enabled() {
+	if !o.trackingEnabled() {
 		return
 	}
 	var frame appServerGatewayFrame
@@ -777,7 +954,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 		o.mu.Unlock()
 		if ok {
 			if state, changed := o.local.ResolveRequest(pending.threadID, rawGatewayID(frame.ID)); changed {
-				_ = o.bridge.PublishLocalConversation(pending.threadID, state)
+				_ = o.bridge.PublishLocalConversation(pending.threadID, o.ownerID, state)
 			}
 		}
 		return
@@ -833,7 +1010,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 // consumeInternalUpstreamResponse consumes responses created by Desktop follower
 // actions. It applies the same Gateway policy before the private waiter sees them.
 func (o *desktopIPCGatewayOverlay) consumeInternalUpstreamResponse(messageType int, payload []byte) bool {
-	if !o.enabled() {
+	if o == nil {
 		return false
 	}
 	var frame appServerGatewayFrame
@@ -866,7 +1043,7 @@ func (o *desktopIPCGatewayOverlay) consumeInternalUpstreamResponse(messageType i
 // observeAcceptedUpstreamFrame mirrors only Gateway-policy-approved App Server
 // responses and lifecycle messages into Desktop state.
 func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) {
-	if !o.enabled() {
+	if !o.trackingEnabled() {
 		return
 	}
 	var frame appServerGatewayFrame
@@ -902,14 +1079,15 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 				id: rawGatewayID(frame.ID), method: method, threadID: threadID, params: cloneAnyMap(params),
 			}
 			o.mu.Unlock()
-			_ = o.bridge.PublishLocalConversation(threadID, state)
+			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
 		}
 		return
 	}
 	threadID, state, changed := o.local.Apply(method, params)
 	if changed {
-		_ = o.ensureLocalOwner(threadID)
-		_ = o.bridge.PublishLocalConversation(threadID, state)
+		if o.ensureLocalOwner(threadID) == nil {
+			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+		}
 	}
 }
 
@@ -923,7 +1101,7 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(expectedThreadID string
 		return
 	}
 	if o.ensureLocalOwner(threadID) == nil {
-		_ = o.bridge.PublishLocalConversation(threadID, state)
+		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
 	}
 }
 
@@ -1047,10 +1225,18 @@ func (o *desktopIPCGatewayOverlay) syncServerRequests(event desktopipc.ThreadEve
 				Params: map[string]any{"threadId": event.ThreadID, "requestId": pending.ID, "mimiDesktopIPCMirror": true},
 			})
 			delete(o.pendingActions, key)
+			delete(o.uncertainActions, key)
 		}
 	}
 	for key, request := range next {
 		if _, exists := o.pendingActions[key]; exists {
+			if event.HistoryConfirmed && o.uncertainActions[key] && o.restorePolicyPendingAction(request) {
+				o.pendingActions[key] = request
+				delete(o.uncertainActions, key)
+				messages = append(messages, desktopipc.AppServerMessage{
+					ID: request.ID, Method: request.Method, Params: request.Params,
+				})
+			}
 			continue
 		}
 		o.pendingActions[key] = request
@@ -1080,6 +1266,15 @@ func desktopIPCActiveTurnError(id *json.RawMessage, activeTurnID string) *appSer
 		data: map[string]any{
 			"reason": "desktop_sync_active_turn", "accepted": false, "retryable": true,
 			"active_turn_id": activeTurnID,
+		},
+	}
+}
+
+func desktopIPCActiveTurnUnconfirmedError(id *json.RawMessage) *appServerGatewayPolicyError {
+	return &appServerGatewayPolicyError{
+		id: id, message: "Codex Desktop 当前活跃 Turn 尚未确认", target: "client",
+		data: map[string]any{
+			"reason": "desktop_sync_active_turn_unconfirmed", "accepted": false, "retryable": true,
 		},
 	}
 }

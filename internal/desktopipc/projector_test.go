@@ -21,7 +21,7 @@ func TestProjectConversationStateBuildsStandardThreadAndFiltersContext(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projection.Thread["id"] != "thread-1" || projection.ActiveTurnID != "turn-1" {
+	if projection.Thread["id"] != "thread-1" || projection.ActiveTurnID != "turn-1" || !projection.ActiveTurnIDTrusted {
 		t.Fatalf("unexpected projection: %#v", projection)
 	}
 	turn := projection.Turns[0].(map[string]any)
@@ -98,8 +98,34 @@ func TestProjectConversationStateReadsCanonicalTurnHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Turns) != 2 || projection.ActiveTurnID != "turn-b" {
+	if len(projection.Turns) != 2 || projection.ActiveTurnID != "turn-b" || !projection.ActiveTurnIDTrusted {
 		t.Fatalf("canonical history was not projected in order: %#v", projection)
+	}
+}
+
+func TestProjectConversationStateNeverTrustsSyntheticOrAmbiguousActiveTurnID(t *testing.T) {
+	for name, turns := range map[string][]any{
+		"missing id": {
+			map[string]any{"status": "inProgress", "items": []any{}},
+		},
+		"multiple active": {
+			map[string]any{"id": "turn-a", "status": "inProgress", "items": []any{}},
+			map[string]any{"id": "turn-b", "status": "inProgress", "items": []any{}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := map[string]any{"turns": turns}
+			projection, err := ProjectConversationState("thread-unsafe", state, time.Unix(0, 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.ActiveTurnID == "" || projection.ActiveTurnIDTrusted {
+				t.Fatalf("unsafe active Turn must remain display-only: %#v", projection)
+			}
+			if activeTurnID, ok := RealActiveTurnID(state); ok || activeTurnID != "" {
+				t.Fatalf("raw active Turn must not authorize writes: id=%q ok=%t", activeTurnID, ok)
+			}
+		})
 	}
 }
 
@@ -110,7 +136,7 @@ func TestProjectConversationStateUsesExplicitMobileItemSchema(t *testing.T) {
 				map[string]any{"id": "hook", "type": "hookPrompt", "prompt": "internal prompt"},
 				map[string]any{"id": "user", "type": "userMessage", "content": []any{
 					map[string]any{"type": "developerContext", "instructions": "secret"},
-					map[string]any{"type": "text", "text": "visible"},
+					map[string]any{"type": "text", "text": "visible", "developerInstructions": "secret", "privateMetadata": map[string]any{"host": true}},
 				}},
 				map[string]any{
 					"id": "tool", "type": "mcpToolCall", "status": "completed", "name": "browser",
@@ -127,8 +153,13 @@ func TestProjectConversationStateUsesExplicitMobileItemSchema(t *testing.T) {
 		t.Fatalf("private Desktop item types must be dropped: %#v", items)
 	}
 	user := items[0].(map[string]any)
-	if content := user["content"].([]any); len(content) != 1 {
+	content := user["content"].([]any)
+	if len(content) != 1 {
 		t.Fatalf("structured hidden user context reached the mobile projection: %#v", content)
+	}
+	textEntry := content[0].(map[string]any)
+	if textEntry["text"] != "visible" || textEntry["developerInstructions"] != nil || textEntry["privateMetadata"] != nil {
+		t.Fatalf("text user content leaked Desktop-only sibling fields: %#v", textEntry)
 	}
 	tool := items[1].(map[string]any)
 	if tool["privatePrompt"] != nil || tool["socketPath"] != nil || tool["output"] != "done" {

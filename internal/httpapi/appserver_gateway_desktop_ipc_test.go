@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http/httptest"
 	"sync"
@@ -145,6 +146,18 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 			})
 		case "thread-follower-start-turn":
 			fake.write(conn, map[string]any{
+				"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
+				"sourceClientId": "desktop-owner",
+				"params": map[string]any{
+					"conversationId": "thread-desktop",
+					"change": map[string]any{"type": "snapshot", "revision": 2, "conversationState": map[string]any{
+						"title": "Desktop", "cwd": "/tmp", "turns": []any{map[string]any{
+							"id": "turn-desktop", "status": "inProgress", "items": []any{},
+						}},
+					}},
+				},
+			})
+			fake.write(conn, map[string]any{
 				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
 				"handledByClientId": "desktop-owner",
 				"result":            map[string]any{"result": map[string]any{"turn": map[string]any{"id": "turn-desktop"}}},
@@ -177,16 +190,28 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 		t.Fatalf("unexpected follower result: %s", response)
 	}
 	handled, _, policyErr = overlay.routeClientFrame(context.Background(), []byte(`{
-		"id":8,"method":"turn/steer","params":{"threadId":"thread-desktop","expectedTurnId":"turn-desktop","input":[],"attachments":[],"additionalContext":{"source":"ipad"}}
+		"id":8,"method":"turn/steer","params":{"threadId":"thread-desktop","expectedTurnId":"turn-desktop","clientUserMessageId":"client-steer","input":[{"type":"text","text":"调整方向"}],"attachments":[],"additionalContext":{"source":"ipad"}}
 	}`))
 	if policyErr != nil || !handled {
 		t.Fatalf("Desktop-owned steer was not routed: handled=%v err=%+v", handled, policyErr)
 	}
 	select {
 	case params := <-steerParams:
-		if params["conversationId"] != "thread-desktop" || params["expectedTurnId"] != "turn-desktop" ||
-			params["input"] == nil || len(params) != 3 {
+		if params["conversationId"] != "thread-desktop" || params["input"] == nil ||
+			params["clientUserMessageId"] != "client-steer" {
 			t.Fatalf("Desktop-owned steer fields were lost: %#v", params)
+		}
+		if _, exists := params["expectedTurnId"]; exists {
+			t.Fatalf("Desktop 7119 follower Steer must not receive unsupported expectedTurnId: %#v", params)
+		}
+		restoreMessage, _ := params["restoreMessage"].(map[string]any)
+		restoreContext, _ := restoreMessage["context"].(map[string]any)
+		workspaceRoots, _ := restoreContext["workspaceRoots"].([]any)
+		attachments, _ := params["attachments"].([]any)
+		if restoreMessage["id"] != "client-steer" || restoreMessage["text"] != "调整方向" ||
+			restoreMessage["cwd"] != "/tmp" || restoreContext["prompt"] != "调整方向" ||
+			len(workspaceRoots) != 1 || workspaceRoots[0] != "/tmp" || len(attachments) != 0 {
+			t.Fatalf("Desktop-owned steer restore context is invalid: %#v", params)
 		}
 	default:
 		t.Fatal("Desktop follower steer was not delivered")
@@ -377,6 +402,40 @@ func TestDesktopIPCOverlayIsInactiveWhenDesktopIsNotRunning(t *testing.T) {
 	}
 }
 
+func TestDesktopIPCOverlayKeepsMimiProjectionCurrentWhileDesktopIsClosed(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, InitialState: desktopipc.StateDesktopNotRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	if err := bridge.ClaimLocalOwner("thread-offline", overlay.ownerID, overlay.handleDesktopFollowerRequest); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := overlay.local.SeedThread(map[string]any{
+		"id": "thread-offline", "cwd": "/tmp", "turns": []any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bridge.PublishLocalConversation("thread-offline", overlay.ownerID, state)
+	overlay.observeAcceptedUpstreamFrame([]byte(`{
+		"method":"turn/started","params":{"threadId":"thread-offline","turn":{"id":"turn-offline"}}
+	}`))
+	projection, ok := bridge.LocalProjection("thread-offline")
+	if !ok || projection.ActiveTurnID != "turn-offline" || !projection.ActiveTurnIDTrusted {
+		t.Fatalf("Desktop-closed App Server activity was not retained: %#v", projection)
+	}
+	overlay.observeAcceptedUpstreamFrame([]byte(`{
+		"method":"turn/completed","params":{"threadId":"thread-offline","turn":{"id":"turn-offline","status":"completed"}}
+	}`))
+	projection, ok = bridge.LocalProjection("thread-offline")
+	if !ok || projection.ActiveTurnID != "" || len(projection.Turns) != 1 {
+		t.Fatalf("Desktop-closed completion was not retained: %#v", projection)
+	}
+}
+
 func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *testing.T) {
 	var projectDir string
 	var turnStarts atomic.Int64
@@ -501,7 +560,7 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 		t.Fatal("turn/started was not projected to Desktop state")
 	}
 	_, err = bridge.RequestLocalOwner(context.Background(), "thread-local", "thread-follower-steer-turn", map[string]any{
-		"conversationId": "thread-local", "expectedTurnId": "turn-local",
+		"conversationId":      "thread-local",
 		"input":               []any{map[string]any{"type": "text", "text": "adjust"}},
 		"clientUserMessageId": "client-steer", "additionalContext": map[string]any{"source": "desktop"},
 		"responsesapiClientMetadata": map[string]any{"source": "desktop"},
@@ -556,6 +615,187 @@ func TestDesktopIPCOverlayErrorReleasesValidatedRequestState(t *testing.T) {
 	if len(policy.pendingThreads) != 0 || len(policy.pendingHistory) != 0 || len(policy.pendingClientRequests) != 0 {
 		t.Fatalf("Desktop overlay error leaked request state: threads=%d history=%d clients=%d",
 			len(policy.pendingThreads), len(policy.pendingHistory), len(policy.pendingClientRequests))
+	}
+}
+
+func TestDesktopIPCOverlayRestoresConsumedReverseResponseBeforeDelivery(t *testing.T) {
+	id := json.RawMessage(`"approval-1"`)
+	policy := &appServerGatewayPolicy{}
+	overlay := &desktopIPCGatewayOverlay{
+		policy: policy,
+		pendingActions: map[string]desktopipc.ServerRequest{
+			gatewayRequestIDKey(&id): {
+				ID: "approval-1", Method: "item/commandExecution/requestApproval",
+				Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1"},
+			},
+		},
+	}
+	frame := appServerGatewayFrame{ID: &id}
+	handled, _, policyErr := overlay.routeServerRequestResponse(
+		context.Background(), frame, []byte(`{"id":"approval-1","error":{"message":"client rejected"}}`),
+	)
+	if !handled || policyErr == nil {
+		t.Fatalf("invalid reverse response was not rejected: handled=%t err=%+v", handled, policyErr)
+	}
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("pre-delivery reverse response failure did not restore Gateway pending state")
+	}
+}
+
+func TestDesktopIPCOverlayRearmsUncertainReverseResponseAfterConfirmedHistory(t *testing.T) {
+	fake := &gatewayFakeDesktopIPC{}
+	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
+		switch request.Method {
+		case "thread-stream-following-changed":
+			fake.write(conn, map[string]any{
+				"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
+				"sourceClientId": "desktop-owner",
+				"params": map[string]any{
+					"conversationId": "thread-approval",
+					"change": map[string]any{"type": "snapshot", "revision": 1, "conversationState": map[string]any{
+						"title": "approval", "cwd": "/tmp", "turns": []any{},
+					}},
+				},
+			})
+		case "thread-owner-discovery":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{}, "handledByClientId": "desktop-owner",
+			})
+		case "thread-follower-load-complete-history":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID), "resultType": "success",
+				"result": map[string]any{"revision": 1}, "handledByClientId": "desktop-owner",
+			})
+		case "thread-follower-command-approval-decision":
+			// Leave delivery uncertain so the policy token cannot be restored until
+			// complete history proves the approval is still pending.
+			return
+		}
+	}
+	bridge := newReadyGatewayBridge(t, fake, 30*time.Millisecond)
+
+	id := json.RawMessage(`"approval-uncertain"`)
+	action := desktopipc.ServerRequest{
+		ID: "approval-uncertain", Method: "item/commandExecution/requestApproval",
+		Params: map[string]any{
+			"threadId": "thread-approval", "turnId": "turn-1", "itemId": "item-1",
+		},
+	}
+	actionParams, _ := json.Marshal(action.Params)
+	policy := &appServerGatewayPolicy{}
+	if err := policy.rememberPendingServerRequest(&id, action.Method, actionParams); err != nil {
+		t.Fatal(err)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, policy, nil, nil)
+	projection, owned, err := overlay.discoverDesktopOwner(context.Background(), "thread-approval")
+	if err != nil || !owned || projection.Thread == nil {
+		t.Fatalf("Desktop approval fixture did not become authoritative: owned=%t projection=%+v err=%v", owned, projection, err)
+	}
+	validated, policyErr := policy.validateClientFrameContext(
+		context.Background(), websocket.TextMessage,
+		[]byte(`{"id":"approval-uncertain","result":{"decision":"accept"}}`),
+	)
+	if policyErr != nil {
+		t.Fatalf("public policy rejected the fixture: %+v", policyErr)
+	}
+	key := gatewayRequestIDKey(&id)
+	overlay.pendingActions[key] = action
+	handled, _, routeErr := overlay.routeClientFrame(context.Background(), validated)
+	if !handled || routeErr == nil || routeErr.data["delivery"] != string(desktopipc.DeliveryUncertain) {
+		t.Fatalf("uncertain reverse response was not retained: handled=%t err=%+v", handled, routeErr)
+	}
+	if _, ok := policy.pendingServerRequest(&id); ok {
+		t.Fatal("uncertain response was rearmed before authoritative history")
+	}
+	overlay.mu.Lock()
+	uncertain := overlay.uncertainActions[key]
+	overlay.mu.Unlock()
+	if !uncertain {
+		t.Fatal("uncertain reverse response was not tracked")
+	}
+	messages := overlay.syncServerRequests(desktopipc.ThreadEvent{
+		ThreadID: "thread-approval", HistoryConfirmed: true,
+		Requests: []desktopipc.ServerRequest{action},
+	})
+	if len(messages) != 1 || messages[0].Method != action.Method {
+		t.Fatalf("confirmed pending approval was not replayed: %#v", messages)
+	}
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("confirmed pending approval did not restore the Gateway response token")
+	}
+	overlay.mu.Lock()
+	uncertain = overlay.uncertainActions[key]
+	overlay.mu.Unlock()
+	if uncertain {
+		t.Fatal("confirmed approval remained marked uncertain")
+	}
+}
+
+func TestDesktopIPCOverlayBlocksFirstWriteAfterUncertainLocalOwnerRelease(t *testing.T) {
+	fake := &gatewayFakeDesktopIPC{}
+	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
+		if request.Method == "thread-owner-discovery" {
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID),
+				"resultType": "error", "error": "no-client-found",
+			})
+		}
+	}
+	bridge := newReadyGatewayBridge(t, fake, 40*time.Millisecond)
+	if err := bridge.ClaimLocalOwner("thread-local-release", "gateway-old", func(context.Context, string, json.RawMessage) (any, error) {
+		return nil, context.Canceled
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridge.RequestLocalOwner(context.Background(), "thread-local-release", "thread-follower-start-turn", map[string]any{
+		"conversationId": "thread-local-release",
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("uncertain local fixture failed: %v", err)
+	}
+	bridge.ReleaseLocalOwner("thread-local-release", "gateway-old")
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	handled, _, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":91,"method":"turn/start","params":{"threadId":"thread-local-release","input":[]}
+	}`))
+	if !handled || policyErr == nil {
+		t.Fatalf("replacement gateway bypassed the local recovery gate: handled=%t err=%+v", handled, policyErr)
+	}
+	if !bridge.LocalOwnerNeedsRecovery("thread-local-release") {
+		t.Fatal("replacement gateway cleared local uncertainty without complete history")
+	}
+}
+
+func TestDesktopIPCOverlayDoesNotLeakDesktopResponseWhenDesktopCloses(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, InitialState: desktopipc.StateDesktopNotRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := json.RawMessage(`"approval-offline"`)
+	params := json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}`)
+	policy := &appServerGatewayPolicy{}
+	if err := policy.rememberPendingServerRequest(&id, "item/commandExecution/requestApproval", params); err != nil {
+		t.Fatal(err)
+	}
+	validated, policyErr := policy.validateClientFrameContext(
+		context.Background(), websocket.TextMessage, []byte(`{"id":"approval-offline","result":{"decision":"accept"}}`),
+	)
+	if policyErr != nil {
+		t.Fatalf("public policy rejected the fixture: %+v", policyErr)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, policy, nil, nil)
+	overlay.pendingActions[gatewayRequestIDKey(&id)] = desktopipc.ServerRequest{
+		ID: "approval-offline", Method: "item/commandExecution/requestApproval",
+		Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1"},
+	}
+	handled, _, routeErr := overlay.routeClientFrame(context.Background(), validated)
+	if !handled || routeErr == nil || routeErr.data["response_to_server_request"] != true {
+		t.Fatalf("closed Desktop response was not rejected locally: handled=%t err=%+v", handled, routeErr)
+	}
+	if _, ok := policy.pendingServerRequest(&id); !ok {
+		t.Fatal("closed Desktop response did not restore the consumed policy pending request")
 	}
 }
 

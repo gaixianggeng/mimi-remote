@@ -46,14 +46,16 @@ type Broadcast struct {
 }
 
 type IncomingRequest struct {
-	RequestID      json.RawMessage
-	Method         string
-	Version        int
-	SourceClientID string
-	Params         json.RawMessage
+	RequestID            json.RawMessage
+	Method               string
+	Version              int
+	SourceClientID       string
+	ConnectionGeneration uint64
+	Params               json.RawMessage
 }
 
 type RequestHandler func(context.Context, IncomingRequest) (any, error)
+type RequestResponseHandler func(IncomingRequest, error)
 
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type VerifySocketFunc func(string) error
@@ -75,6 +77,7 @@ type ClientOptions struct {
 	OnDisconnect   func(uint64)
 	CanHandle      func(IncomingRequest) bool
 	HandleRequest  RequestHandler
+	OnResponseSent RequestResponseHandler
 }
 
 type pendingResponse struct {
@@ -96,14 +99,16 @@ type Client struct {
 	status *statusStore
 	nextID atomic.Uint64
 
-	mu             sync.RWMutex
-	conn           net.Conn
-	clientID       string
-	generation     uint64
-	nextGeneration uint64
-	pending        map[string]pendingResponse
-	ready          chan struct{}
-	started        bool
+	mu               sync.RWMutex
+	conn             net.Conn
+	clientID         string
+	generation       uint64
+	nextGeneration   uint64
+	pending          map[string]pendingResponse
+	ready            chan struct{}
+	started          bool
+	connectionCtx    context.Context
+	connectionCancel context.CancelFunc
 
 	writeMu sync.Mutex
 	stop    context.CancelFunc
@@ -201,29 +206,66 @@ func (c *Client) WaitReady(ctx context.Context) error {
 }
 
 func (c *Client) Request(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	result, _, err := c.request(ctx, "", method, params)
+	result, _, err := c.request(ctx, "", method, params, 0)
 	return result, err
 }
 
 func (c *Client) RequestTo(ctx context.Context, targetClientID, method string, params any) (json.RawMessage, error) {
-	result, _, err := c.request(ctx, strings.TrimSpace(targetClientID), method, params)
+	result, _, err := c.request(ctx, strings.TrimSpace(targetClientID), method, params, 0)
+	return result, err
+}
+
+// RequestToGeneration binds a routed request to the connection generation on
+// which the logical Desktop owner was discovered. It never retries the request
+// on a replacement connection.
+func (c *Client) RequestToGeneration(
+	ctx context.Context,
+	targetClientID, method string,
+	params any,
+	expectedGeneration uint64,
+) (json.RawMessage, error) {
+	if expectedGeneration == 0 {
+		return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection generation is unavailable")}
+	}
+	result, _, err := c.request(ctx, strings.TrimSpace(targetClientID), method, params, expectedGeneration)
 	return result, err
 }
 
 // FindHandler asks the IPC server to route the non-mutating owner-discovery
 // request. The server returns the client ID that accepted it.
 func (c *Client) FindHandler(ctx context.Context, method string, params any) (string, error) {
-	_, handledByClientID, err := c.request(ctx, "", method, params)
+	_, handledByClientID, err := c.request(ctx, "", method, params, 0)
 	return handledByClientID, err
 }
 
-func (c *Client) request(ctx context.Context, targetClientID, method string, params any) (json.RawMessage, string, error) {
+func (c *Client) FindHandlerGeneration(
+	ctx context.Context,
+	method string,
+	params any,
+	expectedGeneration uint64,
+) (string, error) {
+	if expectedGeneration == 0 {
+		return "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection generation is unavailable")}
+	}
+	_, handledByClientID, err := c.request(ctx, "", method, params, expectedGeneration)
+	return handledByClientID, err
+}
+
+func (c *Client) request(
+	ctx context.Context,
+	targetClientID, method string,
+	params any,
+	expectedGeneration uint64,
+) (json.RawMessage, string, error) {
 	requestID := fmt.Sprintf("mimi-%d", c.nextID.Add(1))
 	c.mu.RLock()
 	conn, clientID, generation := c.conn, c.clientID, c.generation
 	c.mu.RUnlock()
 	if conn == nil || clientID == "" {
 		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("not connected")}
+	}
+	if expectedGeneration != 0 && generation != expectedGeneration {
+		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection generation changed")}
 	}
 	payload, err := marshalRequest(requestID, clientID, targetClientID, method, params, false)
 	if err != nil {
@@ -234,7 +276,8 @@ func (c *Client) request(ctx context.Context, targetClientID, method string, par
 		result: make(chan requestResult, 1),
 	}
 	c.mu.Lock()
-	if c.conn != conn || c.clientID == "" || c.generation != waiter.generation {
+	if c.conn != conn || c.clientID == "" || c.generation != waiter.generation ||
+		expectedGeneration != 0 && c.generation != expectedGeneration {
 		c.mu.Unlock()
 		return nil, "", &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection changed")}
 	}
@@ -259,11 +302,25 @@ func (c *Client) request(ctx context.Context, targetClientID, method string, par
 }
 
 func (c *Client) Broadcast(method string, params any) error {
+	return c.broadcast(method, params, 0)
+}
+
+func (c *Client) BroadcastGeneration(method string, params any, expectedGeneration uint64) error {
+	if expectedGeneration == 0 {
+		return &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection generation is unavailable")}
+	}
+	return c.broadcast(method, params, expectedGeneration)
+}
+
+func (c *Client) broadcast(method string, params any, expectedGeneration uint64) error {
 	c.mu.RLock()
-	conn, clientID := c.conn, c.clientID
+	conn, clientID, generation := c.conn, c.clientID, c.generation
 	c.mu.RUnlock()
 	if conn == nil || clientID == "" {
 		return &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("not connected")}
+	}
+	if expectedGeneration != 0 && generation != expectedGeneration {
+		return &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("connection generation changed")}
 	}
 	payload, err := marshalBroadcast(clientID, method, params)
 	if err != nil {
@@ -407,10 +464,13 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 			_ = conn.Close()
 			return fmt.Errorf("initialize response did not include clientId")
 		}
+		connectionCtx, connectionCancel := context.WithCancel(ctx)
 		c.mu.Lock()
 		c.clientID = result.ClientID
 		c.nextGeneration++
 		c.generation = c.nextGeneration
+		c.connectionCtx = connectionCtx
+		c.connectionCancel = connectionCancel
 		c.mu.Unlock()
 		break
 	}
@@ -499,10 +559,10 @@ func (c *Client) dispatch(conn net.Conn, incoming envelope) {
 		}
 		request := IncomingRequest{
 			RequestID: candidate.RequestID, Method: candidate.Method, Version: candidate.Version,
-			SourceClientID: sourceClientID, Params: candidate.Params,
+			SourceClientID: sourceClientID, ConnectionGeneration: c.connectionGenerationFor(conn), Params: candidate.Params,
 		}
 		canHandle := requestVersionMatches(request) && c.opts.CanHandle != nil && c.opts.CanHandle(request)
-		c.writeJSON(conn, map[string]any{
+		_ = c.writeJSON(conn, map[string]any{
 			"type": "client-discovery-response", "requestId": json.RawMessage(incoming.RequestID),
 			"response": map[string]any{"canHandle": canHandle},
 		})
@@ -518,9 +578,18 @@ func isNoClientFound(value, method string) bool {
 }
 
 func (c *Client) handleIncomingRequest(conn net.Conn, incoming envelope) {
+	c.mu.RLock()
+	if c.conn != conn || c.generation == 0 || c.connectionCtx == nil {
+		c.mu.RUnlock()
+		return
+	}
+	generation := c.generation
+	connectionCtx := c.connectionCtx
+	handledByClientID := c.clientID
+	c.mu.RUnlock()
 	request := IncomingRequest{
 		RequestID: incoming.RequestID, Method: incoming.Method, Version: incoming.Version,
-		SourceClientID: incoming.SourceClientID, Params: incoming.Params,
+		SourceClientID: incoming.SourceClientID, ConnectionGeneration: generation, Params: incoming.Params,
 	}
 	var result any
 	var err error
@@ -531,13 +600,13 @@ func (c *Client) handleIncomingRequest(conn net.Conn, incoming envelope) {
 	} else if c.opts.HandleRequest == nil {
 		err = fmt.Errorf("unsupported follower request")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), c.opts.RequestTimeout)
+		ctx, cancel := context.WithTimeout(connectionCtx, c.opts.RequestTimeout)
 		result, err = c.opts.HandleRequest(ctx, request)
 		cancel()
 	}
 	response := map[string]any{
 		"type": "response", "requestId": json.RawMessage(incoming.RequestID), "method": incoming.Method,
-		"handledByClientId": c.currentClientID(),
+		"handledByClientId": handledByClientID,
 	}
 	if err != nil {
 		response["resultType"] = "error"
@@ -546,7 +615,10 @@ func (c *Client) handleIncomingRequest(conn net.Conn, incoming envelope) {
 		response["resultType"] = "success"
 		response["result"] = result
 	}
-	c.writeJSON(conn, response)
+	writeErr := c.writeJSON(conn, response)
+	if c.opts.OnResponseSent != nil {
+		c.opts.OnResponseSent(request, writeErr)
+	}
 }
 
 func requestVersionMatches(request IncomingRequest) bool {
@@ -554,11 +626,12 @@ func requestVersionMatches(request IncomingRequest) bool {
 	return ok && request.Version == expected
 }
 
-func (c *Client) writeJSON(conn net.Conn, value any) {
+func (c *Client) writeJSON(conn net.Conn, value any) error {
 	payload, err := json.Marshal(value)
-	if err == nil {
-		_ = c.write(conn, payload)
+	if err != nil {
+		return err
 	}
+	return c.write(conn, payload)
 }
 
 func (c *Client) write(conn net.Conn, payload []byte) error {
@@ -574,9 +647,15 @@ func (c *Client) disconnect(cause error) {
 	c.conn = nil
 	c.clientID = ""
 	c.generation = 0
+	connectionCancel := c.connectionCancel
+	c.connectionCtx = nil
+	c.connectionCancel = nil
 	pending := c.pending
 	c.pending = make(map[string]pendingResponse)
 	c.mu.Unlock()
+	if connectionCancel != nil {
+		connectionCancel()
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -586,6 +665,15 @@ func (c *Client) disconnect(cause error) {
 	if conn != nil && generation != 0 && c.opts.OnDisconnect != nil {
 		c.opts.OnDisconnect(generation)
 	}
+}
+
+func (c *Client) connectionGenerationFor(conn net.Conn) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conn != conn {
+		return 0
+	}
+	return c.generation
 }
 
 func (c *Client) removePending(requestID string) {

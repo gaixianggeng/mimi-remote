@@ -13,11 +13,12 @@ import (
 )
 
 type ThreadEvent struct {
-	ThreadID   string
-	Projection Projection
-	Previous   *Projection
-	Requests   []ServerRequest
-	Stale      bool
+	ThreadID         string
+	Projection       Projection
+	Previous         *Projection
+	Requests         []ServerRequest
+	Stale            bool
+	HistoryConfirmed bool
 }
 
 type ServerRequest struct {
@@ -59,6 +60,44 @@ type localStream struct {
 	broadcasted bool
 }
 
+var ErrDesktopStartInFlight = errors.New("Desktop start is already pending or uncertain")
+var ErrDesktopDeliveryUncertain = errors.New("Desktop delivery is uncertain; complete history is required")
+
+type desktopStartReservation struct {
+	token                uint64
+	ownerEpoch           uint64
+	connectionGeneration uint64
+	baselineTurnIDs      map[string]struct{}
+	expectedTurnID       string
+}
+
+type localOwnerLease struct {
+	threadID             string
+	ownerID              string
+	ownerEpoch           uint64
+	connectionGeneration uint64
+	followerClientID     string
+}
+
+type localRequestInFlight struct {
+	requestID            string
+	ownerID              string
+	ownerEpoch           uint64
+	connectionGeneration uint64
+}
+
+type desktopHistoryCheckpoint struct {
+	token                uint64
+	ownerID              string
+	ownerEpoch           uint64
+	connectionGeneration uint64
+	uncertaintyEpoch     uint64
+	startToken           uint64
+	revision             int64
+}
+
+type localOwnerLeaseContextKey struct{}
+
 // Bridge is the only Desktop IPC connection and ownership coordinator in an
 // agentd process. Gateway connections subscribe to it instead of opening their
 // own IPC clients.
@@ -66,31 +105,49 @@ type Bridge struct {
 	client *Client
 	store  *ThreadStore
 
-	mu                   sync.RWMutex
-	eventsMu             sync.Mutex
-	projections          map[string]Projection
-	owners               map[string]threadOwner
-	ownerEpochs          map[string]uint64
-	subscribers          map[uint64]chan ThreadEvent
-	nextSubID            uint64
-	localStreams         map[string]localStream
-	publishers           map[string]*sync.Mutex
-	followed             map[string]struct{}
-	refollow             map[string]struct{}
-	connectionGeneration uint64
+	mu                      sync.RWMutex
+	eventsMu                sync.Mutex
+	projections             map[string]Projection
+	owners                  map[string]threadOwner
+	ownerEpochs             map[string]uint64
+	subscribers             map[uint64]chan ThreadEvent
+	nextSubID               uint64
+	localStreams            map[string]localStream
+	publishers              map[string]*sync.Mutex
+	followed                map[string]struct{}
+	refollow                map[string]struct{}
+	resyncing               map[string]uint64
+	desktopStarts           map[string]desktopStartReservation
+	nextDesktopStart        uint64
+	desktopHistory          map[string]desktopHistoryCheckpoint
+	nextDesktopHistory      uint64
+	desktopUncertaintyEpoch map[string]uint64
+	incomingOps             map[string]*sync.Mutex
+	localInFlight           map[string]localRequestInFlight
+	localUncertain          map[string]bool
+	desktopUncertain        map[string]bool
+	connectionGeneration    uint64
 }
 
 func NewBridge(options BridgeOptions) (*Bridge, error) {
 	bridge := &Bridge{
-		store:        NewThreadStore(),
-		projections:  make(map[string]Projection),
-		owners:       make(map[string]threadOwner),
-		ownerEpochs:  make(map[string]uint64),
-		subscribers:  make(map[uint64]chan ThreadEvent),
-		localStreams: make(map[string]localStream),
-		publishers:   make(map[string]*sync.Mutex),
-		followed:     make(map[string]struct{}),
-		refollow:     make(map[string]struct{}),
+		store:                   NewThreadStore(),
+		projections:             make(map[string]Projection),
+		owners:                  make(map[string]threadOwner),
+		ownerEpochs:             make(map[string]uint64),
+		subscribers:             make(map[uint64]chan ThreadEvent),
+		localStreams:            make(map[string]localStream),
+		publishers:              make(map[string]*sync.Mutex),
+		followed:                make(map[string]struct{}),
+		refollow:                make(map[string]struct{}),
+		resyncing:               make(map[string]uint64),
+		desktopStarts:           make(map[string]desktopStartReservation),
+		desktopHistory:          make(map[string]desktopHistoryCheckpoint),
+		desktopUncertaintyEpoch: make(map[string]uint64),
+		incomingOps:             make(map[string]*sync.Mutex),
+		localInFlight:           make(map[string]localRequestInFlight),
+		localUncertain:          make(map[string]bool),
+		desktopUncertain:        make(map[string]bool),
 	}
 	clientOptions := options.ClientOptions
 	clientOptions.Enabled = options.Enabled && !options.LegacyCleanupRequired && options.InitialState == ""
@@ -102,6 +159,7 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 	clientOptions.OnDisconnect = bridge.handleDisconnect
 	clientOptions.CanHandle = bridge.canHandleIncoming
 	clientOptions.HandleRequest = bridge.handleIncoming
+	clientOptions.OnResponseSent = bridge.handleIncomingResponse
 	client, err := NewClient(clientOptions)
 	if err != nil {
 		return nil, err
@@ -179,14 +237,19 @@ func (b *Bridge) FollowThread(_ context.Context, threadID string) error {
 	if threadID == "" {
 		return fmt.Errorf("thread id is required")
 	}
-	if err := b.client.Broadcast("thread-stream-following-changed", map[string]any{
+	generation := b.client.ConnectionGeneration()
+	if err := b.client.BroadcastGeneration("thread-stream-following-changed", map[string]any{
 		"hostId":         "local",
 		"conversationId": threadID,
 		"following":      true,
-	}); err != nil {
+	}, generation); err != nil {
 		return err
 	}
 	b.mu.Lock()
+	if b.connectionGeneration != generation || generation == 0 {
+		b.mu.Unlock()
+		return fmt.Errorf("Desktop IPC connection generation changed while following thread")
+	}
 	b.followed[threadID] = struct{}{}
 	b.mu.Unlock()
 	return nil
@@ -199,17 +262,41 @@ func (b *Bridge) DiscoverDesktopOwner(ctx context.Context, threadID string) (boo
 	}
 	b.mu.RLock()
 	startEpoch := b.ownerEpochs[threadID]
+	startGeneration := b.connectionGeneration
 	current := b.owners[threadID]
 	b.mu.RUnlock()
 	if current.kind == threadOwnerMimi {
 		return false, fmt.Errorf("thread already has an active Mimi writer")
 	}
-	ownerClientID, err := b.client.FindHandler(ctx, "thread-owner-discovery", map[string]any{
+	if startGeneration == 0 {
+		return false, fmt.Errorf("Desktop IPC connection generation is unavailable")
+	}
+	ownerClientID, err := b.client.FindHandlerGeneration(ctx, "thread-owner-discovery", map[string]any{
 		"hostId": "local", "conversationId": threadID,
-	})
+	}, startGeneration)
 	if err != nil {
 		if SafeToFallback(err) {
-			b.ReleaseDesktopOwner(threadID)
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			current = b.owners[threadID]
+			if b.connectionGeneration != startGeneration || b.ownerEpochs[threadID] != startEpoch {
+				if current.kind == threadOwnerDesktop && current.connectionGeneration == b.connectionGeneration {
+					return true, nil
+				}
+				return false, fmt.Errorf("thread owner changed during Desktop discovery")
+			}
+			if current.kind == threadOwnerMimi {
+				return false, fmt.Errorf("thread owner changed to Mimi during Desktop discovery")
+			}
+			if b.desktopUncertain[threadID] {
+				return false, ErrDesktopDeliveryUncertain
+			}
+			if current.kind == threadOwnerDesktop {
+				b.clearOwnerLocked(threadID)
+			}
+			b.clearDesktopRecoveryLocked(threadID)
+			delete(b.projections, threadID)
+			b.store.Remove(threadID)
 			return false, nil
 		}
 		return false, err
@@ -229,7 +316,8 @@ func (b *Bridge) DiscoverDesktopOwner(ctx context.Context, threadID string) (boo
 		}
 		return true, nil
 	}
-	if b.ownerEpochs[threadID] != startEpoch || b.connectionGeneration == 0 {
+	if b.ownerEpochs[threadID] != startEpoch || b.connectionGeneration == 0 ||
+		b.connectionGeneration != startGeneration {
 		return false, fmt.Errorf("thread owner changed during Desktop discovery")
 	}
 	b.setOwnerLocked(threadID, threadOwner{
@@ -240,14 +328,22 @@ func (b *Bridge) DiscoverDesktopOwner(ctx context.Context, threadID string) (boo
 }
 
 func (b *Bridge) DesktopProjection(threadID string) (Projection, bool) {
+	return b.desktopProjection(threadID, false)
+}
+
+func (b *Bridge) desktopProjection(threadID string, allowResync bool) (Projection, bool) {
 	if b.Status().State != StateReady {
 		return Projection{}, false
 	}
+	threadID = strings.TrimSpace(threadID)
 	b.mu.RLock()
-	projection, ok := b.projections[strings.TrimSpace(threadID)]
-	owner := b.owners[strings.TrimSpace(threadID)]
+	projection, ok := b.projections[threadID]
+	owner := b.owners[threadID]
+	resyncing := b.resyncing[threadID] != 0
+	generation := b.connectionGeneration
 	b.mu.RUnlock()
-	return projection, ok && owner.kind == threadOwnerDesktop && owner.ownerID != ""
+	return projection, ok && (allowResync || !resyncing) && owner.kind == threadOwnerDesktop &&
+		owner.ownerID != "" && owner.connectionGeneration == generation && generation != 0
 }
 
 func (b *Bridge) LocalProjection(threadID string) (Projection, bool) {
@@ -277,18 +373,55 @@ func (b *Bridge) LocalOwnerIs(threadID, ownerID string) bool {
 	return owner.kind == threadOwnerMimi && owner.ownerID == strings.TrimSpace(ownerID)
 }
 
+func (b *Bridge) LocalOwnerNeedsRecovery(threadID string) bool {
+	threadID = strings.TrimSpace(threadID)
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, responsePending := b.localInFlight[threadID]
+	return b.localUncertain[threadID] || responsePending
+}
+
 func (b *Bridge) RequestLocalOwner(ctx context.Context, threadID, method string, params any) (any, error) {
 	payload, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
 	}
-	b.mu.RLock()
-	owner := b.owners[strings.TrimSpace(threadID)]
-	b.mu.RUnlock()
+	threadID = strings.TrimSpace(threadID)
+	incoming := b.incomingForThread(threadID)
+	incoming.Lock()
+	defer incoming.Unlock()
+	b.mu.Lock()
+	owner := b.owners[threadID]
 	if owner.kind != threadOwnerMimi || owner.handle == nil {
+		b.mu.Unlock()
 		return nil, fmt.Errorf("no-client-found: Mimi owner is unavailable")
 	}
-	return owner.handle(ctx, method, payload)
+	if b.localUncertain[threadID] && desktopFollowerMethodMutates(method) {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("Mimi owner delivery is uncertain; complete history is required")
+	}
+	if _, pending := b.localInFlight[threadID]; pending && desktopFollowerMethodMutates(method) {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("Mimi owner response is awaiting IPC delivery")
+	}
+	lease := localOwnerLease{
+		threadID: threadID, ownerID: owner.ownerID, ownerEpoch: b.ownerEpochs[threadID],
+		connectionGeneration: b.connectionGeneration, followerClientID: owner.followerClientID,
+	}
+	b.mu.Unlock()
+	result, err := owner.handle(context.WithValue(ctx, localOwnerLeaseContextKey{}, lease), method, payload)
+	b.mu.Lock()
+	leaseStillCurrent := b.localOwnerLeaseStillCurrentLocked(lease)
+	current := b.owners[threadID]
+	ownerStillCurrent := current.kind == threadOwnerMimi && current.ownerID == lease.ownerID &&
+		b.ownerEpochs[threadID] == lease.ownerEpoch
+	if desktopFollowerMethodMutates(method) && ownerStillCurrent && (err != nil || !leaseStillCurrent) {
+		b.localUncertain[threadID] = true
+	} else if leaseStillCurrent && err == nil && method == "thread-follower-load-complete-history" {
+		delete(b.localUncertain, threadID)
+	}
+	b.mu.Unlock()
+	return result, err
 }
 
 func (b *Bridge) WaitDesktopProjection(ctx context.Context, threadID string) (Projection, bool) {
@@ -319,7 +452,7 @@ func (b *Bridge) WaitDesktopProjectionRevision(ctx context.Context, threadID str
 	threadID = strings.TrimSpace(threadID)
 	updates, unsubscribe := b.Subscribe()
 	defer unsubscribe()
-	if projection, ok := b.DesktopProjection(threadID); ok {
+	if projection, ok := b.desktopProjection(threadID, true); ok {
 		if _, revision, stored := b.store.Get(threadID); stored && revision >= minimumRevision {
 			return projection, true
 		}
@@ -339,10 +472,124 @@ func (b *Bridge) WaitDesktopProjectionRevision(ctx context.Context, threadID str
 				return Projection{}, false
 			}
 			if _, revision, stored := b.store.Get(threadID); stored && revision >= minimumRevision {
-				return event.Projection, true
+				projection, projected := b.desktopProjection(threadID, true)
+				return projection, projected
 			}
 		}
 	}
+}
+
+// ConfirmDesktopHistory clears an uncertain Desktop delivery only after the
+// complete-history snapshot named by the Desktop response is authoritative for
+// the same owner and connection generation.
+func (b *Bridge) ConfirmDesktopHistory(threadID string, minimumRevision int64) bool {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || minimumRevision <= 0 {
+		return false
+	}
+	b.mu.Lock()
+	owner := b.owners[threadID]
+	recovery, recovered := b.desktopHistory[threadID]
+	if owner.kind != threadOwnerDesktop || owner.ownerID == "" || b.connectionGeneration == 0 ||
+		owner.connectionGeneration != b.connectionGeneration ||
+		owner.connectionGeneration != b.client.ConnectionGeneration() || !recovered ||
+		recovery.ownerID != owner.ownerID || recovery.ownerEpoch != b.ownerEpochs[threadID] ||
+		recovery.connectionGeneration != owner.connectionGeneration || recovery.revision != minimumRevision ||
+		recovery.uncertaintyEpoch != b.desktopUncertaintyEpoch[threadID] {
+		b.mu.Unlock()
+		return false
+	}
+	state, revision, stored := b.store.Get(threadID)
+	if !stored || revision < minimumRevision {
+		b.mu.Unlock()
+		return false
+	}
+	projection, projected := b.projections[threadID]
+	if !projected {
+		b.mu.Unlock()
+		return false
+	}
+	// A complete-history response is the recovery barrier for an uncertain
+	// start. If it contains no new Turn, the start was not committed. If it
+	// contains one, normal snapshot reconciliation keeps the reservation until
+	// that Turn reaches a terminal state.
+	if b.desktopUncertain[threadID] && recovery.startToken != 0 {
+		if reservation, pending := b.desktopStarts[threadID]; pending && reservation.token == recovery.startToken {
+			reservation.ownerEpoch = b.ownerEpochs[threadID]
+			reservation.connectionGeneration = owner.connectionGeneration
+			b.desktopStarts[threadID] = reservation
+			b.reconcileDesktopStartLocked(threadID, state)
+			if reservation, stillPending := b.desktopStarts[threadID]; stillPending && reservation.expectedTurnID == "" {
+				newTurnCount := 0
+				for turnID := range conversationStateTurnIDs(state) {
+					if _, existed := reservation.baselineTurnIDs[turnID]; !existed {
+						newTurnCount++
+					}
+				}
+				if newTurnCount == 0 {
+					delete(b.desktopStarts, threadID)
+				}
+			}
+		}
+	}
+	delete(b.desktopUncertain, threadID)
+	delete(b.desktopHistory, threadID)
+	subscribers := b.subscribersLocked()
+	requests := ProjectPendingServerRequests(threadID, state)
+	b.mu.Unlock()
+	previous := projection
+	b.publishThreadEvent(subscribers, ThreadEvent{
+		ThreadID: threadID, Projection: projection, Previous: &previous,
+		Requests: requests, HistoryConfirmed: true,
+	})
+	return true
+}
+
+func (b *Bridge) beginDesktopHistoryLocked(threadID string, owner threadOwner, ownerEpoch uint64) desktopHistoryCheckpoint {
+	b.nextDesktopHistory++
+	checkpoint := desktopHistoryCheckpoint{
+		token: b.nextDesktopHistory, ownerID: owner.ownerID, ownerEpoch: ownerEpoch,
+		connectionGeneration: owner.connectionGeneration,
+		uncertaintyEpoch:     b.desktopUncertaintyEpoch[threadID],
+	}
+	if reservation, pending := b.desktopStarts[threadID]; pending {
+		checkpoint.startToken = reservation.token
+	}
+	return checkpoint
+}
+
+func (b *Bridge) completeDesktopHistory(threadID string, checkpoint desktopHistoryCheckpoint, raw json.RawMessage) {
+	revision, ok := completeHistoryRevision(raw)
+	if !ok || checkpoint.token == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	owner := b.owners[threadID]
+	if owner.kind != threadOwnerDesktop || owner.ownerID != checkpoint.ownerID ||
+		b.ownerEpochs[threadID] != checkpoint.ownerEpoch ||
+		owner.connectionGeneration != checkpoint.connectionGeneration ||
+		b.desktopUncertaintyEpoch[threadID] != checkpoint.uncertaintyEpoch {
+		return
+	}
+	if current, exists := b.desktopHistory[threadID]; exists && current.token > checkpoint.token {
+		return
+	}
+	checkpoint.revision = revision
+	b.desktopHistory[threadID] = checkpoint
+}
+
+func (b *Bridge) markDesktopUncertainLocked(threadID string) {
+	b.desktopUncertaintyEpoch[threadID]++
+	b.desktopUncertain[threadID] = true
+	delete(b.desktopHistory, threadID)
+}
+
+func (b *Bridge) clearDesktopRecoveryLocked(threadID string) {
+	b.desktopUncertaintyEpoch[threadID]++
+	delete(b.desktopUncertain, threadID)
+	delete(b.desktopStarts, threadID)
+	delete(b.desktopHistory, threadID)
 }
 
 func (b *Bridge) RequestDesktopOwner(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -356,14 +603,310 @@ func (b *Bridge) RequestDesktopOwner(ctx context.Context, method string, params 
 		return nil, err
 	}
 	threadID := conversationIDFromParams(payload)
-	b.mu.RLock()
+	b.mu.Lock()
 	owner := b.owners[threadID]
-	b.mu.RUnlock()
+	ownerEpoch := b.ownerEpochs[threadID]
+	recoveryRequired := b.desktopUncertain[threadID]
 	if owner.kind != threadOwnerDesktop || owner.ownerID == "" ||
 		owner.connectionGeneration != b.client.ConnectionGeneration() {
+		b.mu.Unlock()
 		return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("Desktop owner is unknown")}
 	}
-	return b.client.RequestTo(ctx, owner.ownerID, method, params)
+	if desktopFollowerMethodMutates(method) {
+		if b.desktopUncertain[threadID] {
+			b.mu.Unlock()
+			return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: ErrDesktopDeliveryUncertain}
+		}
+		if b.resyncing[threadID] != 0 {
+			b.mu.Unlock()
+			return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: ErrSnapshotRequired}
+		}
+		if _, projected := b.projections[threadID]; !projected {
+			b.mu.Unlock()
+			return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: errors.New("Desktop snapshot is unavailable")}
+		}
+	}
+	historyCheckpoint := desktopHistoryCheckpoint{}
+	if method == "thread-follower-load-complete-history" {
+		historyCheckpoint = b.beginDesktopHistoryLocked(threadID, owner, ownerEpoch)
+	}
+	startToken := uint64(0)
+	if method == "thread-follower-start-turn" {
+		if _, exists := b.desktopStarts[threadID]; exists || b.projections[threadID].ActiveTurnID != "" {
+			b.mu.Unlock()
+			return nil, &RequestError{Method: method, Delivery: DeliveryNotSent, Cause: ErrDesktopStartInFlight}
+		}
+		baselineState, _, _ := b.store.Get(threadID)
+		b.nextDesktopStart++
+		startToken = b.nextDesktopStart
+		b.desktopStarts[threadID] = desktopStartReservation{
+			token: startToken, ownerEpoch: ownerEpoch,
+			connectionGeneration: owner.connectionGeneration,
+			baselineTurnIDs:      conversationStateTurnIDs(baselineState),
+		}
+	}
+	b.mu.Unlock()
+	result, err := b.client.RequestToGeneration(ctx, owner.ownerID, method, params, owner.connectionGeneration)
+	if err == nil && historyCheckpoint.token != 0 {
+		b.completeDesktopHistory(threadID, historyCheckpoint, result)
+	}
+	if startToken != 0 {
+		result, err = b.finishDesktopStartRequest(threadID, startToken, result, err)
+	}
+	b.recordDesktopRequestOutcome(threadID, owner, ownerEpoch, method, err)
+	if recoveryRequired && SafeToFallback(err) {
+		return result, &RequestError{
+			Method: method, Delivery: DeliveryNotSent, Cause: ErrDesktopDeliveryUncertain,
+		}
+	}
+	return result, err
+}
+
+// RequestDesktopTurnStart keeps the start reservation across the settings
+// update and the actual start. Concurrent gateways cannot overwrite settings
+// in the ACK-to-snapshot window and then attempt a second Turn.
+func (b *Bridge) RequestDesktopTurnStart(
+	ctx context.Context,
+	settingsParams any,
+	startParams any,
+) (json.RawMessage, error) {
+	payload, err := json.Marshal(startParams)
+	if err != nil {
+		return nil, err
+	}
+	threadID := conversationIDFromParams(payload)
+	b.mu.Lock()
+	owner := b.owners[threadID]
+	ownerEpoch := b.ownerEpochs[threadID]
+	if b.Status().State != StateReady || owner.kind != threadOwnerDesktop || owner.ownerID == "" ||
+		owner.connectionGeneration != b.client.ConnectionGeneration() {
+		b.mu.Unlock()
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent,
+			Cause: errors.New("Desktop owner is unknown"),
+		}
+	}
+	if b.resyncing[threadID] != 0 {
+		b.mu.Unlock()
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent, Cause: ErrSnapshotRequired,
+		}
+	}
+	if b.desktopUncertain[threadID] {
+		b.mu.Unlock()
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent, Cause: ErrDesktopDeliveryUncertain,
+		}
+	}
+	projection, projected := b.projections[threadID]
+	if !projected {
+		b.mu.Unlock()
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent,
+			Cause: errors.New("Desktop snapshot is unavailable"),
+		}
+	}
+	if _, exists := b.desktopStarts[threadID]; exists || projection.ActiveTurnID != "" {
+		b.mu.Unlock()
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent, Cause: ErrDesktopStartInFlight,
+		}
+	}
+	baselineState, _, _ := b.store.Get(threadID)
+	b.nextDesktopStart++
+	startToken := b.nextDesktopStart
+	b.desktopStarts[threadID] = desktopStartReservation{
+		token: startToken, ownerEpoch: ownerEpoch, connectionGeneration: owner.connectionGeneration,
+		baselineTurnIDs: conversationStateTurnIDs(baselineState),
+	}
+	b.mu.Unlock()
+
+	_, err = b.client.RequestToGeneration(
+		ctx, owner.ownerID, "thread-follower-update-thread-settings", settingsParams, owner.connectionGeneration,
+	)
+	if err != nil {
+		_, err = b.finishDesktopStartRequest(threadID, startToken, nil, err)
+		b.recordDesktopRequestOutcome(
+			threadID, owner, ownerEpoch, "thread-follower-update-thread-settings", err,
+		)
+		return nil, err
+	}
+	b.mu.RLock()
+	current := b.owners[threadID]
+	leaseCurrent := b.ownerEpochs[threadID] == ownerEpoch && current.kind == threadOwnerDesktop &&
+		current.ownerID == owner.ownerID && current.connectionGeneration == owner.connectionGeneration &&
+		b.resyncing[threadID] == 0 && !b.desktopUncertain[threadID]
+	b.mu.RUnlock()
+	if !leaseCurrent {
+		err = &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryNotSent,
+			Cause: errors.New("Desktop owner changed after settings update"),
+		}
+		_, err = b.finishDesktopStartRequest(threadID, startToken, nil, err)
+		return nil, err
+	}
+	result, err := b.client.RequestToGeneration(
+		ctx, owner.ownerID, "thread-follower-start-turn", startParams, owner.connectionGeneration,
+	)
+	result, err = b.finishDesktopStartRequest(threadID, startToken, result, err)
+	b.recordDesktopRequestOutcome(threadID, owner, ownerEpoch, "thread-follower-start-turn", err)
+	return result, err
+}
+
+func (b *Bridge) recordDesktopRequestOutcome(
+	threadID string,
+	owner threadOwner,
+	ownerEpoch uint64,
+	method string,
+	requestErr error,
+) {
+	if requestErr == nil {
+		return
+	}
+	var typed *RequestError
+	if !errors.As(requestErr, &typed) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if typed.Delivery == DeliveryUncertain && desktopFollowerMethodMutates(method) {
+		b.markDesktopUncertainLocked(threadID)
+		return
+	}
+	current := b.owners[threadID]
+	ownerStillCurrent := b.ownerEpochs[threadID] == ownerEpoch && current.kind == threadOwnerDesktop &&
+		current.ownerID == owner.ownerID && current.connectionGeneration == owner.connectionGeneration
+	if !ownerStillCurrent {
+		return
+	}
+	if typed.Delivery == DeliveryNoClient {
+		b.clearOwnerLocked(threadID)
+		delete(b.projections, threadID)
+		b.store.Remove(threadID)
+		if b.desktopUncertain[threadID] {
+			delete(b.desktopHistory, threadID)
+			return
+		}
+		b.clearDesktopRecoveryLocked(threadID)
+	}
+}
+
+func (b *Bridge) finishDesktopStartRequest(
+	threadID string,
+	token uint64,
+	result json.RawMessage,
+	requestErr error,
+) (json.RawMessage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	reservation, ok := b.desktopStarts[threadID]
+	if !ok || reservation.token != token {
+		return result, requestErr
+	}
+	if requestErr != nil {
+		var typed *RequestError
+		if !errors.As(requestErr, &typed) || typed.Delivery != DeliveryUncertain {
+			delete(b.desktopStarts, threadID)
+		}
+		return result, requestErr
+	}
+	turnID := desktopStartTurnID(result)
+	if turnID == "" {
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryUncertain,
+			Cause: errors.New("Desktop start acknowledgement is missing turn id"),
+		}
+	}
+	if reservation.expectedTurnID != "" && reservation.expectedTurnID != turnID {
+		return nil, &RequestError{
+			Method: "thread-follower-start-turn", Delivery: DeliveryUncertain,
+			Cause: errors.New("Desktop start acknowledgement does not match the projected Turn"),
+		}
+	}
+	reservation.expectedTurnID = turnID
+	b.desktopStarts[threadID] = reservation
+	if state, _, stored := b.store.Get(threadID); stored && conversationStateTurnIsTerminal(state, turnID) {
+		delete(b.desktopStarts, threadID)
+	}
+	return result, nil
+}
+
+func desktopStartTurnID(raw json.RawMessage) string {
+	var decoded map[string]any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return ""
+	}
+	result, _ := decoded["result"].(map[string]any)
+	if result == nil {
+		result = decoded
+	}
+	turn, _ := result["turn"].(map[string]any)
+	return firstString(turn, "id", "turnId", "turn_id")
+}
+
+func conversationStateTurnIsTerminal(state map[string]any, turnID string) bool {
+	for _, raw := range conversationTurns(state) {
+		turn, _ := raw.(map[string]any)
+		if firstString(turn, "id", "turnId", "turn_id") != turnID {
+			continue
+		}
+		switch normalizeToken(stringValue(turn["status"])) {
+		case "completed", "succeeded", "success", "failed", "error", "systemerror",
+			"interrupted", "cancelled", "canceled", "stopped", "rejected", "denied":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func conversationStateTurnIDs(state map[string]any) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, raw := range conversationTurns(state) {
+		turn, _ := raw.(map[string]any)
+		if turnID := firstString(turn, "id", "turnId", "turn_id"); turnID != "" {
+			ids[turnID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func (b *Bridge) reconcileDesktopStartLocked(threadID string, state map[string]any) {
+	reservation, ok := b.desktopStarts[threadID]
+	if !ok {
+		return
+	}
+	owner := b.owners[threadID]
+	if owner.kind != threadOwnerDesktop || b.ownerEpochs[threadID] != reservation.ownerEpoch ||
+		owner.connectionGeneration != reservation.connectionGeneration {
+		if b.desktopUncertain[threadID] {
+			return
+		}
+		delete(b.desktopStarts, threadID)
+		return
+	}
+	if reservation.expectedTurnID != "" {
+		if conversationStateTurnIsTerminal(state, reservation.expectedTurnID) {
+			delete(b.desktopStarts, threadID)
+		}
+		return
+	}
+	newTurnIDs := make([]string, 0, 1)
+	for turnID := range conversationStateTurnIDs(state) {
+		if _, existed := reservation.baselineTurnIDs[turnID]; !existed {
+			newTurnIDs = append(newTurnIDs, turnID)
+		}
+	}
+	if len(newTurnIDs) != 1 {
+		return
+	}
+	reservation.expectedTurnID = newTurnIDs[0]
+	if conversationStateTurnIsTerminal(state, reservation.expectedTurnID) {
+		delete(b.desktopStarts, threadID)
+		return
+	}
+	b.desktopStarts[threadID] = reservation
 }
 
 func (b *Bridge) ClaimLocalOwner(threadID, ownerID string, handler LocalOwnerHandler) error {
@@ -384,27 +927,27 @@ func (b *Bridge) ClaimLocalOwner(threadID, ownerID string, handler LocalOwnerHan
 	return nil
 }
 
-// ReleaseDesktopOwner is only valid after Desktop explicitly returned
-// no-client-found. It prevents a stale snapshot from blocking the independent
-// App Server when the Desktop owner no longer exists.
-func (b *Bridge) ReleaseDesktopOwner(threadID string) {
-	threadID = strings.TrimSpace(threadID)
-	b.mu.Lock()
-	if b.owners[threadID].kind == threadOwnerDesktop {
-		b.clearOwnerLocked(threadID)
-	}
-	delete(b.projections, threadID)
-	b.mu.Unlock()
-	b.store.Remove(threadID)
-}
-
 func (b *Bridge) ReleaseLocalOwner(threadID, ownerID string) {
 	threadID = strings.TrimSpace(threadID)
+	incoming := b.incomingForThread(threadID)
+	incoming.Lock()
+	defer incoming.Unlock()
+	publisher := b.publisherForThread(threadID)
+	publisher.Lock()
+	defer publisher.Unlock()
 	b.mu.Lock()
 	current := b.owners[threadID]
 	if current.kind == threadOwnerMimi && current.ownerID == strings.TrimSpace(ownerID) {
+		_, responsePending := b.localInFlight[threadID]
+		uncertain := b.localUncertain[threadID] || responsePending
 		b.clearOwnerLocked(threadID)
 		delete(b.localStreams, threadID)
+		delete(b.localInFlight, threadID)
+		if uncertain {
+			b.localUncertain[threadID] = true
+		} else {
+			delete(b.localUncertain, threadID)
+		}
 	}
 	b.mu.Unlock()
 }
@@ -419,17 +962,17 @@ func (b *Bridge) clearOwnerLocked(threadID string) {
 	delete(b.owners, threadID)
 }
 
-func (b *Bridge) PublishLocalConversation(threadID string, state map[string]any) error {
-	_, err := b.publishLocalConversation(threadID, state, false)
+func (b *Bridge) PublishLocalConversation(threadID, ownerID string, state map[string]any) error {
+	_, err := b.publishLocalConversation(threadID, ownerID, state, false)
 	return err
 }
 
-func (b *Bridge) ForcePublishLocalConversation(threadID string, state map[string]any) (int64, error) {
-	return b.publishLocalConversation(threadID, state, true)
+func (b *Bridge) ForcePublishLocalConversation(threadID, ownerID string, state map[string]any) (int64, error) {
+	return b.publishLocalConversation(threadID, ownerID, state, true)
 }
 
-func (b *Bridge) publishLocalConversation(threadID string, state map[string]any, forceSnapshot bool) (int64, error) {
-	threadID = strings.TrimSpace(threadID)
+func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[string]any, forceSnapshot bool) (int64, error) {
+	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
 	next, err := cloneObject(state)
 	if err != nil {
 		return 0, err
@@ -438,9 +981,12 @@ func (b *Bridge) publishLocalConversation(threadID string, state map[string]any,
 	publisher.Lock()
 	defer publisher.Unlock()
 	b.mu.Lock()
-	if b.owners[threadID].kind != threadOwnerMimi {
+	owner := b.owners[threadID]
+	ownerEpoch := b.ownerEpochs[threadID]
+	connectionGeneration := b.connectionGeneration
+	if owner.kind != threadOwnerMimi || owner.ownerID != ownerID {
 		b.mu.Unlock()
-		return 0, fmt.Errorf("Mimi does not own this thread")
+		return 0, fmt.Errorf("Mimi owner lease does not match this thread")
 	}
 	current, hasBaseline := b.localStreams[threadID]
 	hasBaseline = hasBaseline && current.broadcasted
@@ -466,17 +1012,18 @@ func (b *Bridge) publishLocalConversation(threadID string, state map[string]any,
 	}
 	b.localStreams[threadID] = current
 	b.mu.Unlock()
-	err = b.client.Broadcast("thread-stream-state-changed", map[string]any{
+	err = b.client.BroadcastGeneration("thread-stream-state-changed", map[string]any{
 		"conversationId":  threadID,
 		"hostId":          "local",
 		"mimiOwnerSource": "agentd-desktop-ipc",
 		"change":          change,
-	})
+	}, connectionGeneration)
 	if err != nil {
 		// Delivery is uncertain. Force the next successful publish to send a full
 		// snapshot instead of a patch against a baseline Desktop may not have.
 		b.mu.Lock()
-		if b.owners[threadID].kind == threadOwnerMimi {
+		currentOwner := b.owners[threadID]
+		if currentOwner.kind == threadOwnerMimi && currentOwner.ownerID == owner.ownerID && b.ownerEpochs[threadID] == ownerEpoch {
 			b.localStreams[threadID] = localStream{state: next}
 		}
 		b.mu.Unlock()
@@ -529,12 +1076,21 @@ func diffTopLevelState(previous, next map[string]any) []ConversationPatch {
 }
 
 func (b *Bridge) handleReady(connectionGeneration uint64) {
+	type localRepublish struct {
+		ownerID string
+		state   map[string]any
+	}
 	b.mu.Lock()
 	b.connectionGeneration = connectionGeneration
-	states := make(map[string]map[string]any, len(b.localStreams))
+	states := make(map[string]localRepublish, len(b.localStreams))
 	for threadID, stream := range b.localStreams {
-		states[threadID], _ = cloneObject(stream.state)
-		b.localStreams[threadID] = localStream{state: states[threadID]}
+		owner := b.owners[threadID]
+		if owner.kind != threadOwnerMimi || owner.ownerID == "" {
+			continue
+		}
+		state, _ := cloneObject(stream.state)
+		states[threadID] = localRepublish{ownerID: owner.ownerID, state: state}
+		b.localStreams[threadID] = localStream{state: state}
 	}
 	threads := make([]string, 0, len(b.refollow))
 	for threadID := range b.refollow {
@@ -548,8 +1104,8 @@ func (b *Bridge) handleReady(connectionGeneration uint64) {
 	}
 	b.mu.Unlock()
 	go func() {
-		for threadID, state := range states {
-			_ = b.PublishLocalConversation(threadID, state)
+		for threadID, pending := range states {
+			_ = b.PublishLocalConversation(threadID, pending.ownerID, pending.state)
 		}
 		for _, threadID := range threads {
 			b.restoreDesktopFollow(threadID, connectionGeneration)
@@ -564,6 +1120,7 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 		return
 	}
 	b.connectionGeneration = 0
+	b.resyncing = make(map[string]uint64)
 	type staleProjection struct {
 		threadID string
 		previous Projection
@@ -572,6 +1129,7 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 	for threadID, owner := range b.owners {
 		switch {
 		case owner.kind == threadOwnerDesktop && owner.connectionGeneration == connectionGeneration:
+			b.markDesktopUncertainLocked(threadID)
 			if previous, ok := b.projections[threadID]; ok {
 				stale = append(stale, staleProjection{threadID: threadID, previous: previous})
 			}
@@ -581,6 +1139,10 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 				b.refollow[threadID] = struct{}{}
 			}
 		case owner.kind == threadOwnerMimi:
+			if inFlight, ok := b.localInFlight[threadID]; ok && inFlight.connectionGeneration == connectionGeneration {
+				b.localUncertain[threadID] = true
+				delete(b.localInFlight, threadID)
+			}
 			owner.followerClientID = ""
 			b.owners[threadID] = owner
 		}
@@ -606,13 +1168,27 @@ func (b *Bridge) restoreDesktopFollow(threadID string, connectionGeneration uint
 	if err != nil || !owned || b.client.ConnectionGeneration() != connectionGeneration {
 		return
 	}
-	if _, err := b.RequestDesktopOwner(ctx, "thread-follower-load-complete-history", map[string]any{
+	result, err := b.RequestDesktopOwner(ctx, "thread-follower-load-complete-history", map[string]any{
 		"conversationId": threadID,
-	}); err != nil {
+	})
+	if err != nil {
 		return
 	}
+	revision, ok := completeHistoryRevision(result)
+	if !ok {
+		return
+	}
+	if _, ok := b.WaitDesktopProjectionRevision(ctx, threadID, revision); !ok ||
+		b.client.ConnectionGeneration() != connectionGeneration || !b.ConfirmDesktopHistory(threadID, revision) {
+		return
+	}
+	_, appliedRevision, stored := b.store.Get(threadID)
 	b.mu.Lock()
-	delete(b.refollow, threadID)
+	owner := b.owners[threadID]
+	if stored && appliedRevision >= revision && b.connectionGeneration == connectionGeneration &&
+		owner.kind == threadOwnerDesktop && owner.connectionGeneration == connectionGeneration {
+		delete(b.refollow, threadID)
+	}
 	b.mu.Unlock()
 }
 
@@ -661,14 +1237,27 @@ func (b *Bridge) handleBroadcast(broadcast Broadcast) {
 	}
 	state, err := b.store.Apply(params.ConversationID, change)
 	if errors.Is(err, ErrSnapshotRequired) {
+		generation := b.connectionGeneration
+		previous, hadPrevious := b.projections[params.ConversationID]
+		delete(b.projections, params.ConversationID)
+		subscribers := b.subscribersLocked()
+		if b.resyncing[params.ConversationID] == generation {
+			b.mu.Unlock()
+			if hadPrevious {
+				b.publishThreadEvent(subscribers, ThreadEvent{
+					ThreadID: params.ConversationID, Previous: &previous, Stale: true,
+				})
+			}
+			return
+		}
+		b.resyncing[params.ConversationID] = generation
 		b.mu.Unlock()
-		go func(threadID string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			_, _ = b.client.RequestTo(ctx, sourceClientID, "thread-follower-load-complete-history", map[string]any{
-				"conversationId": threadID,
+		if hadPrevious {
+			b.publishThreadEvent(subscribers, ThreadEvent{
+				ThreadID: params.ConversationID, Previous: &previous, Stale: true,
 			})
-		}(params.ConversationID)
+		}
+		go b.resyncDesktopThread(params.ConversationID, sourceClientID, generation)
 		return
 	}
 	if err != nil {
@@ -690,6 +1279,7 @@ func (b *Bridge) handleBroadcast(broadcast Broadcast) {
 			connectionGeneration: b.connectionGeneration,
 		})
 	}
+	b.reconcileDesktopStartLocked(params.ConversationID, state)
 	previous, hadPrevious := b.projections[params.ConversationID]
 	b.projections[params.ConversationID] = projection
 	subscribers := b.subscribersLocked()
@@ -699,6 +1289,51 @@ func (b *Bridge) handleBroadcast(broadcast Broadcast) {
 		event.Previous = &previous
 	}
 	b.publishThreadEvent(subscribers, event)
+}
+
+func (b *Bridge) resyncDesktopThread(threadID, sourceClientID string, generation uint64) {
+	defer func() {
+		b.mu.Lock()
+		if b.resyncing[threadID] == generation {
+			delete(b.resyncing, threadID)
+		}
+		b.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	b.mu.Lock()
+	owner := b.owners[threadID]
+	if owner.kind != threadOwnerDesktop || owner.ownerID != sourceClientID ||
+		owner.connectionGeneration != generation {
+		b.mu.Unlock()
+		return
+	}
+	historyCheckpoint := b.beginDesktopHistoryLocked(threadID, owner, b.ownerEpochs[threadID])
+	b.mu.Unlock()
+	result, err := b.client.RequestToGeneration(ctx, sourceClientID, "thread-follower-load-complete-history", map[string]any{
+		"conversationId": threadID,
+	}, generation)
+	if err != nil || b.client.ConnectionGeneration() != generation {
+		return
+	}
+	revision, ok := completeHistoryRevision(result)
+	if !ok {
+		return
+	}
+	b.completeDesktopHistory(threadID, historyCheckpoint, result)
+	if _, ok := b.WaitDesktopProjectionRevision(ctx, threadID, revision); ok {
+		b.ConfirmDesktopHistory(threadID, revision)
+	}
+}
+
+func completeHistoryRevision(raw json.RawMessage) (int64, bool) {
+	var result struct {
+		Revision int64 `json:"revision"`
+	}
+	if json.Unmarshal(raw, &result) != nil || result.Revision <= 0 {
+		return 0, false
+	}
+	return result.Revision, true
 }
 
 func (b *Bridge) publishThreadEvent(subscribers []chan ThreadEvent, event ThreadEvent) {
@@ -738,6 +1373,9 @@ func (b *Bridge) canHandleIncoming(request IncomingRequest) bool {
 	if b.Status().State != StateReady {
 		return false
 	}
+	if request.ConnectionGeneration == 0 || request.ConnectionGeneration != b.client.ConnectionGeneration() {
+		return false
+	}
 	switch request.Method {
 	case "thread-owner-discovery", "thread-follower-start-turn", "thread-follower-load-complete-history",
 		"thread-follower-compact-thread", "thread-follower-steer-turn", "thread-follower-interrupt-turn",
@@ -758,17 +1396,148 @@ func (b *Bridge) handleIncoming(ctx context.Context, request IncomingRequest) (a
 		return nil, fmt.Errorf("Desktop IPC is not ready")
 	}
 	threadID := conversationIDFromParams(request.Params)
+	incoming := b.incomingForThread(threadID)
+	incoming.Lock()
+	defer incoming.Unlock()
 	b.mu.Lock()
+	if request.ConnectionGeneration == 0 || request.ConnectionGeneration != b.connectionGeneration {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("Desktop IPC connection generation changed")
+	}
 	if !b.bindFollowerClientLocked(threadID, request.Method, request.SourceClientID) {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("no-client-found: Mimi owner is unavailable")
 	}
 	owner := b.owners[threadID]
+	if b.localUncertain[threadID] && desktopFollowerMethodMutates(request.Method) {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("Mimi owner delivery is uncertain; complete history is required")
+	}
+	lease := localOwnerLease{
+		threadID: threadID, ownerID: owner.ownerID, ownerEpoch: b.ownerEpochs[threadID],
+		connectionGeneration: request.ConnectionGeneration, followerClientID: request.SourceClientID,
+	}
+	mutates := desktopFollowerMethodMutates(request.Method)
+	recoversHistory := request.Method == "thread-follower-load-complete-history" && b.localUncertain[threadID]
+	if mutates || recoversHistory {
+		if _, pending := b.localInFlight[threadID]; pending {
+			b.mu.Unlock()
+			return nil, fmt.Errorf("Mimi owner response is awaiting IPC delivery")
+		}
+		b.localInFlight[threadID] = localRequestInFlight{
+			requestID: rawMessageKey(request.RequestID), ownerID: owner.ownerID,
+			ownerEpoch: b.ownerEpochs[threadID], connectionGeneration: request.ConnectionGeneration,
+		}
+	}
 	b.mu.Unlock()
 	if request.Method == "thread-owner-discovery" {
 		return map[string]any{}, nil
 	}
-	return owner.handle(ctx, request.Method, request.Params)
+	result, err := owner.handle(context.WithValue(ctx, localOwnerLeaseContextKey{}, lease), request.Method, request.Params)
+	b.mu.Lock()
+	leaseStillCurrent := b.localOwnerLeaseStillCurrentLocked(lease)
+	current := b.owners[threadID]
+	ownerStillCurrent := current.kind == threadOwnerMimi && current.ownerID == lease.ownerID &&
+		b.ownerEpochs[threadID] == lease.ownerEpoch
+	if mutates && ownerStillCurrent && (err != nil || !leaseStillCurrent) {
+		b.localUncertain[threadID] = true
+		if inFlight, ok := b.localInFlight[threadID]; ok &&
+			inFlight.requestID == rawMessageKey(request.RequestID) &&
+			inFlight.connectionGeneration == request.ConnectionGeneration {
+			delete(b.localInFlight, threadID)
+		}
+	} else if recoversHistory && (err != nil || !leaseStillCurrent) {
+		if inFlight, ok := b.localInFlight[threadID]; ok &&
+			inFlight.requestID == rawMessageKey(request.RequestID) &&
+			inFlight.connectionGeneration == request.ConnectionGeneration {
+			delete(b.localInFlight, threadID)
+		}
+	}
+	b.mu.Unlock()
+	return result, err
+}
+
+func (b *Bridge) handleIncomingResponse(request IncomingRequest, writeErr error) {
+	mutates := desktopFollowerMethodMutates(request.Method)
+	recoversHistory := request.Method == "thread-follower-load-complete-history"
+	if !mutates && !recoversHistory {
+		return
+	}
+	threadID := conversationIDFromParams(request.Params)
+	requestID := rawMessageKey(request.RequestID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	inFlight, ok := b.localInFlight[threadID]
+	if !ok || inFlight.requestID != requestID ||
+		inFlight.connectionGeneration != request.ConnectionGeneration {
+		return
+	}
+	delete(b.localInFlight, threadID)
+	owner := b.owners[threadID]
+	ownerStillCurrent := owner.kind == threadOwnerMimi && owner.ownerID == inFlight.ownerID &&
+		b.ownerEpochs[threadID] == inFlight.ownerEpoch
+	if recoversHistory && ownerStillCurrent {
+		if writeErr == nil {
+			delete(b.localUncertain, threadID)
+		} else {
+			b.localUncertain[threadID] = true
+		}
+		return
+	}
+	if writeErr != nil && ownerStillCurrent {
+		b.localUncertain[threadID] = true
+	}
+}
+
+func (b *Bridge) incomingForThread(threadID string) *sync.Mutex {
+	threadID = strings.TrimSpace(threadID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	incoming := b.incomingOps[threadID]
+	if incoming == nil {
+		incoming = &sync.Mutex{}
+		b.incomingOps[threadID] = incoming
+	}
+	return incoming
+}
+
+func desktopFollowerMethodMutates(method string) bool {
+	switch method {
+	case "thread-owner-discovery", "thread-follower-load-complete-history":
+		return false
+	default:
+		return true
+	}
+}
+
+// ValidateLocalOwnerLease rejects a follower side effect after its IPC
+// generation, logical Desktop follower, or Mimi gateway owner changed.
+func (b *Bridge) ValidateLocalOwnerLease(ctx context.Context, threadID string) error {
+	lease, ok := ctx.Value(localOwnerLeaseContextKey{}).(localOwnerLease)
+	if !ok {
+		return fmt.Errorf("Mimi owner lease is missing")
+	}
+	threadID = strings.TrimSpace(threadID)
+	b.mu.RLock()
+	valid := lease.threadID == threadID && b.localOwnerLeaseStillCurrentLocked(lease)
+	b.mu.RUnlock()
+	if !valid {
+		return fmt.Errorf("Mimi owner lease changed before follower delivery")
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+func (b *Bridge) localOwnerLeaseStillCurrentLocked(lease localOwnerLease) bool {
+	owner := b.owners[lease.threadID]
+	return lease.connectionGeneration == b.connectionGeneration &&
+		lease.connectionGeneration == b.client.ConnectionGeneration() &&
+		lease.ownerEpoch == b.ownerEpochs[lease.threadID] && owner.kind == threadOwnerMimi &&
+		owner.ownerID == lease.ownerID && owner.followerClientID == lease.followerClientID
 }
 
 func (b *Bridge) bindFollowerClientLocked(threadID, method, sourceClientID string) bool {

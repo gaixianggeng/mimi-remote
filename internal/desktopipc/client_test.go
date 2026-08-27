@@ -103,6 +103,49 @@ func TestClientCorrelatesResponses(t *testing.T) {
 	}
 }
 
+func TestClientCancelsIncomingFollowerHandlerOnDisconnect(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	client, err := NewClient(ClientOptions{
+		RequestTimeout: time.Second,
+		CanHandle:      func(IncomingRequest) bool { return true },
+		HandleRequest: func(ctx context.Context, _ IncomingRequest) (any, error) {
+			close(handlerStarted)
+			<-ctx.Done()
+			close(handlerCanceled)
+			return nil, ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectionCtx, connectionCancel := context.WithCancel(context.Background())
+	client.mu.Lock()
+	client.conn = clientConn
+	client.clientID = "mimi-client"
+	client.generation = 7
+	client.connectionCtx = connectionCtx
+	client.connectionCancel = connectionCancel
+	client.mu.Unlock()
+	go client.handleIncomingRequest(clientConn, envelope{
+		Type: "request", RequestID: json.RawMessage(`"incoming"`), Method: "thread-follower-start-turn",
+		Version: 2, SourceClientID: "desktop-owner", Params: json.RawMessage(`{"conversationId":"thread-1"}`),
+	})
+	select {
+	case <-handlerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("incoming follower handler did not start")
+	}
+	client.disconnect(errors.New("test disconnect"))
+	select {
+	case <-handlerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect did not cancel the old generation follower handler")
+	}
+	_ = serverConn.Close()
+}
+
 func TestClientFindsOwnerWithOfficialDiscoveryMethod(t *testing.T) {
 	fake := &fakeDesktopIPC{}
 	fake.respond = func(conn net.Conn, request envelope) {
@@ -347,6 +390,65 @@ func TestClientRechecksPeerBuildOnReconnect(t *testing.T) {
 	}
 	if status := client.Status(); status.State != StateUnsupportedBuild || status.DesktopBuild != "future-build" {
 		t.Fatalf("reconnected peer bypassed the build gate: %#v", status)
+	}
+}
+
+func TestClientGenerationBoundCallsRejectStaleGenerationWithoutSending(t *testing.T) {
+	fake := &fakeDesktopIPC{}
+	client := newStartedTestClient(t, fake, time.Second)
+	oldGeneration := client.ConnectionGeneration()
+	if oldGeneration == 0 {
+		t.Fatal("initial connection generation is unavailable")
+	}
+	fake.mu.Lock()
+	if len(fake.listeners) != 1 {
+		fake.mu.Unlock()
+		t.Fatalf("unexpected initial connection count: %d", len(fake.listeners))
+	}
+	oldServer := fake.listeners[0]
+	fake.mu.Unlock()
+	if err := oldServer.Close(); err != nil {
+		t.Fatalf("close old test connection: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		connectionCount := len(fake.listeners)
+		fake.mu.Unlock()
+		if connectionCount >= 2 && client.Status().State == StateReady && client.ConnectionGeneration() > oldGeneration {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	newGeneration := client.ConnectionGeneration()
+	if newGeneration <= oldGeneration {
+		t.Fatalf("client did not advance connection generation: old=%d new=%d", oldGeneration, newGeneration)
+	}
+
+	fake.mu.Lock()
+	requestsBefore := len(fake.requests)
+	fake.mu.Unlock()
+	assertNotSent := func(label string, err error) {
+		t.Helper()
+		var requestErr *RequestError
+		if !errors.As(err, &requestErr) || requestErr.Delivery != DeliveryNotSent {
+			t.Fatalf("%s must be rejected as not sent: %v", label, err)
+		}
+	}
+
+	_, err := client.RequestToGeneration(context.Background(), "desktop-owner", "thread-follower-start-turn", nil, oldGeneration)
+	assertNotSent("RequestToGeneration", err)
+	_, err = client.FindHandlerGeneration(context.Background(), "thread-owner-discovery", nil, oldGeneration)
+	assertNotSent("FindHandlerGeneration", err)
+	err = client.BroadcastGeneration("thread-stream-following-changed", nil, oldGeneration)
+	assertNotSent("BroadcastGeneration", err)
+
+	fake.mu.Lock()
+	requestsAfter := append([]envelope(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requestsAfter) != requestsBefore {
+		t.Fatalf("stale generation calls wrote %d envelope(s) to the replacement connection", len(requestsAfter)-requestsBefore)
 	}
 }
 

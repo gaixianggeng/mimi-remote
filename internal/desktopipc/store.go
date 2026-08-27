@@ -27,6 +27,7 @@ type ConversationPatch struct {
 type threadState struct {
 	revision int64
 	state    map[string]any
+	valid    bool
 }
 
 type ThreadStore struct {
@@ -50,30 +51,37 @@ func (s *ThreadStore) Apply(threadID string, change StreamChange) (map[string]an
 		if change.Revision <= 0 || change.ConversationState == nil {
 			return nil, fmt.Errorf("Desktop IPC snapshot is incomplete")
 		}
+		if current, ok := s.threads[threadID]; ok && change.Revision < current.revision {
+			// A delayed full-history response must not roll a live projection back.
+			if !current.valid {
+				return nil, ErrSnapshotRequired
+			}
+			return cloneObject(current.state)
+		}
 		state, err := cloneObject(change.ConversationState)
 		if err != nil {
 			return nil, err
 		}
-		s.threads[threadID] = threadState{revision: change.Revision, state: state}
+		s.threads[threadID] = threadState{revision: change.Revision, state: state, valid: true}
 		return cloneObject(state)
 	case "patches":
 		current, ok := s.threads[threadID]
-		if !ok || current.revision != change.BaseRevision || change.Revision != change.BaseRevision+1 {
-			delete(s.threads, threadID)
+		if !ok || !current.valid || current.revision != change.BaseRevision || change.Revision != change.BaseRevision+1 {
+			s.invalidateLocked(threadID, current, change)
 			return nil, ErrSnapshotRequired
 		}
 		next, err := cloneObject(current.state)
 		if err != nil {
-			delete(s.threads, threadID)
+			s.invalidateLocked(threadID, current, change)
 			return nil, ErrSnapshotRequired
 		}
 		for _, patch := range change.Patches {
 			if err := applyConversationPatch(next, patch); err != nil {
-				delete(s.threads, threadID)
+				s.invalidateLocked(threadID, current, change)
 				return nil, fmt.Errorf("%w: %v", ErrSnapshotRequired, err)
 			}
 		}
-		s.threads[threadID] = threadState{revision: change.Revision, state: next}
+		s.threads[threadID] = threadState{revision: change.Revision, state: next, valid: true}
 		return cloneObject(next)
 	default:
 		return nil, fmt.Errorf("unsupported Desktop IPC stream change %q", change.Type)
@@ -84,7 +92,7 @@ func (s *ThreadStore) Get(threadID string) (map[string]any, int64, bool) {
 	s.mu.RLock()
 	current, ok := s.threads[strings.TrimSpace(threadID)]
 	s.mu.RUnlock()
-	if !ok {
+	if !ok || !current.valid || current.state == nil {
 		return nil, 0, false
 	}
 	copy, err := cloneObject(current.state)
@@ -92,6 +100,17 @@ func (s *ThreadStore) Get(threadID string) (map[string]any, int64, bool) {
 		return nil, 0, false
 	}
 	return copy, current.revision, true
+}
+
+func (s *ThreadStore) invalidateLocked(threadID string, current threadState, change StreamChange) {
+	highWater := current.revision
+	if change.BaseRevision > highWater {
+		highWater = change.BaseRevision
+	}
+	if change.Revision > highWater {
+		highWater = change.Revision
+	}
+	s.threads[threadID] = threadState{revision: highWater}
 }
 
 func (s *ThreadStore) Remove(threadID string) {

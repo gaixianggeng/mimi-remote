@@ -31,9 +31,10 @@ var mobileItemType = map[string]string{
 }
 
 type Projection struct {
-	Thread       map[string]any
-	Turns        []any
-	ActiveTurnID string
+	Thread              map[string]any
+	Turns               []any
+	ActiveTurnID        string
+	ActiveTurnIDTrusted bool
 }
 
 func ProjectConversationState(threadID string, state map[string]any, now time.Time) (Projection, error) {
@@ -93,7 +94,30 @@ func ProjectConversationState(threadID string, state map[string]any, now time.Ti
 		thread["runtimeSettingsUpdatedAt"] = runtimeSettings["updatedAt"]
 		thread["runtimeSettingsSource"] = nullableString(stringValue(runtimeSettings["source"]))
 	}
-	return Projection{Thread: thread, Turns: turns, ActiveTurnID: activeTurnID}, nil
+	realActiveTurnID, trusted := RealActiveTurnID(state)
+	return Projection{
+		Thread: thread, Turns: turns, ActiveTurnID: activeTurnID,
+		ActiveTurnIDTrusted: trusted && realActiveTurnID == activeTurnID,
+	}, nil
+}
+
+// RealActiveTurnID returns an ID only when the raw owner state contains one
+// unambiguous active Turn. Synthetic projection IDs are display-only and must
+// never authorize Steer or Interrupt.
+func RealActiveTurnID(state map[string]any) (string, bool) {
+	activeTurnID := ""
+	for _, raw := range conversationTurns(state) {
+		turn, ok := raw.(map[string]any)
+		if !ok || normalizeTurnStatus(turn["status"]) != "inProgress" {
+			continue
+		}
+		turnID := firstString(turn, "turnId", "turn_id", "id")
+		if turnID == "" || activeTurnID != "" {
+			return "", false
+		}
+		activeTurnID = turnID
+	}
+	return activeTurnID, activeTurnID != ""
 }
 
 // Desktop 7119 stores hydrated history in a canonical island graph. Legacy
@@ -255,9 +279,13 @@ func sanitizeUserContent(content []any) []any {
 			if text == "" {
 				continue
 			}
-			copy, _ := cloneObject(value)
-			copy[textKey] = text
-			visible = append(visible, copy)
+			// User text can carry Desktop-only sibling metadata. Keep only the
+			// display schema so private host context cannot reach mobile clients.
+			entry := map[string]any{textKey: text}
+			if typeValue := strings.TrimSpace(stringValue(value["type"])); typeValue != "" {
+				entry["type"] = typeValue
+			}
+			visible = append(visible, entry)
 		}
 	}
 	return visible
