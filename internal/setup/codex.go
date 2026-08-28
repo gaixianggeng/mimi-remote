@@ -186,7 +186,7 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 			if err := validateOriginal(); err != nil {
 				return err
 			}
-			return writePrivateFileAtomicallyCAS(cfgPath, original, updated)
+			return writePrivateFileAtomically(cfgPath, updated)
 		})
 	} else {
 		writeErr = writeConfig(cfgPath, updated)
