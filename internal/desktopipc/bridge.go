@@ -39,6 +39,9 @@ type BridgeOptions struct {
 	InitialState          State
 	ClientOptions         ClientOptions
 	ActivateDesktopThread DesktopThreadActivator
+	// WriterLockDir 指向 Codex 的 thread-writer-locks 目录，用于在不发起 IPC
+	// 探测的情况下判断一条 Thread 当前有没有活跃 writer。
+	WriterLockDir string
 }
 
 type threadOwnerKind uint8
@@ -91,18 +94,6 @@ type desktopStartReservation struct {
 	expectedTurnID       string
 }
 
-type localOwnerLease struct {
-	threadID   string
-	ownerID    string
-	ownerEpoch uint64
-	// connectionGeneration 和 followerClientID 只描述发起请求的那条 Desktop IPC
-	// 连接，因此只有 desktopOriginated 的租约才校验它们。Mimi 自己发起的写请求
-	// 直达它自己的 App Server，Desktop 连接的建立或断开不改变其交付结果。
-	connectionGeneration uint64
-	followerClientID     string
-	desktopOriginated    bool
-}
-
 type localOwnerClaimPermit struct {
 	token                uint64
 	ownerEpoch           uint64
@@ -134,8 +125,6 @@ type desktopHistoryCheckpoint struct {
 	revision             int64
 }
 
-type localOwnerLeaseContextKey struct{}
-
 // Bridge is the only Desktop IPC connection and ownership coordinator in an
 // agentd process. Gateway connections subscribe to it instead of opening their
 // own IPC clients.
@@ -147,6 +136,7 @@ type Bridge struct {
 	activationCancel      context.CancelFunc
 	activateDesktopThread DesktopThreadActivator
 	localFollowRouteMu    sync.Mutex
+	writerLockDir         string
 
 	mu                      sync.RWMutex
 	eventsMu                sync.Mutex
@@ -187,6 +177,7 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 		activationCtx:           activationCtx,
 		activationCancel:        activationCancel,
 		activateDesktopThread:   options.ActivateDesktopThread,
+		writerLockDir:           options.WriterLockDir,
 		store:                   NewThreadStore(),
 		projections:             make(map[string]Projection),
 		owners:                  make(map[string]threadOwner),
@@ -255,10 +246,15 @@ func NewSystemBridge(enabled bool, legacyCleanupRequired bool, codexBin string, 
 	if !info.Installed {
 		initialState = StateNotInstalled
 	}
+	writerLockDir := ""
+	if codexHome, homeErr := resolveCodexHome(env); homeErr == nil {
+		writerLockDir = writerLockDirForCodexHome(codexHome)
+	}
 	return NewBridge(BridgeOptions{
 		Enabled: enabled, SocketPath: info.Socket,
 		DesktopVersion: info.Version, DesktopBuild: info.Build,
 		InitialState:          initialState,
+		WriterLockDir:         writerLockDir,
 		ActivateDesktopThread: activateDesktopThreadRoute,
 		ClientOptions: ClientOptions{
 			Preflight: func() (State, error) {
@@ -1904,42 +1900,6 @@ func desktopFollowerMethodMutates(method string) bool {
 	default:
 		return true
 	}
-}
-
-// ValidateLocalOwnerLease rejects a follower side effect after its IPC
-// generation, logical Desktop follower, or Mimi gateway owner changed.
-func (b *Bridge) ValidateLocalOwnerLease(ctx context.Context, threadID string) error {
-	lease, ok := ctx.Value(localOwnerLeaseContextKey{}).(localOwnerLease)
-	if !ok {
-		return fmt.Errorf("Mimi owner lease is missing")
-	}
-	threadID = strings.TrimSpace(threadID)
-	b.mu.RLock()
-	valid := lease.threadID == threadID && b.localOwnerLeaseStillCurrentLocked(lease)
-	b.mu.RUnlock()
-	if !valid {
-		return fmt.Errorf("Mimi owner lease changed before follower delivery")
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
-	}
-}
-
-func (b *Bridge) localOwnerLeaseStillCurrentLocked(lease localOwnerLease) bool {
-	owner := b.owners[lease.threadID]
-	if owner.kind != threadOwnerMimi || owner.ownerID != lease.ownerID ||
-		lease.ownerEpoch != b.ownerEpochs[lease.threadID] {
-		return false
-	}
-	if !lease.desktopOriginated {
-		return true
-	}
-	return lease.connectionGeneration == b.connectionGeneration &&
-		lease.connectionGeneration == b.client.ConnectionGeneration() &&
-		owner.followerClientID == lease.followerClientID
 }
 
 func (b *Bridge) bindFollowerClientLocked(threadID, method, sourceClientID string) bool {

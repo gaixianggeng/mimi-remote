@@ -175,6 +175,53 @@ func TestDesktopIPCResidentHubActivatesDesktopRouteForMimiTurn(t *testing.T) {
 	fixture.awaitActivation(t)
 }
 
+// Codex deletes a thread's writer lock file when its owner lets the thread go,
+// so a missing lock file already proves Desktop cannot own it. Owner discovery
+// must answer from that instead of waiting out the IPC probe.
+func TestDesktopIPCOwnerDiscoverySkipsProbeWithoutWriterLock(t *testing.T) {
+	// The fake never answers thread-owner-discovery, so any probe burns the full
+	// request timeout.
+	fake := &gatewayFakeDesktopIPC{}
+	lockDir := t.TempDir()
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, SocketPath: "test", WriterLockDir: lockDir,
+		DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: desktopipc.SupportedBuild,
+		ClientOptions: desktopipc.ClientOptions{
+			DialContext:  fake.dial,
+			VerifySocket: func(string) error { return nil },
+			VerifyPeer: func(net.Conn) (desktopipc.DesktopInfo, error) {
+				return desktopipc.DesktopInfo{
+					Version: desktopipc.SupportedVersion, Build: desktopipc.SupportedBuild,
+				}, nil
+			},
+			RequestTimeout: 30 * time.Second,
+			ReconnectDelay: 50 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); bridge.Close() })
+	bridge.Start(ctx)
+	waitForDesktopIPCState(t, bridge, desktopipc.StateReady)
+
+	overlay := newDesktopIPCGatewayOverlay(bridge, newAppServerGatewayPolicy(nil), nil, nil)
+	started := time.Now()
+	projection, owned, discoverErr := overlay.discoverDesktopOwner(context.Background(), "thread-unlocked")
+	elapsed := time.Since(started)
+
+	if discoverErr != nil || owned || projection.Thread != nil {
+		t.Fatalf("unlocked Thread must be reported as unowned: owned=%t err=%v", owned, discoverErr)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("owner discovery waited %s for a Thread with no writer lock", elapsed)
+	}
+	if count := fake.methodCount("discover:thread-owner-discovery"); count != 0 {
+		t.Fatalf("owner discovery probed Desktop %d times despite a free writer lock", count)
+	}
+}
+
 // A Thread claimed while Desktop was closed must be mounted once Desktop comes
 // back. Otherwise it stays invisible for the rest of the agentd process.
 func TestDesktopIPCResidentHubActivatesOfflineClaimAfterDesktopStarts(t *testing.T) {

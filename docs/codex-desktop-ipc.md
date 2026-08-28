@@ -48,6 +48,14 @@ Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查�
 
 这是 Codex Desktop 的私有 IPC，不属于[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)的公开契约。Desktop 升级后必须先经过 build gate 和完整验收，不能根据版本号猜测协议兼容。
 
+## Codex 自身的 writer 锁
+
+Codex 用 `$CODEX_HOME/thread-writer-locks/<thread-id>.lock` 这个 flock 保证一条 Thread 同时只有一个 app-server 在驱动，Codex Desktop 和 Mimi 托管的独立 App Server 共享同一个目录。锁在会话被加载时创建（`thread/start` 与 `thread/resume`），在持有方放弃该会话时连文件一起删除；`thread/read` 既不加载也不加锁。抢不到锁的一方会收到 Codex 自己的 `thread <id> already has an active writer`。
+
+因此**锁文件不存在就等于当前没有任何 app-server 在驱动这条 Thread**。owner 判定优先使用这个本地 stat，只有锁文件存在（包括进程崩溃留下的残留）时才退回 Desktop IPC 的 `thread-owner-discovery` 探测——后者的否定答案最坏要等 12 秒。这里只读不加锁：Codex 的 acquire 会先取目录级 coordination lock，若跟着 flock 就可能与之交错，把一条空闲 Thread 误报成已有 writer。
+
+Codex 没有提供交出锁的接口。`thread/unsubscribe` 和断开连接都不会释放，只有持有进程放弃该会话才会。这也是 Desktop-owned Thread 的写操作必须经 IPC 转回 Desktop 执行、而不能改由 Mimi 接管的根本原因。
+
 ## Writer 和故障恢复
 
 一个 Thread 同时只允许一个明确 writer：

@@ -403,6 +403,13 @@ func desktopIPCSteerPrompt(raw any) string {
 }
 
 func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, threadID string) (desktopipc.Projection, bool, error) {
+	// Codex 的 writer 锁文件在持有方放弃会话时会连文件一起删除，所以“锁文件不存在”
+	// 就等于没有任何 app-server 在驱动这条 Thread：Desktop 不可能是 owner，也没有
+	// 东西可跟随。这个判断是本地 stat，省掉下面那次最坏 12 秒的否定探测。进程崩溃
+	// 留下的锁文件只会让这里放弃快路径、退回原有探测，不会得出错误结论。
+	if held, known := o.bridge.ThreadHasLiveWriter(threadID); known && !held {
+		return desktopipc.Projection{}, false, nil
+	}
 	if err := o.bridge.FollowThread(ctx, threadID); err != nil {
 		return desktopipc.Projection{}, false, err
 	}
