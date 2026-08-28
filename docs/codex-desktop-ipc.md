@@ -56,6 +56,7 @@ Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查�
 - Mimi-owned Thread 继续由独立 App Server 执行，并把标准事件投影给 Desktop follower。
 - 只有 Desktop 明确返回 `no-client-found` 时，未送达操作才允许交给独立 App Server。
 - IPC timeout、断线、协议错误或 owner 不明确时不本地重跑 Turn；返回可重试且交付状态不确定的错误，或保持只读。
+- 交付不确定只针对经由 Desktop IPC 送达的请求。Mimi-owned Thread 上由移动端发起的写入直达 Mimi 自己的 App Server，Codex Desktop 在写入过程中连接或退出不改变其交付结果，因此不会把该 Thread 挡在完整历史恢复之后。
 - revision 缺口、patch 失败或断线后会重新请求完整历史，不猜测中间状态。
 
 Mimi-owned Thread 使用以下方式挂载 Desktop follower：
@@ -65,6 +66,8 @@ Mimi-owned Thread 使用以下方式挂载 Desktop follower：
 3. agentd 先广播 `thread-stream-following-status-requested`，再打开带唯一 `mimi-follow` 查询参数的 `codex://threads/<thread-id>` 路由。
 4. Desktop 返回 `thread-stream-following-changed(following=true)` 后，agentd 绑定该 follower，并立即发送 revision 连续的完整 snapshot。之后才发送 patch。
 5. 每次等待确认 1500 毫秒，最多尝试 3 次。重复生命周期事件复用同一次激活；`following=false` 或 follower 断开后，下一次符合条件的操作可重新激活。
+
+认领 Thread 和每一次从 Mimi 发起的 `turn/start` 都会请求挂载，不依赖首次认领或本地缓存是否已有状态。请求与状态发布共用常驻 owner 的同一条队列，Desktop 不会收到尚未发布状态的路由。Desktop 关闭时只记录路由意图，重新连接后由该意图恢复。
 
 路由激活前会按 `com.openai.codex` bundle 精确确认 Desktop 已经运行，因此正常关闭状态不会主动冷启动 Desktop。macOS 的进程检查和 LaunchServices 路由分发不是一个原子操作；如果 Desktop 恰好在两者之间退出，系统仍可能重新拉起它。这是平台竞态，必须在真机验收中单独观察。激活失败只影响 Desktop follower 的挂载，不会切换 writer、取消或重放已经交给独立 App Server 的请求。
 Desktop 关闭或 IPC 正在连接时，agentd 只保留最近一次有效的 Mimi 路由意图。Desktop 首次连接或重新连接后只恢复该路由，避免多个 gateway 或旧重试争抢 Desktop 前台。

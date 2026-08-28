@@ -580,6 +580,11 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 		}
 		return false, nil, nil
 	}
+	// 每一轮 Mimi Turn 都要重新确认 Desktop follower。上一轮之后 follower 可能
+	// 已经断开或改跟别的 Thread，只在首次认领时挂载会让 Desktop 之后一直看不到。
+	if followerMethod == "thread-follower-start-turn" && o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+		o.activateLocalFollowRoute(threadID, false)
+	}
 	result, err := o.bridge.RequestLocalOwner(ctx, threadID, followerMethod, followerParams)
 	if err != nil {
 		return true, nil, desktopIPCPolicyError(id, err)
@@ -995,6 +1000,24 @@ func (o *desktopIPCGatewayOverlay) publishLocalConversation(threadID string, sta
 	_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
 }
 
+// activateLocalFollowRoute mounts the Desktop follower route for a Mimi-owned
+// Thread. The resident hub owns both the writer and the publish order, so the
+// request joins its queue instead of racing the state it is meant to follow.
+func (o *desktopIPCGatewayOverlay) activateLocalFollowRoute(threadID string, newThread bool) {
+	if strings.TrimSpace(threadID) == "" {
+		return
+	}
+	if o.ownerHub != nil {
+		o.ownerHub.enqueueActivation(threadID, newThread)
+		return
+	}
+	if newThread {
+		_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+		return
+	}
+	_ = o.bridge.ActivateLocalThread(threadID, o.ownerID)
+}
+
 func (o *desktopIPCGatewayOverlay) forcePublishLocalConversation(threadID string, state map[string]any) (int64, error) {
 	if o.ownerHub != nil && o.isHubTransport {
 		return o.bridge.ForcePublishLocalConversationAndNotify(threadID, o.ownerID, state)
@@ -1192,7 +1215,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 			method: frame.Method, threadID: threadID, pendingTurnStart: pendingTurnStart,
 		}
 		o.mu.Unlock()
-		_ = o.bridge.ActivateLocalThread(threadID, o.ownerID)
+		o.activateLocalFollowRoute(threadID, false)
 		return
 	}
 	o.mu.Lock()
@@ -1318,8 +1341,8 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 		}
 		if claimErr == nil {
 			o.publishLocalConversation(threadID, state)
-			if method == "thread/started" && o.ownerHub == nil {
-				_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+			if method == "thread/started" {
+				o.activateLocalFollowRoute(threadID, true)
 			}
 		}
 	}
@@ -1340,8 +1363,8 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 	}
 	if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
 		o.publishLocalConversation(threadID, state)
-		if o.ownerHub == nil && (method == "thread/start" || method == "thread/fork") {
-			_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+		if method == "thread/start" || method == "thread/fork" {
+			o.activateLocalFollowRoute(threadID, true)
 		}
 		return
 	}
@@ -1350,9 +1373,7 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 	if method == "thread/start" || method == "thread/fork" {
 		if o.claimNewLocalOwner(threadID) == nil {
 			o.publishLocalConversation(threadID, state)
-			if o.ownerHub == nil {
-				_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
-			}
+			o.activateLocalFollowRoute(threadID, true)
 		}
 	}
 }

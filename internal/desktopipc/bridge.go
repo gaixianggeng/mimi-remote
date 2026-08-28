@@ -92,11 +92,15 @@ type desktopStartReservation struct {
 }
 
 type localOwnerLease struct {
-	threadID             string
-	ownerID              string
-	ownerEpoch           uint64
+	threadID   string
+	ownerID    string
+	ownerEpoch uint64
+	// connectionGeneration 和 followerClientID 只描述发起请求的那条 Desktop IPC
+	// 连接，因此只有 desktopOriginated 的租约才校验它们。Mimi 自己发起的写请求
+	// 直达它自己的 App Server，Desktop 连接的建立或断开不改变其交付结果。
 	connectionGeneration uint64
 	followerClientID     string
+	desktopOriginated    bool
 }
 
 type localOwnerClaimPermit struct {
@@ -468,7 +472,6 @@ func (b *Bridge) RequestLocalOwner(ctx context.Context, threadID, method string,
 	}
 	lease := localOwnerLease{
 		threadID: threadID, ownerID: owner.ownerID, ownerEpoch: b.ownerEpochs[threadID],
-		connectionGeneration: b.connectionGeneration, followerClientID: owner.followerClientID,
 	}
 	recoveryEpoch := b.localRecoveryEpoch[threadID]
 	startToken := uint64(0)
@@ -1790,6 +1793,7 @@ func (b *Bridge) handleIncoming(ctx context.Context, request IncomingRequest) (a
 	lease := localOwnerLease{
 		threadID: threadID, ownerID: owner.ownerID, ownerEpoch: b.ownerEpochs[threadID],
 		connectionGeneration: request.ConnectionGeneration, followerClientID: request.SourceClientID,
+		desktopOriginated: true,
 	}
 	mutates := desktopFollowerMethodMutates(request.Method)
 	recoversHistory := request.Method == "thread-follower-load-complete-history"
@@ -1926,10 +1930,16 @@ func (b *Bridge) ValidateLocalOwnerLease(ctx context.Context, threadID string) e
 
 func (b *Bridge) localOwnerLeaseStillCurrentLocked(lease localOwnerLease) bool {
 	owner := b.owners[lease.threadID]
+	if owner.kind != threadOwnerMimi || owner.ownerID != lease.ownerID ||
+		lease.ownerEpoch != b.ownerEpochs[lease.threadID] {
+		return false
+	}
+	if !lease.desktopOriginated {
+		return true
+	}
 	return lease.connectionGeneration == b.connectionGeneration &&
 		lease.connectionGeneration == b.client.ConnectionGeneration() &&
-		lease.ownerEpoch == b.ownerEpochs[lease.threadID] && owner.kind == threadOwnerMimi &&
-		owner.ownerID == lease.ownerID && owner.followerClientID == lease.followerClientID
+		owner.followerClientID == lease.followerClientID
 }
 
 func (b *Bridge) bindFollowerClientLocked(threadID, method, sourceClientID string) bool {

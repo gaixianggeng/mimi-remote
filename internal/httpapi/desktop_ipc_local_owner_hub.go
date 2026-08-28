@@ -170,14 +170,11 @@ func (h *desktopIPCLocalOwnerHub) claim(threadID, mode string) error {
 	}
 	h.rememberOwnedThread(threadID)
 	if state, ok := h.local.State(threadID); ok {
-		activation := ""
-		if mode == "new" {
-			activation = "new"
-		} else if mode == "permitted" {
-			activation = "existing"
-		}
-		h.enqueuePublish(threadID, state, true, activation)
+		h.enqueuePublish(threadID, state, true, "")
 	}
+	// 认领成功就要挂载 Desktop follower，不能依赖本地缓存是否已经有状态。
+	// Desktop 关着时 bridge 只记录路由意图，等它重新连上再恢复。
+	h.enqueueActivation(threadID, mode == "new")
 	return nil
 }
 
@@ -423,18 +420,48 @@ func (h *desktopIPCLocalOwnerHub) releaseThread(threadID string) {
 	h.local.Remove(threadID)
 }
 
+// enqueueActivation mounts the Desktop follower route behind the publish queue
+// so Desktop never receives a route for state this hub has not published yet.
+func (h *desktopIPCLocalOwnerHub) enqueueActivation(threadID string, newThread bool) {
+	if h == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	activation := "existing"
+	if newThread {
+		activation = "new"
+	}
+	h.enqueueUpdate(desktopIPCLocalPublish{
+		threadID: strings.TrimSpace(threadID), activation: activation,
+	})
+}
+
 func (h *desktopIPCLocalOwnerHub) enqueuePublish(threadID string, state map[string]any, force bool, activation string) {
 	if h == nil || strings.TrimSpace(threadID) == "" || state == nil {
 		return
 	}
-	update := desktopIPCLocalPublish{
+	h.enqueueUpdate(desktopIPCLocalPublish{
 		threadID: strings.TrimSpace(threadID), state: cloneAnyMap(state), force: force, activation: activation,
-	}
+	})
+}
+
+func (h *desktopIPCLocalOwnerHub) enqueueUpdate(update desktopIPCLocalPublish) {
 	h.publishMu.Lock()
 	if len(h.publishQueue) >= desktopIPCLocalOwnerPublishQueueMax {
 		replaced := false
 		for index := len(h.publishQueue) - 1; index >= 0; index-- {
 			if h.publishQueue[index].threadID == update.threadID {
+				// Coalescing must not drop the other half of the queued work:
+				// an activation-only entry keeps the pending state, and a state
+				// update keeps a pending route activation.
+				previous := h.publishQueue[index]
+				if update.state == nil {
+					update.state = previous.state
+				}
+				if update.activation == "" {
+					update.activation = previous.activation
+				} else if previous.activation == "new" {
+					update.activation = "new"
+				}
 				update.force = true
 				h.publishQueue[index] = update
 				replaced = true
@@ -470,9 +497,11 @@ func (h *desktopIPCLocalOwnerHub) runPublisher() {
 				update := h.publishQueue[0]
 				h.publishQueue = h.publishQueue[1:]
 				h.publishMu.Unlock()
-				if update.force {
+				switch {
+				case update.state == nil:
+				case update.force:
 					_, _ = h.bridge.ForcePublishLocalConversationAndNotify(update.threadID, h.ownerID, update.state)
-				} else {
+				default:
 					_ = h.bridge.PublishLocalConversationAndNotify(update.threadID, h.ownerID, update.state)
 				}
 				switch update.activation {
