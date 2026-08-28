@@ -12,7 +12,7 @@
 | 用例 | 操作 | 预期 |
 | --- | --- | --- |
 | Desktop → Mimi 历史 | Desktop 新建 Thread 并完成一轮；Mimi 打开同一 Thread | Mimi 加载完整历史，包含消息、Reasoning、工具项和完成状态 |
-| Desktop → Mimi 写入 | Mimi 对 Desktop-owned Thread 续问、Steer、中断 | 操作只进入 Desktop；无重复 Turn，状态实时回到 Mimi |
+| Desktop → Mimi 写入 | Mimi 对 Desktop-owned Thread 续问、Steer、中断 | 操作只进入 Desktop；无重复 Turn，状态实时回到 Mimi；中断后 Turn 进入 `interrupted` 且不产生最终回复 |
 | Desktop → Mimi 交互 | Desktop-owned Turn 触发审批、补充输入或 MCP elicitation | 卡片只出现一次；响应回到 Desktop；取消和超时状态明确 |
 | Mimi → Desktop | Mimi 新建并运行 Thread；Desktop 打开同一 Thread | Desktop 收到 `conversationState` 投影并可继续；Mimi 仍是唯一 writer |
 | Browser 宿主 | Desktop-owned Turn 从 Mimi 触发 Browser | Browser 仍由 Desktop 原生工具宿主执行，Mimi 不启动替代进程 |
@@ -41,4 +41,4 @@
 
 ## 通过标准
 
-所有主路径、恢复和阻断用例通过；全程没有重复 Turn、双重审批、写入竞态或敏感 IPC 字段泄露。未知 build 和任何无法证明 owner 的情况必须 fail closed。
+所有主路径、恢复和阻断用例通过；全程没有重复 Turn、双重审批、写入竞态或敏感 IPC 字段泄露。未知 build 和任何无法证明 owner 的情况必须 fail closed。验收日志必须能按短标识对齐移动端请求、gateway 路由、Desktop 回执、Turn 终态和工具项终态，且不包含提示词、命令、工作区或完整 ID。

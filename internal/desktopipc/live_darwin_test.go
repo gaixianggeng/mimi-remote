@@ -418,7 +418,7 @@ func TestLiveDesktopIPCInterruptsActiveTurn(t *testing.T) {
 				"threadId": threadID,
 				"input": []any{map[string]any{
 					"type": "text",
-					"text": "MIM-148 IPC Interrupt 验证：请调用终端运行 sleep 30，然后只回复 SHOULD_NOT_COMPLETE_INTERRUPT。不要修改文件。",
+					"text": "MIM-148 IPC Interrupt 验证：请调用终端运行 sleep 8，然后只回复 SHOULD_NOT_COMPLETE_INTERRUPT。不要修改文件。",
 				}},
 			},
 			"context": map[string]any{"inheritThreadSettings": true},
@@ -453,6 +453,7 @@ func TestLiveDesktopIPCInterruptsActiveTurn(t *testing.T) {
 			projection, _ = bridge.DesktopProjection(threadID)
 		}
 	}
+	commandID := waitLiveCommandRunning(t, ctx, bridge, threadID, turnID)
 
 	interruptResult, err := bridge.RequestDesktopOwner(ctx, "thread-follower-interrupt-turn", map[string]any{
 		"conversationId": threadID,
@@ -466,7 +467,7 @@ func TestLiveDesktopIPCInterruptsActiveTurn(t *testing.T) {
 		InterruptedTurnID string `json:"interruptedTurnId"`
 		OK                bool   `json:"ok"`
 	}
-	if json.Unmarshal(interruptResult, &interruptAck) != nil || !interruptAck.OK || interruptAck.InterruptedTurnID == "" {
+	if json.Unmarshal(interruptResult, &interruptAck) != nil || !interruptAck.OK || interruptAck.InterruptedTurnID != turnID {
 		t.Fatal("live follower interrupt returned an invalid acknowledgement")
 	}
 	turn := waitLiveTurnTerminal(t, ctx, bridge, threadID, turnID)
@@ -476,6 +477,72 @@ func TestLiveDesktopIPCInterruptsActiveTurn(t *testing.T) {
 	if strings.Contains(liveAssistantText(turn), "SHOULD_NOT_COMPLETE_INTERRUPT") {
 		t.Fatalf("interrupted Turn produced the forbidden completion: %#v", turn)
 	}
+	// Desktop 先终止 Turn，底层工具项再按 Desktop 自身的生命周期收敛。
+	// 等待原命令的最长执行时间后记录最终工具状态，用于区分 Turn 中断和工具进程终止。
+	time.Sleep(9 * time.Second)
+	historyResult, err = bridge.RequestDesktopOwner(ctx, "thread-follower-load-complete-history", map[string]any{
+		"conversationId": threadID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(historyResult, &history) != nil || history.Revision <= 0 {
+		t.Fatal("Desktop complete-history response after interrupt is invalid")
+	}
+	projection, ok = bridge.WaitDesktopProjectionRevision(ctx, threadID, history.Revision)
+	if !ok {
+		t.Fatal("Desktop complete history after interrupt was not projected")
+	}
+	t.Logf("post-interrupt command %s status=%s", commandID, liveItemStatus(projection, turnID, commandID))
+}
+
+func waitLiveCommandRunning(
+	t *testing.T,
+	ctx context.Context,
+	bridge *Bridge,
+	threadID string,
+	turnID string,
+) string {
+	t.Helper()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		projection, _ := bridge.DesktopProjection(threadID)
+		for _, raw := range projection.Turns {
+			turn, _ := raw.(map[string]any)
+			if firstString(turn, "id", "turnId", "turn_id") != turnID {
+				continue
+			}
+			for _, rawItem := range anySlice(turn["items"]) {
+				item, _ := rawItem.(map[string]any)
+				if normalizeToken(stringValue(item["type"])) == "commandexecution" &&
+					normalizeToken(stringValue(item["status"])) == "inprogress" {
+					return firstString(item, "id", "itemId", "item_id")
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("live Turn %s did not start a command: %v", turnID, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func liveItemStatus(projection Projection, turnID string, itemID string) string {
+	for _, raw := range projection.Turns {
+		turn, _ := raw.(map[string]any)
+		if firstString(turn, "id", "turnId", "turn_id") != turnID {
+			continue
+		}
+		for _, rawItem := range anySlice(turn["items"]) {
+			item, _ := rawItem.(map[string]any)
+			if firstString(item, "id", "itemId", "item_id") == itemID {
+				return normalizeToken(stringValue(item["status"]))
+			}
+		}
+	}
+	return ""
 }
 
 func waitLiveTurnTerminal(

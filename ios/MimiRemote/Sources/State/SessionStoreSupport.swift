@@ -170,6 +170,35 @@ enum SessionListDiagnostics {
     }
 }
 
+enum DesktopIPCTrace {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gaixianggeng.mimi",
+        category: "DesktopIPC"
+    )
+
+    static func record(
+        _ event: String,
+        sessionID: SessionID,
+        turnID: TurnID? = nil,
+        outcome: String = "none"
+    ) {
+        // 只记录固定阶段和不可逆短 token。不得写提示词、工作区、命令、附件或原始 ID。
+        logger.info(
+            "event=\(event, privacy: .public) session=\(token(sessionID), privacy: .public) turn=\(token(turnID), privacy: .public) outcome=\(outcome, privacy: .public)"
+        )
+    }
+
+    private static func token(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "absent" }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%08llx", hash & 0xffff_ffff)
+    }
+}
+
 struct SessionListBudgetKey: Hashable {
     let profileID: String
     let connectionGeneration: Int
@@ -713,10 +742,11 @@ struct SessionListPreferenceStore {
 enum SessionControlState: String, Codable, Equatable {
     case ipadOwned
     case takenOver
+    case desktopFollower
     case observing
 
     var isControllable: Bool {
-        self == .ipadOwned || self == .takenOver
+        self == .ipadOwned || self == .takenOver || self == .desktopFollower
     }
 }
 

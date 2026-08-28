@@ -12,9 +12,12 @@ enum QueuedTurnAcceptedDisposition {
 }
 
 // Codex Desktop 与 Mimi 的 app-server 是两个独立进程，runtime status 不能跨进程复用。
-// 这里消费 agentd 从 rollout 提炼出的只读活动层；所有消息仍走现有历史读取，不建立控制连接。
+// 这里消费 agentd 提炼的活动层；只有 Desktop IPC ready 的活动才保留 follower 控制连接。
 extension SessionStore {
     func isLocallyStartedExternalActivity(_ activity: ExternalSessionActivity) -> Bool {
+        if activity.controllable == true {
+            return false
+        }
         guard let turnID = activity.turnID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !turnID.isEmpty else {
             return false
@@ -38,6 +41,12 @@ extension SessionStore {
         }
         locallyStartedTurnIDBySessionID[sessionID] = turnID
 
+        // Desktop follower 的 Turn 也由当前移动端发起，但 writer 仍是 Desktop。
+        // 不能把精确 ACK 误解为独立 App Server 所有权证据。
+        if externalControllableSessionIDs.contains(sessionID) {
+            return false
+        }
+
         let externalTurnID = externalActivityBySessionID[sessionID]?.turnID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionTurnID = sessionsByID[sessionID]?.activeTurnID?
@@ -50,6 +59,7 @@ extension SessionStore {
 
         externalActivityBySessionID.removeValue(forKey: sessionID)
         externalReadOnlySessionIDs.remove(sessionID)
+        externalControllableSessionIDs.remove(sessionID)
         externalActivityHistoryRevisionBySessionID.removeValue(forKey: sessionID)
         externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
         externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
@@ -396,7 +406,11 @@ extension SessionStore {
         }
 
         let previousByID = externalActivityBySessionID
+        let previousControllableIDs = externalControllableSessionIDs
         let activeIDs = Set(nextByID.keys)
+        let controllableIDs = Set(nextByID.compactMap { sessionID, activity in
+            activity.controllable == true ? sessionID : nil
+        })
         // 上一次 terminal 最终刷新若因退后台被取消，externalActivityBySessionID 已经清空，
         // 但只读 tombstone 会保留。把它重新纳入 removedIDs，下一次前台轮询即可续跑并清理。
         let removedIDs = Set(previousByID.keys)
@@ -420,7 +434,19 @@ extension SessionStore {
         }
         externalReadOnlySessionIDs.formUnion(activeIDs)
         externalReadOnlySessionIDs.formUnion(removedIDs)
+        externalControllableSessionIDs = controllableIDs
         externalActivityBySessionID = nextByID
+
+        for sessionID in controllableIDs.subtracting(previousControllableIDs) {
+            DesktopIPCTrace.record(
+                "mobile_follower_detected",
+                sessionID: sessionID,
+                turnID: nextByID[sessionID]?.turnID
+            )
+        }
+        for sessionID in previousControllableIDs.subtracting(controllableIDs) {
+            DesktopIPCTrace.record("mobile_follower_released", sessionID: sessionID)
+        }
 
         for (sessionID, activity) in nextByID {
             stopQueuedSessionMonitoring(sessionID: sessionID)
@@ -434,7 +460,14 @@ extension SessionStore {
             }
         }
         if let selectedSessionID, activeIDs.contains(selectedSessionID) {
-            disconnectWebSocket()
+            if controllableIDs.contains(selectedSessionID),
+               let session = sessionsByID[selectedSessionID] {
+                // Desktop IPC ready 时保留现有 gateway，并把控制操作作为 follower
+                // 路由回 Desktop；不可控的外部 writer 仍必须断开。
+                connectWebSocket(session, replayBufferedEvents: false)
+            } else {
+                disconnectWebSocket()
+            }
         }
 
         // 先本地降级，确保 terminal 快照一到就从“进行中”移回“历史”；
@@ -505,6 +538,7 @@ extension SessionStore {
         }
         guard appStore.activeHostScope == hostScope else { return }
         externalReadOnlySessionIDs.subtract(removedIDs)
+        externalControllableSessionIDs.subtract(removedIDs)
         for sessionID in removedIDs where queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
             // 外部 turn 已明确结束后恢复持久队列；连接建立回调会在 socket ready 时
             // 再调用 dispatch，因此这里不会因尚未连上而丢失派发机会。

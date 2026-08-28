@@ -246,11 +246,148 @@ func projectAllowedItemFields(raw map[string]any, typeToken string) map[string]a
 	projected := make(map[string]any, len(fields)+2)
 	for _, key := range fields {
 		if value, exists := raw[key]; exists {
-			projected[key] = cloneValue(value)
+			if safe, ok := projectSafeItemField(typeToken, key, value); ok {
+				projected[key] = safe
+			}
 		}
 	}
 	projected["type"] = raw["type"]
 	return projected
+}
+
+func projectSafeItemField(typeToken string, key string, value any) (any, bool) {
+	switch key {
+	case "id", "itemId", "item_id", "status", "createdAt", "created_at", "updatedAt", "updated_at",
+		"startedAt", "started_at", "completedAt", "completed_at", "durationMs", "duration_ms",
+		"text", "message", "phase", "summaryText", "summary_text", "command", "cwd",
+		"aggregatedOutput", "aggregated_output", "stdout", "stderr", "exitCode", "exit_code", "diff", "patch",
+		"name", "server", "tool", "query", "action", "url", "path", "imageUrl", "image_url", "alt":
+		return projectionScalar(value)
+	case "error":
+		return projectionError(value)
+	case "content":
+		if typeToken == "usermessage" {
+			return sanitizeUserContent(anySlice(value)), true
+		}
+		return projectionDisplayContent(value)
+	case "summary":
+		return projectionDisplayContent(value)
+	case "plan", "steps", "items":
+		return projectionStructuredValue(value, planProjectionFields, 0)
+	case "output":
+		if typeToken == "commandexecution" {
+			return projectionDisplayContent(value)
+		}
+		return projectionStructuredValue(value, toolProjectionFields, 0)
+	case "changes":
+		return projectionStructuredValue(value, fileChangeProjectionFields, 0)
+	case "arguments", "input", "result", "response", "results":
+		return projectionStructuredValue(value, toolProjectionFields, 0)
+	default:
+		return nil, false
+	}
+}
+
+var planProjectionFields = map[string]bool{
+	"id": true, "type": true, "text": true, "content": true, "title": true,
+	"status": true, "completed": true, "items": true, "steps": true,
+}
+
+var fileChangeProjectionFields = map[string]bool{
+	"id": true, "type": true, "path": true, "name": true, "kind": true,
+	"status": true, "diff": true, "patch": true, "text": true, "content": true,
+}
+
+var toolProjectionFields = map[string]bool{
+	"id": true, "type": true, "name": true, "title": true, "status": true,
+	"text": true, "message": true, "content": true, "query": true, "url": true,
+	"path": true, "code": true, "value": true, "output": true, "result": true,
+	"response": true, "results": true, "items": true, "error": true,
+}
+
+func projectionScalar(value any) (any, bool) {
+	switch value.(type) {
+	case nil, string, bool, json.Number, float64, float32, int, int32, int64, uint, uint32, uint64:
+		return value, true
+	default:
+		return nil, false
+	}
+}
+
+func projectionError(value any) (any, bool) {
+	if scalar, ok := projectionScalar(value); ok {
+		return scalar, true
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	result := make(map[string]any)
+	for _, key := range []string{"type", "code", "message", "text", "status"} {
+		if scalar, ok := projectionScalar(object[key]); ok && scalar != nil {
+			result[key] = scalar
+		}
+	}
+	return result, len(result) > 0
+}
+
+func projectionDisplayContent(value any) (any, bool) {
+	if scalar, ok := projectionScalar(value); ok {
+		return scalar, true
+	}
+	values, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+	result := make([]any, 0, len(values))
+	for _, entry := range values {
+		if scalar, ok := projectionScalar(entry); ok {
+			result = append(result, scalar)
+			continue
+		}
+		if safe, ok := projectionStructuredValue(entry, toolProjectionFields, 0); ok {
+			result = append(result, safe)
+		}
+	}
+	return result, true
+}
+
+func projectionStructuredValue(value any, allowed map[string]bool, depth int) (any, bool) {
+	if depth > 4 {
+		return nil, false
+	}
+	if scalar, ok := projectionScalar(value); ok {
+		return scalar, true
+	}
+	switch typed := value.(type) {
+	case []any:
+		result := make([]any, 0, len(typed))
+		for _, entry := range typed {
+			if safe, ok := projectionStructuredValue(entry, allowed, depth+1); ok {
+				result = append(result, safe)
+			}
+		}
+		return result, true
+	case map[string]any:
+		result := make(map[string]any)
+		for key, entry := range typed {
+			if !allowed[key] {
+				continue
+			}
+			if key == "error" {
+				if safe, ok := projectionError(entry); ok {
+					result[key] = safe
+				}
+				continue
+			}
+			if safe, ok := projectionStructuredValue(entry, allowed, depth+1); ok {
+				result[key] = safe
+			}
+		}
+		return result, len(result) > 0
+	default:
+		return nil, false
+	}
 }
 
 func sanitizeUserContent(content []any) []any {

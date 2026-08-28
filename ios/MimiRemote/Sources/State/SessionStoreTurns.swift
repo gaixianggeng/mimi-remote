@@ -955,9 +955,28 @@ extension SessionStore {
         guard let socket = readyWebSocket(for: session) else {
             return
         }
+        let desktopFollower = externalControllableSessionIDs.contains(session.id)
+        if desktopFollower {
+            DesktopIPCTrace.record("mobile_interrupt_requested", sessionID: session.id, turnID: activeTurnID)
+        }
         if !socket.sendCtrlC(expectedTurnID: activeTurnID) {
+            if desktopFollower {
+                DesktopIPCTrace.record(
+                    "mobile_interrupt_failed",
+                    sessionID: session.id,
+                    turnID: activeTurnID,
+                    outcome: "socket_rejected"
+                )
+            }
             setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
             return
+        }
+        if desktopFollower {
+            DesktopIPCTrace.record(
+                "mobile_interrupt_dispatch_accepted",
+                sessionID: session.id,
+                turnID: activeTurnID
+            )
         }
         // 中断只停止当前 turn，不关闭 thread；等待匹配的 turn/completed 后，
         // 原会话仍可继续发送下一条消息。

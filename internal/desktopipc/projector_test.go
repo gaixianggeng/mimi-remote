@@ -1,6 +1,7 @@
 package desktopipc
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,6 +141,11 @@ func TestProjectConversationStateUsesExplicitMobileItemSchema(t *testing.T) {
 				}},
 				map[string]any{
 					"id": "tool", "type": "mcpToolCall", "status": "completed", "name": "browser",
+					"input": map[string]any{
+						"query": "visible", "internalMetadata": map[string]any{
+							"developerPrompt": "secret", "socketPath": "/private/ipc.sock",
+						},
+					},
 					"output": "done", "privatePrompt": "secret", "socketPath": "/private/ipc.sock",
 				},
 			},
@@ -164,5 +170,10 @@ func TestProjectConversationStateUsesExplicitMobileItemSchema(t *testing.T) {
 	tool := items[1].(map[string]any)
 	if tool["privatePrompt"] != nil || tool["socketPath"] != nil || tool["output"] != "done" {
 		t.Fatalf("tool projection did not enforce the allowlist: %#v", tool)
+	}
+	input, _ := tool["input"].(map[string]any)
+	if input["query"] != "visible" || input["internalMetadata"] != nil ||
+		strings.Contains(projectionJSON(input), "developerPrompt") || strings.Contains(projectionJSON(input), "ipc.sock") {
+		t.Fatalf("nested tool metadata reached the mobile projection: %#v", input)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
+	"github.com/gaixianggeng/mimi-remote/internal/desktopipc"
 )
 
 func TestRouterExternalActivityUsesConfiguredCodexHome(t *testing.T) {
@@ -150,7 +151,7 @@ func TestExternalActivityRequiresAuthAndReturnsSanitizedSnapshot(t *testing.T) {
 	activity := activities[0].(map[string]any)
 	allowed := map[string]bool{
 		"thread_id": true, "project_id": true, "source": true, "state": true,
-		"turn_id": true, "revision": true, "last_activity_at": true,
+		"turn_id": true, "revision": true, "last_activity_at": true, "controllable": true,
 	}
 	for key := range activity {
 		if !allowed[key] {
@@ -160,6 +161,39 @@ func TestExternalActivityRequiresAuthAndReturnsSanitizedSnapshot(t *testing.T) {
 	text := rec.Body.String()
 	if strings.Contains(text, "rollout") || strings.Contains(text, "\"cwd\"") || strings.Contains(text, "\"path\"") {
 		t.Fatalf("活动响应不应泄漏本机路径：%s", text)
+	}
+	if activity["controllable"] != false {
+		t.Fatalf("Desktop IPC 未就绪时外部活动必须保持只读：%v", activity)
+	}
+}
+
+func TestExternalActivityIsControllableOnlyWhileDesktopIPCReady(t *testing.T) {
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	router.desktopIPC.Close()
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, InitialState: desktopipc.StateReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.desktopIPC = bridge
+	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{
+		{ThreadID: "desktop", ProjectID: "demo", Source: "codex_desktop", State: "running"},
+		{ThreadID: "gateway", ProjectID: "demo", Source: "mimi_gateway", State: "running"},
+	}}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/external-activity", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("external activity 应返回 200，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	activities := body["activities"].([]any)
+	if activities[0].(map[string]any)["controllable"] != true {
+		t.Fatalf("Desktop IPC ready 时 Desktop activity 应可控：%v", activities[0])
+	}
+	if activities[1].(map[string]any)["controllable"] != false {
+		t.Fatalf("非 Desktop activity 不应因 IPC ready 放宽：%v", activities[1])
 	}
 }
 

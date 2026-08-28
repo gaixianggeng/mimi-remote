@@ -158,8 +158,13 @@ extension SessionStore {
         }
         if connectedSessionID == session.id,
            connectedHostScope == appStore.activeHostScope,
-           case .connected = webSocketStatus {
-            return
+           webSocket != nil {
+            switch webSocketStatus {
+            case .connecting, .connected:
+                return
+            case .failed, .disconnected, .terminated:
+                break
+            }
         }
         disconnectWebSocket(cancelReconnect: !isReconnectAttempt)
 
@@ -318,6 +323,14 @@ extension SessionStore {
                 if self?.statusMessage == L10n.text("ui.stopping_current_reply") {
                     self?.setStatusMessage(nil)
                 }
+                if self?.externalControllableSessionIDs.contains(session.id) == true {
+                    DesktopIPCTrace.record(
+                        "mobile_interrupt_failed",
+                        sessionID: session.id,
+                        turnID: session.activeTurnID,
+                        outcome: "gateway_rejected"
+                    )
+                }
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
             }
         }
@@ -329,6 +342,9 @@ extension SessionStore {
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
         runtimeEventFlushTasks[eventLease] = nil
+        // 客户端的 connecting 回调会异步回到 MainActor。先同步标记，避免其间到达的
+        // external-activity 轮询把同一个 follower 连接退役并重建。
+        setWebSocketStatus(.connecting)
         socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
     }
 
@@ -747,7 +763,8 @@ extension SessionStore {
             guard !Task.isCancelled,
                   webSocketReconnectGeneration == reconnectGeneration,
                   selectedSessionID == sessionID,
-                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                  let latestSession = sessionsByID[sessionID],
+                  !isExternalReadOnlySession(latestSession) else {
                 return nil
             }
             let refreshed = self.session(response.session, in: workspaceForSession(current))
@@ -759,7 +776,8 @@ extension SessionStore {
             // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
             guard !Task.isCancelled,
                   webSocketReconnectGeneration == reconnectGeneration,
-                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                  let historySession = sessionsByID[sessionID],
+                  !isExternalReadOnlySession(historySession) else {
                 return nil
             }
             // 首屏刚完成后，底层事件订阅若短暂结束，会在约 1 秒内进入 reconnect。
@@ -1198,6 +1216,14 @@ extension SessionStore {
                 metadata: metadata,
                 fallbackSessionID: fallbackSessionID
             )
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            if lifecycle == .interrupted, externalControllableSessionIDs.contains(sessionID) {
+                DesktopIPCTrace.record(
+                    "mobile_projection_interrupted",
+                    sessionID: sessionID,
+                    turnID: metadata.turnID
+                )
+            }
         case .assistantDelta(let delta, let metadata, let fallbackSessionID):
             conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: fallbackSessionID)
         case .completed(let message, let metadata, let fallbackSessionID):
@@ -1643,7 +1669,8 @@ extension SessionStore {
                 state: activity.state,
                 turnID: activity.turnID,
                 revision: activity.revision,
-                lastActivityAt: activity.lastActivityAt
+                lastActivityAt: activity.lastActivityAt,
+                controllable: activity.controllable
             )
         }
         missingRunningSessionStateByID = missingRunningSessionStateByID.mapValues { state in
@@ -2616,6 +2643,7 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         externalActivityBySessionID = [:]
         externalReadOnlySessionIDs = []
+        externalControllableSessionIDs = []
         externalActivityHistoryRevisionBySessionID = [:]
         externalActivityHistoryAttemptBySessionID = [:]
         externalActivityHistoryFallbackBySessionID = [:]

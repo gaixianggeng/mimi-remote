@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
+	"github.com/gaixianggeng/mimi-remote/internal/desktopipc"
 )
 
 type externalActivitySource interface {
@@ -23,8 +24,13 @@ type gatewayTurnOwnershipSource interface {
 }
 
 type externalActivityResponse struct {
-	Activities []codexhistory.ExternalActivity `json:"activities"`
-	ScannedAt  time.Time                       `json:"scanned_at"`
+	Activities []externalActivityItem `json:"activities"`
+	ScannedAt  time.Time              `json:"scanned_at"`
+}
+
+type externalActivityItem struct {
+	codexhistory.ExternalActivity
+	Controllable bool `json:"controllable"`
 }
 
 // registerGatewayTurnStart 只接收已经完成 gateway 校验和安全改写的最终帧。
@@ -102,7 +108,7 @@ func (r *Router) externalActivityHandler(w http.ResponseWriter, req *http.Reques
 	}
 	if r.externalActivity == nil {
 		writeJSON(w, http.StatusOK, externalActivityResponse{
-			Activities: []codexhistory.ExternalActivity{},
+			Activities: []externalActivityItem{},
 			ScannedAt:  time.Now().UTC(),
 		})
 		return
@@ -114,11 +120,20 @@ func (r *Router) externalActivityHandler(w http.ResponseWriter, req *http.Reques
 		http.Error(w, "external activity unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if activities == nil {
-		activities = []codexhistory.ExternalActivity{}
+	items := make([]externalActivityItem, 0, len(activities))
+	desktopReady := r.desktopSyncStatus().State == desktopipc.StateReady
+	for _, activity := range activities {
+		items = append(items, externalActivityItem{
+			ExternalActivity: activity,
+			// 只有已经通过 build gate 并建立 IPC 的 Desktop Turn 才允许移动端
+			// 建立 follower 控制连接。其余外部活动继续保持只读。
+			Controllable: desktopReady &&
+				strings.EqualFold(strings.TrimSpace(activity.Source), "codex_desktop") &&
+				strings.EqualFold(strings.TrimSpace(activity.State), "running"),
+		})
 	}
 	writeJSON(w, http.StatusOK, externalActivityResponse{
-		Activities: activities,
+		Activities: items,
 		ScannedAt:  time.Now().UTC(),
 	})
 }

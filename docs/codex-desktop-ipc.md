@@ -44,6 +44,8 @@ Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查�
   ```
 - 状态、日志和错误不会写入 socket 路径、IPC client ID、提示词或原始 `conversationState`。
 
+跨端路由使用结构化 trace 记录 owner 判定、请求交付、Desktop 回执、Turn 状态和工具项状态。trace 只记录事件名、端类型、结果和不可逆的短标识；不记录提示词、命令、工作区、socket 路径或完整 Thread/Turn ID。
+
 这是 Codex Desktop 的私有 IPC，不属于[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)的公开契约。Desktop 升级后必须先经过 build gate 和完整验收，不能根据版本号猜测协议兼容。
 
 ## Writer 和故障恢复
@@ -76,6 +78,8 @@ agentd runtime \
 ## 能力边界
 
 首版不投影 Desktop 私有选择、折叠状态和 Mimi 本地未读水位。未覆盖的 Desktop 写方法返回 `desktop_sync_method_unsupported` 和 `accepted=false`，不伪造成功。Browser、MCP、审批和工具执行仍由拥有该 Thread 的 Desktop 或独立 App Server 负责。
+
+`turn/interrupt` 的验收语义是 Desktop 确认目标 Turn，Turn 进入 `interrupted`，且不再产生最终 assistant 回复。已启动的终端或工具进程由 Codex Desktop 自身收敛；其 item 可能稍后才进入终态，IPC overlay 不伪造进程级强制终止。
 
 ## 验证
 

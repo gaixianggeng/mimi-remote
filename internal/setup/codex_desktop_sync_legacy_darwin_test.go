@@ -14,6 +14,18 @@ import (
 	"time"
 )
 
+func legacyTestLaunchAgentPlist() []byte {
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>` + legacyLaunchAgentLabel + `</string>
+<key>ProgramArguments</key><array>
+<string>/Applications/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac</string>
+<string>--codex-daemon-supervisor</string>
+<string>/Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/node</string>
+<string>/Applications/ChatGPT.app/Contents/Resources/codex</string>
+</array></dict></plist>`)
+}
+
 func TestCleanupDesktopSyncLegacyArtifactsRestoresOwnedEnvironmentAndFixedFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -28,7 +40,7 @@ func TestCleanupDesktopSyncLegacyArtifactsRestoresOwnedEnvironmentAndFixedFiles(
 		content := []byte("legacy")
 		switch filepath.Base(path) {
 		case legacyLaunchAgentLabel + ".plist":
-			content = []byte("<plist><string>" + legacyLaunchAgentLabel + "</string><string>--codex-daemon-supervisor</string></plist>")
+			content = legacyTestLaunchAgentPlist()
 		case "codex-shared-daemon-migration-required":
 			content = []byte("restart-required\n")
 		case "codex-shared-daemon-enable-prepared":
@@ -566,7 +578,7 @@ func TestCleanupDesktopSyncLegacyArtifactsRetriesAfterEpochUnset(t *testing.T) {
 		content := []byte("legacy")
 		switch filepath.Base(path) {
 		case legacyLaunchAgentLabel + ".plist":
-			content = []byte("<plist><string>" + legacyLaunchAgentLabel + "</string><string>--codex-daemon-supervisor</string></plist>")
+			content = legacyTestLaunchAgentPlist()
 		case "codex-shared-daemon-migration-required":
 			content = []byte("restart-required\n")
 		case "codex-shared-daemon-enable-prepared":
@@ -775,7 +787,7 @@ func TestCleanupDesktopSyncLegacyArtifactsRejectsEnvironmentMismatchBeforeSideEf
 	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(plist, []byte("<plist><string>"+legacyLaunchAgentLabel+"</string><string>--codex-daemon-supervisor</string></plist>"), 0o600); err != nil {
+	if err := os.WriteFile(plist, legacyTestLaunchAgentPlist(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ledger := map[string]string{
@@ -848,7 +860,7 @@ func newLegacyCleanupTestFixture(t *testing.T) *legacyCleanupTestFixture {
 		content := []byte("legacy log\n")
 		switch filepath.Base(path) {
 		case legacyLaunchAgentLabel + ".plist":
-			content = []byte("<plist><string>" + legacyLaunchAgentLabel + "</string><string>--codex-daemon-supervisor</string></plist>")
+			content = legacyTestLaunchAgentPlist()
 		case "codex-shared-daemon-migration-required":
 			content = []byte("restart-required\n")
 		case "codex-shared-daemon-enable-prepared":
@@ -1001,7 +1013,7 @@ func TestCleanupDesktopSyncLegacyArtifactsPreservesFilesReplacedAfterInitialVali
 		{
 			name:    "plist",
 			path:    func(paths []string) string { return paths[0] },
-			content: []byte("<plist><string>" + legacyLaunchAgentLabel + "</string><string>--codex-daemon-supervisor</string></plist>"),
+			content: legacyTestLaunchAgentPlist(),
 		},
 		{
 			name:    "migration marker",
@@ -1028,6 +1040,30 @@ func TestCleanupDesktopSyncLegacyArtifactsPreservesFilesReplacedAfterInitialVali
 				t.Fatalf("replacement file content changed: got=%q want=%q", got, test.content)
 			}
 		})
+	}
+}
+
+func TestCleanupDesktopSyncLegacyArtifactsRejectsMarkerPreservingReplacementPlist(t *testing.T) {
+	fixture := newLegacyCleanupTestFixture(t)
+	replacement := []byte(`<plist><dict>
+<key>Comment</key><string>` + legacyLaunchAgentLabel + ` --codex-daemon-supervisor</string>
+<key>Label</key><string>com.example.external</string>
+<key>ProgramArguments</key><array><string>/tmp/external</string></array>
+</dict></plist>`)
+	if err := os.WriteFile(fixture.paths[0], replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.install(t)
+
+	err := cleanupDesktopSyncLegacyArtifacts(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "plist 已被替换") {
+		t.Fatalf("marker-preserving replacement plist was not rejected: %v", err)
+	}
+	if fixture.bootouts != 0 {
+		t.Fatalf("replacement plist must not be booted out: %d", fixture.bootouts)
+	}
+	if got, readErr := os.ReadFile(fixture.paths[0]); readErr != nil || string(got) != string(replacement) {
+		t.Fatalf("replacement plist was changed: content=%q err=%v", got, readErr)
 	}
 }
 
@@ -1100,5 +1136,34 @@ func TestCleanupDesktopSyncLegacyArtifactsFinishesQuarantinedFileAfterInterrupti
 	}
 	if _, err := os.Lstat(quarantine); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy quarantine unexpectedly remained after retry: %v", err)
+	}
+}
+
+func TestCleanupDesktopSyncLegacyArtifactsFinishesQuarantinedOperationLock(t *testing.T) {
+	fixture := newLegacyCleanupTestFixture(t)
+	fixture.ledger[legacyCleanupPhaseKey] = legacyCleanupPhaseEnvironmentRestoring
+	operationLock := ""
+	for _, path := range fixture.paths {
+		if filepath.Base(path) == legacyOperationLockName {
+			operationLock = path
+			break
+		}
+	}
+	if operationLock == "" {
+		t.Fatal("operation lock fixture path is missing")
+	}
+	quarantine := operationLock + ".mimi-cleanup"
+	if err := os.Rename(operationLock, quarantine); err != nil {
+		t.Fatal(err)
+	}
+	fixture.install(t)
+
+	if err := cleanupDesktopSyncLegacyArtifacts(context.Background()); err != nil {
+		t.Fatalf("cleanup did not resume after operation lock quarantine: %v", err)
+	}
+	for _, path := range []string{operationLock, quarantine} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("operation lock residue remained after retry: path=%s err=%v", path, err)
+		}
 	}
 }

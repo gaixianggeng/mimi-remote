@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -173,7 +176,10 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 		}
 	}
 	bridge := newReadyGatewayBridge(t, fake, time.Second)
-	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	policy := &appServerGatewayPolicy{allowedThreads: map[string]appServerGatewayAllowedThread{
+		"thread-desktop": {id: "thread-desktop", cwd: "/tmp", scopeID: "demo"},
+	}}
+	overlay := newDesktopIPCGatewayOverlay(bridge, policy, nil, nil)
 	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
 		"id":7,"method":"turn/start","params":{"threadId":"thread-desktop","model":"gpt-5.6-sol","input":[]}
 	}`))
@@ -368,7 +374,7 @@ func TestDesktopIPCOverlayBlocksWritesForRunningUnsupportedBuild(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	var localWriterCalled atomic.Bool
-	if err := bridge.ClaimLocalOwner("thread-stable", "existing-mimi-owner", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-stable", "existing-mimi-owner", func(context.Context, string, json.RawMessage) (any, error) {
 		localWriterCalled.Store(true)
 		return map[string]any{}, nil
 	}); err != nil {
@@ -410,7 +416,7 @@ func TestDesktopIPCOverlayKeepsMimiProjectionCurrentWhileDesktopIsClosed(t *test
 		t.Fatal(err)
 	}
 	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
-	if err := bridge.ClaimLocalOwner("thread-offline", overlay.ownerID, overlay.handleDesktopFollowerRequest); err != nil {
+	if err := bridge.ClaimNewLocalOwner("thread-offline", overlay.ownerID, overlay.handleDesktopFollowerRequest); err != nil {
 		t.Fatal(err)
 	}
 	_, state, err := overlay.local.SeedThread(map[string]any{
@@ -459,6 +465,8 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 			result = map[string]any{"turn": map[string]any{"id": "turn-local"}}
 		case "turn/steer":
 			steerParams <- params
+			result = map[string]any{}
+		case "thread/name/set":
 			result = map[string]any{}
 		default:
 			return
@@ -509,8 +517,17 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 		t.Fatal(err)
 	}
 	_ = readGatewayRaw(t, client)
+	if bridge.HasLocalOwner("thread-local") {
+		t.Fatal("read-only resume must not claim App Server writer ownership")
+	}
+	if err := client.WriteMessage(websocket.TextMessage, []byte(`{
+		"id":3,"method":"thread/name/set","params":{"threadId":"thread-local","name":"Local owner"}
+	}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, client)
 	if !bridge.HasLocalOwner("thread-local") {
-		t.Fatal("explicit no-client-found must assign the App Server gateway as the sole writer")
+		t.Fatal("explicit write claim must assign the App Server gateway as the sole writer")
 	}
 
 	result, err := bridge.RequestLocalOwner(context.Background(), "thread-local", "thread-follower-start-turn", map[string]any{
@@ -743,7 +760,7 @@ func TestDesktopIPCOverlayBlocksFirstWriteAfterUncertainLocalOwnerRelease(t *tes
 		}
 	}
 	bridge := newReadyGatewayBridge(t, fake, 40*time.Millisecond)
-	if err := bridge.ClaimLocalOwner("thread-local-release", "gateway-old", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local-release", "gateway-old", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, context.Canceled
 	}); err != nil {
 		t.Fatal(err)
@@ -763,6 +780,119 @@ func TestDesktopIPCOverlayBlocksFirstWriteAfterUncertainLocalOwnerRelease(t *tes
 	}
 	if !bridge.LocalOwnerNeedsRecovery("thread-local-release") {
 		t.Fatal("replacement gateway cleared local uncertainty without complete history")
+	}
+}
+
+func TestDesktopIPCReadResponseDoesNotClaimMimiWriter(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion,
+		DesktopBuild: desktopipc.SupportedBuild,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	overlay.seedFromGatewayResult("thread-read-only", "thread/read", json.RawMessage(`{
+		"thread":{"id":"thread-read-only","cwd":"/tmp","turns":[]}
+	}`))
+	if bridge.HasLocalOwner("thread-read-only") {
+		t.Fatal("thread/read response claimed Mimi writer ownership")
+	}
+}
+
+func TestDesktopIPCLocalReadForcesHistoryWhileRecoveryPending(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyCalls := 0
+	if err := bridge.ClaimNewLocalOwner("thread-recovery", "gateway", func(
+		_ context.Context, method string, _ json.RawMessage,
+	) (any, error) {
+		if method == "thread-follower-load-complete-history" {
+			historyCalls++
+			return map[string]any{"revision": 2}, nil
+		}
+		return nil, context.Canceled
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridge.PublishLocalConversation("thread-recovery", "gateway", map[string]any{
+		"id": "thread-recovery", "cwd": "/tmp", "turns": []any{},
+	})
+	if _, err := bridge.RequestLocalOwner(
+		context.Background(), "thread-recovery", "thread-follower-start-turn",
+		map[string]any{"conversationId": "thread-recovery"},
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("local uncertainty fixture failed: %v", err)
+	}
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	overlay.ownerID = "gateway"
+	handled, _, policyErr := overlay.routeLocalOwner(
+		context.Background(), nil, "thread/read", "thread-recovery", map[string]any{"threadId": "thread-recovery"},
+	)
+	if !handled || policyErr != nil || historyCalls != 1 || bridge.LocalOwnerNeedsRecovery("thread-recovery") {
+		t.Fatalf("authoritative local history did not clear recovery: handled=%t calls=%d err=%+v", handled, historyCalls, policyErr)
+	}
+}
+
+func TestDesktopIPCSteerRequiresAuthorizedProjectionWorkspace(t *testing.T) {
+	policy := &appServerGatewayPolicy{allowedThreads: map[string]appServerGatewayAllowedThread{
+		"thread-workspace": {id: "thread-workspace", cwd: "/workspace/allowed", scopeID: "demo"},
+	}}
+	overlay := &desktopIPCGatewayOverlay{policy: policy}
+	params := map[string]any{"input": []any{map[string]any{"type": "text", "text": "steer"}}}
+	for _, cwd := range []string{"", "/workspace/other"} {
+		if _, err := overlay.desktopSteerFollowerParams(
+			"thread-workspace", params, desktopipc.Projection{Thread: map[string]any{"cwd": cwd}},
+		); err == nil {
+			t.Fatalf("projection cwd %q bypassed the authorized workspace", cwd)
+		}
+	}
+	result, err := overlay.desktopSteerFollowerParams(
+		"thread-workspace", params, desktopipc.Projection{Thread: map[string]any{"cwd": "/workspace/allowed"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore, _ := result["restoreMessage"].(map[string]any)
+	if restore["cwd"] != "/workspace/allowed" {
+		t.Fatalf("Steer did not use the canonical authorized cwd: %#v", restore)
+	}
+}
+
+func TestDesktopIPCTraceLogsLifecycleWithoutPrivatePayload(t *testing.T) {
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	event := desktopipc.ThreadEvent{
+		ThreadID: "thread-1234567890-private", Projection: desktopipc.Projection{
+			Turns: []any{map[string]any{
+				"id": "turn-1234567890-private", "status": "interrupted", "items": []any{map[string]any{
+					"id": "item-1234567890-private", "type": "commandExecution", "status": "completed",
+					"command": "SECRET_COMMAND", "cwd": "/private/workspace", "output": "SECRET_OUTPUT",
+				}},
+			}},
+		},
+	}
+	logDesktopIPCProjectionTrace(event)
+	text := output.String()
+	for _, forbidden := range []string{
+		"SECRET_COMMAND", "SECRET_OUTPUT", "/private/workspace",
+		"thread-1234567890-private", "turn-1234567890-private", "item-1234567890-private",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Desktop IPC trace leaked private payload %q: %s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "desktop_ipc_trace") || !strings.Contains(text, "desktoptoolitemstate") {
+		t.Fatalf("Desktop IPC lifecycle trace is missing: %s", text)
 	}
 }
 

@@ -79,6 +79,12 @@ type localOwnerLease struct {
 	followerClientID     string
 }
 
+type localOwnerClaimPermit struct {
+	token                uint64
+	ownerEpoch           uint64
+	connectionGeneration uint64
+}
+
 type localRequestInFlight struct {
 	requestID            string
 	ownerID              string
@@ -126,6 +132,8 @@ type Bridge struct {
 	localInFlight           map[string]localRequestInFlight
 	localUncertain          map[string]bool
 	desktopUncertain        map[string]bool
+	localClaimPermits       map[string]localOwnerClaimPermit
+	nextLocalClaimPermit    uint64
 	connectionGeneration    uint64
 }
 
@@ -148,6 +156,7 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 		localInFlight:           make(map[string]localRequestInFlight),
 		localUncertain:          make(map[string]bool),
 		desktopUncertain:        make(map[string]bool),
+		localClaimPermits:       make(map[string]localOwnerClaimPermit),
 	}
 	clientOptions := options.ClientOptions
 	clientOptions.Enabled = options.Enabled && !options.LegacyCleanupRequired && options.InitialState == ""
@@ -288,7 +297,7 @@ func (b *Bridge) DiscoverDesktopOwner(ctx context.Context, threadID string) (boo
 			if current.kind == threadOwnerMimi {
 				return false, fmt.Errorf("thread owner changed to Mimi during Desktop discovery")
 			}
-			if b.desktopUncertain[threadID] {
+			if b.desktopFallbackBlockedLocked(threadID) {
 				return false, ErrDesktopDeliveryUncertain
 			}
 			if current.kind == threadOwnerDesktop {
@@ -297,6 +306,7 @@ func (b *Bridge) DiscoverDesktopOwner(ctx context.Context, threadID string) (boo
 			b.clearDesktopRecoveryLocked(threadID)
 			delete(b.projections, threadID)
 			b.store.Remove(threadID)
+			b.issueLocalClaimPermitLocked(threadID)
 			return false, nil
 		}
 		return false, err
@@ -378,7 +388,7 @@ func (b *Bridge) LocalOwnerNeedsRecovery(threadID string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	_, responsePending := b.localInFlight[threadID]
-	return b.localUncertain[threadID] || responsePending
+	return b.localUncertain[threadID] || responsePending || b.desktopFallbackBlockedLocked(threadID)
 }
 
 func (b *Bridge) RequestLocalOwner(ctx context.Context, threadID, method string, params any) (any, error) {
@@ -396,7 +406,8 @@ func (b *Bridge) RequestLocalOwner(ctx context.Context, threadID, method string,
 		b.mu.Unlock()
 		return nil, fmt.Errorf("no-client-found: Mimi owner is unavailable")
 	}
-	if b.localUncertain[threadID] && desktopFollowerMethodMutates(method) {
+	if (b.localUncertain[threadID] || b.desktopFallbackBlockedLocked(threadID)) &&
+		desktopFollowerMethodMutates(method) {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("Mimi owner delivery is uncertain; complete history is required")
 	}
@@ -592,6 +603,33 @@ func (b *Bridge) clearDesktopRecoveryLocked(threadID string) {
 	delete(b.desktopHistory, threadID)
 }
 
+func (b *Bridge) desktopFallbackBlockedLocked(threadID string) bool {
+	if b.desktopUncertain[threadID] || b.resyncing[threadID] != 0 {
+		return true
+	}
+	if _, pending := b.desktopStarts[threadID]; pending {
+		return true
+	}
+	if _, pending := b.refollow[threadID]; pending {
+		return true
+	}
+	if projection, ok := b.projections[threadID]; ok && projection.ActiveTurnID != "" {
+		return true
+	}
+	if state, _, stored := b.store.Get(threadID); stored && len(ProjectPendingServerRequests(threadID, state)) > 0 {
+		return true
+	}
+	return false
+}
+
+func (b *Bridge) issueLocalClaimPermitLocked(threadID string) {
+	b.nextLocalClaimPermit++
+	b.localClaimPermits[threadID] = localOwnerClaimPermit{
+		token: b.nextLocalClaimPermit, ownerEpoch: b.ownerEpochs[threadID],
+		connectionGeneration: b.connectionGeneration,
+	}
+}
+
 func (b *Bridge) RequestDesktopOwner(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if b.Status().State != StateReady {
 		return nil, &RequestError{
@@ -780,14 +818,17 @@ func (b *Bridge) recordDesktopRequestOutcome(
 		return
 	}
 	if typed.Delivery == DeliveryNoClient {
-		b.clearOwnerLocked(threadID)
-		delete(b.projections, threadID)
-		b.store.Remove(threadID)
-		if b.desktopUncertain[threadID] {
+		// no-client 只证明当前没有逻辑 handler，不能证明已 ACK 的 Turn、
+		// revision 恢复或待处理审批已经终止。恢复屏障存在时保持原 owner。
+		if b.desktopFallbackBlockedLocked(threadID) {
 			delete(b.desktopHistory, threadID)
 			return
 		}
+		b.clearOwnerLocked(threadID)
+		delete(b.projections, threadID)
+		b.store.Remove(threadID)
 		b.clearDesktopRecoveryLocked(threadID)
+		b.issueLocalClaimPermitLocked(threadID)
 	}
 }
 
@@ -909,13 +950,69 @@ func (b *Bridge) reconcileDesktopStartLocked(threadID string, state map[string]a
 	b.desktopStarts[threadID] = reservation
 }
 
-func (b *Bridge) ClaimLocalOwner(threadID, ownerID string, handler LocalOwnerHandler) error {
+// ClaimNewLocalOwner is only for a Thread ID returned by this App Server's
+// thread/start response. Existing Threads must use a no-client permit or the
+// explicit Desktop-offline path below.
+func (b *Bridge) ClaimNewLocalOwner(threadID, ownerID string, handler LocalOwnerHandler) error {
 	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
 	if threadID == "" || ownerID == "" || handler == nil {
 		return fmt.Errorf("local owner identity is incomplete")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.claimLocalOwnerLocked(threadID, ownerID, handler)
+}
+
+// ClaimPermittedLocalOwner atomically consumes the one-shot permit produced by
+// an exact no-client result. A stale discovery result cannot be replayed after
+// the owner epoch or IPC generation changes.
+func (b *Bridge) ClaimPermittedLocalOwner(threadID, ownerID string, handler LocalOwnerHandler) error {
+	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
+	if threadID == "" || ownerID == "" || handler == nil {
+		return fmt.Errorf("local owner identity is incomplete")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	permit, ok := b.localClaimPermits[threadID]
+	if !ok || permit.token == 0 || permit.ownerEpoch != b.ownerEpochs[threadID] ||
+		permit.connectionGeneration != b.connectionGeneration || b.desktopFallbackBlockedLocked(threadID) {
+		return fmt.Errorf("Desktop fallback permit is unavailable")
+	}
+	delete(b.localClaimPermits, threadID)
+	return b.claimLocalOwnerLocked(threadID, ownerID, handler)
+}
+
+// ClaimOfflineLocalOwner is used only after an App Server mutation was already
+// accepted while Desktop was confirmed absent. A live or connecting Desktop
+// can never be converted to a Mimi writer through this path.
+func (b *Bridge) ClaimOfflineLocalOwner(threadID, ownerID string, handler LocalOwnerHandler) error {
+	state := b.Status().State
+	if state != StateDesktopNotRunning && state != StateNotInstalled && state != StateDisabled {
+		return fmt.Errorf("Desktop is not confirmed offline")
+	}
+	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
+	if threadID == "" || ownerID == "" || handler == nil {
+		return fmt.Errorf("local owner identity is incomplete")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.connectionGeneration != 0 {
+		return fmt.Errorf("Desktop IPC connected while claiming local owner")
+	}
+	// Desktop process absence is the only offline transition that can discharge
+	// stale Desktop delivery state. No App Server read response performs it.
+	if state == StateDesktopNotRunning {
+		b.clearDesktopRecoveryLocked(threadID)
+		delete(b.refollow, threadID)
+	}
+	return b.claimLocalOwnerLocked(threadID, ownerID, handler)
+}
+
+func (b *Bridge) claimLocalOwnerLocked(
+	threadID string,
+	ownerID string,
+	handler LocalOwnerHandler,
+) error {
 	current := b.owners[threadID]
 	if current.kind == threadOwnerDesktop {
 		return fmt.Errorf("Desktop already owns this thread")
@@ -923,7 +1020,11 @@ func (b *Bridge) ClaimLocalOwner(threadID, ownerID string, handler LocalOwnerHan
 	if current.kind == threadOwnerMimi && current.ownerID != ownerID {
 		return fmt.Errorf("thread already has an active writer")
 	}
+	if b.desktopFallbackBlockedLocked(threadID) {
+		return ErrDesktopDeliveryUncertain
+	}
 	b.setOwnerLocked(threadID, threadOwner{kind: threadOwnerMimi, ownerID: ownerID, handle: handler})
+	delete(b.localClaimPermits, threadID)
 	return nil
 }
 
@@ -955,11 +1056,13 @@ func (b *Bridge) ReleaseLocalOwner(threadID, ownerID string) {
 func (b *Bridge) setOwnerLocked(threadID string, owner threadOwner) {
 	b.ownerEpochs[threadID]++
 	b.owners[threadID] = owner
+	delete(b.localClaimPermits, threadID)
 }
 
 func (b *Bridge) clearOwnerLocked(threadID string) {
 	b.ownerEpochs[threadID]++
 	delete(b.owners, threadID)
+	delete(b.localClaimPermits, threadID)
 }
 
 func (b *Bridge) PublishLocalConversation(threadID, ownerID string, state map[string]any) error {
@@ -1082,6 +1185,7 @@ func (b *Bridge) handleReady(connectionGeneration uint64) {
 	}
 	b.mu.Lock()
 	b.connectionGeneration = connectionGeneration
+	b.localClaimPermits = make(map[string]localOwnerClaimPermit)
 	states := make(map[string]localRepublish, len(b.localStreams))
 	for threadID, stream := range b.localStreams {
 		owner := b.owners[threadID]
@@ -1120,6 +1224,7 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 		return
 	}
 	b.connectionGeneration = 0
+	b.localClaimPermits = make(map[string]localOwnerClaimPermit)
 	b.resyncing = make(map[string]uint64)
 	type staleProjection struct {
 		threadID string

@@ -51,7 +51,7 @@ func TestBridgeProjectsDesktopSnapshotAndRejectsOwnerCompetition(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Desktop snapshot was not projected")
 	}
-	if err := bridge.ClaimLocalOwner("thread-1", "gateway-1", func(context.Context, string, json.RawMessage) (any, error) { return nil, nil }); err == nil {
+	if err := bridge.ClaimNewLocalOwner("thread-1", "gateway-1", func(context.Context, string, json.RawMessage) (any, error) { return nil, nil }); err == nil {
 		t.Fatal("Mimi must not claim a Desktop-owned thread")
 	}
 }
@@ -88,7 +88,7 @@ func TestBridgePublishesLocalSnapshotThenContiguousPatch(t *testing.T) {
 	if err := bridge.client.WaitReady(readyCtx); err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-1", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-1", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestBridgeSerializesConcurrentLocalRevisionsPerThread(t *testing.T) {
 	if err := bridge.client.WaitReady(readyCtx); err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.ClaimLocalOwner("thread-concurrent", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-concurrent", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestBridgeDiscoveryCannotOverwriteConcurrentMimiClaim(t *testing.T) {
 		result <- err
 	}()
 	<-discoveryStarted
-	if err := bridge.ClaimLocalOwner("thread-race", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-race", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -413,7 +413,7 @@ func TestBridgeNoClientDiscoveryCannotClearConcurrentDesktopSnapshot(t *testing.
 	if !ok || projection.Thread["title"] != "Desktop won" {
 		t.Fatalf("negative discovery cleared the committed Desktop owner: %#v", projection)
 	}
-	if err := bridge.ClaimLocalOwner("thread-race", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-race", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err == nil {
 		t.Fatal("Mimi claimed a thread after Desktop won the discovery race")
@@ -682,7 +682,7 @@ func TestBridgeBindsMimiFollowerRequestsToOneDesktopClient(t *testing.T) {
 	bridge.client.mu.Lock()
 	bridge.client.generation = 1
 	bridge.client.mu.Unlock()
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway", func(context.Context, string, json.RawMessage) (any, error) {
 		return map[string]any{}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -716,7 +716,7 @@ func TestBridgeBlocksNewFollowerWritesAfterUncertainOldGenerationDelivery(t *tes
 	bridge.client.generation = 1
 	bridge.client.mu.Unlock()
 	var writes int
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		switch method {
 		case "thread-follower-load-complete-history":
 			return map[string]any{"revision": 1}, nil
@@ -790,7 +790,7 @@ func TestBridgeMarksLocalDeliveryUncertainWhenIPCResponseWriteFails(t *testing.T
 	handlerReturned := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	var writes atomic.Int64
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		if method == "thread-follower-load-complete-history" {
 			return map[string]any{"revision": 1}, nil
 		}
@@ -903,7 +903,7 @@ func TestBridgeClearsLocalUncertaintyOnlyAfterHistoryResponseIsSent(t *testing.T
 
 	historyReturned := make(chan struct{})
 	var writes atomic.Int64
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		if method == "thread-follower-load-complete-history" {
 			close(historyReturned)
 			return map[string]any{"revision": 1}, nil
@@ -995,7 +995,7 @@ func TestBridgeKeepsLocalUncertaintyWhenHistoryResponseWriteFails(t *testing.T) 
 	bridge.connectionGeneration = 1
 
 	historyReturned := make(chan struct{})
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		if method == "thread-follower-load-complete-history" {
 			close(historyReturned)
 			return map[string]any{"revision": 1}, nil
@@ -1045,7 +1045,7 @@ func TestBridgePreservesLocalUncertaintyAcrossOwnerRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-old", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-old", func(context.Context, string, json.RawMessage) (any, error) {
 		return map[string]any{}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -1055,7 +1055,7 @@ func TestBridgePreservesLocalUncertaintyAcrossOwnerRelease(t *testing.T) {
 	bridge.mu.Unlock()
 	bridge.ReleaseLocalOwner("thread-local", "gateway-old")
 	var writes atomic.Int64
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-new", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-new", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		if method == "thread-follower-load-complete-history" {
 			return map[string]any{"revision": 1}, nil
 		}
@@ -1455,7 +1455,7 @@ func TestBridgeRequestLocalOwnerHonorsUncertainGate(t *testing.T) {
 	bridge.client.generation = 1
 	bridge.client.mu.Unlock()
 	var calls int
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-a", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-a", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
 		calls++
 		if method == "thread-follower-load-complete-history" {
 			return map[string]any{"revision": 1}, nil
@@ -1495,13 +1495,13 @@ func TestBridgeRejectsProjectionFromReleasedOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-a", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-a", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	bridge.ReleaseLocalOwner("thread-local", "gateway-a")
-	if err := bridge.ClaimLocalOwner("thread-local", "gateway-b", func(context.Context, string, json.RawMessage) (any, error) {
+	if err := bridge.ClaimNewLocalOwner("thread-local", "gateway-b", func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -1515,5 +1515,81 @@ func TestBridgeRejectsProjectionFromReleasedOwner(t *testing.T) {
 	projection, ok := bridge.LocalProjection("thread-local")
 	if !ok || projection.Thread["title"] != "owner-b" {
 		t.Fatalf("released owner changed the current projection: %#v", projection)
+	}
+}
+
+func TestBridgeNoClientCannotClearDesktopRecoveryBarriers(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		block func(*Bridge)
+	}{
+		{
+			name: "start reservation",
+			block: func(bridge *Bridge) {
+				bridge.desktopStarts["thread-barrier"] = desktopStartReservation{token: 1}
+			},
+		},
+		{
+			name: "revision resync",
+			block: func(bridge *Bridge) {
+				bridge.resyncing["thread-barrier"] = 1
+			},
+		},
+		{
+			name: "active projection",
+			block: func(bridge *Bridge) {
+				bridge.projections["thread-barrier"] = Projection{ActiveTurnID: "turn-active"}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bridge, err := NewBridge(BridgeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bridge.connectionGeneration = 1
+			bridge.mu.Lock()
+			bridge.setOwnerLocked("thread-barrier", threadOwner{
+				kind: threadOwnerDesktop, ownerID: "desktop-owner", connectionGeneration: 1,
+			})
+			test.block(bridge)
+			owner := bridge.owners["thread-barrier"]
+			ownerEpoch := bridge.ownerEpochs["thread-barrier"]
+			bridge.mu.Unlock()
+
+			bridge.recordDesktopRequestOutcome(
+				"thread-barrier", owner, ownerEpoch, "thread-follower-compact-thread",
+				&RequestError{Method: "thread-follower-compact-thread", Delivery: DeliveryNoClient},
+			)
+			bridge.mu.RLock()
+			current := bridge.owners["thread-barrier"]
+			_, permitted := bridge.localClaimPermits["thread-barrier"]
+			bridge.mu.RUnlock()
+			if current.kind != threadOwnerDesktop || permitted {
+				t.Fatalf("no-client cleared a live recovery barrier: owner=%#v permit=%t", current, permitted)
+			}
+			if err := bridge.ClaimPermittedLocalOwner(
+				"thread-barrier", "gateway", func(context.Context, string, json.RawMessage) (any, error) { return nil, nil },
+			); err == nil {
+				t.Fatal("blocked no-client unexpectedly produced a local claim permit")
+			}
+		})
+	}
+}
+
+func TestBridgeRejectsLocalClaimWhileDesktopDeliveryIsUncertain(t *testing.T) {
+	bridge, err := NewBridge(BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.mu.Lock()
+	bridge.desktopUncertain["thread-uncertain"] = true
+	bridge.mu.Unlock()
+
+	err = bridge.ClaimNewLocalOwner(
+		"thread-uncertain", "gateway", func(context.Context, string, json.RawMessage) (any, error) { return nil, nil },
+	)
+	if !errors.Is(err, ErrDesktopDeliveryUncertain) || bridge.HasLocalOwner("thread-uncertain") {
+		t.Fatalf("Desktop uncertainty was bypassed by a local claim: err=%v", err)
 	}
 }

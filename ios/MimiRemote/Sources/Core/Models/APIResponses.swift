@@ -278,6 +278,7 @@ struct ExternalSessionActivity: Codable, Hashable, Identifiable {
     let turnID: TurnID?
     let revision: String
     let lastActivityAt: Date
+    let controllable: Bool?
 
     var id: SessionID { threadID }
 
@@ -289,6 +290,7 @@ struct ExternalSessionActivity: Codable, Hashable, Identifiable {
         case turnID = "turn_id"
         case revision
         case lastActivityAt = "last_activity_at"
+        case controllable
     }
 }
 

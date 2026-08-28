@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -186,7 +189,7 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 	}
 	if !desktopOwned {
 		if desktopIPCMethodClaimsLocalOwner(method) {
-			if err := o.ensureLocalOwner(threadID); err != nil {
+			if err := o.ensurePermittedLocalOwner(threadID); err != nil {
 				return true, nil, &appServerGatewayPolicyError{
 					id: frame.ID, message: err.Error(), target: "client",
 					data: map[string]any{"reason": "desktop_sync_owner_conflict", "accepted": false, "retryable": true},
@@ -238,15 +241,24 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 		if !projection.ActiveTurnIDTrusted || requestedTurnID == "" || requestedTurnID != projection.ActiveTurnID {
 			return true, nil, desktopIPCActiveTurnUnconfirmedError(frame.ID)
 		}
+		followerParams, err := o.desktopSteerFollowerParams(threadID, params, projection)
+		if err != nil {
+			return true, nil, desktopIPCWorkspaceMismatchError(frame.ID)
+		}
 		return o.desktopFollowerResult(
 			ctx,
 			frame.ID,
 			"thread-follower-steer-turn",
-			o.desktopSteerFollowerParams(threadID, params, projection),
+			followerParams,
 		)
 	case "turn/interrupt":
 		requestedTurnID := strings.TrimSpace(firstStringFromAnyMap(params, "turnId"))
+		logDesktopIPCTrace("gateway_interrupt_received", threadID, requestedTurnID,
+			"projected_turn_id", projection.ActiveTurnID,
+			"trusted", fmt.Sprint(projection.ActiveTurnIDTrusted))
 		if !projection.ActiveTurnIDTrusted || requestedTurnID == "" || requestedTurnID != projection.ActiveTurnID {
+			logDesktopIPCTrace("gateway_interrupt_rejected", threadID, requestedTurnID,
+				"reason", "active_turn_unconfirmed")
 			return true, nil, desktopIPCActiveTurnUnconfirmedError(frame.ID)
 		}
 		return o.desktopFollowerResult(ctx, frame.ID, "thread-follower-interrupt-turn", map[string]any{
@@ -279,10 +291,13 @@ func (o *desktopIPCGatewayOverlay) desktopSteerFollowerParams(
 	threadID string,
 	params map[string]any,
 	projection desktopipc.Projection,
-) map[string]any {
-	cwd := strings.TrimSpace(firstStringFromAnyMap(projection.Thread, "cwd"))
-	if cwd == "" {
-		cwd = "/"
+) (map[string]any, error) {
+	allowedThread, allowed := o.policy.allowedThread(threadID)
+	cwd := strings.TrimSpace(allowedThread.cwd)
+	projectedCWD := strings.TrimSpace(firstStringFromAnyMap(projection.Thread, "cwd"))
+	if !allowed || cwd == "" || projectedCWD == "" ||
+		filepath.Clean(cwd) != filepath.Clean(projectedCWD) {
+		return nil, fmt.Errorf("Desktop projection cwd does not match the authorized thread workspace")
 	}
 	prompt := desktopIPCSteerPrompt(params["input"])
 	clientUserMessageID := strings.TrimSpace(firstStringFromAnyMap(params, "clientUserMessageId"))
@@ -306,7 +321,7 @@ func (o *desktopIPCGatewayOverlay) desktopSteerFollowerParams(
 	if clientUserMessageID != "" {
 		followerParams["clientUserMessageId"] = clientUserMessageID
 	}
-	return followerParams
+	return followerParams, nil
 }
 
 func desktopIPCSteerPrompt(raw any) string {
@@ -371,7 +386,7 @@ func (o *desktopIPCGatewayOverlay) fallbackToLocalOwner(
 	threadID string,
 	id *json.RawMessage,
 ) (bool, []byte, *appServerGatewayPolicyError) {
-	if err := o.ensureLocalOwner(threadID); err != nil {
+	if err := o.ensurePermittedLocalOwner(threadID); err != nil {
 		return true, nil, &appServerGatewayPolicyError{
 			id: id, message: err.Error(), target: "client",
 			data: map[string]any{"reason": "desktop_sync_owner_conflict", "accepted": false, "retryable": true},
@@ -380,20 +395,52 @@ func (o *desktopIPCGatewayOverlay) fallbackToLocalOwner(
 	return false, nil, nil
 }
 
-func (o *desktopIPCGatewayOverlay) ensureLocalOwner(threadID string) error {
+func (o *desktopIPCGatewayOverlay) ensurePermittedLocalOwner(threadID string) error {
 	if o.bridge.HasLocalOwner(threadID) {
 		if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
 			return nil
 		}
 		return fmt.Errorf("thread already has an active writer")
 	}
-	if err := o.bridge.ClaimLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
+	if err := o.bridge.ClaimPermittedLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
 		return err
 	}
+	o.rememberOwnedThread(threadID)
+	return nil
+}
+
+func (o *desktopIPCGatewayOverlay) claimNewLocalOwner(threadID string) error {
+	if o.bridge.HasLocalOwner(threadID) {
+		if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			return nil
+		}
+		return fmt.Errorf("thread already has an active writer")
+	}
+	if err := o.bridge.ClaimNewLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
+		return err
+	}
+	o.rememberOwnedThread(threadID)
+	return nil
+}
+
+func (o *desktopIPCGatewayOverlay) claimOfflineLocalOwner(threadID string) error {
+	if o.bridge.HasLocalOwner(threadID) {
+		if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			return nil
+		}
+		return fmt.Errorf("thread already has an active writer")
+	}
+	if err := o.bridge.ClaimOfflineLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
+		return err
+	}
+	o.rememberOwnedThread(threadID)
+	return nil
+}
+
+func (o *desktopIPCGatewayOverlay) rememberOwnedThread(threadID string) {
 	o.mu.Lock()
 	o.ownedThreads[threadID] = struct{}{}
 	o.mu.Unlock()
-	return nil
 }
 
 func (o *desktopIPCGatewayOverlay) routeLocalOwner(
@@ -417,7 +464,9 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 	}
 	if method == "thread/read" || method == "thread/resume" || method == "thread/goal/get" {
 		projection, ok := o.bridge.LocalProjection(threadID)
-		if !ok {
+		// 缓存 projection 不能清除上一任 Gateway 的不确定交付。恢复门存在时
+		// 必须再次读取权威完整历史，成功后才允许新的写操作。
+		if !ok || o.bridge.LocalOwnerNeedsRecovery(threadID) {
 			if _, err := o.bridge.RequestLocalOwner(ctx, threadID, "thread-follower-load-complete-history", map[string]any{
 				"conversationId": threadID,
 			}); err != nil {
@@ -506,7 +555,16 @@ func (o *desktopIPCGatewayOverlay) desktopFollowerResult(
 	method string,
 	params map[string]any,
 ) (bool, []byte, *appServerGatewayPolicyError) {
+	startedAt := time.Now()
+	if method == "thread-follower-interrupt-turn" {
+		logDesktopIPCTrace("desktop_ipc_interrupt_forwarded",
+			firstStringFromAnyMap(params, "conversationId"),
+			firstStringFromAnyMap(params, "expectedTurnId"))
+	}
 	result, err := o.bridge.RequestDesktopOwner(ctx, method, params)
+	if method == "thread-follower-interrupt-turn" {
+		logDesktopIPCInterruptResult(params, result, err, time.Since(startedAt))
+	}
 	return o.desktopFollowerResponse(id, method, params, result, err)
 }
 
@@ -589,7 +647,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 			return nil, err
 		}
 		if forwardMethod == "thread/fork" {
-			o.seedFromGatewayResult("", result)
+			o.seedFromGatewayResult("", forwardMethod, result)
 		}
 		return decodeRawGatewayResult(result), nil
 	case "thread-follower-load-complete-history":
@@ -1063,7 +1121,7 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 			o.local.ForgetTurnStart(forwarded.threadID, forwarded.pendingTurnStart)
 		}
 		if tracked && len(frame.Result) > 0 {
-			o.seedFromGatewayResult(forwarded.threadID, frame.Result)
+			o.seedFromGatewayResult(forwarded.threadID, forwarded.method, frame.Result)
 		}
 		return
 	}
@@ -1085,13 +1143,21 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 	}
 	threadID, state, changed := o.local.Apply(method, params)
 	if changed {
-		if o.ensureLocalOwner(threadID) == nil {
+		var claimErr error
+		if !o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			claimErr = o.claimOfflineLocalOwner(threadID)
+		}
+		if claimErr == nil {
 			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
 		}
 	}
 }
 
-func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(expectedThreadID string, result json.RawMessage) {
+func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
+	expectedThreadID string,
+	method string,
+	result json.RawMessage,
+) {
 	thread, err := threadFromGatewayResult(result)
 	if err != nil {
 		return
@@ -1100,8 +1166,16 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(expectedThreadID string
 	if err != nil || (expectedThreadID != "" && threadID != expectedThreadID) {
 		return
 	}
-	if o.ensureLocalOwner(threadID) == nil {
+	if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
 		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+		return
+	}
+	// 只读 read/resume 只能填充本地缓存，不能建立 writer ownership。
+	// thread/start 和 thread/fork 的 Thread ID 则由当前 App Server 新生成。
+	if method == "thread/start" || method == "thread/fork" {
+		if o.claimNewLocalOwner(threadID) == nil {
+			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+		}
 	}
 }
 
@@ -1173,6 +1247,7 @@ func (o *desktopIPCGatewayOverlay) forwardEvents(
 			if _, allowed := o.policy.allowedThread(event.ThreadID); !allowed {
 				continue
 			}
+			logDesktopIPCProjectionTrace(event)
 			messages := []desktopipc.AppServerMessage(nil)
 			if event.Stale {
 				messages = append(messages, desktopipc.AppServerMessage{
@@ -1245,6 +1320,171 @@ func (o *desktopIPCGatewayOverlay) syncServerRequests(event desktopipc.ThreadEve
 	return messages
 }
 
+func logDesktopIPCInterruptResult(params map[string]any, result json.RawMessage, err error, duration time.Duration) {
+	threadID := firstStringFromAnyMap(params, "conversationId")
+	expectedTurnID := firstStringFromAnyMap(params, "expectedTurnId")
+	if err != nil {
+		outcome := "other"
+		var requestErr *desktopipc.RequestError
+		if errors.As(err, &requestErr) {
+			outcome = string(requestErr.Delivery)
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			outcome = "context_done"
+		}
+		logDesktopIPCTrace("desktop_ipc_interrupt_failed", threadID, expectedTurnID,
+			"outcome", outcome, "duration_ms", fmt.Sprint(duration.Milliseconds()))
+		return
+	}
+	var ack map[string]any
+	_ = json.Unmarshal(result, &ack)
+	interruptedTurnID := firstStringFromAnyMap(ack, "interruptedTurnId")
+	ok, _ := ack["ok"].(bool)
+	logDesktopIPCTrace("desktop_ipc_interrupt_ack", threadID, expectedTurnID,
+		"ack_turn_id", interruptedTurnID,
+		"ok", fmt.Sprint(ok),
+		"matched", fmt.Sprint(interruptedTurnID != "" && interruptedTurnID == expectedTurnID),
+		"goal_pause_error", fmt.Sprint(ack["goalPauseError"] != nil),
+		"duration_ms", fmt.Sprint(duration.Milliseconds()))
+}
+
+func logDesktopIPCProjectionTrace(event desktopipc.ThreadEvent) {
+	if event.Stale {
+		logDesktopIPCTrace("desktop_projection_stale", event.ThreadID, "")
+		return
+	}
+	if event.Previous != nil && event.Previous.ActiveTurnID != event.Projection.ActiveTurnID {
+		if previousTurnID := event.Previous.ActiveTurnID; previousTurnID != "" {
+			status := desktopIPCProjectionTurnStatus(event.Projection, previousTurnID)
+			if status == "" {
+				status = desktopIPCProjectionTurnStatus(*event.Previous, previousTurnID)
+			}
+			eventName := "desktop_projection_turn_terminal"
+			if desktopIPCTraceName(status) == "interrupted" {
+				eventName = "desktop_projection_interrupted"
+			}
+			logDesktopIPCTrace(eventName, event.ThreadID, previousTurnID, "status", status)
+		}
+		if event.Projection.ActiveTurnID != "" {
+			logDesktopIPCTrace("desktop_projection_turn_started", event.ThreadID, event.Projection.ActiveTurnID,
+				"trusted", fmt.Sprint(event.Projection.ActiveTurnIDTrusted))
+		}
+	}
+	previousItems := desktopIPCCommandTraceItems(desktopipc.Projection{})
+	if event.Previous != nil {
+		previousItems = desktopIPCCommandTraceItems(*event.Previous)
+	}
+	for key, current := range desktopIPCCommandTraceItems(event.Projection) {
+		previous, existed := previousItems[key]
+		if existed && previous.status == current.status {
+			continue
+		}
+		logDesktopIPCTrace("desktop_tool_item_state", event.ThreadID, current.turnID,
+			"item_id", current.itemID,
+			"status", current.status,
+			"duration_ms", current.durationMilliseconds)
+	}
+}
+
+type desktopIPCCommandTraceItem struct {
+	turnID               string
+	itemID               string
+	status               string
+	durationMilliseconds string
+}
+
+func desktopIPCCommandTraceItems(projection desktopipc.Projection) map[string]desktopIPCCommandTraceItem {
+	items := make(map[string]desktopIPCCommandTraceItem)
+	for _, rawTurn := range projection.Turns {
+		turn, _ := rawTurn.(map[string]any)
+		turnID := firstStringFromAnyMap(turn, "id", "turnId", "turn_id")
+		turnItems, _ := turn["items"].([]any)
+		for _, rawItem := range turnItems {
+			item, _ := rawItem.(map[string]any)
+			if desktopIPCTraceName(firstStringFromAnyMap(item, "type")) != "commandexecution" {
+				continue
+			}
+			itemID := firstStringFromAnyMap(item, "id", "itemId", "item_id")
+			if itemID == "" {
+				continue
+			}
+			status := desktopIPCTraceToken(firstStringFromAnyMap(item, "status"))
+			items[turnID+"\x00"+itemID] = desktopIPCCommandTraceItem{
+				turnID: turnID, itemID: itemID, status: status,
+				durationMilliseconds: desktopIPCTraceNumber(item["durationMs"]),
+			}
+		}
+	}
+	return items
+}
+
+func desktopIPCProjectionTurnStatus(projection desktopipc.Projection, turnID string) string {
+	for _, rawTurn := range projection.Turns {
+		turn, _ := rawTurn.(map[string]any)
+		if firstStringFromAnyMap(turn, "id", "turnId", "turn_id") == turnID {
+			return firstStringFromAnyMap(turn, "status")
+		}
+	}
+	return ""
+}
+
+func desktopIPCTraceNumber(value any) string {
+	switch typed := value.(type) {
+	case json.Number:
+		return typed.String()
+	case float64:
+		return fmt.Sprintf("%.0f", typed)
+	case float32:
+		return fmt.Sprintf("%.0f", typed)
+	case int:
+		return fmt.Sprint(typed)
+	case int64:
+		return fmt.Sprint(typed)
+	default:
+		return "absent"
+	}
+}
+
+func desktopIPCTraceToken(value string) string {
+	return gatewayCompactLogToken(desktopIPCTraceName(value))
+}
+
+func desktopIPCTraceName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
+	if len(value) > 64 {
+		return "invalid"
+	}
+	return value
+}
+
+func logDesktopIPCTrace(event string, threadID string, turnID string, fields ...string) {
+	parts := []string{
+		"event=" + desktopIPCTraceName(event),
+		"thread=" + desktopIPCTraceIdentifier(threadID),
+		"turn=" + desktopIPCTraceIdentifier(turnID),
+	}
+	for index := 0; index+1 < len(fields); index += 2 {
+		key := desktopIPCTraceName(fields[index])
+		value := gatewayCompactLogToken(fields[index+1])
+		if strings.HasSuffix(key, "id") {
+			value = desktopIPCTraceIdentifier(fields[index+1])
+		}
+		parts = append(parts, key+"="+value)
+	}
+	// 这条 Trace 只记录协议阶段、脱敏关联标识、状态和耗时；不记录提示词、
+	// command、cwd、socket、IPC client ID 或原始 conversationState。
+	log.Printf("desktop_ipc_trace %s", strings.Join(parts, " "))
+}
+
+func desktopIPCTraceIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "absent"
+	}
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest[:4])
+}
+
 func desktopIPCPolicyError(id *json.RawMessage, err error) *appServerGatewayPolicyError {
 	delivery := desktopipc.DeliveryUncertain
 	var requestErr *desktopipc.RequestError
@@ -1303,6 +1543,15 @@ func desktopIPCSnapshotUnavailableError(id *json.RawMessage) *appServerGatewayPo
 		id: id, message: "Codex Desktop 尚未提供完整会话快照", target: "client",
 		data: map[string]any{
 			"reason": "desktop_sync_snapshot_unavailable", "accepted": false, "retryable": true,
+		},
+	}
+}
+
+func desktopIPCWorkspaceMismatchError(id *json.RawMessage) *appServerGatewayPolicyError {
+	return &appServerGatewayPolicyError{
+		id: id, message: "Codex Desktop 会话工作区与当前授权不一致", target: "client",
+		data: map[string]any{
+			"reason": "desktop_sync_workspace_mismatch", "accepted": false, "retryable": false,
 		},
 	}
 }

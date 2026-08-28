@@ -4,6 +4,7 @@ package setup
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -95,7 +96,7 @@ func desktopSyncLegacyArtifactsPresent() (bool, error) {
 			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
 		}
 	}
-	return len(ledger.presentKeys) > 0, nil
+	return filesPresent || len(ledger.presentKeys) > 0, nil
 }
 
 func legacyDesktopInertRetiredRemnants(
@@ -107,6 +108,11 @@ func legacyDesktopInertRetiredRemnants(
 		return false, nil
 	}
 	for _, path := range paths {
+		if _, err := os.Lstat(path + ".mimi-cleanup"); err == nil {
+			return false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("检查旧共享 daemon 隔离文件失败：%w", err)
+		}
 		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -233,6 +239,13 @@ func cleanupDesktopSyncLegacyArtifacts(ctx context.Context) error {
 		return err
 	}
 	if ownershipMatches {
+		// 上一次若在 rename 后、remove 前退出，先完成同一个 operation
+		// lock 的隔离清理，再创建或打开锁文件，避免产生两个锁 inode。
+		if err := finishLegacyDesktopQuarantine(
+			operationLockPath, operationLockPath+".mimi-cleanup", true,
+		); err != nil {
+			return err
+		}
 		operationLock, err = acquireLegacyDesktopOperationLock(ctx, operationLockPath)
 		if err != nil {
 			return err
@@ -325,20 +338,21 @@ func cleanupDesktopSyncLegacyArtifacts(ctx context.Context) error {
 	if err := restoreOwnedLegacyDesktopEnvironment(ctx, &ledger); err != nil {
 		return err
 	}
-	// 环境恢复标记必须最后删除；epoch 清除后若偏好删除中断，重试仍可证明恢复已完成。
+	if ownershipMatches {
+		if err := removeValidatedDesktopSyncLegacyFile(
+			operationLockPath, fileIdentities[operationLockPath], true,
+		); err != nil {
+			return err
+		}
+	}
+	// 所有可失败的文件副作用完成后再删除 ownership 账本。任何一步失败时，
+	// 下一次调用仍能识别原文件或 .mimi-cleanup 隔离文件并安全重入。
 	for _, key := range legacyDesktopPreferenceKeys() {
 		if !legacyDesktopPreferencePresent(ledger, key) {
 			continue
 		}
 		if _, err := runDesktopSyncLegacyCommand(ctx, "/usr/bin/defaults", "delete", legacyDefaultsDomain, key); err != nil {
 			return fmt.Errorf("删除旧 Desktop 偏好失败（%s）：%w", key, err)
-		}
-	}
-	if ownershipMatches {
-		if err := removeValidatedDesktopSyncLegacyFile(
-			operationLockPath, fileIdentities[operationLockPath], true,
-		); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -357,10 +371,12 @@ func legacyDesktopPreferencePresent(ledger legacyDesktopLedger, key string) bool
 
 func legacyDesktopLegacyFilesPresent(paths []string) (bool, error) {
 	for _, path := range paths {
-		if _, err := os.Lstat(path); err == nil {
-			return true, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+		for _, candidate := range []string{path, path + ".mimi-cleanup"} {
+			if _, err := os.Lstat(candidate); err == nil {
+				return true, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+			}
 		}
 	}
 	return false, nil
@@ -371,10 +387,12 @@ func legacyDesktopLegacyStateFilesPresent(paths []string) (bool, error) {
 		if filepath.Base(path) == legacyOperationLockName {
 			continue
 		}
-		if _, err := os.Lstat(path); err == nil {
-			return true, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+		for _, candidate := range []string{path, path + ".mimi-cleanup"} {
+			if _, err := os.Lstat(candidate); err == nil {
+				return true, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+			}
 		}
 	}
 	return false, nil
@@ -878,9 +896,7 @@ func validateDesktopSyncLegacyFileAs(
 	}
 	switch expectedName {
 	case legacyLaunchAgentLabel + ".plist":
-		text := string(payload)
-		if !strings.Contains(text, "<string>"+legacyLaunchAgentLabel+"</string>") ||
-			!strings.Contains(text, "<string>--codex-daemon-supervisor</string>") {
+		if err := validateLegacyDesktopLaunchAgentPlist(payload); err != nil {
 			return legacyDesktopFileIdentity{}, false, fmt.Errorf("旧共享 daemon plist 已被替换，拒绝删除")
 		}
 	case "codex-shared-daemon-migration-required":
@@ -897,6 +913,69 @@ func validateDesktopSyncLegacyFileAs(
 		}
 	}
 	return identity, true, nil
+}
+
+type legacyPlistNode struct {
+	XMLName  xml.Name
+	Text     string            `xml:",chardata"`
+	Children []legacyPlistNode `xml:",any"`
+}
+
+func validateLegacyDesktopLaunchAgentPlist(payload []byte) error {
+	var plist legacyPlistNode
+	if xml.Unmarshal(payload, &plist) != nil || plist.XMLName.Local != "plist" || len(plist.Children) != 1 ||
+		plist.Children[0].XMLName.Local != "dict" {
+		return fmt.Errorf("plist root is invalid")
+	}
+	values, err := legacyPlistDictionary(plist.Children[0])
+	if err != nil {
+		return err
+	}
+	label, ok := values["Label"]
+	if !ok || label.XMLName.Local != "string" || strings.TrimSpace(label.Text) != legacyLaunchAgentLabel {
+		return fmt.Errorf("plist label is invalid")
+	}
+	argumentsNode, ok := values["ProgramArguments"]
+	if !ok || argumentsNode.XMLName.Local != "array" {
+		return fmt.Errorf("plist ProgramArguments is invalid")
+	}
+	arguments := make([]string, 0, len(argumentsNode.Children))
+	for _, child := range argumentsNode.Children {
+		if child.XMLName.Local != "string" {
+			return fmt.Errorf("plist ProgramArguments contains a non-string value")
+		}
+		arguments = append(arguments, strings.TrimSpace(child.Text))
+	}
+	// 产品安装只写入这一种责任进程形态。完整数组校验可拒绝把 marker
+	// 放在注释、无关 key 或另一条命令中的替换 plist。
+	if len(arguments) != 4 || !filepath.IsAbs(arguments[0]) ||
+		arguments[1] != "--codex-daemon-supervisor" ||
+		!filepath.IsAbs(arguments[2]) || !filepath.IsAbs(arguments[3]) {
+		return fmt.Errorf("plist ProgramArguments schema is invalid")
+	}
+	return nil
+}
+
+func legacyPlistDictionary(dict legacyPlistNode) (map[string]legacyPlistNode, error) {
+	if len(dict.Children)%2 != 0 {
+		return nil, fmt.Errorf("plist dictionary is invalid")
+	}
+	values := make(map[string]legacyPlistNode, len(dict.Children)/2)
+	for index := 0; index < len(dict.Children); index += 2 {
+		keyNode := dict.Children[index]
+		if keyNode.XMLName.Local != "key" {
+			return nil, fmt.Errorf("plist dictionary key is invalid")
+		}
+		key := strings.TrimSpace(keyNode.Text)
+		if key == "" {
+			return nil, fmt.Errorf("plist dictionary key is empty")
+		}
+		if _, duplicate := values[key]; duplicate {
+			return nil, fmt.Errorf("plist dictionary key is duplicated")
+		}
+		values[key] = dict.Children[index+1]
+	}
+	return values, nil
 }
 
 func removeValidatedDesktopSyncLegacyFile(
@@ -1018,12 +1097,31 @@ func validateLegacyDesktopLaunchJob(
 	if !plistPresent || strings.TrimSpace(plistPath) == "" {
 		return false, fmt.Errorf("旧共享 daemon LaunchAgent 仍已加载，但固定 plist 不存在；拒绝卸载")
 	}
-	if !strings.Contains(combined, "path = "+plistPath) ||
-		!strings.Contains(combined, "--codex-daemon-supervisor") ||
-		!strings.Contains(combined, legacyLaunchAgentLabel) {
+	loadedPath, ok := legacyLaunchctlPrintedValue(combined, "path")
+	if !ok || loadedPath != plistPath {
 		return false, fmt.Errorf("已加载的旧共享 daemon LaunchAgent 身份不匹配；拒绝卸载")
 	}
 	return true, nil
+}
+
+func legacyLaunchctlPrintedValue(output string, key string) (string, bool) {
+	prefix := strings.TrimSpace(key) + " = "
+	if prefix == " = " {
+		return "", false
+	}
+	found := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if value == "" || found != "" {
+			return "", false
+		}
+		found = value
+	}
+	return found, found != ""
 }
 
 func legacyLaunchctlMissing(output string) bool {

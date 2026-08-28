@@ -349,6 +349,9 @@ final class SessionStore: ObservableObject {
     // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
     // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
     var externalReadOnlySessionIDs: Set<SessionID> = []
+    // agentd 只在 Desktop IPC ready 时声明该集合；这些会话保持单 Writer，
+    // 但移动端可通过 follower RPC 控制 Desktop-owned Turn。
+    var externalControllableSessionIDs: Set<SessionID> = []
     // 记录外部活动 revision 已被哪一轮历史快照覆盖。不能只比较轮询快照的前后 revision：
     // 历史请求失败时也会更新 externalActivityBySessionID，若没有独立水位，同一 revision 将永久漏补。
     var externalActivityHistoryRevisionBySessionID: [SessionID: String] = [:]
@@ -1712,6 +1715,9 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
+        if externalControllableSessionIDs.contains(session.id), session.isRunning {
+            return .desktopFollower
+        }
         if isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return .observing
         }
@@ -1821,7 +1827,8 @@ final class SessionStore: ObservableObject {
     }
 
     func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
-        externalReadOnlySessionIDs.contains(session.id)
+        externalReadOnlySessionIDs.contains(session.id) &&
+            !externalControllableSessionIDs.contains(session.id)
     }
 
     func isProtocolReadOnlySession(_ session: AgentSession) -> Bool {

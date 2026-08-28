@@ -47,6 +47,79 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(response.activities[0].projectID, "project-1")
         XCTAssertEqual(response.activities[0].turnID, "turn-1")
         XCTAssertEqual(response.activities[0].revision, "rev-1")
+        XCTAssertNil(response.activities[0].controllable)
+    }
+
+    func testDesktopIPCControllableActivityKeepsFollowerConnectionAndCanInterrupt() async throws {
+        let project = makeProject(id: "proj_desktop_follower")
+        let threadID = "thread-desktop-follower"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Desktop follower",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])]
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: history,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-desktop-follower",
+                revision: "rev-desktop-follower",
+                controllable: true
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        // 轮询可能在首次握手完成前再次返回；同一个 follower 不能因此重建连接。
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-desktop-follower",
+                revision: "rev-desktop-follower-2",
+                controllable: true
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let follower = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertEqual(store.controlState(for: follower), .desktopFollower)
+        XCTAssertTrue(store.canControlSession(follower))
+        XCTAssertFalse(store.isExternalReadOnlySession(follower))
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+        XCTAssertEqual(socket.disconnectCallCount, 0)
+
+        XCTAssertFalse(store.recordLocallyStartedTurn(
+            sessionID: threadID,
+            turnID: "turn-desktop-follower"
+        ))
+        XCTAssertTrue(store.externalControllableSessionIDs.contains(threadID))
+        XCTAssertEqual(store.externalActivityBySessionID[threadID]?.revision, "rev-desktop-follower-2")
+
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        store.interruptSelectedTurn()
+        XCTAssertEqual(socket.sentCtrlCTurnIDs, ["turn-desktop-follower"])
     }
 
     func testDirectRuntimeLatestTurnHistoryUsesOneCompleteTurnPage() async throws {
@@ -438,7 +511,8 @@ extension ConversationDataFlowTests {
             state: "running",
             turnID: nil,
             revision: "rev-no-turn",
-            lastActivityAt: Date(timeIntervalSince1970: 100)
+            lastActivityAt: Date(timeIntervalSince1970: 100),
+            controllable: nil
         )
 
         await store.applyExternalActivitySnapshot(
@@ -459,7 +533,8 @@ extension ConversationDataFlowTests {
             state: "running",
             turnID: nil,
             revision: "rev-no-turn-2",
-            lastActivityAt: Date(timeIntervalSince1970: 110)
+            lastActivityAt: Date(timeIntervalSince1970: 110),
+            controllable: nil
         )
         await store.applyExternalActivitySnapshot(
             [revisedWithoutTurn],
@@ -2159,7 +2234,8 @@ extension ConversationDataFlowTests {
         threadID: SessionID,
         projectID: String,
         turnID: TurnID,
-        revision: String
+        revision: String,
+        controllable: Bool? = nil
     ) -> ExternalSessionActivity {
         ExternalSessionActivity(
             threadID: threadID,
@@ -2168,7 +2244,8 @@ extension ConversationDataFlowTests {
             state: "running",
             turnID: turnID,
             revision: revision,
-            lastActivityAt: Date(timeIntervalSince1970: 100)
+            lastActivityAt: Date(timeIntervalSince1970: 100),
+            controllable: controllable
         )
     }
 
