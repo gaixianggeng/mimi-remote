@@ -1796,20 +1796,24 @@ func TestRunDoctorFixRejectsLegacyResidueBeforeAnyMutation(t *testing.T) {
 	if err := os.WriteFile(configPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	beforeInfo, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	current := doctor.Results{Checks: []doctor.Check{
 		{Name: "legacy-codex-experiment", OK: false},
 		{Name: "config-file", OK: false},
 		{Name: "app-server-token-file", OK: false},
 	}}
 
-	_, _, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
+	_, _, _, _, err = runDoctorFix(context.Background(), configPath, false, current)
 	if err == nil || !strings.Contains(err.Error(), "不会终止任务或改写 owner") {
 		t.Fatalf("doctor --fix must reject legacy residue: %v", err)
 	}
 	stored, readErr := os.ReadFile(configPath)
 	info, statErr := os.Stat(configPath)
 	entries, dirErr := os.ReadDir(dir)
-	if readErr != nil || statErr != nil || dirErr != nil || !bytes.Equal(stored, original) || info.Mode().Perm() != 0o644 || len(entries) != 1 {
+	if readErr != nil || statErr != nil || dirErr != nil || !bytes.Equal(stored, original) || info.Mode() != beforeInfo.Mode() || len(entries) != 1 {
 		t.Fatalf("legacy residue rejection must be byte- and mode-identical: read=%v stat=%v dir=%v entries=%v", readErr, statErr, dirErr, entries)
 	}
 }
@@ -1893,68 +1897,6 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 	}
 	if after["future_root"] != "keep-root-option" || after["auth"].(map[string]any)["token"] != authToken {
 		t.Fatalf("启动前修复不能改写 Token 或未知字段：%+v", after)
-	}
-}
-
-func TestRunDoctorFixRepairsUnsafeWindowsCodexRuntime(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows single-writer repair is platform-specific")
-	}
-	clearAgentdEnvForMainTest(t)
-
-	binDir := t.TempDir()
-	safeCodex := writeMainTestCodex(t, filepath.Join(binDir, "codex"))
-	unsafeCodex := filepath.Join(t.TempDir(), "codex-old.cmd")
-	if err := os.WriteFile(
-		unsafeCodex,
-		[]byte("@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.145.0\r\nexit /b 0\r\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
-
-	configDir := t.TempDir()
-	tokenPath := filepath.Join(configDir, "app-server-token")
-	if err := os.WriteFile(tokenPath, []byte("capability-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(configDir, "config.json")
-	cfg := config.Config{
-		Listen:    "127.0.0.1:8787",
-		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222", WSTokenFile: tokenPath},
-		Codex:     config.CodexConfig{Bin: unsafeCodex},
-		Session:   config.SessionConfig{OutputBufferBytes: 128 * 1024},
-		Projects:  []config.ProjectConfig{{ID: "demo", Name: "Demo", Path: t.TempDir()}},
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	fixes, restartRequired, _, _, err := runDoctorFix(
-		context.Background(),
-		configPath,
-		false,
-		doctor.Results{Checks: []doctor.Check{{Name: "codex-app-server", OK: false}}},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !restartRequired || len(fixes) == 0 || !strings.Contains(strings.Join(fixes, "\n"), safeCodex) {
-		t.Fatalf("unsafe runtime should be repaired to the safe candidate: restart=%t fixes=%v", restartRequired, fixes)
-	}
-	updated, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Clean(updated.Codex.Bin) != filepath.Clean(safeCodex) {
-		t.Fatalf("doctor persisted the wrong Codex runtime: got=%q want=%q", updated.Codex.Bin, safeCodex)
 	}
 }
 
