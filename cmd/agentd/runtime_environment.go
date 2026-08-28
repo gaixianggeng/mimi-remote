@@ -58,5 +58,8 @@ func ensureManagedWSTokenAvailable(configPath string) error {
 	if _, _, err := agentsetup.RepairManagedWSTokenFile(configPath); err != nil {
 		return fmt.Errorf("准备 managed app-server token 失败：%w", err)
 	}
+	if _, _, err := agentsetup.RepairRemoteGatewayTokenFile(configPath); err != nil {
+		return fmt.Errorf("准备 remote gateway token 失败：%w", err)
+	}
 	return nil
 }

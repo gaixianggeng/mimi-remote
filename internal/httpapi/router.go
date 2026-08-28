@@ -85,6 +85,11 @@ type Router struct {
 	gatewayThreads                map[string]appServerGatewayAllowedThread
 	codexGatewayMu                sync.Mutex
 	activeCodexGateway            int
+	remoteGatewayMu               sync.Mutex
+	activeRemoteGateway           int
+	gatewayTurnMu                 sync.Mutex
+	gatewayTurnSequence           uint64
+	gatewayActiveTurns            map[string]appServerGatewayTurnAdmission
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex
@@ -179,6 +184,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
+		gatewayActiveTurns:          map[string]appServerGatewayTurnAdmission{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},

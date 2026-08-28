@@ -153,6 +153,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Managed:     true,
 			Listen:      appServerListen,
 			WSTokenFile: tokenFile,
+			RemoteGateway: config.RemoteGatewayConfig{
+				Enabled: false,
+				Listen:  config.DefaultRemoteGatewayListen(),
+			},
 		},
 		Codex: config.CodexConfig{
 			Bin:         defaultCodexBin(),

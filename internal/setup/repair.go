@@ -29,6 +29,155 @@ func RepairManagedWSTokenFile(configPath string) (string, bool, error) {
 	return repairManagedWSTokenFile(configPath, nil)
 }
 
+// RepairRemoteGatewayTokenFile 只在 remote_gateway 已显式启用时补齐独立 token。
+// 它保留未知配置字段，并且不会让 SSH/CLI 入口复用外侧或 upstream 凭据。
+func RepairRemoteGatewayTokenFile(configPath string) (string, bool, error) {
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Lstat(cfgPath)
+	if err != nil {
+		return "", false, fmt.Errorf("读取配置文件状态失败：%w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
+	}
+	original, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
+		return "", false, err
+	}
+	document, appServer, remote, enabled, tokenPath, err := decodeRemoteGatewayForTokenRepair(original)
+	if err != nil || !enabled {
+		return "", false, err
+	}
+	if tokenPath != "" {
+		tokenInfo, statErr := os.Lstat(tokenPath)
+		switch {
+		case statErr == nil && !tokenInfo.Mode().IsRegular():
+			return "", false, fmt.Errorf("remote gateway token file 必须是 regular file，不能是目录或符号链接：%s", tokenPath)
+		case statErr == nil:
+			return tokenPath, false, nil
+		case !os.IsNotExist(statErr):
+			return "", false, fmt.Errorf("读取 remote gateway token file 状态失败：%w", statErr)
+		}
+	}
+
+	token, err := randomHex(32)
+	if err != nil {
+		return "", false, err
+	}
+	tokenPath, err = createPrivateNamedTokenFile(filepath.Dir(cfgPath), "remote-gateway-token-", token)
+	if err != nil {
+		return "", false, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tokenPath)
+		}
+	}()
+	encodedPath, err := json.Marshal(tokenPath)
+	if err != nil {
+		return "", false, fmt.Errorf("编码 remote gateway token file 路径失败：%w", err)
+	}
+	remote["token_file"] = encodedPath
+	encodedRemote, err := json.Marshal(remote)
+	if err != nil {
+		return "", false, fmt.Errorf("编码 app_server.remote_gateway 配置失败：%w", err)
+	}
+	appServer["remote_gateway"] = encodedRemote
+	encodedAppServer, err := json.Marshal(appServer)
+	if err != nil {
+		return "", false, fmt.Errorf("编码 app_server 配置失败：%w", err)
+	}
+	document["app_server"] = encodedAppServer
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return "", false, fmt.Errorf("编码配置文件失败：%w", err)
+	}
+	if err := writePrivateFileAtomicallyCAS(cfgPath, original, append(updated, '\n')); err != nil {
+		return "", false, fmt.Errorf("原子更新配置文件失败：%w", err)
+	}
+	committed = true
+	return tokenPath, true, nil
+}
+
+// RotateRemoteGatewayTokenFile 原子替换 SSH/CLI token。handler 每次握手重新读文件，
+// 因此 rename 成功后旧 token 立即失效，不需要重启 agentd。
+func RotateRemoteGatewayTokenFile(configPath string) (string, error) {
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return "", fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	_, _, _, enabled, tokenPath, err := decodeRemoteGatewayForTokenRepair(raw)
+	if err != nil {
+		return "", err
+	}
+	if !enabled {
+		return "", fmt.Errorf("app_server.remote_gateway 尚未启用")
+	}
+	if tokenPath == "" {
+		return "", fmt.Errorf("app_server.remote_gateway.token_file 为空；请先运行 agentd doctor --fix")
+	}
+	info, err := os.Lstat(tokenPath)
+	if err != nil {
+		return "", fmt.Errorf("读取 remote gateway token file 状态失败：%w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("remote gateway token file 必须是 regular file，不能是目录或符号链接")
+	}
+	token, err := randomHex(32)
+	if err != nil {
+		return "", err
+	}
+	if err := writePrivateFileAtomically(tokenPath, []byte(token+"\n")); err != nil {
+		return "", fmt.Errorf("原子轮换 remote gateway token 失败：%w", err)
+	}
+	return tokenPath, nil
+}
+
+func decodeRemoteGatewayForTokenRepair(raw []byte) (
+	map[string]json.RawMessage,
+	map[string]json.RawMessage,
+	map[string]json.RawMessage,
+	bool,
+	string,
+	error,
+) {
+	document, appServer, _, err := decodeConfigForTokenRepair(raw)
+	if err != nil {
+		return nil, nil, nil, false, "", err
+	}
+	remote := map[string]json.RawMessage{}
+	if encoded, ok := appServer["remote_gateway"]; ok && string(encoded) != "null" {
+		if err := json.Unmarshal(encoded, &remote); err != nil {
+			return nil, nil, nil, false, "", fmt.Errorf("解析 app_server.remote_gateway 失败：%w", err)
+		}
+	}
+	enabled := false
+	if encoded, ok := remote["enabled"]; ok {
+		if err := json.Unmarshal(encoded, &enabled); err != nil {
+			return nil, nil, nil, false, "", fmt.Errorf("解析 app_server.remote_gateway.enabled 失败：%w", err)
+		}
+	}
+	tokenPath := ""
+	if encoded, ok := remote["token_file"]; ok {
+		if err := json.Unmarshal(encoded, &tokenPath); err != nil {
+			return nil, nil, nil, false, "", fmt.Errorf("解析 app_server.remote_gateway.token_file 失败：%w", err)
+		}
+		tokenPath = strings.TrimSpace(tokenPath)
+	}
+	return document, appServer, remote, enabled, tokenPath, nil
+}
+
 func repairManagedWSTokenFile(configPath string, writeConfig configWriter) (string, bool, error) {
 	cfgPath, err := resolveConfigPath(configPath)
 	if err != nil {
@@ -141,7 +290,11 @@ func decodeConfigForTokenRepair(raw []byte) (map[string]json.RawMessage, map[str
 }
 
 func createPrivateTokenFile(dir string, token string) (string, error) {
-	path, err := stagePrivateFile(dir, "app-server-ws-token-", []byte(token+"\n"))
+	return createPrivateNamedTokenFile(dir, "app-server-ws-token-", token)
+}
+
+func createPrivateNamedTokenFile(dir string, pattern string, token string) (string, error) {
+	path, err := stagePrivateFile(dir, pattern, []byte(token+"\n"))
 	if err != nil {
 		return "", fmt.Errorf("创建 app-server token file 失败：%w", err)
 	}

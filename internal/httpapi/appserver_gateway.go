@@ -106,6 +106,45 @@ var appServerAllowedMethods = map[string]struct{}{
 	"account/usage/read":      {},
 }
 
+// remote CLI 使用逐项维护的独立 allowlist。移动端以后新增能力时不能自动扩大
+// SSH token 的权限；会启动额外工作的 review/compact 与 plugin 方法也不在 v1 边界内。
+var appServerRemoteCLIAllowedMethods = map[string]struct{}{
+	"initialize":              {},
+	"initialized":             {},
+	"thread/list":             {},
+	"thread/search":           {},
+	"thread/start":            {},
+	"thread/resume":           {},
+	"thread/fork":             {},
+	"thread/read":             {},
+	"thread/turns/list":       {},
+	"thread/name/set":         {},
+	"thread/unsubscribe":      {},
+	"thread/archive":          {},
+	"thread/unarchive":        {},
+	"thread/goal/get":         {},
+	"thread/goal/set":         {},
+	"thread/goal/clear":       {},
+	"turn/start":              {},
+	"turn/steer":              {},
+	"turn/interrupt":          {},
+	"model/list":              {},
+	"permissionProfile/list":  {},
+	"skills/list":             {},
+	"account/rateLimits/read": {},
+	"account/usage/read":      {},
+	"config/read":             {},
+	"configRequirements/read": {},
+	"account/read":            {},
+}
+
+type appServerGatewayClientKind string
+
+const (
+	appServerGatewayClientMobile    appServerGatewayClientKind = "mobile"
+	appServerGatewayClientRemoteCLI appServerGatewayClientKind = "remote_cli"
+)
+
 // appServerAllowedServerRequestMethods 是反向 RPC 的显式能力边界。
 // app-server 新增 Server Request 时不能直接落到移动端；只有 iOS 已实现响应协议的方法才能加入这里，
 // 未知方法会由 gateway 立即回错，避免上游一直等待一个移动端永远不会发出的响应。
@@ -231,20 +270,24 @@ type appServerGatewayPolicyError struct {
 }
 
 type appServerGatewayPolicy struct {
-	router    *Router
-	runtimeID string
-	mu        sync.Mutex
-	closed    bool
+	router       *Router
+	runtimeID    string
+	clientKind   appServerGatewayClientKind
+	connectionID uint64
+	mu           sync.Mutex
+	closed       bool
 
-	pendingThreads        map[string]appServerGatewayPendingThreadRequest
-	pendingClientRequests map[string]appServerGatewayPendingClientRequest
-	pendingServerRequests map[string]appServerGatewayPendingServerRequest
-	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
-	historyBudgets        map[string]appServerGatewayHistoryBudget
-	allowedThreads        map[string]appServerGatewayAllowedThread
-	globalListCursors     map[string]string
-	beforePendingRemember func()
-	beforeManagedComplete func()
+	pendingThreads         map[string]appServerGatewayPendingThreadRequest
+	pendingClientRequests  map[string]appServerGatewayPendingClientRequest
+	inflightClientRequests map[string]string
+	pendingTurnStarts      map[string]string
+	pendingServerRequests  map[string]appServerGatewayPendingServerRequest
+	pendingHistory         map[string]appServerGatewayPendingHistoryRequest
+	historyBudgets         map[string]appServerGatewayHistoryBudget
+	allowedThreads         map[string]appServerGatewayAllowedThread
+	globalListCursors      map[string]string
+	beforePendingRemember  func()
+	beforeManagedComplete  func()
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -261,6 +304,7 @@ type appServerGatewayPendingThreadRequest struct {
 
 type appServerGatewayPendingClientRequest struct {
 	method    string
+	cwd       string
 	createdAt time.Time
 }
 
@@ -411,6 +455,13 @@ func appServerAllowedMethodsForRuntime(runtimeID string) map[string]struct{} {
 		return appServerClaudeAllowedMethods
 	}
 	return appServerAllowedMethods
+}
+
+func appServerAllowedMethodsForClient(runtimeID string, clientKind appServerGatewayClientKind) map[string]struct{} {
+	if normalizeAppServerRuntimeID(runtimeID) == "codex" && clientKind == appServerGatewayClientRemoteCLI {
+		return appServerRemoteCLIAllowedMethods
+	}
+	return appServerAllowedMethodsForRuntime(runtimeID)
 }
 
 func (r *Router) appServerGatewayURL(req *http.Request) string {
@@ -610,7 +661,7 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
 	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
-	r.proxyAppServerGateway(req.Context(), client, upstream, monitor)
+	r.proxyAppServerGateway(req.Context(), client, upstream, monitor, appServerGatewayClientMobile)
 }
 
 func (r *Router) acquireCodexGatewaySlot() bool {

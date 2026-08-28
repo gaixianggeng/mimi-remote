@@ -9,7 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
+func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor, clientKind appServerGatewayClientKind) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan string, 5)
@@ -18,14 +18,18 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
 	policy := &appServerGatewayPolicy{
-		router:                r,
-		runtimeID:             "codex",
-		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+		router:                 r,
+		runtimeID:              "codex",
+		clientKind:             clientKind,
+		connectionID:           r.nextGatewayConnectionID(),
+		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests:  map[string]appServerGatewayPendingClientRequest{},
+		inflightClientRequests: map[string]string{},
+		pendingTurnStarts:      map[string]string{},
+		pendingServerRequests:  map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:         map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:         map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:         map[string]appServerGatewayAllowedThread{},
 	}
 	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
@@ -94,6 +98,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			continue
 		}
 		if cachedPayload, ok := policy.cachedAccountTokenUsageResponse(payload, time.Now()); ok {
+			policy.cancelInflightClientRequestFromPayload(forwardPayload)
 			writeStart := time.Now()
 			if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, cachedPayload); err != nil {
 				return gatewayCloseReason("client_cache_write", err)

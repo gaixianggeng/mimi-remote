@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,13 +86,36 @@ func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewa
 	p.mu.Lock()
 	thread, ok := p.allowedThreads[threadID]
 	p.mu.Unlock()
-	if ok {
+	if ok && p.threadScopeAllowed(thread) {
 		return thread, true
 	}
 	if p.router == nil {
 		return appServerGatewayAllowedThread{}, false
 	}
-	return p.router.gatewayThread(p.runtimeID, threadID)
+	thread, ok = p.router.gatewayThread(p.runtimeID, threadID)
+	if !ok || !p.threadScopeAllowed(thread) {
+		return appServerGatewayAllowedThread{}, false
+	}
+	return thread, true
+}
+
+func (p *appServerGatewayPolicy) gatewayScopeForPath(raw string) (gatewayScope, bool) {
+	if p == nil || p.router == nil {
+		return gatewayScope{}, false
+	}
+	scope, ok := p.router.gatewayScopeForPath(raw)
+	if !ok || (p.clientKind == appServerGatewayClientRemoteCLI && scope.browse) {
+		return gatewayScope{}, false
+	}
+	return scope, true
+}
+
+func (p *appServerGatewayPolicy) threadScopeAllowed(thread appServerGatewayAllowedThread) bool {
+	if p == nil || p.clientKind != appServerGatewayClientRemoteCLI {
+		return true
+	}
+	_, ok := p.gatewayScopeForPath(thread.cwd)
+	return ok
 }
 
 func (r *Router) gatewayThread(runtimeID string, threadID string) (appServerGatewayAllowedThread, bool) {
@@ -150,6 +174,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			return payload, false, nil
 		}
 		p.clearPendingServerRequestsForNotification(&frame)
+		p.observeTurnCompletion(&frame)
 		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -160,6 +185,19 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
+		requestMethod, requestKnown := p.consumeInflightClientRequest(frame.ID)
+		if requestKnown {
+			p.observePendingTurnStartResponse(&frame, requestMethod)
+		}
+		if rewritten, handled, err := p.rewriteRemoteCLIResponse(payload, &frame); handled {
+			if err != nil {
+				return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error(), target: "client"}
+			}
+			payload = rewritten
+			if json.Unmarshal(payload, &frame) != nil {
+				return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: "remote CLI 响应改写失败", target: "client"}
+			}
+		}
 		p.rememberAccountTokenUsageResponse(&frame, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
 			if len(frame.Error) == 0 && len(frame.Result) > 0 {
@@ -358,7 +396,7 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 		if threadID == "" || threadID != threadIDRaw || cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) {
 			continue
 		}
-		scope, ok := p.router.gatewayScopeForPath(cwd)
+		scope, ok := p.gatewayScopeForPath(cwd)
 		if !ok {
 			continue
 		}
@@ -501,7 +539,7 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 	if cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) || p.router == nil {
 		return fmt.Errorf("thread/read 返回的只读子会话缺少可验证的 cwd")
 	}
-	scope, ok := p.router.gatewayScopeForPath(cwd)
+	scope, ok := p.gatewayScopeForPath(cwd)
 	if !ok || scope.id != allowed.scopeID {
 		return fmt.Errorf("thread/read 返回的只读子会话不在授权作用域")
 	}
@@ -639,7 +677,7 @@ func (p *appServerGatewayPolicy) sanitizeThreadSearchResponse(payload []byte, pe
 		if threadID == "" || threadID != thread.ID || cwd == "" || cwd != thread.CWD || !filepath.IsAbs(cwd) {
 			continue
 		}
-		scope, ok := p.router.gatewayScopeForPath(cwd)
+		scope, ok := p.gatewayScopeForPath(cwd)
 		if !ok {
 			continue
 		}
@@ -725,6 +763,10 @@ func gatewayFrameIsResponse(frame *appServerGatewayFrame) bool {
 }
 
 func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessage, method string) error {
+	return p.rememberPendingClientRequestWithCWD(id, method, "")
+}
+
+func (p *appServerGatewayPolicy) rememberPendingClientRequestWithCWD(id *json.RawMessage, method string, cwd string) error {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
 		return fmt.Errorf("%s 请求缺少 id", method)
@@ -739,7 +781,7 @@ func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessag
 	if _, exists := p.pendingClientRequests[key]; !exists && len(p.pendingClientRequests) >= appServerGatewayPendingClientRequestMax {
 		return fmt.Errorf("gateway pending client request 过多")
 	}
-	p.pendingClientRequests[key] = appServerGatewayPendingClientRequest{method: method, createdAt: now}
+	p.pendingClientRequests[key] = appServerGatewayPendingClientRequest{method: method, cwd: cwd, createdAt: now}
 	return nil
 }
 
@@ -1059,7 +1101,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			continue
 		}
 		cwd := firstNonEmpty(item.CWD, item.Path, pending.cwd)
-		scope, ok := p.router.gatewayScopeForPath(cwd)
+		scope, ok := p.gatewayScopeForPath(cwd)
 		if !ok {
 			continue
 		}
@@ -1372,7 +1414,28 @@ func gatewayRequestIDKey(id *json.RawMessage) string {
 	if id == nil || len(bytes.TrimSpace(*id)) == 0 {
 		return ""
 	}
-	return string(bytes.TrimSpace(*id))
+	decoder := json.NewDecoder(bytes.NewReader(*id))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return "s:" + typed
+	case json.Number:
+		literal := typed.String()
+		if strings.ContainsAny(literal, ".eE") {
+			return ""
+		}
+		var integer big.Int
+		if _, ok := integer.SetString(literal, 10); !ok {
+			return ""
+		}
+		return "n:" + integer.String()
+	default:
+		return ""
+	}
 }
 
 func decodeGatewayParams(raw json.RawMessage) (map[string]any, error) {

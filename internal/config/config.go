@@ -91,8 +91,17 @@ type AppServerConfig struct {
 	Managed     bool   `json:"managed"`
 	Listen      string `json:"listen,omitempty"`
 	WSTokenFile string `json:"ws_token_file,omitempty"`
+	// RemoteGateway 是给 SSH 本地端口转发使用的独立入口。它默认关闭，
+	// 只监听 loopback，并使用与 agentd、upstream 都不同的 token file。
+	RemoteGateway RemoteGatewayConfig `json:"remote_gateway"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
+}
+
+type RemoteGatewayConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Listen    string `json:"listen,omitempty"`
+	TokenFile string `json:"token_file,omitempty"`
 }
 
 type VoiceConfig struct {
@@ -276,6 +285,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 		// 早期独立 App Server 配置可能没有 listen；补默认 loopback 地址。
 		cfg.AppServer.Listen = defaultAppServerWebSocketListen
 	}
+	if strings.TrimSpace(cfg.AppServer.RemoteGateway.Listen) == "" {
+		cfg.AppServer.RemoteGateway.Listen = defaultRemoteGatewayListen
+	}
 	return cfg, nil
 }
 
@@ -329,6 +341,7 @@ func expandPath(path string) string {
 const (
 	// defaultAppServerWebSocketListen 是独立 App Server 的 loopback 默认地址。
 	defaultAppServerWebSocketListen = "ws://127.0.0.1:4222"
+	defaultRemoteGatewayListen      = "127.0.0.1:8788"
 )
 
 func DefaultAppServerTransport() string {
@@ -341,6 +354,10 @@ func DefaultAppServerListen() string {
 
 func DefaultAppServerWebSocketListen() string {
 	return defaultAppServerWebSocketListen
+}
+
+func DefaultRemoteGatewayListen() string {
+	return defaultRemoteGatewayListen
 }
 
 func DefaultClaudeConfig() ClaudeConfig {
@@ -364,6 +381,10 @@ func defaults() Config {
 			Transport: DefaultAppServerTransport(),
 			Managed:   true,
 			Listen:    DefaultAppServerListen(),
+			RemoteGateway: RemoteGatewayConfig{
+				Enabled: false,
+				Listen:  DefaultRemoteGatewayListen(),
+			},
 			AutoTitle: true,
 		},
 		Voice: VoiceConfig{
@@ -672,6 +693,21 @@ func (c Config) Validate() error {
 	}
 	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
 		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")
+	}
+	if c.AppServer.RemoteGateway.Enabled {
+		if err := validateAgentListen(c.AppServer.RemoteGateway.Listen, false); err != nil {
+			return fmt.Errorf("app_server.remote_gateway.listen 无效：%w", err)
+		}
+		if !isLoopbackListen(c.AppServer.RemoteGateway.Listen) {
+			return fmt.Errorf("app_server.remote_gateway.listen 只允许 loopback；远端必须通过 SSH 本地端口转发接入")
+		}
+		remoteTokenFile := strings.TrimSpace(c.AppServer.RemoteGateway.TokenFile)
+		if remoteTokenFile == "" {
+			return fmt.Errorf("app_server.remote_gateway.token_file 不能为空；请运行 agentd doctor --fix")
+		}
+		if SameConfigPath(remoteTokenFile, c.AppServer.WSTokenFile) {
+			return fmt.Errorf("app_server.remote_gateway.token_file 不能复用 app_server.ws_token_file")
+		}
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

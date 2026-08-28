@@ -88,12 +88,14 @@ func run(args []string) error {
 		return runNetwork(args)
 	case "runtime":
 		return runRuntime(args)
+	case "remote-token":
+		return runRemoteToken(args)
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、runtime、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、runtime、remote-token、serve、doctor、version", cmd)
 	}
 }
 
@@ -968,6 +970,24 @@ func runDoctorFix(
 			}
 		}
 	}
+	if hasFailedCheck(current, "remote-gateway-token-file") && !needsSetup {
+		tokenPath, repaired, repairErr := agentsetup.RepairRemoteGatewayTokenFile(configPath)
+		if repairErr != nil {
+			return nil, false, nil, current, fmt.Errorf("修复 remote gateway token file 失败：%w", repairErr)
+		}
+		if repaired {
+			fixes = append(fixes, "已生成独立 remote gateway token file 并原子更新配置")
+			restartRequired = true
+		} else if strings.TrimSpace(tokenPath) != "" {
+			fixed, fixErr := tightenSensitiveFilePermissions(tokenPath)
+			if fixErr != nil {
+				return nil, false, nil, current, fmt.Errorf("修复 remote gateway token file 权限失败：%w", fixErr)
+			}
+			if fixed {
+				fixes = append(fixes, "已将 remote gateway token file 权限收紧为 0600")
+			}
+		}
+	}
 	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
 		// 旧的绝对路径失效或 Windows CLI 缺少 single-writer 基线时只修复
 		// codex.bin；无法发现安全替代项则保留原 Doctor 结果继续给出升级指引。
@@ -1108,16 +1128,30 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}
 		listeners = append(listeners, listener)
 	}
+	remoteGateway, err := startRemoteGatewayServer(cfg, apiRouter)
+	if err != nil {
+		for _, opened := range listeners {
+			_ = opened.Close()
+		}
+		_ = shutdownServeResources(manager, appServerWSProcess, apiRouter)
+		return err
+	}
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
 	// 每个 HTTP listener 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖全部来源，
 	// 确保 shutdown 同时触发多个 goroutine 退出时不会因主 goroutine 已选中另一事件而阻塞。
-	errCh := make(chan error, len(listeners)+1)
+	errCh := make(chan error, len(listeners)+2)
 	for _, listener := range listeners {
 		listener := listener
 		go func() {
 			log.Printf("agentd listening on http://%s", listener.Addr())
 			errCh <- server.Serve(listener)
+		}()
+	}
+	if remoteGateway != nil {
+		go func() {
+			log.Printf("remote gateway listening on ws://%s/", remoteGateway.listener.Addr())
+			errCh <- remoteGateway.server.Serve(remoteGateway.listener)
 		}()
 	}
 	if appServerWSProcess != nil {
@@ -1131,9 +1165,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()
 	return waitForServeExit(stopCh, errCh, func() error {
-		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
+		remoteErr := remoteGateway.shutdown(serveHTTPDrainTimeout)
+		primaryErr := shutdownServe(server, serveHTTPDrainTimeout, func() error {
 			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
 		})
+		return errors.Join(remoteErr, primaryErr)
 	})
 }
 

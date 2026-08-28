@@ -46,19 +46,49 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		}
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "JSON-RPC frame 缺少 method"}
 	}
+	if method == "initialized" && gatewayJSONRPCFrameHasID(payload) {
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "initialized 必须是不带 id 的 JSON-RPC notification"}
+	}
 	if method != "initialized" && frame.ID == nil {
 		return nil, &appServerGatewayPolicyError{message: "app-server request 必须包含 id"}
 	}
 	if !p.methodAllowed(method) {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server method 不允许：" + method}
 	}
+	if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && p.router.cfg.AppServer.RemoteGateway.Enabled && method == "thread/compact/start" {
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "启用 remote gateway 时暂不允许 thread/compact/start；该协议响应没有可关联的 turn ID"}
+	}
+	inflightReserved := false
+	if frame.ID != nil {
+		if err := p.reserveInflightClientRequest(frame.ID, method); err != nil {
+			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		}
+		inflightReserved = true
+	}
+	keepInflight := false
+	defer func() {
+		if inflightReserved && !keepInflight {
+			p.cancelInflightClientRequest(frame.ID)
+		}
+	}()
 	params, err := decodeGatewayParams(frame.Params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
+	if p.clientKind == appServerGatewayClientRemoteCLI {
+		normalizeRemoteCLIClientParams(method, params)
+	}
 	validated, err := p.router.validateGatewayPolicyParams(normalizeAppServerRuntimeID(p.runtimeID), method, params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+	}
+	if p.clientKind == appServerGatewayClientRemoteCLI && validated.hasCWD &&
+		(!validated.cwdScopeOK || validated.cwdScope.browse) {
+		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: method + ".cwd 必须来自 projects allowlist"}
+	}
+	if p.clientKind == appServerGatewayClientRemoteCLI && method == "config/read" && !validated.hasCWD {
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "config/read.cwd 必须来自 projects allowlist"}
 	}
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
@@ -76,23 +106,78 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
 	tracksClientResponse := (runtimeID == "claude" && method == "model/list") ||
-		(runtimeID == "codex" && method == "account/usage/read")
+		(runtimeID == "codex" && method == "account/usage/read") ||
+		(p.clientKind == appServerGatewayClientRemoteCLI &&
+			(method == "config/read" || method == "configRequirements/read" || method == "account/read"))
 	if frame.ID != nil && tracksClientResponse {
-		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
+		if err := p.rememberPendingClientRequestWithCWD(frame.ID, method, validated.cwd); err != nil {
+			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		}
+	}
+	if gatewayMethodStartsTurnWork(method) {
+		threadID, _ := gatewayStringParam(params, "threadId")
+		if err := p.reservePendingTurnStart(frame.ID, threadID); err != nil {
 			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
 	}
 	if p.isClosed() {
+		if gatewayMethodStartsTurnWork(method) {
+			threadID, _ := gatewayStringParam(params, "threadId")
+			p.router.cancelGatewayTurnReservation(threadID, p.connectionID)
+		}
 		p.cancelPendingHistoryRequest(frame.ID)
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
 	}
 	logGatewayForwardedClientTurnSummary(method, rewritten)
+	keepInflight = inflightReserved
 	return rewritten, nil
 }
 
+func gatewayJSONRPCFrameHasID(payload []byte) bool {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(payload, &envelope) != nil {
+		return false
+	}
+	_, ok := envelope["id"]
+	return ok
+}
+
+func gatewayMethodStartsTurnWork(method string) bool {
+	switch method {
+	case "turn/start", "review/start":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRemoteCLIClientParams(method string, params map[string]any) {
+	if method != "turn/start" {
+		return
+	}
+	// CLI 会把主机 config/read 的 approval_policy=never 当作缺省值带回。
+	// 远程请求本身没有显式完全访问沙盒时，这会在通用策略校验前被拒绝。
+	// 先降为可审批值；后续安全改写仍会把显式 danger-full-access 归一化为 never。
+	if policy, ok := gatewayStringParam(params, "approvalPolicy"); ok && normalizePolicyValue(policy) == "never" {
+		params["approvalPolicy"] = "on-request"
+		params["approvalsReviewer"] = "user"
+	}
+	collaboration, ok := params["collaborationMode"].(map[string]any)
+	if !ok {
+		return
+	}
+	settings, ok := collaboration["settings"].(map[string]any)
+	if !ok {
+		return
+	}
+	// TUI 会附带自己的本地协作说明。远端不能把任意 developer instructions
+	// 当成受信策略透传；清空后由既有 gateway 安全常量重建 Default Mode。
+	settings["developer_instructions"] = nil
+}
+
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
-	_, ok := appServerAllowedMethodsForRuntime(p.runtimeID)[method]
+	_, ok := appServerAllowedMethodsForClient(p.runtimeID, p.clientKind)[method]
 	return ok
 }
 
@@ -310,7 +395,7 @@ func (p *appServerGatewayPolicy) validateThreadInputPaths(method string, params 
 	var scope gatewayScope
 	var scopeOK bool
 	if strings.TrimSpace(thread.cwd) != "" {
-		scope, scopeOK = p.router.gatewayScopeForPath(thread.cwd)
+		scope, scopeOK = p.gatewayScopeForPath(thread.cwd)
 	}
 	for _, path := range inputPaths {
 		if _, ok := p.router.projectForGatewayPath(path); ok {
@@ -622,6 +707,12 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayInitializeParams(params)
 	case "initialized", "model/list", "account/rateLimits/read", "account/usage/read":
 		sanitized = map[string]any{}
+	case "config/read":
+		sanitized = map[string]any{"cwd": validated.cwd, "includeLayers": false}
+	case "configRequirements/read":
+		sanitized = map[string]any{}
+	case "account/read":
+		sanitized = map[string]any{"refreshToken": false}
 	case "skills/list":
 		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
 	case "permissionProfile/list":
@@ -671,7 +762,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	if err := decoder.Decode(&frame); err != nil {
 		return nil, fmt.Errorf("JSON-RPC frame 无效")
 	}
-	if method == "account/usage/read" {
+	if method == "account/usage/read" || method == "configRequirements/read" {
 		// mimiForceRefresh 是移动端与 agentd 的私有提示；上游 schema 没有 params，必须完整剥离。
 		delete(frame, "params")
 	} else {

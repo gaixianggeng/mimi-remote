@@ -455,6 +455,7 @@ Mimi Remote 支持 iOS / iPadOS 18 及以上版本。iOS 26+ 继续使用 Liquid
 - [安装、升级与回滚](docs/install-upgrade-rollback.md)
 - [Tailscale 与 Peer Relay 运维](docs/tailscale-peer-relay-ops.md)
 - [Codex 协议支持边界](docs/codex-protocol-support.md)
+- [通过 SSH 接入同一个 Codex App Server](docs/ssh-codex-cli.md)
 - [Capability 声明与本地降级](docs/capability-rollout.md)
 - [Claude bridge 架构](docs/claude-bridge-architecture.md)
 - [与 Litter 的能力对照](docs/litter-comparison.md)

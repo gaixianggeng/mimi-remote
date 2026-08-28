@@ -560,6 +560,53 @@ func hasCheck(results Results, name string) bool {
 	return false
 }
 
+func TestRemoteGatewayTokenCheckMatchesHandshakeRequirements(t *testing.T) {
+	dir := t.TempDir()
+	remotePath := filepath.Join(dir, "remote-token")
+	upstreamPath := filepath.Join(dir, "upstream-token")
+	writeToken := func(path, token string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upstreamToken := "upstream-token-00000000000000000001"
+	writeToken(upstreamPath, upstreamToken)
+	cfg := config.Config{
+		Auth: config.AuthConfig{Token: "agentd-token-0000000000000000000001"},
+		AppServer: config.AppServerConfig{
+			WSTokenFile: upstreamPath,
+			RemoteGateway: config.RemoteGatewayConfig{
+				Enabled: true, TokenFile: remotePath,
+			},
+		},
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{name: "too short", token: "short", want: "长度不足"},
+		{name: "agentd token reuse", token: cfg.Auth.Token, want: "agentd"},
+		{name: "upstream token reuse", token: upstreamToken, want: "upstream"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			writeToken(remotePath, testCase.token)
+			check := NewChecker("test", cfg, &projects.Registry{}).remoteGatewayTokenFileCheck()
+			if check.OK || !strings.Contains(check.Message, testCase.want) {
+				t.Fatalf("invalid remote token should fail doctor: %+v", check)
+			}
+		})
+	}
+
+	writeToken(remotePath, "remote-token-0000000000000000000001")
+	check := NewChecker("test", cfg, &projects.Registry{}).remoteGatewayTokenFileCheck()
+	if !check.OK {
+		t.Fatalf("dedicated remote token should pass doctor: %+v", check)
+	}
+}
+
 func hasCheckMessage(results Results, name, want string) bool {
 	for _, check := range results.Checks {
 		if check.Name == name && strings.Contains(check.Message, want) {

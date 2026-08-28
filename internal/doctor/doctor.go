@@ -107,6 +107,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.appServerTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.remoteGatewayTokenFileCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
@@ -155,6 +158,9 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		checks = append(checks, check)
 	}
 	if check := c.appServerTokenFileCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
+	if check := c.remoteGatewayTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
@@ -267,6 +273,43 @@ func (c *Checker) appServerTokenFileCheck() Check {
 		return Check{}
 	}
 	return sensitiveFileCheck("app-server-token-file", "app-server token file", path)
+}
+
+func (c *Checker) remoteGatewayTokenFileCheck() Check {
+	if !c.cfg.AppServer.RemoteGateway.Enabled {
+		return Check{}
+	}
+	path := strings.TrimSpace(c.cfg.AppServer.RemoteGateway.TokenFile)
+	if path == "" {
+		return Check{
+			Name:    "remote-gateway-token-file",
+			OK:      false,
+			Message: "SSH/CLI remote gateway 未配置独立 token file",
+			Fix:     "运行 agentd doctor --fix 生成独立 token file",
+		}
+	}
+	check := sensitiveFileCheck("remote-gateway-token-file", "remote gateway token file", path)
+	if !check.OK {
+		return check
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Check{Name: check.Name, OK: false, Message: "remote gateway token file 不可读取", Fix: "检查文件所有者和当前用户读取权限"}
+	}
+	token := strings.TrimSpace(string(raw))
+	if len(token) < 32 {
+		return Check{Name: check.Name, OK: false, Message: "remote gateway token 长度不足 32 字节", Fix: "运行 agentd remote-token rotate 生成新 token"}
+	}
+	if token == strings.TrimSpace(c.cfg.Auth.Token) {
+		return Check{Name: check.Name, OK: false, Message: "remote gateway token 复用了 agentd 访问 token", Fix: "运行 agentd remote-token rotate 生成独立 token"}
+	}
+	upstreamPath := strings.TrimSpace(c.cfg.AppServer.WSTokenFile)
+	if upstreamPath != "" {
+		if upstreamRaw, readErr := os.ReadFile(upstreamPath); readErr == nil && token == strings.TrimSpace(string(upstreamRaw)) {
+			return Check{Name: check.Name, OK: false, Message: "remote gateway token 复用了 app-server upstream token", Fix: "运行 agentd remote-token rotate 生成独立 token"}
+		}
+	}
+	return check
 }
 
 func sensitiveFileCheck(name string, label string, path string) Check {
@@ -438,6 +481,9 @@ func (c *Checker) portChecks(ctx context.Context) []Check {
 	}
 	if strings.EqualFold(c.cfg.AppServer.Transport, "ws") && c.cfg.AppServer.Managed && strings.TrimSpace(c.cfg.AppServer.Listen) != "" {
 		checks = append(checks, c.portCheck(ctx, "app-server-port", c.cfg.AppServer.Listen, "app-server upstream"))
+	}
+	if c.cfg.AppServer.RemoteGateway.Enabled {
+		checks = append(checks, c.portCheck(ctx, "remote-gateway-port", c.cfg.AppServer.RemoteGateway.Listen, "SSH/CLI remote gateway"))
 	}
 	return checks
 }
