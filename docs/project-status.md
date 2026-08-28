@@ -29,7 +29,7 @@ iPhone / iPad SwiftUI App
 
 - `agentd` 是薄网关，不复制一套 Codex 业务协议。
 - macOS 实验开关只启用 Desktop IPC overlay，不创建、签名、恢复或诊断共享 daemon。Mimi 的独立 App Server 始终保留为稳定主链路；Desktop-owned thread 的读写才通过已验证的 owner/follower IPC 路由，Mimi-owned thread 继续由 App Server 执行。
-- IPC 不在官方 App Server 公开契约内，因此首版只放行 Codex Desktop `26.820.60940 (7119)`。未知 build、socket 不可用、协议错误或所有权不明确时保持只读/明确失败，不能回退为本地重复写入。
+- IPC 不在官方 App Server 公开契约内，因此只放行已完成真机协议验收的 Codex Desktop build。当前白名单为 `26.820.60940 (7119)` 和 `26.825.31414 (7287)`。未知 build、socket 不可用、协议错误或所有权不明确时保持只读/明确失败，不能回退为本地重复写入。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
 - Codex 默认保持网络关闭；只有用户显式选择 `danger-full-access` 或 `:danger-full-access` 时允许 `approvalPolicy=never`，其它模式继续由 Gateway 收敛审批策略。

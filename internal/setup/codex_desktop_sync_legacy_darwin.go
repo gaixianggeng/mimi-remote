@@ -45,6 +45,7 @@ type legacyDesktopLedger struct {
 	ownsEpoch      bool
 	cleanupPhase   string
 	presentKeys    map[string]bool
+	values         map[string]string
 }
 
 type legacyDesktopEnvironment struct {
@@ -66,13 +67,6 @@ func desktopSyncLegacyArtifactsPresent() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, path := range paths {
-		if _, err := os.Lstat(path); err == nil {
-			return true, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
-		}
-	}
 	ledger, err := readLegacyDesktopLedger(context.Background())
 	if err != nil {
 		return false, err
@@ -80,7 +74,123 @@ func desktopSyncLegacyArtifactsPresent() (bool, error) {
 	if err := validateLegacyDesktopCleanupPhase(ledger.cleanupPhase); err != nil {
 		return false, err
 	}
+	filesPresent, err := legacyDesktopLegacyFilesPresent(paths)
+	if err != nil {
+		return false, err
+	}
+	if !filesPresent && len(ledger.presentKeys) == 0 {
+		return false, nil
+	}
+	inert, err := legacyDesktopInertRetiredRemnants(context.Background(), paths, ledger)
+	if err != nil {
+		return false, err
+	}
+	if inert {
+		return false, nil
+	}
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+		}
+	}
 	return len(ledger.presentKeys) > 0, nil
+}
+
+func legacyDesktopInertRetiredRemnants(
+	ctx context.Context,
+	paths []string,
+	ledger legacyDesktopLedger,
+) (bool, error) {
+	if !legacyDesktopLedgerIsRetired(ledger) {
+		return false, nil
+	}
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("检查旧共享 daemon 文件失败：%w", err)
+		}
+		name := filepath.Base(path)
+		if name != legacyOperationLockName && name != "codex-shared-daemon.log" {
+			return false, nil
+		}
+		if err := validateLegacyDesktopInertFile(path, info); err != nil {
+			return false, nil
+		}
+	}
+	environment, err := readLegacyDesktopEnvironment(ctx)
+	if err != nil {
+		return false, err
+	}
+	if environment.daemonSet || environment.homeSet || environment.epochSet {
+		return false, nil
+	}
+	jobTarget := fmt.Sprintf("gui/%d/%s", os.Getuid(), legacyLaunchAgentLabel)
+	loaded, err := validateLegacyDesktopLaunchJob(ctx, jobTarget, "", false)
+	if err != nil {
+		return false, err
+	}
+	return !loaded, nil
+}
+
+func legacyDesktopLedgerIsRetired(ledger legacyDesktopLedger) bool {
+	if legacyDesktopLedgerOwnsEnvironment(ledger) || ledger.cleanupPhase != "" {
+		return false
+	}
+	allowed := map[string]bool{
+		"MimiRemoteMac.codexDesktop.enabled":          true,
+		"MimiRemoteMac.codexDesktop.codexHome":        true,
+		"MimiRemoteMac.codexDesktop.ownsEnvironment":  true,
+		"MimiRemoteMac.codexDesktop.ownsCodexHome":    true,
+		"MimiRemoteMac.codexDesktop.ownsSessionEpoch": true,
+	}
+	for key := range ledger.presentKeys {
+		if !allowed[key] {
+			return false
+		}
+		if key != "MimiRemoteMac.codexDesktop.codexHome" &&
+			!legacyDesktopExplicitFalse(ledger.values[key]) {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyDesktopExplicitFalse(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateLegacyDesktopInertFile(path string, lstatInfo os.FileInfo) error {
+	if !lstatInfo.Mode().IsRegular() || lstatInfo.Mode().Perm()&0o077 != 0 || lstatInfo.Size() != 0 {
+		return fmt.Errorf("旧共享 daemon 无害残留文件身份无法确认：%s", filepath.Base(path))
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("安全打开旧共享 daemon 无害残留文件失败：%w", err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("检查旧共享 daemon 无害残留文件失败：%w", err)
+	}
+	openedStat, openedOK := openedInfo.Sys().(*syscall.Stat_t)
+	lstatStat, lstatOK := lstatInfo.Sys().(*syscall.Stat_t)
+	if !openedOK || !lstatOK || openedStat.Uid != uint32(os.Getuid()) ||
+		!openedInfo.Mode().IsRegular() || openedInfo.Mode().Perm()&0o077 != 0 || openedInfo.Size() != 0 ||
+		(legacyDesktopFileIdentity{device: uint64(openedStat.Dev), inode: uint64(openedStat.Ino)}) !=
+			(legacyDesktopFileIdentity{device: uint64(lstatStat.Dev), inode: uint64(lstatStat.Ino)}) {
+		return fmt.Errorf("旧共享 daemon 无害残留文件身份无法确认：%s", filepath.Base(path))
+	}
+	return nil
 }
 
 func cleanupDesktopSyncLegacyArtifacts(ctx context.Context) error {
@@ -422,6 +532,7 @@ func readLegacyDesktopLedger(ctx context.Context) (legacyDesktopLedger, error) {
 		ownsEpoch:      ownsEpoch,
 		cleanupPhase:   cleanupPhase,
 		presentKeys:    presentKeys,
+		values:         values,
 	}, nil
 }
 

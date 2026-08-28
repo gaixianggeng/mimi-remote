@@ -39027,13 +39027,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Check that the Mac experiment window shows Desktop build 7119 and a ready IPC connection."
+            "value": "Check that the Mac experiment window shows a verified Desktop build (7119 or 7287) and a ready IPC connection."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 的实验功能窗口确认 Desktop build 为 7119 且 IPC 状态为“可用”。"
+            "value": "在 Mac 的实验功能窗口确认 Desktop build 为已验证版本（7119 或 7287）且 IPC 状态为“可用”。"
           }
         }
       }

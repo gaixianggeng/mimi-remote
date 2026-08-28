@@ -117,14 +117,14 @@ final class LocalizationTests: XCTestCase {
             "Click the Mimi icon in the Mac menu bar.",
             "Choose Experimental Features…",
             "Turn on Sync Codex Desktop sessions (experimental).",
-            "Check that the Mac experiment window shows Desktop build 7119 and a ready IPC connection.",
+            "Check that the Mac experiment window shows a verified Desktop build (7119 or 7287) and a ready IPC connection.",
             "Continue the same idle session once to verify the cross-device sync.",
         ]
         let expectedChinese = [
             "在 Mac 菜单栏中点按 Mimi 图标。",
             "选择“实验功能…”。",
             "开启“同步 Codex Desktop 会话（实验）”。",
-            "在 Mac 的实验功能窗口确认 Desktop build 为 7119 且 IPC 状态为“可用”。",
+            "在 Mac 的实验功能窗口确认 Desktop build 为已验证版本（7119 或 7287）且 IPC 状态为“可用”。",
             "用同一条空闲会话完成一次跨端同步验证。",
         ]
 

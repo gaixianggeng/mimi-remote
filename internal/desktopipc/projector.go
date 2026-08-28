@@ -120,7 +120,7 @@ func RealActiveTurnID(state map[string]any) (string, bool) {
 	return activeTurnID, activeTurnID != ""
 }
 
-// Desktop 7119 stores hydrated history in a canonical island graph. Legacy
+// 已验证的 Desktop profile 会把 hydrated history 存为 canonical island graph。Legacy
 // state keeps using the flat turns array.
 func conversationTurns(state map[string]any) []any {
 	turnHistory, _ := state["turnHistory"].(map[string]any)

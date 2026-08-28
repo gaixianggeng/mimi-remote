@@ -273,7 +273,7 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 	}
 }
 
-// Desktop 7119 在处理 follower Steer 时会用 restoreMessage 创建本地待发送消息。
+// 已验证的 Desktop profile 在处理 follower Steer 时会用 restoreMessage 创建本地待发送消息。
 // 只传 App Server 的 input 会让 Desktop 在读取 restoreMessage.cwd 时直接拒绝请求。
 func (o *desktopIPCGatewayOverlay) desktopSteerFollowerParams(
 	threadID string,
@@ -329,7 +329,7 @@ func (o *desktopIPCGatewayOverlay) discoverDesktopOwner(ctx context.Context, thr
 		return desktopipc.Projection{}, false, err
 	}
 	if _, projected := o.bridge.DesktopProjection(threadID); !projected {
-		// Desktop 7119 waits up to 10 seconds for all connected clients to reject an
+		// 已验证的 Desktop profile waits up to 10 seconds for all connected clients to reject an
 		// owner probe before it returns the only safe fallback signal: no-client-found.
 		discoveryCtx, discoveryCancel := context.WithTimeout(ctx, desktopIPCOwnerDiscoveryWait)
 		owned, err := o.bridge.DiscoverDesktopOwner(discoveryCtx, threadID)

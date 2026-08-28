@@ -145,8 +145,8 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	client.status.update(func(status *Status) {
 		status.DesktopVersion = opts.DesktopVersion
 		status.DesktopBuild = opts.DesktopBuild
-		if opts.DesktopBuild == SupportedBuild && opts.DesktopVersion == SupportedVersion {
-			status.Profile = SupportedProfile
+		if profile, ok := verifiedDesktopProfile(opts.DesktopVersion, opts.DesktopBuild); ok {
+			status.Profile = profile
 		}
 	})
 	return client, nil
@@ -405,11 +405,11 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 		status.DesktopVersion = peer.Version
 		status.DesktopBuild = peer.Build
 		status.Profile = ""
-		if peer.Version == SupportedVersion && peer.Build == SupportedBuild {
-			status.Profile = SupportedProfile
+		if profile, ok := verifiedDesktopProfile(peer.Version, peer.Build); ok {
+			status.Profile = profile
 		}
 	})
-	if peer.Version != SupportedVersion || peer.Build != SupportedBuild {
+	if _, ok := verifiedDesktopProfile(peer.Version, peer.Build); !ok {
 		_ = conn.Close()
 		return errUnsupportedBuild
 	}

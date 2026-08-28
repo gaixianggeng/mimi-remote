@@ -80,7 +80,7 @@ struct ExperimentsView: View {
             }
 
             Section("边界") {
-                Text("同步使用已验证的 Desktop IPC。首版仅支持 macOS 和 Codex Desktop 26.820.60940 (7119)；普通开关只重载 agentd，不会退出或重开 Desktop。")
+                Text("同步使用已验证的 Desktop IPC。当前支持 Codex Desktop 26.820.60940 (7119) 和 26.825.31414 (7287)；普通开关只重载 agentd，不会退出或重开 Desktop。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

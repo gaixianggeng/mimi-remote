@@ -15,7 +15,7 @@ agentd runtime --codex-desktop-sync=enabled --json
 agentd runtime --codex-desktop-sync=disabled --json
 ```
 
-首版只支持 macOS 上的 Codex Desktop `26.820.60940 (7119)`，配置 profile 为 `desktop-7119`。Windows 始终使用独立 App Server。
+当前验证白名单包含 Codex Desktop `26.820.60940 (7119)` 和 `26.825.31414 (7287)`，对应 profile 为 `desktop-7119` 和 `desktop-7287`。Windows 始终使用独立 App Server。
 
 开关开启后，overlay 仍以 Desktop 进程状态为触发条件：
 
@@ -30,7 +30,7 @@ Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查�
 - IPC socket 固定为 `$CODEX_HOME/ipc/ipc.sock`，采用 4 字节 little-endian 长度帧，单帧上限 64 MiB。
 - `agentd` 只接受当前用户、无组或其他用户权限的 socket。
 - 对端必须是已验证的 `com.openai.codex` bundle，Team ID 为 `2DC432GLL2`。
-- build 7119 的方法版本固定如下；版本不匹配时进入 `protocol_error`：
+- build 7119 和 7287 的已验证方法版本如下；版本不匹配时进入 `protocol_error`：
 
   ```text
   initialize v1

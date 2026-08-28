@@ -2,7 +2,7 @@
 
 ## 前置条件
 
-- macOS 安装并登录 Codex Desktop `26.820.60940 (7119)`。
+- macOS 安装并登录白名单内的 Codex Desktop：`26.820.60940 (7119)` 或 `26.825.31414 (7287)`。
 - Mac App 已开启“同步 Codex Desktop 会话（实验）”，状态为 `ready`。
 - iOS App 已通过配对连接同一 Mac；移动端只连接 Mimi 独立 App Server。
 - 每条用例使用独立、可识别的 Thread，并记录 Desktop、Mimi 和 agentd 日志中的 Thread ID。
@@ -32,10 +32,10 @@
 
 | 用例 | 条件 | 预期 |
 | --- | --- | --- |
-| 未知 build | Desktop 正在运行且 build 不是 7119 | `unsupported_build`，所有写操作暂停；关闭 Desktop 后独立 App Server 恢复 |
+| 未知 build | Desktop 正在运行且 build 不在 7119/7287 白名单 | `unsupported_build`，所有写操作暂停；关闭 Desktop 后独立 App Server 恢复 |
 | Desktop 未运行 | Desktop 已关闭并经过下一次进程检查 | `desktop_not_running`；IPC overlay 退出，独立 App Server 正常读写 |
 | Desktop 运行但 socket 不可用 | Desktop 进程存在，但 socket 尚未建立或异常 | `socket_unavailable`，所有写操作暂停，不将请求本地重跑 |
-| 协议错误 | initialize、revision 或 follower 响应不符合 build 7119 | `protocol_error`，返回可重试且交付状态不确定的错误 |
+| 协议错误 | initialize、revision 或 follower 响应不符合当前 build profile | `protocol_error`，返回可重试且交付状态不确定的错误 |
 | owner 不明确 | Desktop 和 Mimi 均无法证明 Thread ownership | 只读；不向任一 writer 猜测转发 |
 | 旧配置 | 检测到旧 shared fallback、plist 或迁移标记 | `legacy_cleanup_required`；确认 Desktop 已退出后才允许一次性清理 |
 

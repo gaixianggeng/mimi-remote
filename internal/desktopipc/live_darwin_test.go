@@ -40,7 +40,8 @@ func TestLiveVerifiedDesktopIPCInitialize(t *testing.T) {
 		client.Close()
 		t.Fatal(err)
 	}
-	if status := client.Status(); status.State != StateReady || status.Profile != SupportedProfile {
+	expectedProfile, supported := verifiedDesktopProfile(info.Version, info.Build)
+	if status := client.Status(); !supported || status.State != StateReady || status.Profile != expectedProfile {
 		client.Close()
 		t.Fatalf("unexpected live status: %#v", status)
 	}

@@ -51,8 +51,8 @@ enum ExperimentPresentation {
         case .unsupportedBuild:
             let detected = [version, build].compactMap { $0 }.joined(separator: " / ")
             detail = detected.isEmpty
-                ? "当前 Codex Desktop build 不在验证白名单内。首版只支持 26.820.60940 (7119)。"
-                : "当前版本（\(detected)）不在验证白名单内。首版只支持 26.820.60940 (7119)。"
+                ? "当前 Codex Desktop build 不在验证白名单内。已支持 build 7119 和 7287。"
+                : "当前版本（\(detected)）不在验证白名单内。已支持 build 7119 和 7287。"
         case .socketUnavailable:
             detail = "Codex Desktop IPC 不可用。请确认 Desktop 正在运行并重试。"
         case .protocolError:

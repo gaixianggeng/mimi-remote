@@ -202,7 +202,7 @@ func TestDesktopIPCOverlayRoutesDesktopOwnedTurnWithoutAppServerFallback(t *test
 			t.Fatalf("Desktop-owned steer fields were lost: %#v", params)
 		}
 		if _, exists := params["expectedTurnId"]; exists {
-			t.Fatalf("Desktop 7119 follower Steer must not receive unsupported expectedTurnId: %#v", params)
+			t.Fatalf("verified Desktop follower Steer must not receive unsupported expectedTurnId: %#v", params)
 		}
 		restoreMessage, _ := params["restoreMessage"].(map[string]any)
 		restoreContext, _ := restoreMessage["context"].(map[string]any)

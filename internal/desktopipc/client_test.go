@@ -214,7 +214,7 @@ func TestClientRejectsResponseFromWrongLogicalHandler(t *testing.T) {
 	}
 }
 
-func TestSupportedMethodVersionsMatchDesktop7119(t *testing.T) {
+func TestSupportedMethodVersionsMatchVerifiedDesktopProfiles(t *testing.T) {
 	for method, expected := range map[string]int{
 		"thread-stream-state-changed":            11,
 		"thread-owner-discovery":                 1,
@@ -229,7 +229,32 @@ func TestSupportedMethodVersionsMatchDesktop7119(t *testing.T) {
 	}
 	for _, unsupported := range []string{"thread-follower-set-model-and-reasoning", "thread-follower-set-collaboration-mode"} {
 		if _, ok := MethodVersion(unsupported); ok {
-			t.Fatalf("unsupported Desktop 7119 method is still registered: %s", unsupported)
+			t.Fatalf("unsupported verified Desktop method is still registered: %s", unsupported)
+		}
+	}
+}
+
+func TestVerifiedDesktopProfilesRemainBuildScoped(t *testing.T) {
+	for _, profile := range []struct {
+		version string
+		build   string
+		want    string
+	}{
+		{version: SupportedVersion, build: SupportedBuild, want: SupportedProfile},
+		{version: desktopVersion7287, build: desktopBuild7287, want: desktopProfile7287},
+	} {
+		got, ok := verifiedDesktopProfile(profile.version, profile.build)
+		if !ok || got != profile.want {
+			t.Fatalf("verified profile %s (%s) resolved to %q ok=%t", profile.version, profile.build, got, ok)
+		}
+	}
+	for _, unknown := range [][2]string{
+		{SupportedVersion, desktopBuild7287},
+		{desktopVersion7287, SupportedBuild},
+		{desktopVersion7287, "future-build"},
+	} {
+		if profile, ok := verifiedDesktopProfile(unknown[0], unknown[1]); ok || profile != "" {
+			t.Fatalf("unknown Desktop build escaped the exact gate: %v profile=%q", unknown, profile)
 		}
 	}
 }

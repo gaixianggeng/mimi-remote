@@ -21,7 +21,21 @@ const (
 	SupportedVersion    = "26.820.60940"
 	SupportedBuild      = "7119"
 	SupportedProfile    = "desktop-7119"
+	desktopVersion7287  = "26.825.31414"
+	desktopBuild7287    = "7287"
+	desktopProfile7287  = "desktop-7287"
 )
+
+func verifiedDesktopProfile(version string, build string) (string, bool) {
+	switch {
+	case version == SupportedVersion && build == SupportedBuild:
+		return SupportedProfile, true
+	case version == desktopVersion7287 && build == desktopBuild7287:
+		return desktopProfile7287, true
+	default:
+		return "", false
+	}
+}
 
 type Status struct {
 	Enabled        bool   `json:"enabled"`

@@ -166,6 +166,209 @@ func TestCleanupDesktopSyncLegacyArtifactsRequiresDesktopExit(t *testing.T) {
 	}
 }
 
+func TestDesktopSyncLegacyArtifactsIgnoresInertRetiredRemnants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	paths, err := desktopSyncLegacyPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		if name != legacyOperationLockName && name != "codex-shared-daemon.log" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ledger := map[string]string{
+		"MimiRemoteMac.codexDesktop.enabled":          "0",
+		"MimiRemoteMac.codexDesktop.codexHome":        filepath.Join(home, ".codex"),
+		"MimiRemoteMac.codexDesktop.ownsEnvironment":  "0",
+		"MimiRemoteMac.codexDesktop.ownsCodexHome":    "0",
+		"MimiRemoteMac.codexDesktop.ownsSessionEpoch": "0",
+	}
+	installRetiredLegacyInspectionRunner(t, ledger, nil, false)
+
+	present, err := desktopSyncLegacyArtifactsPresent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatal("inert retired lock and log must not require a destructive cleanup")
+	}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		if name != legacyOperationLockName && name != "codex-shared-daemon.log" {
+			continue
+		}
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("inspection must preserve inert retired file %s: %v", name, err)
+		}
+	}
+}
+
+func TestDesktopSyncLegacyArtifactsKeepsUnsafeRetiredStateBlocked(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(t *testing.T, paths []string)
+		ledger    map[string]string
+		env       map[string]string
+		loadedJob bool
+		wantError bool
+	}{
+		{
+			name: "non-empty log",
+			mutate: func(t *testing.T, paths []string) {
+				t.Helper()
+				writeLegacyRetiredTestFile(t, paths, "codex-shared-daemon.log", []byte("active\n"), 0o600)
+			},
+		},
+		{
+			name: "group-readable lock",
+			mutate: func(t *testing.T, paths []string) {
+				t.Helper()
+				writeLegacyRetiredTestFile(t, paths, legacyOperationLockName, nil, 0o640)
+			},
+		},
+		{
+			name: "symlink log",
+			mutate: func(t *testing.T, paths []string) {
+				t.Helper()
+				for _, path := range paths {
+					if filepath.Base(path) != "codex-shared-daemon.log" {
+						continue
+					}
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					target := filepath.Join(t.TempDir(), "external.log")
+					if err := os.WriteFile(target, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(target, path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			name:   "ownership ledger",
+			ledger: map[string]string{"MimiRemoteMac.codexDesktop.ownsEnvironment": "true"},
+		},
+		{
+			name: "legacy environment",
+			env:  map[string]string{legacyDaemonEnvKey: "mimi-daemon"},
+		},
+		{
+			name:      "loaded legacy job",
+			loadedJob: true,
+			wantError: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			paths, err := desktopSyncLegacyPaths()
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeLegacyRetiredTestFile(t, paths, legacyOperationLockName, nil, 0o600)
+			writeLegacyRetiredTestFile(t, paths, "codex-shared-daemon.log", nil, 0o600)
+			if test.mutate != nil {
+				test.mutate(t, paths)
+			}
+			ledger := map[string]string{
+				"MimiRemoteMac.codexDesktop.enabled":          "0",
+				"MimiRemoteMac.codexDesktop.ownsEnvironment":  "0",
+				"MimiRemoteMac.codexDesktop.ownsCodexHome":    "0",
+				"MimiRemoteMac.codexDesktop.ownsSessionEpoch": "0",
+			}
+			for key, value := range test.ledger {
+				ledger[key] = value
+			}
+			installRetiredLegacyInspectionRunner(t, ledger, test.env, test.loadedJob)
+
+			present, err := desktopSyncLegacyArtifactsPresent()
+			if test.wantError {
+				if err == nil {
+					t.Fatal("unsafe loaded job must fail closed")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !present {
+				t.Fatal("unsafe retired state must keep legacy cleanup blocked")
+			}
+		})
+	}
+}
+
+func writeLegacyRetiredTestFile(t *testing.T, paths []string, name string, payload []byte, mode os.FileMode) {
+	t.Helper()
+	for _, path := range paths {
+		if filepath.Base(path) != name {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Remove(path)
+		if err := os.WriteFile(path, payload, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("legacy path not found: %s", name)
+}
+
+func installRetiredLegacyInspectionRunner(
+	t *testing.T,
+	ledger map[string]string,
+	environment map[string]string,
+	loadedJob bool,
+) {
+	t.Helper()
+	oldRunner := runDesktopSyncLegacyCommand
+	runDesktopSyncLegacyCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "/usr/bin/defaults":
+			if value, ok := ledger[args[len(args)-1]]; ok {
+				return []byte(value), nil
+			}
+			return nil, errors.New("missing")
+		case "/bin/launchctl":
+			switch args[0] {
+			case "getenv":
+				if value, ok := environment[args[1]]; ok {
+					return []byte(value), nil
+				}
+				return []byte("Could not find environment variable: " + args[1]), errors.New("exit status 113")
+			case "print":
+				if loadedJob {
+					return []byte(legacyLaunchAgentLabel), nil
+				}
+				return []byte("Could not find service"), errors.New("exit status 113")
+			}
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { runDesktopSyncLegacyCommand = oldRunner })
+}
+
 func TestCleanupDesktopSyncLegacyArtifactsWaitsForLegacyOperationLock(t *testing.T) {
 	fixture := newLegacyCleanupTestFixture(t)
 	fixture.install(t)

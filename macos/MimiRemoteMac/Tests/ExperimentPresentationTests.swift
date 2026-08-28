@@ -24,7 +24,7 @@ final class ExperimentPresentationTests: XCTestCase {
             version: "26.900.1",
             build: "9001"
         )
-        XCTAssertTrue(detail.contains("26.820.60940 (7119)"))
+        XCTAssertTrue(detail.contains("7119 和 7287"))
         XCTAssertTrue(detail.contains("26.900.1 / 9001"))
     }
 
