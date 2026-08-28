@@ -17,19 +17,12 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
-	policy := &appServerGatewayPolicy{
-		router:                r,
-		runtimeID:             "codex",
-		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:        map[string]appServerGatewayAllowedThread{},
-	}
+	policy := newAppServerGatewayPolicy(r)
 	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
-	overlay := newDesktopIPCGatewayOverlay(r.desktopIPC, policy, upstream, &upstreamWriteMu)
+	overlay := newDesktopIPCGatewayOverlayWithHub(
+		r.desktopIPC, policy, upstream, &upstreamWriteMu, r.desktopIPCLocalOwner, false,
+	)
 	defer overlay.close()
 
 	go func() {
@@ -131,6 +124,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 				if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, observed); err != nil {
 					return gatewayCloseReason("desktop_ipc_client_write", err)
 				}
+				overlay.afterClientResponse(observed)
 			}
 			continue
 		}

@@ -645,13 +645,41 @@ func (c *Client) writeJSON(conn net.Conn, value any) error {
 
 func (c *Client) write(conn net.Conn, payload []byte) error {
 	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return WriteFrame(conn, payload)
+	writeTimeout := c.opts.RequestTimeout
+	if writeTimeout <= 0 {
+		// NewClient 会规范化该选项；这里仍保留兜底，避免包内直接构造
+		// Client 时再次出现无界写入。
+		writeTimeout = 15 * time.Second
+	}
+	writeErr := conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if writeErr == nil {
+		writeErr = WriteFrame(conn, payload)
+	}
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	c.writeMu.Unlock()
+	if writeErr == nil {
+		writeErr = clearErr
+	}
+	if writeErr != nil {
+		// 超时或失败后无法确认 Desktop 是否收到完整帧。只失效这条连接，
+		// 避免旧代次的迟到错误关闭并发建立的新连接。
+		c.disconnectConn(conn, writeErr)
+	}
+	return writeErr
 }
 
 func (c *Client) disconnect(cause error) {
+	c.disconnectConn(nil, cause)
+}
+
+func (c *Client) disconnectConn(expected net.Conn, cause error) {
 	c.mu.Lock()
 	conn := c.conn
+	if expected != nil && conn != expected {
+		c.mu.Unlock()
+		_ = expected.Close()
+		return
+	}
 	generation := c.generation
 	c.conn = nil
 	c.clientID = ""

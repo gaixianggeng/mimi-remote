@@ -34,20 +34,28 @@ func (c *LocalConversation) SeedThread(thread map[string]any) (string, map[strin
 		return "", nil, fmt.Errorf("App Server thread is missing id")
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	state := buildLocalConversationState(thread, c.threads[threadID], time.Now())
 	c.threads[threadID] = state
-	c.mu.Unlock()
 	return threadID, cloneState(state), nil
 }
 
 func (c *LocalConversation) State(threadID string) (map[string]any, bool) {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 	state, ok := c.threads[strings.TrimSpace(threadID)]
-	c.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
 	return cloneState(state), true
+}
+
+func (c *LocalConversation) Remove(threadID string) {
+	threadID = strings.TrimSpace(threadID)
+	c.mu.Lock()
+	delete(c.threads, threadID)
+	delete(c.pendingStarts, threadID)
+	c.mu.Unlock()
 }
 
 // RememberTurnStart keeps the initiating request until turn/started supplies
@@ -153,6 +161,21 @@ func (c *LocalConversation) ResolveRequest(threadID string, id any) (map[string]
 		return nil, false
 	}
 	state["requests"] = next
+	return cloneState(state), true
+}
+
+// DropTransportPending removes request IDs and unconfirmed starts that belonged
+// to a dead App Server transport. A replacement can only accept reissued work.
+func (c *LocalConversation) DropTransportPending(threadID string) (map[string]any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	state, ok := c.threads[threadID]
+	if !ok || (len(anySlice(state["requests"])) == 0 && len(c.pendingStarts[threadID]) == 0) {
+		return nil, false
+	}
+	state["requests"] = []any{}
+	delete(c.pendingStarts, threadID)
 	return cloneState(state), true
 }
 

@@ -22,11 +22,16 @@ import (
 )
 
 type gatewayFakeIPCEnvelope struct {
-	Type      string                  `json:"type"`
-	RequestID json.RawMessage         `json:"requestId"`
-	Method    string                  `json:"method"`
-	Params    json.RawMessage         `json:"params"`
-	Request   *gatewayFakeIPCEnvelope `json:"request"`
+	Type           string                  `json:"type"`
+	RequestID      json.RawMessage         `json:"requestId"`
+	Method         string                  `json:"method"`
+	Version        int                     `json:"version"`
+	SourceClientID string                  `json:"sourceClientId"`
+	Params         json.RawMessage         `json:"params"`
+	Request        *gatewayFakeIPCEnvelope `json:"request"`
+	ResultType     string                  `json:"resultType"`
+	Result         json.RawMessage         `json:"result"`
+	Error          string                  `json:"error"`
 }
 
 type gatewayFakeDesktopIPC struct {
@@ -712,6 +717,401 @@ func TestDesktopIPCMimiOwnerRoutesDesktopFollowerTurnToOneAppServerWriter(t *tes
 	}
 }
 
+func TestDesktopIPCLocalOwnerHubSurvivesMobileDisconnectAndDelayedDesktopStart(t *testing.T) {
+	var projectDir string
+	var turnStarts atomic.Int64
+	hubConnections := make(chan *websocket.Conn, 2)
+	followingConfirmed := make(chan struct{})
+	startFollower := make(chan struct{})
+	startTurn := make(chan struct{})
+	followerResult := make(chan gatewayFakeIPCEnvelope, 2)
+	approvalResponses := make(chan struct{}, 1)
+	var reissuedApproval atomic.Bool
+	upstreamURL, received, connections := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
+			return
+		}
+		if strings.TrimSpace(frame.Method) == "" {
+			if gatewayRequestIDKey(frame.ID) == scalarRequestIDKey("approval-new") {
+				approvalResponses <- struct{}{}
+			}
+			return
+		}
+		params, _ := decodeGatewayParams(frame.Params)
+		var result any
+		switch frame.Method {
+		case "initialize":
+			var initialize struct {
+				Params struct {
+					ClientInfo struct {
+						Name string `json:"name"`
+					} `json:"clientInfo"`
+				} `json:"params"`
+			}
+			_ = json.Unmarshal(payload, &initialize)
+			if initialize.Params.ClientInfo.Name == "mimi_remote_owner" {
+				hubConnections <- conn
+			}
+			result = map[string]any{"userAgent": "codex-test"}
+		case "thread/list":
+			result = map[string]any{"data": []any{map[string]any{"id": "thread-resident", "cwd": projectDir}}}
+		case "thread/resume", "thread/read":
+			result = map[string]any{"thread": map[string]any{
+				"id": "thread-resident", "cwd": projectDir, "turns": []any{},
+			}}
+		case "thread/name/set":
+			result = map[string]any{}
+		case "turn/start":
+			turnStarts.Add(1)
+			result = map[string]any{"turn": map[string]any{"id": "turn-after-mobile-disconnect"}}
+		default:
+			return
+		}
+		response, _ := json.Marshal(map[string]any{"id": rawGatewayID(frame.ID), "result": result})
+		_ = conn.WriteMessage(websocket.TextMessage, response)
+		if frame.Method == "thread/name/set" {
+			request, _ := json.Marshal(map[string]any{
+				"id": "approval-old", "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": "thread-resident", "itemId": "command-old"},
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, request)
+		}
+		if frame.Method == "thread/read" && reissuedApproval.CompareAndSwap(false, true) {
+			request, _ := json.Marshal(map[string]any{
+				"id": "approval-new", "method": "item/commandExecution/requestApproval",
+				"params": map[string]any{"threadId": "thread-resident", "itemId": "command-new"},
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, request)
+		}
+		if frame.Method == "turn/start" {
+			notification, _ := json.Marshal(map[string]any{
+				"method": "turn/started", "params": map[string]any{
+					"threadId": "thread-resident",
+					"turn":     map[string]any{"id": "turn-after-mobile-disconnect"},
+				},
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, notification)
+		}
+		_ = params
+	})
+	drainDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-received:
+			case <-drainDone:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { close(drainDone) })
+	handler, router, fixtureProjectDir := buildAppServerGatewayFixture(t, upstreamURL, nil)
+	projectDir = fixtureProjectDir
+	router.desktopIPC.Close()
+
+	fake := &gatewayFakeDesktopIPC{}
+	var followingOnce sync.Once
+	fake.respond = func(conn net.Conn, request gatewayFakeIPCEnvelope) {
+		switch request.Method {
+		case "thread-owner-discovery":
+			fake.write(conn, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID),
+				"resultType": "error", "error": "no-client-found",
+			})
+		case "thread-stream-state-changed":
+			followingOnce.Do(func() {
+				fake.write(conn, map[string]any{
+					"type": "broadcast", "method": "thread-stream-following-changed", "version": 1,
+					"sourceClientId": "desktop-renderer", "params": map[string]any{
+						"conversationId": "thread-resident", "following": true,
+					},
+				})
+				close(followingConfirmed)
+				go func() {
+					<-startFollower
+					fake.write(conn, map[string]any{
+						"type": "request", "requestId": "delayed-history", "method": "thread-follower-load-complete-history",
+						"version": 1, "sourceClientId": "desktop-renderer",
+						"params": map[string]any{"conversationId": "thread-resident"},
+					})
+					<-startTurn
+					fake.write(conn, map[string]any{
+						"type": "request", "requestId": "delayed-start", "method": "thread-follower-start-turn",
+						"version": 2, "sourceClientId": "desktop-renderer", "params": map[string]any{
+							"conversationId": "thread-resident", "turnStart": map[string]any{"request": map[string]any{
+								"cwd": projectDir, "input": []any{map[string]any{"type": "text", "text": "after disconnect"}},
+								"sandboxPolicy":  map[string]any{"type": "workspaceWrite", "writableRoots": []any{projectDir}},
+								"approvalPolicy": "on-request",
+							}},
+						},
+					})
+				}()
+			})
+		default:
+			if request.Type == "response" &&
+				(string(request.RequestID) == `"delayed-history"` || string(request.RequestID) == `"delayed-start"`) {
+				followerResult <- request
+			}
+		}
+	}
+	bridge := newReadyGatewayBridge(t, fake, time.Second)
+	router.desktopIPC = bridge
+	router.cfg.Codex.DesktopSyncEnabled = true
+	router.desktopIPCLocalOwner = newDesktopIPCLocalOwnerHub(router, bridge)
+	t.Cleanup(router.desktopIPCLocalOwner.Close)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	mobile := dialAuthedGateway(t, server.URL)
+	if err := mobile.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"method":"thread/list","params":{"cwd":`+mustJSONTestString(projectDir)+`}}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, mobile)
+	resumePayload, _ := json.Marshal(map[string]any{
+		"id": 2, "method": "thread/resume", "params": map[string]any{
+			"threadId": "thread-resident", "cwd": projectDir,
+			"sandbox": "workspace-write", "approvalPolicy": "on-request",
+		},
+	})
+	if err := mobile.WriteMessage(websocket.TextMessage, resumePayload); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, mobile)
+	if err := mobile.WriteMessage(websocket.TextMessage, []byte(`{
+		"id":3,"method":"thread/name/set","params":{"threadId":"thread-resident","name":"Resident owner"}
+	}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, mobile)
+	if !bridge.LocalOwnerIs("thread-resident", desktopIPCLocalOwnerID) {
+		t.Fatal("process-level hub did not claim the Mimi owner")
+	}
+	approvalDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(approvalDeadline) {
+		state, _ := router.desktopIPCLocalOwner.local.State("thread-resident")
+		if len(desktopIPCTestRequests(state)) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	state, _ := router.desktopIPCLocalOwner.local.State("thread-resident")
+	if requests := desktopIPCTestRequests(state); len(requests) != 1 ||
+		requests[0].(map[string]any)["id"] != "approval-old" {
+		t.Fatalf("old session approval fixture was not projected: %#v", requests)
+	}
+	select {
+	case <-followingConfirmed:
+	case <-time.After(time.Second):
+		t.Fatal("Desktop renderer did not confirm following the resident owner")
+	}
+	var firstHubConnection *websocket.Conn
+	select {
+	case firstHubConnection = <-hubConnections:
+	case <-time.After(time.Second):
+		t.Fatal("resident owner App Server connection was not established")
+	}
+	// The process-level owner must keep its own authorization after the short
+	// reconnect cache expires. Desktop follower requests can arrive much later.
+	router.gatewayThreadsMu.Lock()
+	delete(router.gatewayThreads, gatewayThreadCacheKey("codex", "thread-resident"))
+	router.gatewayThreadsMu.Unlock()
+	if err := mobile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstHubConnection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(recoveryDeadline) {
+		state, _ = router.desktopIPCLocalOwner.local.State("thread-resident")
+		if bridge.LocalOwnerNeedsRecovery("thread-resident") && len(desktopIPCTestRequests(state)) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !bridge.LocalOwnerNeedsRecovery("thread-resident") {
+		t.Fatal("resident App Server disconnect did not fence the Mimi owner for history recovery")
+	}
+	state, _ = router.desktopIPCLocalOwner.local.State("thread-resident")
+	if requests := desktopIPCTestRequests(state); len(requests) != 0 {
+		t.Fatalf("dead App Server approval remained replayable: %#v", requests)
+	}
+
+	// Reproduce the delayed Desktop writer check instead of asserting only the
+	// first frame after navigation.
+	time.Sleep(150 * time.Millisecond)
+	close(startFollower)
+	var response gatewayFakeIPCEnvelope
+	select {
+	case response = <-followerResult:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Desktop complete-history request did not receive an IPC response after mobile disconnect")
+	}
+	if string(response.RequestID) != `"delayed-history"` || response.ResultType != "success" {
+		t.Fatalf("Desktop complete-history request failed after mobile disconnect: %#v", response)
+	}
+	recoveredDeadline := time.Now().Add(time.Second)
+	for bridge.LocalOwnerNeedsRecovery("thread-resident") && time.Now().Before(recoveredDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if bridge.LocalOwnerNeedsRecovery("thread-resident") {
+		t.Fatal("successful complete-history response did not reopen the resident writer")
+	}
+	approvalDeadline = time.Now().Add(time.Second)
+	for time.Now().Before(approvalDeadline) {
+		state, _ = router.desktopIPCLocalOwner.local.State("thread-resident")
+		requests := desktopIPCTestRequests(state)
+		if len(requests) == 1 && requests[0].(map[string]any)["id"] == "approval-new" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	state, _ = router.desktopIPCLocalOwner.local.State("thread-resident")
+	if requests := desktopIPCTestRequests(state); len(requests) != 1 ||
+		requests[0].(map[string]any)["id"] != "approval-new" {
+		t.Fatalf("replacement App Server approval was not reissued: %#v", requests)
+	}
+	if _, err := bridge.RequestLocalOwner(
+		context.Background(), "thread-resident", "thread-follower-command-approval-decision",
+		map[string]any{"conversationId": "thread-resident", "requestId": "approval-new", "decision": "accept"},
+	); err != nil {
+		t.Fatalf("reissued approval could not reach the replacement App Server: %v", err)
+	}
+	select {
+	case <-approvalResponses:
+	case <-time.After(time.Second):
+		t.Fatal("replacement App Server did not receive the reissued approval response")
+	}
+	close(startTurn)
+	select {
+	case response = <-followerResult:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Desktop start request did not receive an IPC response after mobile disconnect")
+	}
+	if response.ResultType != "success" || turnStarts.Load() != 1 {
+		t.Fatalf("delayed Desktop start did not enter exactly one writer: response=%#v starts=%d", response, turnStarts.Load())
+	}
+	if connections.Load() != 3 {
+		t.Fatalf("expected mobile, lost resident, and recovered resident transports; got=%d", connections.Load())
+	}
+}
+
+func TestDesktopIPCFirstOfflineMutationUsesResidentWriter(t *testing.T) {
+	var turnStarts atomic.Int64
+	upstreamURL, _, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
+			return
+		}
+		var result any
+		switch frame.Method {
+		case "initialize":
+			result = map[string]any{"userAgent": "codex-test"}
+		case "turn/start":
+			turnStarts.Add(1)
+			result = map[string]any{"turn": map[string]any{"id": "turn-offline-hub"}}
+		default:
+			return
+		}
+		response, _ := json.Marshal(map[string]any{"id": rawGatewayID(frame.ID), "result": result})
+		_ = conn.WriteMessage(websocket.TextMessage, response)
+	})
+	_, router, projectDir := buildAppServerGatewayFixture(t, upstreamURL, nil)
+	router.desktopIPC.Close()
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
+		Enabled: true, InitialState: desktopipc.StateDesktopNotRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.desktopIPC = bridge
+	router.cfg.Codex.DesktopSyncEnabled = true
+	hub := newDesktopIPCLocalOwnerHub(router, bridge)
+	router.desktopIPCLocalOwner = hub
+	t.Cleanup(hub.Close)
+	allowed := appServerGatewayAllowedThread{id: "thread-offline-hub", cwd: projectDir, scopeID: "demo"}
+	hub.allowed["thread-offline-hub"] = allowed
+	policy := newAppServerGatewayPolicy(router)
+	policy.allowedThreads["thread-offline-hub"] = allowed
+	overlay := newDesktopIPCGatewayOverlayWithHub(
+		bridge, policy, nil, nil, hub, false,
+	)
+	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":41,"method":"turn/start","params":{"threadId":"thread-offline-hub","cwd":`+
+		mustJSONTestString(projectDir)+`,"input":[]}
+	}`))
+	if !handled || policyErr != nil || len(response) == 0 {
+		t.Fatalf("first offline mutation was not routed: handled=%t response=%s err=%+v", handled, response, policyErr)
+	}
+	if !bridge.LocalOwnerIs("thread-offline-hub", desktopIPCLocalOwnerID) || turnStarts.Load() != 1 {
+		t.Fatalf("first offline mutation bypassed the resident writer: owner=%t starts=%d",
+			bridge.LocalOwnerIs("thread-offline-hub", desktopIPCLocalOwnerID), turnStarts.Load())
+	}
+}
+
+func TestDesktopIPCLocalOwnerReadReplaysPendingRequestOnce(t *testing.T) {
+	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &appServerGatewayPolicy{allowedThreads: map[string]appServerGatewayAllowedThread{
+		"thread-approval-replay": {id: "thread-approval-replay", cwd: "/tmp"},
+	}}
+	overlay := newDesktopIPCGatewayOverlay(bridge, policy, nil, nil)
+	var responseMethod string
+	if err := bridge.ClaimNewLocalOwner("thread-approval-replay", overlay.ownerID, func(
+		_ context.Context, method string, _ json.RawMessage,
+	) (any, error) {
+		responseMethod = method
+		return map[string]any{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridge.PublishLocalConversation("thread-approval-replay", overlay.ownerID, map[string]any{
+		"id": "thread-approval-replay", "cwd": "/tmp", "turns": []any{},
+		"requests": []any{map[string]any{
+			"id": "approval-1", "method": "item/commandExecution/requestApproval",
+			"params": map[string]any{"threadId": "thread-approval-replay", "itemId": "command-1"},
+		}},
+	})
+	updates, unsubscribe := bridge.Subscribe()
+	defer unsubscribe()
+	read := func(id string) desktopipc.ThreadEvent {
+		rawID, _ := json.Marshal(id)
+		requestID := json.RawMessage(rawID)
+		handled, response, policyErr := overlay.routeLocalOwner(
+			context.Background(), &requestID, "thread/read", "thread-approval-replay",
+			map[string]any{"threadId": "thread-approval-replay"},
+		)
+		if !handled || policyErr != nil || len(response) == 0 {
+			t.Fatalf("local read failed: handled=%t response=%s err=%+v", handled, response, policyErr)
+		}
+		overlay.afterClientResponse(response)
+		select {
+		case event := <-updates:
+			return event
+		case <-time.After(time.Second):
+			t.Fatal("local read did not replay its current pending requests")
+		}
+		return desktopipc.ThreadEvent{}
+	}
+	first := overlay.syncServerRequests(read("read-1"))
+	if len(first) != 1 || first[0].Method != "item/commandExecution/requestApproval" {
+		t.Fatalf("pending approval was not replayed on attach: %#v", first)
+	}
+	if duplicate := overlay.syncServerRequests(read("read-2")); len(duplicate) != 0 {
+		t.Fatalf("pending approval was replayed more than once: %#v", duplicate)
+	}
+	responsePayload, _ := json.Marshal(map[string]any{
+		"id": first[0].ID, "result": map[string]any{"decision": "accept"},
+	})
+	handled, _, responseErr := overlay.routeClientFrame(context.Background(), responsePayload)
+	if !handled || responseErr != nil || responseMethod != "thread-follower-command-approval-decision" {
+		t.Fatalf("replayed approval could not return to the local owner: handled=%t method=%q err=%+v", handled, responseMethod, responseErr)
+	}
+}
+
 func TestDesktopFollowerPermissionDecisionRestoresRequestedGrant(t *testing.T) {
 	pending := desktopIPCServerRequest{
 		method: "item/permissions/requestApproval",
@@ -762,6 +1162,8 @@ func TestDesktopIPCOverlayRestoresConsumedReverseResponseBeforeDelivery(t *testi
 				Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1"},
 			},
 		},
+		pendingActionLocal: map[string]bool{gatewayRequestIDKey(&id): true},
+		uncertainActions:   map[string]bool{},
 	}
 	frame := appServerGatewayFrame{ID: &id}
 	handled, _, policyErr := overlay.routeServerRequestResponse(
@@ -772,6 +1174,9 @@ func TestDesktopIPCOverlayRestoresConsumedReverseResponseBeforeDelivery(t *testi
 	}
 	if _, ok := policy.pendingServerRequest(&id); !ok {
 		t.Fatal("pre-delivery reverse response failure did not restore Gateway pending state")
+	}
+	if !overlay.pendingActionLocal[gatewayRequestIDKey(&id)] {
+		t.Fatal("invalid response lost its local-owner routing before retry")
 	}
 }
 
@@ -1048,4 +1453,9 @@ func TestDesktopIPCOverlayDoesNotLeakDesktopResponseWhenDesktopCloses(t *testing
 func mustJSONTestString(value string) string {
 	payload, _ := json.Marshal(value)
 	return string(payload)
+}
+
+func desktopIPCTestRequests(state map[string]any) []any {
+	requests, _ := state["requests"].([]any)
+	return requests
 }

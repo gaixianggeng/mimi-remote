@@ -1490,6 +1490,205 @@ func TestBridgeRequestLocalOwnerHonorsUncertainGate(t *testing.T) {
 	}
 }
 
+func TestBridgeSessionLossFenceWinsAfterConcurrentHistory(t *testing.T) {
+	bridge, err := NewBridge(BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.client.status.update(func(status *Status) { status.State = StateReady })
+	bridge.connectionGeneration = 1
+	bridge.client.mu.Lock()
+	bridge.client.generation = 1
+	bridge.client.mu.Unlock()
+	historyEntered := make(chan struct{})
+	releaseHistory := make(chan struct{})
+	if err := bridge.ClaimNewLocalOwner("thread-recovery-race", "agentd-owner", func(
+		_ context.Context, method string, _ json.RawMessage,
+	) (any, error) {
+		if method == "thread-follower-load-complete-history" {
+			close(historyEntered)
+			<-releaseHistory
+		}
+		return map[string]any{"revision": 1}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	params := json.RawMessage(`{"conversationId":"thread-recovery-race"}`)
+	discoveryVersion, _ := MethodVersion("thread-owner-discovery")
+	if _, err := bridge.handleIncoming(context.Background(), IncomingRequest{
+		Method: "thread-owner-discovery", Version: discoveryVersion, SourceClientID: "desktop-a",
+		ConnectionGeneration: 1, Params: params,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.MarkLocalOwnerRecoveryRequired("thread-recovery-race", "agentd-owner")
+	historyVersion, _ := MethodVersion("thread-follower-load-complete-history")
+	history := IncomingRequest{
+		RequestID: json.RawMessage(`"history-race"`), Method: "thread-follower-load-complete-history",
+		Version: historyVersion, SourceClientID: "desktop-a", ConnectionGeneration: 1, Params: params,
+	}
+	historyDone := make(chan error, 1)
+	go func() {
+		_, requestErr := bridge.handleIncoming(context.Background(), history)
+		historyDone <- requestErr
+	}()
+	<-historyEntered
+	markDone := make(chan struct{})
+	go func() {
+		bridge.MarkLocalOwnerRecoveryRequired("thread-recovery-race", "agentd-owner")
+		close(markDone)
+	}()
+	select {
+	case <-markDone:
+	case <-time.After(time.Second):
+		t.Fatal("session-loss fence waited for the in-flight history operation")
+	}
+	close(releaseHistory)
+	if err := <-historyDone; err != nil {
+		t.Fatal(err)
+	}
+	bridge.handleIncomingResponse(history, nil)
+	if !bridge.LocalOwnerNeedsRecovery("thread-recovery-race") {
+		t.Fatal("successful stale history incorrectly cleared the later session-loss fence")
+	}
+}
+
+func TestBridgeStaleHistoryResponseCannotClearNewSessionLossFence(t *testing.T) {
+	bridge, err := NewBridge(BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.client.status.update(func(status *Status) { status.State = StateReady })
+	bridge.connectionGeneration = 1
+	bridge.client.mu.Lock()
+	bridge.client.generation = 1
+	bridge.client.mu.Unlock()
+	if err := bridge.ClaimNewLocalOwner("thread-response-race", "agentd-owner", func(
+		_ context.Context, _ string, _ json.RawMessage,
+	) (any, error) {
+		return map[string]any{"revision": 1}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	params := json.RawMessage(`{"conversationId":"thread-response-race"}`)
+	discoveryVersion, _ := MethodVersion("thread-owner-discovery")
+	if _, err := bridge.handleIncoming(context.Background(), IncomingRequest{
+		Method: "thread-owner-discovery", Version: discoveryVersion, SourceClientID: "desktop-a",
+		ConnectionGeneration: 1, Params: params,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.MarkLocalOwnerRecoveryRequired("thread-response-race", "agentd-owner")
+	historyVersion, _ := MethodVersion("thread-follower-load-complete-history")
+	history := IncomingRequest{
+		RequestID: json.RawMessage(`"history-old"`), Method: "thread-follower-load-complete-history",
+		Version: historyVersion, SourceClientID: "desktop-a", ConnectionGeneration: 1, Params: params,
+	}
+	if _, err := bridge.handleIncoming(context.Background(), history); err != nil {
+		t.Fatal(err)
+	}
+	// The App Server session disappears after history was prepared but before
+	// the Desktop response is written. That newer fence must win.
+	bridge.MarkLocalOwnerRecoveryRequired("thread-response-race", "agentd-owner")
+	bridge.handleIncomingResponse(history, nil)
+	if !bridge.LocalOwnerNeedsRecovery("thread-response-race") {
+		t.Fatal("stale complete-history response cleared a newer session-loss fence")
+	}
+	history.RequestID = json.RawMessage(`"history-new"`)
+	if _, err := bridge.handleIncoming(context.Background(), history); err != nil {
+		t.Fatal(err)
+	}
+	bridge.handleIncomingResponse(history, nil)
+	if bridge.LocalOwnerNeedsRecovery("thread-response-race") {
+		t.Fatal("fresh complete-history response did not clear its own recovery fence")
+	}
+}
+
+func TestBridgeReservesLocalTurnStartUntilProjectedTerminalState(t *testing.T) {
+	bridge, err := NewBridge(BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	if err := bridge.ClaimNewLocalOwner("thread-local-start", "agentd-owner", func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+		if method != "thread-follower-start-turn" {
+			return map[string]any{}, nil
+		}
+		calls++
+		return map[string]any{"result": map[string]any{
+			"turn": map[string]any{"id": fmt.Sprintf("turn-%d", calls)},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"conversationId": "thread-local-start"}
+	if _, err := bridge.RequestLocalOwner(context.Background(), "thread-local-start", "thread-follower-start-turn", params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridge.RequestLocalOwner(context.Background(), "thread-local-start", "thread-follower-start-turn", params); !errors.Is(err, ErrDesktopStartInFlight) {
+		t.Fatalf("second start crossed the ACK-to-projection reservation: %v", err)
+	}
+	_ = bridge.PublishLocalConversation("thread-local-start", "agentd-owner", map[string]any{
+		"id": "thread-local-start", "turns": []any{map[string]any{
+			"id": "turn-1", "status": "completed", "items": []any{},
+		}},
+	})
+	if _, err := bridge.RequestLocalOwner(context.Background(), "thread-local-start", "thread-follower-start-turn", params); err != nil {
+		t.Fatalf("terminal projection did not release the start reservation: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("unexpected handler calls: %d", calls)
+	}
+}
+
+func TestBridgeRejectedIncomingStartDoesNotLeakReservation(t *testing.T) {
+	bridge, err := NewBridge(BridgeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.client.status.update(func(status *Status) { status.State = StateReady })
+	bridge.connectionGeneration = 1
+	bridge.client.mu.Lock()
+	bridge.client.generation = 1
+	bridge.client.mu.Unlock()
+	if err := bridge.ClaimNewLocalOwner("thread-pending-response", "agentd-owner", func(
+		_ context.Context, _ string, _ json.RawMessage,
+	) (any, error) {
+		return map[string]any{"turn": map[string]any{"id": "turn-after-pending"}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	params := json.RawMessage(`{"conversationId":"thread-pending-response"}`)
+	discovery := IncomingRequest{
+		Method: "thread-owner-discovery", Version: 1, SourceClientID: "desktop-a",
+		ConnectionGeneration: 1, Params: params,
+	}
+	if _, err := bridge.handleIncoming(context.Background(), discovery); err != nil {
+		t.Fatal(err)
+	}
+	bridge.mu.Lock()
+	bridge.localInFlight["thread-pending-response"] = localRequestInFlight{
+		requestID: "s:previous", ownerID: "agentd-owner", ownerEpoch: bridge.ownerEpochs["thread-pending-response"],
+		connectionGeneration: 1,
+	}
+	bridge.mu.Unlock()
+	start := IncomingRequest{
+		Method: "thread-follower-start-turn", Version: 2, SourceClientID: "desktop-a",
+		ConnectionGeneration: 1, Params: params,
+	}
+	if _, err := bridge.handleIncoming(context.Background(), start); err == nil {
+		t.Fatal("incoming start bypassed the pending response fence")
+	}
+	bridge.mu.Lock()
+	delete(bridge.localInFlight, "thread-pending-response")
+	bridge.mu.Unlock()
+	if _, err := bridge.RequestLocalOwner(context.Background(), "thread-pending-response", "thread-follower-start-turn", map[string]any{
+		"conversationId": "thread-pending-response",
+	}); err != nil {
+		t.Fatalf("rejected incoming start leaked its reservation: %v", err)
+	}
+}
+
 func TestBridgeRejectsProjectionFromReleasedOwner(t *testing.T) {
 	bridge, err := NewBridge(BridgeOptions{})
 	if err != nil {

@@ -83,7 +83,7 @@ func (b *Bridge) activateLocalThread(threadID, ownerID string, waitForMaterializ
 		desktopRouteTrace(desktopRouteTraceRequested, threadID, 0, reason, 0)
 	}
 	if started {
-		b.launchLocalFollowActivation(threadID, activation)
+		_ = b.launchLocalFollowActivation(threadID, activation)
 	} else if intentChanged {
 		switch {
 		case alreadyFollowing:
@@ -135,15 +135,28 @@ func (b *Bridge) startLocalFollowActivationLocked(
 	return activation, true
 }
 
-func (b *Bridge) launchLocalFollowActivation(threadID string, activation localFollowActivation) {
+func (b *Bridge) launchLocalFollowActivation(threadID string, activation localFollowActivation) <-chan struct{} {
+	broadcastDone := make(chan struct{})
 	if current, _ := b.localFollowActivationState(threadID, activation); !current {
-		return
+		close(broadcastDone)
+		return broadcastDone
 	}
-	// An already-mounted renderer can answer this without a visible navigation.
-	_ = b.client.BroadcastGeneration("thread-stream-following-status-requested", map[string]any{
-		"hostId": "local", "conversationId": threadID,
-	}, activation.connectionGeneration)
-	go b.runLocalFollowActivation(threadID, activation)
+	go func() {
+		// Recheck the lease after scheduling. A newer route or connection may
+		// have made this activation stale before the background path started.
+		if current, _ := b.localFollowActivationState(threadID, activation); !current {
+			close(broadcastDone)
+			return
+		}
+		// 已挂载的 renderer 可以直接回答状态，不必触发可见导航。广播必须
+		// 先于路由激活，但两者都放在后台路径，避免 Desktop 读取慢时阻塞调用者。
+		_ = b.client.BroadcastGeneration("thread-stream-following-status-requested", map[string]any{
+			"hostId": "local", "conversationId": threadID,
+		}, activation.connectionGeneration)
+		close(broadcastDone)
+		b.runLocalFollowActivation(threadID, activation)
+	}()
+	return broadcastDone
 }
 
 func (b *Bridge) runLocalFollowActivation(threadID string, activation localFollowActivation) {

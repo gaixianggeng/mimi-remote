@@ -32,10 +32,14 @@ type desktopIPCGatewayOverlay struct {
 	upstreamWriteMu *sync.Mutex
 	ownerID         string
 	local           *desktopipc.LocalConversation
+	ownerHub        *desktopIPCLocalOwnerHub
+	isHubTransport  bool
 	nextRequestID   atomic.Uint64
 
 	mu                  sync.Mutex
 	pendingActions      map[string]desktopipc.ServerRequest
+	pendingActionLocal  map[string]bool
+	pendingLocalReplay  map[string]string
 	uncertainActions    map[string]bool
 	pendingUpstream     map[string]chan desktopIPCUpstreamResult
 	forwardedClient     map[string]desktopIPCForwardedClientRequest
@@ -68,10 +72,29 @@ func newDesktopIPCGatewayOverlay(
 	upstream *websocket.Conn,
 	upstreamWriteMu *sync.Mutex,
 ) *desktopIPCGatewayOverlay {
+	return newDesktopIPCGatewayOverlayWithHub(bridge, policy, upstream, upstreamWriteMu, nil, false)
+}
+
+func newDesktopIPCGatewayOverlayWithHub(
+	bridge *desktopipc.Bridge,
+	policy *appServerGatewayPolicy,
+	upstream *websocket.Conn,
+	upstreamWriteMu *sync.Mutex,
+	ownerHub *desktopIPCLocalOwnerHub,
+	isHubTransport bool,
+) *desktopIPCGatewayOverlay {
+	ownerID := fmt.Sprintf("gateway-%p", policy)
+	local := desktopipc.NewLocalConversation()
+	if ownerHub != nil {
+		ownerID = ownerHub.ownerID
+		local = ownerHub.local
+	}
 	return &desktopIPCGatewayOverlay{
 		bridge: bridge, policy: policy, upstream: upstream, upstreamWriteMu: upstreamWriteMu,
-		ownerID: fmt.Sprintf("gateway-%p", policy), local: desktopipc.NewLocalConversation(),
+		ownerID: ownerID, local: local, ownerHub: ownerHub, isHubTransport: isHubTransport,
 		pendingActions:      make(map[string]desktopipc.ServerRequest),
+		pendingActionLocal:  make(map[string]bool),
+		pendingLocalReplay:  make(map[string]string),
 		uncertainActions:    make(map[string]bool),
 		pendingUpstream:     make(map[string]chan desktopIPCUpstreamResult),
 		forwardedClient:     make(map[string]desktopIPCForwardedClientRequest),
@@ -109,6 +132,11 @@ func (o *desktopIPCGatewayOverlay) close() {
 	if o == nil || o.bridge == nil {
 		return
 	}
+	if o.ownerHub != nil {
+		// The process-level hub owns the writer. Closing a mobile WebSocket only
+		// detaches that frontend and must not release Desktop following.
+		return
+	}
 	o.mu.Lock()
 	threads := make([]string, 0, len(o.ownedThreads))
 	for threadID := range o.ownedThreads {
@@ -130,8 +158,9 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 		key := gatewayRequestIDKey(frame.ID)
 		o.mu.Lock()
 		action, pendingDesktopResponse := o.pendingActions[key]
+		pendingLocalResponse := o.pendingActionLocal[key]
 		o.mu.Unlock()
-		if pendingDesktopResponse && !o.enabled() {
+		if pendingDesktopResponse && !pendingLocalResponse && !o.enabled() {
 			o.restorePolicyPendingAction(action)
 			o.mu.Lock()
 			delete(o.uncertainActions, key)
@@ -144,13 +173,10 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 				},
 			}
 		}
-		if !o.enabled() {
+		if !o.enabled() && !pendingLocalResponse {
 			return false, nil, nil
 		}
 		return o.routeServerRequestResponse(ctx, frame, payload)
-	}
-	if !o.enabled() {
-		return false, nil, nil
 	}
 	status := o.bridge.Status()
 	method := strings.TrimSpace(frame.Method)
@@ -162,13 +188,42 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 	if threadID == "" {
 		return false, nil, nil
 	}
+	// Once the resident hub owns a Thread, mobile writes must keep using that
+	// App Server transport even while Desktop is closed or reconnecting.
+	if o.ownerHub != nil && o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+		return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+	}
+	// When Desktop is confirmed closed, establish the process-level App Server
+	// writer before the first mutation. Otherwise a mobile disconnect between
+	// the ACK and turn/started leaves Desktop's delayed owner probe unanswered.
+	if o.ownerHub != nil && status.Enabled && status.State == desktopipc.StateDesktopNotRunning &&
+		desktopIPCMethodClaimsLocalOwner(method) {
+		if err := o.claimOfflineLocalOwner(threadID); err != nil {
+			return true, nil, &appServerGatewayPolicyError{
+				id: frame.ID, message: err.Error(), target: "client",
+				data: map[string]any{"reason": "desktop_sync_owner_conflict", "accepted": false, "retryable": true},
+			}
+		}
+		return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+	}
+	if !o.enabled() {
+		return false, nil, nil
+	}
 	if status.State != desktopipc.StateReady && desktopIPCMethodWritesThread(method) {
 		return true, nil, desktopIPCOwnerUnknownError(frame.ID, nil)
 	}
 	if o.bridge.HasLocalOwner(threadID) {
+		// Recovery always wins over the same-owner fast path. A previous timeout
+		// may have reached App Server, so no new write can bypass full history.
+		if o.bridge.LocalOwnerNeedsRecovery(threadID) && desktopIPCMethodWritesThread(method) {
+			return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+		}
 		// 当前 Gateway 就是唯一 writer 时，请求必须继续直达它自己的 App Server。
 		// 只有其他 Gateway 才需要通过 follower handler 转交给 owner。
 		if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			if o.ownerHub != nil && !o.isHubTransport {
+				return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+			}
 			return false, nil, nil
 		}
 		return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
@@ -201,6 +256,9 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 				}
 			}
 			if o.bridge.LocalOwnerNeedsRecovery(threadID) {
+				return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
+			}
+			if o.ownerHub != nil {
 				return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
 			}
 		}
@@ -407,6 +465,9 @@ func (o *desktopIPCGatewayOverlay) ensurePermittedLocalOwner(threadID string) er
 		}
 		return fmt.Errorf("thread already has an active writer")
 	}
+	if o.ownerHub != nil {
+		return o.ownerHub.claimPermitted(threadID)
+	}
 	if err := o.bridge.ClaimPermittedLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
 		return err
 	}
@@ -420,6 +481,9 @@ func (o *desktopIPCGatewayOverlay) claimNewLocalOwner(threadID string) error {
 			return nil
 		}
 		return fmt.Errorf("thread already has an active writer")
+	}
+	if o.ownerHub != nil {
+		return o.ownerHub.claimNew(threadID)
 	}
 	if err := o.bridge.ClaimNewLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
 		return err
@@ -435,6 +499,9 @@ func (o *desktopIPCGatewayOverlay) claimOfflineLocalOwner(threadID string) error
 		}
 		return fmt.Errorf("thread already has an active writer")
 	}
+	if o.ownerHub != nil {
+		return o.ownerHub.claimOffline(threadID)
+	}
 	if err := o.bridge.ClaimOfflineLocalOwner(threadID, o.ownerID, o.handleDesktopFollowerRequest); err != nil {
 		return err
 	}
@@ -443,6 +510,10 @@ func (o *desktopIPCGatewayOverlay) claimOfflineLocalOwner(threadID string) error
 }
 
 func (o *desktopIPCGatewayOverlay) rememberOwnedThread(threadID string) {
+	if o.ownerHub != nil {
+		o.ownerHub.rememberOwnedThread(threadID)
+		return
+	}
 	o.mu.Lock()
 	o.ownedThreads[threadID] = struct{}{}
 	o.mu.Unlock()
@@ -489,6 +560,7 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 		case "thread/goal/get":
 			return o.syntheticResult(id, map[string]any{"goal": nil})
 		default:
+			o.deferLocalReplay(id, threadID)
 			return o.syntheticResult(id, map[string]any{"thread": projection.Thread, "mimiDesktopIPCMirror": true})
 		}
 	}
@@ -500,6 +572,9 @@ func (o *desktopIPCGatewayOverlay) routeLocalOwner(
 			})
 			if err != nil {
 				return true, nil, desktopIPCPolicyError(id, err)
+			}
+			if o.ownerHub != nil && method == "thread/archive" {
+				o.ownerHub.releaseThread(threadID)
 			}
 			return o.syntheticResult(id, result)
 		}
@@ -668,7 +743,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 			if seedErr != nil {
 				return nil, seedErr
 			}
-			revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, o.ownerID, state)
+			revision, publishErr := o.forcePublishLocalConversation(threadID, state)
 			if publishErr != nil {
 				return nil, publishErr
 			}
@@ -678,7 +753,7 @@ func (o *desktopIPCGatewayOverlay) handleDesktopFollowerRequest(
 		if !ok {
 			return nil, err
 		}
-		revision, publishErr := o.bridge.ForcePublishLocalConversation(threadID, o.ownerID, state)
+		revision, publishErr := o.forcePublishLocalConversation(threadID, state)
 		return map[string]any{"revision": revision}, publishErr
 	case "thread-follower-start-turn":
 		turnStart, _ := params["turnStart"].(map[string]any)
@@ -848,7 +923,7 @@ func (o *desktopIPCGatewayOverlay) forwardDesktopServerRequestResponse(
 	delete(o.localServerRequests, key)
 	o.mu.Unlock()
 	if state, changed := o.local.ResolveRequest(threadID, pending.id); changed {
-		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+		o.publishLocalConversation(threadID, state)
 	}
 	return map[string]any{}, nil
 }
@@ -883,6 +958,10 @@ func desktopFollowerServerResponse(pending desktopIPCServerRequest, response map
 }
 
 func (o *desktopIPCGatewayOverlay) rememberLocalSettings(threadID string, settings map[string]any) {
+	if o.ownerHub != nil {
+		o.ownerHub.rememberSettings(threadID, settings)
+		return
+	}
 	o.mu.Lock()
 	current := o.localSettings[threadID]
 	if current == nil {
@@ -896,11 +975,55 @@ func (o *desktopIPCGatewayOverlay) rememberLocalSettings(threadID string, settin
 }
 
 func (o *desktopIPCGatewayOverlay) applyLocalSettings(threadID string, params map[string]any) {
+	if o.ownerHub != nil {
+		o.ownerHub.applySettings(threadID, params)
+		return
+	}
 	o.mu.Lock()
 	settings := cloneAnyMap(o.localSettings[threadID])
 	o.mu.Unlock()
 	for key, value := range settings {
 		params[key] = value
+	}
+}
+
+func (o *desktopIPCGatewayOverlay) publishLocalConversation(threadID string, state map[string]any) {
+	if o.ownerHub != nil {
+		o.ownerHub.enqueuePublish(threadID, state, false, "")
+		return
+	}
+	_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+}
+
+func (o *desktopIPCGatewayOverlay) forcePublishLocalConversation(threadID string, state map[string]any) (int64, error) {
+	if o.ownerHub != nil && o.isHubTransport {
+		return o.bridge.ForcePublishLocalConversationAndNotify(threadID, o.ownerID, state)
+	}
+	return o.bridge.ForcePublishLocalConversation(threadID, o.ownerID, state)
+}
+
+func (o *desktopIPCGatewayOverlay) deferLocalReplay(id *json.RawMessage, threadID string) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return
+	}
+	o.mu.Lock()
+	o.pendingLocalReplay[key] = threadID
+	o.mu.Unlock()
+}
+
+func (o *desktopIPCGatewayOverlay) afterClientResponse(payload []byte) {
+	var frame appServerGatewayFrame
+	if json.Unmarshal(payload, &frame) != nil || frame.ID == nil {
+		return
+	}
+	key := gatewayRequestIDKey(frame.ID)
+	o.mu.Lock()
+	threadID := o.pendingLocalReplay[key]
+	delete(o.pendingLocalReplay, key)
+	o.mu.Unlock()
+	if threadID != "" {
+		_ = o.bridge.NotifyLocalConversation(threadID, o.ownerID, true)
 	}
 }
 
@@ -912,6 +1035,7 @@ func (o *desktopIPCGatewayOverlay) routeServerRequestResponse(
 	key := gatewayRequestIDKey(frame.ID)
 	o.mu.Lock()
 	action, ok := o.pendingActions[key]
+	localOwnerAction := o.pendingActionLocal[key]
 	o.mu.Unlock()
 	if !ok {
 		return false, nil, nil
@@ -935,7 +1059,13 @@ func (o *desktopIPCGatewayOverlay) routeServerRequestResponse(
 		o.mu.Unlock()
 		return true, nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error(), target: "client"}
 	}
-	_, requestErr := o.bridge.RequestDesktopOwner(ctx, method, params)
+	var requestErr error
+	if localOwnerAction {
+		threadID := firstStringFromAnyMap(action.Params, "threadId", "thread_id")
+		_, requestErr = o.bridge.RequestLocalOwner(ctx, threadID, method, params)
+	} else {
+		_, requestErr = o.bridge.RequestDesktopOwner(ctx, method, params)
+	}
 	if requestErr != nil {
 		var ipcRequestErr *desktopipc.RequestError
 		if errors.As(requestErr, &ipcRequestErr) && ipcRequestErr.Delivery == desktopipc.DeliveryUncertain {
@@ -953,6 +1083,7 @@ func (o *desktopIPCGatewayOverlay) routeServerRequestResponse(
 	o.mu.Lock()
 	delete(o.pendingActions, key)
 	delete(o.uncertainActions, key)
+	delete(o.pendingActionLocal, key)
 	o.mu.Unlock()
 	// Responses to server requests are fire-and-forget on the App Server wire.
 	return true, nil, nil
@@ -1017,7 +1148,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 		o.mu.Unlock()
 		if ok {
 			if state, changed := o.local.ResolveRequest(pending.threadID, rawGatewayID(frame.ID)); changed {
-				_ = o.bridge.PublishLocalConversation(pending.threadID, o.ownerID, state)
+				o.publishLocalConversation(pending.threadID, state)
 			}
 		}
 		return
@@ -1104,6 +1235,22 @@ func (o *desktopIPCGatewayOverlay) consumeInternalUpstreamResponse(messageType i
 	return false
 }
 
+func (o *desktopIPCGatewayOverlay) failPendingUpstream(err error) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	pending := o.pendingUpstream
+	o.pendingUpstream = make(map[string]chan desktopIPCUpstreamResult)
+	o.mu.Unlock()
+	for _, waiter := range pending {
+		select {
+		case waiter <- desktopIPCUpstreamResult{err: err}:
+		default:
+		}
+	}
+}
+
 // observeAcceptedUpstreamFrame mirrors only Gateway-policy-approved App Server
 // responses and lifecycle messages into Desktop state.
 func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) {
@@ -1136,6 +1283,12 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 		return
 	}
 	if frame.ID != nil {
+		if o.isHubTransport {
+			threadID := firstStringFromAnyMap(params, "threadId", "thread_id")
+			if !o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+				return
+			}
+		}
 		threadID, state, changed := o.local.RememberRequest(rawGatewayID(frame.ID), method, params)
 		if changed {
 			o.mu.Lock()
@@ -1143,9 +1296,19 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 				id: rawGatewayID(frame.ID), method: method, threadID: threadID, params: cloneAnyMap(params),
 			}
 			o.mu.Unlock()
-			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+			o.publishLocalConversation(threadID, state)
 		}
 		return
+	}
+	if o.isHubTransport {
+		threadID := firstStringFromAnyMap(params, "threadId", "thread_id")
+		if method == "thread/started" {
+			thread, _ := params["thread"].(map[string]any)
+			threadID = firstStringFromAnyMap(thread, "id", "threadId", "thread_id")
+		}
+		if !o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			return
+		}
 	}
 	threadID, state, changed := o.local.Apply(method, params)
 	if changed {
@@ -1154,8 +1317,8 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 			claimErr = o.claimOfflineLocalOwner(threadID)
 		}
 		if claimErr == nil {
-			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
-			if method == "thread/started" {
+			o.publishLocalConversation(threadID, state)
+			if method == "thread/started" && o.ownerHub == nil {
 				_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
 			}
 		}
@@ -1176,8 +1339,8 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 		return
 	}
 	if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
-		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
-		if method == "thread/start" || method == "thread/fork" {
+		o.publishLocalConversation(threadID, state)
+		if o.ownerHub == nil && (method == "thread/start" || method == "thread/fork") {
 			_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
 		}
 		return
@@ -1186,8 +1349,10 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 	// thread/start 和 thread/fork 的 Thread ID 则由当前 App Server 新生成。
 	if method == "thread/start" || method == "thread/fork" {
 		if o.claimNewLocalOwner(threadID) == nil {
-			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
-			_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+			o.publishLocalConversation(threadID, state)
+			if o.ownerHub == nil {
+				_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+			}
 		}
 	}
 }
@@ -1314,10 +1479,12 @@ func (o *desktopIPCGatewayOverlay) syncServerRequests(event desktopipc.ThreadEve
 			})
 			delete(o.pendingActions, key)
 			delete(o.uncertainActions, key)
+			delete(o.pendingActionLocal, key)
 		}
 	}
 	for key, request := range next {
 		if _, exists := o.pendingActions[key]; exists {
+			o.pendingActionLocal[key] = event.LocalOwner
 			if event.HistoryConfirmed && o.uncertainActions[key] && o.restorePolicyPendingAction(request) {
 				o.pendingActions[key] = request
 				delete(o.uncertainActions, key)
@@ -1328,6 +1495,7 @@ func (o *desktopIPCGatewayOverlay) syncServerRequests(event desktopipc.ThreadEve
 			continue
 		}
 		o.pendingActions[key] = request
+		o.pendingActionLocal[key] = event.LocalOwner
 		messages = append(messages, desktopipc.AppServerMessage{ID: request.ID, Method: request.Method, Params: request.Params})
 	}
 	return messages

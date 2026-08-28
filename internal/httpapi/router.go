@@ -50,6 +50,9 @@ type Router struct {
 	// desktopIPC is one process-wide private Desktop overlay. Every mobile
 	// gateway reuses this connection and its single-writer coordinator.
 	desktopIPC *desktopipc.Bridge
+	// desktopIPCLocalOwner keeps the Mimi App Server writer alive for the
+	// agentd process. Mobile Gateway disconnects only detach a frontend.
+	desktopIPCLocalOwner *desktopIPCLocalOwnerHub
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -219,6 +222,9 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		})
 	}
 	r.desktopIPC = desktopBridge
+	if cfg.Codex.DesktopSyncEnabled {
+		r.desktopIPCLocalOwner = newDesktopIPCLocalOwnerHub(r, desktopBridge)
+	}
 	r.desktopIPC.Start(context.Background())
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
@@ -300,6 +306,9 @@ func (r *Router) Shutdown() {
 	}
 	if r.autoThreadTitles != nil {
 		r.autoThreadTitles.Close()
+	}
+	if r.desktopIPCLocalOwner != nil {
+		r.desktopIPCLocalOwner.Close()
 	}
 	if r.desktopIPC != nil {
 		r.desktopIPC.Close()

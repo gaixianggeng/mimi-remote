@@ -146,6 +146,66 @@ func TestClientCancelsIncomingFollowerHandlerOnDisconnect(t *testing.T) {
 	_ = serverConn.Close()
 }
 
+func TestClientWriteDeadlineClosesConnectionAndInvalidatesGeneration(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	client := &Client{
+		opts:    ClientOptions{RequestTimeout: 20 * time.Millisecond},
+		pending: make(map[string]pendingResponse),
+	}
+	client.mu.Lock()
+	client.conn = clientConn
+	client.clientID = "mimi-client"
+	client.generation = 7
+	client.mu.Unlock()
+
+	startedAt := time.Now()
+	err := client.write(clientConn, []byte(`{"type":"broadcast"}`))
+	elapsed := time.Since(startedAt)
+	if err == nil {
+		t.Fatal("blocked write unexpectedly succeeded")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("blocked write exceeded its deadline: %s", elapsed)
+	}
+	if generation := client.ConnectionGeneration(); generation != 0 {
+		t.Fatalf("failed write kept the current generation: %d", generation)
+	}
+	if _, err := clientConn.Write([]byte("after-close")); err == nil {
+		t.Fatal("failed write did not close the connection")
+	}
+}
+
+func TestClientStaleWriteFailureDoesNotCloseNewGeneration(t *testing.T) {
+	oldConn, oldPeer := net.Pipe()
+	newConn, newPeer := net.Pipe()
+	t.Cleanup(func() {
+		_ = oldPeer.Close()
+		_ = newConn.Close()
+		_ = newPeer.Close()
+	})
+	client := &Client{pending: make(map[string]pendingResponse)}
+	client.mu.Lock()
+	client.conn = newConn
+	client.clientID = "new-client"
+	client.generation = 8
+	client.mu.Unlock()
+
+	client.disconnectConn(oldConn, errors.New("stale write failed"))
+	if generation := client.ConnectionGeneration(); generation != 8 {
+		t.Fatalf("stale write failure invalidated the new generation: %d", generation)
+	}
+	client.mu.RLock()
+	current := client.conn
+	client.mu.RUnlock()
+	if current != newConn {
+		t.Fatal("stale write failure replaced or closed the new connection")
+	}
+	if _, err := oldConn.Write([]byte("closed")); err == nil {
+		t.Fatal("stale connection was not closed")
+	}
+}
+
 func TestClientFindsOwnerWithOfficialDiscoveryMethod(t *testing.T) {
 	fake := &fakeDesktopIPC{}
 	fake.respond = func(conn net.Conn, request envelope) {

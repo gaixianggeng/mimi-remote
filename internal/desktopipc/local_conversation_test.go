@@ -46,6 +46,34 @@ func TestLocalConversationProjectsLifecycleReasoningAndApproval(t *testing.T) {
 	}
 }
 
+func TestLocalConversationDropsRequestsFromDeadTransport(t *testing.T) {
+	conversation := NewLocalConversation()
+	conversation.SeedThread(map[string]any{"id": "thread-local", "turns": []any{}})
+	conversation.RememberRequest("old-approval", "item/commandExecution/requestApproval", map[string]any{
+		"threadId": "thread-local", "itemId": "command-1",
+	})
+	conversation.RememberTurnStart("thread-local", map[string]any{
+		"input": []any{map[string]any{"type": "text", "text": "stale prompt"}},
+	})
+	state, changed := conversation.DropTransportPending("thread-local")
+	if !changed || len(anySlice(state["requests"])) != 0 {
+		t.Fatalf("dead transport approval was retained: %#v", state)
+	}
+	_, state, _ = conversation.Apply("turn/started", map[string]any{
+		"threadId": "thread-local", "turn": map[string]any{"id": "turn-after-reconnect"},
+	})
+	turn := anySlice(state["turns"])[0].(map[string]any)
+	if input := anySlice(turn["params"].(map[string]any)["input"]); len(input) != 0 {
+		t.Fatalf("dead transport prompt was attached to a later turn: %#v", input)
+	}
+	_, state, changed = conversation.RememberRequest("new-approval", "item/commandExecution/requestApproval", map[string]any{
+		"threadId": "thread-local", "itemId": "command-1",
+	})
+	if !changed || len(anySlice(state["requests"])) != 1 {
+		t.Fatalf("replacement transport could not reissue approval: %#v", state)
+	}
+}
+
 func TestLocalConversationBuildsDesktopStateAndAdoptsHydratedPrompt(t *testing.T) {
 	conversation := NewLocalConversation()
 	_, state, err := conversation.SeedThread(map[string]any{

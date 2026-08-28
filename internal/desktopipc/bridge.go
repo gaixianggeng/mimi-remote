@@ -19,6 +19,7 @@ type ThreadEvent struct {
 	Requests         []ServerRequest
 	Stale            bool
 	HistoryConfirmed bool
+	LocalOwner       bool
 }
 
 type ServerRequest struct {
@@ -109,6 +110,14 @@ type localRequestInFlight struct {
 	ownerID              string
 	ownerEpoch           uint64
 	connectionGeneration uint64
+	recoveryEpoch        uint64
+}
+
+type localStartReservation struct {
+	token           uint64
+	ownerEpoch      uint64
+	baselineTurnIDs map[string]struct{}
+	expectedTurnID  string
 }
 
 type desktopHistoryCheckpoint struct {
@@ -154,7 +163,10 @@ type Bridge struct {
 	desktopUncertaintyEpoch map[string]uint64
 	incomingOps             map[string]*sync.Mutex
 	localInFlight           map[string]localRequestInFlight
+	localStarts             map[string]localStartReservation
+	nextLocalStart          uint64
 	localUncertain          map[string]bool
+	localRecoveryEpoch      map[string]uint64
 	desktopUncertain        map[string]bool
 	localClaimPermits       map[string]localOwnerClaimPermit
 	nextLocalClaimPermit    uint64
@@ -186,7 +198,9 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 		desktopUncertaintyEpoch: make(map[string]uint64),
 		incomingOps:             make(map[string]*sync.Mutex),
 		localInFlight:           make(map[string]localRequestInFlight),
+		localStarts:             make(map[string]localStartReservation),
 		localUncertain:          make(map[string]bool),
+		localRecoveryEpoch:      make(map[string]uint64),
 		desktopUncertain:        make(map[string]bool),
 		localClaimPermits:       make(map[string]localOwnerClaimPermit),
 		localFollowActivations:  make(map[string]localFollowActivation),
@@ -456,20 +470,121 @@ func (b *Bridge) RequestLocalOwner(ctx context.Context, threadID, method string,
 		threadID: threadID, ownerID: owner.ownerID, ownerEpoch: b.ownerEpochs[threadID],
 		connectionGeneration: b.connectionGeneration, followerClientID: owner.followerClientID,
 	}
+	recoveryEpoch := b.localRecoveryEpoch[threadID]
+	startToken := uint64(0)
+	if method == "thread-follower-start-turn" {
+		var reserveErr error
+		startToken, reserveErr = b.reserveLocalStartLocked(threadID)
+		if reserveErr != nil {
+			b.mu.Unlock()
+			return nil, reserveErr
+		}
+	}
 	b.mu.Unlock()
 	result, err := owner.handle(context.WithValue(ctx, localOwnerLeaseContextKey{}, lease), method, payload)
 	b.mu.Lock()
+	if startToken != 0 {
+		err = b.finishLocalStartLocked(threadID, startToken, result, err)
+	}
+	if method == "thread-follower-load-complete-history" && err == nil {
+		b.reconcileLocalStartLocked(threadID, true)
+	}
 	leaseStillCurrent := b.localOwnerLeaseStillCurrentLocked(lease)
 	current := b.owners[threadID]
 	ownerStillCurrent := current.kind == threadOwnerMimi && current.ownerID == lease.ownerID &&
 		b.ownerEpochs[threadID] == lease.ownerEpoch
 	if desktopFollowerMethodMutates(method) && ownerStillCurrent && (err != nil || !leaseStillCurrent) {
 		b.localUncertain[threadID] = true
-	} else if leaseStillCurrent && err == nil && method == "thread-follower-load-complete-history" {
+	} else if leaseStillCurrent && err == nil && method == "thread-follower-load-complete-history" &&
+		recoveryEpoch == b.localRecoveryEpoch[threadID] {
 		delete(b.localUncertain, threadID)
 	}
 	b.mu.Unlock()
 	return result, err
+}
+
+func (b *Bridge) reserveLocalStartLocked(threadID string) (uint64, error) {
+	if _, pending := b.localStarts[threadID]; pending {
+		return 0, ErrDesktopStartInFlight
+	}
+	stream := b.localStreams[threadID]
+	if activeTurnID, active := RealActiveTurnID(stream.state); active && activeTurnID != "" {
+		return 0, ErrDesktopStartInFlight
+	}
+	b.nextLocalStart++
+	token := b.nextLocalStart
+	b.localStarts[threadID] = localStartReservation{
+		token: token, ownerEpoch: b.ownerEpochs[threadID],
+		baselineTurnIDs: conversationStateTurnIDs(stream.state),
+	}
+	return token, nil
+}
+
+func (b *Bridge) finishLocalStartLocked(threadID string, token uint64, result any, requestErr error) error {
+	reservation, ok := b.localStarts[threadID]
+	if !ok || reservation.token != token {
+		return requestErr
+	}
+	if requestErr != nil {
+		// App Server writes are not replay-safe. Keep the reservation until a
+		// complete-history recovery proves whether a Turn was committed.
+		return requestErr
+	}
+	turnID := localStartTurnID(result)
+	if turnID == "" {
+		// Older/fake App Server responses may omit the Turn ID. Delivery still
+		// succeeded, so keep the reservation until a notification or full-history
+		// recovery identifies the committed Turn.
+		return nil
+	}
+	reservation.expectedTurnID = turnID
+	b.localStarts[threadID] = reservation
+	b.reconcileLocalStartLocked(threadID, false)
+	return nil
+}
+
+func localStartTurnID(result any) string {
+	object, _ := result.(map[string]any)
+	if nested, ok := object["result"].(map[string]any); ok {
+		object = nested
+	}
+	turn, _ := object["turn"].(map[string]any)
+	return firstString(turn, "id", "turnId", "turn_id")
+}
+
+func (b *Bridge) reconcileLocalStartLocked(threadID string, completeHistory bool) {
+	reservation, ok := b.localStarts[threadID]
+	if !ok || reservation.ownerEpoch != b.ownerEpochs[threadID] {
+		delete(b.localStarts, threadID)
+		return
+	}
+	stream := b.localStreams[threadID]
+	if reservation.expectedTurnID != "" {
+		if conversationStateTurnIsTerminal(stream.state, reservation.expectedTurnID) {
+			delete(b.localStarts, threadID)
+		}
+		return
+	}
+	if !completeHistory {
+		return
+	}
+	newTurnIDs := make([]string, 0, 1)
+	for turnID := range conversationStateTurnIDs(stream.state) {
+		if _, existed := reservation.baselineTurnIDs[turnID]; !existed {
+			newTurnIDs = append(newTurnIDs, turnID)
+		}
+	}
+	if len(newTurnIDs) == 0 {
+		delete(b.localStarts, threadID)
+		return
+	}
+	if len(newTurnIDs) == 1 {
+		reservation.expectedTurnID = newTurnIDs[0]
+		b.localStarts[threadID] = reservation
+		if conversationStateTurnIsTerminal(stream.state, reservation.expectedTurnID) {
+			delete(b.localStarts, threadID)
+		}
+	}
 }
 
 func (b *Bridge) WaitDesktopProjection(ctx context.Context, threadID string) (Projection, bool) {
@@ -1077,7 +1192,8 @@ func (b *Bridge) ReleaseLocalOwner(threadID, ownerID string) {
 	current := b.owners[threadID]
 	if current.kind == threadOwnerMimi && current.ownerID == strings.TrimSpace(ownerID) {
 		_, responsePending := b.localInFlight[threadID]
-		uncertain := b.localUncertain[threadID] || responsePending
+		_, startPending := b.localStarts[threadID]
+		uncertain := b.localUncertain[threadID] || responsePending || startPending
 		b.clearOwnerLocked(threadID)
 		delete(b.localStreams, threadID)
 		delete(b.localFollowActivations, threadID)
@@ -1104,6 +1220,7 @@ func (b *Bridge) setOwnerLocked(threadID string, owner threadOwner) {
 func (b *Bridge) clearOwnerLocked(threadID string) {
 	b.ownerEpochs[threadID]++
 	delete(b.owners, threadID)
+	delete(b.localStarts, threadID)
 	delete(b.localClaimPermits, threadID)
 	delete(b.localFollowActivations, threadID)
 	if b.latestLocalFollowIntent.threadID == threadID {
@@ -1112,12 +1229,21 @@ func (b *Bridge) clearOwnerLocked(threadID string) {
 }
 
 func (b *Bridge) PublishLocalConversation(threadID, ownerID string, state map[string]any) error {
-	_, err := b.publishLocalConversation(threadID, ownerID, state, false)
+	_, err := b.publishLocalConversation(threadID, ownerID, state, false, false)
 	return err
 }
 
 func (b *Bridge) ForcePublishLocalConversation(threadID, ownerID string, state map[string]any) (int64, error) {
-	return b.publishLocalConversation(threadID, ownerID, state, true)
+	return b.publishLocalConversation(threadID, ownerID, state, true, false)
+}
+
+func (b *Bridge) PublishLocalConversationAndNotify(threadID, ownerID string, state map[string]any) error {
+	_, err := b.publishLocalConversation(threadID, ownerID, state, false, true)
+	return err
+}
+
+func (b *Bridge) ForcePublishLocalConversationAndNotify(threadID, ownerID string, state map[string]any) (int64, error) {
+	return b.publishLocalConversation(threadID, ownerID, state, true, true)
 }
 
 // ForceRepublishLocalConversation reads the latest state while holding the
@@ -1128,10 +1254,16 @@ func (b *Bridge) ForceRepublishLocalConversation(threadID, ownerID string) (int6
 	publisher := b.publisherForThread(threadID)
 	publisher.Lock()
 	defer publisher.Unlock()
-	return b.publishClonedLocalConversation(threadID, ownerID, nil, true, true)
+	return b.publishClonedLocalConversation(threadID, ownerID, nil, true, true, false)
 }
 
-func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[string]any, forceSnapshot bool) (int64, error) {
+func (b *Bridge) publishLocalConversation(
+	threadID string,
+	ownerID string,
+	state map[string]any,
+	forceSnapshot bool,
+	notifySubscribers bool,
+) (int64, error) {
 	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
 	next, err := cloneObject(state)
 	if err != nil {
@@ -1140,7 +1272,7 @@ func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[st
 	publisher := b.publisherForThread(threadID)
 	publisher.Lock()
 	defer publisher.Unlock()
-	return b.publishClonedLocalConversation(threadID, ownerID, next, forceSnapshot, false)
+	return b.publishClonedLocalConversation(threadID, ownerID, next, forceSnapshot, false, notifySubscribers)
 }
 
 // publishClonedLocalConversation runs with the per-Thread publisher lock held.
@@ -1150,6 +1282,7 @@ func (b *Bridge) publishClonedLocalConversation(
 	next map[string]any,
 	forceSnapshot bool,
 	readCurrent bool,
+	notifySubscribers bool,
 ) (int64, error) {
 	b.mu.Lock()
 	owner := b.owners[threadID]
@@ -1160,6 +1293,12 @@ func (b *Bridge) publishClonedLocalConversation(
 		return 0, fmt.Errorf("Mimi owner lease does not match this thread")
 	}
 	current, hasBaseline := b.localStreams[threadID]
+	var previous *Projection
+	if notifySubscribers && current.state != nil {
+		if projected, projectErr := ProjectConversationState(threadID, current.state, time.Now()); projectErr == nil {
+			previous = &projected
+		}
+	}
 	if readCurrent {
 		if current.state == nil {
 			b.mu.Unlock()
@@ -1194,7 +1333,26 @@ func (b *Bridge) publishClonedLocalConversation(
 		current = localStream{revision: current.revision + 1, state: next, broadcasted: true}
 	}
 	b.localStreams[threadID] = current
+	b.reconcileLocalStartLocked(threadID, false)
+	var subscribers []chan ThreadEvent
+	var localEvent *ThreadEvent
+	if notifySubscribers {
+		if projection, projectErr := ProjectConversationState(threadID, next, time.Now()); projectErr == nil {
+			event := ThreadEvent{
+				ThreadID: threadID, Projection: projection, Previous: previous,
+				Requests: ProjectPendingServerRequests(threadID, next), LocalOwner: true,
+				HistoryConfirmed: forceSnapshot,
+			}
+			subscribers = b.subscribersLocked()
+			localEvent = &event
+		}
+	}
 	b.mu.Unlock()
+	if localEvent != nil {
+		// Mobile projections are local process state. Deliver them before the
+		// private Desktop socket write so a stalled Desktop cannot freeze iOS.
+		b.publishThreadEvent(subscribers, *localEvent)
+	}
 	err := b.client.BroadcastGeneration("thread-stream-state-changed", map[string]any{
 		"conversationId":  threadID,
 		"hostId":          "local",
@@ -1304,7 +1462,7 @@ func (b *Bridge) handleReady(connectionGeneration uint64) {
 		// recovery. One stale Desktop Thread can otherwise delay this route by
 		// the full recovery timeout.
 		if activate {
-			b.launchLocalFollowActivation(intent.threadID, activation)
+			<-b.launchLocalFollowActivation(intent.threadID, activation)
 		}
 		for threadID, pending := range states {
 			_ = b.client.BroadcastGeneration("thread-stream-following-status-requested", map[string]any{
@@ -1634,15 +1792,27 @@ func (b *Bridge) handleIncoming(ctx context.Context, request IncomingRequest) (a
 		connectionGeneration: request.ConnectionGeneration, followerClientID: request.SourceClientID,
 	}
 	mutates := desktopFollowerMethodMutates(request.Method)
-	recoversHistory := request.Method == "thread-follower-load-complete-history" && b.localUncertain[threadID]
+	recoversHistory := request.Method == "thread-follower-load-complete-history"
 	if mutates || recoversHistory {
 		if _, pending := b.localInFlight[threadID]; pending {
 			b.mu.Unlock()
 			return nil, fmt.Errorf("Mimi owner response is awaiting IPC delivery")
 		}
+	}
+	startToken := uint64(0)
+	if request.Method == "thread-follower-start-turn" {
+		var reserveErr error
+		startToken, reserveErr = b.reserveLocalStartLocked(threadID)
+		if reserveErr != nil {
+			b.mu.Unlock()
+			return nil, reserveErr
+		}
+	}
+	if mutates || recoversHistory {
 		b.localInFlight[threadID] = localRequestInFlight{
 			requestID: rawMessageKey(request.RequestID), ownerID: owner.ownerID,
 			ownerEpoch: b.ownerEpochs[threadID], connectionGeneration: request.ConnectionGeneration,
+			recoveryEpoch: b.localRecoveryEpoch[threadID],
 		}
 	}
 	b.mu.Unlock()
@@ -1651,6 +1821,12 @@ func (b *Bridge) handleIncoming(ctx context.Context, request IncomingRequest) (a
 	}
 	result, err := owner.handle(context.WithValue(ctx, localOwnerLeaseContextKey{}, lease), request.Method, request.Params)
 	b.mu.Lock()
+	if startToken != 0 {
+		err = b.finishLocalStartLocked(threadID, startToken, result, err)
+	}
+	if recoversHistory && err == nil {
+		b.reconcileLocalStartLocked(threadID, true)
+	}
 	leaseStillCurrent := b.localOwnerLeaseStillCurrentLocked(lease)
 	current := b.owners[threadID]
 	ownerStillCurrent := current.kind == threadOwnerMimi && current.ownerID == lease.ownerID &&
@@ -1693,7 +1869,7 @@ func (b *Bridge) handleIncomingResponse(request IncomingRequest, writeErr error)
 	ownerStillCurrent := owner.kind == threadOwnerMimi && owner.ownerID == inFlight.ownerID &&
 		b.ownerEpochs[threadID] == inFlight.ownerEpoch
 	if recoversHistory && ownerStillCurrent {
-		if writeErr == nil {
+		if writeErr == nil && inFlight.recoveryEpoch == b.localRecoveryEpoch[threadID] {
 			delete(b.localUncertain, threadID)
 		} else {
 			b.localUncertain[threadID] = true

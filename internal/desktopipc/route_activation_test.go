@@ -3,8 +3,10 @@ package desktopipc
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,6 +115,106 @@ func TestActivateLocalThreadBindsDesktopFollowerAndForcesSnapshot(t *testing.T) 
 	bridge.mu.RUnlock()
 	if followerID != "desktop-renderer" {
 		t.Fatalf("Desktop follower was not bound: %q", followerID)
+	}
+}
+
+func TestActivateLocalThreadDoesNotWaitForBlockedStatusBroadcast(t *testing.T) {
+	var peerMu sync.Mutex
+	var peer net.Conn
+	activationCalled := make(chan struct{}, 1)
+	dial := func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		peerMu.Lock()
+		peer = server
+		peerMu.Unlock()
+		go func() {
+			payload, err := ReadFrame(server)
+			if err != nil {
+				return
+			}
+			var request envelope
+			if json.Unmarshal(payload, &request) != nil || request.Method != "initialize" {
+				return
+			}
+			writeTestEnvelope(server, map[string]any{
+				"type": "response", "requestId": json.RawMessage(request.RequestID),
+				"resultType": "success", "result": map[string]any{"clientId": "desktop-test-client"},
+			})
+			// 保持 peer 打开但不读取，让第一次状态广播阻塞到 Client.write
+			// 的 deadline 到期。
+		}()
+		return client, nil
+	}
+	bridge, err := NewBridge(BridgeOptions{
+		Enabled: true, SocketPath: "test", DesktopVersion: SupportedVersion, DesktopBuild: SupportedBuild,
+		ActivateDesktopThread: func(context.Context, string, string) error {
+			activationCalled <- struct{}{}
+			return nil
+		},
+		ClientOptions: ClientOptions{
+			DialContext: dial, VerifySocket: func(string) error { return nil }, VerifyPeer: supportedTestPeer,
+			RequestTimeout: 250 * time.Millisecond, ReconnectDelay: time.Hour,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	bridge.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		bridge.Close()
+		peerMu.Lock()
+		server := peer
+		peerMu.Unlock()
+		if server != nil {
+			_ = server.Close()
+		}
+	})
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readyCancel()
+	if err := bridge.client.WaitReady(readyCtx); err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "thread-blocked-status-broadcast"
+	if err := bridge.ClaimNewLocalOwner(threadID, "gateway-1", func(context.Context, string, json.RawMessage) (any, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	activationDone := make(chan error, 1)
+	startedAt := time.Now()
+	go func() {
+		activationDone <- bridge.ActivateLocalThread(threadID, "gateway-1")
+	}()
+	select {
+	case err := <-activationDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+			t.Fatalf("activation waited for the blocked status broadcast: %s", elapsed)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("activation was blocked by the status broadcast")
+	}
+	select {
+	case <-activationCalled:
+		t.Fatal("Desktop route started before the ordered status broadcast finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	deadline := time.Now().Add(time.Second)
+	for bridge.client.ConnectionGeneration() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if generation := bridge.client.ConnectionGeneration(); generation != 0 {
+		t.Fatalf("background status broadcast did not hit its write deadline: generation=%d", generation)
+	}
+	select {
+	case <-activationCalled:
+		t.Fatal("Desktop route ran after the ordered status broadcast invalidated the connection")
+	default:
 	}
 }
 
