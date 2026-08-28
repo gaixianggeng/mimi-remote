@@ -332,6 +332,28 @@ func TestDesktopIPCOverlayOnlyExplicitNoClientAllowsFallback(t *testing.T) {
 	}
 }
 
+func TestDesktopIPCCurrentMimiOwnerStartsTurnDirectlyThroughItsAppServer(t *testing.T) {
+	fake := &gatewayFakeDesktopIPC{}
+	bridge := newReadyGatewayBridge(t, fake, time.Second)
+	overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+	overlay.seedFromGatewayResult("", "thread/start", json.RawMessage(`{
+		"thread":{"id":"thread-new","cwd":"/tmp","turns":[]}
+	}`))
+	if !bridge.LocalOwnerIs("thread-new", overlay.ownerID) {
+		t.Fatal("new App Server thread was not assigned to the creating gateway")
+	}
+
+	handled, response, policyErr := overlay.routeClientFrame(context.Background(), []byte(`{
+		"id":10,"method":"turn/start","params":{"threadId":"thread-new","input":[]}
+	}`))
+	if handled || len(response) != 0 || policyErr != nil {
+		t.Fatalf("current writer must forward directly to its App Server: handled=%v response=%s err=%+v", handled, response, policyErr)
+	}
+	if fake.methodCount(desktopIPCLocalForwardMethod) != 0 {
+		t.Fatal("current writer turn looped through the local-owner follower route")
+	}
+}
+
 func TestDesktopIPCOverlayKeepsUnknownOwnershipReadOnlyWhileConnecting(t *testing.T) {
 	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
 		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: desktopipc.SupportedBuild,

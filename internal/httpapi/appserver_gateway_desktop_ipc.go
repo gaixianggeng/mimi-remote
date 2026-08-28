@@ -166,6 +166,11 @@ func (o *desktopIPCGatewayOverlay) routeClientFrame(ctx context.Context, payload
 		return true, nil, desktopIPCOwnerUnknownError(frame.ID, nil)
 	}
 	if o.bridge.HasLocalOwner(threadID) {
+		// 当前 Gateway 就是唯一 writer 时，请求必须继续直达它自己的 App Server。
+		// 只有其他 Gateway 才需要通过 follower handler 转交给 owner。
+		if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
+			return false, nil, nil
+		}
 		return o.routeLocalOwner(ctx, frame.ID, method, threadID, params)
 	}
 	projection, desktopOwned := o.bridge.DesktopProjection(threadID)
