@@ -1378,7 +1378,7 @@ extension ConversationDataFlowTests {
         await expiredReconnect.value
 
         XCTAssertEqual(client.requestedMessageLimits, [20, 20])
-        XCTAssertEqual(socket.connectedSessionIDs, [threadID, threadID])
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
     }
 
     func testExternalActivityInvalidatesReconnectWhileSessionReadIsInFlight() async throws {

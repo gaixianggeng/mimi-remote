@@ -8,6 +8,8 @@ import (
 	"log"
 	"net"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,9 +93,19 @@ func (f *gatewayFakeDesktopIPC) methodCount(method string) int {
 }
 
 func newReadyGatewayBridge(t *testing.T, fake *gatewayFakeDesktopIPC, requestTimeout time.Duration) *desktopipc.Bridge {
+	return newReadyGatewayBridgeWithActivator(t, fake, requestTimeout, nil)
+}
+
+func newReadyGatewayBridgeWithActivator(
+	t *testing.T,
+	fake *gatewayFakeDesktopIPC,
+	requestTimeout time.Duration,
+	activator desktopipc.DesktopThreadActivator,
+) *desktopipc.Bridge {
 	t.Helper()
 	bridge, err := desktopipc.NewBridge(desktopipc.BridgeOptions{
 		Enabled: true, SocketPath: "test", DesktopVersion: desktopipc.SupportedVersion, DesktopBuild: desktopipc.SupportedBuild,
+		ActivateDesktopThread: activator,
 		ClientOptions: desktopipc.ClientOptions{
 			DialContext: fake.dial, VerifySocket: func(string) error { return nil }, VerifyPeer: func(net.Conn) (desktopipc.DesktopInfo, error) {
 				return desktopipc.DesktopInfo{Version: desktopipc.SupportedVersion, Build: desktopipc.SupportedBuild}, nil
@@ -352,6 +364,88 @@ func TestDesktopIPCCurrentMimiOwnerStartsTurnDirectlyThroughItsAppServer(t *test
 	if fake.methodCount(desktopIPCLocalForwardMethod) != 0 {
 		t.Fatal("current writer turn looped through the local-owner follower route")
 	}
+}
+
+func TestDesktopIPCMimiOwnerLifecycleActivatesRunningDesktopRoute(t *testing.T) {
+	newOverlay := func(t *testing.T, activated chan<- string) (*desktopIPCGatewayOverlay, string) {
+		t.Helper()
+		fake := &gatewayFakeDesktopIPC{}
+		bridge := newReadyGatewayBridgeWithActivator(t, fake, time.Second, func(_ context.Context, threadID, _ string) error {
+			select {
+			case activated <- threadID:
+			default:
+			}
+			return nil
+		})
+		overlay := newDesktopIPCGatewayOverlay(bridge, &appServerGatewayPolicy{}, nil, nil)
+		rolloutPath := filepath.Join(t.TempDir(), "rollout.jsonl")
+		if err := os.WriteFile(rolloutPath, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return overlay, rolloutPath
+	}
+	assertActivated := func(t *testing.T, activated <-chan string, want string) {
+		t.Helper()
+		select {
+		case got := <-activated:
+			if got != want {
+				t.Fatalf("activated Thread %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Desktop route for %q was not activated", want)
+		}
+	}
+
+	t.Run("new thread materialized", func(t *testing.T) {
+		activated := make(chan string, 1)
+		overlay, rolloutPath := newOverlay(t, activated)
+		result, _ := json.Marshal(map[string]any{"thread": map[string]any{
+			"id": "thread-new-route", "cwd": "/tmp", "path": rolloutPath, "turns": []any{},
+		}})
+		overlay.seedFromGatewayResult("", "thread/start", result)
+		assertActivated(t, activated, "thread-new-route")
+	})
+
+	t.Run("existing Mimi owner starts turn", func(t *testing.T) {
+		activated := make(chan string, 1)
+		overlay, rolloutPath := newOverlay(t, activated)
+		if err := overlay.claimNewLocalOwner("thread-existing-route"); err != nil {
+			t.Fatal(err)
+		}
+		_, state, err := overlay.local.SeedThread(map[string]any{
+			"id": "thread-existing-route", "cwd": "/tmp", "path": rolloutPath, "turns": []any{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := overlay.bridge.PublishLocalConversation("thread-existing-route", overlay.ownerID, state); err != nil {
+			t.Fatal(err)
+		}
+		overlay.observeClientForward([]byte(`{
+			"id":12,"method":"turn/start","params":{"threadId":"thread-existing-route","input":[]}
+		}`))
+		assertActivated(t, activated, "thread-existing-route")
+	})
+
+	t.Run("fork claims and activates the new thread", func(t *testing.T) {
+		activated := make(chan string, 1)
+		overlay, rolloutPath := newOverlay(t, activated)
+		if err := overlay.claimNewLocalOwner("thread-fork-source"); err != nil {
+			t.Fatal(err)
+		}
+		overlay.observeClientForward([]byte(`{
+			"id":13,"method":"thread/fork","params":{"threadId":"thread-fork-source"}
+		}`))
+		result, _ := json.Marshal(map[string]any{"thread": map[string]any{
+			"id": "thread-fork-route", "cwd": "/tmp", "path": rolloutPath, "turns": []any{},
+		}})
+		response, _ := json.Marshal(map[string]any{"id": 13, "result": json.RawMessage(result)})
+		overlay.observeAcceptedUpstreamFrame(response)
+		assertActivated(t, activated, "thread-fork-route")
+		if !overlay.bridge.LocalOwnerIs("thread-fork-route", overlay.ownerID) {
+			t.Fatal("fork result did not claim the new Mimi owner")
+		}
+	})
 }
 
 func TestDesktopIPCOverlayKeepsUnknownOwnershipReadOnlyWhileConnecting(t *testing.T) {

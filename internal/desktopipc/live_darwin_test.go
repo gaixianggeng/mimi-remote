@@ -83,6 +83,68 @@ func TestLiveDesktopIPCReportsNoOwnerExplicitly(t *testing.T) {
 	client.Close()
 }
 
+// This opt-in probe asks the running Desktop renderer whether it mounted the
+// exact Thread route. It is read-only and does not claim ownership or publish
+// conversation state.
+func TestLiveDesktopIPCReportsFollowingForThread(t *testing.T) {
+	if os.Getenv("MIMI_DESKTOP_IPC_LIVE") != "1" {
+		t.Skip("set MIMI_DESKTOP_IPC_LIVE=1 to verify the installed Desktop build")
+	}
+	threadID := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))
+	if threadID == "" {
+		t.Skip("CODEX_THREAD_ID is unavailable")
+	}
+	info, err := InspectDesktop("/Applications/ChatGPT.app/Contents/Resources/codex", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	following := make(chan bool, 1)
+	client, err := NewClient(ClientOptions{
+		Enabled: true, SocketPath: info.Socket,
+		DesktopVersion: info.Version, DesktopBuild: info.Build,
+		RequestTimeout: 15 * time.Second,
+		OnBroadcast: func(broadcast Broadcast) {
+			if broadcast.Method != "thread-stream-following-changed" {
+				return
+			}
+			var params struct {
+				ConversationID string `json:"conversationId"`
+				Following      bool   `json:"following"`
+			}
+			if json.Unmarshal(broadcast.Params, &params) != nil || params.ConversationID != threadID {
+				return
+			}
+			select {
+			case following <- params.Following:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client.Start(ctx)
+	defer client.Close()
+	if err := client.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Broadcast("thread-stream-following-status-requested", map[string]any{
+		"hostId": "local", "conversationId": threadID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case mounted := <-following:
+		if !mounted {
+			t.Fatal("Desktop renderer reported following=false for the requested Thread")
+		}
+	case <-ctx.Done():
+		t.Fatal("Desktop renderer did not report following state for the requested Thread")
+	}
+}
+
 func TestLiveDesktopIPCFollowsCurrentDesktopThread(t *testing.T) {
 	if os.Getenv("MIMI_DESKTOP_IPC_LIVE") != "1" {
 		t.Skip("set MIMI_DESKTOP_IPC_LIVE=1 to verify the installed Desktop build")

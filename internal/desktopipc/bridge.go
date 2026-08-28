@@ -37,6 +37,7 @@ type BridgeOptions struct {
 	LegacyCleanupRequired bool
 	InitialState          State
 	ClientOptions         ClientOptions
+	ActivateDesktopThread DesktopThreadActivator
 }
 
 type threadOwnerKind uint8
@@ -52,12 +53,30 @@ type threadOwner struct {
 	handle               LocalOwnerHandler
 	connectionGeneration uint64
 	followerClientID     string
+	confirmedFollowerID  string
 }
 
 type localStream struct {
 	revision    int64
 	state       map[string]any
 	broadcasted bool
+}
+
+type localFollowActivation struct {
+	token                  uint64
+	intentToken            uint64
+	ownerID                string
+	ownerEpoch             uint64
+	connectionGeneration   uint64
+	waitForMaterialization bool
+}
+
+type localFollowIntent struct {
+	token                  uint64
+	threadID               string
+	ownerID                string
+	ownerEpoch             uint64
+	waitForMaterialization bool
 }
 
 var ErrDesktopStartInFlight = errors.New("Desktop start is already pending or uncertain")
@@ -111,6 +130,11 @@ type Bridge struct {
 	client *Client
 	store  *ThreadStore
 
+	activationCtx         context.Context
+	activationCancel      context.CancelFunc
+	activateDesktopThread DesktopThreadActivator
+	localFollowRouteMu    sync.Mutex
+
 	mu                      sync.RWMutex
 	eventsMu                sync.Mutex
 	projections             map[string]Projection
@@ -135,10 +159,18 @@ type Bridge struct {
 	localClaimPermits       map[string]localOwnerClaimPermit
 	nextLocalClaimPermit    uint64
 	connectionGeneration    uint64
+	localFollowActivations  map[string]localFollowActivation
+	nextLocalFollowToken    uint64
+	latestLocalFollowIntent localFollowIntent
+	nextLocalFollowIntent   uint64
 }
 
 func NewBridge(options BridgeOptions) (*Bridge, error) {
+	activationCtx, activationCancel := context.WithCancel(context.Background())
 	bridge := &Bridge{
+		activationCtx:           activationCtx,
+		activationCancel:        activationCancel,
+		activateDesktopThread:   options.ActivateDesktopThread,
 		store:                   NewThreadStore(),
 		projections:             make(map[string]Projection),
 		owners:                  make(map[string]threadOwner),
@@ -157,6 +189,7 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 		localUncertain:          make(map[string]bool),
 		desktopUncertain:        make(map[string]bool),
 		localClaimPermits:       make(map[string]localOwnerClaimPermit),
+		localFollowActivations:  make(map[string]localFollowActivation),
 	}
 	clientOptions := options.ClientOptions
 	clientOptions.Enabled = options.Enabled && !options.LegacyCleanupRequired && options.InitialState == ""
@@ -207,7 +240,8 @@ func NewSystemBridge(enabled bool, legacyCleanupRequired bool, codexBin string, 
 	return NewBridge(BridgeOptions{
 		Enabled: enabled, SocketPath: info.Socket,
 		DesktopVersion: info.Version, DesktopBuild: info.Build,
-		InitialState: initialState,
+		InitialState:          initialState,
+		ActivateDesktopThread: activateDesktopThreadRoute,
 		ClientOptions: ClientOptions{
 			Preflight: func() (State, error) {
 				running, err := desktopRunning()
@@ -224,8 +258,11 @@ func NewSystemBridge(enabled bool, legacyCleanupRequired bool, codexBin string, 
 }
 
 func (b *Bridge) Start(ctx context.Context) { b.client.Start(ctx) }
-func (b *Bridge) Close()                    { b.client.Close() }
-func (b *Bridge) Status() Status            { return b.client.Status() }
+func (b *Bridge) Close() {
+	b.activationCancel()
+	b.client.Close()
+}
+func (b *Bridge) Status() Status { return b.client.Status() }
 
 func (b *Bridge) Subscribe() (<-chan ThreadEvent, func()) {
 	b.mu.Lock()
@@ -1043,6 +1080,7 @@ func (b *Bridge) ReleaseLocalOwner(threadID, ownerID string) {
 		uncertain := b.localUncertain[threadID] || responsePending
 		b.clearOwnerLocked(threadID)
 		delete(b.localStreams, threadID)
+		delete(b.localFollowActivations, threadID)
 		delete(b.localInFlight, threadID)
 		if uncertain {
 			b.localUncertain[threadID] = true
@@ -1057,12 +1095,20 @@ func (b *Bridge) setOwnerLocked(threadID string, owner threadOwner) {
 	b.ownerEpochs[threadID]++
 	b.owners[threadID] = owner
 	delete(b.localClaimPermits, threadID)
+	delete(b.localFollowActivations, threadID)
+	if b.latestLocalFollowIntent.threadID == threadID {
+		b.latestLocalFollowIntent = localFollowIntent{}
+	}
 }
 
 func (b *Bridge) clearOwnerLocked(threadID string) {
 	b.ownerEpochs[threadID]++
 	delete(b.owners, threadID)
 	delete(b.localClaimPermits, threadID)
+	delete(b.localFollowActivations, threadID)
+	if b.latestLocalFollowIntent.threadID == threadID {
+		b.latestLocalFollowIntent = localFollowIntent{}
+	}
 }
 
 func (b *Bridge) PublishLocalConversation(threadID, ownerID string, state map[string]any) error {
@@ -1074,6 +1120,17 @@ func (b *Bridge) ForcePublishLocalConversation(threadID, ownerID string, state m
 	return b.publishLocalConversation(threadID, ownerID, state, true)
 }
 
+// ForceRepublishLocalConversation reads the latest state while holding the
+// per-Thread publisher lock. A following confirmation therefore cannot publish
+// an older snapshot after a newer App Server event.
+func (b *Bridge) ForceRepublishLocalConversation(threadID, ownerID string) (int64, error) {
+	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
+	publisher := b.publisherForThread(threadID)
+	publisher.Lock()
+	defer publisher.Unlock()
+	return b.publishClonedLocalConversation(threadID, ownerID, nil, true, true)
+}
+
 func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[string]any, forceSnapshot bool) (int64, error) {
 	threadID, ownerID = strings.TrimSpace(threadID), strings.TrimSpace(ownerID)
 	next, err := cloneObject(state)
@@ -1083,6 +1140,17 @@ func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[st
 	publisher := b.publisherForThread(threadID)
 	publisher.Lock()
 	defer publisher.Unlock()
+	return b.publishClonedLocalConversation(threadID, ownerID, next, forceSnapshot, false)
+}
+
+// publishClonedLocalConversation runs with the per-Thread publisher lock held.
+func (b *Bridge) publishClonedLocalConversation(
+	threadID string,
+	ownerID string,
+	next map[string]any,
+	forceSnapshot bool,
+	readCurrent bool,
+) (int64, error) {
 	b.mu.Lock()
 	owner := b.owners[threadID]
 	ownerEpoch := b.ownerEpochs[threadID]
@@ -1092,14 +1160,26 @@ func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[st
 		return 0, fmt.Errorf("Mimi owner lease does not match this thread")
 	}
 	current, hasBaseline := b.localStreams[threadID]
-	hasBaseline = hasBaseline && current.broadcasted
-	if forceSnapshot {
-		hasBaseline = false
-		delete(b.localStreams, threadID)
+	if readCurrent {
+		if current.state == nil {
+			b.mu.Unlock()
+			return 0, fmt.Errorf("Mimi owner state is unavailable")
+		}
+		var err error
+		next, err = cloneObject(current.state)
+		if err != nil {
+			b.mu.Unlock()
+			return 0, err
+		}
 	}
+	hasBaseline = hasBaseline && current.broadcasted
 	change := map[string]any{}
-	if !hasBaseline {
-		current = localStream{revision: 1, state: next, broadcasted: true}
+	if forceSnapshot || !hasBaseline {
+		nextRevision := current.revision + 1
+		if nextRevision <= 0 {
+			nextRevision = 1
+		}
+		current = localStream{revision: nextRevision, state: next, broadcasted: true}
 		change = map[string]any{"type": "snapshot", "revision": current.revision, "conversationState": next}
 	} else {
 		patches := diffTopLevelState(current.state, next)
@@ -1115,7 +1195,7 @@ func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[st
 	}
 	b.localStreams[threadID] = current
 	b.mu.Unlock()
-	err = b.client.BroadcastGeneration("thread-stream-state-changed", map[string]any{
+	err := b.client.BroadcastGeneration("thread-stream-state-changed", map[string]any{
 		"conversationId":  threadID,
 		"hostId":          "local",
 		"mimiOwnerSource": "agentd-desktop-ipc",
@@ -1127,7 +1207,7 @@ func (b *Bridge) publishLocalConversation(threadID, ownerID string, state map[st
 		b.mu.Lock()
 		currentOwner := b.owners[threadID]
 		if currentOwner.kind == threadOwnerMimi && currentOwner.ownerID == owner.ownerID && b.ownerEpochs[threadID] == ownerEpoch {
-			b.localStreams[threadID] = localStream{state: next}
+			b.localStreams[threadID] = localStream{revision: current.revision, state: next}
 		}
 		b.mu.Unlock()
 		return 0, err
@@ -1181,35 +1261,56 @@ func diffTopLevelState(previous, next map[string]any) []ConversationPatch {
 func (b *Bridge) handleReady(connectionGeneration uint64) {
 	type localRepublish struct {
 		ownerID string
-		state   map[string]any
 	}
 	b.mu.Lock()
 	b.connectionGeneration = connectionGeneration
 	b.localClaimPermits = make(map[string]localOwnerClaimPermit)
+	b.localFollowActivations = make(map[string]localFollowActivation)
 	states := make(map[string]localRepublish, len(b.localStreams))
 	for threadID, stream := range b.localStreams {
 		owner := b.owners[threadID]
 		if owner.kind != threadOwnerMimi || owner.ownerID == "" {
 			continue
 		}
-		state, _ := cloneObject(stream.state)
-		states[threadID] = localRepublish{ownerID: owner.ownerID, state: state}
-		b.localStreams[threadID] = localStream{state: state}
+		states[threadID] = localRepublish{ownerID: owner.ownerID}
+		// A new Desktop connection has no delivery baseline. Keep the latest
+		// state, then force-republish it under the per-Thread publisher lock.
+		b.localStreams[threadID] = localStream{revision: stream.revision, state: stream.state}
 	}
 	threads := make([]string, 0, len(b.refollow))
 	for threadID := range b.refollow {
 		threads = append(threads, threadID)
 	}
+	intent := b.latestLocalFollowIntent
+	intentOwner := b.owners[intent.threadID]
+	if intent.threadID == "" || intentOwner.kind != threadOwnerMimi ||
+		intentOwner.ownerID != intent.ownerID || b.ownerEpochs[intent.threadID] != intent.ownerEpoch {
+		intent = localFollowIntent{}
+		b.latestLocalFollowIntent = localFollowIntent{}
+	}
 	for threadID, owner := range b.owners {
 		if owner.kind == threadOwnerMimi && owner.followerClientID != "" {
 			owner.followerClientID = ""
+		}
+		if owner.kind == threadOwnerMimi {
+			owner.confirmedFollowerID = ""
 			b.owners[threadID] = owner
 		}
 	}
+	activation, activate := b.startLocalFollowActivationLocked(intent, connectionGeneration)
 	b.mu.Unlock()
 	go func() {
+		// Restore the foreground Mimi route before slow Desktop-owned history
+		// recovery. One stale Desktop Thread can otherwise delay this route by
+		// the full recovery timeout.
+		if activate {
+			b.launchLocalFollowActivation(intent.threadID, activation)
+		}
 		for threadID, pending := range states {
-			_ = b.PublishLocalConversation(threadID, pending.ownerID, pending.state)
+			_ = b.client.BroadcastGeneration("thread-stream-following-status-requested", map[string]any{
+				"hostId": "local", "conversationId": threadID,
+			}, connectionGeneration)
+			_, _ = b.ForceRepublishLocalConversation(threadID, pending.ownerID)
 		}
 		for _, threadID := range threads {
 			b.restoreDesktopFollow(threadID, connectionGeneration)
@@ -1225,6 +1326,7 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 	}
 	b.connectionGeneration = 0
 	b.localClaimPermits = make(map[string]localOwnerClaimPermit)
+	b.localFollowActivations = make(map[string]localFollowActivation)
 	b.resyncing = make(map[string]uint64)
 	type staleProjection struct {
 		threadID string
@@ -1249,6 +1351,7 @@ func (b *Bridge) handleDisconnect(connectionGeneration uint64) {
 				delete(b.localInFlight, threadID)
 			}
 			owner.followerClientID = ""
+			owner.confirmedFollowerID = ""
 			b.owners[threadID] = owner
 		}
 	}
@@ -1298,7 +1401,15 @@ func (b *Bridge) restoreDesktopFollow(threadID string, connectionGeneration uint
 }
 
 func (b *Bridge) handleBroadcast(broadcast Broadcast) {
-	if broadcast.Method != "thread-stream-state-changed" {
+	switch broadcast.Method {
+	case "thread-stream-following-changed":
+		b.handleFollowingChanged(broadcast)
+		return
+	case "client-status-changed":
+		b.handleClientStatusChanged(broadcast)
+		return
+	case "thread-stream-state-changed":
+	default:
 		return
 	}
 	if expected, ok := MethodVersion(broadcast.Method); !ok || broadcast.Version != expected {

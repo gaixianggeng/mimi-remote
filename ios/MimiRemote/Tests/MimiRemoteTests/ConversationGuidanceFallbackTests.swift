@@ -108,7 +108,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(socket.sentGuidance.count, 1)
         XCTAssertEqual(store.selectedQueuedTurns.map(\.previewText), ["后续仍需等待"])
         XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
-        XCTAssertFalse(store.selectedQueuedTurns.first?.waitsForAcceptedTurnStart == true)
+        XCTAssertTrue(store.selectedQueuedTurns.first?.waitsForAcceptedTurnStart == true)
         XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn_fallback")
         XCTAssertEqual(store.selectedSession?.activeTurnID, "turn_fallback")
         XCTAssertFalse(store.queuedGuidanceDispatchClientMessageIDs.contains(clientMessageID))

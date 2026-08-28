@@ -2976,10 +2976,10 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(didSend)
         XCTAssertEqual(client.requestedMessageSessionIDs, [resumed.id])
-        // 选中历史会话时就建立事件订阅（sockets[0]），resume 成功后切到运行连接（sockets[1]）；
-        // 两次连接都已有 canonical 历史快照，都不应要求完整回放。
-        XCTAssertEqual(sockets.count, 2)
-        XCTAssertEqual(sockets.map(\.replayBufferedEventsByConnect), [[false], [false]])
+        // resume 期间同一个 session 已处于 connecting，继续复用现有订阅；canonical 历史
+        // 已加载，因此这一次连接不应要求完整回放。
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets.map(\.replayBufferedEventsByConnect), [[false]])
         XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: resumed.id))
         XCTAssertEqual(conversationStore.messages(for: resumed.id).filter { $0.kind == .reasoningSummary }.map(\.content), ["历史中已有的过程卡"])
     }

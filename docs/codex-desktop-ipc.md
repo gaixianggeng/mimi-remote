@@ -58,6 +58,19 @@ Desktop 断开后，agentd 先失效旧 owner 和投影。下一次进程检查�
 - IPC timeout、断线、协议错误或 owner 不明确时不本地重跑 Turn；返回可重试且交付状态不确定的错误，或保持只读。
 - revision 缺口、patch 失败或断线后会重新请求完整历史，不猜测中间状态。
 
+Mimi-owned Thread 使用以下方式挂载 Desktop follower：
+
+1. 新 Thread 收到 `thread/started`，或已有 Thread 从 Mimi 发起下一次 `turn/start` 时，agentd 先确认 Desktop IPC 已经 `ready`。
+2. 新 Thread 最多等待 5 秒，直到 App Server 的 rollout 文件可读。超时后仍可使用已知 Thread ID 尝试挂载。
+3. agentd 先广播 `thread-stream-following-status-requested`，再打开带唯一 `mimi-follow` 查询参数的 `codex://threads/<thread-id>` 路由。
+4. Desktop 返回 `thread-stream-following-changed(following=true)` 后，agentd 绑定该 follower，并立即发送 revision 连续的完整 snapshot。之后才发送 patch。
+5. 每次等待确认 1500 毫秒，最多尝试 3 次。重复生命周期事件复用同一次激活；`following=false` 或 follower 断开后，下一次符合条件的操作可重新激活。
+
+路由激活前会按 `com.openai.codex` bundle 精确确认 Desktop 已经运行，因此正常关闭状态不会主动冷启动 Desktop。macOS 的进程检查和 LaunchServices 路由分发不是一个原子操作；如果 Desktop 恰好在两者之间退出，系统仍可能重新拉起它。这是平台竞态，必须在真机验收中单独观察。激活失败只影响 Desktop follower 的挂载，不会切换 writer、取消或重放已经交给独立 App Server 的请求。
+Desktop 关闭或 IPC 正在连接时，agentd 只保留最近一次有效的 Mimi 路由意图。Desktop 首次连接或重新连接后只恢复该路由，避免多个 gateway 或旧重试争抢 Desktop 前台。
+
+agentd 使用 `desktop_ipc_route_requested`、`desktop_ipc_route_deferred`、`desktop_ipc_route_opened`、`desktop_ipc_route_following_confirmed`、`desktop_ipc_route_confirmation_timeout` 和 `desktop_ipc_route_exhausted` 记录路由阶段。每条日志只包含 Thread 短哈希、尝试次数、稳定原因和耗时，不包含原始 Thread ID、路由、IPC client ID 或会话内容。
+
 状态接口中的 `desktop_sync.state` 只使用以下值：
 
 `disabled`、`not_installed`、`desktop_not_running`、`connecting`、`ready`、`unsupported_build`、`socket_unavailable`、`protocol_error`、`legacy_cleanup_required`。

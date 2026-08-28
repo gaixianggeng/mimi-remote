@@ -1030,7 +1030,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 	if frame.ID == nil {
 		return
 	}
-	if strings.TrimSpace(frame.Method) == "thread/start" {
+	if strings.TrimSpace(frame.Method) == "thread/start" || strings.TrimSpace(frame.Method) == "thread/fork" {
 		o.mu.Lock()
 		o.forwardedClient[gatewayRequestIDKey(frame.ID)] = desktopIPCForwardedClientRequest{method: frame.Method}
 		o.mu.Unlock()
@@ -1061,6 +1061,7 @@ func (o *desktopIPCGatewayOverlay) observeClientForward(payload []byte) {
 			method: frame.Method, threadID: threadID, pendingTurnStart: pendingTurnStart,
 		}
 		o.mu.Unlock()
+		_ = o.bridge.ActivateLocalThread(threadID, o.ownerID)
 		return
 	}
 	o.mu.Lock()
@@ -1154,6 +1155,9 @@ func (o *desktopIPCGatewayOverlay) observeAcceptedUpstreamFrame(payload []byte) 
 		}
 		if claimErr == nil {
 			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+			if method == "thread/started" {
+				_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+			}
 		}
 	}
 }
@@ -1173,6 +1177,9 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 	}
 	if o.bridge.LocalOwnerIs(threadID, o.ownerID) {
 		_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+		if method == "thread/start" || method == "thread/fork" {
+			_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
+		}
 		return
 	}
 	// 只读 read/resume 只能填充本地缓存，不能建立 writer ownership。
@@ -1180,6 +1187,7 @@ func (o *desktopIPCGatewayOverlay) seedFromGatewayResult(
 	if method == "thread/start" || method == "thread/fork" {
 		if o.claimNewLocalOwner(threadID) == nil {
 			_ = o.bridge.PublishLocalConversation(threadID, o.ownerID, state)
+			_ = o.bridge.ActivateNewLocalThread(threadID, o.ownerID)
 		}
 	}
 }

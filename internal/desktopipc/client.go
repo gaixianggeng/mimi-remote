@@ -39,10 +39,11 @@ func SafeToFallback(err error) bool {
 }
 
 type Broadcast struct {
-	Method         string
-	Version        int
-	SourceClientID string
-	Params         json.RawMessage
+	Method               string
+	Version              int
+	SourceClientID       string
+	ConnectionGeneration uint64
+	Params               json.RawMessage
 }
 
 type IncomingRequest struct {
@@ -188,6 +189,12 @@ func (c *Client) ConnectionGeneration() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.generation
+}
+
+func (c *Client) ClientID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.clientID
 }
 
 func (c *Client) WaitReady(ctx context.Context) error {
@@ -545,7 +552,9 @@ func (c *Client) dispatch(conn net.Conn, incoming envelope) {
 		if c.opts.OnBroadcast != nil {
 			c.opts.OnBroadcast(Broadcast{
 				Method: incoming.Method, Version: incoming.Version,
-				SourceClientID: incoming.SourceClientID, Params: incoming.Params,
+				SourceClientID:       incoming.SourceClientID,
+				ConnectionGeneration: c.connectionGenerationFor(conn),
+				Params:               incoming.Params,
 			})
 		}
 	case "client-discovery-request":

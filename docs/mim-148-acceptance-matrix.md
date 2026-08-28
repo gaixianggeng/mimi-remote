@@ -14,7 +14,7 @@
 | Desktop → Mimi 历史 | Desktop 新建 Thread 并完成一轮；Mimi 打开同一 Thread | Mimi 加载完整历史，包含消息、Reasoning、工具项和完成状态 |
 | Desktop → Mimi 写入 | Mimi 对 Desktop-owned Thread 续问、Steer、中断 | 操作只进入 Desktop；无重复 Turn，状态实时回到 Mimi；中断后 Turn 进入 `interrupted` 且不产生最终回复 |
 | Desktop → Mimi 交互 | Desktop-owned Turn 触发审批、补充输入或 MCP elicitation | 卡片只出现一次；响应回到 Desktop；取消和超时状态明确 |
-| Mimi → Desktop | Mimi 新建并运行 Thread；Desktop 打开同一 Thread | Desktop 收到 `conversationState` 投影并可继续；Mimi 仍是唯一 writer |
+| Mimi → Desktop | 保持 Desktop 已运行；Mimi 新建并运行 Thread | agentd 等待 rollout materialization，自动挂载 Desktop follower；Desktop 收到完整 `conversationState` 后实时更新并可继续；Mimi 仍是唯一 writer |
 | Browser 宿主 | Desktop-owned Turn 从 Mimi 触发 Browser | Browser 仍由 Desktop 原生工具宿主执行，Mimi 不启动替代进程 |
 
 ## 恢复和竞争
@@ -24,8 +24,10 @@
 | 反复切换 | 两端反复打开同一 Thread 并交替发送 | writer 始终明确；无 `already has an active writer`、重复审批或重复 Turn |
 | 移动端断线 | Turn 运行中断开并恢复 iOS WebSocket | 恢复后加载完整快照或从明确 revision 继续，不重放 `turn/start` |
 | agentd 重启 | Turn 运行中重启 agentd | Desktop-owned 状态不被猜测；连接恢复后重新请求完整历史 |
-| Desktop 重启 | Desktop 退出并重新打开 | socket 断开期间保持只读；重新握手、build gate 和完整快照通过后恢复 |
+| Desktop 重启 | Desktop 退出；从 Mimi 操作多个 Mimi-owned Thread；再重新打开 Desktop | 独立 App Server 持续读写；重新握手和 build gate 通过后，只挂载最近一次有效的 Mimi 路由并发送完整快照 |
 | Desktop 保持关闭 | 退出 Desktop，等待状态变为 `desktop_not_running`，再从 Mimi 新建并继续 Thread | IPC overlay 不参与请求；独立 App Server 正常读写，不需要重启 agentd |
+| Desktop 退出竞态 | 路由激活开始后立即退出 Desktop | Mimi App Server 继续执行且不重放请求；记录 Desktop 是否被 LaunchServices 再次拉起，不能把该平台竞态归为“关闭时绝不冷启动” |
+| Desktop follower 重新挂载 | Mimi-owned Thread 收到 `following=false` 或 Desktop follower 断开；随后从 Mimi 发起下一轮 | 下一次符合条件的生命周期重新使用唯一 deep link 激活；首个事件为完整 snapshot，revision 不回退 |
 | 长历史 | 使用大量消息、Reasoning、工具项和附件的 Thread | 首个完整快照可加载，patch 缺口自动回完整历史，内容不截断为错误状态 |
 
 ## 阻断路径
