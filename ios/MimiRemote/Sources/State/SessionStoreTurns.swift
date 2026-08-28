@@ -404,8 +404,6 @@ extension SessionStore {
         if let previousSession, supportsCodexThreadManagement(previousSession) {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
     }
@@ -578,8 +576,6 @@ extension SessionStore {
            supportsCodexThreadManagement(previousSession) {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
         if let previousSession,
@@ -622,8 +618,8 @@ extension SessionStore {
         } else {
             // 非运行会话有两种可能：真历史，或被瞬时 idle 误读降级的运行会话。
             // 已有缓存时先展示缓存、后台补一次最新页；失败和 savings notice 仍保持静默，
-            // 同时仍恢复页面连接。共享模式会用 thread/resume 纠正误判；独立模式只读
-            // 持久化历史，直到首次发送才取得 writer。两种模式都不要求手动刷新历史。
+            // 同时仍恢复页面连接。这里保持持久化历史只读；直到首次发送才由 gateway
+            // 按当前 owner 取得 writer，不要求手动刷新历史。
             let didRefreshHistory: Bool
             let hasUnreconciledForegroundActivity: Bool
             switch foregroundActivityBySessionID[session.id] {
@@ -707,8 +703,8 @@ extension SessionStore {
         permissionSelection: ComposerPermissionSelectionSnapshot? = nil
     ) async -> Bool {
         if let session = selectedSession,
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return false
         }
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -817,8 +813,8 @@ extension SessionStore {
             return false
         }
         if let session = selectedSession,
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            setErrorMessage(L10n.text("ui.mac_observe_only"))
+           isProtocolReadOnlySession(session) {
+            setErrorMessage(L10n.text("ui.read_only"))
             return false
         }
         if let notice = selectedQuotaNotice, notice.blocksSending {
@@ -1329,15 +1325,6 @@ extension SessionStore {
         let reconnectSessionID = connectedSessionID
             ?? (webSocketReconnectTask == nil ? nil : selectedSessionID)
             ?? networkSuspendedSessionID
-        // 退到后台前先把当前实际持有前台连接的 Codex thread 交给 agentd。
-        // active turn 不需要在这里等待：服务端会返回 scheduled，并在 turn idle 后释放 writer。
-        // 有本地排队 turn 时沿用切会话的 guard，避免后台释放后丢失仍待发送的队列上下文。
-        if let handoffSessionID = connectedSessionID ?? selectedSessionID,
-           let handoffSession = sessionsByID[handoffSessionID],
-           supportsCodexThreadManagement(handoffSession),
-           queuedRunningTurnsBySessionID[handoffSessionID]?.isEmpty != false {
-            releaseThreadWriterWhenIdleInBackground(handoffSessionID)
-        }
         if let reconnectSessionID, sessionsByID[reconnectSessionID] != nil {
             if isNetworkUnavailable {
                 networkSuspendedSessionID = reconnectSessionID
@@ -1484,8 +1471,8 @@ extension SessionStore {
         tokenBudget: Int64?
     ) async -> Bool {
         if let session = sessionsByID[threadID],
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return false
         }
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1544,8 +1531,8 @@ extension SessionStore {
             return
         }
         if let session = sessionsByID[sessionID],
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return
         }
         isUpdatingThreadGoal = true

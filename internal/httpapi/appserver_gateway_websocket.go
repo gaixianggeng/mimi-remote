@@ -12,22 +12,20 @@ import (
 func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan string, 4)
+	done := make(chan string, 5)
 	var clientWriteMu sync.Mutex
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
 	policy := &appServerGatewayPolicy{
-		router:                 r,
-		runtimeID:              "codex",
-		pendingThreads:         map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests:  map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests:  map[string]appServerGatewayPendingServerRequest{},
-		pendingHistory:         map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:         map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:         map[string]appServerGatewayAllowedThread{},
-		threadWriterCandidates: map[string]struct{}{},
-		pendingThreadWriters:   map[string]appServerGatewayPendingThreadWriter{},
+		router:                r,
+		runtimeID:             "codex",
+		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
 	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
@@ -45,7 +43,6 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	go func() {
 		done <- pingGatewayConnection(ctx, upstream, &upstreamWriteMu, "upstream_ping_write")
 	}()
-
 	reason := <-done
 	cancel()
 	_ = client.Close()
@@ -106,9 +103,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 		}
 		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
 		writeStart := time.Now()
-		if err := policy.forwardClientFrameToUpstream(forwardPayload, func() error {
-			return writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload)
-		}); err != nil {
+		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {
 			monitor.cancelRPCRequest(requestID)
 			return gatewayCloseReason("upstream_write", err)
 		}

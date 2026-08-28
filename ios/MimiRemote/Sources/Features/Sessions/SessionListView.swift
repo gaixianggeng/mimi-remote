@@ -777,7 +777,6 @@ struct SessionListView: View {
                     isArchived: sessionStore.isSessionArchived(session.id),
                     reminder: sessionStore.sessionReminder(for: session.id),
                     isObserving: sessionStore.isSessionObserving(session),
-                    isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),

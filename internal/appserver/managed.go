@@ -347,11 +347,10 @@ func (p *ManagedWebSocketProcess) captureStderr(stderr io.Reader) {
 }
 
 func buildManagedEnv(extra map[string]string) []string {
-	// Desktop 的 transport 选择只属于 Electron 进程。若 Mac App 通过 launchctl
-	// 为未来 Desktop 设置了这些键，不能继续透传给 agentd 启动的 Codex 子进程；
-	// 这样既避免未来 CLI 解释同名开关形成递归，也不会把 Desktop 外部 WS URL 扩散。
+	// 受管 App Server 必须保持独立。旧实验版本可能在 launchd 会话中留下
+	// Desktop transport 环境；无论它来自继承环境还是 codex.env，都不能透传。
 	filtered := map[string]struct{}{
-		LocalDaemonEnvironmentKey:                   {},
+		"CODEX_APP_SERVER_USE_LOCAL_DAEMON":         {},
 		"CODEX_APP_SERVER_WS_URL":                   {},
 		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": {},
 	}

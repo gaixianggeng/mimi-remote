@@ -356,7 +356,6 @@ func assertInitializeEnablesExperimentalAPI(
     // 初始化时必须声明 experimentalApi，否则计划模式会被真实服务端拒绝或降级。
     XCTAssertEqual(capabilities?["experimentalApi"]?.boolValue, true, file: file, line: line)
     XCTAssertEqual(capabilities?["requestAttestation"]?.boolValue, false, file: file, line: line)
-    XCTAssertEqual(capabilities?["mimiThreadHandoff"]?.boolValue, true, file: file, line: line)
 }
 
 func waitForFakeAppServerResponse(
@@ -440,7 +439,6 @@ func waitForThreadSearchQueries(
 func makeDirectAppServerConfig(
     project: AgentProject,
     gatewayAvailable: Bool = true,
-    transport: String = "ws",
     allowedMethods: [String]? = nil,
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
@@ -449,7 +447,7 @@ func makeDirectAppServerConfig(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: transport,
+            transport: "ws",
             managed: true,
             gatewayAvailable: gatewayAvailable,
         upstreamConfigured: gatewayAvailable,
@@ -490,9 +488,15 @@ func appServerThreadListResult(_ rows: [String], nextCursor: String?) -> String 
     return #"{"data":[\#(rows.joined(separator: ","))]\#(encodedCursor)}"#
 }
 
-func appServerThreadJSON(id: String, cwd: String, source: String, updatedAt: Int) -> String {
+func appServerThreadJSON(
+    id: String,
+    cwd: String,
+    source: String,
+    updatedAt: Int,
+    statusType: String = "idle"
+) -> String {
     """
-    {"id":"\(id)","sessionId":"\(id)","preview":"\(id)","ephemeral":false,"modelProvider":"openai","createdAt":\(updatedAt - 10),"updatedAt":\(updatedAt),"status":{"type":"idle"},"path":null,"cwd":"\(cwd)","cliVersion":"0.0.0","source":"\(source)","threadSource":"user","name":"\(id)","turns":[]}
+    {"id":"\(id)","sessionId":"\(id)","preview":"\(id)","ephemeral":false,"modelProvider":"openai","createdAt":\(updatedAt - 10),"updatedAt":\(updatedAt),"status":{"type":"\(statusType)"},"path":null,"cwd":"\(cwd)","cliVersion":"0.0.0","source":"\(source)","threadSource":"user","name":"\(id)","turns":[]}
     """
 }
 

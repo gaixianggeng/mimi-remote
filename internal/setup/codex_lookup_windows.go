@@ -7,8 +7,6 @@ import (
 	"io"
 	"os/exec"
 	"time"
-
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 )
 
 // lookupUsableExecutable 只确认 Windows 候选路径可以真实启动。Claude 与
@@ -33,11 +31,5 @@ func lookupUsableExecutable(file string) (string, error) {
 // ACL denies CreateProcess to an ordinary desktop process. Probe candidates
 // before persisting them so the service never records an unusable path.
 func lookupUsableCodexExecutable(file string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	info, err := appserver.ValidateIndependentCodexRuntime(ctx, file)
-	if err != nil {
-		return "", err
-	}
-	return info.Path, nil
+	return lookupUsableExecutable(file)
 }

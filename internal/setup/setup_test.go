@@ -339,6 +339,33 @@ func TestRunKeepsExistingConfigWithoutForce(t *testing.T) {
 	}
 }
 
+func TestRunRejectsNonWebSocketAppServerListenBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	original := []byte("{\"existing\":true}\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Run(context.Background(), Options{
+		ConfigPath:      cfgPath,
+		ScanRoot:        t.TempDir(),
+		BrowseRoot:      t.TempDir(),
+		AppServerListen: "unix://",
+		Force:           true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "只支持 ws/wss") {
+		t.Fatalf("setup 必须在写入前拒绝 Unix transport：%v", err)
+	}
+	stored, readErr := os.ReadFile(cfgPath)
+	if readErr != nil || !bytes.Equal(stored, original) {
+		t.Fatalf("失败的 setup 不能覆盖现有配置：err=%v raw=%s", readErr, stored)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "app-server-ws-token")); !os.IsNotExist(statErr) {
+		t.Fatalf("失败的 setup 不能留下 upstream token：%v", statErr)
+	}
+}
+
 func TestRepairManagedWSTokenFileReplacesMissingConfiguredPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -418,6 +445,28 @@ func TestRepairManagedWSTokenFileFailureKeepsOldConfigAndCleansTemporaryFiles(t 
 		if entry.Name() != filepath.Base(cfgPath) {
 			t.Fatalf("失败后必须清理新 token 和配置临时文件，残留：%s", entry.Name())
 		}
+	}
+}
+
+func TestRepairManagedWSTokenFileRejectsLegacySharingWithoutCreatingToken(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	original := []byte(`{"app_server":{"transport":"ws","managed":true,"shared_fallback":{"transport":"ws"}}}`)
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := RepairManagedWSTokenFile(cfgPath)
+	if !errors.Is(err, config.ErrLegacyAppServerConfiguration) {
+		t.Fatalf("legacy sharing must fail closed: %v", err)
+	}
+	stored, readErr := os.ReadFile(cfgPath)
+	if readErr != nil || !bytes.Equal(stored, original) {
+		t.Fatalf("legacy config must stay byte-identical: err=%v raw=%s", readErr, stored)
+	}
+	entries, readDirErr := os.ReadDir(dir)
+	if readDirErr != nil || len(entries) != 1 {
+		t.Fatalf("legacy rejection must not create token artifacts: err=%v entries=%v", readDirErr, entries)
 	}
 }
 
@@ -505,8 +554,8 @@ func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
 
 func clearSetupEnv(t *testing.T) {
 	t.Helper()
-	// setup 的并发提交现在会取得用户级 shared-daemon 锁。每个测试使用独立
-	// HOME，既避免碰到开发机真实 LaunchAgent，也防止并行用例互相串锁。
+	// setup 的并发提交使用用户级配置锁。每个测试使用独立 HOME，避免并行
+	// 用例共享锁文件或碰到开发机配置。
 	t.Setenv("HOME", t.TempDir())
 	for _, key := range []string{
 		"AGENTD_CONFIG",

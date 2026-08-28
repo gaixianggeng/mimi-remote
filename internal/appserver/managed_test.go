@@ -196,15 +196,15 @@ func writeCodexThatExitsEarly(t *testing.T) string {
 	return falseBin
 }
 
-func TestBuildManagedEnvFiltersDesktopTransportAndOverlaysConfiguredValues(t *testing.T) {
-	t.Setenv(LocalDaemonEnvironmentKey, "1")
+func TestBuildManagedEnvFiltersLegacyDesktopTransportAndOverlaysConfiguredValues(t *testing.T) {
+	t.Setenv("CODEX_APP_SERVER_USE_LOCAL_DAEMON", "1")
 	t.Setenv("CODEX_APP_SERVER_WS_URL", "ws://desktop-only.invalid")
 	t.Setenv("MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH", "desktop-owner-token")
 	t.Setenv("MIMI_MANAGED_ENV_TEST", "inherited")
 	t.Setenv("CODEX_HOME", "/inherited/codex")
 
 	env := buildManagedEnv(map[string]string{
-		LocalDaemonEnvironmentKey:                   "1",
+		"CODEX_APP_SERVER_USE_LOCAL_DAEMON":         "1",
 		"CODEX_APP_SERVER_WS_URL":                   "ws://still-blocked.invalid",
 		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": "still-blocked-owner-token",
 		"MIMI_MANAGED_ENV_TEST":                     "configured",
@@ -220,14 +220,14 @@ func TestBuildManagedEnvFiltersDesktopTransportAndOverlaysConfiguredValues(t *te
 		values[key] = value
 		counts[key]++
 	}
-	if _, exists := values[LocalDaemonEnvironmentKey]; exists {
-		t.Fatal("Desktop local-daemon 开关不能泄漏到 agentd 管理的 Codex 子进程")
-	}
-	if _, exists := values["CODEX_APP_SERVER_WS_URL"]; exists {
-		t.Fatal("Desktop 外部 WS URL 不能泄漏到 agentd 管理的 Codex 子进程")
-	}
-	if _, exists := values["MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH"]; exists {
-		t.Fatal("Desktop 环境 ownership token 不能泄漏到 agentd 管理的 Codex 子进程")
+	for _, key := range []string{
+		"CODEX_APP_SERVER_USE_LOCAL_DAEMON",
+		"CODEX_APP_SERVER_WS_URL",
+		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH",
+	} {
+		if _, exists := values[key]; exists {
+			t.Fatalf("旧 Desktop transport 环境不能泄漏到受管 App Server：%s", key)
+		}
 	}
 	if values["MIMI_MANAGED_ENV_TEST"] != "configured" || counts["MIMI_MANAGED_ENV_TEST"] != 1 {
 		t.Fatalf("显式配置应唯一覆盖继承值：value=%q count=%d", values["MIMI_MANAGED_ENV_TEST"], counts["MIMI_MANAGED_ENV_TEST"])

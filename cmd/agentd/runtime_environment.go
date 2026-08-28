@@ -43,14 +43,17 @@ func ensureProcessUserEnvironment() error {
 
 // 历史 stdio/off 配置会兼容迁移为 managed WS。旧配置通常没有独立
 // ws_token_file；后台服务不能依赖用户先手工运行 doctor --fix，因此在正式
-// Load 前完成同一套原子修复。Unix daemon 不需要、也不会生成这个 token。
+// Load 前完成同一套原子修复。
 func ensureManagedWSTokenAvailable(configPath string) error {
 	cfg, err := config.LoadForDoctor(configPath)
 	if err != nil {
 		return err
 	}
-	if !cfg.AppServer.Managed || !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ws") {
-		return nil
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ws") {
+		return fmt.Errorf("app_server.transport 只支持 ws")
+	}
+	if !cfg.AppServer.Managed {
+		return fmt.Errorf("app_server.managed 必须为 true；agentd 只支持受管 App Server")
 	}
 	if _, _, err := agentsetup.RepairManagedWSTokenFile(configPath); err != nil {
 		return fmt.Errorf("准备 managed app-server token 失败：%w", err)

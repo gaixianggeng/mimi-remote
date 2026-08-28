@@ -209,7 +209,7 @@ func TestPlatformDefaultPathIgnoresAgentdConfig(t *testing.T) {
 	}
 }
 
-func TestIsPlatformDefaultPathResolvesEquivalentDirectorySymlink(t *testing.T) {
+func TestSameConfigPathResolvesEquivalentDirectorySymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	platformDefault := PlatformDefaultPath()
 	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
@@ -220,11 +220,11 @@ func TestIsPlatformDefaultPathResolvesEquivalentDirectorySymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !IsPlatformDefaultPath(filepath.Join(aliasRoot, filepath.Base(platformDefault))) {
-		t.Fatal("同一默认配置目录的 symlink 路径应视为平台默认配置")
+	if !SameConfigPath(filepath.Join(aliasRoot, filepath.Base(platformDefault)), platformDefault) {
+		t.Fatal("同一配置目录的 symlink 路径应取得同一把提交锁")
 	}
-	if IsPlatformDefaultPath(filepath.Join(t.TempDir(), "custom.json")) {
-		t.Fatal("自定义配置不能取得用户全局 shared-daemon owner")
+	if SameConfigPath(filepath.Join(t.TempDir(), "custom.json"), platformDefault) {
+		t.Fatal("不同配置文件不能共享提交锁身份")
 	}
 }
 
@@ -240,8 +240,8 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	caseVariant := filepath.Join(filepath.Dir(platformDefault), "Config.json")
 	_, variantErr := os.Stat(caseVariant)
 	if variantErr == nil {
-		if !IsPlatformDefaultPath(caseVariant) {
-			t.Fatal("大小写不敏感卷上的同一默认文件必须取得全局 owner 权限")
+		if !SameConfigPath(caseVariant, platformDefault) {
+			t.Fatal("大小写不敏感卷上的同一文件必须取得同一把提交锁")
 		}
 		left, err := ConfigPathIdentity(platformDefault)
 		if err != nil {
@@ -259,12 +259,12 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	if !os.IsNotExist(variantErr) {
 		t.Fatal(variantErr)
 	}
-	if IsPlatformDefaultPath(caseVariant) {
-		t.Fatal("大小写敏感卷上的不同文件不能共享 owner")
+	if SameConfigPath(caseVariant, platformDefault) {
+		t.Fatal("大小写敏感卷上的不同文件不能共享提交锁身份")
 	}
 }
 
-func TestIsPlatformDefaultPathRejectsDifferentHardLinkEntry(t *testing.T) {
+func TestSameConfigPathRejectsDifferentHardLinkEntry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	platformDefault := PlatformDefaultPath()
 	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
@@ -277,7 +277,7 @@ func TestIsPlatformDefaultPathRejectsDifferentHardLinkEntry(t *testing.T) {
 	if err := os.Link(platformDefault, hardLink); err != nil {
 		t.Fatal(err)
 	}
-	if IsPlatformDefaultPath(hardLink) {
-		t.Fatal("不同 hard-link 目录项不能取得平台默认配置的全局 owner 权限")
+	if SameConfigPath(hardLink, platformDefault) {
+		t.Fatal("不同 hard-link 目录项不能共享提交锁身份")
 	}
 }

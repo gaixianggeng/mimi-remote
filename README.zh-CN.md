@@ -144,7 +144,7 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
     Gateway["你的 Mac<br/>agentd 安全网关"]
-    Codex["Codex<br/>共享 daemon 或受管 app-server"]
+    Codex["Codex<br/>受管 App Server"]
     Claude["Claude Code<br/>实验 bridge"]
 
     Mobile <-->|"局域网或 Tailscale<br/>实时会话与审批"| Gateway
@@ -155,11 +155,11 @@ flowchart LR
 这个仓库包含完整链路：iPhone / iPad 原生 App、Mac 菜单栏宿主、Go `agentd` 网关，以及 Claude Code 兼容 bridge。移动端只连接你自己的 Mac，项目文件、会话历史和 Runtime 凭证都留在宿主机。
 
 - **直连、响应快：**通过私有网络上的 REST 与 WebSocket 实时传递输出、追问、任务控制和审批，不经过 Mimi 运营的应用层中转。
-- **真正的会话接力：**Codex 可选择与 Codex Desktop 共用官方 local daemon，让 Mac 上空闲的原会话无需 fork 就能在移动端继续；默认和回滚链路仍使用独立受管 app-server。
+- **单一稳定的 Codex 运行时：**`agentd` 只为 Mimi Remote 托管一个 loopback App Server。官方 Codex Desktop 保持自己的运行时，不通过私有 IPC 接管。
 - **双 Runtime、统一体验：**Codex 是主 Runtime；可选的 Claude Code bridge 把会话与审批适配到同一套结构化移动界面。
 - **边界小而明确：**`agentd` 在 Mac 上完成认证、工作区授权和 Runtime 路由。Mac 需要保持唤醒并能从私有网络访问。
 
-协议细节与准确能力边界见[项目现状](docs/project-status.md)、[Codex 共享 daemon](docs/codex-shared-daemon.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
+协议细节与准确能力边界见[项目现状](docs/project-status.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
 ## 开始前检查
 
@@ -228,7 +228,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
+`agentd up` 会生成用户私有配置和两层独立 Token，启动受管的 loopback App Server，等待它就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
 
 Homebrew / CLI 常用命令：
 

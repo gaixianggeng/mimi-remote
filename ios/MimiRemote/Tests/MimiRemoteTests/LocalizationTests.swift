@@ -99,8 +99,6 @@ final class LocalizationTests: XCTestCase {
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
             ("ui.experimental_features", "Experimental Features", "实验功能"),
-            ("ui.enable_on_mac", "Enable on Mac", "在 Mac 上开启"),
-            ("ui.how_to_enable_on_mac", "How to enable on Mac", "如何在 Mac 上开启"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
@@ -112,45 +110,14 @@ final class LocalizationTests: XCTestCase {
         }
     }
 
-    func testCodexDesktopExperimentGuideHasCompleteLocalizedSteps() {
-        let expectedEnglish = [
-            "Click the Mimi icon in the Mac menu bar.",
-            "Choose Experimental Features…",
-            "Turn on Share Codex Desktop sessions (experimental).",
-            "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm.",
-            "When the status says Environment configured, continue the same idle session once to verify sharing.",
-        ]
-        let expectedChinese = [
-            "在 Mac 菜单栏中点按 Mimi 图标。",
-            "选择“实验功能…”。",
-            "开启“共享 Codex Desktop 会话（实验）”。",
-            "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。",
-            "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。",
-        ]
-
-        XCTAssertEqual(CodexDesktopExperimentGuide.stepKeys.count, 5)
+    func testActiveWriterConflictExplainsRecoveryAction() {
         XCTAssertEqual(
-            CodexDesktopExperimentGuide.stepKeys.map {
-                L10n.text($0, language: .english)
-            },
-            expectedEnglish
+            L10n.text("ui.codex_active_writer_conflict", language: .english),
+            "This session is active in another Codex client. Finish or interrupt that turn there, then retry."
         )
         XCTAssertEqual(
-            CodexDesktopExperimentGuide.stepKeys.map {
-                L10n.text($0, language: .simplifiedChinese)
-            },
-            expectedChinese
-        )
-    }
-
-    func testActiveWriterConflictExplainsBothRecoveryActions() {
-        XCTAssertEqual(
-            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .english),
-            "This session is in use by Codex Desktop. Fully quit Codex Desktop, or enable sharing in Experimental Features on the Mac and follow the restart prompt. Closing only the session does not release it."
-        )
-        XCTAssertEqual(
-            L10n.text("ui.codex_active_writer_conflict_requires_shared_service", language: .simplifiedChinese),
-            "此会话被 Codex Desktop 占用。请完全退出 Codex Desktop，或在 Mac 的“实验功能”中开启共享并按提示重启。仅关闭会话页面不会释放占用。"
+            L10n.text("ui.codex_active_writer_conflict", language: .simplifiedChinese),
+            "此会话正在另一个 Codex 客户端中运行。请先在那里完成或中断当前回合，然后重试。"
         )
     }
 

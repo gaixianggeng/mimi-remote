@@ -3,7 +3,6 @@ package doctor
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,169 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
-
-func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *testing.T) {
-	limit := 8192
-	usage := 75.0
-	tests := []struct {
-		name      string
-		status    appserver.SharedDaemonDiagnostics
-		err       error
-		wantOK    bool
-		wantLevel string
-		wantText  string
-	}{
-		{
-			name: "healthy stable owner",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 100, OpenFileDescriptors: 80,
-				DirectChildProcesses: 2, EffectiveFDSoftLimit: &limit,
-				OwnerState:    appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateHealthy,
-			},
-			wantOK: true, wantText: "80/8192",
-		},
-		{
-			name: "degraded is warning",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 101, OpenFileDescriptors: 6144,
-				DirectChildProcesses: 9, EffectiveFDSoftLimit: &limit,
-				FDUsagePercent: &usage, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateDegraded,
-			},
-			wantLevel: "warning", wantText: "75.0%",
-		},
-		{
-			name: "critical blocks doctor",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 102, OpenFileDescriptors: 7800,
-				EffectiveFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateCritical,
-			},
-			wantLevel: "error", wantText: "接近耗尽",
-		},
-		{
-			name: "external owner stays informational",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 103, OpenFileDescriptors: 90,
-				OwnerState:    appserver.SharedDaemonOwnerStateExternal,
-				ResourceState: appserver.SharedDaemonResourceStateUnknown,
-			},
-			wantOK: true, wantText: "外部 owner",
-		},
-		{
-			name: "migration pending blocks doctor",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 104, OpenFileDescriptors: 200,
-				OwnerState: appserver.SharedDaemonOwnerStateMigrationPending,
-			},
-			wantLevel: "error", wantText: "尚未作用",
-		},
-		{
-			name: "stable unknown effective limit stays informational",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 106, OpenFileDescriptors: 7800,
-				OwnerTargetFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateUnknown,
-			},
-			wantOK: true, wantText: "当前进程未验证",
-		},
-		{
-			name: "claimed owner without lifecycle pid is warning",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 107, OpenFileDescriptors: 82,
-				OwnerState: appserver.SharedDaemonOwnerStateClaimedUnverified,
-			},
-			wantLevel: "warning", wantText: "未返回 listener PID",
-		},
-		{
-			name: "observation failure is warning",
-			err:  errors.New("dial unix /Users/secret/.codex/app-server.sock: permission denied"), wantLevel: "warning", wantText: "无法读取",
-		},
-	}
-
-	checker := &Checker{}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			check := sharedDaemonRuntimeDiagnosticCheck(testCase.status, testCase.err)
-			results := checker.results([]Check{check})
-			got := results.Checks[0]
-			if got.OK != testCase.wantOK || got.Level != testCase.wantLevel && testCase.wantLevel != "" {
-				t.Fatalf("诊断等级错误：%+v", got)
-			}
-			if !strings.Contains(got.Message, testCase.wantText) {
-				t.Fatalf("诊断文案缺少 %q：%+v", testCase.wantText, got)
-			}
-			if strings.Contains(got.Fix, "/Users/secret") {
-				t.Fatalf("Doctor 修复建议泄露了底层 socket 路径：%+v", got)
-			}
-			if testCase.wantLevel == "error" && results.OK {
-				t.Fatalf("阻断状态必须让 doctor 失败：%+v", results)
-			}
-			if testCase.wantLevel == "warning" && !results.OK {
-				t.Fatalf("warning 不应让 doctor 失败：%+v", results)
-			}
-		})
-	}
-}
-
-func TestSharedDaemonChecksTreatUnmanagedUnixFallbackAsExternal(t *testing.T) {
-	fallback := &config.AppServerFallbackConfig{Transport: "ws", Managed: true}
-	checker := &Checker{
-		cfg: config.Config{AppServer: config.AppServerConfig{
-			Transport:      "unix",
-			Managed:        false,
-			SharedFallback: fallback,
-		}},
-	}
-	if check := checker.sharedDaemonOwnerCheck(context.Background()); check.Name != "" {
-		t.Fatalf("外部 Unix listener 不应检查 Mimi LaunchAgent owner：%+v", check)
-	}
-
-	stableOwner := true
-	checker.sharedDaemonDiagnostics = func(
-		_ context.Context,
-		options appserver.LocalDaemonOptions,
-	) (appserver.SharedDaemonDiagnostics, error) {
-		stableOwner = options.StableOwner
-		return appserver.SharedDaemonDiagnostics{
-			Supported:  true,
-			OwnerState: appserver.SharedDaemonOwnerStateExternal,
-		}, nil
-	}
-	check := checker.sharedDaemonRuntimeCheck(context.Background())
-	if stableOwner {
-		t.Fatal("managed=false 时不能仅凭 shared_fallback 宣称 stable owner")
-	}
-	if !check.OK || !strings.Contains(check.Message, "外部 owner") {
-		t.Fatalf("外部 Unix listener 应保持只读信息诊断：%+v", check)
-	}
-}
-
-func TestSharedDaemonOwnerInspectionFailureDoesNotLeakRawError(t *testing.T) {
-	rawErr := errors.New("读取 /Users/secret/Library/LaunchAgents/com.example.codex.plist 失败：permission denied")
-	check := sharedDaemonOwnerInspectionFailureCheck(rawErr)
-
-	if check.OK || check.Name != "codex-daemon-owner" {
-		t.Fatalf("owner 检查失败应保留阻断检查语义：%+v", check)
-	}
-	for field, value := range map[string]string{
-		"message": check.Message,
-		"fix":     check.Fix,
-	} {
-		if strings.Contains(value, "/Users/secret") || strings.Contains(value, rawErr.Error()) {
-			t.Fatalf("owner 检查不应把底层错误写入 %s：%q", field, value)
-		}
-	}
-	if !strings.Contains(check.Fix, "共享 Codex daemon") || !strings.Contains(check.Fix, "权限") {
-		t.Fatalf("owner 检查失败应给出共享功能和权限方向的固定修复建议：%+v", check)
-	}
-}
 
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 	binDir := t.TempDir()
@@ -247,25 +87,6 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 	}
 }
 
-func TestManagedDaemonLifecycleFailureBlocksDoctor(t *testing.T) {
-	checker := &Checker{}
-	results := checker.results([]Check{{
-		Name:    "codex-daemon-lifecycle",
-		Message: "standalone 缺失",
-	}})
-	if results.OK || len(results.Checks) != 1 || results.Checks[0].Level != "error" {
-		t.Fatalf("managed Unix 冷启动条件缺失必须阻断 doctor：%+v", results)
-	}
-
-	external := checker.results([]Check{{
-		Name:    "codex-daemon-lifecycle-external",
-		Message: "外部 owner 生命周期不可验证",
-	}})
-	if !external.OK || len(external.Checks) != 1 || external.Checks[0].Level != "warning" {
-		t.Fatalf("external Unix 生命周期由部署方负责，应保留 warning：%+v", external)
-	}
-}
-
 func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:  "127.0.0.1:8787",
@@ -273,7 +94,7 @@ func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 		Runtime: config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{
 			Transport: "ws",
-			Managed:   false,
+			Managed:   true,
 			Listen:    "ws://127.0.0.1:4222",
 		},
 		Codex:  config.CodexConfig{Bin: filepath.Join(t.TempDir(), "missing-codex")},
@@ -296,38 +117,6 @@ func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 		if !hasCheck(results, required) {
 			t.Fatalf("readiness 缺少关键静态检查 %q：%+v", required, results.Checks)
 		}
-	}
-}
-
-func TestCheckerRunReadinessIncludesSharedDaemonReconcileWarning(t *testing.T) {
-	checker := newTestChecker(t, config.Config{
-		Listen:      "127.0.0.1:8787",
-		DevInsecure: true,
-		Runtime:     config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{
-			Transport: "ws",
-			Managed:   false,
-			Listen:    "ws://127.0.0.1:4222",
-		},
-		Projects: []config.ProjectConfig{{
-			ID: "demo", Name: "Demo", Path: t.TempDir(),
-		}},
-	})
-	checker.SetSharedDaemonReconcile("共享 daemon 尚未清理", "退出 Desktop 后重试")
-
-	results := checker.RunReadiness(context.Background())
-	found := false
-	for _, check := range results.Checks {
-		if check.Name != sharedDaemonReconcileName {
-			continue
-		}
-		found = true
-		if check.Level != "warning" || check.OK {
-			t.Fatalf("readyz 中的 reconcile 状态必须是 warning：%+v", check)
-		}
-	}
-	if !found {
-		t.Fatal("readyz 必须包含共享 daemon reconcile 告警")
 	}
 }
 
@@ -463,6 +252,34 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	if results.OK {
 		t.Fatalf("非 loopback app-server ws 不应通过 doctor：%+v", results)
 	}
+}
+
+func TestCheckerRejectsUnmanagedAppServer(t *testing.T) {
+	binDir := t.TempDir()
+	codexPath := writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: false, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: codexPath},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if results.OK {
+		t.Fatalf("unmanaged App Server must not pass doctor: %+v", results)
+	}
+	for _, check := range results.Checks {
+		if check.Name == "app-server" && !check.OK && strings.Contains(check.Message, "只支持受管") {
+			return
+		}
+	}
+	t.Fatalf("doctor must explain the managed-only boundary: %+v", results.Checks)
 }
 
 func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
@@ -625,58 +442,6 @@ func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
 	}
 	if !hasCheck(results, "codex-app-server") {
 		t.Fatalf("应包含 codex-app-server 检查：%+v", results.Checks)
-	}
-}
-
-func TestCheckerRejectsUnsafeWindowsCodexVersion(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows independent runtime safety gate is platform-specific")
-	}
-	path := filepath.Join(t.TempDir(), "codex-old.cmd")
-	body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.145.0\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	checker := newTestChecker(t, config.Config{
-		Listen:    "127.0.0.1:8787",
-		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
-		Codex:     config.CodexConfig{Bin: path},
-		Projects: []config.ProjectConfig{{
-			ID: "demo", Name: "Demo", Path: t.TempDir(),
-		}},
-	})
-
-	check := checker.codexAppServerCheck(context.Background())
-	if check.OK || !strings.Contains(check.Message, "single-writer") ||
-		!strings.Contains(check.Fix, "0.145.0") ||
-		!strings.Contains(check.Fix, appserver.MinimumIndependentWriterVersion) {
-		t.Fatalf("Doctor should explain the unsafe Windows runtime and recovery: %+v", check)
-	}
-}
-
-func TestCheckerReportsSafeWindowsCodexPathAndVersion(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows independent runtime diagnostics are platform-specific")
-	}
-	path := writeFakeCodexWithAppServerHelp(t, filepath.Join(t.TempDir(), "codex-safe"))
-	checker := newTestChecker(t, config.Config{
-		Listen:    "127.0.0.1:8787",
-		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
-		Codex:     config.CodexConfig{Bin: path},
-		Projects: []config.ProjectConfig{{
-			ID: "demo", Name: "Demo", Path: t.TempDir(),
-		}},
-	})
-
-	check := checker.codexAppServerCheck(context.Background())
-	if !check.OK || !strings.Contains(check.Message, "0.149.0") ||
-		!strings.Contains(check.Message, filepath.Clean(path)) {
-		t.Fatalf("Doctor should expose the selected safe Windows runtime: %+v", check)
 	}
 }
 

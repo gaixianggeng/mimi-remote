@@ -109,44 +109,40 @@ func TestReadyzReturns503WhenUpstreamPortIsNotListening(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previousLog) })
 
-	for _, managed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unmanaged", true: "managed"}[managed], func(t *testing.T) {
-			upstreamURL := unusedReadyzUpstreamURL(t) + "/sensitive-upstream-path"
-			tokenMarker := "private-upstream-token-port-test"
-			tokenFile := filepath.Join(t.TempDir(), "private-token-file-marker")
-			if err := os.WriteFile(tokenFile, []byte(tokenMarker+"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			server := newReadyzTestServer(t, managed, upstreamURL, tokenFile)
+	upstreamURL := unusedReadyzUpstreamURL(t) + "/sensitive-upstream-path"
+	tokenMarker := "private-upstream-token-port-test"
+	tokenFile := filepath.Join(t.TempDir(), "private-token-file-marker")
+	if err := os.WriteFile(tokenFile, []byte(tokenMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newReadyzTestServer(t, upstreamURL, tokenFile)
 
-			ready := requestReadyz(t, server.handler)
-			if ready.Code != http.StatusServiceUnavailable {
-				t.Fatalf("upstream 未监听时 readyz 必须返回 503：code=%d body=%s", ready.Code, ready.Body.String())
-			}
-			assertReadyzUpstreamCheck(t, ready, false)
-			for _, secret := range []string{tokenMarker, tokenFile, upstreamURL, "sensitive-upstream-path"} {
-				if strings.Contains(ready.Body.String(), secret) || strings.Contains(logs.String(), secret) {
-					t.Fatalf("readyz 响应和日志不得泄露 upstream 敏感信息 %q：body=%s logs=%s", secret, ready.Body.String(), logs.String())
-				}
-			}
+	ready := requestReadyz(t, server.handler)
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("upstream 未监听时 readyz 必须返回 503：code=%d body=%s", ready.Code, ready.Body.String())
+	}
+	assertReadyzUpstreamCheck(t, ready, false)
+	for _, secret := range []string{tokenMarker, tokenFile, upstreamURL, "sensitive-upstream-path"} {
+		if strings.Contains(ready.Body.String(), secret) || strings.Contains(logs.String(), secret) {
+			t.Fatalf("readyz 响应和日志不得泄露 upstream 敏感信息 %q：body=%s logs=%s", secret, ready.Body.String(), logs.String())
+		}
+	}
 
-			live := httptest.NewRecorder()
-			server.handler.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-			if live.Code != http.StatusOK {
-				t.Fatalf("upstream 不可用不应影响 liveness：%d", live.Code)
-			}
-		})
+	live := httptest.NewRecorder()
+	server.handler.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if live.Code != http.StatusOK {
+		t.Fatalf("upstream 不可用不应影响 liveness：%d", live.Code)
 	}
 }
 
-func TestReadyzRejectsUnmanagedUpstreamWithoutIndependentToken(t *testing.T) {
+func TestReadyzRejectsManagedUpstreamWithoutIndependentToken(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
-	server := newReadyzTestServer(t, false, upstreamURL, "")
+	server := newReadyzTestServer(t, upstreamURL, "")
 
 	ready := requestReadyz(t, server.handler)
 
 	if ready.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unmanaged upstream 未配置独立 token 时 readyz 必须 fail-closed：code=%d body=%s", ready.Code, ready.Body.String())
+		t.Fatalf("受管 upstream 未配置独立 token 时 readyz 必须 fail-closed：code=%d body=%s", ready.Code, ready.Body.String())
 	}
 	assertReadyzUpstreamCheck(t, ready, false)
 	if connections.Load() != 0 {
@@ -162,7 +158,7 @@ func TestReadyzAuthenticationFailureCacheAndRecovery(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(wrongToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := newReadyzTestServer(t, true, upstreamURL, tokenFile)
+	server := newReadyzTestServer(t, upstreamURL, tokenFile)
 
 	var logs bytes.Buffer
 	previousLog := log.Writer()
@@ -202,7 +198,7 @@ func TestReadyzAuthenticationFailureCacheAndRecovery(t *testing.T) {
 	}
 }
 
-func newReadyzTestServer(t *testing.T, managed bool, upstreamURL string, tokenFile string) testServer {
+func newReadyzTestServer(t *testing.T, upstreamURL string, tokenFile string) testServer {
 	t.Helper()
 	codexPath := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf '%s\\n' '--listen --ws-auth --ws-token-file'\n"), 0o755); err != nil {
@@ -213,7 +209,7 @@ func newReadyzTestServer(t *testing.T, managed bool, upstreamURL string, tokenFi
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
 			Transport:   "ws",
-			Managed:     managed,
+			Managed:     true,
 			Listen:      upstreamURL,
 			WSTokenFile: tokenFile,
 		}

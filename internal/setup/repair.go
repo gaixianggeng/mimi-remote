@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type configWriter func(path string, raw []byte) error
@@ -43,6 +45,9 @@ func repairManagedWSTokenFile(configPath string, writeConfig configWriter) (stri
 	original, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
+		return "", false, err
 	}
 	document, appServer, existingTokenPath, err := decodeConfigForTokenRepair(original)
 	if err != nil {

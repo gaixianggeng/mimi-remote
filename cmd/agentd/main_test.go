@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -28,23 +28,6 @@ import (
 func TestVersionDoesNotRequireConfig(t *testing.T) {
 	if err := run([]string{"agentd", "version"}); err != nil {
 		t.Fatalf("version 不应依赖配置：%v", err)
-	}
-}
-
-func TestCodexCLIRepairErrorPreservesCompatibilityGuidance(t *testing.T) {
-	unsafe := fmt.Errorf(
-		"%w：Codex 版本为 0.145.0",
-		appserver.ErrIndependentWriterCapabilityUnavailable,
-	)
-	err := codexCLIRepairError(unsafe)
-	if !errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
-		t.Fatalf("启动错误应保留版本不兼容原因：%v", err)
-	}
-	message := err.Error()
-	if !strings.Contains(message, "版本不兼容") ||
-		!strings.Contains(message, ">= "+appserver.MinimumIndependentWriterVersion) ||
-		strings.Contains(message, "未找到 Codex CLI") {
-		t.Fatalf("启动错误应要求升级而不是提示安装：%s", message)
 	}
 }
 
@@ -103,6 +86,26 @@ func TestEnsureManagedWSTokenAvailableRepairsLegacyConfig(t *testing.T) {
 	}
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("迁移生成的 token 必须是私有 regular file：%v", info.Mode())
+	}
+}
+
+func TestEnsureManagedWSTokenAvailableRejectsUnmanagedConfigWithoutWriting(t *testing.T) {
+	clearAgentdEnvForMainTest(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	original := []byte(`{"app_server":{"transport":"ws","managed":false,"listen":"ws://127.0.0.1:4222"}}`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureManagedWSTokenAvailable(configPath)
+	if err == nil || !strings.Contains(err.Error(), "managed 必须为 true") {
+		t.Fatalf("unmanaged config must fail before token repair: %v", err)
+	}
+	stored, readErr := os.ReadFile(configPath)
+	entries, dirErr := os.ReadDir(dir)
+	if readErr != nil || dirErr != nil || !bytes.Equal(stored, original) || len(entries) != 1 {
+		t.Fatalf("unmanaged rejection must not mutate config or create a token: read=%v dir=%v entries=%v", readErr, dirErr, entries)
 	}
 }
 
@@ -1783,6 +1786,68 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	}
 	if cfg.Auth.Token == "" || cfg.AppServer.WSTokenFile == "" {
 		t.Fatalf("完整 setup 应同时生成外侧 token 与 upstream token：%+v", cfg)
+	}
+}
+
+func TestRunDoctorFixRejectsLegacyResidueBeforeAnyMutation(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	original := []byte("{\"auth\":{\"token\":\"keep-token-0123456789\"}}\n")
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current := doctor.Results{Checks: []doctor.Check{
+		{Name: "legacy-codex-experiment", OK: false},
+		{Name: "config-file", OK: false},
+		{Name: "app-server-token-file", OK: false},
+	}}
+
+	_, _, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
+	if err == nil || !strings.Contains(err.Error(), "不会终止任务或改写 owner") {
+		t.Fatalf("doctor --fix must reject legacy residue: %v", err)
+	}
+	stored, readErr := os.ReadFile(configPath)
+	info, statErr := os.Stat(configPath)
+	entries, dirErr := os.ReadDir(dir)
+	if readErr != nil || statErr != nil || dirErr != nil || !bytes.Equal(stored, original) || info.Mode().Perm() != 0o644 || len(entries) != 1 {
+		t.Fatalf("legacy residue rejection must be byte- and mode-identical: read=%v stat=%v dir=%v entries=%v", readErr, statErr, dirErr, entries)
+	}
+}
+
+func TestRunDoctorFixDoesNotRebuildLegacySharingConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	original := []byte(`{"app_server":{"transport":"ws","shared_fallback":{"transport":"ws"}}}`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDoctor([]string{"doctor", "--config", configPath, "--fix"})
+	if !errors.Is(err, config.ErrLegacyAppServerConfiguration) {
+		t.Fatalf("doctor --fix must preserve the legacy migration boundary: %v", err)
+	}
+	stored, readErr := os.ReadFile(configPath)
+	entries, dirErr := os.ReadDir(dir)
+	if readErr != nil || dirErr != nil || !bytes.Equal(stored, original) || len(entries) != 1 {
+		t.Fatalf("legacy config must not produce backup or token artifacts: read=%v dir=%v entries=%v raw=%s", readErr, dirErr, entries, stored)
+	}
+}
+
+func TestRunUpRejectsLegacyResidueBeforeSetupWrites(t *testing.T) {
+	previous := inspectLegacyCodexExperimentResidue
+	inspectLegacyCodexExperimentResidue = func() (string, error) {
+		return "旧 LaunchAgent 配置仍存在", nil
+	}
+	t.Cleanup(func() { inspectLegacyCodexExperimentResidue = previous })
+	dir := filepath.Join(t.TempDir(), "new-config-dir")
+	configPath := filepath.Join(dir, "config.json")
+
+	err := runUp([]string{"up", "--config", configPath, "--wait=0"})
+	if err == nil || !strings.Contains(err.Error(), "两套 owner 混跑") {
+		t.Fatalf("up must reject legacy residue: %v", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("residue preflight must run before setup creates files: %v", statErr)
 	}
 }
 

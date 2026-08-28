@@ -80,6 +80,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
 		}
 	}
+	appServerListen, err := normalizeSetupAppServerListen(options.AppServerListen)
+	if err != nil {
+		return Result{}, err
+	}
 
 	cfgDir := filepath.Dir(cfgPath)
 	cfgDirExisted := true
@@ -135,16 +139,6 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		allowLAN = ip != nil && (ip.IsUnspecified() || isPrivateLANIPv4(ip))
 	}
-	appServerListen := strings.TrimSpace(options.AppServerListen)
-	appServerTransport := config.DefaultAppServerTransport()
-	if appServerListen == "" {
-		appServerListen = config.DefaultAppServerListen()
-	} else if strings.HasPrefix(strings.ToLower(appServerListen), "unix://") {
-		appServerTransport = "unix"
-	} else {
-		appServerTransport = "ws"
-	}
-
 	cfg := config.Config{
 		Listen:  listen,
 		Network: config.NetworkConfig{AllowLAN: allowLAN},
@@ -155,7 +149,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Type: "codex_app_server",
 		},
 		AppServer: config.AppServerConfig{
-			Transport:   appServerTransport,
+			Transport:   config.DefaultAppServerTransport(),
 			Managed:     true,
 			Listen:      appServerListen,
 			WSTokenFile: tokenFile,
@@ -182,8 +176,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		return validateSetupConfigSnapshot(cfgPath, configExisted, originalConfig)
 	}
 	commitFiles := func() error {
-		// 两个文件的备份、rename 与目录同步都在配置提交锁内完成。sharing、
-		// Claude、network 和 setup --force 因而不会在各自 CAS 与 rename 之间互相覆盖。
+		// 两个文件的备份、rename 与目录同步都在配置提交锁内完成。Claude、network
+		// 和 setup --force 因而不会在各自 CAS 与 rename 之间互相覆盖。
 		return withConfigCommitLock(ctx, cfgPath, func() error {
 			if err := validateOriginal(); err != nil {
 				return err
@@ -197,9 +191,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			)
 		})
 	}
-	// setup 的新文档不包含 Mimi shared_fallback；即使原配置损坏或已经丢失，
-	// 只要还残留 Mimi owner/marker，也必须在同一 daemon lock 内先清理。
-	if err := commitConfigReplacingOwnedSharedDaemon(ctx, cfgPath, validateOriginal, commitFiles); err != nil {
+	if err := commitFiles(); err != nil {
 		return Result{}, fmt.Errorf("原子写入 setup 配置失败：%w", err)
 	}
 	filesCommitted = true
@@ -214,6 +206,29 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	result.AppServerListen = appServerListen
 	result.AppServerTokenFile = tokenFile
 	return result, nil
+}
+
+func normalizeSetupAppServerListen(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return config.DefaultAppServerListen(), nil
+	}
+	if !strings.Contains(value, "://") {
+		value = "ws://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("app-server WebSocket listen 无效：%w", err)
+	}
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+		return "", fmt.Errorf("app-server WebSocket listen 只支持 ws/wss")
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return "", fmt.Errorf("app-server WebSocket listen 只允许 loopback")
+	}
+	return parsed.String(), nil
 }
 
 func validateSetupConfigSnapshot(path string, expectedExists bool, expected []byte) error {

@@ -1,5 +1,13 @@
 import Foundation
 
+enum QueuedTurnAcceptedDisposition {
+    case awaitingStart(turnID: TurnID?)
+    case guidance
+    case terminal(turnID: TurnID?)
+    case superseded(turnID: TurnID?, activeTurnID: TurnID)
+    case threadClosed(turnID: TurnID?)
+}
+
 // 排队 Turn 的调度、连接监控、发送结果归并与持久化对账集中在同一协调边界。
 extension SessionStore {
     func dispatchNextQueuedRunningTurnIfIdle(sessionID: SessionID) {
@@ -272,12 +280,7 @@ extension SessionStore {
                     sessionID: sessionID,
                     generation: generation
                 )
-                guard isCurrentConnection ||
-                        self.canReconcileTurnOutcomeFromRetiredSocket(
-                            sessionID: sessionID,
-                            outcome: outcome,
-                            hostScope: eventLease.hostScope
-                        ) else {
+                guard isCurrentConnection else {
                     return
                 }
                 self.handleTurnSendOutcome(
@@ -386,6 +389,64 @@ extension SessionStore {
         }
     }
 
+    func reconciledAcceptedDisposition(
+        sessionID: SessionID,
+        disposition: QueuedTurnAcceptedDisposition,
+        ignoringActiveTurnID: TurnID? = nil
+    ) -> QueuedTurnAcceptedDisposition {
+        let reportedActiveTurnID = sessionsByID[sessionID]?.activeTurnID
+        // guidance fallback 只忽略 RPC 前确认已经失效的精确 turn ID。
+        let currentActiveTurnID = reportedActiveTurnID == ignoringActiveTurnID
+            ? nil
+            : reportedActiveTurnID
+        func isTerminal(_ turnID: TurnID) -> Bool {
+            conversationStore.turnLifecycle(
+                sessionID: sessionID,
+                turnID: turnID
+            )?.isTerminal == true
+        }
+
+        switch disposition {
+        case .awaitingStart(let turnID):
+            if let turnID, isTerminal(turnID) {
+                return .terminal(turnID: turnID)
+            }
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(turnID: turnID, activeTurnID: currentActiveTurnID)
+            }
+            return disposition
+        case .terminal(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(turnID: turnID, activeTurnID: currentActiveTurnID)
+            }
+            return disposition
+        case .superseded(let turnID, let reportedActiveTurnID):
+            let effectiveActiveTurnID: TurnID
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID,
+               currentActiveTurnID != reportedActiveTurnID {
+                effectiveActiveTurnID = currentActiveTurnID
+            } else {
+                effectiveActiveTurnID = reportedActiveTurnID
+            }
+            if isTerminal(effectiveActiveTurnID) {
+                // 终态事件可能先于 superseded ACK 到达，不能再次复活已完成的 turn。
+                return .terminal(turnID: effectiveActiveTurnID)
+            }
+            return .superseded(turnID: turnID, activeTurnID: effectiveActiveTurnID)
+        case .threadClosed(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(turnID: turnID, activeTurnID: currentActiveTurnID)
+            }
+            return disposition
+        case .guidance:
+            return disposition
+        }
+    }
+
     @discardableResult
     func handleQueuedSendAccepted(
         clientMessageID: ClientMessageID,
@@ -424,10 +485,10 @@ extension SessionStore {
             case .awaitingStart(let turnID):
                 let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
                 for index in queue.indices where queue[index].dispatchState == .waiting {
-                    // ACK 带 turnID 仍不等于已观察到 started。门闩和精确 ID 必须一起
-                    // 持久化，避免 ACK 后崩溃时重启把 expectedTurnID 当成陈旧状态清掉。
-                    queue[index].waitsForAcceptedTurnStart = true
-                    queue[index].blockedCompletionID = blockedCompletionID
+                    // guidance 已由 Runtime 降级为新的 turn/start 时，ACK 中的精确 ID
+                    // 就是本地权威状态；普通发送仍要等待 started 事件解除门闩。
+                    queue[index].waitsForAcceptedTurnStart = wasGuidance ? nil : true
+                    queue[index].blockedCompletionID = wasGuidance ? nil : blockedCompletionID
                     queue[index].expectedTurnID = turnID
                 }
             case .superseded(_, let activeTurnID):
@@ -738,6 +799,170 @@ extension SessionStore {
             }
             ensureQueuedSessionMonitoring(sessionID: sessionID)
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
+    }
+
+    func handleTurnSendOutcome(
+        clientMessageID: ClientMessageID?,
+        sessionID: SessionID,
+        outcome: TurnSendOutcome
+    ) {
+        let acceptedTurnID: TurnID?
+        switch outcome {
+        case .accepted(let turnID),
+             .acceptedTerminal(let turnID),
+             .acceptedThreadClosed(let turnID):
+            acceptedTurnID = turnID
+        case .acceptedSuperseded(let turnID, _):
+            acceptedTurnID = turnID
+        case .guidanceAccepted,
+             .activeTurnConflict,
+             .rejected,
+             .uncertain:
+            acceptedTurnID = nil
+        }
+
+        if let clientMessageID, let acceptedTurnID {
+            conversationStore.bindTurnID(
+                acceptedTurnID,
+                clientMessageID: clientMessageID,
+                sessionID: sessionID
+            )
+        }
+        guard let clientMessageID else { return }
+
+        func finishAccepted(_ disposition: QueuedTurnAcceptedDisposition) {
+            if handleQueuedSendAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                disposition: disposition
+            ) {
+                return
+            }
+            let disposition = reconciledAcceptedDisposition(
+                sessionID: sessionID,
+                disposition: disposition
+            )
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .sent
+            )
+            conversationStore.compactTurnPayloadAfterSendAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID
+            )
+            // 非队列消息也必须 compare-and-apply，避免覆盖已经到达的更新 turn。
+            switch disposition {
+            case .terminal(let turnID):
+                let terminalStatus = turnID.flatMap {
+                    conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
+                } == .failed ? SessionStatus.failed : .completed
+                updateSession(sessionID) { session in
+                    guard session.activeTurnID == nil || session.activeTurnID == turnID else {
+                        return
+                    }
+                    session.status = terminalStatus.rawValue
+                    session.activeTurnID = nil
+                }
+            case .superseded(let turnID, let activeTurnID):
+                updateSession(sessionID) { session in
+                    guard session.activeTurnID == nil
+                            || session.activeTurnID == turnID
+                            || session.activeTurnID == activeTurnID else {
+                        return
+                    }
+                    session.status = SessionStatus.running.rawValue
+                    session.activeTurnID = activeTurnID
+                }
+            case .threadClosed(let turnID):
+                updateSession(sessionID) { session in
+                    guard session.activeTurnID == nil || session.activeTurnID == turnID else {
+                        return
+                    }
+                    session.status = "closed"
+                    session.activeTurnID = nil
+                }
+            case .awaitingStart, .guidance:
+                break
+            }
+        }
+
+        switch outcome {
+        case .accepted(let turnID):
+            finishAccepted(.awaitingStart(turnID: turnID))
+        case .acceptedTerminal(let turnID):
+            finishAccepted(.terminal(turnID: turnID))
+        case .acceptedSuperseded(let turnID, let activeTurnID):
+            finishAccepted(.superseded(turnID: turnID, activeTurnID: activeTurnID))
+        case .acceptedThreadClosed(let turnID):
+            finishAccepted(.threadClosed(turnID: turnID))
+        case .guidanceAccepted:
+            finishAccepted(.guidance)
+        case .activeTurnConflict(let activeTurnID, let message):
+            // 新消息未被接受。保留权威 active turn，并让排队项等待原 turn 完成。
+            updateSession(sessionID) { item in
+                item.activeTurnID = activeTurnID
+                if item.pendingUserInput != nil {
+                    item.status = "waiting_for_input"
+                } else if item.pendingApproval != nil {
+                    item.status = "waiting_for_approval"
+                } else {
+                    item.status = "running"
+                }
+            }
+            if handleQueuedActiveTurnConflict(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                activeTurnID: activeTurnID
+            ) {
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return
+            }
+            preservePermissionTurnRetryRequirementAfterRejection(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            )
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            setStatusMessage(message)
+        case .rejected(let message):
+            if handleQueuedSendRejected(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            preservePermissionTurnRetryRequirementAfterRejection(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            )
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        case .uncertain(let message):
+            if handleQueuedSendFailure(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
         }
     }
 }

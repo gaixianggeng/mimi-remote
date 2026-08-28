@@ -838,7 +838,7 @@ func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
 			Transport:   "ws",
-			Managed:     false,
+			Managed:     true,
 			Listen:      upstreamURL,
 			WSTokenFile: tokenFile,
 		}

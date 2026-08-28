@@ -24,10 +24,6 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
-    func externalActivities() async throws -> ExternalActivityResponse? {
-        try await runtime.externalActivities()
-    }
-
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         try await runtime.capabilities(path: path, forceReload: forceReload)
     }
@@ -225,10 +221,6 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.unsubscribeThread(threadID: threadID)
     }
 
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
-        try await runtime.releaseThreadWriterWhenIdle(threadID: threadID)
-    }
-
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -375,7 +367,6 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func projects() async throws -> [AgentProject] { try await codexClient.projects() }
-    func externalActivities() async throws -> ExternalActivityResponse? { try await codexClient.externalActivities() }
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         try await codexClient.capabilities(path: path, forceReload: forceReload)
     }
@@ -608,11 +599,6 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         try await bundle.runtime(forSessionID: threadID).unsubscribeThread(threadID: threadID)
-    }
-
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
-        try await bundle.runtime(forSessionID: threadID)
-            .releaseThreadWriterWhenIdle(threadID: threadID)
     }
 
     func startReview(
@@ -932,15 +918,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             )
         }
         if case CodexAppServerConnectionError.appServer(let appError) = error {
-            if let data = appError.data?.objectValue,
-               data["accepted"]?.boolValue == false,
-               data["retryable"]?.boolValue == true,
-               data["reason"]?.stringValue == "external_thread_active" {
-                return .retryableExternalThreadActive(
-                    message: error.localizedDescription,
-                    retryAfterMilliseconds: max(0, data["retry_after_ms"]?.intValue ?? 1_000)
-                )
-            }
             if let activeTurnID = CodexAppServerSessionRuntime.activeTurnIDFromConflict(error) {
                 return .activeTurnConflict(
                     activeTurnID: activeTurnID,
