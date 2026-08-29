@@ -190,7 +190,7 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		path.input["path"] = realPath
 		validated.rewroteLocalImagePath = true
 	}
-	if method != "turn/steer" {
+	if method != "turn/steer" && method != "thread/queue/add" {
 		for _, path := range collectedInputPaths.mentions {
 			if _, ok := r.projectForGatewayPath(path); ok {
 				continue

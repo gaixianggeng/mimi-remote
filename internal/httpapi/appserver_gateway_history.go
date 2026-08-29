@@ -163,6 +163,18 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 			method: method, threadID: threadID, cursor: gatewayOptionalStringParam(params, "cursor"), limit: limit,
 			sortDirection: gatewayOptionalStringParam(params, "sortDirection"), itemsView: gatewayHistoryItemsViewFromParams(params),
 		}, true
+	case "thread/items/list":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return appServerGatewayPendingHistoryRequest{}, false
+		}
+		return appServerGatewayPendingHistoryRequest{
+			method: method, threadID: threadID, cursor: gatewayOptionalStringParam(params, "cursor"),
+			limit: gatewayOptionalInt64Param(params, "limit"), sortDirection: gatewayOptionalStringParam(params, "sortDirection"),
+			// filterFingerprint 是请求指纹的不透明维度。此处保留 turnId，
+			// 避免同一 Thread 不同 Turn 的 items 分页被误判为重复请求。
+			itemsView: "items", filterFingerprint: gatewayOptionalStringParam(params, "turnId"),
+		}, true
 	case "thread/read":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {

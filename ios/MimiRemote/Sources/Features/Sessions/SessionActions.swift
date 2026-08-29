@@ -29,8 +29,7 @@ private struct SessionRowActionController {
     }
 
     var canChangeArchiveState: Bool {
-        !sessionStore.isExternalReadOnlySession(session)
-            && !sessionStore.isProtocolReadOnlySession(session)
+        !sessionStore.isProtocolReadOnlySession(session)
             && !sessionStore.isSessionArchiveMutationPending(session.id)
     }
 
@@ -128,8 +127,7 @@ struct SessionActionMenuContent: View {
                 Divider()
             }
 
-            if sessionStore.isSessionObserving(session),
-               !sessionStore.isExternalReadOnlySession(session) {
+            if sessionStore.isSessionObserving(session) {
                 Button {
                     sessionStore.takeOverSession(session)
                 } label: {

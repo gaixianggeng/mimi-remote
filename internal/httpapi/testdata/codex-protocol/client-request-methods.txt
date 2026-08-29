@@ -1,3 +1,5 @@
+account/bedrock/discover
+account/bedrock/setup
 account/login/cancel
 account/login/start
 account/logout
@@ -73,6 +75,13 @@ process/kill
 process/resizePty
 process/spawn
 process/writeStdin
+project/create
+project/delete
+project/import
+project/list
+project/move
+project/read
+project/update
 remoteControl/client/list
 remoteControl/client/revoke
 remoteControl/disable
@@ -81,6 +90,7 @@ remoteControl/pairing/start
 remoteControl/pairing/status
 remoteControl/status/read
 review/start
+server/diagnostics
 skills/config/write
 skills/extraRoots/set
 skills/list
@@ -104,6 +114,12 @@ thread/loaded/list
 thread/memoryMode/set
 thread/metadata/update
 thread/name/set
+thread/queue/add
+thread/queue/delete
+thread/queue/list
+thread/queue/reorder
+thread/queue/start
+thread/queue/update
 thread/read
 thread/realtime/appendAudio
 thread/realtime/appendSpeech
@@ -112,6 +128,7 @@ thread/realtime/listVoices
 thread/realtime/start
 thread/realtime/stop
 thread/resume
+thread/revert
 thread/rollback
 thread/search
 thread/searchOccurrences

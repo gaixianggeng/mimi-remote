@@ -143,70 +143,49 @@ The mobile images above are the same current assets used by the Mimi Remote webs
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
     Gateway["Your Mac<br/>agentd secure gateway"]
-    Codex["Codex<br/>shared daemon or managed app-server"]
+    Codex["Codex<br/>shared Unix App Server"]
+    Desktop["Codex Desktop<br/>SSH hosts"]
     Claude["Claude Code<br/>experimental bridge"]
 
     Mobile <-->|"LAN or Tailscale<br/>live sessions and approvals"| Gateway
     Gateway <--> Codex
+    Desktop <-->|"SSH app-server proxy"| Codex
     Gateway <--> Claude
 ```
 
 This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own Mac, so project files, session history, and runtime credentials stay on the host.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
-- **A real session handoff:** Codex can opt into the official local daemon shared with Codex Desktop, so an idle Mac thread can continue on mobile without a fork; the managed app-server remains the default and fallback.
+- **One shared Codex runtime:** `agentd`, local Desktop SSH hosts, and remote Desktop SSH hosts connect through `codex app-server proxy` to the same Unix App Server. Desktop's ordinary local mode and OpenClaw remain independent and are never controlled through private IPC.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
 - **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the Mac. The Mac must remain awake and privately reachable.
 
-For protocol details and exact capability boundaries, see [project status](docs/project-status.md), [Codex shared daemon](docs/codex-shared-daemon.md), and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
+For protocol details and exact capability boundaries, see [project status](docs/project-status.md) and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
 
 ## Prerequisites
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
+- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a Mac that can keep the host service running, and Codex CLI installed and ready on that Mac. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. Use [TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds, or build from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
-- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+- **Developer-only tools:** the normal macOS host install from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) does not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
 
 ## Install and run
 
 ### First installation in four steps
 
 1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
-2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
+2. **Install and start the host:** install the macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
 3. **Install the iOS app:** download Mimi Remote from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, or join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds. Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
-### Windows host
+### Windows Desktop client
 
-Requirements:
+MIM-207 does not support Windows as the `agentd` host. The shared runtime requires a POSIX SSH target, a Unix Socket, and the Mac workspace paths. Windows installer publishing is paused, and the retained installer source rejects setup before stopping a service or replacing files.
 
-- Windows 10/11 x64, with Codex CLI installed and signed in as the same Windows user.
-- The PC and iPhone/iPad on the same private network. Tailscale is recommended across networks.
-
-Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest). Always verify the SHA-256. When `metadata.json` reports `authenticode-pfx`, require an Authenticode status of `Valid`; when it reports `unsigned-release`, expect `NotSigned` and a possible Microsoft Defender SmartScreen warning:
-
-```powershell
-$setup = Get-Item .\Mimi-Remote-Setup-*.exe
-(Get-FileHash $setup -Algorithm SHA256).Hash
-(Get-AuthenticodeSignature $setup).Status
-```
-
-Unsigned assets include `-unsigned` in the EXE filename. Only run one when it came from this repository's official Release and its SHA-256 matches the published sidecar.
-
-The per-user installer embeds `agentd.exe`, `alleycat-claude-bridge.exe`, and a native `mimi-remote-tray.exe`; Go, Rust, and administrator-level services are not required. It registers a limited current-user Task Scheduler task, starts it, waits for `/api/readyz`, and launches the notification-area controller. The tray shows the endpoint and Codex/Claude state and provides start, stop, restart, pairing, Doctor, and log actions. Configuration and credentials stay under `%APPDATA%\mimi-remote`; logs stay under `%LOCALAPPDATA%\Mimi Remote\logs`. Normal upgrade and uninstall preserve them.
-
-Private-LAN access is opt-in. Without Tailscale and without that selection, a fresh Windows install remains loopback-only. If selected, Setup first requires the default Windows network profile to be **Private**, removes any prompt-created extra inbound rules for `agentd.exe`, then creates one Private-profile, `LocalSubnet` rule and only then expands `agentd` to LAN listening. Runtime validation rejects Public/Any or otherwise unmanaged inbound Allow rules. The pairing endpoint follows the system default route and excludes Hyper-V, WSL, container, and VPN-only virtual adapters. A Public profile is rejected rather than widening the firewall boundary; only mark a Wi-Fi or Ethernet network Private when you trust it. Day-to-day commands can also be run from PowerShell:
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" status
-& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" pair --qr-only
-& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" doctor --fix
-& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" logs -n 200
-& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" restart --no-pair
-```
+Use Codex Desktop for Windows as a client instead: add the Mac as an SSH host, log in as the same macOS user that owns the shared App Server, and open the shared workspace there. Mimi Remote continues to connect to `agentd` on that Mac.
 
 ### macOS host
 
@@ -228,7 +207,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` creates private local configuration and separate tokens, starts the service, waits for the configured app-server transport, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. The shared Codex Desktop daemon is opt-in; see [Codex Desktop shared daemon (Chinese)](docs/codex-shared-daemon.md) for requirements, rollback, and verification.
+Before the first start, enable Remote Login and make sure `ssh 127.0.0.1 codex --version` succeeds without a password prompt. `agentd up` creates private local configuration, connects through localhost SSH to the shared Unix App Server, waits for a real protocol initialization, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. See [Shared SSH App Server](docs/shared-ssh-app-server.md) for Desktop setup and runtime boundaries.
 
 Useful commands:
 
@@ -246,7 +225,7 @@ agentd stop
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
 From an agent, automation, or retained remote log, use `agentd up --no-pair` / `agentd restart --no-pair` so the output contains no pairing QR code, endpoint, or long-lived access token. `agentd up --no-pair --json` returns only the version, readiness state, and safe warnings rather than the complete setup result. When pairing is needed, have the user run `agentd pair --qr-only` in a local terminal.
 
-For Windows, macOS, and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md). Maintainers can find the daily Internal TestFlight and formal host release flow in [Nightly and release (Chinese)](docs/nightly-release.md).
+For macOS and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md). Maintainers can find the daily Internal TestFlight and formal host release flow in [Nightly and release (Chinese)](docs/nightly-release.md).
 
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 
@@ -310,7 +289,7 @@ macOS does not provide one background-requestable permission for the entire user
 
 The Claude runtime is disabled by default. When enabled, `agentd` supervises one resident `alleycat-claude-bridge` and attaches mobile WebSocket sessions to it by a stable session key. Each Claude thread owns a headless stdio JSONL process; reconnects replay missed events or reload authoritative history instead of resubmitting `turn/start`.
 
-The Windows installer and Mac DMG already include a compatible bridge next to `agentd`; signed Windows releases and the notarized Mac DMG preserve platform code identity, while an `unsigned-release` Windows package does not. Do not install a second copy with Cargo for those setups. Install the bridge from source only for Homebrew, Linux, or standalone development:
+The notarized Mac DMG already includes a compatible bridge next to `agentd`; do not install a second copy with Cargo for that setup. Install the bridge from source only for Homebrew, Linux, or standalone development:
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/mimi-remote.git \
@@ -333,7 +312,7 @@ Enable it explicitly in the user configuration:
 }
 ```
 
-An empty `bridge_bin` selects the bridge bundled with the Windows installer or Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
+An empty `bridge_bin` selects the bridge bundled with Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
 
 After changing the configuration, restart from the current service owner: use **Restart Service** in the Mimi Remote Mac menu, `agentd restart --no-pair` for Homebrew, or the user-systemd service on Linux. Run Doctor and confirm that the mobile runtime picker exposes Claude without disrupting Codex.
 
@@ -342,6 +321,7 @@ This remains an experimental channel. Goal, archive, and fork are not available 
 ## Current limitations
 
 - Mimi Remote is not a general-purpose SSH terminal and does not run Codex inside the iOS sandbox.
+- Shared Codex sessions must be opened from a Desktop SSH host. Desktop's ordinary “This Mac” mode has private capabilities that are not injected into the shared App Server.
 - It has no cloud account, code-hosting proxy, public relay, arbitrary remote shell, unattended deletion, or multi-user sharing.
 - One iOS WebSocket can attach to a session at a time. Cloud/projectless threads, background push, offline remote notifications, profile sync, and IDE sync are not implemented.
 - A private Tailscale address is recommended across networks. Without Tailscale, Mimi Remote can use a private LAN address only while both devices are on the same local network. Do not expose `agentd` directly to the public Internet.

@@ -454,7 +454,6 @@ struct SessionIndexRow: View {
     let isArchived: Bool
     let reminder: SessionReminder?
     let isObserving: Bool
-    let isExternalReadOnly: Bool
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
@@ -764,7 +763,7 @@ struct SessionIndexRow: View {
                 .foregroundStyle(tokens.warning)
                 .accessibilityLabel(L10n.text("ui.reminder"))
         }
-        if isObserving || isExternalReadOnly {
+        if isObserving {
             Image(systemName: "eye")
                 .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)

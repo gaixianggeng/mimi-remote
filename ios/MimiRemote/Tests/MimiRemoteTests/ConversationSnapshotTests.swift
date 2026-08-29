@@ -1663,7 +1663,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
             SessionIndexRow(
@@ -1674,7 +1673,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }
@@ -1745,7 +1743,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 isUnread: true,
                 density: .compact
             )
@@ -1757,7 +1754,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }

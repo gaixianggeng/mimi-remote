@@ -121,48 +121,6 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     }
 }
 
-struct CodexSharingConfigurationResult: Codable, Equatable, Sendable {
-    let enabled: Bool
-    let changed: Bool
-    let restartRequired: Bool
-    let daemonRestartRequired: Bool?
-    let transport: String?
-    let codexHome: String?
-    let warning: String?
-    let message: String
-
-    enum CodingKeys: String, CodingKey {
-        case enabled
-        case changed
-        case restartRequired = "restart_required"
-        case daemonRestartRequired = "daemon_restart_required"
-        case transport
-        case codexHome = "codex_home"
-        case warning
-        case message
-    }
-
-    init(
-        enabled: Bool,
-        changed: Bool = false,
-        restartRequired: Bool = false,
-        daemonRestartRequired: Bool? = nil,
-        transport: String? = nil,
-        codexHome: String? = nil,
-        warning: String? = nil,
-        message: String = ""
-    ) {
-        self.enabled = enabled
-        self.changed = changed
-        self.restartRequired = restartRequired
-        self.daemonRestartRequired = daemonRestartRequired
-        self.transport = transport
-        self.codexHome = codexHome
-        self.warning = warning
-        self.message = message
-    }
-}
-
 struct AgentCheck: Codable, Equatable, Identifiable, Sendable {
     let name: String
     let ok: Bool
@@ -286,13 +244,6 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     let planType: String?
     let reason: String?
     let rateLimits: AgentRuntimeRateLimits?
-    /// agentd 通过 Unix socket 暴露给 Codex Desktop 的传输类型。
-    /// 旧 agentd 不返回这些字段，因此必须保持可选并按未确认处理。
-    let transport: String?
-    let shared: Bool?
-    /// Mimi-owned launchd owner 已安装，但现有 daemon 尚未在用户确认后迁移。
-    let daemonRestartRequired: Bool?
-    let codexHome: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -305,10 +256,6 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case planType = "plan_type"
         case reason
         case rateLimits = "rate_limits"
-        case transport
-        case shared
-        case daemonRestartRequired = "daemon_restart_required"
-        case codexHome = "codex_home"
     }
 
     init(
@@ -321,11 +268,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         authMode: String?,
         planType: String?,
         reason: String?,
-        rateLimits: AgentRuntimeRateLimits?,
-        transport: String? = nil,
-        shared: Bool? = nil,
-        daemonRestartRequired: Bool? = nil,
-        codexHome: String? = nil
+        rateLimits: AgentRuntimeRateLimits?
     ) {
         self.id = id
         self.title = title
@@ -337,10 +280,6 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.planType = planType
         self.reason = reason
         self.rateLimits = rateLimits
-        self.transport = transport
-        self.shared = shared
-        self.daemonRestartRequired = daemonRestartRequired
-        self.codexHome = codexHome
     }
 
     var effectivePlanType: String? {
@@ -353,104 +292,6 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: startedAt) ?? ISO8601DateFormatter().date(from: startedAt)
     }
-}
-
-/// Codex Desktop 的环境开关由 Mimi Remote Mac 写入 launchd 后，只能在新进程
-/// 创建时生效。这个状态同时保留环境快照和 Desktop 发现结果，方便 UI 明确区分
-/// “未安装、未确认共享、需要重启、已就绪”和外部冲突，而不是把所有情况显示成成功。
-struct CodexDesktopEnvironmentSnapshot: Equatable, Sendable {
-    let hasLocalPreference: Bool
-    let enabled: Bool
-    let environmentValue: String?
-    let codexHome: String?
-    let previousValue: String?
-    let previousCodexHome: String?
-    let writtenValue: String?
-    let writtenCodexHome: String?
-    let ownsEnvironment: Bool
-    let ownsCodexHome: Bool
-    /// launchd 中的当前会话 ownership epoch。它不是官方 Codex 配置，
-    /// 只用于区分注销/登录后新会话里外部恰好写入相同值的情况。
-    let sessionEpoch: String?
-    let writtenSessionEpoch: String?
-    let ownsSessionEpoch: Bool
-    let appInstalled: Bool
-    let appRunning: Bool
-    let restartRequired: Bool
-    /// 已取得用户确认、但 Desktop 环境或重开尚未全部完成的目标状态。
-    /// nil 表示没有待恢复事务；该值由 Mac App 持久化，不能从当前环境猜测。
-    let pendingEnabled: Bool?
-    let bundleURL: URL?
-
-    init(
-        hasLocalPreference: Bool = false,
-        enabled: Bool = false,
-        environmentValue: String? = nil,
-        codexHome: String? = nil,
-        previousValue: String? = nil,
-        previousCodexHome: String? = nil,
-        writtenValue: String? = nil,
-        writtenCodexHome: String? = nil,
-        ownsEnvironment: Bool = false,
-        ownsCodexHome: Bool = false,
-        sessionEpoch: String? = nil,
-        writtenSessionEpoch: String? = nil,
-        ownsSessionEpoch: Bool = false,
-        appInstalled: Bool = false,
-        appRunning: Bool = false,
-        restartRequired: Bool = false,
-        pendingEnabled: Bool? = nil,
-        bundleURL: URL? = nil
-    ) {
-        self.hasLocalPreference = hasLocalPreference
-        self.enabled = enabled
-        self.environmentValue = environmentValue
-        self.codexHome = codexHome
-        self.previousValue = previousValue
-        self.previousCodexHome = previousCodexHome
-        self.writtenValue = writtenValue
-        self.writtenCodexHome = writtenCodexHome
-        self.ownsEnvironment = ownsEnvironment
-        self.ownsCodexHome = ownsCodexHome
-        self.sessionEpoch = sessionEpoch
-        self.writtenSessionEpoch = writtenSessionEpoch
-        self.ownsSessionEpoch = ownsSessionEpoch
-        self.appInstalled = appInstalled
-        self.appRunning = appRunning
-        self.restartRequired = restartRequired
-        self.pendingEnabled = pendingEnabled
-        self.bundleURL = bundleURL
-    }
-}
-
-enum CodexDesktopStatusState: Equatable, Sendable {
-    case disabled
-    case notInstalled
-    case backendNotShared
-    case pendingRestart
-    case ready
-    case failed
-    case externalConflict
-}
-
-struct CodexDesktopStatus: Equatable, Sendable {
-    let environment: CodexDesktopEnvironmentSnapshot
-    let state: CodexDesktopStatusState
-    let error: String?
-
-    init(
-        environment: CodexDesktopEnvironmentSnapshot = CodexDesktopEnvironmentSnapshot(),
-        state: CodexDesktopStatusState = .backendNotShared,
-        error: String? = nil
-    ) {
-        self.environment = environment
-        self.state = state
-        self.error = error
-    }
-
-    var enabled: Bool { environment.pendingEnabled ?? environment.enabled }
-    var appInstalled: Bool { environment.appInstalled }
-    var appRunning: Bool { environment.appRunning }
 }
 
 struct AgentRuntimeRateLimits: Codable, Equatable, Sendable {
