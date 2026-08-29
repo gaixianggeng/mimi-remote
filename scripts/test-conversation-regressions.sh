@@ -80,7 +80,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure \
-  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
