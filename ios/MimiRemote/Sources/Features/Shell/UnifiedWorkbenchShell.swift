@@ -68,7 +68,6 @@ struct UnifiedWorkbenchShell: View {
                     )
                 }
             }
-            .workbenchTopScrollEdgeCoordination()
             .sheet(
                 item: sheetPresentationBinding,
                 onDismiss: dismissSheet
