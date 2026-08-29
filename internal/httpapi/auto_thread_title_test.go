@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -188,51 +186,55 @@ func TestCodexAutoThreadTitleGeneratorCancellationClosesBlockedWebSocket(t *test
 }
 
 func TestAutoThreadTitleRequestOnlyConsumesNewCodexThreadOnce(t *testing.T) {
-	policy := &appServerGatewayPolicy{
-		runtimeID: "codex",
-		allowedThreads: map[string]appServerGatewayAllowedThread{
-			"thread-new": {
-				id:                "thread-new",
-				runtimeID:         "codex",
-				cwd:               "/tmp/project",
-				scopeID:           "project",
-				autoTitleEligible: true,
-			},
-		},
-	}
-	payload, err := json.Marshal(map[string]any{
-		"id":     3,
-		"method": "turn/start",
-		"params": map[string]any{
-			"threadId": "thread-new",
-			"input": []any{
-				map[string]any{"type": "text", "text": "检查支付回调"},
-				map[string]any{"type": "localImage", "path": "/secret/screenshot.png"},
-				map[string]any{"type": "skill", "name": "review", "path": "/secret/SKILL.md"},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, method := range []string{"thread/queue/add", "turn/start"} {
+		t.Run(method, func(t *testing.T) {
+			policy := &appServerGatewayPolicy{
+				runtimeID: "codex",
+				allowedThreads: map[string]appServerGatewayAllowedThread{
+					"thread-new": {
+						id:                "thread-new",
+						runtimeID:         "codex",
+						cwd:               "/tmp/project",
+						scopeID:           "project",
+						autoTitleEligible: true,
+					},
+				},
+			}
+			payload, err := json.Marshal(map[string]any{
+				"id":     3,
+				"method": method,
+				"params": map[string]any{
+					"threadId": "thread-new",
+					"input": []any{
+						map[string]any{"type": "text", "text": "检查支付回调"},
+						map[string]any{"type": "localImage", "path": "/secret/screenshot.png"},
+						map[string]any{"type": "skill", "name": "review", "path": "/secret/SKILL.md"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	request, ok := policy.takeAutoThreadTitleRequest(payload)
-	if !ok {
-		t.Fatal("新 Codex thread 的首个 turn/start 应生成标题请求")
-	}
-	if request.ThreadID != "thread-new" || request.CWD != "/tmp/project" {
-		t.Fatalf("标题请求线程绑定异常：%+v", request)
-	}
-	if !strings.Contains(request.Prompt, "检查支付回调") ||
-		!strings.Contains(request.Prompt, "[Image]") ||
-		!strings.Contains(request.Prompt, "@review") {
-		t.Fatalf("标题 prompt 未保留安全摘要：%q", request.Prompt)
-	}
-	if strings.Contains(request.Prompt, "/secret/") {
-		t.Fatalf("标题 prompt 不应复制图片或 Skill 路径：%q", request.Prompt)
-	}
-	if _, ok := policy.takeAutoThreadTitleRequest(payload); ok {
-		t.Fatal("同一新 thread 的标题资格只能消费一次")
+			request, ok := policy.takeAutoThreadTitleRequest(payload)
+			if !ok {
+				t.Fatalf("新 Codex thread 的首个 %s 应生成标题请求", method)
+			}
+			if request.ThreadID != "thread-new" || request.CWD != "/tmp/project" {
+				t.Fatalf("标题请求线程绑定异常：%+v", request)
+			}
+			if !strings.Contains(request.Prompt, "检查支付回调") ||
+				!strings.Contains(request.Prompt, "[Image]") ||
+				!strings.Contains(request.Prompt, "@review") {
+				t.Fatalf("标题 prompt 未保留安全摘要：%q", request.Prompt)
+			}
+			if strings.Contains(request.Prompt, "/secret/") {
+				t.Fatalf("标题 prompt 不应复制图片或 Skill 路径：%q", request.Prompt)
+			}
+			if _, ok := policy.takeAutoThreadTitleRequest(payload); ok {
+				t.Fatal("同一新 thread 的标题资格只能消费一次")
+			}
+		})
 	}
 }
 
@@ -298,9 +300,13 @@ func TestGatewayPublishesAutoThreadTitleNotificationToOriginatingClient(t *testi
 					"cwd": cwd,
 				},
 			})
-		case "turn/start":
+		case "thread/queue/add":
 			writeAutoTitleRPCResult(t, conn, *frame.ID, map[string]any{
-				"turn": map[string]any{"id": "turn-main"},
+				"queuedSubmission": map[string]any{
+					"id":                  "submission-main",
+					"input":               params["input"],
+					"clientUserMessageId": "client-main",
+				},
 			})
 		}
 	})
@@ -329,23 +335,17 @@ func TestGatewayPublishesAutoThreadTitleNotificationToOriginatingClient(t *testi
 
 	if err := conn.WriteJSON(map[string]any{
 		"id":     2,
-		"method": "turn/start",
+		"method": "thread/queue/add",
 		"params": map[string]any{
-			"threadId":       "thread-new",
-			"cwd":            projectDir,
-			"input":          []any{map[string]any{"type": "text", "text": "实现自动标题"}},
-			"approvalPolicy": "on-request",
-			"sandboxPolicy": map[string]any{
-				"type":          "workspaceWrite",
-				"writableRoots": []string{projectDir},
-				"networkAccess": false,
-			},
+			"threadId":            "thread-new",
+			"input":               []any{map[string]any{"type": "text", "text": "实现自动标题"}},
+			"clientUserMessageId": "client-main",
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	var sawTurnResponse bool
+	var sawQueueResponse bool
 	var sawTitleNotification bool
 	for range 2 {
 		var frame runtimeWebSocketFrame
@@ -353,7 +353,7 @@ func TestGatewayPublishesAutoThreadTitleNotificationToOriginatingClient(t *testi
 			t.Fatal(err)
 		}
 		if string(frame.ID) == "2" {
-			sawTurnResponse = true
+			sawQueueResponse = true
 		}
 		if frame.Method == "thread/name/updated" {
 			var params struct {
@@ -366,8 +366,8 @@ func TestGatewayPublishesAutoThreadTitleNotificationToOriginatingClient(t *testi
 			sawTitleNotification = params.ThreadID == "thread-new" && params.ThreadName == "自动生成标题"
 		}
 	}
-	if !sawTurnResponse || !sawTitleNotification {
-		t.Fatalf("移动端应同时收到主 Turn response 和标题通知：turn=%t title=%t", sawTurnResponse, sawTitleNotification)
+	if !sawQueueResponse || !sawTitleNotification {
+		t.Fatalf("移动端应同时收到 queue/add response 和标题通知：queue=%t title=%t", sawQueueResponse, sawTitleNotification)
 	}
 }
 
@@ -419,10 +419,6 @@ func newAutoThreadTitleUpstream(
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Header.Get("Authorization") != "Bearer test-upstream-token" {
-			http.Error(w, "missing token", http.StatusUnauthorized)
-			return
-		}
 		conn, err := upgrader.Upgrade(w, req, nil)
 		if err != nil {
 			return
@@ -510,18 +506,15 @@ func newAutoThreadTitleUpstream(
 
 func autoThreadTitleTestRouter(t *testing.T, upstreamURL string) *Router {
 	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "app-server-token")
-	if err := os.WriteFile(tokenFile, []byte("test-upstream-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return &Router{
 		cfg: config.Config{
 			AppServer: config.AppServerConfig{
-				Listen:      upstreamURL,
-				WSTokenFile: tokenFile,
+				Transport: "ssh",
+				SSHTarget: upstreamURL,
 			},
 		},
-		version: "test",
+		version:      "test",
+		appServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 	}
 }
 

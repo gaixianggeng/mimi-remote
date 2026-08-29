@@ -50,14 +50,14 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        var externalReadOnlyRoot = makeSession(
+        var protocolReadOnlyRoot = makeSession(
             id: "thread-external-read-only-root",
             projectID: project.id,
             title: "External read-only root",
             status: "history",
             source: "codex"
         )
-        externalReadOnlyRoot.canAcceptDirectInput = false
+        protocolReadOnlyRoot.canAcceptDirectInput = false
 
         let store = SessionStore(
             appStore: makeIsolatedAppStore(),
@@ -73,7 +73,7 @@ extension ConversationDataFlowTests {
             runningChild,
             sourceOnlyChild,
             ordinaryFork,
-            externalReadOnlyRoot,
+            protocolReadOnlyRoot,
         ]
 
         let childIDs = Set([structuralChild.id, runningChild.id, sourceOnlyChild.id])
@@ -93,7 +93,7 @@ extension ConversationDataFlowTests {
             XCTAssertTrue(childIDs.isDisjoint(with: Set(projection.map(\.id))))
         }
         XCTAssertTrue(store.activeSessions.contains { $0.id == ordinaryFork.id }, "普通 fork 仍是可独立打开的 root")
-        XCTAssertTrue(store.sessionLibrarySessions.contains { $0.id == externalReadOnlyRoot.id }, "只读能力不能被误当成 child 身份")
+        XCTAssertTrue(store.sessionLibrarySessions.contains { $0.id == protocolReadOnlyRoot.id }, "只读能力不能被误当成 child 身份")
         XCTAssertTrue(store.sessions(forProjectID: project.id).contains { $0.id == parent.id })
 
         store.sessionSearchQuery = "remote child needle"
@@ -5620,120 +5620,5 @@ private actor AccountTokenUsageResponseGate {
     func resolve(_ snapshot: AccountTokenUsageSnapshot?) {
         continuation?.resume(returning: snapshot)
         continuation = nil
-    }
-}
-
-@MainActor
-extension ConversationDataFlowTests {
-    func testLeavingSessionListSchedulesWriterHandoff() async {
-        let project = makeProject(id: "proj_handoff_list")
-        let session = makeSession(
-            id: "thread-handoff-list",
-            projectID: project.id,
-            title: "会话 A",
-            status: "history",
-            source: "codex",
-            resumeID: "thread-handoff-list"
-        )
-        let client = MockSessionStoreClient(projects: [project], sessions: [session])
-        let store = makeThreadHandoffStore(project: project, sessions: [session], client: client)
-
-        await store.selectSession(session)
-        store.returnToSessionList()
-        await waitForThreadHandoffs([session.id], client: client)
-    }
-
-    func testSwitchingFromAToBSchedulesOnlyPreviousThreadHandoff() async {
-        let project = makeProject(id: "proj_handoff_switch")
-        let sessionA = makeSession(
-            id: "thread-handoff-a",
-            projectID: project.id,
-            title: "会话 A",
-            status: "history",
-            source: "codex",
-            resumeID: "thread-handoff-a"
-        )
-        let sessionB = makeSession(
-            id: "thread-handoff-b",
-            projectID: project.id,
-            title: "会话 B",
-            status: "history",
-            source: "codex",
-            resumeID: "thread-handoff-b"
-        )
-        let client = MockSessionStoreClient(projects: [project], sessions: [sessionA, sessionB])
-        let store = makeThreadHandoffStore(project: project, sessions: [sessionA, sessionB], client: client)
-
-        await store.selectSession(sessionA)
-        await store.selectSession(sessionB)
-        await waitForThreadHandoffs([sessionA.id], client: client)
-    }
-
-    func testBackgroundHandoffUsesSelectedThreadAndHonorsQueuedTurnGuard() async {
-        let project = makeProject(id: "proj_handoff_background")
-        let session = makeSession(
-            id: "thread-handoff-background",
-            projectID: project.id,
-            title: "后台会话",
-            status: "history",
-            source: "codex",
-            resumeID: "thread-handoff-background"
-        )
-        let client = MockSessionStoreClient(projects: [project], sessions: [session])
-        let store = makeThreadHandoffStore(project: project, sessions: [session], client: client)
-        await store.selectSession(session)
-
-        store.suspendForBackground()
-        await waitForThreadHandoffs([session.id], client: client)
-
-        let queuedClient = MockSessionStoreClient(projects: [project], sessions: [session])
-        let queuedStore = makeThreadHandoffStore(project: project, sessions: [session], client: queuedClient)
-        await queuedStore.selectSession(session)
-        let payload = CodexAppServerTurnPayload(prompt: "后台排队")
-        queuedStore.queuedRunningTurnsBySessionID[session.id] = [QueuedTurnEntry(
-            sessionID: session.id,
-            projectID: project.id,
-            payload: payload,
-            clientMessageID: "client-handoff-queued",
-            intent: .standard
-        )]
-
-        queuedStore.suspendForBackground()
-        for _ in 0..<20 {
-            await Task.yield()
-        }
-        XCTAssertTrue(queuedClient.requestedThreadHandoffs.isEmpty)
-    }
-
-    private func makeThreadHandoffStore(
-        project: AgentProject,
-        sessions: [AgentSession],
-        client: MockSessionStoreClient
-    ) -> SessionStore {
-        let store = SessionStore(
-            appStore: makeIsolatedAppStore(),
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { client },
-            webSocketFactory: { MockWebSocketClient() }
-        )
-        store.projects = [project]
-        store.sessions = sessions
-        store.selectedProjectID = project.id
-        return store
-    }
-
-    private func waitForThreadHandoffs(
-        _ expected: [SessionID],
-        client: MockSessionStoreClient,
-        timeout: Int = 80
-    ) async {
-        for _ in 0..<timeout {
-            if client.requestedThreadHandoffs == expected {
-                return
-            }
-            await Task.yield()
-        }
-        XCTAssertEqual(client.requestedThreadHandoffs, expected)
     }
 }

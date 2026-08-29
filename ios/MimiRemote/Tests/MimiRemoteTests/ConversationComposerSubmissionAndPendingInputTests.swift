@@ -5,6 +5,50 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testSharedThreadComposerTurnSettingsPolicyOnlyLocksExistingSharedSessions() {
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.resolve(
+                scope: .session("shared-thread"),
+                sessionRuntimeProvider: "codex",
+                isLocalSession: false,
+                isArchivedSession: false
+            ),
+            .sharedThreadManaged
+        )
+        XCTAssertFalse(ComposerTurnSettingsPolicy.sharedThreadManaged.allowsTurnSettingsEditing)
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.sharedThreadNotice,
+            "沿用共享线程设置；请在 Desktop 修改"
+        )
+
+        let editableCases: [(
+            scope: ComposerDraftScopeKey,
+            runtimeProvider: String?,
+            isLocal: Bool,
+            isArchived: Bool
+        )] = [
+            (.session("local:project:message"), "codex", false, false),
+            (.session("optimistic-thread"), "codex", true, false),
+            (.newSession(projectID: "project"), "codex", false, false),
+            (.none, "codex", false, false),
+            (.session("claude-thread"), "claude", false, false),
+            (.session("chatgpt-thread"), "chatgpt", false, false),
+            (.session("archived-thread"), "codex", false, true),
+        ]
+        for item in editableCases {
+            XCTAssertEqual(
+                ComposerTurnSettingsPolicy.resolve(
+                    scope: item.scope,
+                    sessionRuntimeProvider: item.runtimeProvider,
+                    isLocalSession: item.isLocal,
+                    isArchivedSession: item.isArchived
+                ),
+                .editable
+            )
+        }
+        XCTAssertTrue(ComposerTurnSettingsPolicy.editable.allowsTurnSettingsEditing)
+    }
+
     func testCompactComposerModelTitleUsesDeterministicWidthPolicy() {
         XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: nil))
         XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 379))
@@ -192,7 +236,7 @@ extension ConversationDataFlowTests {
             projectID: "ipad-composer-project",
             title: "iPad Composer 收起回归",
             status: SessionStatus.completed.rawValue,
-            source: "codex"
+            source: "local"
         )
         sessionStore.sessionsByID[session.id] = session
         sessionStore.selectedSessionID = session.id

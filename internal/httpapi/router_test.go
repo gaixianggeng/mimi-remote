@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
@@ -34,6 +37,37 @@ type testServer struct {
 	handler http.Handler
 	router  *Router
 	manager *session.Manager
+}
+
+// directWSTestTransport 只用于把旧 gateway 协议测试接到内存 WebSocket server。
+// 生产代码始终使用 SSHTransport；测试仍通过同一个固定 gateway URL 和 initialize。
+type directWSTestTransport struct{ upstreamURL string }
+
+func (transport directWSTestTransport) WebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
+	parsed, err := url.Parse(transport.upstreamURL)
+	if err != nil {
+		return websocket.Dialer{}, err
+	}
+	dialer := websocket.Dialer{HandshakeTimeout: timeout}
+	dialer.NetDialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, parsed.Host)
+	}
+	return dialer, nil
+}
+
+func (transport directWSTestTransport) EnsureReady(ctx context.Context) error {
+	dialer, err := transport.WebSocketDialer(2 * time.Second)
+	if err != nil {
+		return err
+	}
+	conn, response, err := dialer.DialContext(ctx, appserver.CodexAppServerWebSocketURL, nil)
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func requireTestSymlink(t *testing.T, target string, link string) {
@@ -89,7 +123,11 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	t.Cleanup(manager.Shutdown)
 
 	checker := doctor.NewChecker("test", cfg, registry)
-	handler, router := NewRouterWithRuntimeAndInstallationID(
+	options := RouterOptions{}
+	if strings.HasPrefix(cfg.AppServer.SSHTarget, "ws://") || strings.HasPrefix(cfg.AppServer.SSHTarget, "wss://") {
+		options.AppServerSSH = directWSTestTransport{upstreamURL: cfg.AppServer.SSHTarget}
+	}
+	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg,
 		registry,
 		manager,
@@ -97,6 +135,7 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 		"test",
 		testInstallationID,
 		nil,
+		options,
 	)
 	return testServer{
 		handler: handler,

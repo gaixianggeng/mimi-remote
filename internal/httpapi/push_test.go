@@ -72,10 +72,8 @@ func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*htt
 	t.Helper()
 	cfg, registry, manager, checker, _ := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
-		Transport:      "ws",
-		Managed:        true,
-		Listen:         upstreamURL,
-		WSTokenFile:    testAppServerTokenFile(t, "test-upstream-token"),
+		Transport:      "ssh",
+		SSHTarget:      upstreamURL,
 		ApprovalBroker: true,
 	}
 	cfg.Push = config.PushConfig{
@@ -86,7 +84,10 @@ func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*htt
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg, registry, manager, checker, "test", "install-push-test", nil,
-		RouterOptions{ConfigPath: configPath},
+		RouterOptions{
+			ConfigPath:   configPath,
+			AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
+		},
 	)
 	t.Cleanup(router.claudeBridge.shutdown)
 	server := httptest.NewServer(handler)

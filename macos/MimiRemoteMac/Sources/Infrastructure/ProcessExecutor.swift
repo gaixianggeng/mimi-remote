@@ -27,28 +27,6 @@ enum ProcessExecutorError: LocalizedError {
 actor ProcessExecutor {
     static let shared = ProcessExecutor()
 
-    /// 用于 launchctl setenv/unsetenv 这类很短、但可能已经提交系统状态的命令。
-    /// 调用方取消后仍等待独立任务返回，确保上层能够看到真实执行结果并完成
-    /// 后续写入或回滚；普通命令继续使用 `run`，保持及时取消能力。
-    func runToCompletion(
-        executable: URL,
-        arguments: [String],
-        timeout: Duration = .seconds(15),
-        outputLimit: Int = 1_048_576,
-        environment: [String: String]? = nil
-    ) async throws -> CommandResult {
-        let execution = Task.detached {
-            try await self.run(
-                executable: executable,
-                arguments: arguments,
-                timeout: timeout,
-                outputLimit: outputLimit,
-                environment: environment
-            )
-        }
-        return try await execution.value
-    }
-
     func run(
         executable: URL,
         arguments: [String],
@@ -90,8 +68,8 @@ actor ProcessExecutor {
             timeoutState.set()
             // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
             // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
-            // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰共享
-            // Codex daemon；后端 marker/manual plist 仍保留，可安全重试。
+            // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰
+            // Desktop 或其 IPC 连接；配置文件仍保持原子写入，可安全重试。
             _ = Darwin.kill(processIdentifier, SIGTERM)
             guard forceKillAfterTimeout else { return }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {

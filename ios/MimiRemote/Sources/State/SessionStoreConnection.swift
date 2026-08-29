@@ -114,13 +114,6 @@ extension SessionStore {
         replayBufferedEvents: Bool = true,
         allowNonRunning: Bool = false
     ) {
-        guard !isExternalReadOnlySession(session) else {
-            if connectedSessionID == session.id {
-                disconnectWebSocket()
-            }
-            setWebSocketStatus(.disconnected)
-            return
-        }
         // 本地草稿尚无远端 thread id，任何 history/resume/WebSocket 请求都会把 local: id
         // 误送给 app-server。首条消息创建真实 thread 后再按正常路径连接。
         guard !session.isLocalDraft else {
@@ -259,15 +252,8 @@ extension SessionStore {
                     generation: connectionGeneration,
                     hostScope: hostScope
                 )
-                // external-activity 可能在 turn/start ACK 前先误断开 socket。仅当迟到 ACK 的
-                // turnID 与被标成 Mac 活动的 turn 精确一致时，允许旧连接完成这次对账；
-                // Host 已切换、turnID 不同或普通旧回调仍全部丢弃。
-                guard isCurrentConnection ||
-                        self.canReconcileTurnOutcomeFromRetiredSocket(
-                            sessionID: session.id,
-                            outcome: outcome,
-                            hostScope: hostScope
-                        ) else {
+                // 旧连接的 ACK 只能在当前连接仍有效时对账；Host 已切换或普通旧回调全部丢弃。
+                guard isCurrentConnection else {
                     return
                 }
                 self.handleTurnSendOutcome(
@@ -401,6 +387,7 @@ extension SessionStore {
             }
             cancelWebSocketReconnect(resetAttempts: false)
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+            setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
@@ -412,8 +399,11 @@ extension SessionStore {
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+            if activeWriterConflict {
+                setActiveWriterConflict(true, sessionID: sessionID)
+            }
             // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
-            // Mac 侧共享入口，避免把结构性冲突伪装成短暂网络波动。
+            // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动。
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
                 && !policyRejected
                 && !activeWriterConflict
@@ -436,12 +426,13 @@ extension SessionStore {
             } else {
                 setWebSocketStatus(.failed(message))
                 if activeWriterConflict {
-                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict_requires_shared_service"))
+                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict"))
                 } else {
                     setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
                 }
             }
         case .terminated(let reason):
+            setActiveWriterConflict(false, sessionID: sessionID)
             if reason == .credentialsInvalid,
                !appStore.isCurrentCredentialFingerprint(connectedCredentialFingerprint) {
                 // 旧 Runtime/空 Token 的迟到拒绝不是当前凭据结论；按普通断线交给现有恢复链路。
@@ -599,16 +590,14 @@ extension SessionStore {
     }
 
     func shouldAutoReconnectWebSocket(sessionID: SessionID) -> Bool {
-        // 不再要求 isRunning：状态可能刚被瞬时 idle 误读降级。共享模式会恢复订阅，
-        // 独立模式只恢复页面连接并保持持久化历史可读。
+        // 状态可能刚被瞬时 idle 误读降级，但 gateway 连接本身仍可重连。
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
               connectedSessionID == sessionID,
               connectedHostScope == appStore.activeHostScope,
               selectedSessionID == sessionID,
-              let session = sessionsByID[sessionID],
-              !isExternalReadOnlySession(session),
+              sessionsByID[sessionID] != nil,
               appStore.isConfigured else {
             return false
         }
@@ -699,8 +688,7 @@ extension SessionStore {
               webSocketReconnectGeneration == reconnectGeneration,
               selectedSessionID == sessionID,
               webSocketReconnectAttemptBySessionID[sessionID] == attempt,
-              let latestSession = sessionsByID[sessionID],
-              !isExternalReadOnlySession(latestSession) else {
+              let latestSession = sessionsByID[sessionID] else {
             return
         }
         guard selectedSessionID == sessionID else {
@@ -717,12 +705,11 @@ extension SessionStore {
               webSocketReconnectGeneration == reconnectGeneration,
               selectedSessionID == sessionID,
               webSocketReconnectAttemptBySessionID[sessionID] == attempt,
-              let currentSession = sessionsByID[sessionID],
-              !isExternalReadOnlySession(currentSession) else {
+              sessionsByID[sessionID] != nil else {
             return
         }
         // 快照可能在上游刚恢复时把运行中的 turn 误读成 idle；不能据此一次性放弃重连。
-        // 共享模式会 resume 并用权威状态纠正；独立模式保持只读，等待轮询或首次发送。
+        // 连接会在发送前由 gateway 按当前状态重新建立写入路径。
         connectWebSocket(refreshedSession, isReconnectAttempt: true, allowNonRunning: true)
     }
 
@@ -732,8 +719,7 @@ extension SessionStore {
     ) async -> AgentSession? {
         guard !Task.isCancelled,
               webSocketReconnectGeneration == reconnectGeneration,
-              let current = sessionsByID[sessionID],
-              !isExternalReadOnlySession(current) else {
+              let current = sessionsByID[sessionID] else {
             return nil
         }
         do {
@@ -742,12 +728,9 @@ extension SessionStore {
             // 自身可能跨过 4 秒 TTL，导致明明刚加载成功的首屏仍被重复下载。
             let hadRecentAppliedFullAtPreflightStart = hasRecentFullHistoryFirstPage(sessionID: sessionID)
             let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
-            // external-activity 可能在 session/read 期间确认该线程由 Mac 持有。此时 reconnect
-            // 已失效，不能让迟到的恢复任务继续发 10-turn full，再在只读 guard 处才停下。
             guard !Task.isCancelled,
                   webSocketReconnectGeneration == reconnectGeneration,
-                  selectedSessionID == sessionID,
-                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                  selectedSessionID == sessionID else {
                 return nil
             }
             let refreshed = self.session(response.session, in: workspaceForSession(current))
@@ -758,8 +741,7 @@ extension SessionStore {
             }
             // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
             guard !Task.isCancelled,
-                  webSocketReconnectGeneration == reconnectGeneration,
-                  !externalReadOnlySessionIDs.contains(sessionID) else {
+                  webSocketReconnectGeneration == reconnectGeneration else {
                 return nil
             }
             // 首屏刚完成后，底层事件订阅若短暂结束，会在约 1 秒内进入 reconnect。
@@ -848,6 +830,15 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
+        if case .messageCompleted(let message, let metadata) = event,
+           message.role == .user,
+           let clientMessageID = metadata.clientMessageID {
+            _ = handleServerQueueTurnStarted(
+                clientMessageID: clientMessageID,
+                sessionID: metadata.sessionID ?? sessionID,
+                turnID: metadata.turnID
+            )
+        }
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
             _ = satisfyPendingPermissionTurnBoundary(
@@ -855,13 +846,20 @@ extension SessionStore {
                 clientMessageID: metadata.clientMessageID
             )
             if let turnID = metadata.turnID {
-                queuedTurnAwaitingStartSessionIDs.remove(id)
-                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                let hasPendingServerQueueReceipt = serverQueueDeliveryActive(sessionID: id)
+                    && queuedRunningTurnsBySessionID[id]?.contains(where: {
+                        $0.dispatchState == .dispatching
+                    }) == true
+                if !hasPendingServerQueueReceipt {
+                    queuedTurnAwaitingStartSessionIDs.remove(id)
+                    queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                }
                 queuedTurnStartedIDBySessionID[id] = turnID
                 // 第一条已派发时，后续队列项统一改为等待这个新 turn；不能继续绑定旧完成事件。
                 _ = mutateAndPersistQueuedTurns {
                     guard var queue = queuedRunningTurnsBySessionID[id] else { return }
-                    for index in queue.indices where queue[index].dispatchState == .waiting {
+                    for index in queue.indices
+                    where queue[index].dispatchState == .waiting {
                         queue[index].expectedTurnID = turnID
                         queue[index].waitsForAcceptedTurnStart = nil
                         queue[index].blockedCompletionID = nil
@@ -1632,20 +1630,6 @@ extension SessionStore {
             remoteSessionSearchResults = migratedRemoteSessions
         }
 
-        externalActivityBySessionID = externalActivityBySessionID.mapValues { activity in
-            guard let newID = replacements[activity.projectID] else {
-                return activity
-            }
-            return ExternalSessionActivity(
-                threadID: activity.threadID,
-                projectID: newID,
-                source: activity.source,
-                state: activity.state,
-                turnID: activity.turnID,
-                revision: activity.revision,
-                lastActivityAt: activity.lastActivityAt
-            )
-        }
         missingRunningSessionStateByID = missingRunningSessionStateByID.mapValues { state in
             MissingRunningSessionState(
                 projectID: replacements[state.projectID] ?? state.projectID,
@@ -2413,9 +2397,13 @@ extension SessionStore {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
+        let activeWriterConflict = value.map(Self.isCodexActiveWriterConflict) == true
+        if activeWriterConflict, let selectedSessionID {
+            setActiveWriterConflict(true, sessionID: selectedSessionID)
+        }
         let userFacingValue: String?
-        if let value, Self.isCodexActiveWriterConflict(value) {
-            userFacingValue = L10n.text("ui.codex_active_writer_conflict_requires_shared_service")
+        if activeWriterConflict {
+            userFacingValue = L10n.text("ui.codex_active_writer_conflict")
         } else {
             userFacingValue = value
         }
@@ -2614,14 +2602,6 @@ extension SessionStore {
         reloadSessionControlStates()
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
-        externalActivityBySessionID = [:]
-        externalReadOnlySessionIDs = []
-        externalActivityHistoryRevisionBySessionID = [:]
-        externalActivityHistoryAttemptBySessionID = [:]
-        externalActivityHistoryFallbackBySessionID = [:]
-        locallyStartedTurnIDBySessionID = [:]
-        isRefreshingExternalActivity = false
-        externalActivityCapabilityUnavailable = false
         runtimeActivityBySessionID = [:]
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []

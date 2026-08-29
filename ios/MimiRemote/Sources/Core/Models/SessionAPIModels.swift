@@ -118,19 +118,28 @@ struct CreateSessionResponse: Codable {
     let row: DataFlowSessionRow?
     let wsURL: String
     let firstMessage: AgentMessage?
+    let requiresQueuedInitialInput: Bool?
 
     enum CodingKeys: String, CodingKey {
         case session
         case row
         case wsURL = "ws_url"
         case firstMessage = "first_message"
+        case requiresQueuedInitialInput = "requires_queued_initial_input"
     }
 
-    init(session: AgentSession, row: DataFlowSessionRow? = nil, wsURL: String, firstMessage: AgentMessage? = nil) {
+    init(
+        session: AgentSession,
+        row: DataFlowSessionRow? = nil,
+        wsURL: String,
+        firstMessage: AgentMessage? = nil,
+        requiresQueuedInitialInput: Bool? = nil
+    ) {
         self.session = session
         self.row = row
         self.wsURL = wsURL
         self.firstMessage = firstMessage
+        self.requiresQueuedInitialInput = requiresQueuedInitialInput
     }
 
     init(from decoder: Decoder) throws {
@@ -149,6 +158,10 @@ struct CreateSessionResponse: Codable {
         }
         self.wsURL = try container.decode(String.self, forKey: .wsURL)
         self.firstMessage = try container.decodeIfPresent(AgentMessage.self, forKey: .firstMessage)
+        self.requiresQueuedInitialInput = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .requiresQueuedInitialInput
+        )
     }
 }
 

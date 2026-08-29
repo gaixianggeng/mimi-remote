@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// 同一个可执行文件有两种角色：默认是菜单栏 App，带 --codex-daemon-supervisor 时是
-/// 共享 Codex daemon 的无 UI TCC 责任进程（见 CodexDaemonSupervisor）。分叉必须发生在
-/// 触碰 SwiftUI 之前，否则 launchd 拉起的后台进程会连带初始化 AppKit。
+/// Mimi Remote Mac 只运行菜单栏 App；后台 Codex App Server 由 agentd 托管。
 @main
 enum MimiRemoteMacMain {
     static func main() {
-        if let command = CodexDaemonSupervisorInvocation.parse(CommandLine.arguments) {
-            CodexDaemonSupervisor.run(command)
+        // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
+        // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
+        if CommandLine.arguments.contains("--codex-daemon-supervisor") {
+            return
         }
         MimiRemoteMacApp.main()
     }

@@ -82,41 +82,6 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testFullThreadReadHidesInheritedSubagentPrefix() async throws {
-        let project = AgentProject(id: "subagent-full", name: "Subagent Full", path: "/tmp/subagent-full")
-        let transport = FakeCodexAppServerTransport()
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "outer-token",
-            transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
-        )
-        let client = CodexAppServerSessionAPIClient(runtime: runtime)
-
-        let pageTask = Task {
-            try await client.messagesPage(sessionID: "child-thread", before: nil, limit: 50)
-        }
-        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
-        transportResponse(
-            transport,
-            id: initialize.id,
-            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
-        )
-        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read")
-        XCTAssertEqual(read.params?.objectValue?["threadId"]?.stringValue, "child-thread")
-        XCTAssertEqual(read.params?.objectValue?["includeTurns"]?.boolValue, true)
-        transportResponse(
-            transport,
-            id: read.id,
-            result: #"{"thread":{"id":"child-thread","sessionId":"child-thread","parentThreadId":"parent-thread","forkedFromId":"parent-thread","preview":"child","ephemeral":false,"modelProvider":"openai","createdAt":200,"updatedAt":220,"status":{"type":"idle"},"path":null,"cwd":"/tmp/subagent-full","cliVersion":"0.0.0","source":{"subAgent":{"thread_spawn":{}}},"threadSource":"subagent","agentNickname":"Curie","name":null,"turns":[{"id":"inherited-turn","startedAt":100,"status":"interrupted","items":[{"type":"userMessage","id":"parent-user","content":[{"type":"text","text":"parent request"}]},{"type":"agentMessage","id":"parent-commentary","text":"parent commentary","phase":"commentary"},{"type":"commandExecution","id":"parent-command","command":"echo parent","cwd":"/tmp","status":"completed","commandActions":[]}]},{"id":"child-turn","startedAt":201,"completedAt":220,"status":"completed","items":[{"type":"agentMessage","id":"child-result","text":"child result","phase":"final_answer"}]}]}}"#
-        )
-
-        let page = try await pageTask.value
-
-        XCTAssertEqual(page.messages.map(\.content), ["child result"])
-        XCTAssertFalse(page.context?.tasks.contains { $0.id == "parent-command" } == true)
-    }
-
     func testPagedTurnHistoryUsesCachedSourceOnlyChildMetadataAndClosesInheritedCursor() async throws {
         let project = AgentProject(id: "subagent-paged", name: "Subagent Paged", path: "/tmp/subagent-paged")
         let transport = FakeCodexAppServerTransport()

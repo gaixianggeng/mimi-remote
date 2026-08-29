@@ -18,16 +18,16 @@
 
 | 项目 | 当前状态 | 完成证据 / 下一步 |
 | --- | --- | --- |
-| Mac 一键启动 | 已完成菜单栏安装闭环 | 正式 Release 生成 Developer ID 签名并经过 Apple 公证的 universal DMG；菜单栏 App 内置 `agentd` 和 Claude bridge，负责首次设置、状态、配对、Doctor、登录启动和服务生命周期。检测到旧 Homebrew 服务时先保持其运行，用户确认后安全接管，失败自动尝试恢复旧服务；配置、双 Token 和配对关系继续保留。 |
-| 服务存活与就绪分离 | 本轮完成 | `/healthz` 只表示进程存活；`/api/readyz` 除 Doctor 静态检查外，还会使用独立 upstream Token 对 loopback Codex app-server 完成真实 WebSocket 握手，失败返回 503。探测使用 750ms 硬超时、成功/失败短缓存和并发 single-flight，避免 `up` 高频轮询反复建连；`up/start/restart` 通过前不展示二维码。`agentd status --json` 的 `process_ok` 对应存活，兼容字段 `service_ok` 改为真正就绪，Linux 安装/升级不会再把“端口活着但 Codex 不可用”误判为成功。 |
-| 安装、升级与回滚 | 本轮完成 | macOS 普通用户使用 DMG 覆盖升级，App 与配置分离，回滚优先恢复上一版已签名、公证 App；Homebrew 保留给命令行、服务器、自动化和恢复，Linux Release 内置 user-systemd 安装脚本并在升级失败时自动恢复旧二进制和 unit。setup 的 config/upstream Token 双文件写入失败原子，安全卸载先停止或迁移服务，只移除程序并保留配置与 Token。Release 已创建但 tap 失败时可在不移动 tag 的前提下重跑同一 workflow。 |
+| Mac 一键启动 | 已完成菜单栏安装闭环 | 正式 Release 生成 Developer ID 签名并经过 Apple 公证的 universal DMG；菜单栏 App 内置 `agentd` 和 Claude bridge，负责首次设置、状态、配对、Doctor、登录启动和服务生命周期。检测到旧 Homebrew 服务时先保持其运行，用户确认后安全接管，失败自动尝试恢复旧服务；配置、移动端 Token 和配对关系继续保留。 |
+| 服务存活与就绪分离 | 本轮完成 | `/healthz` 只表示进程存活；`/api/readyz` 除 Doctor 静态检查外，还会通过 SSH proxy 对共享 Unix App Server 完成真实 `initialize`，失败返回 503。SSH 探测并发使用 single-flight；只有默认 Socket 不存在时才启动 App Server。`up/start/restart` 通过前不展示二维码。`agentd status --json` 的 `process_ok` 对应存活，`service_ok` 对应 SSH、版本和协议就绪。 |
+| 安装、升级与回滚 | 本轮完成 | macOS 普通用户使用 DMG 覆盖升级，App 与配置分离，回滚优先恢复上一版已签名、公证 App；Homebrew 保留给命令行、服务器、自动化和恢复，Linux Release 内置 user-systemd 安装脚本并在升级失败时自动恢复旧二进制和 unit。setup 原子写入配置；旧 managed WebSocket 配置只在 SSH 预检通过后原子迁移。安全卸载只移除 Mimi 程序和服务，不停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。 |
 | macOS 稳定代码身份与文件授权 | 本轮完成代码闭环 | Doctor 会把 cdhash-only ad-hoc 二进制标记为 warning；开发脚本使用固定 identifier + Apple Development 签名，并通过独立 launchd job 完成替换、kickstart、readyz 验证和失败回滚。每次 serve 启动最前面异步预检 projects/scan/browse roots，Home 浏览根额外触发 Desktop、Documents、Downloads 探测，结果进入 Doctor 与日志但不阻塞远程控制面。无人值守访问整个 Home 仍需人工一次性授予完全磁盘访问。正式 GoReleaser 链路强制 Developer ID + Apple notarization，发布后重新解包两个 Darwin 归档校验 Authority、TeamIdentifier 和 designated requirement。 |
-| 敏感文件权限 | 本轮完成 | Doctor 检查配置和 app-server token 必须是当前用户私有 regular file；对已有文件只收紧到 `0600`，不会轮换；旧配置缺少独立 upstream Token 时才原子生成并只补 `ws_token_file`。 |
+| 敏感文件权限 | 本轮完成 | Doctor 检查配置必须是当前用户私有 regular file，并把权限收紧到 `0600`。agentd 不保存 SSH 密码或私钥；host key、密钥和默认 Unix Socket 都由当前 macOS 用户管理。 |
 | APP 凭据与弱网 | 本轮完成代码闭环 | Keychain/连接切换失败保留旧连接；清除配对先完成 Keychain 删除再提交 UserDefaults/内存状态，删除失败不会形成“默认地址 + 旧 Token”。忘记当前 Mac 和删除其它档案都先展示目标与重新配对影响，二次确认时重验 profile ID，避免旧弹窗误删后来切换的新当前档案。扫码相机权限拒绝/受限时提供系统设置和手动连接两个恢复动作，相机不可用或配置失败时也能选择回到原连接页并展开已有手动区域；权限与相机回调延后交回 SwiftUI，不增加后台相机能力。首次扫码、URL Scheme 和手动配对在凭据提交后统一复用冷启动恢复，最多等待 45 秒；修复或切换已有档案等待 10 秒。超时保留已提交凭据并展示无需重新扫码的可重试错误，不再误报“已连接”。REST/WS 401/鉴权 403 进入重新配对终态并停止重试；离线暂停轮询/WS，恢复只重连一次，瞬时失败使用 jitter + 30 秒上限。进入后台会主动退役旧 WebSocket 并保留会话、消息、排队 turn 与审批，回到前台后按网络状态只恢复一次。会话提醒在系统通知未授权时明确标记为仅 App 内保存，冷启动和回前台会清理已到期状态，不增加常驻 timer。提醒与运行态通知只携带版本/profile/project/session 路由，不含 Token 或明文 endpoint；点击后等待 bootstrap 完成，只打开当前 Mac 的会话，其他 Mac 仅提示手动切换档案。 |
 | HTTP 请求资源边界 | 本轮完成 | 全部 JSON handler 统一拒绝未知字段、第二个 JSON 值和超限尾部；未鉴权配对为 16 KiB、普通控制面为 256 KiB、12 MiB 原始语音对应的 JSON envelope 为 17 MiB。`Content-Length`、chunked 和伪造长度都返回通用 413，不回显请求内容。 |
 | App Store 隐私清单 | 本轮完成 | App bundle 根包含 `PrivacyInfo.xcprivacy`，声明不跟踪、不由开发者收集，UserDefaults 使用 approved reason `CA92.1`；iOS CI/TestFlight 归档前强制校验。 |
 | iPad 诊断体验 | 本轮完成 | Doctor 页面结构化展示总状态、逐项检查和修复建议；保留可复制原始 JSON；非 2xx、超时和畸形响应进入明确错误态并可重试。当前会话日志可导出 ANSI 清洗后的有界 UTF-8 `.log`；头部只含生成时间、App 版本、会话 ID/标题和 Mac 显示名，不读取连接凭据。 |
-| Gateway 协议边界 | 已完成 | 当前只放行 23 个移动端需要的方法；`thread/search` 请求严格按 schema 重建，响应按 project、`browse_roots` 和 managed Worktree 的 cwd scope 逐条裁剪；反向 Server Request fail-closed；Review 仅允许 inline；Codex `0.144.2` 协议漂移由快照检查阻断。 |
+| Gateway 协议边界 | 已完成 | Gateway 只放行移动端需要的公开方法，并按 schema 重建请求；`thread/search` 响应按 project、`browse_roots` 和 managed Worktree 的 cwd scope 逐条裁剪。标准审批和补充输入允许任一订阅入口首个响应；未知 Desktop 私有反向请求保持沉默。共享队列最低兼容 Codex `0.149.1`。 |
 | PR 质量门禁 | 本轮完成配置 | Go/iOS/协议回归外，新增当前工作树 + Git 历史凭据扫描、Action SHA 固定、第三方许可证正文/版本门禁、隐私清单门禁。推送后仍需以 GitHub Actions 真实运行结果作为最终证据。 |
 | 公开二进制发布 | 正式发布链路已完成 | GoReleaser 生成并校验 darwin/linux、amd64/arm64 四套归档、checksums 和 Homebrew Formula；同一 tag workflow 还会构建 universal Mac App DMG，强制验证内嵌 `agentd` / Claude bridge、Developer ID、notarization ticket 和 Gatekeeper。缺少任何 Apple Secret 会在创建发布产物前失败。 |
 | 真机网络与 ATS | 已完成 iOS 27 模拟器 Tailscale 裸 IP 回归定位，真机完整验收待执行 | 2026-07-14 确认只保留 `NSAllowsLocalNetworking` 会导致 Tailscale 裸 IP HTTP 在发请求前被 ATS 以 `-1022` 拦截。系统层恢复 `NSAllowsArbitraryLoads`，设置提交、REST 和 WebSocket 仍由应用层统一拒绝公网 HTTP，CI 检查两层配置不再互相冲突。发布前仍需在真机上完成 Token 鉴权、前后台切换和 Wi-Fi/蜂窝弱网验收，并决定是否切换 MagicDNS HTTPS。 |
@@ -43,7 +43,7 @@
 | Managed Worktree | 本轮完成 P1 生命周期闭环 | 创建、分支选择、fork、打开和受保护删除可用。registry 记录真实 checkout 根与生命周期，实际访问会节流更新 `last_used_at`；清理固定为“30 天候选 + 每项目保留最近 3 个 + dry-run 计划 + APP 二次确认”，执行前重验 Git、仓库 identity、托管根、会话状态和计划指纹。Gateway 的 `thread/start`、`thread/resume`、`thread/fork` 在上游响应前持有 pending-use lease，避免普通删除撞上正在建立的会话；Codex/Claude 断连会释放 lease，成功时先登记 thread 再释放。清理永远不用 `force`，旧删除接口的 `force=true` 也会被后端拒绝。checkout 已删但 registry unlink 失败时返回结构化部分结果，APP 先移除真实 checkout 再提示重试 prune。创建后处理失败会回滚本次 checkout 和新分支；无人值守定时删除继续关闭。 |
 | Git 审查动作 | MVP 已完成 | stage/unstage/revert、hunk、commit、push、草稿 PR 和本地 review note 已形成闭环；GitHub Review API inline comment 后置。 |
 | 项目 Action | MVP 已完成 | 只执行配置 allowlist 中的命令，带确认、超时、输出截断和本地队列；不开放任意交互式 Shell。 |
-| 运行与诊断细节 | 本轮完成代码闭环 | `/api/diagnostics/relay` 提供限界现场数据；APP 已区分凭据终态、离线和瞬时失败，并保留会话/排队消息。`serve` 在 signal、HTTP 异常和 managed upstream 退出时统一先停止 HTTP 接入并 drain，再回收会话/upstream；排空超时强关，upstream 意外退出保留非零原因，由 Homebrew/systemd 自动恢复。剩余仅是真机 Wi-Fi/蜂窝、前后台和 Tailscale 暂停/恢复验收。 |
+| 运行与诊断细节 | 本轮完成代码闭环 | `/api/diagnostics/relay` 提供限界现场数据；APP 已区分凭据终态、离线和瞬时失败，并保留会话/排队消息。`serve` 在 signal 或 HTTP 异常时先停止 HTTP 接入并 drain，再回收 agentd 自己的会话与 SSH proxy；共享 Unix App Server 继续运行。SSH 或共享 App Server 异常会明确失败，不回退到独立运行时。剩余仅是真机 Wi-Fi/蜂窝、前后台和 Tailscale 暂停/恢复验收。 |
 
 与 Litter 的详细比较见[能力对照](litter-comparison.md)。当前优先吸收的是“保存多台 Mac、单次只连接一台、每台独立 Keychain Token”的低复杂度闭环；Bonjour/SSH 任意主机、内置终端、Watch/CarPlay、Android、云端线程和 vendored Codex runtime 不进入首发范围。
 

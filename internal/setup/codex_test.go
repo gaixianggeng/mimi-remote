@@ -3,14 +3,13 @@ package setup
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
@@ -56,52 +55,6 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	want, _ := filepath.Abs(embedded)
 	if resolved != filepath.Clean(want) {
 		t.Fatalf("应恢复桌面 App 内置 Codex：%s", resolved)
-	}
-}
-
-func TestResolveCodexBinSkipsUnsafePATHRuntimeForCompatibleDesktopCandidate(t *testing.T) {
-	oldConfigured := filepath.Join(t.TempDir(), "codex-old")
-	desktop := filepath.Join(t.TempDir(), "codex-desktop")
-	lookups := []string{}
-	lookup := func(candidate string) (string, error) {
-		lookups = append(lookups, candidate)
-		switch candidate {
-		case oldConfigured, "codex":
-			return "", fmt.Errorf(
-				"%w: %s version 0.145.0",
-				appserver.ErrIndependentWriterCapabilityUnavailable,
-				oldConfigured,
-			)
-		case desktop:
-			return desktop, nil
-		default:
-			return "", errors.New("missing")
-		}
-	}
-
-	resolved, err := resolveCodexBin(oldConfigured, lookup, []string{desktop})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := filepath.Abs(desktop)
-	if resolved != filepath.Clean(want) {
-		t.Fatalf("compatible Desktop runtime should win after unsafe PATH candidate: got=%q want=%q", resolved, want)
-	}
-	if !reflect.DeepEqual(lookups, []string{oldConfigured, "codex", desktop}) {
-		t.Fatalf("runtime candidates were checked in the wrong order: %v", lookups)
-	}
-}
-
-func TestResolveCodexBinReturnsUnsafeVersionWhenNoCompatibleCandidateExists(t *testing.T) {
-	unsafeErr := fmt.Errorf(
-		"%w: version 0.145.0",
-		appserver.ErrIndependentWriterCapabilityUnavailable,
-	)
-	_, err := resolveCodexBin("codex", func(string) (string, error) {
-		return "", unsafeErr
-	}, nil)
-	if !errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
-		t.Fatalf("unsafe installed runtime should not degrade to a missing CLI error: %v", err)
 	}
 }
 
@@ -191,5 +144,32 @@ func TestRepairCodexBinDoesNotRewriteValidAbsolutePath(t *testing.T) {
 	}
 	if repaired || writeCalled || path != "/valid/codex" {
 		t.Fatalf("有效绝对路径不应重写：path=%q repaired=%v write=%v", path, repaired, writeCalled)
+	}
+}
+
+func TestRepairCodexBinRejectsLegacySharingBeforeResolvingOrWriting(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"ws","shared_fallback":{"transport":"ws"}},"codex":{"bin":"codex"}}`)
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolverCalled := false
+	writerCalled := false
+	_, _, err := repairCodexBin(cfgPath, func(string) (string, error) {
+		resolverCalled = true
+		return "/tmp/codex", nil
+	}, func(string, []byte) error {
+		writerCalled = true
+		return nil
+	})
+	if !errors.Is(err, config.ErrLegacyAppServerConfiguration) {
+		t.Fatalf("legacy sharing must fail closed: %v", err)
+	}
+	if resolverCalled || writerCalled {
+		t.Fatalf("legacy sharing must be rejected before repair: resolve=%t write=%t", resolverCalled, writerCalled)
+	}
+	stored, readErr := os.ReadFile(cfgPath)
+	if readErr != nil || !reflect.DeepEqual(stored, original) {
+		t.Fatalf("legacy config must stay byte-identical: err=%v raw=%s", readErr, stored)
 	}
 }

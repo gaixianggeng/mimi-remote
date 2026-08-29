@@ -6,20 +6,6 @@ enum AgentSessionForkReason: String, Hashable, Sendable {
     case duplicate = "duplicate"
 }
 
-extension SessionStore {
-    func releaseThreadWriterWhenIdleInBackground(_ threadID: SessionID) {
-        // 必须在进入后台清空 AppStore 凭据前抓住 client/runtime；否则异步 Task
-        // 才调用 clientFactory 时会看到空 Token，handoff 请求根本无法发出。
-        guard let client = try? clientFactory() else { return }
-        Task {
-            // 旧 WS agentd 需要 handoff 才能释放 writer。共享 Unix daemon 也安全复用
-            // 这条 best-effort 链路：服务端会返回 already_released 并跳过 terminal
-            // auto-handoff，因此客户端无需按后端类型分叉，更不会触发 archive/unarchive。
-            _ = try? await client.releaseThreadWriterWhenIdle(threadID: threadID)
-        }
-    }
-}
-
 // API 外观、网络状态源与事件批处理从 SessionStore 生命周期实现中解耦。
 enum NetworkReachabilityStatus: Equatable, Sendable {
     case unknown
@@ -118,7 +104,6 @@ protocol SessionStoreAPIClient {
     func modelOptions() async throws -> [CodexAppServerModelOption]
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
-    func externalActivities() async throws -> ExternalActivityResponse?
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -170,7 +155,6 @@ protocol SessionStoreAPIClient {
     func setThreadName(threadID: String, name: String) async throws
     func compactThread(threadID: String) async throws
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage
@@ -222,12 +206,6 @@ extension SessionStoreAPIClient {
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
         SessionsPage(sessions: [])
-    }
-
-    func externalActivities() async throws -> ExternalActivityResponse? {
-        // 旧 agentd/iOS 测试客户端没有该能力时明确返回 nil；nil 表示“不支持”，
-        // 与新 agentd 返回 activities=[]（支持但当前无活动）不能混为一谈。
-        nil
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
@@ -283,12 +261,6 @@ extension SessionStoreAPIClient {
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         throw AgentAPIError.invalidResponse
-    }
-
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
-        // 旧测试替身/非 app-server 客户端没有 writer handoff 能力；返回幂等结果，
-        // 让导航清理保持 best-effort，同时避免为每个替身引入无意义的 mock 改动。
-        ThreadHandoffResponse(threadID: threadID, status: .alreadyReleased)
     }
 
     func startReview(

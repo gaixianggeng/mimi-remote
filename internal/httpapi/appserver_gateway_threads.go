@@ -131,14 +131,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if !appServerServerRequestAllowed(p.runtimeID, frame.Method) {
-			return payload, false, &appServerGatewayPolicyError{
-				id:      frame.ID,
-				message: "app-server server request 尚未被移动端支持：" + strings.TrimSpace(frame.Method),
-				data: map[string]any{
-					"reason": "unsupported_server_request",
-					"method": strings.TrimSpace(frame.Method),
-				},
-			}
+			// 共享 App Server 可能产生 Desktop 私有反向请求。Mimi 不是该
+			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
+			return payload, false, nil
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -150,16 +145,8 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
 			return payload, false, nil
 		}
-		if rewritten, ok := p.rewriteOwnedThreadHandoffLifecycle(&frame, payload); ok {
-			// coordinator 自己触发的 archive 生命周期不是用户结束会话。改写为
-			// 私有通知，让新版 iOS 只失效 resume binding，跳过 closed 终态投影。
-			return rewritten, true, nil
-		}
 		p.clearPendingServerRequestsForNotification(&frame)
 		p.rememberReplayedServerRequests(&frame)
-		// 用户停留在完成页时也要释放 resident app-server 的 writer lock。
-		// coordinator 先留出续问/本地队列窗口；新的 turn/start 会取消该任务。
-		p.scheduleThreadHandoffAfterTerminal(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 				payload = redacted
@@ -169,7 +156,6 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
-		p.completePendingThreadWriter(&frame)
 		p.rememberAccountTokenUsageResponse(&frame, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
 			if len(frame.Error) == 0 && len(frame.Result) > 0 {
@@ -877,20 +863,6 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 			}
 		}
 	}
-	gatewayOwnedTurn := false
-	if p != nil && p.router != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" &&
-		strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") &&
-		threadID != "" && turnID != "" {
-		owned, err := p.router.codexGatewayOwnsTurn(threadID, turnID)
-		if err != nil {
-			// request 本身是只读投影，可以继续展示；归属不可确认时不放宽后续
-			// response，仍由 external guard fail-closed。
-			log.Printf("gateway server request ownership unavailable method=%s err=%v",
-				sanitizeGatewayDiagnostic(method), err)
-		} else {
-			gatewayOwnedTurn = owned
-		}
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -907,7 +879,6 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		turnID:               turnID,
 		itemID:               itemID,
 		requestedPermissions: requestedPermissions,
-		gatewayOwnedTurn:     gatewayOwnedTurn,
 		createdAt:            now,
 	}
 	return nil
@@ -1114,11 +1085,9 @@ func (p *appServerGatewayPolicy) isClosed() bool {
 }
 
 func (p *appServerGatewayPolicy) close() {
-	p.threadWriterForwardMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		p.threadWriterForwardMu.Unlock()
 		return
 	}
 	p.closed = true
@@ -1129,32 +1098,10 @@ func (p *appServerGatewayPolicy) close() {
 		}
 		delete(p.pendingThreads, key)
 	}
-	writerCandidates := make([]string, 0, len(p.threadWriterCandidates))
-	seenWriterCandidates := make(map[string]struct{}, len(p.threadWriterCandidates)+len(p.pendingThreadWriters))
-	for threadID := range p.threadWriterCandidates {
-		writerCandidates = append(writerCandidates, threadID)
-		seenWriterCandidates[threadID] = struct{}{}
-	}
-	for _, pending := range p.pendingThreadWriters {
-		if !pending.forwarded {
-			continue
-		}
-		threadID := pending.threadID
-		if _, exists := seenWriterCandidates[threadID]; exists {
-			continue
-		}
-		writerCandidates = append(writerCandidates, threadID)
-		seenWriterCandidates[threadID] = struct{}{}
-	}
-	p.threadWriterCandidates = nil
-	p.pendingThreadWriters = nil
-	handoffCapable := p.threadHandoffCapable
 	p.mu.Unlock()
-	p.threadWriterForwardMu.Unlock()
 	for _, path := range paths {
 		p.router.releaseManagedWorktreePendingUse(path)
 	}
-	p.scheduleThreadHandoffsAfterDisconnect(writerCandidates, handoffCapable)
 }
 
 func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending appServerGatewayPendingThreadRequest) []appServerGatewayAllowedThread {
@@ -1402,9 +1349,6 @@ func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pendi
 		}
 		delete(p.pendingThreads, key)
 		for _, thread := range normalized {
-			if !gatewayThreadRejectsWrites(thread) {
-				p.rememberThreadWriterCandidateLocked(pending.method, thread.id)
-			}
 			p.allowedThreads[thread.id] = thread
 			p.router.allowGatewayThread(thread)
 		}
@@ -1429,9 +1373,6 @@ func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pendi
 	}
 	delete(p.pendingThreads, key)
 	for _, thread := range normalized {
-		if !gatewayThreadRejectsWrites(thread) {
-			p.rememberThreadWriterCandidateLocked(pending.method, thread.id)
-		}
 		p.allowedThreads[thread.id] = thread
 		p.router.allowGatewayThread(thread)
 	}

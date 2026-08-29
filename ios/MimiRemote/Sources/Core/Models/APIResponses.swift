@@ -270,64 +270,6 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
     }
 }
 
-struct ExternalSessionActivity: Codable, Hashable, Identifiable {
-    let threadID: SessionID
-    let projectID: String
-    let source: String
-    let state: String
-    let turnID: TurnID?
-    let revision: String
-    let lastActivityAt: Date
-
-    var id: SessionID { threadID }
-
-    enum CodingKeys: String, CodingKey {
-        case threadID = "thread_id"
-        case projectID = "project_id"
-        case source
-        case state
-        case turnID = "turn_id"
-        case revision
-        case lastActivityAt = "last_activity_at"
-    }
-}
-
-struct ExternalActivityResponse: Codable, Hashable {
-    let activities: [ExternalSessionActivity]
-    let scannedAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case activities
-        case scannedAt = "scanned_at"
-    }
-}
-
-/// agentd 的 thread writer handoff 结果。`scheduled` 表示当前 turn 仍在执行，
-/// 服务端会等它回到 idle 后再释放 writer；移动端不需要自行轮询或维护额外状态。
-enum ThreadHandoffStatus: String, Codable, Hashable {
-    case released
-    case alreadyReleased = "already_released"
-    case scheduled
-}
-
-struct ThreadHandoffRequest: Encodable, Hashable {
-    let threadID: String
-
-    enum CodingKeys: String, CodingKey {
-        case threadID = "thread_id"
-    }
-}
-
-struct ThreadHandoffResponse: Codable, Hashable {
-    let threadID: String
-    let status: ThreadHandoffStatus
-
-    enum CodingKeys: String, CodingKey {
-        case threadID = "thread_id"
-        case status
-    }
-}
-
 struct CodexAppServerChannelBridgeMetadata: Codable, Hashable {
     let name: String?
     let version: String?

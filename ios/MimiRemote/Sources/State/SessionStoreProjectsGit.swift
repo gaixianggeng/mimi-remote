@@ -993,8 +993,8 @@ extension SessionStore {
     /// 又经过 toggle 把同一操作翻转两次。
     @discardableResult
     func setSessionArchivedRemote(_ session: AgentSession, archived shouldArchive: Bool) async -> Bool {
-        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
-            setStatusMessage(L10n.text("ui.mac_observe_only"))
+        guard !isProtocolReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.read_only"))
             return false
         }
 
@@ -1236,7 +1236,7 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
+        !isProtocolReadOnlySession(session)
             && !session.isLocalDraft
             && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
