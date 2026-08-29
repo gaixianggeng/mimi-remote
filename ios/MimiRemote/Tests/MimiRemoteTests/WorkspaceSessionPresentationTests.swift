@@ -11,31 +11,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceRunningCountBadge.displayText(for: 10), "9+")
     }
 
-    func testWorkspaceSessionRailOnlyShowsStatesThatNeedAttention() {
-        let active = AgentSessionDisplayStatus(
-            title: "Running",
-            systemImage: "circle.dotted",
-            tone: .active,
-            showsSpinner: true
-        )
-        let waiting = AgentSessionDisplayStatus(
-            title: "Waiting",
-            systemImage: "exclamationmark.triangle.fill",
-            tone: .warning,
-            showsSpinner: false
-        )
-        let failed = AgentSessionDisplayStatus(
-            title: "Failed",
-            systemImage: "exclamationmark.circle.fill",
-            tone: .danger,
-            showsSpinner: false
-        )
-
-        XCTAssertNil(WorkspaceSessionRailState.resolve(status: active))
-        XCTAssertEqual(WorkspaceSessionRailState.resolve(status: waiting), .waiting)
-        XCTAssertEqual(WorkspaceSessionRailState.resolve(status: failed), .failed)
-    }
-
     func testWorkspaceNeighborPrefetchWaitsForEachRuntimeSpecificFirstPage() {
         XCTAssertTrue(
             WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: nil),

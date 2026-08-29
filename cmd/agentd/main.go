@@ -48,6 +48,7 @@ const (
 func main() {
 	if err := run(os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
+		appendManagedServiceFailure(os.Args, err)
 		os.Exit(1)
 	}
 }
@@ -57,6 +58,9 @@ func run(args []string) error {
 	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 		cmd = args[1]
 		args = append([]string{args[0]}, args[2:]...)
+	}
+	if cmd == "serve" {
+		hideStandaloneManagedServiceConsole(args)
 	}
 	if cmd != "version" {
 		if err := ensureProcessUserEnvironment(); err != nil {
@@ -414,12 +418,16 @@ func runStatus(args []string) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	includeRuntime := fs.Bool("runtime", false, "附加本机 Codex / Claude 运行时状态")
+	refreshRuntime := fs.Bool("runtime-refresh", false, "强制刷新并等待本机运行时状态")
 	inspectNetworkPolicy := fs.Bool("network-policy", false, "附加 Windows 防火墙和默认网络类别检查")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if *includeRuntime && !*asJSON {
 		return errors.New("status --runtime 只能与 --json 一起使用")
+	}
+	if *refreshRuntime && (!*includeRuntime || !*asJSON) {
+		return errors.New("status --runtime-refresh 只能与 --runtime --json 一起使用")
 	}
 	if *inspectNetworkPolicy && !*asJSON {
 		return errors.New("status --network-policy 只能与 --json 一起使用")
@@ -441,10 +449,6 @@ func runStatus(args []string) error {
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
 	loopbackEndpoint := loopbackServiceEndpoint(result.Endpoint)
-	type runtimeStatusResult struct {
-		payload map[string]any
-		err     error
-	}
 	networkStatus := configuredAgentNetworkStatus(cfg)
 	var networkStatusCh chan agentNetworkStatus
 	if *inspectNetworkPolicy {
@@ -459,13 +463,11 @@ func runStatus(args []string) error {
 	if *includeRuntime {
 		runtimeStatusCh = make(chan runtimeStatusResult, 1)
 		go func() {
-			payload, fetchErr := fetchServiceRuntimeStatus(
-				context.Background(),
+			runtimeStatusCh <- fetchRuntimeStatusForCommand(
 				loopbackEndpoint,
 				result.Token,
-				2*time.Second,
+				*refreshRuntime,
 			)
-			runtimeStatusCh <- runtimeStatusResult{payload: payload, err: fetchErr}
 		}()
 	}
 	serviceStatus := probeAgentServiceStatus(
@@ -520,10 +522,10 @@ func runStatus(args []string) error {
 	status["doctor"] = doctorResults
 	status["network_status"] = networkStatus
 	status["pair_expires"] = result.PairExpiresAt
-	// 旧版本 agentd 没有 runtime status endpoint。升级/接管过程中保持 status
-	// 兼容，只在成功拿到脱敏快照时附加字段，不让展示增强阻断服务状态。
-	if runtimeStatusCh != nil && runtimeStatus.err == nil {
-		status["runtime_status"] = runtimeStatus.payload
+	if runtimeStatusCh != nil {
+		if err := attachRuntimeStatus(status, runtimeStatus, *refreshRuntime); err != nil {
+			return err
+		}
 	}
 	if *asJSON {
 		return printJSON(status)

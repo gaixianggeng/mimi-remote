@@ -250,7 +250,7 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(lightConversationSecondaryText, red: 112, green: 112, blue: 110)
         assertRGB(lightConversationTertiaryText, red: 142, green: 142, blue: 139)
         assertRGB(lightComposerControlSurface, red: 242, green: 241, blue: 238)
-        assertRGB(lightComposerInactiveActionSurface, red: 234, green: 218, blue: 210)
+        assertRGB(lightComposerInactiveActionSurface, red: 237, green: 235, blue: 231)
         assertRGB(lightPlanCardBackground, red: 255, green: 255, blue: 255)
         assertRGB(lightPlanCardBorder, red: 230, green: 227, blue: 224)
         assertRGB(lightBorder, red: 229, green: 226, blue: 223)
@@ -292,7 +292,7 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkConversationCanvasBackground, red: 18, green: 17, blue: 18)
         assertRGB(darkComposerControlSurface, red: 45, green: 42, blue: 45)
-        assertRGB(darkComposerInactiveActionSurface, red: 79, green: 65, blue: 72)
+        assertRGB(darkComposerInactiveActionSurface, red: 55, green: 52, blue: 56)
         assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkPlanCardBorder, red: 75, green: 69, blue: 73)
         assertRGB(darkBorder, red: 64, green: 59, blue: 63)
@@ -579,8 +579,8 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
-        // iPhone 竖屏与 iPad 竖屏共用同一套会话行结构，项目锚点不再按设备缩小。
-        XCTAssertTrue(layout.prefersSessionTableDensity)
+        // 390pt 的 iPhone 使用 compact 身份列，避免 table 的固定列挤压摘要。
+        XCTAssertFalse(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -673,7 +673,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         )
     }
 
-    func testSessionTableDensityFallsBackOnlyBelowSlideOverWidth() {
+    func testSessionTableDensityUsesSharedWidthThreshold() {
         let slideOverPad = WorkbenchLayout(
             containerWidth: 320,
             horizontalSizeClass: .compact,
@@ -695,9 +695,9 @@ final class ResponsiveLayoutTests: XCTestCase {
             isPad: true
         )
 
-        // 只有 Slide Over 这类真正窄的窗口才放弃锚点列；手机与分屏都保留同一套结构。
+        // iPhone 与 Slide Over 都使用 compact；达到共享阈值的 iPad 分栏才使用 table。
         XCTAssertFalse(slideOverPad.prefersSessionTableDensity)
-        XCTAssertTrue(phonePortrait.prefersSessionTableDensity)
+        XCTAssertFalse(phonePortrait.prefersSessionTableDensity)
         XCTAssertTrue(splitViewPad.prefersSessionTableDensity)
         XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }

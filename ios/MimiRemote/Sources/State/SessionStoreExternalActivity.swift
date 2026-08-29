@@ -987,6 +987,10 @@ extension SessionStore {
                 setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
                 return
             }
+            preservePermissionTurnRetryRequirementAfterRejection(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            )
             conversationStore.updateSendStatus(
                 clientMessageID: clientMessageID,
                 sessionID: sessionID,
@@ -1020,6 +1024,10 @@ extension SessionStore {
             ) {
                 return
             }
+            preservePermissionTurnRetryRequirementAfterRejection(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            )
             conversationStore.updateSendStatus(
                 clientMessageID: clientMessageID,
                 sessionID: sessionID,

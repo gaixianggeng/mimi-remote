@@ -1095,6 +1095,36 @@ func TestStatusRuntimeEnrichmentRequiresJSON(t *testing.T) {
 	}
 }
 
+func TestStatusRuntimeRefreshRequiresRuntimeJSON(t *testing.T) {
+	err := runStatus([]string{"status", "--json", "--runtime-refresh"})
+	if err == nil || !strings.Contains(err.Error(), "--runtime --json") {
+		t.Fatalf("status --runtime-refresh 必须要求 --runtime --json：%v", err)
+	}
+}
+
+func TestAttachRuntimeStatusPropagatesOnlyForcedRefreshFailure(t *testing.T) {
+	status := map[string]any{"version": "1.2.3"}
+	fetchErr := errors.New("runtime status HTTP 500")
+	if err := attachRuntimeStatus(status, runtimeStatusResult{err: fetchErr}, false); err != nil {
+		t.Fatalf("cached runtime enrichment must remain compatible with an old service: %v", err)
+	}
+	if _, exists := status["runtime_status"]; exists {
+		t.Fatalf("failed cached enrichment must not attach an empty runtime status: %v", status)
+	}
+	if err := attachRuntimeStatus(status, runtimeStatusResult{err: fetchErr}, true); err == nil ||
+		!strings.Contains(err.Error(), "强制刷新运行时状态失败") {
+		t.Fatalf("forced refresh failure must reach the tray as a non-zero error: %v", err)
+	}
+
+	payload := map[string]any{"runtimes": []any{}}
+	if err := attachRuntimeStatus(status, runtimeStatusResult{payload: payload}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(status["runtime_status"], payload) {
+		t.Fatalf("successful runtime status was not attached: %v", status)
+	}
+}
+
 func TestStatusNetworkPolicyInspectionRequiresJSON(t *testing.T) {
 	err := runStatus([]string{"status", "--network-policy"})
 	if err == nil || !strings.Contains(err.Error(), "--json") {
@@ -1109,6 +1139,8 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	const token = "status-runtime-opt-in-token-0123456789"
 	var runtimeRequests atomic.Int32
+	var runtimeRefreshRequests atomic.Int32
+	var runtimeFailure atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/healthz":
@@ -1123,8 +1155,22 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			})
 		case "/api/runtime/status":
 			runtimeRequests.Add(1)
+			if req.URL.Query().Get("refresh") == "wait" {
+				runtimeRefreshRequests.Add(1)
+			}
 			if req.Header.Get("Authorization") != "Bearer "+token {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			switch runtimeFailure.Load() {
+			case 1:
+				w.WriteHeader(http.StatusNotFound)
+				return
+			case 2:
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			case 3:
+				_, _ = w.Write([]byte(`{"runtimes":`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"refreshing":false,"stale":false,"runtimes":[]}`))
@@ -1202,11 +1248,31 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if runtimeRequests.Load() != 1 {
 		t.Fatalf("显式 --runtime 应只请求一次缓存接口：requests=%d", runtimeRequests.Load())
 	}
+	if runtimeRefreshRequests.Load() != 0 {
+		t.Fatalf("普通 --runtime 不得强制刷新：requests=%d", runtimeRefreshRequests.Load())
+	}
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+	}); err != nil {
+		t.Fatalf("runtime force-refresh status 失败：%v", err)
+	}
+	if runtimeRequests.Load() != 2 || runtimeRefreshRequests.Load() != 1 {
+		t.Fatalf("--runtime-refresh 必须只请求一次强制刷新接口：requests=%d refresh=%d", runtimeRequests.Load(), runtimeRefreshRequests.Load())
+	}
+	for mode, want := range map[int32]string{1: "HTTP 404", 2: "HTTP 500", 3: "不是有效 JSON"} {
+		runtimeFailure.Store(mode)
+		if _, _, err := captureMainCommandOutput(t, func() error {
+			return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+		}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("forced runtime failure mode %d = %v, want substring %q", mode, err, want)
+		}
+	}
 }
 
 func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	const token = "runtime-status-secret"
 	var requests atomic.Int32
+	var refreshRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests.Add(1)
 		if req.URL.Path != "/api/runtime/status" {
@@ -1216,11 +1282,14 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if req.URL.Query().Get("refresh") == "wait" {
+			refreshRequests.Add(1)
+		}
 		_, _ = w.Write([]byte(`{"checked_at":"2026-07-27T12:00:00Z","runtimes":[{"id":"codex","title":"Codex","enabled":true,"state":"connected"}]}`))
 	}))
 	defer server.Close()
 
-	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second)
+	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1230,10 +1299,48 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("runtime status 应只请求一次：requests=%d", requests.Load())
 	}
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true); err != nil {
+		t.Fatal(err)
+	}
+	if refreshRequests.Load() != 1 {
+		t.Fatalf("强制刷新必须请求 refresh=wait：requests=%d", refreshRequests.Load())
+	}
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
+	}
+}
+
+func TestFetchServiceRuntimeStatusReportsRefreshFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		want    string
+		timeout time.Duration
+	}{
+		{name: "old endpoint", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}, want: "HTTP 404", timeout: time.Second},
+		{name: "server error", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}, want: "HTTP 500", timeout: time.Second},
+		{name: "malformed JSON", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"runtimes":`))
+		}, want: "不是有效 JSON", timeout: time.Second},
+		{name: "timeout", handler: func(w http.ResponseWriter, req *http.Request) {
+			<-req.Context().Done()
+		}, want: "deadline exceeded", timeout: 20 * time.Millisecond},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(test.handler)
+			defer server.Close()
+			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("refresh failure = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -1243,7 +1350,7 @@ func TestFetchServiceRuntimeStatusRejectsTrailingJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "多个 JSON 值") {
 		t.Fatalf("runtime status 必须拒绝尾随 JSON：%v", err)
 	}
@@ -1255,7 +1362,7 @@ func TestFetchServiceRuntimeStatusRejectsMissingRequiredShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
 		!strings.Contains(err.Error(), "缺少 runtimes") {
 		t.Fatalf("runtime status 必须拒绝缺少最小结构的 200 响应：%v", err)
 	}

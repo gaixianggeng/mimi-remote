@@ -275,6 +275,16 @@ enum ComposerStatusTrayPlacement: Equatable {
     var usesEmbeddedStatusChip: Bool {
         self == .embedded
     }
+
+    /// 内嵌状态栏只占 36pt 的视觉高度；独立托盘沿用 44pt 行高。
+    var visualHeight: CGFloat {
+        self == .embedded ? 36 : 44
+    }
+
+    /// disclosure 的真实命中框始终满足 44pt 触控目标；它可通过 overlay 越出视觉槽位。
+    var disclosureHitSize: CGSize {
+        CGSize(width: 44, height: 44)
+    }
 }
 
 struct ComposerStatusTraySurfaceStyle: Equatable {
@@ -412,18 +422,30 @@ struct ComposerStatusTray: View {
             .layoutPriority(1)
 
             if hasExpandableDetail {
-                collapsedDisclosureButton(
-                    title: L10n.text("ui.expanded_state"),
-                    systemImage: "chevron.down",
-                    tint: tokens.secondaryText,
-                    action: onToggleGoalExpanded
-                )
+                collapsedDisclosureSlot(tint: tokens.secondaryText)
             }
         }
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
         .padding(.trailing, 2)
-        .frame(minHeight: 44)
+        // 内嵌托盘是输入卡顶部的一条状态注解，不是一条独立列表行：视觉高度 36pt
+        // 会让一枚 28pt 的 chip 顶着一整行空白，读成"这里少了点什么"。
+        // 命中区由 overlay 中独立的 44×44 Button 保证，不参与这条视觉栏的高度。
+        .frame(minHeight: placement.visualHeight)
+    }
+
+    private func collapsedDisclosureSlot(tint: Color) -> some View {
+        Color.clear
+            .frame(width: placement.disclosureHitSize.width, height: placement.visualHeight)
+            // overlay 不参与父布局，按钮可以真实保持 44×44，同时视觉栏继续只有 36pt。
+            .overlay {
+                collapsedDisclosureButton(
+                    title: L10n.text("ui.expanded_state"),
+                    systemImage: "chevron.down",
+                    tint: tint,
+                    action: onToggleGoalExpanded
+                )
+            }
     }
 
     @ViewBuilder
@@ -537,9 +559,12 @@ struct ComposerStatusTray: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 12, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+                .frame(
+                    width: placement.disclosureHitSize.width,
+                    height: placement.disclosureHitSize.height
+                )
         }
+        .frame(width: placement.disclosureHitSize.width, height: placement.disclosureHitSize.height)
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .help(title)
         .accessibilityLabel(title)
@@ -751,13 +776,6 @@ struct ComposerStatusTray: View {
                 .font(themeStore.uiFont(size: 16, weight: .semibold))
                 .foregroundStyle(isDisabled ? tokens.tertiaryText : tint)
                 .frame(width: 44, height: 44)
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: 12,
-                        isEmphasized: false
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

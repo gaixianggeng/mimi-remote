@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	fileUploadCapability = "file_upload_v1"
+	fileUploadCapability            = "file_upload_v1"
+	codexRemoteFullAccessCapability = "codex_remote_full_access_v1"
 
 	capabilityStateEnabled               = "enabled"
 	capabilityStateLocallyDisabled       = "locally_disabled"
@@ -41,16 +42,31 @@ func newCapabilityRegistry(cfg config.Config, fileUploads *fileUploadStore) capa
 		fileUpload.State = capabilityStateDependencyUnavailable
 		fileUpload.Reason = capabilityReasonStorageUnavailable
 	}
+	codexRemoteFullAccess := protocolcontract.CapabilityStatus{
+		Name:   codexRemoteFullAccessCapability,
+		State:  capabilityStateEnabled,
+		Reason: capabilityReasonAvailable,
+	}
+	if cfg.Capabilities.IsDisabled(codexRemoteFullAccessCapability) {
+		codexRemoteFullAccess.State = capabilityStateLocallyDisabled
+		codexRemoteFullAccess.Reason = capabilityReasonDisabledByLocalConfig
+	}
 
-	log.Printf(
-		"capability decision name=%s state=%s reason=%s",
-		fileUpload.Name,
-		fileUpload.State,
-		fileUpload.Reason,
-	)
+	statuses := []protocolcontract.CapabilityStatus{fileUpload, codexRemoteFullAccess}
+	for _, status := range statuses {
+		log.Printf(
+			"capability decision name=%s state=%s reason=%s",
+			status.Name,
+			status.State,
+			status.Reason,
+		)
+	}
 	return capabilityRegistry{
-		ordered: []protocolcontract.CapabilityStatus{fileUpload},
-		byName:  map[string]protocolcontract.CapabilityStatus{fileUpload.Name: fileUpload},
+		ordered: statuses,
+		byName: map[string]protocolcontract.CapabilityStatus{
+			fileUpload.Name:            fileUpload,
+			codexRemoteFullAccess.Name: codexRemoteFullAccess,
+		},
 	}
 }
 

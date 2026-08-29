@@ -1,259 +1,5 @@
 import SwiftUI
 
-enum SessionIndexRowDensity: Equatable {
-    case compact
-    case table
-    case rail
-
-    var minimumHeight: CGFloat {
-        switch self {
-        case .compact: 44
-        case .table: 60
-        case .rail: 34
-        }
-    }
-
-    var horizontalPadding: CGFloat {
-        switch self {
-        case .compact: 12
-        case .table: 14
-        case .rail: 10
-        }
-    }
-
-    var titleFontSize: CGFloat {
-        switch self {
-        case .compact: 14
-        case .table: 15
-        case .rail: 13
-        }
-    }
-
-    var metadataFontSize: CGFloat {
-        switch self {
-        case .compact: 10
-        case .table: 11.5
-        case .rail: 9
-        }
-    }
-
-    var runtimeIconSize: CGFloat {
-        switch self {
-        case .compact: 9
-        case .table: 10
-        case .rail: 8
-        }
-    }
-
-    var statusIconSize: CGFloat {
-        switch self {
-        case .compact, .table: 9
-        case .rail: 8
-        }
-    }
-
-    /// 宽屏优先表格密度；辅助功能字号必须回退两行布局，避免固定列截断状态和时间。
-    static func resolved(
-        prefersTable: Bool,
-        dynamicTypeSize: DynamicTypeSize
-    ) -> SessionIndexRowDensity {
-        prefersTable && !dynamicTypeSize.isAccessibilitySize ? .table : .compact
-    }
-}
-
-struct SessionRuntimePresentation: Equatable {
-    enum Kind: Equatable {
-        case codex
-        case claude
-    }
-
-    let kind: Kind
-
-    init(session: AgentSession) {
-        self.init(runtimeProvider: session.runtimeProvider, source: session.source)
-    }
-
-    init(runtimeProvider: String?, source: String) {
-        let provider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let rawValue = provider?.isEmpty == false ? provider : source
-        kind = CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) == "claude"
-            ? .claude
-            : .codex
-    }
-
-    var title: String {
-        switch kind {
-        case .codex:
-            return L10n.text("ui.runtime_default")
-        case .claude:
-            return L10n.text("ui.runtime_optional")
-        }
-    }
-
-    var brandAssetName: String {
-        switch kind {
-        case .codex:
-            return "ChatGPT"
-        case .claude:
-            return "Claude"
-        }
-    }
-}
-
-/// 未读只是一条历史结果的轻量提示，不承担进行状态，也不参与点击命中区域。
-/// 视觉点隐藏给 VoiceOver，完整语义由会话行的 accessibilityValue 提供。
-struct SessionUnreadIndicator: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Circle()
-            .fill(tokens.primaryAction)
-            .frame(width: 7, height: 7)
-            .overlay {
-                Circle()
-                    .stroke(tokens.background.opacity(0.72), lineWidth: 0.75)
-            }
-            .fixedSize()
-            .accessibilityHidden(true)
-    }
-}
-
-/// 会话列表里的运行时标识使用中性胶囊承载品牌图标和名称。
-/// 它需要比普通元数据更容易扫读，但不能抢过会话标题和需要处理的状态。
-struct SessionRuntimeBadge: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    let presentation: SessionRuntimePresentation
-    var compact = false
-
-    init(session: AgentSession, compact: Bool = false) {
-        presentation = SessionRuntimePresentation(session: session)
-        self.compact = compact
-    }
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let iconSize: CGFloat = compact ? 10 : 12
-
-        HStack(spacing: compact ? 3 : 4) {
-            Image(presentation.brandAssetName)
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                .frame(width: iconSize, height: iconSize)
-
-            Text(presentation.title)
-                .lineLimit(1)
-        }
-        .font(themeStore.uiFont(size: compact ? 9 : 10, weight: .medium))
-        .foregroundStyle(tokens.secondaryText)
-        .padding(.horizontal, compact ? 5 : 6)
-        .padding(.vertical, compact ? 1.5 : 2)
-        .background(tokens.elevatedSurface.opacity(0.76), in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(tokens.border.opacity(0.54), lineWidth: 0.5)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(presentation.title)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-}
-
-/// 置顶属于用户主动设置的稳定状态，用品牌紫实底与白色钉子提升扫读辨识度。
-/// 组件统一服务规划 Tab、工作区最近规划和侧栏，避免三个入口各自使用不同强调方式。
-struct SessionPinnedBadge: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var compact = false
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        // 色块只承担置顶强调，不应比同一列表中的运行时图标更抢眼。
-        let side: CGFloat = compact ? 14 : 17
-        let cornerRadius: CGFloat = compact ? 4 : 5
-
-        Image(systemName: "pin.fill")
-            .font(themeStore.uiFont(size: compact ? 7 : 8, weight: .bold))
-            .foregroundStyle(tokens.primaryActionForeground)
-            .frame(width: side, height: side)
-            .background(
-                tokens.primaryAction,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(L10n.text("ui.pinned"))
-            .fixedSize()
-    }
-}
-
-/// 使用 Codex 与 Claude Code 桌面端都采用的经典三节点分支拓扑。
-/// 自绘可以避免 SF Symbol 的三角轮廓，同时维持小尺寸下的圆角描边与清晰度。
-struct SessionBranchIcon: View {
-    let size: CGFloat
-
-    var body: some View {
-        SessionBranchGlyph()
-            .stroke(
-                style: StrokeStyle(
-                    lineWidth: max(0.75, size * 0.08125),
-                    lineCap: .round,
-                    lineJoin: .round
-                )
-            )
-            .frame(width: size, height: size)
-            .fixedSize()
-    }
-}
-
-private struct SessionBranchGlyph: Shape {
-    func path(in rect: CGRect) -> Path {
-        let side = min(rect.width, rect.height)
-        let origin = CGPoint(
-            x: rect.midX - side / 2,
-            y: rect.midY - side / 2
-        )
-        let point: (CGFloat, CGFloat) -> CGPoint = { x, y in
-            CGPoint(x: origin.x + side * x, y: origin.y + side * y)
-        }
-        let nodeRadius = side * 0.11875
-        let upperNode = point(0.296875, 0.234375)
-        let lowerNode = point(0.296875, 0.765625)
-        let branchNode = point(0.75, 0.65625)
-
-        var path = Path()
-        for center in [upperNode, lowerNode, branchNode] {
-            path.addEllipse(
-                in: CGRect(
-                    x: center.x - nodeRadius,
-                    y: center.y - nodeRadius,
-                    width: nodeRadius * 2,
-                    height: nodeRadius * 2
-                )
-            )
-        }
-
-        path.move(to: point(0.296875, 0.353125))
-        path.addLine(to: point(0.296875, 0.646875))
-        path.move(to: point(0.296875, 0.40625))
-        path.addCurve(
-            to: point(0.63125, 0.65625),
-            control1: point(0.296875, 0.5875),
-            control2: point(0.44375, 0.65625)
-        )
-        return path
-    }
-}
-
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -380,6 +126,8 @@ struct SessionListView: View {
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
     @State private var keyboardSelectionID: SessionID?
+    /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
+    @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
 
     var onNewSession: ((NewSessionPresentationSource?) -> Void)?
@@ -474,6 +222,13 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        // 与工作区共用同一条宽度判据；量到之后 rowDensity 就不再依赖页面身份。
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.width
+        } action: { newWidth in
+            guard newWidth > 0 else { return }
+            measuredContentWidth = newWidth
+        }
         .listSectionSpacing(12)
         // 最新设计把日期恢复成轻量粘性标题，正文保持完全扁平；行距与分隔线由行组件统一控制。
         .listRowSpacing(0)
@@ -778,8 +533,19 @@ struct SessionListView: View {
         )
     }
 
+    /// 密度以实测宽度为准，与工作区使用同一条规则。
+    ///
+    /// `prefersTableDensity` 由 Shell 按页面身份注入，只作为首帧测量出来之前的种子值：
+    /// 两个 tab 各用一套判据时，同一个窗口宽度可能得到两个不同的答案，Split View
+    /// 拖动过程中会看到两页的行密度不一致。
     private var rowDensity: SessionIndexRowDensity {
-        SessionIndexRowDensity.resolved(
+        if let measuredContentWidth {
+            return SessionIndexRowDensity.resolved(
+                availableWidth: measuredContentWidth,
+                dynamicTypeSize: dynamicTypeSize
+            )
+        }
+        return SessionIndexRowDensity.resolved(
             prefersTable: prefersTableDensity,
             dynamicTypeSize: dynamicTypeSize
         )
@@ -959,6 +725,16 @@ struct SessionListView: View {
                 .foregroundStyle(tokens.secondaryText)
                 .textCase(nil)
                 .accessibilityAddTraits(.isHeader)
+                // 与工作区同一条规则：小节标题对齐前导列的左缘。
+                // 会话 tab 的前导列是项目图标，本来就每行都有，不需要兜底字形。
+                .listRowInsets(
+                    .init(
+                        top: 0,
+                        leading: 20 + rowDensity.horizontalPadding,
+                        bottom: 0,
+                        trailing: 20
+                    )
+                )
         }
     }
 
@@ -984,6 +760,9 @@ struct SessionListView: View {
                     profileID: profileID,
                     projectID: session.projectID
                 )
+            let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
+            let isUnread = sessionStore.isHistorySessionUnread(session)
+            let showsNeutralHistoryStatus = isActiveSection && !session.isRunning
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -992,22 +771,22 @@ struct SessionListView: View {
             } label: {
                 SessionIndexRow(
                     session: session,
-                    foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+                    foregroundActivity: foregroundActivity,
                     isSelected: session.id == highlightedSessionID,
                     isPinned: sessionStore.isSessionPinned(session.id),
                     isArchived: sessionStore.isSessionArchived(session.id),
                     reminder: sessionStore.sessionReminder(for: session.id),
                     isObserving: sessionStore.isSessionObserving(session),
                     isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-                    isUnread: sessionStore.isHistorySessionUnread(session),
+                    isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
                     projectIcon: projectIcon,
+                    // 会话 tab 是所有项目的汇集区：前导槽放项目图标，回答"这条属于哪个项目"。
+                    leadingSlot: .projectIcon,
                     showsProjectAnchor: startsProjectRun,
-                    reservesProjectAnchor: rowDensity == .table,
-                    drawsDivider: index != sessions.index(before: sessions.endIndex),
                     // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
-                    showsNeutralHistoryStatus: isActiveSection && !session.isRunning
+                    showsNeutralHistoryStatus: showsNeutralHistoryStatus
                 )
                 .contentShape(Rectangle())
             }
@@ -1015,9 +794,12 @@ struct SessionListView: View {
             .hoverEffect(.highlight)
             .accessibilityElement(children: .combine)
             .accessibilityValue(
-                sessionStore.isHistorySessionUnread(session)
-                    ? L10n.text("ui.unread_result")
-                    : ""
+                SessionIndexRow.accessibilityValue(
+                    status: session.displayStatus(foregroundActivity: foregroundActivity),
+                    sessionStatus: session.status,
+                    isUnread: isUnread,
+                    showsNeutralHistoryStatus: showsNeutralHistoryStatus
+                )
             )
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
@@ -1209,359 +991,6 @@ struct SessionListView: View {
             for: nil
         )
     }
-}
-
-private struct SessionIndexRowButtonStyle: ButtonStyle {
-    let pressedFill: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(configuration.isPressed ? pressedFill.opacity(0.72) : .clear)
-            .opacity(configuration.isPressed ? 0.82 : 1)
-    }
-}
-
-struct SessionIndexRow: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let session: AgentSession
-    let foregroundActivity: SessionForegroundActivity?
-    let isSelected: Bool
-    let isPinned: Bool
-    let isArchived: Bool
-    let reminder: SessionReminder?
-    let isObserving: Bool
-    let isExternalReadOnly: Bool
-    var isUnread = false
-    let density: SessionIndexRowDensity
-    var searchSnippet: String? = nil
-    var projectIcon: WorkspaceProjectIconContent? = nil
-    var showsProjectAnchor = false
-    var reservesProjectAnchor = false
-    var drawsDivider = false
-    var drawsSelectionBackground = true
-    var showsNeutralHistoryStatus = false
-
-    static func metadataDirectoryText(for session: AgentSession) -> String {
-        // 同一项目可能同时存在多个 worktree；优先展示真实工作目录，
-        // 只有旧数据缺少 dir 时才回退项目名，避免列表行失去区分度。
-        session.dir.isEmpty ? session.project : session.dir
-    }
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Group {
-            switch density {
-            case .compact:
-                compactContent(tokens: tokens)
-            case .table:
-                tableContent(tokens: tokens)
-            case .rail:
-                railContent(tokens: tokens)
-            }
-        }
-        .padding(.horizontal, density.horizontalPadding)
-        .frame(maxWidth: .infinity, minHeight: density.minimumHeight, alignment: .leading)
-        .background {
-            if isSelected && drawsSelectionBackground {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tokens.selectionFill)
-            }
-        }
-        .overlay(alignment: .leading) {
-            if isSelected {
-                Capsule()
-                    .fill(tokens.primaryAction)
-                    .frame(width: 3)
-                    .padding(.vertical, 7)
-                    .padding(.leading, 2)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if drawsDivider {
-                Rectangle()
-                    .fill(tokens.border.opacity(0.46))
-                    .frame(height: 0.5)
-                    .padding(.leading, dividerLeadingInset)
-            }
-        }
-        .frame(minHeight: density == .rail ? 34 : 44)
-    }
-
-    private func compactContent(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .center, spacing: 7) {
-                titleContent(tokens: tokens, compactPinnedBadge: true)
-                Spacer(minLength: 8)
-                stableStateIcons(tokens: tokens)
-                animatedStatusLabel(tokens: tokens)
-                if isUnread {
-                    SessionUnreadIndicator()
-                }
-            }
-
-            HStack(spacing: 6) {
-                compactProjectAnchor(tokens: tokens)
-                directoryText(tokens: tokens)
-                Spacer(minLength: 8)
-                timestamp(tokens: tokens)
-            }
-
-            if let searchSnippet, !searchSnippet.isEmpty {
-                Text(searchSnippet)
-                    .font(themeStore.uiFont(size: 11, weight: .regular))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(2)
-            }
-        }
-    }
-
-    private func tableContent(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 10) {
-            if reservesProjectAnchor {
-                projectAnchor(tokens: tokens)
-                    .frame(width: 30, height: 30)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    titleContent(tokens: tokens, compactPinnedBadge: true)
-
-                    let preview = SessionListPresentation.previewDisplayText(for: session)
-                    if !preview.isEmpty {
-                        Text(preview)
-                            .font(themeStore.uiFont(size: 13, weight: .regular))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 10) {
-                    Text(session.project)
-                        .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    stableStateIcons(tokens: tokens)
-                    Spacer(minLength: 8)
-                    animatedStatusLabel(tokens: tokens)
-                    timestamp(tokens: tokens)
-                    if isUnread {
-                        SessionUnreadIndicator()
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func projectAnchor(tokens: ThemeTokens) -> some View {
-        if showsProjectAnchor, let projectIcon {
-            WorkspaceProjectIconTile(content: projectIcon, size: 30, tokens: tokens)
-        } else {
-            Color.clear
-        }
-    }
-
-    private func railContent(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 7) {
-            if isPinned {
-                Image(systemName: "pin.fill")
-                    .font(themeStore.uiFont(size: 8, weight: .bold))
-                    .foregroundStyle(tokens.primaryAction)
-                    .accessibilityHidden(true)
-            }
-
-            Text(visibleTitle)
-                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-
-            Spacer(minLength: 6)
-
-            if shouldShowStatusLabel {
-                Circle()
-                    .fill(statusColor(tokens: tokens))
-                    .frame(width: 6, height: 6)
-                    .accessibilityLabel(status.title)
-            } else if isUnread {
-                SessionUnreadIndicator()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func titleContent(tokens: ThemeTokens, compactPinnedBadge: Bool) -> some View {
-        if isPinned {
-            SessionPinnedBadge(compact: compactPinnedBadge)
-        }
-
-        Text(visibleTitle)
-            .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(tokens.primaryText)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(1)
-    }
-
-    @ViewBuilder
-    private func stableStateIcons(tokens: ThemeTokens) -> some View {
-        if isArchived {
-            Image(systemName: "archivebox.fill")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
-                .foregroundStyle(tokens.tertiaryText)
-                .accessibilityLabel(L10n.text("ui.archived"))
-        }
-        if reminder != nil {
-            Image(systemName: "bell.fill")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
-                .foregroundStyle(tokens.warning)
-                .accessibilityLabel(L10n.text("ui.reminder"))
-        }
-        if isObserving || isExternalReadOnly {
-            Image(systemName: "eye")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
-                .foregroundStyle(tokens.tertiaryText)
-                .accessibilityLabel(L10n.text("ui.just_observe"))
-        }
-    }
-
-    @ViewBuilder
-    private func compactProjectAnchor(tokens: ThemeTokens) -> some View {
-        if showsProjectAnchor, let projectIcon {
-            WorkspaceProjectIconTile(
-                content: projectIcon,
-                size: 12,
-                tokens: tokens
-            )
-        } else {
-            // 紧凑布局没有 30pt 项目列；仅段首展示一次缩小锚点，后续行保留
-            // 同宽空槽以维持目录文本对齐，不再把同一个项目图标逐行重复。
-            Color.clear
-                .frame(width: 12, height: 12)
-        }
-    }
-
-    private func directoryText(tokens: ThemeTokens) -> some View {
-        Text(SessionListPresentation.directoryDisplayText(for: session))
-            .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
-            .foregroundStyle(tokens.tertiaryText)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .accessibilityLabel(
-                L10n.format(
-                    "ui.directory_value",
-                    Self.metadataDirectoryText(for: session)
-                )
-            )
-            .layoutPriority(1)
-    }
-
-    @ViewBuilder
-    private func animatedStatusLabel(tokens: ThemeTokens) -> some View {
-        ZStack(alignment: .trailing) {
-            if shouldShowStatusLabel {
-                statusLabel(tokens: tokens)
-                    .id(status)
-                    .transition(.opacity)
-            }
-        }
-        .animation(
-            MimiMotion.stateTransition.animation(reduceMotion: reduceMotion),
-            value: status
-        )
-    }
-
-    @ViewBuilder
-    private func timestamp(tokens: ThemeTokens) -> some View {
-        if !timestampText.isEmpty {
-            Text(timestampText)
-                .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
-                .foregroundStyle(tokens.tertiaryText)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-        }
-    }
-
-    private var visibleTitle: String {
-        SessionListPresentation.titleDisplayText(for: session)
-    }
-
-    private var dividerLeadingInset: CGFloat {
-        density.horizontalPadding + (density == .table && reservesProjectAnchor ? 40 : 0)
-    }
-
-    private var status: AgentSessionDisplayStatus {
-        return session.displayStatus(foregroundActivity: foregroundActivity)
-    }
-
-    private var shouldShowStatusLabel: Bool {
-        showsNeutralHistoryStatus ||
-            !(session.status == SessionStatus.history.rawValue && status.tone == .neutral)
-    }
-
-    @ViewBuilder
-    private func statusLabel(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 4) {
-            if status.showsSpinner {
-                ProgressView()
-                    .controlSize(.mini)
-                    .tint(statusColor(tokens: tokens))
-            } else {
-                Image(systemName: status.systemImage)
-                    .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
-            }
-            Text(status.title)
-                .lineLimit(1)
-        }
-        .font(themeStore.uiFont(size: density.metadataFontSize, weight: .semibold))
-        .foregroundStyle(statusColor(tokens: tokens))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(status.title)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private func statusColor(tokens: ThemeTokens) -> Color {
-        switch status.tone {
-        case .active: return tokens.secondaryText
-        case .warning: return tokens.warning
-        case .danger: return .red
-        case .complete, .neutral: return tokens.tertiaryText
-        }
-    }
-
-    private var timestampText: String {
-        guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
-        if Calendar.current.isDateInToday(date) {
-            return Self.timeFormatter.string(from: date)
-        }
-        if Calendar.current.isDateInYesterday(date) {
-            return L10n.text("ui.yesterday")
-        }
-        return Self.dateFormatter.string(from: date)
-    }
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Hm")
-        return formatter
-    }()
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter
-    }()
 }
 
 private enum SessionReviewScope: String, CaseIterable, Identifiable {

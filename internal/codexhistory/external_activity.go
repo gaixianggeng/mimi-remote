@@ -20,18 +20,20 @@ import (
 const (
 	externalActivityCandidateLimit = 500
 	maxExternalActivityLineBytes   = 1 << 20
-	// Gateway 登记只需要覆盖 turn/start 到 rollout 写入用户消息证据的短窗口。
-	// 有界 TTL 可以避免断线或 upstream 写失败后留下永久“本机发起”证据。
-	gatewayTurnRegistrationTTL   = 2 * time.Minute
-	gatewayTurnRegistrationLimit = 512
-	gatewayTurnRegistrationIDMax = 256
-	gatewayTurnEventClockSkew    = 2 * time.Second
+	// Gateway 证据只允许匹配 turn/start 后短时间内写入的 rollout 用户消息。
+	// 登记本身需要保留更久，因为 iOS 退到后台后可能数分钟不再轮询；恢复时仍应
+	// 根据 rollout 的事件时间认回本机 Turn，而不是根据扫描发生的墙上时间误判为外部活动。
+	gatewayTurnEvidenceTTL           = 2 * time.Minute
+	gatewayTurnRegistrationRetention = gatewayOwnedTurnClaimTTL
+	gatewayTurnRegistrationLimit     = 512
+	gatewayTurnRegistrationIDMax     = 256
+	gatewayTurnEventClockSkew        = 2 * time.Second
 	// gateway 在写入 upstream 前登记；task_started 应很快出现。真实 app-server
 	// 冷启动时 user_message 可能比 task_started 晚十几秒落盘，因此不能再用
 	// 两个 rollout 事件的短间隔判断归属。改为要求 task_started 靠近登记时刻，
-	// 同时保留精确 Thread+client ID 和 2 分钟总 TTL。
+	// 同时保留精确 Thread+client ID 和 2 分钟事件关联窗口。
 	gatewayTurnStartWindow     = 30 * time.Second
-	gatewayTurnLifecycleWindow = gatewayTurnRegistrationTTL
+	gatewayTurnLifecycleWindow = gatewayTurnEvidenceTTL
 )
 
 // ExternalActivity 是允许返回给移动端的最小只读快照。
@@ -684,7 +686,7 @@ func (t *ExternalActivityTracker) consumeGatewayTurnRegistration(
 	if eventAt.Before(registration.registeredAt.Add(-gatewayTurnEventClockSkew)) {
 		return gatewayTurnEvidence{}, false
 	}
-	if eventAt.After(registration.registeredAt.Add(gatewayTurnRegistrationTTL)) {
+	if eventAt.After(registration.registeredAt.Add(gatewayTurnEvidenceTTL)) {
 		return gatewayTurnEvidence{}, false
 	}
 	return gatewayTurnEvidence{
@@ -718,7 +720,7 @@ func gatewayTurnEvidenceMatchesTaskStart(evidence gatewayTurnEvidence, turnStart
 
 func (t *ExternalActivityTracker) pruneGatewayTurnRegistrations(now time.Time) {
 	for key, registration := range t.gatewayTurns {
-		if now.After(registration.registeredAt.Add(gatewayTurnRegistrationTTL)) {
+		if now.After(registration.registeredAt.Add(gatewayTurnRegistrationRetention)) {
 			delete(t.gatewayTurns, key)
 			t.gatewayClaimsDirty = true
 		}

@@ -16,6 +16,12 @@ final class ProtocolContractTests: XCTestCase {
             current.capabilityNegotiation.decision(for: "file_upload_v1"),
             .enabled
         )
+        XCTAssertEqual(
+            current.capabilityNegotiation.decision(
+                for: SessionStore.codexRemoteFullAccessCapability
+            ),
+            .enabled
+        )
         XCTAssertNoThrow(try current.requireCompatible())
 
         let previous = try decodeVersionFixture("version-previous.json")
@@ -28,6 +34,12 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertTrue(previous.capabilities.isEmpty, "旧服务缺少 capability 时必须安全降级为空集合")
         XCTAssertEqual(
             previous.capabilityNegotiation.decision(for: "file_upload_v1"),
+            .serverUnsupported
+        )
+        XCTAssertEqual(
+            previous.capabilityNegotiation.decision(
+                for: SessionStore.codexRemoteFullAccessCapability
+            ),
             .serverUnsupported
         )
         XCTAssertNoThrow(try previous.requireCompatible())
@@ -55,6 +67,61 @@ final class ProtocolContractTests: XCTestCase {
             .serverUnsupported,
             "未知 capability/state 不能意外打开当前客户端的文件上传路径"
         )
+    }
+
+    @MainActor
+    func testLegacyAgentDOnlyDowngradesNoApprovalPolicy() {
+        var fullAccess = CodexAppServerTurnOptions.default
+        fullAccess.approvalPolicy = .never
+        fullAccess.approvalsReviewer = "user"
+        fullAccess.sandboxMode = .dangerFullAccess
+
+        let legacy = fullAccess.adjustedForRemoteNoApprovalSupport(false)
+        XCTAssertEqual(legacy.approvalPolicy, .onRequest)
+        XCTAssertEqual(legacy.sandboxMode, .dangerFullAccess)
+        XCTAssertEqual(legacy.approvalsReviewer, "user")
+
+        let current = fullAccess.adjustedForRemoteNoApprovalSupport(true)
+        XCTAssertEqual(current.approvalPolicy, .never)
+        XCTAssertEqual(current.sandboxMode, .dangerFullAccess)
+
+        var workspace = CodexAppServerTurnOptions.default
+        workspace.approvalPolicy = .onRequest
+        workspace.sandboxMode = .workspaceWrite
+        XCTAssertEqual(
+            workspace.adjustedForRemoteNoApprovalSupport(false),
+            workspace
+        )
+
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        appStore.replaceCapabilityNegotiation(
+            HostCapabilityNegotiation(wasNegotiated: true, declared: [], statuses: []),
+            preserving: appStore.activeHostState
+        )
+        let legacyPayload = store.payloadApplyingRemoteNoApprovalCompatibility(
+            CodexAppServerTurnPayload(prompt: "兼容旧 Mac", options: fullAccess)
+        )
+        XCTAssertEqual(legacyPayload.options.approvalPolicy, .onRequest)
+        XCTAssertEqual(legacyPayload.options.sandboxMode, .dangerFullAccess)
+
+        appStore.replaceCapabilityNegotiation(
+            HostCapabilityNegotiation(
+                wasNegotiated: true,
+                declared: [SessionStore.codexRemoteFullAccessCapability],
+                statuses: []
+            ),
+            preserving: appStore.activeHostState
+        )
+        let currentPayload = store.payloadApplyingRemoteNoApprovalCompatibility(
+            CodexAppServerTurnPayload(prompt: "使用新版 Mac", options: fullAccess)
+        )
+        XCTAssertEqual(currentPayload.options.approvalPolicy, .never)
+        XCTAssertEqual(currentPayload.options.sandboxMode, .dangerFullAccess)
     }
 
     func testVersionAndPairingResponsesDecodeOptionalTailscaleMetadata() throws {
