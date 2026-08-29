@@ -6,10 +6,12 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -266,6 +268,121 @@ func TestSSHWebSocketDialerKeepsProxyAliveAfterHandshakeContextCancellation(t *t
 	}
 }
 
+func TestSSHProxyConnFallbackDeadlinesUnblockUnsupportedExecPipes(t *testing.T) {
+	readPipe := newNoDeadlineReadPipe()
+	writePipe := newNoDeadlineWritePipe()
+	done := make(chan struct{})
+	close(done)
+	proxy := &sshProxyConn{stdin: writePipe, stdout: readPipe, doneCh: done}
+	if err := proxy.SetReadDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("不支持原生 deadline 的 read pipe 应启用 fallback：%v", err)
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		_, err := proxy.Read(make([]byte, 1))
+		readResult <- err
+	}()
+	select {
+	case err := <-readResult:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("read fallback 应返回 timeout：%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read fallback 未解除阻塞")
+	}
+
+	writeProxy := &sshProxyConn{
+		stdin:  newNoDeadlineWritePipe(),
+		stdout: newNoDeadlineReadPipe(),
+		doneCh: done,
+	}
+	if err := writeProxy.SetWriteDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("不支持原生 deadline 的 write pipe 应启用 fallback：%v", err)
+	}
+	writeResult := make(chan error, 1)
+	go func() {
+		_, err := writeProxy.Write([]byte("x"))
+		writeResult <- err
+	}()
+	select {
+	case err := <-writeResult:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("write fallback 应返回 timeout：%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("write fallback 未解除阻塞")
+	}
+}
+
+func TestSSHProxyConnFallbackDeadlineResetInvalidatesStaleCallback(t *testing.T) {
+	readPipe := newNoDeadlineReadPipe()
+	writePipe := newNoDeadlineWritePipe()
+	done := make(chan struct{})
+	close(done)
+	proxy := &sshProxyConn{stdin: writePipe, stdout: readPipe, doneCh: done}
+	if err := proxy.SetReadDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	proxy.stateMu.Lock()
+	staleGeneration := proxy.readDeadlineGeneration
+	proxy.stateMu.Unlock()
+	if err := proxy.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("清零 read deadline 失败：%v", err)
+	}
+	proxy.expireFallbackDeadline(true, staleGeneration)
+	if readPipe.isClosed() {
+		t.Fatal("清零 deadline 后旧 generation callback 不得关闭 pipe")
+	}
+
+	if err := proxy.SetDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := proxy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	proxy.stateMu.Lock()
+	defer proxy.stateMu.Unlock()
+	if proxy.readDeadlineTimer != nil || proxy.writeDeadlineTimer != nil {
+		t.Fatal("Close 必须清理 fallback deadline timers")
+	}
+}
+
+func TestSSHProxyConnFallbackDeadlineCloseAndResetAreAtomic(t *testing.T) {
+	readPipe := newGatedNoDeadlineReadPipe()
+	done := make(chan struct{})
+	close(done)
+	proxy := &sshProxyConn{
+		stdin:  newNoDeadlineWritePipe(),
+		stdout: readPipe,
+		doneCh: done,
+	}
+	proxy.stateMu.Lock()
+	proxy.readDeadlineGeneration = 7
+	proxy.stateMu.Unlock()
+	expired := make(chan struct{})
+	go func() {
+		proxy.expireFallbackDeadline(true, 7)
+		close(expired)
+	}()
+	<-readPipe.closeStarted
+	if proxy.stateMu.TryLock() {
+		proxy.stateMu.Unlock()
+		close(readPipe.allowClose)
+		<-expired
+		t.Fatal("deadline callback 校验 generation 后不能在关闭 pipe 前释放状态锁")
+	}
+
+	reset := make(chan error, 1)
+	go func() {
+		reset <- proxy.SetReadDeadline(time.Time{})
+	}()
+	close(readPipe.allowClose)
+	<-expired
+	if err := <-reset; err != nil {
+		t.Fatalf("deadline callback 完成后清零失败：%v", err)
+	}
+}
+
 func newSSHHelperTransport(t *testing.T, ready bool) (*SSHTransport, string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -273,9 +390,17 @@ func newSSHHelperTransport(t *testing.T, ready bool) (*SSHTransport, string, str
 	logPath := filepath.Join(dir, "ssh.log")
 	serverMarker := filepath.Join(dir, "server-ready")
 	failMarker := filepath.Join(dir, "proxy-fail")
-	script := "#!/bin/sh\nexec \"$MIMI_SSH_TEST_BINARY\" -test.run=TestSSHHelperProcess -- \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		wrapper += ".cmd"
+		script := "@echo off\r\n\"%MIMI_SSH_TEST_BINARY%\" -test.run=TestSSHHelperProcess -- %*\r\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		script := "#!/bin/sh\nexec \"$MIMI_SSH_TEST_BINARY\" -test.run=TestSSHHelperProcess -- \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if ready {
 		if err := os.WriteFile(serverMarker, []byte("ready"), 0o600); err != nil {
@@ -375,4 +500,76 @@ func readSSHHelperLog(t *testing.T, path string) string {
 func countSSHHelperCommand(t *testing.T, path, command string) int {
 	t.Helper()
 	return strings.Count(readSSHHelperLog(t, path), command)
+}
+
+type noDeadlineReadPipe struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newNoDeadlineReadPipe() *noDeadlineReadPipe {
+	return &noDeadlineReadPipe{closed: make(chan struct{})}
+}
+
+func (p *noDeadlineReadPipe) Read([]byte) (int, error) {
+	<-p.closed
+	return 0, os.ErrClosed
+}
+
+func (p *noDeadlineReadPipe) Close() error {
+	p.once.Do(func() { close(p.closed) })
+	return nil
+}
+
+func (p *noDeadlineReadPipe) SetReadDeadline(time.Time) error { return os.ErrNoDeadline }
+
+func (p *noDeadlineReadPipe) isClosed() bool {
+	select {
+	case <-p.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type noDeadlineWritePipe struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newNoDeadlineWritePipe() *noDeadlineWritePipe {
+	return &noDeadlineWritePipe{closed: make(chan struct{})}
+}
+
+func (p *noDeadlineWritePipe) Write([]byte) (int, error) {
+	<-p.closed
+	return 0, os.ErrClosed
+}
+
+func (p *noDeadlineWritePipe) Close() error {
+	p.once.Do(func() { close(p.closed) })
+	return nil
+}
+
+func (p *noDeadlineWritePipe) SetWriteDeadline(time.Time) error { return os.ErrNoDeadline }
+
+type gatedNoDeadlineReadPipe struct {
+	*noDeadlineReadPipe
+	closeStarted chan struct{}
+	allowClose   chan struct{}
+	startOnce    sync.Once
+}
+
+func newGatedNoDeadlineReadPipe() *gatedNoDeadlineReadPipe {
+	return &gatedNoDeadlineReadPipe{
+		noDeadlineReadPipe: newNoDeadlineReadPipe(),
+		closeStarted:       make(chan struct{}),
+		allowClose:         make(chan struct{}),
+	}
+}
+
+func (p *gatedNoDeadlineReadPipe) Close() error {
+	p.startOnce.Do(func() { close(p.closeStarted) })
+	<-p.allowClose
+	return p.noDeadlineReadPipe.Close()
 }

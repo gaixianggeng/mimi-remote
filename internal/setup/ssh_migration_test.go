@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
@@ -65,7 +66,7 @@ func TestMigrateAppServerToSSHAtomicallyPreservesUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("原子迁移结果必须是私有 regular file：%v", info.Mode())
 	}
 }

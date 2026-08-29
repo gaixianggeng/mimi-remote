@@ -43,7 +43,9 @@ enum ComposerTurnSettingsPolicy: Equatable {
     case editable
     case sharedThreadManaged
 
-    static let sharedThreadNotice = "沿用共享线程设置；请在 Desktop 修改"
+    static let sharedThreadNotice = String(
+        localized: "ui.use_shared_thread_settings_change_them_on_desktop"
+    )
 
     static func resolve(
         scope: ComposerDraftScopeKey,

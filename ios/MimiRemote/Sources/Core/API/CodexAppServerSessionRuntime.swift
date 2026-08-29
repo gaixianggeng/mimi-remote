@@ -38,13 +38,21 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
         case .userInputRequestNotFound(let requestID):
             return L10n.format("ui.the_request_for_additional_information_has_expired_value", requestID)
         case .serverQueueUnavailable(let method):
-            return "当前 SSH App Server 不支持实验接口 \(method)，消息未发送。"
+            return String(
+                format: String(localized: "ui.current_ssh_app_server_does_not_support_experimental_api"),
+                method
+            )
         case .serverQueueOutputSchemaUnsupported:
-            return "共享 SSH 队列暂不支持 outputSchema，消息未发送。"
+            return String(localized: "ui.shared_ssh_queue_does_not_support_output_schema")
         case .serverQueueSubmissionInFlight:
-            return "当前会话已有一条 Mimi 消息等待 App Server 开始，消息未发送。"
+            return String(
+                localized: "ui.this_session_already_has_a_mimi_message_waiting_for_app_server"
+            )
         case .paginatedHistoryUnavailable(let method):
-            return "当前 App Server 不支持分页历史接口 \(method)。"
+            return String(
+                format: String(localized: "ui.current_app_server_does_not_support_paginated_history_api"),
+                method
+            )
         }
     }
 }

@@ -1905,7 +1905,7 @@ func TestMainSSHHelperProcess(t *testing.T) {
 		} else {
 			fmt.Fprint(os.Stdout, "socket-missing")
 		}
-	case "nohup codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &":
+	case "nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &":
 		if err := os.WriteFile(os.Getenv("MIMI_AGENTD_SSH_SERVER_MARKER"), []byte("ready"), 0o600); err != nil {
 			os.Exit(91)
 		}

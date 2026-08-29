@@ -596,11 +596,17 @@ type sshProxyConn struct {
 	waitCh chan error
 	doneCh chan struct{}
 
-	stderrMu   sync.Mutex
-	stderrTail []string
-	stateMu    sync.Mutex
-	closed     bool
-	closeOnce  sync.Once
+	stderrMu                sync.Mutex
+	stderrTail              []string
+	stateMu                 sync.Mutex
+	closed                  bool
+	readDeadlineTimer       *time.Timer
+	writeDeadlineTimer      *time.Timer
+	readDeadlineGeneration  uint64
+	writeDeadlineGeneration uint64
+	readDeadlineExpired     bool
+	writeDeadlineExpired    bool
+	closeOnce               sync.Once
 }
 
 func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
@@ -699,11 +705,19 @@ func (p *sshProxyConn) captureStderr(stderr io.ReadCloser) {
 }
 
 func (p *sshProxyConn) Read(data []byte) (int, error) {
-	return p.stdout.Read(data)
+	n, err := p.stdout.Read(data)
+	if err != nil && p.pipeDeadlineExpired(true) {
+		return n, os.ErrDeadlineExceeded
+	}
+	return n, err
 }
 
 func (p *sshProxyConn) Write(data []byte) (int, error) {
-	return p.stdin.Write(data)
+	n, err := p.stdin.Write(data)
+	if err != nil && p.pipeDeadlineExpired(false) {
+		return n, os.ErrDeadlineExceeded
+	}
+	return n, err
 }
 
 func (p *sshProxyConn) Close() error {
@@ -714,6 +728,8 @@ func (p *sshProxyConn) Close() error {
 	p.closeOnce.Do(func() {
 		p.stateMu.Lock()
 		p.closed = true
+		p.cancelFallbackDeadlineLocked(true, false)
+		p.cancelFallbackDeadlineLocked(false, false)
 		p.stateMu.Unlock()
 		if err := p.stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 			closeErr = err
@@ -739,19 +755,19 @@ func (p *sshProxyConn) RemoteAddr() net.Addr                 { return sshProxyAd
 func (p *sshProxyConn) SetDeadline(deadline time.Time) error { return p.setPipeDeadline(deadline) }
 func (p *sshProxyConn) SetReadDeadline(deadline time.Time) error {
 	if file, ok := p.stdout.(interface{ SetReadDeadline(time.Time) error }); ok {
-		return file.SetReadDeadline(deadline)
+		return p.applyPipeDeadline(true, deadline, file.SetReadDeadline)
 	}
 	if file, ok := p.stdout.(interface{ SetDeadline(time.Time) error }); ok {
-		return file.SetDeadline(deadline)
+		return p.applyPipeDeadline(true, deadline, file.SetDeadline)
 	}
 	return nil
 }
 func (p *sshProxyConn) SetWriteDeadline(deadline time.Time) error {
 	if file, ok := p.stdin.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		return file.SetWriteDeadline(deadline)
+		return p.applyPipeDeadline(false, deadline, file.SetWriteDeadline)
 	}
 	if file, ok := p.stdin.(interface{ SetDeadline(time.Time) error }); ok {
-		return file.SetDeadline(deadline)
+		return p.applyPipeDeadline(false, deadline, file.SetDeadline)
 	}
 	return nil
 }
@@ -760,6 +776,112 @@ func (p *sshProxyConn) setPipeDeadline(deadline time.Time) error {
 		return err
 	}
 	return p.SetWriteDeadline(deadline)
+}
+
+func (p *sshProxyConn) applyPipeDeadline(read bool, deadline time.Time, native func(time.Time) error) error {
+	err := native(deadline)
+	if err == nil {
+		p.clearFallbackDeadline(read)
+		return nil
+	}
+	if !errors.Is(err, os.ErrNoDeadline) {
+		return err
+	}
+	// Windows 的 exec pipe 不支持 os.File deadline。用关闭对应 pipe 的 timer
+	// 解除阻塞，并由 Read/Write 把关闭错误还原为标准 timeout 语义。
+	p.armFallbackDeadline(read, deadline)
+	return nil
+}
+
+func (p *sshProxyConn) armFallbackDeadline(read bool, deadline time.Time) {
+	p.stateMu.Lock()
+	p.cancelFallbackDeadlineLocked(read, true)
+	if p.closed || deadline.IsZero() {
+		p.stateMu.Unlock()
+		return
+	}
+	var generation uint64
+	if read {
+		generation = p.readDeadlineGeneration
+		p.readDeadlineTimer = time.AfterFunc(time.Until(deadline), func() {
+			p.expireFallbackDeadline(true, generation)
+		})
+	} else {
+		generation = p.writeDeadlineGeneration
+		p.writeDeadlineTimer = time.AfterFunc(time.Until(deadline), func() {
+			p.expireFallbackDeadline(false, generation)
+		})
+	}
+	p.stateMu.Unlock()
+}
+
+func (p *sshProxyConn) clearFallbackDeadline(read bool) {
+	p.stateMu.Lock()
+	p.cancelFallbackDeadlineLocked(read, true)
+	p.stateMu.Unlock()
+}
+
+func (p *sshProxyConn) cancelFallbackDeadlineLocked(read bool, resetExpired bool) {
+	if read {
+		p.readDeadlineGeneration++
+		if p.readDeadlineTimer != nil {
+			p.readDeadlineTimer.Stop()
+			p.readDeadlineTimer = nil
+		}
+		if resetExpired {
+			p.readDeadlineExpired = false
+		}
+		return
+	}
+	p.writeDeadlineGeneration++
+	if p.writeDeadlineTimer != nil {
+		p.writeDeadlineTimer.Stop()
+		p.writeDeadlineTimer = nil
+	}
+	if resetExpired {
+		p.writeDeadlineExpired = false
+	}
+}
+
+func (p *sshProxyConn) expireFallbackDeadline(read bool, generation uint64) {
+	p.stateMu.Lock()
+	if p.closed {
+		p.stateMu.Unlock()
+		return
+	}
+	var pipe io.Closer
+	if read {
+		if generation != p.readDeadlineGeneration {
+			p.stateMu.Unlock()
+			return
+		}
+		p.readDeadlineTimer = nil
+		p.readDeadlineExpired = true
+		pipe = p.stdout
+	} else {
+		if generation != p.writeDeadlineGeneration {
+			p.stateMu.Unlock()
+			return
+		}
+		p.writeDeadlineTimer = nil
+		p.writeDeadlineExpired = true
+		pipe = p.stdin
+	}
+	// generation 校验与 Close 必须处于同一临界区。否则清零或延长 deadline
+	// 可能在两者之间成功返回，旧 callback 随后仍会关闭已经恢复健康的 pipe。
+	if pipe != nil {
+		_ = pipe.Close()
+	}
+	p.stateMu.Unlock()
+}
+
+func (p *sshProxyConn) pipeDeadlineExpired(read bool) bool {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if read {
+		return p.readDeadlineExpired
+	}
+	return p.writeDeadlineExpired
 }
 
 type sshProxyAddr string
