@@ -825,8 +825,7 @@ extension View {
                 // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
-                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-                    .overlay(alignment: .top) { WorkbenchTopScrollEdgeBoost() }
+                modifier(WorkbenchTopScrollEdgeBoostModifier())
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -892,11 +891,17 @@ struct WorkbenchSidebarContainer<
                     }
                 }
                 .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
+                // 加深带画在 padding 之外，浮层卡片与外围 gutter 一起被盖住。只盖卡片会把
+                // gutter 剩成一条没被提亮的暗缝，比原来的分栏色差更显眼。
+                .workbenchSidebarTopScrollEdgeBoost()
                 // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
                 .toolbar(.hidden, for: .navigationBar)
         } else {
             content
                 .background(tokens.sidebarBackground.ignoresSafeArea())
+                // 分栏形态下侧栏有自己的导航栏，overlay 落在内容之上、系统 toolbar 之下，
+                // 品牌标题不会被蒙住。
+                .workbenchSidebarTopScrollEdgeBoost()
                 .toolbar {
                     if #available(iOS 26.0, *) {
                         ToolbarItem(placement: .topBarLeading) {
@@ -1776,8 +1781,22 @@ struct CombinedUsageRingsGraphic: View {
 /// 二次采样，真正加深模糊而不是把内容压淡；用渐变 mask 收边，材质自身的直角边界不可见，
 /// 下沿精确落到全透明，因此不会出现横贯全宽的硬边或明度断层。整体观感仍是"顶部一整片
 /// 玻璃"，只是比系统默认更实。
+///
+/// 强度由 `WorkbenchTopScrollEdgeBoostRamp` 按正文的上滚量给出，静止时为 0：那时这一层
+/// 盖住的是一整块纯色画布，玻璃对纯色不产生任何虚化，只会把顶部这一条提亮——详情列因此
+/// 比相邻的侧栏亮一档，界线正好压在分栏缝上。可读性没有收益，纯粹制造横向色差。
 @available(iOS 26.0, *)
 private struct WorkbenchTopScrollEdgeBoost: View {
+    /// 0 = 完全不绘制，1 = 满强度。
+    let intensity: Double
+
+    /// 状态栏 + 导航控制层，由会话列的滚动几何测量后共享给两段。
+    ///
+    /// 不能让每一段自己量：浮层形态的侧栏根本没有导航栏，自己只能量到状态栏那点高度；
+    /// 而会话列这一层 overlay 让出安全区后 `safeAreaInsets.top` 也回报不到控制层的真实高度，
+    /// 收边会提前几十 pt 结束。两边各量各的，拼出来的是两段错位的带子。
+    let topInset: CGFloat
+
     /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
     private let fadeTail: CGFloat = 56
 
@@ -1792,14 +1811,18 @@ private struct WorkbenchTopScrollEdgeBoost: View {
     /// 每一步都写死类型并用普通循环展开：交给类型推导去解
     /// `stops:` 里的 map + 混合字面量算术，Swift 类型检查器会在较慢的机器上超时
     /// （CI 报 "unable to type-check this expression in reasonable time"）。
-    private static func falloffStops(holdStop: CGFloat) -> [Gradient.Stop] {
+    ///
+    /// 上滚淡入的强度也乘在这条 alpha 上，而不是给 Material 加 `.opacity`：收边本来就在
+    /// 同一条 alpha 通道上工作，两者相乘只是把同一条曲线整体压低，不引入第二次合成。
+    private static func falloffStops(holdStop: CGFloat, intensity: Double) -> [Gradient.Stop] {
         var stops: [Gradient.Stop] = []
         stops.reserveCapacity(falloffSampleCount)
         let lastIndex: CGFloat = CGFloat(falloffSampleCount - 1)
         for index in 0..<falloffSampleCount {
             let progress: CGFloat = CGFloat(index) / lastIndex
             let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
-            let alpha: Double = Double(1.0 - eased)
+            let falloff: Double = Double(1.0 - eased)
+            let alpha: Double = falloff * intensity
             let location: CGFloat = holdStop + (1.0 - holdStop) * progress
             stops.append(Gradient.Stop(color: Color.black.opacity(alpha), location: location))
         }
@@ -1807,29 +1830,141 @@ private struct WorkbenchTopScrollEdgeBoost: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            // 让出安全区后，proxy 汇报的正是被让出的顶部 inset（状态栏 + 导航控制层）。
-            let topInset: CGFloat = proxy.safeAreaInsets.top
-            let height: CGFloat = max(topInset + fadeTail, 1)
-            // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
-            let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
-            Rectangle()
-                // 这里是全 App 唯一不走 `WorkbenchMaterial.surface` 的地方，而且是有意的：
-                // 它不是一块表面，是叠在系统 soft scroll edge 之上的**第二次采样**，
-                // 实际观感 = 系统边缘虚化 + 这一层。换成同一档 surface 会把顶部压成
-                // 明显比其它表面更浓的一块，正好制造这次要消掉的浓度差。
-                .fill(.ultraThinMaterial)
-                .mask(
-                    LinearGradient(
-                        stops: Self.falloffStops(holdStop: holdStop),
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(height: height)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // 强度为 0 时整层不进入视图树：静止阅读是常态，不为一层看不见的材质付出合成开销。
+        // 几何还没测到时同样不画，避免用 0 inset 画出一条位置错误的短带。
+        if intensity > 0, topInset > 0 {
+            boostLayer
         }
-        .ignoresSafeArea(edges: .top)
-        .allowsHitTesting(false)
+    }
+
+    private var boostLayer: some View {
+        let height: CGFloat = max(topInset + fadeTail, 1)
+        // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
+        let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
+        return Rectangle()
+            // 这里是全 App 唯一不走 `WorkbenchMaterial.surface` 的地方，而且是有意的：
+            // 它不是一块表面，是叠在系统 soft scroll edge 之上的**第二次采样**，
+            // 实际观感 = 系统边缘虚化 + 这一层。换成同一档 surface 会把顶部压成
+            // 明显比其它表面更浓的一块，正好制造这次要消掉的浓度差。
+            .fill(.ultraThinMaterial)
+            .mask(
+                LinearGradient(
+                    stops: Self.falloffStops(holdStop: holdStop, intensity: intensity),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .frame(height: height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+    }
+}
+
+/// 顶部加深层的强度曲线：把"正文钻进导航控制层后方多少"换算成 0…1 的强度。
+///
+/// 纯函数，不带可用性标注，便于直接做单元测试。
+enum WorkbenchTopScrollEdgeBoostRamp {
+    /// 从正文刚碰到控制层下沿到加深层满强度的滚动距离。太短会在起滚瞬间闪出一条亮边，
+    /// 太长则正文已经明显压在标题上却还没被压住。
+    static let rampDistance: CGFloat = 24
+
+    /// 强度量化档位。`onScrollGeometryChange` 只在值变化时回调，量化后整条 ramp 最多
+    /// 触发 8 次，越过 ramp 之后强度恒为 1、滚动全程不再产生状态更新。不量化就会每帧
+    /// 写一次 @State，长会话时间线要为一层顶部材质付出整屏重估。
+    static let intensitySteps: Double = 8
+
+    /// `underlap` = `contentOffset.y + contentInsets.top`，为正表示正文已经进入控制层后方；
+    /// 贴顶或列表不足一屏时为 0。用 smoothstep 淡入，起点斜率为 0，不会线性起跳。
+    static func intensity(forUnderlap underlap: CGFloat) -> Double {
+        let clamped: CGFloat = min(rampDistance, max(0, underlap))
+        let progress: Double = Double(clamped / rampDistance)
+        let eased: Double = progress * progress * (3.0 - 2.0 * progress)
+        return (eased * intensitySteps).rounded() / intensitySteps
+    }
+}
+
+/// 把滚动几何接到顶部加深层上。
+///
+/// 状态刻意留在这个 ViewModifier 内部而不是上抬到会话时间线：`content` 是已经构建好的
+/// 不透明视图，强度变化只会重估这一层 overlay，不会让 List 的 body 跟着失效。
+@available(iOS 26.0, *)
+private struct WorkbenchTopScrollEdgeBoostModifier: ViewModifier {
+    @Environment(WorkbenchTopScrollEdgeCoordinator.self)
+    private var coordinator: WorkbenchTopScrollEdgeCoordinator?
+
+    @State private var sample = WorkbenchTopScrollEdgeSample()
+    @State private var producerID = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+            // 参数在闭包里算完再交给 SwiftUI 比较，State 只承载最终值。
+            .onScrollGeometryChange(for: WorkbenchTopScrollEdgeSample.self) { geometry in
+                let underlap: CGFloat = geometry.contentOffset.y + geometry.contentInsets.top
+                return WorkbenchTopScrollEdgeSample(
+                    intensity: WorkbenchTopScrollEdgeBoostRamp.intensity(forUnderlap: underlap),
+                    // 取整到 pt：旋转与工具栏高度变化才需要重画，亚像素抖动不必惊动侧栏。
+                    topInset: geometry.contentInsets.top.rounded()
+                )
+            } action: { _, newSample in
+                sample = newSample
+                coordinator?.publish(newSample, from: producerID)
+            }
+            .overlay(alignment: .top) {
+                WorkbenchTopScrollEdgeBoost(
+                    intensity: sample.intensity,
+                    topInset: sample.topInset
+                )
+            }
+            .onDisappear {
+                // 转场时旧、新会话可能短暂共存；只允许当前生产者清掉共享状态。
+                coordinator?.removeProducer(producerID)
+            }
+    }
+}
+
+extension View {
+    /// 侧栏侧的那一段加深带。几何与强度全部取自会话列，自己不做任何测量。
+    @ViewBuilder
+    func workbenchSidebarTopScrollEdgeBoost() -> some View {
+        if #available(iOS 26.0, *) {
+            modifier(WorkbenchSidebarTopScrollEdgeBoostModifier())
+        } else {
+            self
+        }
+    }
+}
+
+@available(iOS 26.0, *)
+private struct WorkbenchSidebarTopScrollEdgeBoostModifier: ViewModifier {
+    /// 侧栏那一段相对会话列的强度系数。
+    ///
+    /// 不能照搬满强度，两个理由指向同一个数：
+    ///
+    /// 1. **两列底色本来就不同**。侧栏表面 `sidebarSurfaceBackground` (25,23,25) 比工作区画布
+    ///    (18,17,18) 高约 7 级——这是刻意的结构分区色，不是 bug。同一档玻璃各自提亮约 19 级，
+    ///    结果是 44 对 37，缝不但没消失，还从"右边亮"翻成"左边亮"。压到 0.6 档，侧栏落在 35
+    ///    左右，与会话列的 37 基本对齐。
+    /// 2. **侧栏顶部有内容要读**。浮层形态下品牌行（当前电脑 / 连接状态）正落在满强度区里，
+    ///    满档玻璃会把它连字带按钮一起糊掉。玻璃是二次采样，压低 mask alpha 等于让原本清晰的
+    ///    那一份留下来，字仍然锐利。
+    ///
+    /// 系数按深色实测标定；浅色下两列底色差同样存在，同一系数按比例成立。
+    private static let matchFactor: Double = 0.6
+
+    @Environment(WorkbenchTopScrollEdgeCoordinator.self)
+    private var coordinator: WorkbenchTopScrollEdgeCoordinator?
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if let sample = coordinator?.sample {
+                    WorkbenchTopScrollEdgeBoost(
+                        intensity: sample.intensity * Self.matchFactor,
+                        topInset: sample.topInset
+                    )
+                }
+            }
     }
 }
