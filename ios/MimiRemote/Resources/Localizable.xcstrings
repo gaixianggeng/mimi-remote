@@ -4950,13 +4950,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session is active in another Codex client. Finish or interrupt that turn there, then retry."
+            "value": "Close the session in the other app before continuing here."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话正在另一个 Codex 客户端中运行。请先在那里完成或中断当前回合，然后重试。"
+            "value": "请先在那边关闭会话，才能在这里继续。"
+          }
+        }
+      }
+    },
+    "ui.codex_active_writer_conflict_title": {
+      "comment": "Title for the blocking composer card shown after thread/resume confirms that another app owns the writer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open in another app"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在另一个应用中打开"
           }
         }
       }
@@ -13925,13 +13942,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Load full history"
+            "value": "Load full content"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "加载完整历史"
+            "value": "加载完整内容"
           }
         }
       }
@@ -30175,13 +30192,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session contains large images or tool output that have been loaded using save mode."
+            "value": "Recent history is shown. Large images and tool output are not loaded."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话包含较大的图片或工具输出，已使用省流模式加载。"
+            "value": "已显示最近记录。较大的图片和工具输出暂未加载。"
           }
         }
       }

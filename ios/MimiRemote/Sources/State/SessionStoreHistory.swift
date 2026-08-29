@@ -356,11 +356,9 @@ extension SessionStore {
             }
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
-                if Self.isCodexActiveWriterConflict(error.localizedDescription) {
-                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict"))
-                } else {
-                    setErrorMessage(error.localizedDescription)
-                }
+                // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
+                // Composer 仍会错误地保持可发送状态。
+                setErrorMessage(error.localizedDescription)
             }
             return false
         }

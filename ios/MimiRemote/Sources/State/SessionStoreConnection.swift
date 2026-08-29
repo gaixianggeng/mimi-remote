@@ -387,6 +387,7 @@ extension SessionStore {
             }
             cancelWebSocketReconnect(resetAttempts: false)
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+            setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
@@ -398,6 +399,9 @@ extension SessionStore {
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+            if activeWriterConflict {
+                setActiveWriterConflict(true, sessionID: sessionID)
+            }
             // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
             // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动。
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
@@ -428,6 +432,7 @@ extension SessionStore {
                 }
             }
         case .terminated(let reason):
+            setActiveWriterConflict(false, sessionID: sessionID)
             if reason == .credentialsInvalid,
                !appStore.isCurrentCredentialFingerprint(connectedCredentialFingerprint) {
                 // 旧 Runtime/空 Token 的迟到拒绝不是当前凭据结论；按普通断线交给现有恢复链路。
@@ -2392,8 +2397,12 @@ extension SessionStore {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
+        let activeWriterConflict = value.map(Self.isCodexActiveWriterConflict) == true
+        if activeWriterConflict, let selectedSessionID {
+            setActiveWriterConflict(true, sessionID: selectedSessionID)
+        }
         let userFacingValue: String?
-        if let value, Self.isCodexActiveWriterConflict(value) {
+        if activeWriterConflict {
             userFacingValue = L10n.text("ui.codex_active_writer_conflict")
         } else {
             userFacingValue = value

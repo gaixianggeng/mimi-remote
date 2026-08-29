@@ -207,6 +207,9 @@ final class SessionStore: ObservableObject {
     @Published var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
+    /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
+    /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。
+    @Published var activeWriterConflictLeases: Set<HostSessionLease> = []
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
     /// 同一 Session 可连续提交多次权限变更；必须按提交顺序逐条等待精确 turn/started。
     @Published var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:]
@@ -1721,6 +1724,9 @@ final class SessionStore: ObservableObject {
         guard !isProtocolReadOnlySession(session) else {
             return false
         }
+        guard !hasActiveWriterConflict(sessionID: session.id) else {
+            return false
+        }
         guard session.isRunning else {
             return true
         }
@@ -1793,6 +1799,39 @@ final class SessionStore: ObservableObject {
             return L10n.text("ui.read_only")
         }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
+    }
+
+    var selectedSessionHasActiveWriterConflict: Bool {
+        guard let selectedSessionID else {
+            return false
+        }
+        return hasActiveWriterConflict(sessionID: selectedSessionID)
+    }
+
+    func hasActiveWriterConflict(sessionID: SessionID) -> Bool {
+        activeWriterConflictLeases.contains(
+            HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        )
+    }
+
+    func setActiveWriterConflict(_ hasConflict: Bool, sessionID: SessionID) {
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        if hasConflict {
+            activeWriterConflictLeases.insert(lease)
+        } else {
+            activeWriterConflictLeases.remove(lease)
+        }
+    }
+
+    func retrySelectedSessionWriterAccess() {
+        guard let session = selectedSession else {
+            return
+        }
+        // thread/resume 是公开协议中唯一可信的 writer 检查。重试必须由用户触发，
+        // 且强制建立新连接，不能复用曾在发送阶段返回冲突的 connected socket。
+        setErrorMessage(nil)
+        disconnectWebSocket()
+        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
     }
 
     var selectedSessionAllowsTakeOver: Bool {

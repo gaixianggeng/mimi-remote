@@ -1680,8 +1680,8 @@ actor CodexAppServerSessionRuntime {
         }
         let config = try await ensureConfig()
         guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
-            // 独立 WS 模式下，打开空闲历史只读取 state DB / rollout，不提前把 thread
-            // 加载进 Mimi 的 app-server。首次真正发送时仍会先 resume，再启动 turn。
+            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout。SSH 共享模式会在这里
+            // resume，以服务端真实结果决定当前入口是否拥有 writer。
             return
         }
         let projects = try await projects()
@@ -1732,11 +1732,10 @@ actor CodexAppServerSessionRuntime {
         guard runtimeProvider == "codex" else {
             return true
         }
-        // agentd 统一通过独立 WebSocket gateway 暴露 App Server。空闲历史不提前取得
-        // writer；Desktop-owned 会话的 owner 判定与请求路由由 gateway 完成，发送时再建立
-        // 对应的事件监听。
-        _ = config
-        return session.isRunning
+        // 共享 SSH 的多个入口必须在打开时就得到同一份 writer 结论。普通 WS 仍保持
+        // 空闲历史只读，避免仅浏览历史就提前取得 writer。
+        let transport = config.runtime.transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return transport == "ssh" || session.isRunning
     }
 
     func replaceThreadSubscriptionLease(
@@ -1765,8 +1764,8 @@ actor CodexAppServerSessionRuntime {
         }
         let config = try await ensureConfig()
         guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
-            // 独立模式的空闲历史没有服务端订阅需要恢复。旧 unsubscribe 的迟到 ACK
-            // 不能把一次纯读取重新升级成 thread/resume。
+            // 普通 WS 的空闲历史没有服务端订阅需要恢复。旧 unsubscribe 的迟到 ACK
+            // 不能把一次纯读取重新升级成 thread/resume；SSH 共享模式不走这里。
             return
         }
         let connection = try await ensureConnection()

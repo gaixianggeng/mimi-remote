@@ -310,6 +310,27 @@ extension ConversationDataFlowTests {
             L10n.text("ui.codex_active_writer_conflict")
         )
         XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+
+        // writer 结论必须保持到下一次 thread/resume 成功。显式退役旧 socket 或随后出现
+        // 普通连接错误，都不能让 Composer 在尚未取得 writer 时重新出现。
+        store.applyWebSocketStatus(.disconnected, sessionID: running.id)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        store.applyWebSocketStatus(.failed("temporary transport error"), sessionID: running.id)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+
+        store.retrySelectedSessionWriterAccess()
+        XCTAssertEqual(sockets.count, 2, "用户显式重试时必须建立新连接，不能复用冲突 socket")
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict, "重试完成前必须继续锁定 Composer")
+
+        let retrySocket = try XCTUnwrap(sockets.last)
+        retrySocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertFalse(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertTrue(store.canSendInSelectedSession)
     }
 
     func testActiveWriterSendFailureShowsDesktopSyncGuidance() async throws {
@@ -356,6 +377,8 @@ extension ConversationDataFlowTests {
             L10n.text("ui.codex_active_writer_conflict")
         )
         XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
     }
 
     func testLateOlderNetworkPathUpdateCannotOverwriteSatisfiedState() async throws {

@@ -3,6 +3,57 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testSharedSSHOpeningIdleThreadResumesToValidateWriter() async throws {
+        let project = AgentProject(id: "shared-open", name: "Shared Open", path: "/tmp/shared-open")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeSharedSSHConfig(project: project) }
+        )
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        socket.onStatus = { statuses.append($0) }
+
+        socket.connect(sessionID: "thread-shared-open")
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 1)
+        transportResponse(
+            transport,
+            id: read.id,
+            result: sharedIdleThreadJSON(id: "thread-shared-open", cwd: project.path)
+        )
+
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        XCTAssertEqual(resume.params?.objectValue?["threadId"]?.stringValue, "thread-shared-open")
+        transportErrorResponse(
+            transport,
+            id: resume.id,
+            code: -32600,
+            message: "thread thread-shared-open already has an active writer"
+        )
+
+        for _ in 0..<100 where !statuses.contains(where: {
+            if case .failed(let message) = $0 {
+                return SessionStore.isCodexActiveWriterConflict(message)
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(statuses.count, 2)
+        XCTAssertEqual(statuses.first, .connecting)
+        guard case .failed(let failureMessage) = statuses.last else {
+            XCTFail("SSH writer 检查失败必须以 failed 结束，当前为 \(statuses)")
+            return
+        }
+        XCTAssertTrue(SessionStore.isCodexActiveWriterConflict(failureMessage))
+        XCTAssertFalse(statuses.contains(.connected), "writer 冲突确认前不能把 Composer 误判为可发送")
+        socket.disconnect()
+    }
+
     func testSharedSSHResumeActiveThreadQueuesFirstPromptWithoutTurnStart() async throws {
         let project = AgentProject(id: "shared-active", name: "Shared Active", path: "/tmp/shared-active")
         let transport = FakeCodexAppServerTransport()
