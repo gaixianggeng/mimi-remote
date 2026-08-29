@@ -31,6 +31,7 @@ type Config struct {
 	Voice         VoiceConfig      `json:"voice"`
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
+	Push          PushConfig       `json:"push"`
 	Session       SessionConfig    `json:"session"`
 	Debug         DebugConfig      `json:"debug"`
 	Projects      []ProjectConfig  `json:"projects"`
@@ -93,11 +94,26 @@ type AppServerConfig struct {
 	SSHTarget string `json:"ssh_target,omitempty"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
+	// ApprovalBroker 让具名 gateway 会话的上游连接在移动端退到后台后有界存活，
+	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
+	// 需要先在真机上验证后台/锁屏路径再放开。
+	ApprovalBroker bool `json:"approval_broker,omitempty"`
 }
 
 type VoiceConfig struct {
 	CodexTranscriptionBaseURL string `json:"codex_transcription_base_url,omitempty"`
 	CodexAuthFile             string `json:"codex_auth_file,omitempty"`
+}
+
+// PushConfig 是锁屏审批提醒（MIM-112）的本机开关。默认关闭：只有用户在 App 内
+// 显式同意使用中转服务、并且这里配置了 Provider 之后，agentd 才会注册设备或
+// 发送任何提醒。坚持纯本地部署的用户不开启即可，链路上不产生对外请求。
+type PushConfig struct {
+	Enabled     bool   `json:"enabled"`
+	ProviderURL string `json:"provider_url,omitempty"`
+	// Environment 必须与 App 构建匹配：TestFlight/Debug 是 sandbox，
+	// App Store 是 production，Device Token 不能跨环境使用。
+	Environment string `json:"environment,omitempty"`
 }
 
 type SessionConfig struct {

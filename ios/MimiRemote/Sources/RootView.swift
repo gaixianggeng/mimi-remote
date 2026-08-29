@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -90,6 +91,12 @@ struct RootView: View {
             await appStore.preflightConnection()
 #endif
         }
+        .task(id: notificationResponseAdapter.approvalInbox.pending) {
+            guard let delivery = notificationResponseAdapter.approvalInbox.pending else { return }
+            // 先消费再做网络操作；新的锁屏动作可独立入队，不会被旧任务结束时误清。
+            notificationResponseAdapter.approvalInbox.consume(delivery)
+            await handleLockScreenApproval(delivery)
+        }
         .task(id: notificationRouteTaskID) {
             guard let route = notificationResponseAdapter.pendingRoute else {
                 pendingNotificationRouteRevision = nil
@@ -113,6 +120,12 @@ struct RootView: View {
             let expectedSelectionLease = sessionStore.currentSelectionLease()
             await handleNotificationRoute(route, ifCurrent: expectedSelectionLease)
         }
+        .task(id: lockScreenApprovalLifecycleTaskID) {
+            guard scenePhase == .active else { return }
+            // 冷启动不要求用户先打开设置页；失败只保留为可重试状态，
+            // 下一次前台恢复仍会再次尝试。
+            await refreshLockScreenApprovalLifecycle(markFailure: true)
+        }
         .task(id: scenePhase == .active ? sessionStore.selectedProjectID : nil) {
             guard scenePhase == .active else {
                 return
@@ -131,9 +144,13 @@ struct RootView: View {
                 return
             }
             Task {
+			// 恢复凭据后由生命周期协调器用绑定 Profile 查询 agentd；这里先做
+			// 不依赖网络的过期清理，避免前台恢复期间继续展示已过期卡片。
+			await lockScreenApprovalStore.reconcileDeliveredNotifications()
                 do {
                     try await appStore.restoreCredentialsForForeground()
                     await sessionStore.resumeFromForeground()
+                    await refreshLockScreenApprovalLifecycle(markFailure: true)
                 } catch is CancellationError {
                     // 后台/前台快速抖动或同时切换主机时由最新生命周期操作接管。
                 } catch {
@@ -196,6 +213,107 @@ struct RootView: View {
             hasCompletedInitialBootstrap: hasCompletedInitialBootstrap
         )
     }
+
+    private var lockScreenApprovalLifecycleTaskID: String {
+        [
+            scenePhase == .active ? "active" : "inactive",
+            appStore.activeConnectionProfileID ?? "",
+            lockScreenApprovalStore.registeredProfileID ?? "",
+        ].joined(separator: "|")
+    }
+
+    private func refreshLockScreenApprovalLifecycle(markFailure: Bool) async {
+        guard lockScreenApprovalStore.isEnabled,
+              let profileID = lockScreenApprovalStore.registeredProfileID else {
+            return
+        }
+        do {
+            let client: AgentAPIClient
+            if profileID == appStore.activeConnectionProfileID {
+                client = try appStore.client()
+            } else {
+                client = try await LockScreenApprovalRouting.client(
+                    profileID: profileID,
+                    appStore: appStore
+                )
+            }
+            lockScreenApprovalStore.registerNotificationInfrastructure()
+			await lockScreenApprovalStore.refreshHostSupport(client: client, profileID: profileID)
+            await lockScreenApprovalStore.refreshTicketIfNeeded(
+                client: client,
+                profileID: profileID
+            )
+			await lockScreenApprovalStore.reconcileDeliveredNotifications(client: client)
+        } catch is CancellationError {
+            return
+        } catch {
+            if markFailure {
+                lockScreenApprovalStore.markRegistrationFailed()
+            }
+        }
+    }
+
+    /// 锁屏动作只做两件事：把决策交给自己的 agentd，或者打开 App 看详情。
+    /// 结果未知时如实展示未知——把超时当成已允许是这条链路上最危险的错误。
+	private func handleLockScreenApproval(_ delivery: LockScreenApprovalDelivery) async {
+		guard let decision = delivery.decision else {
+			if delivery.notification.event == .resolved {
+				await lockScreenApprovalStore.handleResolved(delivery.notification)
+			} else {
+				await openLockScreenApprovalDetails(delivery.notification)
+			}
+			return
+		}
+		guard let source = try? await LockScreenApprovalRouting.sourceClient(
+			for: delivery.notification,
+			appStore: appStore
+		) else {
+			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+			return
+		}
+        await lockScreenApprovalStore.submitDecision(
+            decision,
+            for: delivery.notification,
+			client: source.client,
+			notificationRequestIdentifier: delivery.requestIdentifier
+        )
+		if let message = lockScreenApprovalStore.lastDecisionMessage {
+			notificationRouteAlertMessage = message
+		}
+	}
+
+	private func openLockScreenApprovalDetails(
+		_ notification: LockScreenApprovalNotification
+	) async {
+		do {
+			let source = try await LockScreenApprovalRouting.sourceClient(
+				for: notification,
+				appStore: appStore
+			)
+			let destination = try await source.client.pushActionRoute(
+				actionID: notification.actionID,
+				deviceID: notification.deviceID
+			)
+			if appStore.activeConnectionProfileID != source.profileID {
+				_ = try await sessionStore.switchConnectionProfile(id: source.profileID)
+				await sessionStore.bootstrap()
+			}
+			let projectID = destination.projectID.isEmpty
+				? sessionStore.sessions.first(where: { $0.id == destination.threadID })?.projectID
+				: destination.projectID
+			guard let projectID else {
+				throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+			}
+			let route = SessionNotificationRoute.current(
+				profileID: appStore.notificationRoutingProfileID,
+				projectID: projectID,
+				sessionID: destination.threadID
+			)
+			await handleNotificationRoute(route, ifCurrent: sessionStore.currentSelectionLease())
+		} catch {
+			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+		}
+	}
 
     private func handleNotificationRoute(
         _ route: SessionNotificationRoute,

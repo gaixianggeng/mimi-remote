@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 锁屏审批提醒（MIM-112）。这里写 development 对应 APNs sandbox；
+	     Xcode 在 App Store / TestFlight 导出时会自动改写成 production。 -->
+	<key>aps-environment</key>
+	<string>development</string>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.gaixianggeng.mimi</string>

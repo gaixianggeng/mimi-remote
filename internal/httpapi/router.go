@@ -24,6 +24,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
+	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
@@ -77,15 +78,29 @@ type Router struct {
 	claudeRuntimeQuotaCheckedAt time.Time
 	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
 	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
-	accountTokenUsageMu           sync.RWMutex
-	accountTokenUsageResult       json.RawMessage
-	accountTokenUsageCachedAt     time.Time
-	accountTokenUsageCacheTTL     time.Duration
-	gatewayThreadsMu              sync.Mutex
-	gatewayThreads                map[string]appServerGatewayAllowedThread
-	codexGatewayMu                sync.Mutex
-	activeCodexGateway            int
-	appServerSSH                  appServerSSHTransport
+	accountTokenUsageMu       sync.RWMutex
+	accountTokenUsageResult   json.RawMessage
+	accountTokenUsageCachedAt time.Time
+	accountTokenUsageCacheTTL time.Duration
+	gatewayThreadsMu          sync.Mutex
+	gatewayThreads            map[string]appServerGatewayAllowedThread
+	codexGatewayMu            sync.Mutex
+	activeCodexGateway        int
+	appServerSSH              appServerSSHTransport
+	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
+	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
+	// 全部消失，上游请求继续 fail closed。
+	codexBrokerMu sync.Mutex
+	codexBrokers  map[string]*codexGatewayBroker
+	// push 是锁屏审批提醒（MIM-112）的安全层。nil 或未启用时所有入口都是空操作。
+	push *pushbridge.Manager
+	// claudeObservers 让 Claude bridge 会话在移动端离线后仍被观察；否则 agentd
+	// 看不到期间到达的审批请求，也就无从提醒。
+	claudeObserverMu sync.Mutex
+	claudeObservers  map[string]*claudeApprovalObserver
+	// claudeObserverEpochs 让前台 attach 与断线 observer 安装共享同一个代际门。
+	// 新连接先递增代际，旧 handler 随后到达时就不能再发布 observer。
+	claudeObserverEpochs          map[string]uint64
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex
@@ -203,6 +218,13 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 			autoThreadTitleTimeout,
 		)
 	}
+	r.push = newPushManager(pushManagerConfig{
+		Enabled:         cfg.Push.Enabled,
+		ProviderURL:     cfg.Push.ProviderURL,
+		Environment:     cfg.Push.Environment,
+		InstallationID:  installationID,
+		DeviceStorePath: pushDeviceStorePath(options.ConfigPath),
+	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
 	mux.HandleFunc("/api/health", r.healthz)
@@ -235,6 +257,10 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/worktrees/prune", authed(http.HandlerFunc(r.worktreePruneHandler)))
 	mux.Handle("/api/worktrees/cleanup", authed(http.HandlerFunc(r.worktreeCleanupHandler)))
 	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
+	mux.Handle("/api/push/status", authed(http.HandlerFunc(r.pushStatusHandler)))
+	mux.Handle("/api/push/devices", authed(http.HandlerFunc(r.pushDeviceHandler)))
+	mux.Handle("/api/push/actions/route", authed(http.HandlerFunc(r.pushActionRouteHandler)))
+	mux.Handle("/api/push/actions/decide", authed(http.HandlerFunc(r.pushDecideHandler)))
 	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))
 	mux.Handle("/api/actions/run", authed(http.HandlerFunc(r.commandActionRunHandler)))
 	mux.Handle("/api/git/status", authed(http.HandlerFunc(r.gitStatusHandler)))

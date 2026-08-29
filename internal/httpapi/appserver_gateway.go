@@ -242,6 +242,9 @@ type appServerGatewayPolicy struct {
 	pendingThreads        map[string]appServerGatewayPendingThreadRequest
 	pendingClientRequests map[string]appServerGatewayPendingClientRequest
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
+	// activeServerTurns 让 Claude 观察者在客户端断开时继承真实运行态，避免把仍在
+	// 执行、尚未产生审批的 turn 误判为空闲并提前关闭 bridge 读端。
+	activeServerTurns     map[string]struct{}
 	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
@@ -598,6 +601,16 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	}
 	defer client.Close()
 
+	// 具名会话可能已经有存活的 broker。命中时完全跳过拨号：复用同一条上游连接，
+	// 离线期间登记的审批请求 id 才继续有效，重连后可以直接重放。
+	brokerKey := ""
+	if r.codexGatewayBrokerEnabled() {
+		brokerKey = codexGatewayBrokerKey(req)
+	}
+	if brokerKey != "" && r.serveAttachedCodexGatewayBroker(req, client, brokerKey) {
+		return
+	}
+
 	// 正常链路直接建立这一条连接，避免为每个移动端连接额外创建 readiness proxy。
 	// 只有首次拨号失败时才进入带 single-flight 的 Socket 探测/bootstrap，然后重试一次。
 	// 外侧握手必须先成功，畸形请求和超额连接不能触发任何 SSH 子进程。
@@ -625,10 +638,20 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")
 		return
 	}
-	defer upstream.Close()
+	// broker 接管后上游连接要比这次 HTTP 请求活得更久，不能由 handler 关闭。
+	upstreamOwnedByBroker := false
+	defer func() {
+		if !upstreamOwnedByBroker {
+			upstream.Close()
+		}
+	}()
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
 	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
+	if brokerKey != "" && r.serveNewCodexGatewayBroker(req, client, upstream, monitor, brokerKey) {
+		upstreamOwnedByBroker = true
+		return
+	}
 	r.proxyAppServerGateway(req.Context(), client, upstream, monitor)
 }
 
