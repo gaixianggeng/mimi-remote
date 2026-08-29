@@ -64,6 +64,7 @@ actor ReconnectDelayRecorder {
 }
 
 final class MockWebSocketClient: SessionWebSocketClient {
+    var turnDeliveryMode: TurnDeliveryMode = .direct
     var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?

@@ -2,6 +2,7 @@ import Foundation
 
 enum TurnSendOutcome: Equatable {
     case accepted(turnID: TurnID?)
+    case serverQueued(submissionID: String, startedTurnID: TurnID?)
     case guidanceAccepted
     case acceptedTerminal(turnID: TurnID?)
     case acceptedSuperseded(
@@ -14,7 +15,13 @@ enum TurnSendOutcome: Equatable {
     case uncertain(message: String)
 }
 
+enum TurnDeliveryMode: Equatable {
+    case direct
+    case sharedServerQueue
+}
+
 protocol SessionWebSocketClient: AnyObject {
+    var turnDeliveryMode: TurnDeliveryMode { get }
     var onEvent: (@MainActor (AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
@@ -37,6 +44,8 @@ protocol SessionWebSocketClient: AnyObject {
 }
 
 extension SessionWebSocketClient {
+    var turnDeliveryMode: TurnDeliveryMode { .direct }
+
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
     }

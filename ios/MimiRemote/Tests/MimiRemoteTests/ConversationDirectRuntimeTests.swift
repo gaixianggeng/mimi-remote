@@ -404,7 +404,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(notification?.params?["thread_id"]?.stringValue, "thr_reverse")
     }
 
-    func testDirectRuntimeRestoresApprovalCardAfterGatewayRejectsReverseResponse() async {
+    func testDirectRuntimeDoesNotResurrectApprovalAfterRejectedReverseResponse() async {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "reverse-response-rejection"
@@ -432,32 +432,7 @@ extension ConversationDataFlowTests {
         ))
 
         let events = await runtime.bufferedEvents(sessionID: "thr_reverse", replayPolicy: .all)
-        XCTAssertTrue(events.contains {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        XCTAssertTrue(events.contains {
-            if case .approvalRequest(let approval, let metadata) = $0 {
-                return approval.id == "cmd_reverse" && metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        XCTAssertTrue(events.contains {
-            if case .warning(let warning, let metadata) = $0 {
-                return warning.code == "external_thread_active"
-                    && metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_reverse")
-        XCTAssertTrue(pending.contains {
-            if case .approvalRequest(let approval, _) = $0 {
-                return approval.id == "cmd_reverse"
-            }
-            return false
-        })
+        XCTAssertTrue(events.isEmpty, "rejected 仅表示另一入口未接受响应，不能复活卡片或生成警告")
     }
 
     func testCodexAppServerConnectionBuffersInboundStreamsWithoutDroppingOldEvents() async throws {
@@ -2301,47 +2276,6 @@ extension ConversationDataFlowTests {
         }, "requestUserInput 完成后不能投影成 approvalResolved")
 
         socket.disconnect()
-    }
-
-    func testDirectRuntimeServesEarlierHistoryFromCacheWithoutRefetch() async throws {
-        let project = AgentProject(id: "proj_hist", name: "Hist", path: "/tmp/hist")
-        let transport = FakeCodexAppServerTransport()
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "outer-token",
-            transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
-        )
-        let client = CodexAppServerSessionAPIClient(runtime: runtime)
-
-        // 首屏 before=nil：触发一次整段 thread/read。
-        let firstPageTask = Task {
-            try await client.messagesPage(sessionID: "thr_hist", before: nil, limit: 2)
-        }
-
-        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
-        let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
-
-        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
-        let read = try decodeAppServerRequest(readMessages[2])
-        XCTAssertEqual(read.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist","sessionId":"thr_hist","preview":"hist","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist","turns":[{"id":"turn_h","startedAt":1780490000,"items":[{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]},{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"userMessage","id":"item_2","content":[{"type":"text","text":"m2"}]}]}]}}}"#)
-
-        let firstPage = try await firstPageTask.value
-        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2"])
-        XCTAssertTrue(firstPage.hasMoreBefore)
-        let cursor = try XCTUnwrap(firstPage.previousCursor)
-
-        // 翻看更早 before=cursor：必须命中缓存，能取回最早的 m0，并且不再发第二次 thread/read。
-        let earlier = try await client.messagesPage(sessionID: "thr_hist", before: cursor, limit: 2)
-        XCTAssertEqual(earlier.messages.map(\.content), ["m0"])
-        XCTAssertFalse(earlier.hasMoreBefore)
-
-        let sent = await transport.sentMessages()
-        let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
-        XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
     }
 
     func testDirectRuntimePreservesHistoryImagePayloadAsLazyMedia() async throws {

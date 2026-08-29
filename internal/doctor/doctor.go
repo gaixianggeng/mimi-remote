@@ -30,6 +30,16 @@ type Checker struct {
 	fileAccessPreflight        Check
 }
 
+type doctorSSHTransport interface {
+	CheckRemoteCodex(context.Context) (string, error)
+	EnsureReady(context.Context) error
+	SSHCheckCommand() string
+}
+
+var newDoctorSSHTransport = func(options appserver.SSHTransportOptions) (doctorSSHTransport, error) {
+	return appserver.NewSSHTransport(options)
+}
+
 type Results struct {
 	OK      bool    `json:"ok"`
 	Version string  `json:"version"`
@@ -104,9 +114,6 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.windowsLANCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
-	if check := c.appServerTokenFileCheck(); check.Name != "" {
-		checks = append(checks, check)
-	}
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
@@ -152,9 +159,6 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		c.runtimeCheck(),
 	}
 	if check := c.configFileCheck(); check.Name != "" {
-		checks = append(checks, check)
-	}
-	if check := c.appServerTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
@@ -250,25 +254,6 @@ func (c *Checker) configFileCheck() Check {
 	return sensitiveFileCheck("config-file", "配置文件", path)
 }
 
-func (c *Checker) appServerTokenFileCheck() Check {
-	if strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "unix") {
-		return Check{}
-	}
-	path := strings.TrimSpace(c.cfg.AppServer.WSTokenFile)
-	if path == "" {
-		if c.cfg.AppServer.Managed && strings.EqualFold(firstNonEmpty(c.cfg.AppServer.Transport, "ws"), "ws") {
-			return Check{
-				Name:    "app-server-token-file",
-				OK:      false,
-				Message: "托管 app-server 未配置独立 token file",
-				Fix:     "运行 agentd doctor --fix 生成独立 token file；不要手工复用 agentd 访问 token",
-			}
-		}
-		return Check{}
-	}
-	return sensitiveFileCheck("app-server-token-file", "app-server token file", path)
-}
-
 func sensitiveFileCheck(name string, label string, path string) Check {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -332,32 +317,16 @@ func (c *Checker) runtimeCheck() Check {
 func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 	transport := c.cfg.AppServer.Transport
 	if transport == "" {
-		transport = "ws"
+		transport = "ssh"
 	}
 	switch transport {
-	case "ws":
-		if !c.cfg.AppServer.Managed {
-			return Check{
-				Name:    "app-server",
-				OK:      false,
-				Message: "agentd 只支持受管 Codex App Server",
-				Fix:     "将 app_server.managed 设置为 true",
-			}
+	case "ssh":
+		if err := config.ValidateAppServerSSHTarget(c.cfg.AppServer.SSHTarget); err != nil {
+			return Check{Name: "app-server", OK: false, Message: "app-server SSH target 无效", Fix: "将 app_server.ssh_target 设为 127.0.0.1 或可用 SSH 主机"}
 		}
-		if c.cfg.AppServer.Listen == "" {
-			return Check{Name: "app-server", OK: false, Message: "app-server ws upstream 未配置", Fix: "执行 agentd setup 生成默认 loopback upstream"}
-		}
-		if isLoopbackListen(c.cfg.AppServer.Listen) {
-			return Check{Name: "app-server", OK: true, Message: "Codex app-server ws upstream 仅限 loopback 本机访问"}
-		}
-		return Check{
-			Name:    "app-server",
-			OK:      false,
-			Message: "Codex app-server 不应暴露到非 loopback 网络",
-			Fix:     "将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
-		}
+		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用共享 SSH proxy"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ws"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ssh"}
 	}
 }
 
@@ -366,23 +335,18 @@ func (c *Checker) needsCodexAppServerCheck() bool {
 }
 
 func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
-	if !commandExists(c.cfg.Codex.Bin) {
-		return Check{Name: "codex-app-server", OK: false, Message: "无法检查 Codex app-server 能力", Fix: "先安装 Codex CLI"}
-	}
-	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(runCtx, c.cfg.Codex.Bin, "app-server", "--help").CombinedOutput()
+	transport, err := newDoctorSSHTransport(appserver.SSHTransportOptions{Target: c.cfg.AppServer.SSHTarget})
 	if err != nil {
-		return Check{Name: "codex-app-server", OK: false, Message: "Codex CLI 不支持 app-server 命令", Fix: "升级 Codex CLI，然后重新执行 agentd doctor"}
+		return Check{Name: "codex-app-server", OK: false, Message: "SSH App Server 配置无效", Fix: "检查 app_server.ssh_target"}
 	}
-	help := string(out)
-	requiredFlags := []string{"--listen", "--ws-auth", "--ws-token-file"}
-	for _, flag := range requiredFlags {
-		if !strings.Contains(help, flag) {
-			return Check{Name: "codex-app-server", OK: false, Message: "Codex app-server 缺少必要 transport 参数", Fix: "升级 Codex CLI 到支持 WebSocket transport 的版本"}
-		}
+	version, err := transport.CheckRemoteCodex(ctx)
+	if err != nil {
+		return Check{Name: "codex-app-server", OK: false, Message: "SSH host key、非交互密钥或远程 Codex 版本检查失败", Fix: "先手工执行：" + transport.SSHCheckCommand()}
 	}
-	return Check{Name: "codex-app-server", OK: true, Message: "Codex app-server WebSocket 能力可用"}
+	if err := transport.EnsureReady(ctx); err != nil {
+		return Check{Name: "codex-app-server", OK: false, Message: "SSH proxy 无法完成 app-server initialize", Fix: "运行 agentd logs 查看 SSH proxy 错误"}
+	}
+	return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("远程 Codex %s 与 SSH proxy initialize 可用", version)}
 }
 
 func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
@@ -435,9 +399,6 @@ func isLoopbackListen(raw string) bool {
 func (c *Checker) portChecks(ctx context.Context) []Check {
 	checks := []Check{
 		c.portCheck(ctx, "agentd-port", c.cfg.Listen, "agentd"),
-	}
-	if strings.EqualFold(c.cfg.AppServer.Transport, "ws") && c.cfg.AppServer.Managed && strings.TrimSpace(c.cfg.AppServer.Listen) != "" {
-		checks = append(checks, c.portCheck(ctx, "app-server-port", c.cfg.AppServer.Listen, "app-server upstream"))
 	}
 	return checks
 }

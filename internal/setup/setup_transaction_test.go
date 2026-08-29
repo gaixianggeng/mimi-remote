@@ -15,11 +15,8 @@ import (
 
 func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
 	for _, failure := range []string{
-		"token-write",
 		"config-write",
-		"token-fsync",
 		"config-fsync",
-		"token-rename",
 		"config-rename",
 		"directory-fsync",
 	} {
@@ -34,7 +31,7 @@ func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
 			writeFileWithMode(t, tokenPath, oldToken, 0o644)
 			sentinel := errors.New("injected " + failure)
 
-			_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, true), failingSetupFileOps(configPath, tokenPath, failure, sentinel))
+			_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, true), failingSetupFileOps(configPath, failure, sentinel))
 			if !errors.Is(err, sentinel) {
 				t.Fatalf("应返回注入错误 %q，实际 %v", failure, err)
 			}
@@ -47,11 +44,8 @@ func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
 
 func TestSetupWriteFailuresLeaveNoFreshInstallArtifacts(t *testing.T) {
 	for _, failure := range []string{
-		"token-write",
 		"config-write",
-		"token-fsync",
 		"config-fsync",
-		"token-rename",
 		"config-rename",
 		"directory-fsync",
 	} {
@@ -62,7 +56,7 @@ func TestSetupWriteFailuresLeaveNoFreshInstallArtifacts(t *testing.T) {
 			tokenPath := filepath.Join(dir, "app-server-ws-token")
 			sentinel := errors.New("injected " + failure)
 
-			_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, false), failingSetupFileOps(configPath, tokenPath, failure, sentinel))
+			_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, false), failingSetupFileOps(configPath, failure, sentinel))
 			if !errors.Is(err, sentinel) {
 				t.Fatalf("应返回注入错误 %q，实际 %v", failure, err)
 			}
@@ -73,46 +67,28 @@ func TestSetupWriteFailuresLeaveNoFreshInstallArtifacts(t *testing.T) {
 	}
 }
 
-func TestSetupRejectsConfigAndTokenPathAliases(t *testing.T) {
-	dir := t.TempDir()
-	exact := filepath.Join(dir, "app-server-ws-token")
-	if err := writeSetupFilesAtomically(exact, exact, []byte("config"), []byte("token"), defaultSetupFileTransactionOps()); err == nil {
-		t.Fatal("配置与 token 的完全相同路径必须拒绝")
-	}
-
-	caseAlias := filepath.Join(dir, "App-Server-WS-Token")
-	if !config.SameConfigPath(caseAlias, exact) {
-		t.Skip("当前测试卷区分大小写，不存在大小写别名")
-	}
-	if err := writeSetupFilesAtomically(caseAlias, exact, []byte("config"), []byte("token"), defaultSetupFileTransactionOps()); err == nil {
-		t.Fatal("大小写不敏感卷上的同一目录项别名必须在写入前拒绝")
-	}
-	assertSetupDirectoryEntries(t, dir)
-}
-
 func TestFreshSetupFailureRemovesNewEmptyConfigDirectory(t *testing.T) {
 	clearSetupEnv(t)
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "new-mimi-config")
 	configPath := filepath.Join(dir, "config.json")
-	tokenPath := filepath.Join(dir, "app-server-ws-token")
-	sentinel := errors.New("injected token-write")
+	sentinel := errors.New("injected config-write")
 
-	_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, false), failingSetupFileOps(configPath, tokenPath, "token-write", sentinel))
+	_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, false), failingSetupFileOps(configPath, "config-write", sentinel))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("应返回注入错误：%v", err)
 	}
 	assertMissingPath(t, dir)
 }
 
-func TestSetupSuccessUsesPrivateFilesAndKeepsRotationSemantics(t *testing.T) {
+func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
 		force    bool
 		existing bool
 	}{
 		{name: "fresh", force: false, existing: false},
-		{name: "force rotates", force: true, existing: true},
+		{name: "force preserves legacy token", force: true, existing: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			clearSetupEnv(t)
@@ -129,29 +105,28 @@ func TestSetupSuccessUsesPrivateFilesAndKeepsRotationSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !result.Created || result.AppServerTokenFile != tokenPath {
+			if !result.Created || result.AppServerSSHTarget != config.DefaultAppServerSSHTarget() {
 				t.Fatalf("setup 成功结果异常：%+v", result)
 			}
 			assertPrivateRegularFile(t, configPath)
-			assertPrivateRegularFile(t, tokenPath)
-			newToken, err := os.ReadFile(tokenPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(strings.TrimSpace(string(newToken))) != 64 {
-				t.Fatalf("upstream token 应为 32-byte hex：%q", newToken)
-			}
-			if testCase.existing && bytes.Equal(newToken, oldToken) {
-				t.Fatal("setup --force 成功后必须保持既有的 token 轮换语义")
+			if testCase.existing {
+				newToken, err := os.ReadFile(tokenPath)
+				if err != nil || !bytes.Equal(newToken, oldToken) {
+					t.Fatalf("SSH setup 不得修改旧 token file：err=%v raw=%q", err, newToken)
+				}
 			}
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.AppServer.WSTokenFile != tokenPath || len(cfg.Auth.Token) != 64 {
-				t.Fatalf("提交后的配置未引用新 token 或缺少外侧 token：%+v", cfg)
+			if cfg.AppServer.SSHTarget != config.DefaultAppServerSSHTarget() || len(cfg.Auth.Token) != 64 {
+				t.Fatalf("提交后的配置缺少 SSH target 或外侧 token：%+v", cfg)
 			}
-			assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
+			if testCase.existing {
+				assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
+			} else {
+				assertSetupDirectoryEntries(t, dir, "config.json")
+			}
 		})
 	}
 }
@@ -196,47 +171,12 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 		}
 	})
 
-	for _, kind := range []string{"symlink", "directory"} {
-		t.Run("token "+kind, func(t *testing.T) {
-			clearSetupEnv(t)
-			dir := t.TempDir()
-			configPath := filepath.Join(dir, "config.json")
-			oldConfig := []byte("old-config\n")
-			writeFileWithMode(t, configPath, oldConfig, 0o600)
-			tokenPath := filepath.Join(dir, "app-server-ws-token")
-			if kind == "symlink" {
-				target := filepath.Join(dir, "real-token")
-				writeFileWithMode(t, target, []byte("do-not-touch-token\n"), 0o600)
-				if err := os.Symlink(target, tokenPath); err != nil {
-					if runtime.GOOS == "windows" {
-						t.Skip("Windows symlink creation requires Developer Mode or elevation")
-					}
-					t.Fatal(err)
-				}
-				defer assertFileBytesAndMode(t, target, []byte("do-not-touch-token\n"), 0o600)
-			} else if err := os.Mkdir(tokenPath, 0o700); err != nil {
-				t.Fatal(err)
-			}
-
-			_, err := Run(context.Background(), atomicSetupOptions(t, configPath, true))
-			if err == nil || !strings.Contains(err.Error(), "regular file") {
-				t.Fatalf("token %s 必须 fail-closed：%v", kind, err)
-			}
-			assertFileBytesAndMode(t, configPath, oldConfig, 0o600)
-		})
-	}
 }
 
-func failingSetupFileOps(configPath string, tokenPath string, failure string, sentinel error) setupFileTransactionOps {
+func failingSetupFileOps(configPath string, failure string, sentinel error) setupFileTransactionOps {
 	ops := defaultSetupFileTransactionOps()
-	defaultStage := ops.stage
-	if failure == "token-write" || failure == "config-write" || failure == "token-fsync" || failure == "config-fsync" {
+	if failure == "config-write" || failure == "config-fsync" {
 		ops.stage = func(dir string, pattern string, raw []byte) (string, error) {
-			isToken := strings.Contains(pattern, "app-server-ws-token")
-			failThisFile := (strings.HasPrefix(failure, "token-") && isToken) || (strings.HasPrefix(failure, "config-") && !isToken)
-			if !failThisFile {
-				return defaultStage(dir, pattern, raw)
-			}
 			stageOps := privateFileStageOps{
 				write: func(file *os.File, raw []byte) (int, error) {
 					if strings.HasSuffix(failure, "-write") {
@@ -257,11 +197,10 @@ func failingSetupFileOps(configPath string, tokenPath string, failure string, se
 		}
 	}
 	defaultRename := ops.rename
-	if failure == "token-rename" || failure == "config-rename" {
+	if failure == "config-rename" {
 		ops.rename = func(oldPath string, newPath string) error {
-			isTokenCommit := newPath == tokenPath && strings.Contains(filepath.Base(oldPath), ".app-server-ws-token.tmp-")
 			isConfigCommit := newPath == configPath && strings.Contains(filepath.Base(oldPath), ".config.json.tmp-")
-			if (failure == "token-rename" && isTokenCommit) || (failure == "config-rename" && isConfigCommit) {
+			if isConfigCommit {
 				return sentinel
 			}
 			return defaultRename(oldPath, newPath)

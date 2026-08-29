@@ -85,8 +85,24 @@ case "\${1:-}" in
     echo "$version"
     ;;
   setup)
-    mkdir -p "\$HOME/.config/mimi-remote"
-    printf '%s\n' '{"test":true}' >"\$HOME/.config/mimi-remote/config.json"
+    config_path="\$HOME/.config/mimi-remote/config.json"
+    shift
+    while [[ \$# -gt 0 ]]; do
+      case "\${1:-}" in
+        --config)
+          config_path="\${2:-}"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [[ "\${FAKE_SSH_PREFLIGHT_FAIL:-0}" == "1" && "\$config_path" == *'/ssh-preflight/'* ]]; then
+      exit 17
+    fi
+    mkdir -p "\$(dirname "\$config_path")"
+    printf '%s\n' '{"test":true}' >"\$config_path"
     printf 'Token：%s\n' "\$TEST_SECRET"
     printf '连接链接：mimiremote://connect?token=%s\n' "\$TEST_SECRET"
     ;;
@@ -139,6 +155,34 @@ make_release "$release_123" "1.2.3" "true"
 make_release "$release_124" "1.2.4" "true"
 make_release "$release_125_bad" "1.2.5" "false"
 
+# SSH 预检必须在创建安装目录、替换二进制或调用 systemd 前失败。
+preflight_failure_home="$TEST_DIR/preflight-failure-home"
+preflight_failure_state="$TEST_DIR/preflight-failure-state"
+mkdir -p "$preflight_failure_home" "$preflight_failure_state"
+set +e
+preflight_failure_output="$(
+  HOME="$preflight_failure_home" \
+    FAKE_SYSTEMCTL_ENABLED="$preflight_failure_state/enabled" \
+    FAKE_SYSTEMCTL_ACTIVE="$preflight_failure_state/active" \
+    FAKE_SYSTEMCTL_LOG="$preflight_failure_state/systemctl.log" \
+    FAKE_AGENTD_LOG="$preflight_failure_state/agentd.log" \
+    FAKE_SSH_PREFLIGHT_FAIL=1 \
+    AGENTD_APP_SERVER_SSH_TARGET=linux-share-host \
+    bash "$release_123/scripts/install-linux.sh" install 2>&1
+)"
+preflight_failure_status=$?
+set -e
+[[ "$preflight_failure_status" -ne 0 ]] || {
+  echo "SSH 预检失败没有阻止安装。" >&2
+  exit 1
+}
+grep -Fq 'ssh linux-share-host codex --version' <<<"$preflight_failure_output"
+[[ ! -e "$preflight_failure_home/.local/bin/agentd" ]]
+[[ ! -e "$preflight_failure_home/.config/systemd/user/mimi-remote.service" ]]
+[[ ! -s "$preflight_failure_state/systemctl.log" ]]
+
+export AGENTD_APP_SERVER_SSH_TARGET="linux-share-host"
+
 install_output="$(bash "$release_123/scripts/install-linux.sh" install 2>&1)"
 grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$install_output"
 grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' <<<"$install_output"
@@ -149,6 +193,10 @@ if grep -Fq "$TEST_SECRET" <<<"$install_output"; then
   exit 1
 fi
 agentd_commands="$(<"$FAKE_AGENTD_LOG")"
+[[ "$agentd_commands" == *'--app-server-ssh-target linux-share-host'* ]] || {
+  echo "首次安装没有把 SSH target 显式传给 setup：$agentd_commands" >&2
+  exit 1
+}
 [[ "$agentd_commands" == *$'1.2.3 status --json\n1.2.3 pair --qr-only'* ]] || {
   echo "首次配对必须在 readiness 成功后使用 --qr-only：$agentd_commands" >&2
   exit 1

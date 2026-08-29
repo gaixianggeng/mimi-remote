@@ -166,6 +166,7 @@ func occurrenceCount(of needle: String, in haystack: String) -> Int {
 final class FakeCodexAppServerTransport: CodexAppServerTransport {
     private let sentStore = FakeCodexAppServerSentStore()
     private let lifecycleStore = FakeCodexAppServerLifecycleStore()
+    private let historyItemsStore = FakeCodexHistoryItemsStore()
     private var receiveContinuation: AsyncThrowingStream<String, Error>.Continuation?
     private var receiveIterator: AsyncThrowingStream<String, Error>.Iterator
 
@@ -182,6 +183,38 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
 
     func send(_ text: String) async throws {
         await sentStore.append(text)
+        guard let request = try? decodeAppServerRequest(text),
+              let params = request.params?.objectValue else {
+            return
+        }
+        if request.method == "thread/turns/list",
+           params["cursor"] == nil,
+           let threadID = params["threadId"]?.stringValue,
+           let turns = historyItemsStore.turns(threadID: threadID) {
+            let response = CodexAppServerResponse(
+                id: request.id,
+                result: .object(["data": .array(turns), "nextCursor": .null]),
+                error: nil
+            )
+            if let data = try? JSONEncoder().encode(response) {
+                receiveContinuation?.yield(String(decoding: data, as: UTF8.self))
+            }
+            return
+        }
+        guard request.method == "thread/items/list",
+              let turnID = params["turnId"]?.stringValue,
+              let items = historyItemsStore.items(turnID: turnID) else { return }
+        let entries = items.map { item in
+            CodexAppServerJSONValue.object(["turnId": .string(turnID), "item": item])
+        }
+        let response = CodexAppServerResponse(
+            id: request.id,
+            result: .object(["data": .array(entries), "nextCursor": .null]),
+            error: nil
+        )
+        if let data = try? JSONEncoder().encode(response) {
+            receiveContinuation?.yield(String(decoding: data, as: UTF8.self))
+        }
     }
 
     func receive() async throws -> String? {
@@ -194,6 +227,11 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
     }
 
     func enqueue(_ text: String) {
+        if let data = text.data(using: .utf8),
+           let response = try? JSONDecoder().decode(CodexAppServerResponse.self, from: data),
+           let result = response.result {
+            registerEmbeddedHistoryItems(in: result)
+        }
         receiveContinuation?.yield(text)
     }
 
@@ -207,6 +245,62 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
 
     func closeCallCount() async -> Int {
         await lifecycleStore.closeCallCount
+    }
+
+    func registerHistoryItems(turnID: TurnID, items: [CodexAppServerJSONValue]) {
+        historyItemsStore.register(turnID: turnID, items: items)
+    }
+
+    private func registerEmbeddedHistoryItems(in result: CodexAppServerJSONValue) {
+        let resultObject = result.objectValue
+        let thread = resultObject?["thread"]?.objectValue
+        let turns = resultObject?["data"]?.arrayValue ?? thread?["turns"]?.arrayValue ?? []
+        if let threadID = thread?["id"]?.stringValue, !turns.isEmpty {
+            historyItemsStore.register(threadID: threadID, turns: turns)
+        }
+        for turn in turns {
+            guard let object = turn.objectValue,
+                  let turnID = object["id"]?.stringValue,
+                  let items = object["items"]?.arrayValue else {
+                continue
+            }
+            historyItemsStore.register(turnID: turnID, items: items)
+        }
+    }
+}
+
+private final class FakeCodexHistoryItemsStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var itemsByTurnID: [TurnID: [CodexAppServerJSONValue]] = [:]
+    private var turnsByThreadID: [SessionID: [CodexAppServerJSONValue]] = [:]
+
+    func register(turnID: TurnID, items: [CodexAppServerJSONValue]) {
+        lock.lock()
+        itemsByTurnID[turnID] = items
+        lock.unlock()
+    }
+
+    func items(turnID: TurnID) -> [CodexAppServerJSONValue]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return itemsByTurnID[turnID]
+    }
+
+    func register(threadID: SessionID, turns: [CodexAppServerJSONValue]) {
+        lock.lock()
+        turnsByThreadID[threadID] = turns.map { turn in
+            guard var object = turn.objectValue else { return turn }
+            object.removeValue(forKey: "items")
+            object["itemsView"] = .string("notLoaded")
+            return .object(object)
+        }
+        lock.unlock()
+    }
+
+    func turns(threadID: SessionID) -> [CodexAppServerJSONValue]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return turnsByThreadID[threadID]
     }
 }
 
@@ -442,7 +536,15 @@ func makeDirectAppServerConfig(
     allowedMethods: [String]? = nil,
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
-    let defaultAllowedMethods = ["initialize", "initialized", "thread/list", "thread/start", "thread/read", "turn/start", "turn/interrupt"]
+    let defaultAllowedMethods = [
+        "initialize", "initialized", "thread/list", "thread/start", "thread/read",
+        "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt"
+    ]
+    var resolvedAllowedMethods = allowedMethods ?? defaultAllowedMethods
+    if resolvedAllowedMethods.contains("thread/turns/list"),
+       !resolvedAllowedMethods.contains("thread/items/list") {
+        resolvedAllowedMethods.append("thread/items/list")
+    }
     return CodexAppServerConfigResponse(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
@@ -458,7 +560,7 @@ func makeDirectAppServerConfig(
         channels: channels,
         projects: [project],
         policy: CodexAppServerPolicyMetadata(
-            allowedMethods: allowedMethods ?? defaultAllowedMethods,
+            allowedMethods: resolvedAllowedMethods,
             projectsSource: "agentd_allowlist"
         )
     )
@@ -561,6 +663,13 @@ func jsonFragment(for id: CodexAppServerRequestID) throws -> String {
 }
 
 func transportResponse(_ transport: FakeCodexAppServerTransport, id: CodexAppServerRequestID, result: String) {
+    if let value = try? AgentAPIClient.decoder.decode(CodexAppServerJSONValue.self, from: Data(result.utf8)) {
+        for turn in value.objectValue?["data"]?.arrayValue?.compactMap(\.objectValue) ?? [] {
+            guard let turnID = turn["id"]?.stringValue,
+                  let items = turn["items"]?.arrayValue else { continue }
+            transport.registerHistoryItems(turnID: turnID, items: items)
+        }
+    }
     let encodedID = (try? jsonFragment(for: id)) ?? "null"
     transport.enqueue(#"{"id":\#(encodedID),"result":\#(result)}"#)
 }

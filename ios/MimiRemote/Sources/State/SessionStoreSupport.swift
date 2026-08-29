@@ -1289,6 +1289,9 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
     // blockedCompletionID 用来识别并忽略触发上一条派发的重复 completed 事件。
     var waitsForAcceptedTurnStart: Bool?
     var blockedCompletionID: TurnID?
+    // SSH shared queue 的 durable receipt。只有同一 client id 的 started 事件才能释放下一项。
+    var serverSubmissionID: String?
+    var serverStartedTurnID: TurnID?
     var lastAttemptAt: Date?
     var lastError: String?
 
@@ -1304,6 +1307,8 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         requiresFreshTurn: Bool? = nil,
         waitsForAcceptedTurnStart: Bool? = nil,
         blockedCompletionID: TurnID? = nil,
+        serverSubmissionID: String? = nil,
+        serverStartedTurnID: TurnID? = nil,
         lastAttemptAt: Date? = nil,
         lastError: String? = nil
     ) {
@@ -1318,6 +1323,8 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         self.requiresFreshTurn = requiresFreshTurn
         self.waitsForAcceptedTurnStart = waitsForAcceptedTurnStart
         self.blockedCompletionID = blockedCompletionID
+        self.serverSubmissionID = serverSubmissionID
+        self.serverStartedTurnID = serverStartedTurnID
         self.lastAttemptAt = lastAttemptAt
         self.lastError = lastError
     }

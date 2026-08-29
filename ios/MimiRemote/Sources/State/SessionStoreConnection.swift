@@ -825,6 +825,15 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
+        if case .messageCompleted(let message, let metadata) = event,
+           message.role == .user,
+           let clientMessageID = metadata.clientMessageID {
+            _ = handleServerQueueTurnStarted(
+                clientMessageID: clientMessageID,
+                sessionID: metadata.sessionID ?? sessionID,
+                turnID: metadata.turnID
+            )
+        }
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
             _ = satisfyPendingPermissionTurnBoundary(
@@ -832,13 +841,20 @@ extension SessionStore {
                 clientMessageID: metadata.clientMessageID
             )
             if let turnID = metadata.turnID {
-                queuedTurnAwaitingStartSessionIDs.remove(id)
-                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                let hasPendingServerQueueReceipt = serverQueueDeliveryActive(sessionID: id)
+                    && queuedRunningTurnsBySessionID[id]?.contains(where: {
+                        $0.dispatchState == .dispatching
+                    }) == true
+                if !hasPendingServerQueueReceipt {
+                    queuedTurnAwaitingStartSessionIDs.remove(id)
+                    queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                }
                 queuedTurnStartedIDBySessionID[id] = turnID
                 // 第一条已派发时，后续队列项统一改为等待这个新 turn；不能继续绑定旧完成事件。
                 _ = mutateAndPersistQueuedTurns {
                     guard var queue = queuedRunningTurnsBySessionID[id] else { return }
-                    for index in queue.indices where queue[index].dispatchState == .waiting {
+                    for index in queue.indices
+                    where queue[index].dispatchState == .waiting {
                         queue[index].expectedTurnID = turnID
                         queue[index].waitsForAcceptedTurnStart = nil
                         queue[index].blockedCompletionID = nil

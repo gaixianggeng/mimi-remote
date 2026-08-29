@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 
-	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -41,22 +41,11 @@ func ensureProcessUserEnvironment() error {
 	return nil
 }
 
-// 历史 stdio/off 配置会兼容迁移为 managed WS。旧配置通常没有独立
-// ws_token_file；后台服务不能依赖用户先手工运行 doctor --fix，因此在正式
-// Load 前完成同一套原子修复。
-func ensureManagedWSTokenAvailable(configPath string) error {
-	cfg, err := config.LoadForDoctor(configPath)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ws") {
-		return fmt.Errorf("app_server.transport 只支持 ws")
-	}
-	if !cfg.AppServer.Managed {
-		return fmt.Errorf("app_server.managed 必须为 true；agentd 只支持受管 App Server")
-	}
-	if _, _, err := agentsetup.RepairManagedWSTokenFile(configPath); err != nil {
-		return fmt.Errorf("准备 managed app-server token 失败：%w", err)
+// ensureAppServerSSHMigration 在正式 Load 前原子迁移旧 managed WS 配置。
+// SSH 预检失败时原文件保持不变，避免升级留下两套都不可用的配置。
+func ensureAppServerSSHMigration(ctx context.Context, configPath string, target string) error {
+	if err := agentsetup.MigrateAppServerToSSH(ctx, configPath, target); err != nil {
+		return fmt.Errorf("迁移共享 SSH App Server 配置失败：%w", err)
 	}
 	return nil
 }

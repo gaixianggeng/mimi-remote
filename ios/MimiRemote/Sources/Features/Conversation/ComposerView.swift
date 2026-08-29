@@ -107,6 +107,7 @@ struct ComposerView: View {
                 .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
+            sharedThreadSettingsNotice
             composerInputRow(tokens: tokens)
         }
         // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
@@ -247,9 +248,13 @@ struct ComposerView: View {
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
+            enforceComposerTurnSettingsPolicy()
             Task { @MainActor in
                 await refreshPermissionProfilesForCurrentCWD()
             }
+        }
+        .onChange(of: composerTurnSettingsPolicy) { _, _ in
+            enforceComposerTurnSettingsPolicy()
         }
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
@@ -322,6 +327,7 @@ struct ComposerView: View {
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
@@ -481,6 +487,33 @@ struct ComposerView: View {
             selectedSessionID: sessionStore.selectedSessionID,
             selectedProjectID: sessionStore.selectedProjectID
         )
+    }
+
+    var composerTurnSettingsPolicy: ComposerTurnSettingsPolicy {
+        let scope = currentComposerDraftScope
+        guard case .session(let sessionID) = scope,
+              let session = sessionStore.selectedSession,
+              session.id == sessionID else {
+            return .editable
+        }
+        return ComposerTurnSettingsPolicy.resolve(
+            scope: scope,
+            sessionRuntimeProvider: normalizedRuntimeProvider(session.runtimeProvider ?? session.source),
+            isLocalSession: session.source == "local",
+            isArchivedSession: sessionStore.isSessionArchived(sessionID)
+        )
+    }
+
+    func enforceComposerTurnSettingsPolicy() {
+        guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return
+        }
+        showsModelGridPicker = false
+        showsAdvancedOptionsSheet = false
+        showsAddContentPanel = false
+        if composerState.isPlanModeSelected {
+            setSendMode(.standard)
+        }
     }
 
     func switchComposerDraftScope(to nextScope: ComposerDraftScopeKey) {
@@ -1213,7 +1246,7 @@ struct ComposerView: View {
         if composerState.isGoalModeSelected {
             return sessionStore.selectedThreadGoal == nil ? L10n.text("ui.describe_the_target_task") : L10n.text("ui.request_subsequent_changes_to_goals")
         }
-        if composerState.isPlanModeSelected {
+        if composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected {
             return L10n.text("ui.describe_the_issues_to_plan_for_first")
         }
         if canChooseRunningFollowUpDelivery {
@@ -1246,7 +1279,9 @@ struct ComposerView: View {
         } else {
             HStack(spacing: 10) {
                 addContentButton
-                modelPickerControl
+                if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                    modelPickerControl
+                }
                 followUpDeliveryMenu
                 Spacer(minLength: 0)
                 composerOptionsMenu
@@ -1311,7 +1346,10 @@ struct ComposerView: View {
 
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
-        AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
+        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
 
     @inline(never)
@@ -1348,16 +1386,18 @@ struct ComposerView: View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
-            runSettingsMenu
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                runSettingsMenu
 
-            Divider()
+                Divider()
 
-            Button {
-                setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
-            } label: {
-                Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                Button {
+                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                } label: {
+                    Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                }
+                .accessibilityIdentifier("composer.mode.plan")
             }
-            .accessibilityIdentifier("composer.mode.plan")
 
             Button {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
@@ -1374,7 +1414,8 @@ struct ComposerView: View {
             composerToolbarControlLabel(
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
                 systemImage: "slider.horizontal.3",
-                isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
+                isSelected: (composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected)
+                    || composerState.isGoalModeSelected,
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
@@ -1387,7 +1428,7 @@ struct ComposerView: View {
 
     var composerOptionsAccessibilityValue: String {
         var values: [String] = []
-        if composerState.isPlanModeSelected {
+        if composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected {
             values.append(L10n.text("ui.planning_mode"))
         } else if composerState.isGoalModeSelected {
             values.append(L10n.text("ui.target_task"))
@@ -1444,8 +1485,10 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
             }
-            hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
-                setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
+                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                }
             }
         }
         .frame(width: 0, height: 0)
@@ -1566,6 +1609,9 @@ struct ComposerView: View {
     }
 
     func setSendMode(_ mode: ComposerSendMode) {
+        guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return
+        }
         composerState.setSendMode(mode)
         let scope = activeComposerDraftScope == .none ? currentComposerDraftScope : activeComposerDraftScope
         persistComposerSendMode(mode, for: scope)

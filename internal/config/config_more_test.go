@@ -62,7 +62,7 @@ func TestLoadMergesExplicitAndScannedProjects(t *testing.T) {
 	}
 }
 
-func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
+func TestLoadRejectsLegacyStdioTransportOutsideAtomicSetupMigration(t *testing.T) {
 	projectDir := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	raw, err := json.Marshal(map[string]any{
@@ -79,20 +79,8 @@ func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
 	}
 	clearAgentdEnv(t)
 
-	// 旧配置（pty + stdio，且没有 listen）不能再让 Load/Validate 直接失败，
-	// 必须平滑迁移到独立 WebSocket transport。
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatalf("旧 stdio 配置应平滑迁移而不是报错：%v", err)
-	}
-	if cfg.Runtime.Type != "codex_app_server" {
-		t.Fatalf("runtime.type 应迁移为 codex_app_server，实际 %q", cfg.Runtime.Type)
-	}
-	if cfg.AppServer.Transport != "ws" {
-		t.Fatalf("app_server.transport 应迁移为 legacy ws，实际 %q", cfg.AppServer.Transport)
-	}
-	if cfg.AppServer.Listen != DefaultAppServerWebSocketListen() {
-		t.Fatalf("迁移后缺失的 listen 应补 legacy ws upstream，实际 %q", cfg.AppServer.Listen)
+	if _, err := Load(cfgPath); err == nil || !strings.Contains(err.Error(), "transport 只支持 ssh") {
+		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写：%v", err)
 	}
 }
 
@@ -106,7 +94,7 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_LISTEN", "127.0.0.1:7777")
 	t.Setenv("AGENTD_OUTPUT_BUFFER_BYTES", "4096")
 	t.Setenv("AGENTD_ALLOW_QUERY_TOKEN", "1")
-	t.Setenv("AGENTD_APP_SERVER_WS_TOKEN_FILE", "/tmp/codex-app-server-ws-token")
+	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "mimi-host")
 	t.Setenv("AGENTD_APP_SERVER_AUTO_TITLE", "false")
 	t.Setenv("AGENTD_DEBUG_CODEX_HISTORY", "true")
 	t.Setenv("AGENTD_CODEX_TRANSCRIPTION_BASE_URL", "https://chatgpt.com/backend-api")
@@ -129,7 +117,7 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	if cfg.Runtime.Type != "codex_app_server" {
 		t.Fatalf("runtime 环境变量解析异常：%+v", cfg.Runtime)
 	}
-	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.WSTokenFile != "/tmp/codex-app-server-ws-token" {
+	if cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != "mimi-host" {
 		t.Fatalf("app_server 环境变量解析异常：%+v", cfg.AppServer)
 	}
 	if cfg.AppServer.AutoTitle {
@@ -270,37 +258,37 @@ func TestValidateRejectsShortToken(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsUnsafeAppServerListen(t *testing.T) {
+func TestValidateRejectsUnsafeAppServerSSHTarget(t *testing.T) {
 	cfg := defaults()
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
 	cfg.Runtime.Type = "codex_app_server"
-	cfg.AppServer.Transport = "ws"
-	cfg.AppServer.Listen = "0.0.0.0:8390"
+	cfg.AppServer.Transport = "ssh"
+	cfg.AppServer.SSHTarget = "-oProxyCommand=bad"
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
 
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("非 loopback app-server ws 监听应被拒绝")
+		t.Fatal("以 - 开头的 SSH target 应被拒绝")
 	}
 
-	cfg.AppServer.Listen = "127.0.0.1.evil:8390"
+	cfg.AppServer.SSHTarget = "host with-space"
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("伪 loopback hostname 不应允许作为 app-server ws 监听")
+		t.Fatal("包含空白的 SSH target 应被拒绝")
 	}
 
-	cfg.AppServer.Listen = "127.0.0.1:8390"
+	cfg.AppServer.SSHTarget = "127.0.0.1"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("loopback app-server ws 监听应允许用于本机调试：%v", err)
+		t.Fatalf("localhost SSH target 应可用：%v", err)
 	}
 }
 
-func TestValidateRejectsUnmanagedAppServer(t *testing.T) {
+func TestValidateRejectsNonSSHAppServer(t *testing.T) {
 	cfg := defaults()
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
-	cfg.AppServer.Managed = false
+	cfg.AppServer.Transport = "ws"
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
 
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "managed 必须为 true") {
-		t.Fatalf("agentd must reject an externally managed App Server: %v", err)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "transport 只支持 ssh") {
+		t.Fatalf("agentd must reject a non-SSH App Server: %v", err)
 	}
 }
 
@@ -316,7 +304,7 @@ func TestLoadIgnoresRemovedAppServerModeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed {
+	if cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != DefaultAppServerSSHTarget() {
 		t.Fatalf("removed mode environment variables must not reopen an external App Server path: %+v", cfg.AppServer)
 	}
 }
@@ -422,6 +410,7 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_APP_SERVER_LISTEN",
 		"AGENTD_APP_SERVER_WS_TOKEN_FILE",
 		"AGENTD_APP_SERVER_MANAGED",
+		"AGENTD_APP_SERVER_SSH_TARGET",
 		"AGENTD_APP_SERVER_AUTO_TITLE",
 		"AGENTD_CODEX_TRANSCRIPTION_BASE_URL",
 		"AGENTD_CODEX_AUTH_FILE",

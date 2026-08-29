@@ -517,6 +517,25 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
     }
 
+    func threadStartForSharedQueue(
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        var params = safeThreadRuntimeParams(cwd: path)
+        options.threadParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
+        params["effort"] = options.reasoningEffort.map { .string($0.rawValue) }
+        params["summary"] = options.reasoningSummary.map { .string($0.rawValue) }
+        params["collaborationMode"] = options.turnParams(projectPath: path)["collaborationMode"] ?? nil
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/start",
+            params: .object(params.compactMapValues { $0 })
+        )
+    }
+
     func threadResume(threadID: String, projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {
@@ -561,6 +580,30 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params.compactMapValues { $0 }))
     }
 
+    func threadResumePreservingSharedState(
+        threadID: String,
+        cwd: String,
+        includeInitialTurnsPage: Bool = true
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        var params: [String: CodexAppServerJSONValue] = [
+            "threadId": .string(threadID),
+            "cwd": .string(path),
+            "excludeTurns": .bool(true),
+            // Shared SSH 中恢复只建立监听，不能让 gateway 写入 Mimi 的默认权限设置。
+            "mimiPreserveThreadPermissions": .bool(true)
+        ]
+        if includeInitialTurnsPage {
+            params["initialTurnsPage"] = .object([
+                "limit": .int(5),
+                "sortDirection": .string("desc"),
+                "itemsView": .string("summary")
+            ])
+        }
+        try validateRemoteSafeParams(params.mapValues { Optional($0) }, projectPath: path)
+        return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params))
+    }
+
     func threadFork(threadID: String, cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
@@ -573,11 +616,58 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/fork", params: .object(params.compactMapValues { $0 }))
     }
 
-    func threadRead(threadID: String, includeTurns: Bool = true) -> CodexAppServerRequestSpec {
+    func threadRead(threadID: String, includeTurns: Bool = false) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/read", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
             "includeTurns": .bool(includeTurns)
         ]))
+    }
+
+    func threadQueueAdd(
+        threadID: String,
+        cwd: String,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let params: [String: CodexAppServerJSONValue?] = [
+            "threadId": .string(threadID),
+            "input": payload.appServerInput,
+            "clientUserMessageId": .string(clientMessageID)
+        ]
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/queue/add",
+            params: .object(params.compactMapValues { $0 })
+        )
+    }
+
+    func threadQueueList(
+        threadID: String,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/queue/list", params: .object([
+            "threadId": .string(threadID),
+            "cursor": cursor.map(CodexAppServerJSONValue.string),
+            "limit": .int(Int64(limit))
+        ].compactMapValues { $0 }))
+    }
+
+    func threadItemsList(
+        threadID: String,
+        turnID: TurnID? = nil,
+        cursor: String? = nil,
+        limit: Int = 100,
+        sortDirection: String = "desc"
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/items/list", params: .object([
+            "threadId": .string(threadID),
+            "turnId": turnID.map(CodexAppServerJSONValue.string),
+            "cursor": cursor.map(CodexAppServerJSONValue.string),
+            "limit": .int(Int64(limit)),
+            "sortDirection": .string(sortDirection)
+        ].compactMapValues { $0 }))
     }
 
     func threadTurnsList(

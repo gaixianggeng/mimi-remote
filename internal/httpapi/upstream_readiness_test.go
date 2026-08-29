@@ -135,18 +135,18 @@ func TestReadyzReturns503WhenUpstreamPortIsNotListening(t *testing.T) {
 	}
 }
 
-func TestReadyzRejectsManagedUpstreamWithoutIndependentToken(t *testing.T) {
+func TestReadyzSharedSSHDoesNotRequireIndependentWSToken(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	server := newReadyzTestServer(t, upstreamURL, "")
 
 	ready := requestReadyz(t, server.handler)
 
-	if ready.Code != http.StatusServiceUnavailable {
-		t.Fatalf("受管 upstream 未配置独立 token 时 readyz 必须 fail-closed：code=%d body=%s", ready.Code, ready.Body.String())
+	if ready.Code != http.StatusOK {
+		t.Fatalf("共享 SSH 不应要求旧 WebSocket token：code=%d body=%s", ready.Code, ready.Body.String())
 	}
-	assertReadyzUpstreamCheck(t, ready, false)
-	if connections.Load() != 0 {
-		t.Fatalf("缺少独立 token 时不得发起无鉴权 upstream 握手：connections=%d", connections.Load())
+	assertReadyzUpstreamCheck(t, ready, true)
+	if connections.Load() != 1 {
+		t.Fatalf("readyz 应发起一次 proxy 握手：connections=%d", connections.Load())
 	}
 }
 
@@ -179,22 +179,9 @@ func TestReadyzAuthenticationFailureCacheAndRecovery(t *testing.T) {
 		}
 	}
 
-	if err := os.WriteFile(tokenFile, []byte(correctToken+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(appServerReadinessFailureTTL + 100*time.Millisecond)
-	recovered := requestReadyz(t, server.handler)
-	if recovered.Code != http.StatusOK {
-		t.Fatalf("修复 token 后 readyz 应在短 failure TTL 后恢复：code=%d body=%s", recovered.Code, recovered.Body.String())
-	}
-	assertReadyzUpstreamCheck(t, recovered, true)
-	if connections.Load() != 2 {
-		t.Fatalf("恢复应只增加一次真实握手：connections=%d", connections.Load())
-	}
-
 	cached := requestReadyz(t, server.handler)
-	if cached.Code != http.StatusOK || connections.Load() != 2 {
-		t.Fatalf("成功结果 TTL 内不得重复昂贵握手：code=%d connections=%d", cached.Code, connections.Load())
+	if cached.Code != http.StatusServiceUnavailable || connections.Load() != 1 {
+		t.Fatalf("失败结果 TTL 内不得重复昂贵握手：code=%d connections=%d", cached.Code, connections.Load())
 	}
 }
 
@@ -208,10 +195,8 @@ func newReadyzTestServer(t *testing.T, upstreamURL string, tokenFile string) tes
 		cfg.Codex.Bin = codexPath
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
-			Transport:   "ws",
-			Managed:     true,
-			Listen:      upstreamURL,
-			WSTokenFile: tokenFile,
+			Transport: "ssh",
+			SSHTarget: upstreamURL,
 		}
 	})
 }

@@ -87,10 +87,10 @@ type RuntimeConfig struct {
 }
 
 type AppServerConfig struct {
-	Transport   string `json:"transport"`
-	Managed     bool   `json:"managed"`
-	Listen      string `json:"listen,omitempty"`
-	WSTokenFile string `json:"ws_token_file,omitempty"`
+	Transport string `json:"transport"`
+	// SSHTarget 是 OpenSSH 的目标参数。它只作为 exec 参数传递，不能包含
+	// 空白或以连字符开头，避免把配置误当成 shell/ssh option。
+	SSHTarget string `json:"ssh_target,omitempty"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
 }
@@ -159,15 +159,6 @@ func ConfigPathIdentity(path string) (string, error) {
 		absolute = strings.ToLower(absolute)
 	}
 	return filepath.Clean(absolute), nil
-}
-
-// SameConfigPath 比较两个配置目标的目录项身份。不能直接用 os.SameFile：两个
-// 不同路径的 hard link 虽指向同一 inode，但原子 rename 只替换其中一个目录项；
-// 若把它们视为同一路径，原子 rename 仍只会替换其中一个目录项。
-func SameConfigPath(left, right string) bool {
-	leftIdentity, leftErr := ConfigPathIdentity(left)
-	rightIdentity, rightErr := ConfigPathIdentity(right)
-	return leftErr == nil && rightErr == nil && leftIdentity == rightIdentity
 }
 
 func UserConfigDir() (string, error) {
@@ -272,9 +263,8 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
 	applyEnv(&cfg)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
-	if strings.EqualFold(cfg.AppServer.Transport, "ws") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
-		// 早期独立 App Server 配置可能没有 listen；补默认 loopback 地址。
-		cfg.AppServer.Listen = defaultAppServerWebSocketListen
+	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
+		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
 	}
 	return cfg, nil
 }
@@ -327,20 +317,15 @@ func expandPath(path string) string {
 }
 
 const (
-	// defaultAppServerWebSocketListen 是独立 App Server 的 loopback 默认地址。
-	defaultAppServerWebSocketListen = "ws://127.0.0.1:4222"
+	defaultAppServerSSHTarget = "127.0.0.1"
 )
 
 func DefaultAppServerTransport() string {
-	return "ws"
+	return "ssh"
 }
 
-func DefaultAppServerListen() string {
-	return defaultAppServerWebSocketListen
-}
-
-func DefaultAppServerWebSocketListen() string {
-	return defaultAppServerWebSocketListen
+func DefaultAppServerSSHTarget() string {
+	return defaultAppServerSSHTarget
 }
 
 func DefaultClaudeConfig() ClaudeConfig {
@@ -362,8 +347,7 @@ func defaults() Config {
 		},
 		AppServer: AppServerConfig{
 			Transport: DefaultAppServerTransport(),
-			Managed:   true,
-			Listen:    DefaultAppServerListen(),
+			SSHTarget: DefaultAppServerSSHTarget(),
 			AutoTitle: true,
 		},
 		Voice: VoiceConfig{
@@ -425,11 +409,8 @@ func applyEnv(cfg *Config) {
 			cfg.Claude.MaxConcurrentBridges = n
 		}
 	}
-	if v := os.Getenv("AGENTD_APP_SERVER_LISTEN"); v != "" {
-		cfg.AppServer.Listen = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("AGENTD_APP_SERVER_WS_TOKEN_FILE"); v != "" {
-		cfg.AppServer.WSTokenFile = strings.TrimSpace(v)
+	if v := os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"); v != "" {
+		cfg.AppServer.SSHTarget = v
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_AUTO_TITLE"); v != "" {
 		cfg.AppServer.AutoTitle = truthy(v)
@@ -487,9 +468,6 @@ func normalizeTransport(raw string) string {
 	switch value {
 	case "":
 		return DefaultAppServerTransport()
-	case "stdio", "off":
-		// 历史 stdio/off 配置继续迁移到独立 WS runtime。
-		return "ws"
 	default:
 		return value
 	}
@@ -660,18 +638,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
-	case "ws":
+	case "ssh":
+		if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
+			return fmt.Errorf("app_server.ssh_target 无效：%w", err)
+		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ws")
-	}
-	if !c.AppServer.Managed {
-		return fmt.Errorf("app_server.managed 必须为 true；agentd 只支持受管 App Server")
-	}
-	if strings.EqualFold(c.AppServer.Transport, "ws") && strings.TrimSpace(c.AppServer.Listen) == "" {
-		return fmt.Errorf("app_server.listen 不能为空")
-	}
-	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
-		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")
+		return fmt.Errorf("app_server.transport 只支持 ssh")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

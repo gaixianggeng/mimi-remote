@@ -209,25 +209,6 @@ func TestPlatformDefaultPathIgnoresAgentdConfig(t *testing.T) {
 	}
 }
 
-func TestSameConfigPathResolvesEquivalentDirectorySymlink(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	platformDefault := PlatformDefaultPath()
-	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	aliasRoot := filepath.Join(t.TempDir(), "config-alias")
-	if err := os.Symlink(filepath.Dir(platformDefault), aliasRoot); err != nil {
-		t.Fatal(err)
-	}
-
-	if !SameConfigPath(filepath.Join(aliasRoot, filepath.Base(platformDefault)), platformDefault) {
-		t.Fatal("同一配置目录的 symlink 路径应取得同一把提交锁")
-	}
-	if SameConfigPath(filepath.Join(t.TempDir(), "custom.json"), platformDefault) {
-		t.Fatal("不同配置文件不能共享提交锁身份")
-	}
-}
-
 func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	platformDefault := PlatformDefaultPath()
@@ -240,9 +221,6 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	caseVariant := filepath.Join(filepath.Dir(platformDefault), "Config.json")
 	_, variantErr := os.Stat(caseVariant)
 	if variantErr == nil {
-		if !SameConfigPath(caseVariant, platformDefault) {
-			t.Fatal("大小写不敏感卷上的同一文件必须取得同一把提交锁")
-		}
 		left, err := ConfigPathIdentity(platformDefault)
 		if err != nil {
 			t.Fatal(err)
@@ -259,25 +237,15 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	if !os.IsNotExist(variantErr) {
 		t.Fatal(variantErr)
 	}
-	if SameConfigPath(caseVariant, platformDefault) {
-		t.Fatal("大小写敏感卷上的不同文件不能共享提交锁身份")
-	}
-}
-
-func TestSameConfigPathRejectsDifferentHardLinkEntry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	platformDefault := PlatformDefaultPath()
-	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
+	left, err := ConfigPathIdentity(platformDefault)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(platformDefault, []byte("{}\n"), 0o600); err != nil {
+	right, err := ConfigPathIdentity(caseVariant)
+	if err != nil {
 		t.Fatal(err)
 	}
-	hardLink := filepath.Join(t.TempDir(), "config-hardlink.json")
-	if err := os.Link(platformDefault, hardLink); err != nil {
-		t.Fatal(err)
-	}
-	if SameConfigPath(hardLink, platformDefault) {
-		t.Fatal("不同 hard-link 目录项不能共享提交锁身份")
+	if left == right {
+		t.Fatalf("大小写敏感卷上的不同文件必须取得不同配置锁：left=%q right=%q", left, right)
 	}
 }

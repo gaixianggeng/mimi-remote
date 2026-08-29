@@ -217,8 +217,10 @@ grep -Fq 'scripts/check-windows-installer.ps1' .github/workflows/release.yml \
   || fail "Release workflow 没有校验 Windows 安装器。"
 grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
   || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
-grep -Fq 'Mimi-Remote-Setup-' .github/workflows/release.yml \
-  || fail "Release workflow 没有发布 Windows 安装器。"
+grep -Fq 'Upload verified Windows installer' .github/workflows/release.yml \
+  || fail "Release workflow 没有保留 Windows 兼容性验证 artifact。"
+! grep -Fq 'publish-windows:' .github/workflows/release.yml \
+  || fail "MIM-207 期间不得公开发布 Windows agentd 安装包。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

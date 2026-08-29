@@ -1742,7 +1742,7 @@ extension ConversationDataFlowTests {
             project: project,
             allowedMethods: [
                 "initialize", "initialized", "thread/list", "thread/start", "thread/read",
-                "thread/turns/list", "turn/start", "turn/interrupt"
+                "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt"
             ]
         )
         let codexTransport = FakeCodexAppServerTransport()
@@ -1786,7 +1786,7 @@ extension ConversationDataFlowTests {
         }
         // sentMessages[3] 仍是上一条 economy 请求；full 请求从下一个下标开始等待。
         let fullRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 4)
-        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
         transportResponse(codexTransport, id: fullRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         let fullPage = try await fullTask.value
         XCTAssertEqual(fullPage.loadMode, .full)

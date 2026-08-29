@@ -26,7 +26,7 @@ The detailed engineering and operational reference below is currently in Chinese
 
 Mimi Remote 是原生 iPhone / iPad SwiftUI 控制台。`MimiRemote` 只保留为 Xcode target、scheme 和源码目录名，不作为用户侧产品名。
 
-目标主链路是 iPhone / iPad App 直接消费 Codex app-server JSON-RPC 协议；Mac 上的 `agentd` 只负责项目 allowlist、鉴权、健康诊断、app-server 启动和可选薄网关。这个 App 是独立第三方客户端，不隶属于 OpenAI，也不是任何商业产品的免费替代品。
+目标主链路是 iPhone / iPad App 消费 Codex app-server JSON-RPC 协议；Mac 上的 `agentd` 负责项目 allowlist、鉴权、健康诊断和薄网关。`agentd` 通过 localhost SSH 连接默认 Unix App Server，与本机 Desktop 和远程 Desktop 共享同一个会话运行时。这个 App 是独立第三方客户端，不隶属于 OpenAI，也不是任何商业产品的免费替代品。
 
 ## 方案
 
@@ -35,10 +35,13 @@ Mimi Remote 是原生 iPhone / iPad SwiftUI 控制台。`MimiRemote` 只保留�
 ```text
 iPhone / iPad SwiftUI App
   -> REST: /api/projects /api/app-server/config
-  -> WebSocket: /api/app-server/ws
-  -> Codex app-server JSON-RPC
+  -> 鉴权 WebSocket: /api/app-server/ws
 Mac agentd control plane / thin gateway
-  -> loopback codex app-server WebSocket upstream
+  -> localhost SSH: codex app-server proxy
+  -> 默认 Unix App Server
+本机 Desktop / 远程 Desktop
+  -> SSH: codex app-server proxy
+  -> 同一个默认 Unix App Server
 ```
 
 已下线旧链路：`/api/sessions*`、`/api/sessions/{id}/ws`、Web/PWA 和 iOS PTY 文本解析回退都已经删除。后续不要再基于这些入口增加功能。
@@ -48,6 +51,7 @@ Mac agentd control plane / thin gateway
 ```bash
 codex --version
 codex app-server --help
+ssh 127.0.0.1 codex --version
 
 agentd up
 agentd doctor
@@ -68,11 +72,11 @@ App 可以保存多台 Mac，但同一时间只连接一台。每台 Mac 的 Tok
 
 App target 打包 `Resources/PrivacyInfo.xcprivacy`：声明不跟踪、不配置跟踪域、不由项目开发者收集用户数据；`UserDefaults` 只用于 Endpoint、界面偏好和本地会话控制状态，因此按 Apple 的 approved reason `CA92.1` 声明。发布前运行 `bash ./scripts/check-ios-privacy-manifest.sh`，并以 App Store Connect 的实际隐私报告为最终准入依据。Apple 规则入口：[Privacy manifest files](https://developer.apple.com/documentation/bundleresources/privacy-manifest-files)、[Required reason API](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api)。
 
-direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。`agentd setup` 会生成独立 upstream token file；Mac 侧由 `agentd` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
+direct 模式下，iPad 只连接 `agentd` 的鉴权 WebSocket。`agentd` 为每条 iPad 协议连接启动一个 SSH proxy 子进程，不再生成或读取 app-server upstream token。
 
 直连要求：
 
-1. 推荐用 `agentd setup` 生成配置；`agentd serve` 会在 `app_server.managed=true` 时自动托管 loopback `codex app-server`。
+1. 先确认 `ssh 127.0.0.1 codex --version` 可以非交互成功，再用 `agentd setup` 生成 `app_server.transport=ssh` 配置。
 2. 设置页扫码连接会先用短期配对票据兑换 Endpoint/Token，再校验 `/api/app-server/config` 和 gateway 可用性。
 3. 点击“保存并加载”会先原子提交新 Endpoint/Keychain Token；只有提交成功才断开旧 WebSocket 并切换 client，失败时完整保留旧连接和会话。凭据提交后会复用冷启动退避加载项目和会话：首次配对最多等待 45 秒，修复或切换已有档案最多等待 10 秒；超时保留已提交凭据并提示直接重试，不会误报“已连接”。配对票据未过期时可以直接重试，无需重新扫码。
 4. 网络不可用时暂停可见轮询和 WebSocket 重连；恢复后只触发一次受 connection generation 保护的重连。瞬时失败使用带 jitter 的指数退避，401/403 凭据终态不会继续重试。
@@ -224,7 +228,7 @@ REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run
 - 能拉取项目列表和会话列表。
 - 能选择 Codex 历史会话并加载历史消息。
 - 能新建会话和继续历史会话。
-- direct 模式能完成 `initialize -> thread/start -> turn/start`。
+- shared SSH direct 模式能完成 `initialize(experimentalApi:true) -> thread/start -> thread/queue/add`。
 - 能通过 app-server notification 接收 assistant delta、completed item、日志、diff、turn completed。
 - 能发送普通输入、Ctrl-C/interrupt 和审批响应。
 - 能停止 running session。
@@ -253,7 +257,7 @@ REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run
 当前限制：
 
 - 可以保存多台 Mac，但只支持一个当前档案和一条活动后端连接；Catalyst 仅检测同机固定 loopback，不做 Bonjour/SSH 任意主机发现或档案云同步。
-- direct 模式仍需要 app-server WebSocket transport 或 agentd 薄网关。
+- direct 模式仍需要 `agentd` 的鉴权 WebSocket 薄网关；iOS 不直接持有 SSH 凭据，Gateway 上游固定使用 SSH proxy。
 - 每个 session 当前只允许一个 iOS WebSocket attach。
 - app-server runtime 走结构化事件；iOS 不再用 PTY/TUI 文本启发式解析消息气泡。
 - 当前后端默认是 HTTP。iOS 27 上 Tailscale 裸 IP 需要 `NSAllowsArbitraryLoads`，App 再在应用层只允许本机、私网或 Tailscale Endpoint；不提供应用层公网备用入口。发布前仍需用真机验收 Tailscale IP、前后台切换和弱网恢复，并优先评估 MagicDNS 域名 + HTTPS。

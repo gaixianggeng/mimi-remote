@@ -386,6 +386,10 @@ final class SessionStore: ObservableObject {
     var queuedSessionReconnectTasks: [SessionID: Task<Void, Never>] = [:]
     var queuedTurnStartedIDBySessionID: [SessionID: TurnID] = [:]
     var queuedTurnAwaitingStartSessionIDs: Set<SessionID> = []
+    // shared queue 的 started 事件可能早于 queue/add 回调。按 client ID 保留 RPC 门闩，
+    // 避免 Runtime 的同 session 单提交保护仍占用时提前派发下一项。
+    var queuedServerSubmissionAwaitingOutcomeBySessionID: [SessionID: ClientMessageID] = [:]
+    var queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs: Set<ClientMessageID> = []
     var queuedTurnBlockedCompletionIDBySessionID: [SessionID: TurnID] = [:]
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
     var currentQueuedTurnProfileID: String?
@@ -1225,14 +1229,18 @@ final class SessionStore: ObservableObject {
     func reloadQueuedTurns() {
         let profileID = appStore.notificationRoutingProfileID
         currentQueuedTurnProfileID = profileID
+        queuedServerSubmissionAwaitingOutcomeBySessionID.removeAll()
+        queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs.removeAll()
         do {
             var snapshot = try queuedTurnStore.load(profileID: profileID)
-            // dispatching 表示上一个进程在 RPC 确认前中断。协议没有承诺
-            // clientUserMessageId 幂等，因此重启后先阻止盲目重放，等历史对账。
+            // 没有 server receipt 的 dispatching 项在 RPC 确认前中断，必须阻止盲目重放。
+            // 已持久化 submissionID 的项已确认入队，重启后保持 dispatching 并等 items 对账。
             var didRecoverAmbiguousDispatch = false
             for sessionID in snapshot.queuesBySessionID.keys {
                 guard var queue = snapshot.queuesBySessionID[sessionID] else { continue }
-                for index in queue.indices where queue[index].dispatchState == .dispatching {
+                for index in queue.indices
+                where queue[index].dispatchState == .dispatching
+                    && queue[index].serverSubmissionID == nil {
                     queue[index].dispatchState = .needsConfirmation
                     queue[index].lastError = L10n.text("ui.the_last_sending_was_interrupted_before_confirmation_checking")
                     didRecoverAmbiguousDispatch = true
