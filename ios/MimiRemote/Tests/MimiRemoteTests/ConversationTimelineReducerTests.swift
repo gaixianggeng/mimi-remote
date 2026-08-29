@@ -474,4 +474,94 @@ extension ConversationDataFlowTests {
             ["先运行测试。", "还在修改是么", "还在修改和回归。", "又发现一个代次交叉。"]
         )
     }
+
+    func testAnnotatedHistoryMutationAdvancesOnlyWhenTimelineChanges() throws {
+        let sessionID = "history-mutation-generation"
+        let store = ConversationStore()
+        store.activate(profileID: "history-mutation-profile")
+        let latest = CodexHistoryMessage(
+            id: "history:latest",
+            role: "assistant",
+            content: "最新文案",
+            createdAt: Date(timeIntervalSince1970: 20),
+            turnID: "turn-latest",
+            itemID: "item-latest"
+        )
+
+        store.setHistory([latest], sessionID: sessionID, timelineMutationKind: .enrichment)
+        let firstMutation = try XCTUnwrap(store.historyTimelineMutation(for: sessionID))
+        XCTAssertEqual(firstMutation.kind, .enrichment)
+
+        store.setHistory([latest], sessionID: sessionID, timelineMutationKind: .enrichment)
+        XCTAssertEqual(store.historyTimelineMutation(for: sessionID), firstMutation)
+
+        let earlier = CodexHistoryMessage(
+            id: "history:earlier",
+            role: "user",
+            content: "更早文案",
+            createdAt: Date(timeIntervalSince1970: 10),
+            turnID: "turn-earlier",
+            itemID: "item-earlier"
+        )
+        store.setHistory(
+            [earlier, latest],
+            sessionID: sessionID,
+            timelineMutationKind: .prepend
+        )
+        let secondMutation = try XCTUnwrap(store.historyTimelineMutation(for: sessionID))
+        XCTAssertEqual(secondMutation.kind, .prepend)
+        XCTAssertGreaterThan(secondMutation.generation, firstMutation.generation)
+    }
+
+    func testHistoricalTimelineGenerationSeparatesHistoryFromLiveUpdates() {
+        XCTAssertTrue(
+            ConversationTimelineView.isHistoricalTimelineChange(
+                previousGeneration: nil,
+                currentGeneration: 1
+            )
+        )
+        XCTAssertTrue(
+            ConversationTimelineView.isHistoricalTimelineChange(
+                previousGeneration: 1,
+                currentGeneration: 2
+            )
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.isHistoricalTimelineChange(
+                previousGeneration: 2,
+                currentGeneration: 2
+            )
+        )
+        XCTAssertFalse(
+            ConversationTimelineView.isHistoricalTimelineChange(
+                previousGeneration: nil,
+                currentGeneration: nil
+            )
+        )
+    }
+
+    func testHistoryPreservedOffsetKeepsAnchorAtOriginalScreenPosition() {
+        XCTAssertEqual(
+            ConversationTimelineView.historyPreservedOffset(
+                currentOffsetY: 400,
+                currentAnchorMinY: 150,
+                baselineAnchorMinY: 90,
+                minimumOffsetY: -20,
+                maximumOffsetY: 1_200
+            ),
+            460,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ConversationTimelineView.historyPreservedOffset(
+                currentOffsetY: 1_180,
+                currentAnchorMinY: 160,
+                baselineAnchorMinY: 90,
+                minimumOffsetY: -20,
+                maximumOffsetY: 1_200
+            ),
+            1_200,
+            accuracy: 0.001
+        )
+    }
 }

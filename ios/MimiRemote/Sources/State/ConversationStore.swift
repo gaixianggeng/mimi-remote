@@ -1,5 +1,15 @@
 import Foundation
 
+enum ConversationHistoryTimelineMutationKind: Equatable {
+    case prepend
+    case enrichment
+}
+
+struct ConversationHistoryTimelineMutation: Equatable {
+    let generation: UInt64
+    let kind: ConversationHistoryTimelineMutationKind
+}
+
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private var activeProfileID = ""
@@ -16,6 +26,8 @@ final class ConversationStore: ObservableObject {
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
     private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
+    private var historyTimelineMutationBySessionID: [ScopedSessionID: ConversationHistoryTimelineMutation] = [:]
+    private var historyTimelineMutationGeneration: UInt64 = 0
     private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
     private var retainedByteCountBySessionID: [ScopedSessionID: Int] = [:]
     private var totalRetainedByteCount = 0
@@ -169,6 +181,13 @@ final class ConversationStore: ObservableObject {
         loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
     }
 
+    func historyTimelineMutation(for sessionID: String?) -> ConversationHistoryTimelineMutation? {
+        guard let sessionID else {
+            return nil
+        }
+        return historyTimelineMutationBySessionID[scopedSessionID(for: sessionID)]
+    }
+
     func hasLocallyUnreconciledUserDelivery(sessionID: String) -> Bool {
         // 与时间线“等待回复”判定保持同一边界：只检查最后一个普通 assistant 气泡之后的
         // 用户发送态。切换目录丢掉 completion 时，这能触发一次权威历史对账；已完整展示
@@ -238,7 +257,8 @@ final class ConversationStore: ObservableObject {
     func setHistory(
         _ history: [CodexHistoryMessage],
         sessionID: String,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        timelineMutationKind: ConversationHistoryTimelineMutationKind? = nil
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         flushPendingAssistantDelta(sessionID: sessionID)
@@ -260,15 +280,27 @@ final class ConversationStore: ObservableObject {
             touchConversationSession(scopedSessionID)
             return
         }
-        setMessages(
-            mergeHistory(
-                converted,
-                with: messagesByScopedSessionID[scopedSessionID] ?? [],
-                sessionID: sessionID,
-                authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
-            ),
-            sessionID: sessionID
+        let merged = mergeHistory(
+            converted,
+            with: messagesByScopedSessionID[scopedSessionID] ?? [],
+            sessionID: sessionID,
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
+        if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, merged) {
+            loadedHistorySessionIDs.insert(scopedSessionID)
+            touchConversationSession(scopedSessionID)
+            return
+        }
+        // 历史分页的来源必须在 @Published 消息写回前记录。时间线在同一轮渲染中
+        // 才能识别这是历史补齐，而不是实时新消息，并阻止错误的尾部跟随。
+        if let timelineMutationKind {
+            historyTimelineMutationGeneration &+= 1
+            historyTimelineMutationBySessionID[scopedSessionID] = ConversationHistoryTimelineMutation(
+                generation: historyTimelineMutationGeneration,
+                kind: timelineMutationKind
+            )
+        }
+        setMessages(merged, sessionID: sessionID)
         loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
@@ -1357,6 +1389,7 @@ final class ConversationStore: ObservableObject {
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
         messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
         historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
+        historyTimelineMutationBySessionID.removeValue(forKey: scopedSessionID)
         pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
         assistantDeltaFlushTasks.removeValue(forKey: scopedSessionID)

@@ -64,6 +64,13 @@ extension SessionStore {
         historyItemEnrichmentBySessionID = [:]
     }
 
+    func waitForHistoryItemEnrichment(sessionID: SessionID) async {
+        guard let task = historyItemEnrichmentBySessionID[sessionID]?.task else {
+            return
+        }
+        await task.value
+    }
+
     private func runHistoryItemEnrichment(sessionID: SessionID, token: UUID) async {
         let client: SessionStoreAPIClient
         do {
@@ -148,7 +155,8 @@ extension SessionStore {
         conversationStore.setHistory(
             page.messages,
             sessionID: sessionID,
-            authoritativeCompletedTurnItems: authoritativeItems
+            authoritativeCompletedTurnItems: authoritativeItems,
+            timelineMutationKind: .enrichment
         )
     }
 

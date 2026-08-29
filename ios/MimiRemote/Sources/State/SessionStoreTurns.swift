@@ -367,7 +367,8 @@ extension SessionStore {
             conversationStore.setHistory(
                 page.messages,
                 sessionID: session.id,
-                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems,
+                timelineMutationKind: .prepend
             )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
