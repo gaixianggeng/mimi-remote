@@ -4978,6 +4978,159 @@
         }
       }
     },
+    "ui.retry_writer_access": {
+      "comment": "Accessibility label for retrying writer access from the active-writer conflict card.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry writer access"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试写入权限"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_check_failed_value": {
+      "comment": "Inline error shown when Mimi cannot determine a safe terminal Turn for a writer-conflict fork. The placeholder is the underlying error.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t find a safe copy point: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认安全的复制位置：%@"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_checking": {
+      "comment": "Primary action title while Mimi checks the latest safe fork boundary.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查…"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_continue": {
+      "comment": "Primary action that copies a writer-conflicted Thread and opens the new Thread.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy and continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制并继续"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_copying": {
+      "comment": "Primary action title while the writer-conflicted Thread is being copied.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copying…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在复制…"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_idle_explanation": {
+      "comment": "Explains that an idle writer-conflicted Thread can be copied without changing the original.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy this session to continue here; the original stays unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制为新会话后，可在这里继续；原会话保持不变。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_no_terminal_turn": {
+      "comment": "Explains why a running writer-conflicted Thread cannot yet be copied safely.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There isn’t a finished turn to copy yet. Wait for the current Desktop response to finish."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前还没有可复制的完整回合。请等待 Desktop 当前回复完成。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_recheck": {
+      "comment": "Primary action title after checking the safe fork boundary fails.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_running_explanation": {
+      "comment": "Explains that a running Desktop response is excluded from the copied Thread.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The copy will end at the previous finished turn; the current Desktop response won’t be included."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将复制到上一轮结束的位置；Desktop 当前回复不会带入。"
+          }
+        }
+      }
+    },
     "ui.codex_currently_returns_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

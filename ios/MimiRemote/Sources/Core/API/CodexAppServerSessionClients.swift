@@ -232,9 +232,15 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     func forkSession(
         threadID: String,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID? = nil
     ) async throws -> AgentSession {
-        try await runtime.forkSession(threadID: threadID, workspace: workspace, reason: reason)
+        try await runtime.forkSession(
+            threadID: threadID,
+            workspace: workspace,
+            reason: reason,
+            lastTurnID: lastTurnID
+        )
     }
 
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
@@ -567,12 +573,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     func forkSession(
         threadID: String,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID? = nil
     ) async throws -> AgentSession {
         let session = try await bundle.runtime(forSessionID: threadID).forkSession(
             threadID: threadID,
             workspace: workspace,
-            reason: reason
+            reason: reason,
+            lastTurnID: lastTurnID
         )
         bundle.routes.remember(session)
         return session

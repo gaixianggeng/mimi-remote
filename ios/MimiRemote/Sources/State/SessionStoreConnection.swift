@@ -2487,6 +2487,7 @@ extension SessionStore {
         worktreeErrorMessage = nil
         isCreatingWorktree = false
         duplicatingSessionIDs = []
+        clearAllWriterConflictForkState()
         isRefreshingWorktreeBranches = false
         isRefreshingWorktrees = false
         isDeletingWorktree = false

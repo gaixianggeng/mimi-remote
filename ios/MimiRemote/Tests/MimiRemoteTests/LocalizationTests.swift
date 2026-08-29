@@ -121,6 +121,32 @@ final class LocalizationTests: XCTestCase {
         )
         XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in another app")
         XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在另一个应用中打开")
+        let writerConflictForkValues: [(String, String, String)] = [
+            (
+                "ui.writer_conflict_fork_idle_explanation",
+                "Copy this session to continue here; the original stays unchanged.",
+                "复制为新会话后，可在这里继续；原会话保持不变。"
+            ),
+            (
+                "ui.writer_conflict_fork_running_explanation",
+                "The copy will end at the previous finished turn; the current Desktop response won’t be included.",
+                "将复制到上一轮结束的位置；Desktop 当前回复不会带入。"
+            ),
+            (
+                "ui.writer_conflict_fork_no_terminal_turn",
+                "There isn’t a finished turn to copy yet. Wait for the current Desktop response to finish.",
+                "当前还没有可复制的完整回合。请等待 Desktop 当前回复完成。"
+            ),
+            ("ui.writer_conflict_fork_continue", "Copy and continue", "复制并继续"),
+            ("ui.writer_conflict_fork_checking", "Checking…", "正在检查…"),
+            ("ui.writer_conflict_fork_copying", "Copying…", "正在复制…"),
+            ("ui.writer_conflict_fork_recheck", "Check again", "重新检查"),
+            ("ui.retry_writer_access", "Retry writer access", "重试写入权限")
+        ]
+        for (key, english, simplifiedChinese) in writerConflictForkValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english)
+            XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
         XCTAssertEqual(

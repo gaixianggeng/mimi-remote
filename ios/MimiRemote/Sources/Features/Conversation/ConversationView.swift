@@ -76,7 +76,27 @@ struct ConversationView: View {
                     Spacer(minLength: 0)
                     Group {
                         if sessionStore.selectedSessionHasActiveWriterConflict {
-                            writerConflictCard(isRetrying: sessionStore.webSocketStatus == .connecting)
+                            WriterConflictCard(
+                                sourceIsRunning: sessionStore.selectedSession?.isRunning == true,
+                                availability: sessionStore.selectedWriterConflictForkAvailability,
+                                errorMessage: sessionStore.selectedWriterConflictForkErrorMessage,
+                                isDuplicating: sessionStore.isDuplicatingSelectedWriterConflictSession,
+                                isRetrying: sessionStore.webSocketStatus == .connecting,
+                                onFork: {
+                                    Task { await sessionStore.duplicateSelectedWriterConflictSession() }
+                                },
+                                onRecheck: {
+                                    Task {
+                                        await sessionStore.prepareSelectedWriterConflictForkAvailability(
+                                            force: true
+                                        )
+                                    }
+                                },
+                                onRetry: sessionStore.retrySelectedSessionWriterAccess
+                            )
+                            .task(id: sessionStore.selectedWriterConflictForkPreparationID) {
+                                await sessionStore.prepareSelectedWriterConflictForkAvailability()
+                            }
                         } else {
                             ComposerView(
                                 availableWidth: composerWidth,
@@ -369,71 +389,6 @@ struct ConversationView: View {
 
     private var statusChipBackground: Color {
         themeStore.tokens(for: colorScheme).elevatedSurface
-    }
-
-    private func writerConflictCard(isRetrying: Bool) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 14) {
-                writerConflictMessage(tokens: tokens)
-                Spacer(minLength: 12)
-                writerConflictRetryButton(isRetrying: isRetrying)
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                writerConflictMessage(tokens: tokens)
-                writerConflictRetryButton(isRetrying: isRetrying)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tokens.elevatedSurface, in: shape)
-        .overlay {
-            shape.strokeBorder(tokens.warning.opacity(0.32), lineWidth: 0.75)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func writerConflictMessage(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "lock")
-                .font(themeStore.uiFont(.body, weight: .semibold))
-                .foregroundStyle(tokens.warning)
-                .frame(width: 24, height: 24)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L10n.text("ui.codex_active_writer_conflict_title"))
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(L10n.text("ui.codex_active_writer_conflict"))
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func writerConflictRetryButton(isRetrying: Bool) -> some View {
-        Button {
-            sessionStore.retrySelectedSessionWriterAccess()
-        } label: {
-            Group {
-                if isRetrying {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Text(L10n.text("ui.retry"))
-                }
-            }
-            .frame(minWidth: 64, minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.bordered)
-        .disabled(isRetrying)
-        .accessibilityHint(L10n.text("ui.codex_active_writer_conflict"))
     }
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
