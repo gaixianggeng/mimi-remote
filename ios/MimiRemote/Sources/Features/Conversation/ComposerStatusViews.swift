@@ -250,8 +250,10 @@ extension QueuedTurnEntry {
 
 enum ComposerStatusTrayMaterialStrength: Equatable {
     case opaque
-    case thin
-    case regular
+    /// 全 App 唯一的磨砂档位，见 `WorkbenchMaterial.surface`。
+    /// 过去这里按展开/收起分成 thin / regular 两档，结果是同一枚托盘在两个状态下
+    /// 是两种质感，展开时还比旁边的输入卡更浓。遮蔽交给 tint，不再换档位。
+    case frosted
 }
 
 enum ComposerStatusTrayPlacement: Equatable {
@@ -273,6 +275,16 @@ enum ComposerStatusTrayPlacement: Equatable {
     var usesEmbeddedStatusChip: Bool {
         self == .embedded
     }
+
+    /// 内嵌状态栏只占 36pt 的视觉高度；独立托盘沿用 44pt 行高。
+    var visualHeight: CGFloat {
+        self == .embedded ? 36 : 44
+    }
+
+    /// disclosure 的真实命中框始终满足 44pt 触控目标；它可通过 overlay 越出视觉槽位。
+    var disclosureHitSize: CGSize {
+        CGSize(width: 44, height: 44)
+    }
 }
 
 struct ComposerStatusTraySurfaceStyle: Equatable {
@@ -283,8 +295,10 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
     /// 只有 `.standalone` 会真正绘制这套表面。iPhone 恒定使用 `.embedded`，
     /// 状态直接长在 Composer 外壳里，材质由 Composer 自身提供，因此这里不需要
     /// 也不应该再有一条 phone 专用分支——那只会让样式看起来被覆盖，实际却渲染不到。
+    ///
+    /// 同理，这里不再接收展开状态：材质、tint 和描边在两个状态下完全相同，
+    /// 留一个不影响任何返回值的参数只会让调用方以为展开态另有一套样式。
     static func resolve(
-        isExpanded: Bool,
         scheme: ThemeResolvedScheme,
         reduceTransparency: Bool,
         increasedContrast: Bool = false
@@ -306,10 +320,10 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
             )
         }
 
-        // 深色继续保留功能材质；展开时只增加模糊厚度保证长内容可读，
+        // 深色继续保留功能材质；长内容的可读性由 tint 保证，
         // 不再靠阴影、彩色双描边或多层高光制造实体卡片感。
         return Self(
-            materialStrength: isExpanded ? .regular : .thin,
+            materialStrength: .frosted,
             surfaceTintOpacity: 0.46,
             borderOpacity: 0.58
         )
@@ -408,18 +422,30 @@ struct ComposerStatusTray: View {
             .layoutPriority(1)
 
             if hasExpandableDetail {
-                collapsedDisclosureButton(
-                    title: L10n.text("ui.expanded_state"),
-                    systemImage: "chevron.down",
-                    tint: tokens.secondaryText,
-                    action: onToggleGoalExpanded
-                )
+                collapsedDisclosureSlot(tint: tokens.secondaryText)
             }
         }
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
         .padding(.trailing, 2)
-        .frame(minHeight: 44)
+        // 内嵌托盘是输入卡顶部的一条状态注解，不是一条独立列表行：视觉高度 36pt
+        // 会让一枚 28pt 的 chip 顶着一整行空白，读成"这里少了点什么"。
+        // 命中区由 overlay 中独立的 44×44 Button 保证，不参与这条视觉栏的高度。
+        .frame(minHeight: placement.visualHeight)
+    }
+
+    private func collapsedDisclosureSlot(tint: Color) -> some View {
+        Color.clear
+            .frame(width: placement.disclosureHitSize.width, height: placement.visualHeight)
+            // overlay 不参与父布局，按钮可以真实保持 44×44，同时视觉栏继续只有 36pt。
+            .overlay {
+                collapsedDisclosureButton(
+                    title: L10n.text("ui.expanded_state"),
+                    systemImage: "chevron.down",
+                    tint: tint,
+                    action: onToggleGoalExpanded
+                )
+            }
     }
 
     @ViewBuilder
@@ -466,11 +492,11 @@ struct ComposerStatusTray: View {
         sessionControlNotice != nil || quotaNotice != nil || usage != nil
     }
 
-    /// 展开只会多出目标详情、额度完整文案和刷新入口。只挂着「仅观察」时，展开态和
-    /// 收起态渲染的内容完全一样，那颗 chevron 点了什么也不会发生，纯属噪声。
-    /// 目标、额度这类真的有下文的状态继续保留开合。
+    /// 展开只为真正的次级内容或操作保留：目标详情、额度完整文案和刷新入口，
+    /// 以及观察态中可执行的接管操作。不可接管的只读观察没有下文，继续隐藏 disclosure。
     var hasExpandableDetail: Bool {
-        goal != nil || quotaNotice != nil || usage != nil
+        goal != nil || quotaNotice != nil || usage != nil ||
+            (sessionControlNotice != nil && allowsTakeOver)
     }
 
     /// 没有可展开内容时忽略外部的展开状态，避免目标被清空后停在一个收不回去的展开态。
@@ -533,9 +559,12 @@ struct ComposerStatusTray: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 12, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+                .frame(
+                    width: placement.disclosureHitSize.width,
+                    height: placement.disclosureHitSize.height
+                )
         }
+        .frame(width: placement.disclosureHitSize.width, height: placement.disclosureHitSize.height)
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .help(title)
         .accessibilityLabel(title)
@@ -747,13 +776,6 @@ struct ComposerStatusTray: View {
                 .font(themeStore.uiFont(size: 16, weight: .semibold))
                 .foregroundStyle(isDisabled ? tokens.tertiaryText : tint)
                 .frame(width: 44, height: 44)
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: 12,
-                        isEmphasized: false
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -798,17 +820,10 @@ struct ComposerStatusTray: View {
             } else {
                 shape.fill(tokens.elevatedSurface)
             }
-        case .regular:
-            // 深色展开态内容更多，只增加材质模糊厚度。
+        case .frosted:
+            // 只在深色出现；浅色独立托盘一律走 `.opaque`。
             shape
-                .fill(.regularMaterial)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
-                }
-        case .thin:
-            // `.thin` 只在深色收起态出现；浅色独立托盘一律走 `.opaque`。
-            shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
@@ -817,7 +832,6 @@ struct ComposerStatusTray: View {
 
     private func surfaceStyle(tokens: ThemeTokens) -> ComposerStatusTraySurfaceStyle {
         ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: isGoalExpanded,
             scheme: tokens.resolvedScheme,
             reduceTransparency: reduceTransparency,
             increasedContrast: colorSchemeContrast == .increased

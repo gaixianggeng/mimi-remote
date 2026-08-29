@@ -340,32 +340,6 @@ struct AgentAPIClient {
         )
     }
 
-    func externalActivities(timeout: TimeInterval = 10) async throws -> ExternalActivityResponse {
-        try await request(
-            path: "/api/app-server/external-activity",
-            method: "GET",
-            body: Optional<Data>.none,
-            timeout: timeout
-        )
-    }
-
-    /// 请求 agentd 在当前 turn 空闲后接管并释放 thread writer。服务端会返回
-    /// `scheduled`，所以客户端不等待 active turn，也不需要自行轮询。
-    func scheduleThreadHandoff(threadID: String) async throws -> ThreadHandoffResponse {
-        let body = try JSONEncoder().encode(ThreadHandoffRequest(threadID: threadID))
-        return try await request(
-            path: "/api/app-server/thread-handoff",
-            method: "POST",
-            body: body
-        )
-    }
-
-    /// 语义别名供生命周期调用点使用；REST 端点本身是“schedule handoff”，
-    /// 服务端会在 active turn 结束后完成实际 writer release。
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
-        try await scheduleThreadHandoff(threadID: threadID)
-    }
-
     func relayDiagnostics() async throws -> RelayDiagnosticsResponse {
         try await request(path: "/api/diagnostics/relay", method: "GET", body: Optional<Data>.none)
     }

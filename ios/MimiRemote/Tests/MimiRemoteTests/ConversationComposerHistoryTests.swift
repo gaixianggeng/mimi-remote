@@ -153,6 +153,40 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testComposerPermissionChangeRequiresQueuedTurnBeforeGuidanceCanResume() {
+        var composerState = ComposerState()
+        composerState.applyPermissionMode(.readOnly, sessionIsRunning: true)
+
+        XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(
+            composerState.runningTurnDelivery(canUseGuidedFollowUp: true, guidedFollowUpEnabled: true),
+            .queued,
+            "turn/steer 不能携带下一回合权限，必须排队到新的 turn/start"
+        )
+
+        let startedSelection = composerState.permissionSelectionSnapshot()
+        composerState.markPermissionSelectionApplied(startedSelection)
+
+        XCTAssertFalse(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(
+            composerState.runningTurnDelivery(canUseGuidedFollowUp: true, guidedFollowUpEnabled: true),
+            .guided
+        )
+    }
+
+    func testLatePermissionTurnStartDoesNotClearNewerSelection() {
+        var composerState = ComposerState()
+        composerState.markPermissionSelectionRequiresNewTurn()
+        let startedSelection = composerState.permissionSelectionSnapshot()
+
+        composerState.applyPermissionMode(.readOnly)
+        composerState.markPermissionSelectionRequiresNewTurn()
+        composerState.markPermissionSelectionApplied(startedSelection)
+
+        XCTAssertTrue(composerState.permissionSelectionRequiresNewTurn)
+        XCTAssertEqual(composerState.permissionMode, .readOnly)
+    }
+
     func testComposerPrimaryActionKeepsRunningTurnSubmissionAndStopReachable() {
         XCTAssertEqual(
             ComposerPrimaryAction.resolve(
@@ -363,7 +397,7 @@ extension ConversationDataFlowTests {
             (.readOnly, .onRequest, "user", .readOnly),
             (.requestApproval, .onRequest, "user", .workspaceWrite),
             (.autoApprove, .onRequest, "auto_review", .workspaceWrite),
-            (.fullAccess, .onRequest, "user", .dangerFullAccess)
+            (.fullAccess, .never, "user", .dangerFullAccess)
         ]
 
         for testCase in cases {
@@ -399,7 +433,7 @@ extension ConversationDataFlowTests {
         ))
         let options = submitted.payload.options
 
-        XCTAssertEqual(options.approvalPolicy, .onRequest)
+        XCTAssertEqual(options.approvalPolicy, .never)
         XCTAssertEqual(options.approvalsReviewer, "user")
         XCTAssertEqual(options.sandboxMode, .dangerFullAccess)
         XCTAssertFalse(options.networkAccess)
@@ -548,6 +582,10 @@ extension ConversationDataFlowTests {
         )
 
         await coordinator.deactivate(secondActivation)
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        while backend.operations.last != .deactivate, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         XCTAssertEqual(
             backend.operations,
             [.prepare, .prepare, .activate, .prepare, .activate, .deactivate]
@@ -2181,77 +2219,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(messages.first?.content, completed.content)
         XCTAssertEqual(messages.first?.sendStatus, .confirmed)
         XCTAssertEqual(store.lastSeenSeq(for: sessionID), 2)
-    }
-
-    func testPaginateHistoryWindowsBackwardThroughEarliestMessage() {
-        let messages = (0..<5).map { index in
-            CodexHistoryMessage(id: "m\(index)", role: "user", content: "msg\(index)", createdAt: nil)
-        }
-
-        let latest = CodexAppServerSessionRuntime.paginateHistory(messages, before: nil, limit: 2)
-        XCTAssertEqual(latest.messages.map(\.id), ["m3", "m4"])
-        XCTAssertEqual(latest.previousCursor, "m3")
-        XCTAssertTrue(latest.hasMoreBefore)
-
-        let middle = CodexAppServerSessionRuntime.paginateHistory(messages, before: "m3", limit: 2)
-        XCTAssertEqual(middle.messages.map(\.id), ["m1", "m2"])
-        XCTAssertEqual(middle.previousCursor, "m1")
-        XCTAssertTrue(middle.hasMoreBefore)
-
-        // 翻到最早一窗时必须能拿到第一条 m0，并关闭分页入口。
-        let earliest = CodexAppServerSessionRuntime.paginateHistory(messages, before: "m1", limit: 2)
-        XCTAssertEqual(earliest.messages.map(\.id), ["m0"])
-        XCTAssertNil(earliest.previousCursor)
-        XCTAssertFalse(earliest.hasMoreBefore)
-    }
-
-    func testPaginateHistoryCarriesAuthoritativeTurnItemsAcrossWindowCuts() {
-        let turnID = "turn_window_authority"
-        let allItemIDs: [AgentItemID] = (20..<25).map { index in "item-\(index)" }
-        let messages: [CodexHistoryMessage] = (20..<25).map { index in
-            let role = index == 24 ? "assistant" : "system"
-            let kind: MessageKind = index == 24 ? .message : .commandSummary
-            let itemID: AgentItemID = "item-\(index)"
-            return CodexHistoryMessage(
-                id: "appserver:\(turnID):\(itemID)",
-                role: role,
-                kind: kind,
-                content: "msg\(index)",
-                createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
-                turnID: turnID,
-                itemID: itemID,
-                timelineOrdinal: Int64(index)
-            )
-        }
-
-        let page = CodexAppServerSessionRuntime.paginateHistory(
-            messages,
-            before: nil,
-            limit: 2,
-            authoritativeCompletedTurnItems: [
-                turnID: Set(allItemIDs)
-            ]
-        )
-
-        XCTAssertEqual(page.messages.map { $0.itemID }, ["item-23", "item-24"])
-        XCTAssertTrue(page.hasMoreBefore)
-        XCTAssertEqual(page.authoritativeCompletedTurnItems[turnID], Set(allItemIDs))
-    }
-
-    func testPaginateHistoryReturnsAllWhenWithinLimitOrCursorMissing() {
-        let messages = (0..<3).map { index in
-            CodexHistoryMessage(id: "m\(index)", role: "user", content: "msg\(index)", createdAt: nil)
-        }
-
-        let full = CodexAppServerSessionRuntime.paginateHistory(messages, before: nil, limit: 10)
-        XCTAssertEqual(full.messages.map(\.id), ["m0", "m1", "m2"])
-        XCTAssertNil(full.previousCursor)
-        XCTAssertFalse(full.hasMoreBefore)
-
-        let missing = CodexAppServerSessionRuntime.paginateHistory(messages, before: "gone", limit: 2)
-        XCTAssertTrue(missing.messages.isEmpty)
-        XCTAssertNil(missing.previousCursor)
-        XCTAssertFalse(missing.hasMoreBefore)
     }
 
     func testMessagePageResponseMapsToHistoryMessages() throws {

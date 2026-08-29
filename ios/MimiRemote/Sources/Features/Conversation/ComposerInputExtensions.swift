@@ -1,6 +1,169 @@
 import AVFoundation
 import PhotosUI
 import SwiftUI
+
+// 权限选择、能力降级和队列边界属于输入状态协作，不让 ComposerView 主体继续增长。
+extension ComposerView {
+    @ViewBuilder
+    var sharedThreadSettingsNotice: some View {
+        if composerTurnSettingsPolicy == .sharedThreadManaged {
+            Label(ComposerTurnSettingsPolicy.sharedThreadNotice, systemImage: "desktopcomputer")
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("composer.sharedThreadSettingsNotice")
+        }
+    }
+
+    func applyDefaultPermissionMode() {
+        let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
+        composerState.applyPermissionMode(safePermissionMode(stored))
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    func applyDefaultPermissionModeForActiveScope() {
+        // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
+        // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
+        switch activeComposerDraftScope {
+        case .newSession:
+            applyDefaultPermissionMode()
+        case .session(let sessionID) where sessionID.hasPrefix("local:"):
+            applyDefaultPermissionMode()
+        case .none, .session:
+            break
+        }
+    }
+
+    func setPermissionMode(_ mode: ComposerPermissionMode) {
+        let safeMode = safePermissionMode(mode)
+        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
+        if selectedSessionRuntimeProviderForModelMenu != "claude" {
+            defaultPermissionModeID = safeMode.rawValue
+        }
+        composerState.applyPermissionMode(
+            safeMode,
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        )
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: profile.id) {
+            setPermissionMode(builtInMode)
+            return
+        }
+        composerState.updatePermissionSelection(
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        ) { options in
+            options.preservesThreadPermissionSettings = false
+            options.permissionProfileID = profile.id
+            options.approvalPolicy = .forPermissionProfileID(profile.id)
+            options.approvalsReviewer = "user"
+            options.networkAccess = false
+        }
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    var permissionProfileCWD: String? {
+        let path = sessionStore.selectedSession?.dir ?? sessionStore.selectedProject?.path
+        return path?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+    }
+
+    var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
+        guard selectedSessionRuntimeProviderForModelMenu != "claude",
+              sessionStore.permissionProfilesCWD == permissionProfileCWD
+        else {
+            return []
+        }
+        // 三个内建档案与上方用户权限模式完全重复，只把真正的自定义档案放进高级入口。
+        return sessionStore.appServerPermissionProfiles.filter {
+            ComposerPermissionMode(builtInPermissionProfileID: $0.id) == nil
+        }
+    }
+
+    var selectedPermissionProfileID: String? {
+        if let profileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty {
+            return profileID
+        }
+        return composerState.turnOptions.preservesThreadPermissionSettings
+            ? activePermissionProfile?.id
+            : nil
+    }
+
+    var activePermissionProfile: CodexAppServerActivePermissionProfile? {
+        guard let sessionID = sessionStore.selectedSessionID else {
+            return nil
+        }
+        return sessionStore.activePermissionProfileBySessionID[sessionID]
+    }
+
+    func clampPermissionProfileToAvailableOptions() {
+        guard let explicitProfileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty else { return }
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: explicitProfileID) {
+            composerState.applyPermissionMode(
+                builtInMode,
+                sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+            )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            return
+        }
+        guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
+            composerState.resetUnavailablePermissionProfile(
+                sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+            )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            return
+        }
+    }
+
+    var availablePermissionModes: [ComposerPermissionMode] {
+        if selectedSessionRuntimeProviderForModelMenu == "claude" {
+            return [.requestApproval, .readOnly, .autoApprove]
+        }
+        return ComposerPermissionMode.allCases
+    }
+
+    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
+        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
+        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
+        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
+        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
+            ? .autoApprove
+            : mode
+    }
+
+    func clampPermissionSelectionToSelectedSessionRuntime() {
+        let safeMode = safePermissionMode(composerState.permissionMode)
+        guard safeMode != composerState.permissionMode else {
+            return
+        }
+        composerState.applyPermissionMode(
+            safeMode,
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        )
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+}
 import UIKit
 
 enum ComposerTextLayoutPolicy {
@@ -47,7 +210,6 @@ struct ComposerToolbarControlLabel: View {
     let tint: Color?
     let titleMaxWidth: CGFloat?
     let accessibilityLabel: String
-    var showsRestingSurface = true
     var usesPhoneStyle = false
     var usesCondensedTitle = false
 
@@ -55,8 +217,7 @@ struct ComposerToolbarControlLabel: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let cornerRadius: CGFloat = title == nil ? 22 : (usesPhoneStyle ? 20 : 12)
         let surfaceInset: CGFloat = usesPhoneStyle ? 2 : 4
-        // 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
-        let restingForeground = usesPhoneStyle ? tokens.conversationPrimaryText : tokens.primaryText
+        let restingForeground = restingForeground(tokens: tokens)
         let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? restingForeground)
 
         HStack(spacing: 6) {
@@ -101,19 +262,99 @@ struct ComposerToolbarControlLabel: View {
                 .fill(isSelected ? tokens.accent : Color.clear)
                 .padding(surfaceInset)
         }
-        .modifier(
-            ComposerFlatControlSurface(
-                tokens: tokens,
-                cornerRadius: cornerRadius,
-                isEmphasized: isSelected,
-                showsRestingFill: showsRestingSurface,
-                surfaceInset: surfaceInset,
-                usesNeutralControlSurface: usesPhoneStyle
-            )
-        )
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
+    ///
+    /// 键帽底色去掉之后，iPhone 上唯一的纯文字控件（模型标签）如果继续用正文墨色，
+    /// 就会和右侧实心发送键抢同一档视觉重量——一行里两个"最重"的东西。
+    /// 模型名表达的是"当前用什么"这一上下文，不是与发送并列的动作，压到次级灰；
+    /// 图标按钮本身是动作，保持正文墨色。
+    private func restingForeground(tokens: ThemeTokens) -> Color {
+        guard usesPhoneStyle else { return tokens.primaryText }
+        return usesCondensedTitle ? tokens.conversationSecondaryText : tokens.conversationPrimaryText
+    }
+}
+
+/// 权限配置菜单单独形成泛型边界，避免继续放大 ComposerView 已经很长的视图类型。
+struct ComposerPermissionMenu: View {
+    let permissionModes: [ComposerPermissionMode]
+    let permissionProfiles: [CodexAppServerPermissionProfileSummary]
+    let selectedMode: ComposerPermissionMode
+    let selectedProfileID: String?
+    let activeProfileID: String?
+    let permissionAccessibilityValue: String
+    let tint: Color
+    let reduceMotion: Bool
+    let usesPhoneStyle: Bool
+    let onSelectMode: (ComposerPermissionMode) -> Void
+    let onSelectProfile: (CodexAppServerPermissionProfileSummary) -> Void
+
+    var body: some View {
+        Menu {
+            Section(L10n.text("ui.permission_mode")) {
+                ForEach(permissionModes) { mode in
+                    Button {
+                        onSelectMode(mode)
+                    } label: {
+                        Label(mode.title, systemImage: modeIcon(mode))
+                    }
+                    .accessibilityHint(mode.detail)
+                }
+            }
+            if !permissionProfiles.isEmpty {
+                Section(L10n.text("ui.advanced_permission_profiles")) {
+                    ForEach(permissionProfiles) { profile in
+                        Button {
+                            onSelectProfile(profile)
+                        } label: {
+                            Label(profile.id, systemImage: profileIcon(profile))
+                        }
+                        .accessibilityHint(profile.description ?? L10n.text("ui.use_named_permission_profile"))
+                    }
+                }
+            }
+            Section(L10n.text("ui.permission_status")) {
+                if let activeProfileID {
+                    Text(L10n.format("ui.current_turn_permission_value", displayName(for: activeProfileID)))
+                }
+                Text(L10n.format("ui.next_turn_permission_value", selectedPermissionName))
+            }
+        } label: {
+            ComposerToolbarControlLabel(
+                title: selectedProfileID ?? selectedMode.title,
+                systemImage: selectedProfileID == nil ? selectedMode.systemImage : "shield.lefthalf.filled",
+                trailingSystemImage: nil,
+                isSelected: false,
+                tint: tint,
+                titleMaxWidth: nil,
+                accessibilityLabel: L10n.text("ui.permission_mode"),
+                usesPhoneStyle: usesPhoneStyle,
+                usesCondensedTitle: false
+            )
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.permission_mode"))
+        .accessibilityValue(permissionAccessibilityValue)
+    }
+
+    private func modeIcon(_ mode: ComposerPermissionMode) -> String {
+        selectedProfileID == nil && selectedMode == mode ? "checkmark" : mode.systemImage
+    }
+
+    private func profileIcon(_ profile: CodexAppServerPermissionProfileSummary) -> String {
+        selectedProfileID == profile.id ? "checkmark" : "shield.lefthalf.filled"
+    }
+
+    private var selectedPermissionName: String {
+        selectedProfileID.map { displayName(for: $0) } ?? selectedMode.title
+    }
+
+    private func displayName(for profileID: String) -> String {
+        ComposerPermissionMode(builtInPermissionProfileID: profileID)?.title ?? profileID
     }
 }
 
@@ -199,7 +440,7 @@ extension ComposerView {
                 pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                showsPermissionSettings: isPhoneComposer,
+                showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
                 showsCameraAction: showsCameraAttachmentAction,
@@ -263,7 +504,7 @@ extension ComposerView {
             shape.fill(tokens.elevatedSurface)
         } else {
             shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
                 }
@@ -277,7 +518,9 @@ extension ComposerView {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     skillPickerButton
-                    permissionMenu
+                    if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                        permissionMenu
+                    }
                 }
             }
             .scrollIndicators(.hidden)
@@ -699,7 +942,8 @@ extension ComposerView {
     func submitDraftButton(showLabels: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isGoalMode = composerState.isGoalModeSelected
-        let isPlanMode = composerState.isPlanModeSelected
+        let isPlanMode = composerTurnSettingsPolicy.allowsTurnSettingsEditing
+            && composerState.isPlanModeSelected
         let isGuidedFollowUp = !isGoalMode && !isPlanMode && canUseGuidedFollowUp && guidedFollowUpEnabled
         let title: String
         if composerState.voiceDraftNeedsReview {
@@ -748,15 +992,6 @@ extension ComposerView {
                     .fill(fill)
                     .padding(surfaceInset)
             }
-            .modifier(
-                ComposerFlatControlSurface(
-                    tokens: tokens,
-                    cornerRadius: cornerRadius,
-                    isEmphasized: enabled || usesPhonePrimaryStyle,
-                    surfaceInset: surfaceInset,
-                    usesNeutralControlSurface: usesPhonePrimaryStyle
-                )
-            )
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -793,14 +1028,22 @@ extension ComposerView {
     }
 
     var permissionTitle: String {
-        "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
-    }
-
-    var permissionWireSummary: String {
-        "\(composerState.turnOptions.approvalPolicy.rawValue) · \(composerState.turnOptions.approvalsReviewer)"
+        if composerState.turnOptions.preservesThreadPermissionSettings,
+           activePermissionProfile == nil {
+            return L10n.text("ui.follow_the_current_thread_permissions")
+        }
+        if let profileID = selectedPermissionProfileID {
+            return activePermissionProfile.map {
+                L10n.format("ui.current_turn_permission_value", $0.id)
+            } ?? L10n.format("ui.next_turn_permission_value", profileID)
+        }
+        return "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
     }
 
     var permissionTint: Color {
+        if selectedPermissionProfileID != nil {
+            return themeStore.tokens(for: colorScheme).accent
+        }
         switch composerState.permissionMode {
         case .requestApproval:
             return themeStore.tokens(for: colorScheme).accent

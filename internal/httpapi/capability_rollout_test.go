@@ -93,14 +93,23 @@ func TestFileUploadCapabilityRolloutMatrix(t *testing.T) {
 			if capabilityListContains(version.Capabilities, fileUploadCapability) != item.wantDeclared {
 				t.Fatalf("capability 声明不符：%+v", version.Capabilities)
 			}
-			if len(version.CapabilityStatuses) != 1 {
+			if len(version.CapabilityStatuses) != 2 {
 				t.Fatalf("状态声明应覆盖已知可选能力：%+v", version.CapabilityStatuses)
 			}
-			status := version.CapabilityStatuses[0]
+			status := findCapabilityStatus(version.CapabilityStatuses, fileUploadCapability)
 			if status.Name != fileUploadCapability ||
 				status.State != item.wantState ||
 				status.Reason != item.wantReason {
 				t.Fatalf("能力状态不符：%+v", status)
+			}
+			remoteFullAccess := findCapabilityStatus(
+				version.CapabilityStatuses,
+				codexRemoteFullAccessCapability,
+			)
+			if !capabilityListContains(version.Capabilities, codexRemoteFullAccessCapability) ||
+				remoteFullAccess.State != capabilityStateEnabled ||
+				remoteFullAccess.Reason != capabilityReasonAvailable {
+				t.Fatalf("远程完全访问能力未声明：%+v", remoteFullAccess)
 			}
 
 			uploadRecorder := httptest.NewRecorder()
@@ -168,6 +177,28 @@ func TestFileUploadCapabilityRolloutMatrix(t *testing.T) {
 	}
 }
 
+func TestCodexRemoteFullAccessCapabilityCanBeDisabledLocally(t *testing.T) {
+	t.Setenv("AGENTD_FILE_UPLOAD_CACHE_DIR", t.TempDir())
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Capabilities.Disabled = []string{codexRemoteFullAccessCapability}
+	})
+	recorder := httptest.NewRecorder()
+	server.handler.ServeHTTP(
+		recorder,
+		authedRequest(t, http.MethodGet, "/api/version", nil),
+	)
+	var version protocolcontract.VersionResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&version); err != nil {
+		t.Fatal(err)
+	}
+	status := findCapabilityStatus(version.CapabilityStatuses, codexRemoteFullAccessCapability)
+	if capabilityListContains(version.Capabilities, codexRemoteFullAccessCapability) ||
+		status.State != capabilityStateLocallyDisabled ||
+		status.Reason != capabilityReasonDisabledByLocalConfig {
+		t.Fatalf("本地禁用后仍不应向 iOS 授权免审批路径：%+v", version)
+	}
+}
+
 func TestCapabilityDecisionLogContainsStateButNoCredentials(t *testing.T) {
 	t.Setenv("AGENTD_FILE_UPLOAD_CACHE_DIR", t.TempDir())
 	var output bytes.Buffer
@@ -196,6 +227,18 @@ func capabilityListContains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func findCapabilityStatus(
+	statuses []protocolcontract.CapabilityStatus,
+	target string,
+) protocolcontract.CapabilityStatus {
+	for _, status := range statuses {
+		if status.Name == target {
+			return status
+		}
+	}
+	return protocolcontract.CapabilityStatus{}
 }
 
 func findDoctorCheck(checks []doctor.Check, name string) doctor.Check {

@@ -767,8 +767,9 @@ func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t 
 		t.Fatalf("version 响应必须保留移动端所需字段：%v", versionBody)
 	}
 	capabilities, ok := versionBody["capabilities"].([]any)
-	if !ok || len(capabilities) != 1 || capabilities[0] != "file_upload_v1" {
-		t.Fatalf("version 应声明移动端文件上传能力：%v", versionBody)
+	if !ok || !containsJSONCapability(capabilities, fileUploadCapability) ||
+		!containsJSONCapability(capabilities, codexRemoteFullAccessCapability) {
+		t.Fatalf("version 应声明当前移动端能力：%v", versionBody)
 	}
 
 	doctor := httptest.NewRecorder()
@@ -784,6 +785,15 @@ func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t 
 	if !ok || len(checks) == 0 {
 		t.Fatalf("doctor 响应必须包含结构化 checks：%v", doctorBody)
 	}
+}
+
+func containsJSONCapability(values []any, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReadyzRequiresBearerAndReturns503WhenDoctorFails(t *testing.T) {
@@ -814,9 +824,7 @@ func TestReadyzRequiresBearerAndReturns503WhenDoctorFails(t *testing.T) {
 }
 
 func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
-	const upstreamToken = "readyz-independent-upstream-token"
-	upstreamURL, _, connections := fakeAppServerUpstreamWithAuth(t, upstreamToken, nil)
-	tokenFile := testAppServerTokenFile(t, upstreamToken)
+	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		// readiness 只证明当前已启动的服务可承接请求；缺失的 CLI/Claude bridge
 		// 由完整 doctor 报告，不得让高频 readyz 执行外部进程或制造假离线。
@@ -827,10 +835,8 @@ func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
 		}
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
-			Transport:   "ws",
-			Managed:     false,
-			Listen:      upstreamURL,
-			WSTokenFile: tokenFile,
+			Transport: "ssh",
+			SSHTarget: upstreamURL,
 		}
 	})
 

@@ -861,8 +861,12 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }
 
-    func testApprovalPolicyRejectsUnsupportedPersistedValues() {
-        for value in ["never", "granular", "unknown"] {
+    func testApprovalPolicyAcceptsNeverAndRejectsUnsupportedPersistedValues() throws {
+        XCTAssertEqual(
+            try JSONDecoder().decode(CodexAppServerApprovalPolicy.self, from: Data(#""never""#.utf8)),
+            .never
+        )
+        for value in ["granular", "unknown"] {
             XCTAssertThrowsError(
                 try JSONDecoder().decode(
                     CodexAppServerApprovalPolicy.self,
@@ -871,6 +875,38 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 "Mimi 不应静默接受未开放的审批策略：\(value)"
             )
         }
+    }
+
+    func testNoApprovalRequiresExplicitFullAccess() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var fullAccess = CodexAppServerTurnOptions.default
+        fullAccess.approvalPolicy = .never
+        fullAccess.sandboxMode = .dangerFullAccess
+
+        let threadRequest = try builder.threadStart(projectID: project.id, options: fullAccess)
+        XCTAssertEqual(threadRequest.params?.objectValue?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(threadRequest.params?.objectValue?["sandbox"]?.stringValue, "danger-full-access")
+
+        let turnRequest = try builder.turnStart(
+            threadID: "thread-full-access",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "直接执行", options: fullAccess)
+        )
+        XCTAssertEqual(turnRequest.params?.objectValue?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(turnRequest.params?.objectValue?["sandboxPolicy"]?.objectValue?["type"]?.stringValue, "dangerFullAccess")
+
+        var workspace = fullAccess
+        workspace.sandboxMode = .workspaceWrite
+        XCTAssertThrowsError(try builder.threadStart(projectID: project.id, options: workspace))
+
+        var namedWorkspace = fullAccess
+        namedWorkspace.permissionProfileID = ":workspace"
+        XCTAssertThrowsError(try builder.threadStart(projectID: project.id, options: namedWorkspace))
+
+        var namedFullAccess = fullAccess
+        namedFullAccess.permissionProfileID = ":danger-full-access"
+        XCTAssertNoThrow(try builder.threadStart(projectID: project.id, options: namedFullAccess))
     }
 
     func testTurnStartBuilderUsesDefaultCollaborationModeForGoalTurns() throws {
@@ -2502,6 +2538,176 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertEqual(forgedAlways["action"]?.stringValue, "decline")
         XCTAssertEqual(forgedAlways["_meta"], .null)
+    }
+
+    func testNamedPermissionProfileReplacesLegacySandboxFields() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var options = CodexAppServerTurnOptions.default
+        options.permissionProfileID = ":workspace"
+
+        let thread = try builder.threadStart(projectID: project.id, options: options)
+        let threadParams = try XCTUnwrap(thread.params?.objectValue)
+        XCTAssertEqual(threadParams["permissions"]?.stringValue, ":workspace")
+        XCTAssertNil(threadParams["sandbox"])
+
+        let turn = try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "继续", options: options)
+        )
+        let turnParams = try XCTUnwrap(turn.params?.objectValue)
+        XCTAssertEqual(turnParams["permissions"]?.stringValue, ":workspace")
+        XCTAssertNil(turnParams["sandboxPolicy"])
+    }
+
+    func testPreservingThreadPermissionsUsesGatewayMarkerWithoutOverrides() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var options = CodexAppServerTurnOptions.default
+        options.preservesThreadPermissionSettings = true
+
+        let resume = try builder.threadResume(
+            threadID: "thread-1",
+            projectID: project.id,
+            options: options
+        )
+        let resumeParams = try XCTUnwrap(resume.params?.objectValue)
+        XCTAssertEqual(resumeParams["mimiPreserveThreadPermissions"]?.boolValue, true)
+        XCTAssertNil(resumeParams["approvalPolicy"])
+        XCTAssertNil(resumeParams["approvalsReviewer"])
+        XCTAssertNil(resumeParams["permissions"])
+        XCTAssertNil(resumeParams["sandbox"])
+
+        let turn = try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "继续", options: options)
+        )
+        let turnParams = try XCTUnwrap(turn.params?.objectValue)
+        XCTAssertEqual(turnParams["mimiPreserveThreadPermissions"]?.boolValue, true)
+        XCTAssertNil(turnParams["approvalPolicy"])
+        XCTAssertNil(turnParams["approvalsReviewer"])
+        XCTAssertNil(turnParams["permissions"])
+        XCTAssertNil(turnParams["sandboxPolicy"])
+    }
+
+    func testPermissionProfileListFiltersDisallowedAndDuplicateProfiles() {
+        let result: CodexAppServerJSONValue = .object([
+            "data": .array([
+                .object(["id": .string(":workspace"), "allowed": .bool(true), "description": .string("Workspace only")]),
+                .object(["id": .string(":danger"), "allowed": .bool(false)]),
+                .object(["id": .string(":workspace"), "allowed": .bool(true)])
+            ])
+        ])
+        let profiles = CodexAppServerPermissionProfileSummary.parseListResult(result)
+        XCTAssertEqual(profiles.map(\.id), [":workspace"])
+        XCTAssertEqual(profiles.first?.description, "Workspace only")
+    }
+
+    func testPermissionApprovalReturnsValidatedRequestOnlyForAccept() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let requested: CodexAppServerJSONValue = .object([
+            "fileSystem": .object([
+                "entries": .array([
+                    .object([
+                        "access": .string("read"),
+                        "path": .object(["type": .string("path"), "path": .string("/tmp/report.txt")])
+                    ])
+                ])
+            ]),
+            "network": .object(["enabled": .bool(true)])
+        ])
+        let params = ["permissions": requested]
+
+        let accepted = await runtime.approvalResponse(
+            method: "item/permissions/requestApproval",
+            params: params,
+            decision: "accept"
+        )
+        XCTAssertEqual(accepted["permissions"], requested)
+        XCTAssertEqual(accepted["scope"]?.stringValue, "turn")
+        XCTAssertEqual(accepted["strictAutoReview"]?.boolValue, true)
+
+        let declined = await runtime.approvalResponse(
+            method: "item/permissions/requestApproval",
+            params: params,
+            decision: "decline"
+        )
+        XCTAssertEqual(declined["permissions"], .object([:]))
+
+        let invalid = await runtime.approvalResponse(
+            method: "item/permissions/requestApproval",
+            params: ["permissions": .object(["unknown": .bool(true)])],
+            decision: "accept"
+        )
+        XCTAssertEqual(invalid["permissions"], .object([:]))
+    }
+
+    func testApprovalCardsExposePermissionAndNetworkScope() {
+        var projector = CodexAppServerEventProjector()
+        let permissionRequest = CodexAppServerServerRequest(
+            id: .int(171),
+            method: "item/permissions/requestApproval",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "turnId": .string("turn-1"),
+                "itemId": .string("permission-1"),
+                "permissions": .object([
+                    "fileSystem": .object([
+                        "entries": .array([
+                            .object([
+                                "access": .string("write"),
+                                "path": .object([
+                                    "type": .string("special"),
+                                    "value": .object(["kind": .string("project_roots"), "subpath": .string("output")])
+                                ])
+                            ])
+                        ])
+                    ]),
+                    "network": .object(["enabled": .bool(true)])
+                ])
+            ])
+        )
+        guard case .approvalRequest(let permission, _) = projector.project(permissionRequest) else {
+            return XCTFail("expected permission approval")
+        }
+        XCTAssertTrue(permission.body?.contains("WRITE  project_roots: output") == true)
+        XCTAssertTrue(permission.body?.contains(L10n.text("ui.network_access_requested")) == true)
+
+        let commandRequest = CodexAppServerServerRequest(
+            id: .int(172),
+            method: "item/commandExecution/requestApproval",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "turnId": .string("turn-1"),
+                "itemId": .string("command-1"),
+                "command": .string("curl https://example.com"),
+                "networkApprovalContext": .object([
+                    "host": .string("example.com:443"),
+                    "protocol": .string("https")
+                ]),
+                "additionalPermissions": .object([
+                    "fileSystem": .object(["read": .array([.string("/tmp/input")])])
+                ])
+            ])
+        )
+        guard case .approvalRequest(let command, _) = projector.project(commandRequest) else {
+            return XCTFail("expected command approval")
+        }
+        XCTAssertEqual(command.title, L10n.text("ui.agent_requests_network_access"))
+        XCTAssertTrue(command.body?.contains("example.com:443") == true)
+        XCTAssertTrue(command.body?.contains("READ  /tmp/input") == true)
+    }
+
+    func testActivePermissionProfileParsesActualServerValue() {
+        let profile = CodexAppServerActivePermissionProfile(value: .object([
+            "id": .string(":workspace"),
+            "extends": .string(":base")
+        ]))
+        XCTAssertEqual(profile?.id, ":workspace")
+        XCTAssertEqual(profile?.extends, ":base")
+        XCTAssertNil(CodexAppServerActivePermissionProfile(value: .object(["extends": .string(":base")])))
     }
 
     func testProjectorMapsPlanReasoningUsageCompactionNameMCPAndDeprecationNotifications() throws {

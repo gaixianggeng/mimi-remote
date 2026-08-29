@@ -7,14 +7,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        if !name.contains("testLiveSharedDaemonIdleThreadCanContinue") {
-            // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
-            // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
-            app.launchArguments += [
-                "--debug-skip-pairing",
-                "--debug-seed-ui"
-            ]
-        }
+        // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
+        // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
+        app.launchArguments += [
+            "--debug-skip-pairing",
+            "--debug-seed-ui"
+        ]
         if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
             app.launchArguments.append("--debug-seed-mcp-approval-ui")
         }
@@ -57,57 +55,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
-    }
-
-    func testLiveSharedDaemonIdleThreadCanContinue() throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let threadID = environment["MIMI_LIVE_THREAD_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !threadID.isEmpty,
-              let expectedReply = environment["MIMI_LIVE_EXPECTED_REPLY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !expectedReply.isEmpty else {
-            throw XCTSkip("仅在提供真实共享 daemon thread 与预期回复时执行")
-        }
-        let message = environment["MIMI_LIVE_MESSAGE"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? "Reply exactly \(expectedReply). Do not call tools."
-
-        try enterWorkbenchIfNeeded()
-        let targetRow = app.descendant(identifier: "sessions.row.\(threadID)")
-        XCTAssertTrue(
-            targetRow.waitForExistence(timeout: 35),
-            "共享 daemon 新建的真实会话应出现在手机会话列表"
-        )
-        targetRow.tap()
-
-        let input = app.descendant(identifier: "composer.textInput")
-        XCTAssertTrue(input.waitForExistence(timeout: 30), "打开真实会话后应显示 Composer 输入框")
-        input.tap()
-        input.typeText(message)
-
-        let send = app.descendant(identifier: "composer.send")
-        XCTAssertTrue(send.waitForExistence(timeout: 10), "Composer 应显示发送按钮")
-        XCTAssertTrue(send.isEnabled, "输入消息后发送按钮应可用")
-        send.tap()
-
-        let reply = app.descendants(matching: .any)
-            .matching(
-                NSPredicate(
-                    format: "identifier == %@ AND label CONTAINS %@",
-                    "conversation.message.assistant",
-                    expectedReply
-                )
-            )
-            .firstMatch
-        XCTAssertTrue(
-            reply.waitForExistence(timeout: 120),
-            "Desktop 仅打开空闲会话时，真机应能在同一 thread 继续发送并收到回复"
-        )
-
-        for failureText in ["already has an active writer", "-32600", "发送失败", "Sending failed"] {
-            XCTAssertFalse(
-                app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", failureText)).firstMatch.exists,
-                "续写成功后不应出现 writer 冲突或发送失败：\(failureText)"
-            )
-        }
     }
 
     private func openHostInstaller() throws {
@@ -908,14 +855,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
     }
 
-    func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
+    func testSelectedWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,
             "目录移除确认的 popover 锚点只在 iPad regular width 下验收。"
         )
         try relaunchDirectlyIntoWorkspaces()
 
-        let projectID = "debug-sample-app"
+        let projectID = "debug-mimi-demo"
         for (orientation, attachmentName) in [
             (UIDeviceOrientation.landscapeLeft, "landscape-sidebar"),
             (.portrait, "portrait")
@@ -924,11 +871,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
             let source = app.descendant(identifier: "workspace.card.\(projectID)")
             XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区项目胶囊应保持可见")
+            XCTAssertTrue(source.isSelected, "当前选中的工作区应保持选中状态")
             assertMinimumTouchTarget(source, named: "工作区项目胶囊")
             source.press(forDuration: 1.0)
 
             let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
-            XCTAssertTrue(request.waitForExistence(timeout: 6), "长按菜单应提供移除目录入口")
+            XCTAssertTrue(request.waitForExistence(timeout: 6), "当前选中工作区的长按菜单应提供移除目录入口")
             request.tap()
 
             let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
@@ -959,7 +907,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         XCTAssertTrue(
             source.waitForNonExistence(timeout: 8),
-            "确认后只应从当前工作区列表移除 Debug 样例目录"
+            "确认后应从当前工作区列表移除选中的 Debug 样例目录"
         )
     }
 

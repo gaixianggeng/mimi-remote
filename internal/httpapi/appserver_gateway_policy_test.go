@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"log"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,8 +23,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 )
 
 func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
@@ -209,7 +213,7 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 			want: "不允许 file URL",
 		},
 		{
-			name: "local image outside allowlist",
+			name: "missing external local image",
 			payload: map[string]any{
 				"id":     14,
 				"method": "turn/start",
@@ -225,7 +229,7 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 					},
 				},
 			},
-			want: "path 必须来自 projects allowlist",
+			want: "localImage.path",
 		},
 		{
 			name: "blank skill path",
@@ -410,7 +414,297 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
-func TestAppServerGatewayAllowsExplicitFullAccessSandbox(t *testing.T) {
+func TestAppServerGatewayValidatesLocalImageContentAndReadability(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalDir := t.TempDir()
+
+	newParams := func(path string) map[string]any {
+		return map[string]any{
+			"cwd":   projectDir,
+			"input": []any{map[string]any{"type": "localImage", "path": path}},
+		}
+	}
+	validate := func(path string) error {
+		_, err := router.validateGatewayPolicyParams("codex", "turn/start", newParams(path))
+		return err
+	}
+
+	validImages := []struct {
+		name string
+		data []byte
+	}{
+		{name: "image.png", data: gatewayTestLocalImageBytes(t, "png")},
+		{name: "image.jpg", data: gatewayTestLocalImageBytes(t, "jpeg")},
+		{name: "image.gif", data: gatewayTestLocalImageBytes(t, "gif")},
+		{name: "image.webp", data: gatewayTestLocalImageBytes(t, "webp")},
+	}
+	for _, image := range validImages {
+		t.Run("allows "+image.name, func(t *testing.T) {
+			path := filepath.Join(externalDir, image.name)
+			if err := os.WriteFile(path, image.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := validate(path); err != nil {
+				t.Fatalf("可读取的 %s 应放行：%v", image.name, err)
+			}
+			params := newParams(path)
+			if _, err := router.validateGatewayPolicyParams("codex", "turn/start", params); err != nil {
+				t.Fatalf("重复验证 %s 失败：%v", image.name, err)
+			}
+			input := params["input"].([]any)[0].(map[string]any)
+			canonical, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := input["path"]; got != canonical {
+				t.Fatalf("项目外 localImage 应转发 canonical path：got=%v want=%s", got, canonical)
+			}
+		})
+	}
+
+	validTarget := filepath.Join(externalDir, "target.png")
+	if err := os.WriteFile(validTarget, validImages[0].data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("canonical symlink", func(t *testing.T) {
+		validLink := filepath.Join(externalDir, "linked-image")
+		if err := os.Symlink(validTarget, validLink); err != nil {
+			t.Skipf("当前平台不可用符号链接：%v", err)
+		}
+		params := newParams(validLink)
+		if _, err := router.validateGatewayPolicyParams("codex", "turn/start", params); err != nil {
+			t.Fatalf("指向有效 canonical target 的 localImage 应放行：%v", err)
+		}
+		canonicalTarget, err := filepath.EvalSymlinks(validTarget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := params["input"].([]any)[0].(map[string]any)
+		if got := input["path"]; got != canonicalTarget {
+			t.Fatalf("符号链接 localImage 应转发 canonical target：got=%v want=%s", got, canonicalTarget)
+		}
+	})
+
+	invalidText := filepath.Join(externalDir, "renamed-secret.png")
+	if err := os.WriteFile(invalidText, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(invalidText); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+		t.Fatalf("改名的普通文件应被拒绝：%v", err)
+	}
+	projectInvalidText := filepath.Join(projectDir, "renamed-project-secret.png")
+	if err := os.WriteFile(projectInvalidText, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(projectInvalidText); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+		t.Fatalf("项目内改名的普通文件也应被拒绝：%v", err)
+	}
+	headerOnly := filepath.Join(externalDir, "header-only.png")
+	if err := os.WriteFile(headerOnly, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(headerOnly); err == nil {
+		t.Fatal("只有 magic bytes 的伪图片应被拒绝")
+	}
+	truncated := filepath.Join(externalDir, "truncated.png")
+	if err := os.WriteFile(truncated, validImages[0].data[:len(validImages[0].data)-4], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(truncated); err == nil || !strings.Contains(err.Error(), "损坏或不完整") {
+		t.Fatalf("截断图片应被拒绝：%v", err)
+	}
+
+	invalidDir := filepath.Join(externalDir, "image-directory")
+	if err := os.Mkdir(invalidDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(invalidDir); err == nil || !strings.Contains(err.Error(), "普通文件") {
+		t.Fatalf("目录应被拒绝：%v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		fifo := filepath.Join(externalDir, "image-fifo.png")
+		mkfifo, err := exec.LookPath("mkfifo")
+		if err == nil {
+			if output, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
+				t.Fatalf("创建 FIFO 失败：%v output=%s", err, output)
+			}
+			if err := validate(fifo); err == nil || !strings.Contains(err.Error(), "普通文件") {
+				t.Fatalf("FIFO 应在 open 前被拒绝：%v", err)
+			}
+		}
+	}
+
+	missing := filepath.Join(externalDir, "missing.png")
+	if err := validate(missing); err == nil || !strings.Contains(err.Error(), "不存在或不可访问") {
+		t.Fatalf("缺失图片应被拒绝：%v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		unreadable := filepath.Join(externalDir, "unreadable.png")
+		if err := os.WriteFile(unreadable, validImages[0].data, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+		if err := validate(unreadable); err == nil {
+			t.Fatal("当前运行用户不可读的项目外图片应被拒绝")
+		}
+	}
+
+	secretTarget := filepath.Join(externalDir, "secret.txt")
+	if err := os.WriteFile(secretTarget, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("rejects symlink to non-image", func(t *testing.T) {
+		secretLink := filepath.Join(externalDir, "secret.png")
+		if err := os.Symlink(secretTarget, secretLink); err != nil {
+			t.Skipf("当前平台不可用符号链接：%v", err)
+		}
+		if err := validate(secretLink); err == nil || !strings.Contains(err.Error(), "内容不是受支持") {
+			t.Fatalf("指向普通文件的符号链接应按 canonical target 拒绝：%v", err)
+		}
+	})
+}
+
+func gatewayTestLocalImageBytes(t *testing.T, format string) []byte {
+	t.Helper()
+	if format == "webp" {
+		data, err := base64.StdEncoding.DecodeString("UklGRi4AAABXRUJQVlA4ICIAAABQAQCdASoBAAEAAgA0JQBOgCgAAP7zaZTttFpfKgy20+AA")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	var err error
+	switch format {
+	case "png":
+		err = png.Encode(&buf, img)
+	case "jpeg":
+		err = jpeg.Encode(&buf, img, nil)
+	case "gif":
+		err = gif.Encode(&buf, img, nil)
+	default:
+		t.Fatalf("不支持的测试图片格式：%s", format)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestAppServerGatewayForwardsCanonicalExternalLocalImagePath(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-external-image")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	externalDir := t.TempDir()
+	target := filepath.Join(externalDir, "target.png")
+	if err := os.WriteFile(target, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(externalDir, "dragged-photo")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("当前平台不可用符号链接：%v", err)
+	}
+	canonical, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-external-image")
+
+	frames := [][]byte{
+		[]byte(fmt.Sprintf(
+			`{"id":71,"method":"turn/start","params":{"threadId":"thread-external-image","cwd":%q,"input":[{"type":"localImage","path":%q}],"effort":"xhigh","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+			projectDir,
+			link,
+			projectDir,
+		)),
+		[]byte(fmt.Sprintf(
+			`{"id":72,"method":"turn/steer","params":{"threadId":"thread-external-image","expectedTurnId":"turn-1","input":[{"type":"localImage","path":%q}]}}`,
+			link,
+		)),
+	}
+
+	for _, frame := range frames {
+		if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+			t.Fatal(err)
+		}
+		got := readUpstreamFrame(t, received)
+		params := decodeGatewayParamsForTest(t, got)
+		input := params["input"].([]any)[0].(map[string]any)
+		if input["path"] != canonical {
+			t.Fatalf("最终 upstream frame 必须使用 canonical localImage.path：got=%v want=%s frame=%s", input["path"], canonical, got)
+		}
+	}
+}
+
+func TestAppServerGatewayKeepsMentionAllowlistWithExternalLocalImage(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalDir := t.TempDir()
+	imagePath := filepath.Join(externalDir, "external.png")
+	if err := os.WriteFile(imagePath, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mentionPath := filepath.Join(externalDir, "mention.md")
+	if err := os.WriteFile(mentionPath, []byte("mention"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := router.validateGatewayPolicyParams("codex", "turn/start", map[string]any{
+		"cwd": projectDir,
+		"input": []any{
+			map[string]any{"type": "localImage", "path": imagePath},
+			map[string]any{"type": "mention", "path": mentionPath},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "input path 必须来自 projects allowlist") {
+		t.Fatalf("项目外 mention 仍应被拒绝，而有效 localImage 不应放宽 mention：%v", err)
+	}
+}
+
+func TestAppServerGatewayKeepsWritableRootsAllowlistWithExternalLocalImage(t *testing.T) {
+	_, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
+	projects := router.projects.List()
+	if len(projects) != 1 {
+		t.Fatalf("fixture 应包含一个项目，got=%d", len(projects))
+	}
+	projectDir := projects[0].Path
+	externalRoot := filepath.Join(t.TempDir(), "external-writable-root")
+	_, err := router.validateGatewayPolicyParams("codex", "turn/start", map[string]any{
+		"cwd": projectDir,
+		"sandboxPolicy": map[string]any{
+			"type":          "workspaceWrite",
+			"writableRoots": []any{externalRoot},
+			"networkAccess": false,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandboxPolicy.writableRoots 必须来自 projects allowlist") {
+		t.Fatalf("项目外 writableRoots 仍应被拒绝：%v", err)
+	}
+}
+
+func TestAppServerGatewayAllowsExplicitFullAccessWithoutApproval(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-full-access")
@@ -443,8 +737,8 @@ func TestAppServerGatewayAllowsExplicitFullAccessSandbox(t *testing.T) {
 		if sandbox["type"] != "dangerFullAccess" || sandbox["networkAccess"] != false {
 			t.Fatalf("sandboxPolicy 应允许完全访问但禁用网络：%v", sandbox)
 		}
-		if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" {
-			t.Fatalf("完全访问仍应走用户审批：%v", params)
+		if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" {
+			t.Fatalf("显式完全访问应关闭审批：%v", params)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到合法 full access 帧")
@@ -571,7 +865,7 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	defer conn.Close()
 
 	threadStart := []byte(fmt.Sprintf(
-		`{"id":50,"method":"thread/start","params":{"cwd":%q,"sandbox":"custom","approvalsReviewer":"auto_review","permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true}}}`,
+		`{"id":50,"method":"thread/start","params":{"cwd":%q,"sandbox":"custom","approvalsReviewer":"auto_review","runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true}}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, threadStart); err != nil {
@@ -590,7 +884,7 @@ func TestAppServerGatewayRewritesMissingSafeDefaults(t *testing.T) {
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-safe-default")
 
 	turnStart := []byte(fmt.Sprintf(
-		`{"id":51,"method":"turn/start","params":{"threadId":"thread-safe-default","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-failure","approvalsReviewer":"auto_review","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5-codex","reasoning_effort":"high","developer_instructions":null}},"permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"}}}`,
+		`{"id":51,"method":"turn/start","params":{"threadId":"thread-safe-default","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-failure","approvalsReviewer":"auto_review","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5-codex","reasoning_effort":"high","developer_instructions":null}},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"}}}`,
 		projectDir,
 	))
 	if err := conn.WriteMessage(websocket.TextMessage, turnStart); err != nil {
@@ -654,6 +948,7 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 		name           string
 		params         map[string]any
 		workspaceWrite bool
+		fullAccess     bool
 		wantPolicy     string
 		wantReviewer   string
 	}{
@@ -672,6 +967,26 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 			workspaceWrite: true,
 			wantPolicy:     "on-request",
 			wantReviewer:   "auto_review",
+		},
+		{
+			name: "explicit full access without approval",
+			params: map[string]any{
+				"approvalPolicy":    "never",
+				"approvalsReviewer": "user",
+			},
+			fullAccess:   true,
+			wantPolicy:   "never",
+			wantReviewer: "user",
+		},
+		{
+			name: "legacy app full access is normalized without approval",
+			params: map[string]any{
+				"approvalPolicy":    "on-request",
+				"approvalsReviewer": "user",
+			},
+			fullAccess:   true,
+			wantPolicy:   "never",
+			wantReviewer: "user",
 		},
 		{
 			name: "legacy auto review falls back",
@@ -716,7 +1031,7 @@ func TestSanitizedGatewayApprovalAllowsOnlySafeAutoReview(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params, tt.workspaceWrite)
+			gotPolicy, gotReviewer := sanitizedGatewayApproval(tt.params, tt.workspaceWrite, tt.fullAccess)
 			if gotPolicy != tt.wantPolicy || gotReviewer != tt.wantReviewer {
 				t.Fatalf("got %s/%s, want %s/%s", gotPolicy, gotReviewer, tt.wantPolicy, tt.wantReviewer)
 			}
@@ -729,24 +1044,28 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 		name          string
 		threadSandbox string
 		turnSandbox   string
+		wantPolicy    string
 		wantReviewer  string
 	}{
 		{
 			name:          "workspace write keeps auto review",
 			threadSandbox: "workspace-write",
 			turnSandbox:   "workspaceWrite",
+			wantPolicy:    "on-request",
 			wantReviewer:  "auto_review",
 		},
 		{
 			name:          "read only requires user review",
 			threadSandbox: "read-only",
 			turnSandbox:   "readOnly",
+			wantPolicy:    "on-request",
 			wantReviewer:  "user",
 		},
 		{
-			name:          "full access requires user review",
+			name:          "explicit full access disables approval",
 			threadSandbox: "danger-full-access",
 			turnSandbox:   "dangerFullAccess",
+			wantPolicy:    "never",
 			wantReviewer:  "user",
 		},
 	}
@@ -760,7 +1079,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"approvalsReviewer": "auto_review",
 					"sandbox":           tt.threadSandbox,
 				})
-				if threadParams["approvalPolicy"] != "on-request" || threadParams["approvalsReviewer"] != tt.wantReviewer {
+				if threadParams["approvalPolicy"] != tt.wantPolicy || threadParams["approvalsReviewer"] != tt.wantReviewer {
 					t.Fatalf("%s 审批组合异常：%v", method, threadParams)
 				}
 			}
@@ -774,7 +1093,7 @@ func TestGatewayAutoReviewRequiresWorkspaceWriteSandbox(t *testing.T) {
 					"networkAccess": false,
 				},
 			}, "/tmp/project")
-			if turnParams["approvalPolicy"] != "on-request" || turnParams["approvalsReviewer"] != tt.wantReviewer {
+			if turnParams["approvalPolicy"] != tt.wantPolicy || turnParams["approvalsReviewer"] != tt.wantReviewer {
 				t.Fatalf("turn/start 审批组合异常：%v", turnParams)
 			}
 		})
@@ -1000,7 +1319,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
 
-	dangerousTail := `"permissions":{"sandbox":"workspace-write"},"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"},"approvalsReviewer":"auto_review"`
+	dangerousTail := `"runtimeWorkspaceRoots":["/tmp/other"],"dynamicTools":{"shell":true},"environments":{"SECRET":"token"},"config":{"feature":true},"outputSchema":{"type":"object"},"approvalsReviewer":"auto_review"`
 	emptyParamFrames := []string{
 		`{"id":60,"method":"initialize","params":{` + dangerousTail + `}}`,
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
@@ -1162,8 +1481,8 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	}
 	threadReadParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
 	assertGatewayParamsOnly(t, threadReadParams, "threadId", "includeTurns")
-	if threadReadParams["threadId"] != "thread-sanitize" || threadReadParams["includeTurns"] != true {
-		t.Fatalf("thread/read 合法参数应保留：%v", threadReadParams)
+	if threadReadParams["threadId"] != "thread-sanitize" || threadReadParams["includeTurns"] != false {
+		t.Fatalf("thread/read 必须禁用 full-history hydration：%v", threadReadParams)
 	}
 
 	threadTurnsList := []byte(`{"id":650,"method":"thread/turns/list","params":{"threadId":"thread-sanitize","limit":40,"cursor":"older","sortDirection":"desc","itemsView":"full",` + dangerousTail + `}}`)
@@ -1510,11 +1829,8 @@ func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *test
 		id := index + 100
 		payload := []byte(fmt.Sprintf(`{"id":%d,"method":%q,"params":{}}`, id, method))
 		_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
-		if forward || policyErr == nil || !strings.Contains(policyErr.message, "尚未被移动端支持") {
-			t.Fatalf("未支持 server request 应 fail-closed method=%s forward=%v err=%+v", method, forward, policyErr)
-		}
-		if policyErr.data["reason"] != "unsupported_server_request" || policyErr.data["method"] != method {
-			t.Fatalf("未支持 server request 错误数据异常 method=%s data=%v", method, policyErr.data)
+		if forward || policyErr != nil {
+			t.Fatalf("未支持 server request 应保持沉默 method=%s forward=%v err=%+v", method, forward, policyErr)
 		}
 	}
 }
@@ -1562,24 +1878,14 @@ func TestAppServerGatewayRejectsUnsupportedServerRequestBackToUpstream(t *testin
 		t.Fatalf("initialize 应先转发给 upstream：got=%s", got)
 	}
 
-	upstreamError := readUpstreamFrame(t, received)
-	var frame struct {
-		ID    json.RawMessage `json:"id"`
-		Error struct {
-			Code    int            `json:"code"`
-			Message string         `json:"message"`
-			Data    map[string]any `json:"data"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(upstreamError, &frame); err != nil {
-		t.Fatalf("upstream error 不是合法 JSON：%v raw=%s", err, upstreamError)
-	}
-	if string(frame.ID) != `"clock-1"` || frame.Error.Code != appServerPolicyErrorCode || frame.Error.Data["reason"] != "unsupported_server_request" {
-		t.Fatalf("gateway 应向 upstream 返回同 id fail-closed error：%s", upstreamError)
+	select {
+	case upstreamReply := <-received:
+		t.Fatalf("未知私有请求必须保持沉默，不能回复 upstream：%s", upstreamReply)
+	case <-time.After(150 * time.Millisecond):
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
 	if _, payload, err := conn.ReadMessage(); err == nil {
-		t.Fatalf("未支持 server request 不应转发给移动端：%s", payload)
+		t.Fatalf("未知私有请求不能转发给移动端：%s", payload)
 	}
 }
 
@@ -1627,6 +1933,231 @@ func TestAppServerGatewayRewritesPermissionsApprovalResponse(t *testing.T) {
 	}
 	if bytes.Contains(got, []byte("danger-full-access")) || bytes.Contains(got, []byte("networkAccess")) {
 		t.Fatalf("permissions approval response 不应透传危险权限：%s", got)
+	}
+}
+
+func TestAppServerGatewayForwardsOnlyRequestedPermissionSubset(t *testing.T) {
+	requestedPermissions := `{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}},{"access":"write","path":{"type":"special","value":{"kind":"project_roots","subpath":"output"}}}]},"network":{"enabled":true}}`
+	var sentApprovalRequest atomic.Bool
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		if sentApprovalRequest.Swap(true) {
+			return
+		}
+		request := []byte(`{"id":"perm-subset","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"perm-1","permissions":` + requestedPermissions + `}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
+		}
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	_ = readGatewayRaw(t, conn)
+
+	response := []byte(`{"id":"perm-subset","result":{"permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}}]}},"scope":"session","strictAutoReview":false}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, response); err != nil {
+		t.Fatal(err)
+	}
+	got := readUpstreamFrame(t, received)
+	result := decodeGatewayResultForTest(t, got)
+	permissions, ok := result["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions response 应保留合法子集：%s", got)
+	}
+	fileSystem, ok := permissions["fileSystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions response 应保留文件权限：%s", got)
+	}
+	entries, ok := fileSystem["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("permissions response 只能保留用户确认的一个条目：%s", got)
+	}
+	if _, exists := permissions["network"]; exists {
+		t.Fatalf("未确认的网络权限不应被授予：%s", got)
+	}
+	if result["scope"] != "turn" || result["strictAutoReview"] != true {
+		t.Fatalf("授权范围必须固定为当前 turn：%s", got)
+	}
+}
+
+func TestAppServerGatewayDropsOverGrantedPermissions(t *testing.T) {
+	var sentApprovalRequest atomic.Bool
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		if sentApprovalRequest.Swap(true) {
+			return
+		}
+		request := []byte(`{"id":"perm-overgrant","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"perm-1","permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/requested.txt"}}]}}}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
+		}
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	_ = readGatewayRaw(t, conn)
+
+	response := []byte(`{"id":"perm-overgrant","result":{"permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/not-requested.txt"}}]}}}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, response); err != nil {
+		t.Fatal(err)
+	}
+	got := readUpstreamFrame(t, received)
+	permissions, ok := decodeGatewayResultForTest(t, got)["permissions"].(map[string]any)
+	if !ok || len(permissions) != 0 {
+		t.Fatalf("越过原请求范围的响应必须 fail-closed：%s", got)
+	}
+}
+
+func TestAppServerGatewayForwardsPermissionProfileListForAllowlistedCWD(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
+	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	request := []byte(fmt.Sprintf(
+		`{"id":170,"method":"permissionProfile/list","params":{"cwd":%q,"limit":25,"cursor":"next-page","unknown":"drop"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, params, "cwd", "limit", "cursor")
+	if params["cwd"] != projectDir || params["cursor"] != "next-page" {
+		t.Fatalf("permissionProfile/list 必须绑定当前授权工作区：%v", params)
+	}
+	if limit, ok := gatewayJSONNumberInt64(params["limit"]); !ok || limit != 25 {
+		t.Fatalf("permissionProfile/list.limit 应保留受控分页值：%v", params)
+	}
+}
+
+func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-profile")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-profile")
+
+	request := []byte(fmt.Sprintf(
+		`{"id":171,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"use profile"}],"permissions":":workspace","approvalPolicy":"on-request","approvalsReviewer":"user"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	if params["permissions"] != ":workspace" {
+		t.Fatalf("turn/start 应保留命名权限档案：%v", params)
+	}
+	if _, exists := params["sandboxPolicy"]; exists {
+		t.Fatalf("命名权限档案不能与 sandboxPolicy 同时发送：%v", params)
+	}
+
+	fullAccess := []byte(fmt.Sprintf(
+		`{"id":1711,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"full access"}],"permissions":":danger-full-access","approvalPolicy":"on-request","approvalsReviewer":"user"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, fullAccess); err != nil {
+		t.Fatal(err)
+	}
+	fullAccessParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	if fullAccessParams["permissions"] != ":danger-full-access" || fullAccessParams["approvalPolicy"] != "never" {
+		t.Fatalf("内建完全访问档案应保留无审批组合：%v", fullAccessParams)
+	}
+
+	conflict := []byte(fmt.Sprintf(
+		`{"id":172,"method":"turn/start","params":{"threadId":"thread-profile","cwd":%q,"input":[{"type":"text","text":"conflict"}],"permissions":":workspace","sandboxPolicy":{"type":"readOnly"}}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, conflict); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "不能与 sandboxPolicy 同时发送") {
+		t.Fatalf("permissions 与 sandboxPolicy 冲突必须拒绝：%+v", errFrame)
+	}
+}
+
+func TestAppServerGatewayPreservesExistingThreadSettingsWithoutForwardingMarker(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-preserve")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-preserve")
+
+	conflict := []byte(fmt.Sprintf(
+		`{"id":173,"method":"turn/start","params":{"threadId":"thread-preserve","cwd":%q,"input":[{"type":"text","text":"conflict"}],"mimiPreserveThreadPermissions":true,"approvalPolicy":"on-request"}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, conflict); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "不能与 approvalPolicy 同时发送") {
+		t.Fatalf("沿用 Thread 权限不能夹带覆盖值：%+v", errFrame)
+	}
+
+	request := []byte(fmt.Sprintf(
+		`{"id":174,"method":"turn/start","params":{"threadId":"thread-preserve","cwd":%q,"input":[{"type":"text","text":"preserve"}],"mimiPreserveThreadPermissions":true}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "effort")
+	if params["threadId"] != "thread-preserve" || params["cwd"] != projectDir {
+		t.Fatalf("turn/start 必须保留 Thread 与授权工作区：%v", params)
+	}
+	if _, exists := params["approvalPolicy"]; exists {
+		t.Fatalf("turn/start 沿用 Thread 设置时不得改写审批策略：%v", params)
+	}
+	if _, exists := params["approvalsReviewer"]; exists {
+		t.Fatalf("turn/start 沿用 Thread 设置时不得改写审批人：%v", params)
+	}
+
+	resumeParams := sanitizedGatewayThreadParams("codex", "thread/resume", map[string]any{
+		"threadId":                            "thread-preserve",
+		"cwd":                                 projectDir,
+		"initialTurnsPage":                    map[string]any{"limit": float64(5), "itemsView": "summary"},
+		gatewayPreserveThreadPermissionsParam: true,
+	})
+	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage")
+
+	settingsParams := sanitizedGatewayThreadSettingsParams("codex", map[string]any{
+		"threadId": "thread-preserve", "approvalPolicy": "on-request", "approvalsReviewer": "user",
+	}, projectDir)
+	assertGatewayParamsOnly(t, settingsParams, "threadId", "approvalPolicy", "approvalsReviewer")
+	if settingsParams["approvalPolicy"] != "on-request" || settingsParams["approvalsReviewer"] != "user" {
+		t.Fatalf("只有显式 thread/settings/update 才应改写共享审批设置：%v", settingsParams)
 	}
 }
 
@@ -1741,8 +2272,8 @@ func TestClaudeGatewayRejectsUnknownReverseRequest(t *testing.T) {
 	policy := &appServerGatewayPolicy{runtimeID: "claude"}
 	request := []byte(`{"id":"unknown-1","method":"claude/private/request","params":{}}`)
 	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
-	if forward || policyErr == nil || policyErr.data["reason"] != "unsupported_server_request" {
-		t.Fatalf("Claude 未知反向请求应 fail closed：forward=%t err=%+v", forward, policyErr)
+	if forward || policyErr != nil {
+		t.Fatalf("Claude 未知反向请求应保持沉默：forward=%t err=%+v", forward, policyErr)
 	}
 }
 
@@ -1897,7 +2428,7 @@ func TestAppServerGatewayForwardsModelList(t *testing.T) {
 	}
 }
 
-func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
+func TestAppServerGatewayPreservesStructuredUserInputWhileCanonicalizingLocalImage(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-structured")
@@ -1912,7 +2443,7 @@ func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(userSkillPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(localImage, []byte("png"), 0o600); err != nil {
+	if err := os.WriteFile(localImage, gatewayTestLocalImageBytes(t, "png"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(userSkillPath, []byte("skill"), 0o600); err != nil {
@@ -1938,8 +2469,23 @@ func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
 
 	select {
 	case got := <-received:
-		if !bytes.Equal(got, authorized) {
-			t.Fatalf("结构化 input 必须原样转发：got=%s want=%s", got, authorized)
+		var gotFrame map[string]any
+		if err := json.Unmarshal(got, &gotFrame); err != nil {
+			t.Fatalf("解析 upstream frame 失败：%v frame=%s", err, got)
+		}
+		var wantFrame map[string]any
+		if err := json.Unmarshal(authorized, &wantFrame); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := filepath.EvalSymlinks(localImage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantParams := wantFrame["params"].(map[string]any)
+		wantInput := wantParams["input"].([]any)[2].(map[string]any)
+		wantInput["path"] = canonical
+		if !reflect.DeepEqual(gotFrame, wantFrame) {
+			t.Fatalf("结构化 input 除 canonical localImage.path 外必须保持不变：got=%s want=%v", got, wantFrame)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到结构化 input 帧")
@@ -2049,424 +2595,6 @@ func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 	notification := readGatewayRaw(t, conn)
 	if !bytes.Equal(notification, upstreamNotification) {
 		t.Fatalf("upstream notification 必须原样返回：got=%s want=%s", notification, upstreamNotification)
-	}
-}
-
-func TestAppServerGatewayRegistersOnlyValidatedCodexTurnStarts(t *testing.T) {
-	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
-	recorder := &recordingExternalActivitySource{}
-	router.externalActivity = recorder
-	scope, ok := router.gatewayScopeForPath(projectDir)
-	if !ok {
-		t.Fatal("测试项目目录应命中 gateway scope")
-	}
-	newPolicy := func(runtimeID string) *appServerGatewayPolicy {
-		return &appServerGatewayPolicy{
-			router:    router,
-			runtimeID: runtimeID,
-			allowedThreads: map[string]appServerGatewayAllowedThread{
-				"thread-1": {
-					id: "thread-1", runtimeID: runtimeID, cwd: projectDir, scopeID: scope.id,
-				},
-			},
-		}
-	}
-	turnStart := func(id int, clientID string, networkAccess bool) []byte {
-		clientField := ""
-		if clientID != "" {
-			clientField = fmt.Sprintf(`,"clientUserMessageId":%q`, clientID)
-		}
-		return []byte(fmt.Sprintf(
-			`{"id":%d,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}]%s,"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":%t}}}`,
-			id,
-			projectDir,
-			clientField,
-			projectDir,
-			networkAccess,
-		))
-	}
-
-	forwarded, policyErr := newPolicy("codex").validateClientFrame(
-		websocket.TextMessage,
-		turnStart(1, "client-ipad", false),
-	)
-	if policyErr != nil || !bytes.Contains(forwarded, []byte(`"clientUserMessageId":"client-ipad"`)) {
-		t.Fatalf("合法 Codex turn/start 应完成安全改写并转发：err=%+v payload=%s", policyErr, forwarded)
-	}
-	if len(recorder.registrations) != 1 ||
-		recorder.registrations[0].threadID != "thread-1" ||
-		recorder.registrations[0].clientUserMessageID != "client-ipad" {
-		t.Fatalf("合法 Codex turn/start 应登记精确关联 ID：%+v", recorder.registrations)
-	}
-
-	if _, policyErr := newPolicy("codex").validateClientFrame(
-		websocket.TextMessage,
-		turnStart(2, "client-invalid", true),
-	); policyErr == nil {
-		t.Fatal("networkAccess=true 的非法 turn/start 应被拒绝")
-	}
-	if len(recorder.registrations) != 1 {
-		t.Fatalf("未通过策略校验的 turn/start 不应登记：%+v", recorder.registrations)
-	}
-
-	if _, policyErr := newPolicy("codex").validateClientFrame(
-		websocket.TextMessage,
-		turnStart(3, "", false),
-	); policyErr != nil {
-		t.Fatalf("缺 clientUserMessageId 仍可由上游处理，但不能作为 ownership 证据：%+v", policyErr)
-	}
-	if len(recorder.registrations) != 1 {
-		t.Fatalf("缺 clientUserMessageId 的 turn/start 不应登记：%+v", recorder.registrations)
-	}
-
-	steer := []byte(`{"id":4,"method":"turn/steer","params":{"threadId":"thread-1","expectedTurnId":"turn-1","clientUserMessageId":"client-steer","input":[{"type":"text","text":"继续"}]}}`)
-	if _, policyErr := newPolicy("codex").validateClientFrame(websocket.TextMessage, steer); policyErr != nil {
-		t.Fatalf("合法 turn/steer 应继续转发：%+v", policyErr)
-	}
-	if len(recorder.registrations) != 1 {
-		t.Fatalf("turn/steer 不是新 turn ownership 证据，不应登记：%+v", recorder.registrations)
-	}
-
-	if _, policyErr := newPolicy("claude").validateClientFrame(
-		websocket.TextMessage,
-		turnStart(5, "client-claude", false),
-	); policyErr != nil {
-		t.Fatalf("合法 Claude turn/start 应继续转发：%+v", policyErr)
-	}
-	if len(recorder.registrations) != 1 {
-		t.Fatalf("Claude turn/start 不属于 Codex rollout 跟踪，不应登记：%+v", recorder.registrations)
-	}
-}
-
-func TestAppServerGatewayRejectsWritesWhileCodexDesktopTurnIsActive(t *testing.T) {
-	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
-	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
-		ThreadID: "thread-1",
-		Source:   "codex_desktop",
-		State:    "running",
-	}}}
-	scope, ok := router.gatewayScopeForPath(projectDir)
-	if !ok {
-		t.Fatal("测试项目目录应命中 gateway scope")
-	}
-	policy := &appServerGatewayPolicy{
-		router:    router,
-		runtimeID: "codex",
-		allowedThreads: map[string]appServerGatewayAllowedThread{
-			"thread-1": {
-				id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
-			},
-		},
-	}
-	payload := []byte(fmt.Sprintf(
-		`{"id":41,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"clientUserMessageId":"client-ipad","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
-		projectDir,
-		projectDir,
-	))
-
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, payload)
-	if len(forwarded) != 0 || policyErr == nil {
-		t.Fatalf("Desktop active turn 必须在转发前拒绝：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	if got := policyErr.data["reason"]; got != "external_thread_active" {
-		t.Fatalf("错误必须携带稳定 reason：got=%v data=%v", got, policyErr.data)
-	}
-	if accepted, ok := policyErr.data["accepted"].(bool); !ok || accepted {
-		t.Fatalf("转发前拒绝必须声明 accepted=false：data=%v", policyErr.data)
-	}
-	if !gatewayMethodRequiresExternalIdle("turn/start") || gatewayMethodRequiresExternalIdle("thread/resume") {
-		t.Fatal("active turn 只阻止写操作，thread/resume 仍须可用于只读观察")
-	}
-}
-
-func TestAppServerGatewaySharedModeFailsClosedWhenDesktopActivityIsUnavailable(t *testing.T) {
-	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
-	router.cfg.AppServer.Transport = "unix"
-	router.externalActivity = stubExternalActivitySource{err: errors.New("state database locked")}
-	scope, ok := router.gatewayScopeForPath(projectDir)
-	if !ok {
-		t.Fatal("测试项目目录应命中 gateway scope")
-	}
-	policy := &appServerGatewayPolicy{
-		router:    router,
-		runtimeID: "codex",
-		allowedThreads: map[string]appServerGatewayAllowedThread{
-			"thread-1": {
-				id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id,
-			},
-		},
-	}
-	payload := []byte(fmt.Sprintf(
-		`{"id":42,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"clientUserMessageId":"client-ipad","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
-		projectDir,
-		projectDir,
-	))
-
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, payload)
-	if len(forwarded) != 0 || policyErr == nil {
-		t.Fatalf("共享 runtime 无法判断 Desktop 活动时必须在转发前拒绝：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	if got := policyErr.data["reason"]; got != "external_activity_unavailable" {
-		t.Fatalf("应返回可区分的观测失败 reason：got=%v data=%v", got, policyErr.data)
-	}
-	if accepted, ok := policyErr.data["accepted"].(bool); !ok || accepted {
-		t.Fatalf("观测失败发生在转发前，必须声明 accepted=false：data=%v", policyErr.data)
-	}
-
-	// 独立 WS 后端不存在共享 writer，SQLite 观测失败不能阻断原有发送路径。
-	router.cfg.AppServer.Transport = "ws"
-	if err := policy.guardExternalDesktopThread("turn/start", map[string]any{"threadId": "thread-1"}); err != nil {
-		t.Fatalf("独立 WS 模式应继续 fail-open：%v", err)
-	}
-}
-
-func TestAppServerGatewayRejectsReverseResponseWhileCodexDesktopTurnIsActive(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
-	router.cfg.AppServer.Transport = "unix"
-	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
-		ThreadID: "thread-1",
-		Source:   "codex_desktop",
-		State:    "running",
-	}}}
-	policy := &appServerGatewayPolicy{
-		router:                router,
-		runtimeID:             "codex",
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-	}
-	request := []byte(`{"id":"approval-active","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}}`)
-	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
-		t.Fatalf("反向审批 request 应先以只读卡片转发：forward=%t err=%+v", forward, policyErr)
-	}
-
-	response := []byte(`{"id":"approval-active","result":{"decision":"accept"}}`)
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
-	if len(forwarded) != 0 || policyErr == nil {
-		t.Fatalf("Desktop active turn 的反向 response 必须拒绝：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	if policyErr.data["reason"] != "external_thread_active" ||
-		policyErr.data["response_to_server_request"] != true ||
-		policyErr.data["thread_id"] != "thread-1" {
-		t.Fatalf("反向拒绝必须携带移动端恢复卡片所需字段：%v", policyErr.data)
-	}
-	id := json.RawMessage(`"approval-active"`)
-	if _, ok := policy.pendingServerRequest(&id); !ok {
-		t.Fatal("策略拒绝后必须保留 pending，等待 Desktop 空闲后重试")
-	}
-
-	// 同一个 outstanding request 在 Desktop turn 完成后可以重试；成功后才消费。
-	router.externalActivity = stubExternalActivitySource{}
-	forwarded, policyErr = policy.validateClientFrame(websocket.TextMessage, response)
-	if policyErr != nil || !bytes.Equal(forwarded, response) {
-		t.Fatalf("Desktop 空闲后应允许原 response 重试：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	if _, ok := policy.pendingServerRequest(&id); ok {
-		t.Fatal("成功转发后必须消费 pending")
-	}
-}
-
-func TestAppServerGatewayAllowsOwnedReverseResponseAfterClaimTTLReclassification(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
-	router.cfg.AppServer.Transport = "unix"
-	activity := &gatewayOwnedExternalActivitySource{
-		threadID: "thread-ipad",
-		turnID:   "turn-ipad",
-	}
-	router.externalActivity = activity
-	policy := &appServerGatewayPolicy{
-		router:                router,
-		runtimeID:             "codex",
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-	}
-	request := []byte(`{"id":"approval-long","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
-	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
-		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
-	}
-	id := json.RawMessage(`"approval-long"`)
-	pending, ok := policy.pendingServerRequest(&id)
-	if !ok || !pending.gatewayOwnedTurn {
-		t.Fatalf("pending 必须捕获 request 创建时的精确 gateway turn 归属：pending=%+v ok=%t", pending, ok)
-	}
-
-	// 模拟 40 分钟 claim TTL 到期：tracker 会把仍在等待审批的同一 turn
-	// 保守重分类为 codex_desktop，但它不是一个新的 Mac writer。
-	activity.activities = []codexhistory.ExternalActivity{{
-		ThreadID: "thread-ipad",
-		TurnID:   "turn-ipad",
-		Source:   "codex_desktop",
-		State:    "running",
-	}}
-	response := []byte(`{"id":"approval-long","result":{"decision":"accept"}}`)
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
-	if policyErr != nil || !bytes.Equal(forwarded, response) {
-		t.Fatalf("原 gateway turn 的长时间 pending response 不应被 TTL 永久锁死：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-}
-
-func TestAppServerGatewayOwnedReverseResponseStillRejectsDifferentDesktopTurn(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
-	router.cfg.AppServer.Transport = "unix"
-	activity := &gatewayOwnedExternalActivitySource{
-		threadID: "thread-ipad",
-		turnID:   "turn-ipad",
-	}
-	router.externalActivity = activity
-	policy := &appServerGatewayPolicy{
-		router:                router,
-		runtimeID:             "codex",
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-	}
-	request := []byte(`{"id":"approval-stale","method":"item/fileChange/requestApproval","params":{"threadId":"thread-ipad","turnId":"turn-ipad","itemId":"item-1"}}`)
-	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
-		t.Fatalf("gateway-owned 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
-	}
-
-	activity.activities = []codexhistory.ExternalActivity{{
-		ThreadID: "thread-ipad",
-		TurnID:   "turn-mac-new",
-		Source:   "codex_desktop",
-		State:    "running",
-	}}
-	response := []byte(`{"id":"approval-stale","result":{"decision":"accept"}}`)
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
-	if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != "external_thread_active" {
-		t.Fatalf("新的 Mac turn 必须继续阻止旧 gateway response：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	id := json.RawMessage(`"approval-stale"`)
-	if _, ok := policy.pendingServerRequest(&id); !ok {
-		t.Fatal("被新的 Mac turn 拒绝后必须保留 pending，不能丢失上游请求")
-	}
-}
-
-func TestAppServerGatewayLegacyApprovalUsesConversationIDForExternalWriterGuard(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
-	router.cfg.AppServer.Transport = "unix"
-	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
-		ThreadID: "thread-legacy",
-		Source:   "codex_desktop",
-		State:    "running",
-	}}}
-	policy := &appServerGatewayPolicy{
-		router:                router,
-		runtimeID:             "codex",
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-	}
-	request := []byte(`{"id":"legacy-approval","method":"execCommandApproval","params":{"conversationId":"thread-legacy","callId":"call-1","command":["rm","tmp"]}}`)
-	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
-		t.Fatalf("legacy 反向审批 request 应正常登记：forward=%t err=%+v", forward, policyErr)
-	}
-
-	response := []byte(`{"id":"legacy-approval","result":{"decision":"denied"}}`)
-	forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, response)
-	if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != "external_thread_active" ||
-		policyErr.data["thread_id"] != "thread-legacy" {
-		t.Fatalf("conversationId 必须映射到共享 writer guard：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-	id := json.RawMessage(`"legacy-approval"`)
-	if _, ok := policy.pendingServerRequest(&id); !ok {
-		t.Fatal("legacy 审批被 guard 拒绝后必须保留 pending")
-	}
-
-	router.externalActivity = stubExternalActivitySource{}
-	forwarded, policyErr = policy.validateClientFrame(websocket.TextMessage, response)
-	if policyErr != nil || !bytes.Equal(forwarded, response) {
-		t.Fatalf("Desktop 空闲后 legacy 审批应可重试：forwarded=%s err=%+v", forwarded, policyErr)
-	}
-}
-
-func TestAppServerGatewaySharedReverseResponseFailsClosedWithoutReliableThreadActivity(t *testing.T) {
-	tests := []struct {
-		name          string
-		transport     string
-		threadParams  string
-		activity      externalActivitySource
-		response      string
-		wantReason    string
-		wantForwarded bool
-	}{
-		{
-			name:         "observer missing",
-			transport:    "unix",
-			threadParams: `"threadId":"thread-1",`,
-			response:     `{"id":"reverse-1","result":{"decision":"accept"}}`,
-			wantReason:   "external_activity_unavailable",
-		},
-		{
-			name:         "observer error",
-			transport:    "unix",
-			threadParams: `"threadId":"thread-1",`,
-			activity:     stubExternalActivitySource{err: errors.New("state database locked")},
-			response:     `{"id":"reverse-1","result":{"decision":"accept"}}`,
-			wantReason:   "external_activity_unavailable",
-		},
-		{
-			name:       "missing thread scope",
-			transport:  "unix",
-			activity:   stubExternalActivitySource{},
-			response:   `{"id":"reverse-1","result":{"decision":"accept"}}`,
-			wantReason: "external_activity_unavailable",
-		},
-		{
-			name:          "idle shared thread",
-			transport:     "unix",
-			threadParams:  `"threadId":"thread-1",`,
-			activity:      stubExternalActivitySource{},
-			response:      `{"id":"reverse-1","result":{"decision":"accept"}}`,
-			wantForwarded: true,
-		},
-		{
-			name:          "independent websocket keeps old behavior",
-			transport:     "ws",
-			threadParams:  `"threadId":"thread-1",`,
-			response:      `{"id":"reverse-1","result":{"decision":"accept"}}`,
-			wantForwarded: true,
-		},
-		{
-			name:         "error response is also a write",
-			transport:    "unix",
-			threadParams: `"threadId":"thread-1",`,
-			activity: stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{
-				ThreadID: "thread-1",
-				Source:   "codex_desktop",
-				State:    "running",
-			}}},
-			response:   `{"id":"reverse-1","error":{"code":-1,"message":"declined"}}`,
-			wantReason: "external_thread_active",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, router, _ := buildAppServerGatewayFixture(t, "", nil)
-			router.cfg.AppServer.Transport = test.transport
-			router.externalActivity = test.activity
-			policy := &appServerGatewayPolicy{
-				router:                router,
-				runtimeID:             "codex",
-				pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-			}
-			request := []byte(`{"id":"reverse-1","method":"item/fileChange/requestApproval","params":{` + test.threadParams + `"turnId":"turn-1","itemId":"item-1"}}`)
-			if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
-				t.Fatalf("登记反向 request 失败：forward=%t err=%+v", forward, policyErr)
-			}
-
-			forwarded, policyErr := policy.validateClientFrame(websocket.TextMessage, []byte(test.response))
-			id := json.RawMessage(`"reverse-1"`)
-			if test.wantForwarded {
-				if policyErr != nil || !bytes.Equal(forwarded, []byte(test.response)) {
-					t.Fatalf("response 应保持原行为：forwarded=%s err=%+v", forwarded, policyErr)
-				}
-				if _, ok := policy.pendingServerRequest(&id); ok {
-					t.Fatal("成功 response 应消费 pending")
-				}
-				return
-			}
-			if len(forwarded) != 0 || policyErr == nil || policyErr.data["reason"] != test.wantReason {
-				t.Fatalf("shared response 应 fail closed：forwarded=%s err=%+v", forwarded, policyErr)
-			}
-			if _, ok := policy.pendingServerRequest(&id); !ok {
-				t.Fatal("拒绝 response 不得消费 pending")
-			}
-		})
 	}
 }
 

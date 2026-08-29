@@ -78,7 +78,6 @@ final class SessionStore: ObservableObject {
             synchronizeCarStatusSnapshot()
         }
     }
-    @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
@@ -104,6 +103,12 @@ final class SessionStore: ObservableObject {
     @Published var selectedSessionID: String?
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
+    /// 系统搜索框是否处于激活态（聚焦/展开），与 `isSessionSearchActive` 不同：
+    /// 后者按查询是否非空判定，聚焦但没输入时仍是 false，盖不住"键盘已弹出"这一段。
+    /// iPad 紧凑布局的设备入口是画在 TabView 上的浮层，不归导航栏管，搜索激活时
+    /// 系统会收起 Tab 胶囊和顶栏按钮，浮层却留在原地被搜索框压住，所以需要这个信号。
+    @Published var isSessionSearchPresented = false
+
     @Published var sessionSearchQuery = "" {
         didSet {
             guard oldValue != sessionSearchQuery else {
@@ -138,6 +143,9 @@ final class SessionStore: ObservableObject {
     @Published var isUpdatingThreadGoal = false
     @Published var threadGoalErrorMessage: String?
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
+    @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
+    @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
+    @Published var isRefreshingPermissionProfiles = false
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
@@ -199,7 +207,16 @@ final class SessionStore: ObservableObject {
     @Published var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
+    /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
+    /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。
+    @Published var activeWriterConflictLeases: Set<HostSessionLease> = []
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
+    /// 同一 Session 可连续提交多次权限变更；必须按提交顺序逐条等待精确 turn/started。
+    @Published var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:]
+    /// 明确拒绝的消息离开队列后，仍持久化重试所需的 fresh-turn 权限快照。
+    @Published var permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary] = [:]
+    /// 用于让当前 Composer 收到“哪个已提交快照真正开始”的通知；非当前会话仍先更新 cache。
+    @Published var latestSatisfiedPermissionTurnBoundary: PendingPermissionTurnBoundary?
     @Published var queuedTurnStorageErrorMessage: String?
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
@@ -265,6 +282,8 @@ final class SessionStore: ObservableObject {
     // 模型与推理强度按会话保留，但只存在当前连接的内存生命周期内。
     // 与内容草稿分开后，空输入或发送成功也不会误删模型偏好。
     var composerModelSelectionCache = ComposerModelSelectionCache()
+    // 权限选择按会话保留；未显式选择的既有 Thread 使用“沿用服务端当前设置”。
+    var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -303,7 +322,6 @@ final class SessionStore: ObservableObject {
     let sessionListSleep: (UInt64) async -> Void
     let sessionSearchDebounceNanoseconds: UInt64
     let sessionSearchSleep: (UInt64) async throws -> Void
-    let externalActivitySleep: (UInt64) async -> Void
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
@@ -329,24 +347,6 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
-    // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
-    // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
-    var externalReadOnlySessionIDs: Set<SessionID> = []
-    // 记录外部活动 revision 已被哪一轮历史快照覆盖。不能只比较轮询快照的前后 revision：
-    // 历史请求失败时也会更新 externalActivityBySessionID，若没有独立水位，同一 revision 将永久漏补。
-    var externalActivityHistoryRevisionBySessionID: [SessionID: String] = [:]
-    // full 不可用后，economy 成功处理到哪一版 revision；同 revision 不重复，失败则可重试。
-    var externalActivityHistoryAttemptBySessionID: [SessionID: ExternalActivityHistoryAttempt] = [:]
-    // fallback 以 turn 为作用域：rollout revision 会随每次写入变化，不能拿 revision 作为
-    // “full 已确定超限/无安全分页边界”的抑制键；新 turn 与 terminal 会清理它。
-    var externalActivityHistoryFallbackBySessionID: [SessionID: ExternalActivityHistoryFallback] = [:]
-    // 只记录当前 Host 生命周期内由 iPad 的 turn/start 明确返回的 turnID。不能用持久化的
-    // `.takenOver` / `.ipadOwned` 代替：同一 thread 后续可能真的在 Mac 启动新 turn。
-    // 精确到 session + turn 后，既能过滤 Desktop-origin 历史线程的 rollout 镜像，
-    // 又不会放行 turnID 不同的真实 Mac 活动。
-    var locallyStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
-    var isRefreshingExternalActivity = false
-    var externalActivityCapabilityUnavailable = false
     // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
     // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
     var controlledGlobalDiscoveryUnavailable = false
@@ -389,6 +389,10 @@ final class SessionStore: ObservableObject {
     var queuedSessionReconnectTasks: [SessionID: Task<Void, Never>] = [:]
     var queuedTurnStartedIDBySessionID: [SessionID: TurnID] = [:]
     var queuedTurnAwaitingStartSessionIDs: Set<SessionID> = []
+    // shared queue 的 started 事件可能早于 queue/add 回调。按 client ID 保留 RPC 门闩，
+    // 避免 Runtime 的同 session 单提交保护仍占用时提前派发下一项。
+    var queuedServerSubmissionAwaitingOutcomeBySessionID: [SessionID: ClientMessageID] = [:]
+    var queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs: Set<ClientMessageID> = []
     var queuedTurnBlockedCompletionIDBySessionID: [SessionID: TurnID] = [:]
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
     var currentQueuedTurnProfileID: String?
@@ -457,6 +461,9 @@ final class SessionStore: ObservableObject {
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
+    var permissionProfilesCWD: String?
+    var permissionProfilesRefreshRequestedCWD: String?
+    var permissionProfilesRefreshGeneration = 0
     var accountTokenUsageRefreshHostScope: HostScope?
     @Published var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
@@ -464,8 +471,6 @@ final class SessionStore: ObservableObject {
     let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
     let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
-    let externalActivityDefaultPollingDelayNanoseconds: UInt64 = 8_000_000_000
-    let externalActivitySelectedPollingDelayNanoseconds: UInt64 = 5_000_000_000
     let sessionListFirstPageCacheTTL: TimeInterval = 2
     let sessionLibraryIndexPollingInterval: TimeInterval = 60
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
@@ -542,9 +547,6 @@ final class SessionStore: ObservableObject {
         sessionSearchDebounceNanoseconds: UInt64 = 300_000_000,
         sessionSearchSleep: @escaping (UInt64) async throws -> Void = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
-        },
-        externalActivitySleep: @escaping (UInt64) async -> Void = { nanoseconds in
-            try? await Task.sleep(nanoseconds: nanoseconds)
         }
     ) {
         self.appStore = appStore
@@ -684,7 +686,6 @@ final class SessionStore: ObservableObject {
         self.sessionListSleep = sessionListSleep
         self.sessionSearchDebounceNanoseconds = sessionSearchDebounceNanoseconds
         self.sessionSearchSleep = sessionSearchSleep
-        self.externalActivitySleep = externalActivitySleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
         reloadHistoryReadStates()
@@ -824,6 +825,203 @@ final class SessionStore: ObservableObject {
         composerModelSelectionCache.remove(scope: scope)
     }
 
+    func saveComposerPermissionSelection(
+        _ snapshot: ComposerPermissionSelectionSnapshot,
+        for scope: ComposerDraftScopeKey
+    ) {
+        composerPermissionSelectionCache.save(snapshot, for: scope)
+    }
+
+    func composerPermissionSelection(
+        for scope: ComposerDraftScopeKey
+    ) -> ComposerPermissionSelectionSnapshot? {
+        composerPermissionSelectionCache.snapshot(for: scope)
+    }
+
+    func removeComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
+        composerPermissionSelectionCache.remove(scope: scope)
+    }
+
+    func pendingPermissionTurnBoundary(for sessionID: SessionID) -> PendingPermissionTurnBoundary? {
+        pendingPermissionTurnBoundariesBySessionID[sessionID]?.first
+    }
+
+    func latestPendingPermissionTurnBoundary(for sessionID: SessionID) -> PendingPermissionTurnBoundary? {
+        pendingPermissionTurnBoundariesBySessionID[sessionID]?.last
+    }
+
+    func pendingPermissionTurnBoundaryLocation(
+        clientMessageID: ClientMessageID
+    ) -> (sessionID: SessionID, index: Int, boundary: PendingPermissionTurnBoundary)? {
+        for (sessionID, boundaries) in pendingPermissionTurnBoundariesBySessionID {
+            if let index = boundaries.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                return (sessionID, index, boundaries[index])
+            }
+        }
+        return nil
+    }
+
+    var hasPendingPermissionTurnBoundaryForSelectedSession: Bool {
+        guard let selectedSessionID else { return false }
+        return pendingPermissionTurnBoundariesBySessionID[selectedSessionID]?.isEmpty == false
+    }
+
+    var selectedSessionRequiresFreshPermissionTurn: Bool {
+        guard let selectedSession else { return false }
+        return selectedSession.isRunning
+            || queuedRunningTurnsBySessionID[selectedSession.id]?.isEmpty == false
+            || pendingPermissionTurnBoundariesBySessionID[selectedSession.id]?.isEmpty == false
+            || queuedTurnAwaitingStartSessionIDs.contains(selectedSession.id)
+    }
+
+    @discardableResult
+    func satisfyPendingPermissionTurnBoundary(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID?
+    ) -> Bool {
+        // nil 或错误 ID 都不是这条权限提交的权威 started，不能解除边界。
+        guard let clientMessageID,
+              let pending = pendingPermissionTurnBoundariesBySessionID[sessionID]?.first,
+              pending.sessionID == sessionID,
+              pending.clientMessageID == clientMessageID
+        else {
+            return false
+        }
+        guard mutateAndPersistQueuedTurns({
+            var boundaries = pendingPermissionTurnBoundariesBySessionID[sessionID] ?? []
+            guard boundaries.first?.clientMessageID == clientMessageID else { return }
+            boundaries.removeFirst()
+            if var queue = queuedRunningTurnsBySessionID[sessionID],
+               let index = queue.firstIndex(where: { $0.clientMessageID == pending.clientMessageID }) {
+                queue[index].requiresFreshTurn = nil
+                queuedRunningTurnsBySessionID[sessionID] = queue
+            }
+
+            // 同一权限快照的后续消息已被这次 started 覆盖，不再强制额外创建 Turn。
+            while boundaries.first?.permissionSelection == pending.permissionSelection {
+                let covered = boundaries.removeFirst()
+                if var queue = queuedRunningTurnsBySessionID[sessionID],
+                   let index = queue.firstIndex(where: { $0.clientMessageID == covered.clientMessageID }) {
+                    queue[index].requiresFreshTurn = nil
+                    queuedRunningTurnsBySessionID[sessionID] = queue
+                }
+            }
+            if boundaries.isEmpty {
+                pendingPermissionTurnBoundariesBySessionID.removeValue(forKey: sessionID)
+            } else {
+                pendingPermissionTurnBoundariesBySessionID[sessionID] = boundaries
+            }
+        }) else {
+            return false
+        }
+
+        // 还有更新的权限边界时，旧 started 只推进 FIFO，不能清理当前 Composer 标记。
+        guard pendingPermissionTurnBoundariesBySessionID[sessionID]?.isEmpty != false else {
+            return true
+        }
+
+        let scope = ComposerDraftScopeKey.session(sessionID)
+        if let cached = composerPermissionSelectionCache.snapshot(for: scope),
+           cached == pending.permissionSelection {
+            var satisfied = cached
+            satisfied.requiresNewTurn = false
+            composerPermissionSelectionCache.save(satisfied, for: scope)
+        }
+        latestSatisfiedPermissionTurnBoundary = pending
+        return true
+    }
+
+    func reconcilePendingPermissionTurnBoundaries(
+        sessionID: SessionID,
+        historyMessages: [CodexHistoryMessage]
+    ) {
+        let startedClientMessageIDs = Set(historyMessages.compactMap { message -> ClientMessageID? in
+            guard let clientMessageID = message.clientMessageID,
+                  let turnID = message.turnID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !turnID.isEmpty
+            else {
+                return nil
+            }
+            return clientMessageID
+        })
+
+        // App 可能在服务端 started 后、实时事件落地前退出。权威历史只能按 FIFO 头部
+        // 解除边界，避免较新的历史消息越过尚未证明开始的权限提交。
+        var didAdvanceBoundary = false
+        while let pending = pendingPermissionTurnBoundary(for: sessionID),
+              startedClientMessageIDs.contains(pending.clientMessageID) {
+            guard satisfyPendingPermissionTurnBoundary(
+                sessionID: sessionID,
+                clientMessageID: pending.clientMessageID
+            ) else {
+                break
+            }
+            didAdvanceBoundary = true
+        }
+        if didAdvanceBoundary,
+           sessionsByID[sessionID]?.activeTurnID == nil {
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
+    }
+
+    /// 仅删除已明确不会再 started 的边界；结果不确定的派发必须保留。
+    @discardableResult
+    func removePendingPermissionTurnBoundary(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) -> PendingPermissionTurnBoundary? {
+        guard var boundaries = pendingPermissionTurnBoundariesBySessionID[sessionID],
+              let index = boundaries.firstIndex(where: { $0.clientMessageID == clientMessageID })
+        else {
+            return nil
+        }
+        let removed = boundaries.remove(at: index)
+        if boundaries.isEmpty {
+            pendingPermissionTurnBoundariesBySessionID.removeValue(forKey: sessionID)
+        } else {
+            pendingPermissionTurnBoundariesBySessionID[sessionID] = boundaries
+        }
+        return removed
+    }
+
+    func preservePermissionTurnRetryRequirementAfterRejection(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) {
+        _ = mutateAndPersistQueuedTurns {
+            guard let boundary = removePendingPermissionTurnBoundary(
+                sessionID: sessionID,
+                clientMessageID: clientMessageID
+            ) else {
+                return
+            }
+            permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = boundary
+        }
+    }
+
+    func migratePendingPermissionTurnBoundary(
+        clientMessageID: ClientMessageID,
+        to sessionID: SessionID
+    ) {
+        guard let location = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID),
+              location.sessionID != sessionID else {
+            return
+        }
+        _ = mutateAndPersistQueuedTurns {
+            _ = removePendingPermissionTurnBoundary(
+                sessionID: location.sessionID,
+                clientMessageID: clientMessageID
+            )
+            pendingPermissionTurnBoundariesBySessionID[sessionID, default: []].append(
+                PendingPermissionTurnBoundary(
+                    sessionID: sessionID,
+                    clientMessageID: clientMessageID,
+                    permissionSelection: location.boundary.permissionSelection
+                )
+            )
+        }
+    }
+
     func composerSendModeForScopeActivation(
         previousScope: ComposerDraftScopeKey,
         nextScope: ComposerDraftScopeKey,
@@ -891,7 +1089,19 @@ final class SessionStore: ObservableObject {
         let didPersist = mutateAndPersistQueuedTurns {
             guard var queue = queuedRunningTurnsBySessionID[location.sessionID],
                   queue.indices.contains(location.index) else { return }
-            queue.remove(at: location.index)
+            let removed = queue.remove(at: location.index)
+            if removed.dispatchState == .waiting,
+               removePendingPermissionTurnBoundary(
+                   sessionID: location.sessionID,
+                   clientMessageID: removed.clientMessageID
+               ) != nil {
+                // 删除尚未开始的边界项后，后续等待项不能永久继承 accepted-but-not-started 门闩。
+                for index in queue.indices where queue[index].waitsForAcceptedTurnStart == true {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
+                    queue[index].expectedTurnID = sessionsByID[location.sessionID]?.activeTurnID
+                }
+            }
             setQueuedTurns(queue, sessionID: location.sessionID)
         }
         if didPersist {
@@ -927,9 +1137,22 @@ final class SessionStore: ObservableObject {
         guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
               location.sessionID == selectedSessionID,
               let session = selectedSession,
-              let item = queuedRunningTurnsBySessionID[location.sessionID]?[location.index],
-              item.dispatchState == .waiting,
+              let queue = queuedRunningTurnsBySessionID[location.sessionID],
+              queue.indices.contains(location.index)
+        else {
+            setErrorMessage(L10n.text("ui.there_are_currently_no_active_rounds_to_boot"))
+            return false
+        }
+        let item = queue[location.index]
+        let hasEarlierFreshTurnBoundary = queue[..<location.index].contains {
+            $0.requiresFreshTurn == true
+        }
+        guard item.dispatchState == .waiting,
               item.intent.canGuideCurrentTurn,
+              item.requiresFreshTurn != true,
+              !hasEarlierFreshTurnBoundary,
+              pendingPermissionTurnBoundariesBySessionID[location.sessionID]?.isEmpty != false,
+              item.waitsForAcceptedTurnStart != true,
               let activeTurnID = session.activeTurnID,
               let socket = readyWebSocket(for: session)
         else {
@@ -976,11 +1199,17 @@ final class SessionStore: ObservableObject {
     func moveSelectedQueuedTurns(fromOffsets: IndexSet, toOffset: Int) -> Bool {
         guard let selectedSessionID,
               var queue = queuedRunningTurnsBySessionID[selectedSessionID],
-              queue.allSatisfy({ $0.dispatchState != .dispatching })
+              queue.allSatisfy({ $0.dispatchState == .waiting })
         else {
             return false
         }
-        let previous = queuedRunningTurnsBySessionID
+        let boundaryIDs = Set(
+            (pendingPermissionTurnBoundariesBySessionID[selectedSessionID] ?? []).map(\.clientMessageID)
+        )
+        guard boundaryIDs.isSubset(of: Set(queue.map(\.clientMessageID))) else {
+            // 已离开队列的 uncertain 边界没有可见拖动位置，不能让等待项跨过它。
+            return false
+        }
         let moving = fromOffsets.sorted().compactMap { queue.indices.contains($0) ? queue[$0] : nil }
         for index in fromOffsets.sorted(by: >) where queue.indices.contains(index) {
             queue.remove(at: index)
@@ -988,29 +1217,33 @@ final class SessionStore: ObservableObject {
         let removedBeforeDestination = fromOffsets.filter { $0 < toOffset }.count
         let destination = min(max(0, toOffset - removedBeforeDestination), queue.count)
         queue.insert(contentsOf: moving, at: destination)
-        queuedRunningTurnsBySessionID[selectedSessionID] = queue
-        do {
-            try persistQueuedTurns()
-            queuedTurnStorageErrorMessage = nil
-            return true
-        } catch {
-            queuedRunningTurnsBySessionID = previous
-            reportQueuedTurnStorageError(error)
-            return false
+        return mutateAndPersistQueuedTurns {
+            queuedRunningTurnsBySessionID[selectedSessionID] = queue
+            guard let boundaries = pendingPermissionTurnBoundariesBySessionID[selectedSessionID] else {
+                return
+            }
+            let boundaryByID = Dictionary(uniqueKeysWithValues: boundaries.map { ($0.clientMessageID, $0) })
+            pendingPermissionTurnBoundariesBySessionID[selectedSessionID] = queue.compactMap {
+                boundaryByID[$0.clientMessageID]
+            }
         }
     }
 
     func reloadQueuedTurns() {
         let profileID = appStore.notificationRoutingProfileID
         currentQueuedTurnProfileID = profileID
+        queuedServerSubmissionAwaitingOutcomeBySessionID.removeAll()
+        queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs.removeAll()
         do {
             var snapshot = try queuedTurnStore.load(profileID: profileID)
-            // dispatching 表示上一个进程在 RPC 确认前中断。协议没有承诺
-            // clientUserMessageId 幂等，因此重启后先阻止盲目重放，等历史对账。
+            // 没有 server receipt 的 dispatching 项在 RPC 确认前中断，必须阻止盲目重放。
+            // 已持久化 submissionID 的项已确认入队，重启后保持 dispatching 并等 items 对账。
             var didRecoverAmbiguousDispatch = false
             for sessionID in snapshot.queuesBySessionID.keys {
                 guard var queue = snapshot.queuesBySessionID[sessionID] else { continue }
-                for index in queue.indices where queue[index].dispatchState == .dispatching {
+                for index in queue.indices
+                where queue[index].dispatchState == .dispatching
+                    && queue[index].serverSubmissionID == nil {
                     queue[index].dispatchState = .needsConfirmation
                     queue[index].lastError = L10n.text("ui.the_last_sending_was_interrupted_before_confirmation_checking")
                     didRecoverAmbiguousDispatch = true
@@ -1018,6 +1251,8 @@ final class SessionStore: ObservableObject {
                 snapshot.queuesBySessionID[sessionID] = queue
             }
             queuedRunningTurnsBySessionID = snapshot.queuesBySessionID.filter { !$0.value.isEmpty }
+            pendingPermissionTurnBoundariesBySessionID = snapshot.pendingPermissionTurnBoundariesBySessionID
+            permissionTurnRetryRequirementsByClientMessageID = snapshot.permissionTurnRetryRequirementsByClientMessageID
             if didRecoverAmbiguousDispatch {
                 try queuedTurnStore.save(snapshot)
             }
@@ -1025,6 +1260,8 @@ final class SessionStore: ObservableObject {
         } catch {
             // 解码失败不覆盖原文件；否则一次版本不兼容会把待发指令静默清空。
             queuedRunningTurnsBySessionID = [:]
+            pendingPermissionTurnBoundariesBySessionID = [:]
+            permissionTurnRetryRequirementsByClientMessageID = [:]
             reportQueuedTurnStorageError(error)
         }
     }
@@ -1033,7 +1270,9 @@ final class SessionStore: ObservableObject {
         let profileID = currentQueuedTurnProfileID ?? appStore.notificationRoutingProfileID
         let snapshot = QueuedTurnProfileSnapshot(
             profileID: profileID,
-            queuesBySessionID: queuedRunningTurnsBySessionID.filter { !$0.value.isEmpty }
+            queuesBySessionID: queuedRunningTurnsBySessionID.filter { !$0.value.isEmpty },
+            pendingPermissionTurnBoundariesBySessionID: pendingPermissionTurnBoundariesBySessionID,
+            permissionTurnRetryRequirementsByClientMessageID: permissionTurnRetryRequirementsByClientMessageID
         )
         try queuedTurnStore.save(snapshot)
     }
@@ -1041,6 +1280,8 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func mutateAndPersistQueuedTurns(_ mutation: () -> Void) -> Bool {
         let previous = queuedRunningTurnsBySessionID
+        let previousPermissionBoundaries = pendingPermissionTurnBoundariesBySessionID
+        let previousRetryRequirements = permissionTurnRetryRequirementsByClientMessageID
         mutation()
         do {
             try persistQueuedTurns()
@@ -1048,6 +1289,8 @@ final class SessionStore: ObservableObject {
             return true
         } catch {
             queuedRunningTurnsBySessionID = previous
+            pendingPermissionTurnBoundariesBySessionID = previousPermissionBoundaries
+            permissionTurnRetryRequirementsByClientMessageID = previousRetryRequirements
             reportQueuedTurnStorageError(error)
             return false
         }
@@ -1454,7 +1697,7 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
-        if isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
+        if isProtocolReadOnlySession(session) {
             return .observing
         }
         if session.isRunning,
@@ -1478,7 +1721,10 @@ final class SessionStore: ObservableObject {
         guard let session else {
             return true
         }
-        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
+        guard !isProtocolReadOnlySession(session) else {
+            return false
+        }
+        guard !hasActiveWriterConflict(sessionID: session.id) else {
             return false
         }
         guard session.isRunning else {
@@ -1549,21 +1795,50 @@ final class SessionStore: ObservableObject {
             return nil
         }
         if let session = selectedSession,
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            return L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            return L10n.text("ui.read_only")
         }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
+    }
+
+    var selectedSessionHasActiveWriterConflict: Bool {
+        guard let selectedSessionID else {
+            return false
+        }
+        return hasActiveWriterConflict(sessionID: selectedSessionID)
+    }
+
+    func hasActiveWriterConflict(sessionID: SessionID) -> Bool {
+        activeWriterConflictLeases.contains(
+            HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        )
+    }
+
+    func setActiveWriterConflict(_ hasConflict: Bool, sessionID: SessionID) {
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        if hasConflict {
+            activeWriterConflictLeases.insert(lease)
+        } else {
+            activeWriterConflictLeases.remove(lease)
+        }
+    }
+
+    func retrySelectedSessionWriterAccess() {
+        guard let session = selectedSession else {
+            return
+        }
+        // thread/resume 是公开协议中唯一可信的 writer 检查。重试必须由用户触发，
+        // 且强制建立新连接，不能复用曾在发送阶段返回冲突的 connected socket。
+        setErrorMessage(nil)
+        disconnectWebSocket()
+        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
     }
 
     var selectedSessionAllowsTakeOver: Bool {
         guard let session = selectedSession else {
             return false
         }
-        return !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
-    }
-
-    func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
-        externalReadOnlySessionIDs.contains(session.id)
+        return !isProtocolReadOnlySession(session)
     }
 
     func isProtocolReadOnlySession(_ session: AgentSession) -> Bool {
@@ -1571,8 +1846,8 @@ final class SessionStore: ObservableObject {
     }
 
     func takeOverSession(_ session: AgentSession) {
-        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
-            setStatusMessage(L10n.text("ui.mac_observe_only"))
+        guard !isProtocolReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.read_only"))
             return
         }
         setSessionControlState(.takenOver, sessionID: session.id)

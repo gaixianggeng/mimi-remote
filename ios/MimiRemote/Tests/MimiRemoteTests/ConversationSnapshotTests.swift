@@ -68,9 +68,53 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testWorkspaceOpenCurrentDirectoryButton() {
-        let view = WorkspaceOpenCurrentDirectoryButton(
-            directoryName: "gaixiaotongxue",
+    // 路径条要在深路径下仍然只占一行高度，并从绝对路径的左侧开始展示。
+    func testWorkspaceCurrentDirectoryBreadcrumbKeepsSingleRow() {
+        let view = WorkspaceCurrentDirectoryCard(
+            path: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios/MimiRemote",
+            rootPath: "/Users/example/code",
+            parentPath: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios",
+            isBrowsing: false,
+            isOpening: false,
+            onNavigate: { _ in }
+        )
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 390)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .sizeThatFits)
+        )
+    }
+
+    // 授权浏览根之上的层级不可进入，但绝对路径必须仍然可读：那段前缀按原文保留成
+    // 不可点文本，可点层级从浏览根开始。锁住这个边界表达，避免又被压回省略号。
+    func testWorkspaceCurrentDirectoryBreadcrumbKeepsUnreachablePrefixReadable() {
+        let view = WorkspaceCurrentDirectoryCard(
+            path: "/Users/example/code/app",
+            rootPath: "/Users/example/code",
+            parentPath: "/Users/example/code",
+            isBrowsing: false,
+            isOpening: false,
+            onNavigate: { _ in }
+        )
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 390)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .sizeThatFits)
+        )
+    }
+
+    func testWorkspaceOpenCurrentDirectoryToolbarButton() {
+        let view = WorkspaceOpenCurrentDirectoryToolbarButton(
             isOpening: false,
             isDisabled: false,
             action: {}
@@ -78,12 +122,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(makeThemeStore())
         .environment(\.colorScheme, .light)
         .padding(20)
-        .frame(width: 390, height: 110)
         .background(Color(uiColor: .systemGroupedBackground))
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
+            as: .image(precision: 0.98, layout: .sizeThatFits)
         )
     }
 
@@ -831,29 +874,17 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 430, height: 900)
     }
 
-    func testConversationBubbleAlignment() {
-        assertSnapshot(
+    func testConversationBubbleAlignment() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeSeededConversation(),
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
-    func testDefaultDarkConversationPalette() {
-        assertSnapshot(
+    func testDefaultDarkConversationPalette() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeSeededConversation(colorScheme: .dark),
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
@@ -889,10 +920,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testRichMarkdownConversationRendering() {
-        assertSnapshot(
+    func testRichMarkdownConversationRendering() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeRichMarkdownConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
@@ -909,18 +940,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testMixedActivityAndImageConversationRendering() async {
+    func testMixedActivityAndImageConversationRendering() async throws {
         let view = await makeMixedActivityConversation()
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 900)
-                )
-            )
+            size: CGSize(width: 1024, height: 900)
         )
     }
 
@@ -978,10 +1003,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testUnavailableUserImageGalleryRemainsLegibleInLightTheme() {
-        assertSnapshot(
+    func testUnavailableUserImageGalleryRemainsLegibleInLightTheme() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeUnavailableUserImageGallery(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
+            size: CGSize(width: 1024, height: 900)
         )
     }
 
@@ -1006,10 +1031,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testCommentaryAndTrailingProcessRendering() {
-        assertSnapshot(
+    func testCommentaryAndTrailingProcessRendering() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeCommentaryAndTrailingProcessConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 430, height: 900))
+            size: CGSize(width: 430, height: 900)
         )
     }
 
@@ -1638,7 +1663,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
             SessionIndexRow(
@@ -1649,7 +1673,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }
@@ -1720,7 +1743,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 isUnread: true,
                 density: .compact
             )
@@ -1732,7 +1754,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }

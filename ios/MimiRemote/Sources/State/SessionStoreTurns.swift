@@ -2,6 +2,8 @@ import Foundation
 
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
+    nonisolated static let codexRemoteFullAccessCapability = "codex_remote_full_access_v1"
+
     func refreshCodexUsage() async {
         await refreshUsage(runtimeProvider: "codex")
     }
@@ -161,6 +163,53 @@ extension SessionStore {
         }
     }
 
+    func refreshPermissionProfiles(cwd: String?) async {
+        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedCWD.isEmpty else {
+            permissionProfilesRefreshGeneration += 1
+            permissionProfilesRefreshRequestedCWD = nil
+            isRefreshingPermissionProfiles = false
+            appServerPermissionProfiles = []
+            permissionProfilesCWD = nil
+            return
+        }
+        if isRefreshingPermissionProfiles,
+           permissionProfilesRefreshRequestedCWD == normalizedCWD {
+            return
+        }
+        if !isRefreshingPermissionProfiles,
+           permissionProfilesCWD == normalizedCWD {
+            return
+        }
+
+        permissionProfilesRefreshGeneration += 1
+        let refreshGeneration = permissionProfilesRefreshGeneration
+        permissionProfilesRefreshRequestedCWD = normalizedCWD
+        isRefreshingPermissionProfiles = true
+        defer {
+            if permissionProfilesRefreshGeneration == refreshGeneration {
+                permissionProfilesRefreshRequestedCWD = nil
+                isRefreshingPermissionProfiles = false
+            }
+        }
+        do {
+            let profiles = try await clientFactory().permissionProfiles(cwd: normalizedCWD)
+            guard !Task.isCancelled,
+                  permissionProfilesRefreshGeneration == refreshGeneration
+            else { return }
+            appServerPermissionProfiles = profiles
+            permissionProfilesCWD = normalizedCWD
+        } catch {
+            // 权限档案仍是 Beta。旧 app-server 或未开启 experimentalApi 时保持旧沙盒入口，
+            // 不把能力探测失败升级成阻断发送的界面错误。
+            guard !Task.isCancelled,
+                  permissionProfilesRefreshGeneration == refreshGeneration
+            else { return }
+            appServerPermissionProfiles = []
+            permissionProfilesCWD = normalizedCWD
+        }
+    }
+
     func payloadResolvingRequiredModel(_ payload: CodexAppServerTurnPayload) async -> CodexAppServerTurnPayload {
         var resolved = payload
         let lockedRuntimeProvider = selectedSessionRuntimeProviderForTurn()
@@ -181,7 +230,7 @@ extension SessionStore {
            !model.isEmpty {
             // 开发者模式明确允许未列入 model/list 的自定义模型；普通模式才执行目录校验和回落。
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return resolved
+            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
         }
         if appServerModelOptions.isEmpty {
             await refreshAppServerModelOptions()
@@ -210,12 +259,12 @@ extension SessionStore {
             resolved.options.model = matched.model
             resolved.options.modelProvider = matched.provider
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return resolved
+            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
         }
 
         guard let selected = candidateOptions.first(where: \.isDefault) ?? candidateOptions.first else {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return resolved
+            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
         }
 
         // app-server 的 turn/start 目前要求顶层 model 必填；模型来源必须优先使用
@@ -226,7 +275,18 @@ extension SessionStore {
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
-        return resolved
+        return payloadApplyingRemoteNoApprovalCompatibility(resolved)
+    }
+
+    func payloadApplyingRemoteNoApprovalCompatibility(
+        _ payload: CodexAppServerTurnPayload
+    ) -> CodexAppServerTurnPayload {
+        var compatible = payload
+        let isSupported = appStore.capabilityDecision(
+            for: Self.codexRemoteFullAccessCapability
+        ) == .enabled
+        compatible.options = compatible.options.adjustedForRemoteNoApprovalSupport(isSupported)
+        return compatible
     }
 
     func selectedSessionRuntimeProviderForTurn() -> String? {
@@ -344,8 +404,6 @@ extension SessionStore {
         if let previousSession, supportsCodexThreadManagement(previousSession) {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
     }
@@ -518,8 +576,6 @@ extension SessionStore {
            supportsCodexThreadManagement(previousSession) {
             if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
                 ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            } else {
-                releaseThreadWriterWhenIdleInBackground(previousSession.id)
             }
         }
         if let previousSession,
@@ -562,9 +618,8 @@ extension SessionStore {
         } else {
             // 非运行会话有两种可能：真历史，或被瞬时 idle 误读降级的运行会话。
             // 已有缓存时先展示缓存、后台补一次最新页；失败和 savings notice 仍保持静默，
-            // 同时仍建立事件订阅——
-            // thread/resume 的权威状态能立即纠正误判，之后的 turn 事件也能直接推进来，
-            // 不再要求手动刷新。
+            // 同时仍恢复页面连接。这里保持持久化历史只读；直到首次发送才由 gateway
+            // 按当前 owner 取得 writer，不要求手动刷新历史。
             let didRefreshHistory: Bool
             let hasUnreconciledForegroundActivity: Bool
             switch foregroundActivityBySessionID[session.id] {
@@ -596,7 +651,8 @@ extension SessionStore {
                     clearRuntimeActivity(sessionID: session.id)
                 }
             } else if conversationStore.hasLoadedHistory(sessionID: session.id) {
-                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+                // 已有缓存就是可读首屏；后台对账保持静默，避免尾部临时加载行改变布局。
+                scheduleQuietHistoryRefresh(for: session)
                 didRefreshHistory = true
             } else {
                 didRefreshHistory = await loadHistoryIfNeeded(for: session)
@@ -643,11 +699,12 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         objective: String,
         tokenBudget: Int64? = nil,
-        runningDelivery: RunningTurnDelivery = .queued
+        runningDelivery: RunningTurnDelivery = .queued,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
     ) async -> Bool {
         if let session = selectedSession,
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return false
         }
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -665,14 +722,28 @@ extension SessionStore {
             return false
         }
 
-        if let session = selectedSession, session.isRunning {
+        let selectedSessionHasQueuedTurns = selectedSession.map {
+            queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+            pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+            queuedTurnAwaitingStartSessionIDs.contains($0.id)
+        } ?? false
+        if let session = selectedSession,
+           session.isRunning || (runningDelivery == .queued
+                && (selectedSessionHasQueuedTurns
+                    || selectedSessionHasPendingPermissionBoundary
+                    || selectedSessionAwaitsAcceptedTurnStart)) {
             // 排队目标必须把“设置目标 + 启动 turn”作为同一个本地队列项保存；
             // 若在这里提前写远端目标，App 被挂起时会留下“目标已改、任务没发”的半完成状态。
             if runningDelivery == .queued {
                 let sent = await sendTurn(
                     payload,
                     runningDelivery: .queued,
-                    queuedIntent: .goal(objective: normalizedObjective, tokenBudget: tokenBudget)
+                    queuedIntent: .goal(objective: normalizedObjective, tokenBudget: tokenBudget),
+                    permissionSelection: permissionSelection
                 )
                 if sent {
                     setStatusMessage(L10n.text("ui.the_target_task_has_been_added_to_be"))
@@ -691,7 +762,8 @@ extension SessionStore {
             }
             let sent = await sendTurn(
                 payload,
-                runningDelivery: .guided
+                runningDelivery: .guided,
+                permissionSelection: permissionSelection
             )
             if sent {
                 setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -711,6 +783,7 @@ extension SessionStore {
             payload: payload,
             resume: resume,
             clientMessageID: UUID().uuidString,
+            permissionSelection: permissionSelection,
             initialGoalObjective: normalizedObjective,
             replacingLocalDraft: localDraft
         )
@@ -733,14 +806,15 @@ extension SessionStore {
     func sendTurn(
         _ payload: CodexAppServerTurnPayload,
         runningDelivery: RunningTurnDelivery = .queued,
-        queuedIntent: QueuedTurnIntent? = nil
+        queuedIntent: QueuedTurnIntent? = nil,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
     ) async -> Bool {
         guard !payload.isEmpty else {
             return false
         }
         if let session = selectedSession,
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            setErrorMessage(L10n.text("ui.mac_observe_only"))
+           isProtocolReadOnlySession(session) {
+            setErrorMessage(L10n.text("ui.read_only"))
             return false
         }
         if let notice = selectedQuotaNotice, notice.blocksSending {
@@ -756,6 +830,7 @@ extension SessionStore {
                 payload: payload,
                 resume: nil,
                 clientMessageID: UUID().uuidString,
+                permissionSelection: permissionSelection,
                 replacingLocalDraft: localDraft
             )
         }
@@ -763,8 +838,17 @@ extension SessionStore {
         let selectedSessionHasQueuedTurns = selectedSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
         } ?? false
+        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+            pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
+        } ?? false
+        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+            queuedTurnAwaitingStartSessionIDs.contains($0.id)
+        } ?? false
         if let session = selectedSession,
-           session.isRunning || (runningDelivery == .queued && selectedSessionHasQueuedTurns) {
+           session.isRunning || (runningDelivery == .queued
+                && (selectedSessionHasQueuedTurns
+                    || selectedSessionHasPendingPermissionBoundary
+                    || selectedSessionAwaitsAcceptedTurnStart)) {
             guard canControlSession(session) else {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
@@ -777,16 +861,28 @@ extension SessionStore {
                     return false
                 }
                 let intent = queuedIntent ?? (payload.options.collaborationMode == .plan ? .plan : .standard)
+                let requiresFreshTurn = permissionSelection?.requiresNewTurn == true
                 let item = QueuedTurnEntry(
                     sessionID: session.id,
                     projectID: session.projectID,
                     payload: payload,
                     clientMessageID: clientMessageID,
                     intent: intent,
-                    expectedTurnID: session.activeTurnID
+                    expectedTurnID: session.activeTurnID,
+                    requiresFreshTurn: requiresFreshTurn ? true : nil
                 )
                 guard mutateAndPersistQueuedTurns({
                     queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                    if requiresFreshTurn,
+                       let permissionSelection {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                            sessionID: session.id,
+                            clientMessageID: clientMessageID,
+                            permissionSelection: permissionSelection
+                            )
+                        )
+                    }
                 }) else {
                     return false
                 }
@@ -839,691 +935,13 @@ extension SessionStore {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
         }
-        return await createSession(projectID: projectID, payload: payload, resume: resume, clientMessageID: UUID().uuidString)
-    }
-
-    func dispatchNextQueuedRunningTurnIfIdle(sessionID: SessionID) {
-        guard let session = sessionsByID[sessionID],
-              !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
-              session.activeTurnID == nil,
-              let next = queuedRunningTurnsBySessionID[sessionID]?.first,
-              next.dispatchState == .waiting,
-              next.waitsForAcceptedTurnStart != true,
-              next.expectedTurnID == nil
-        else {
-            return
-        }
-        guard canControlSession(session) else {
-            setStatusMessage(L10n.text("ui.message_to_be_sent_is_waiting_please_take"))
-            return
-        }
-        guard let socket = socketForQueuedDispatch(sessionID: sessionID) else {
-            ensureQueuedSessionMonitoring(sessionID: sessionID)
-            return
-        }
-
-        guard mutateAndPersistQueuedTurns({
-            guard var queue = queuedRunningTurnsBySessionID[sessionID], !queue.isEmpty else { return }
-            queue[0].dispatchState = .dispatching
-            queue[0].lastAttemptAt = Date()
-            queue[0].lastError = nil
-            queuedRunningTurnsBySessionID[sessionID] = queue
-        }) else {
-            return
-        }
-
-        if case .goal(let objective, let tokenBudget) = next.intent {
-            Task { @MainActor [weak self, socket] in
-                guard let self else { return }
-                guard await self.setThreadGoal(
-                    threadID: sessionID,
-                    objective: objective,
-                    status: .active,
-                    tokenBudget: tokenBudget
-                ) else {
-                    self.markQueuedTurnWaitingAfterDefiniteFailure(
-                        clientMessageID: next.clientMessageID,
-                        message: L10n.text("ui.target_setup_failed_and_has_not_been_sent")
-                    )
-                    return
-                }
-                self.performQueuedTurnSend(next, session: session, socket: socket)
-            }
-        } else {
-            performQueuedTurnSend(next, session: session, socket: socket)
-        }
-    }
-
-    func performQueuedTurnSend(
-        _ item: QueuedTurnEntry,
-        session: AgentSession,
-        socket: any SessionWebSocketClient
-    ) {
-        guard queuedTurnLocation(clientMessageID: item.clientMessageID) != nil else { return }
-        setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-
-        queuedTurnAwaitingStartSessionIDs.insert(session.id)
-        guard socket.sendTurn(item.payload, clientMessageID: item.clientMessageID) else {
-            queuedTurnAwaitingStartSessionIDs.remove(session.id)
-            markQueuedTurnWaitingAfterDefiniteFailure(
-                clientMessageID: item.clientMessageID,
-                message: L10n.text("ui.the_connection_is_not_ready_yet_the_message")
-            )
-            clearForegroundActivity(sessionID: session.id)
-            return
-        }
-
-        // 只有传输层接受 turn/start 后才进入 timeline；纯本地等待项只在输入框上方的队列托盘展示。
-        conversationStore.appendLocalUser(
-            item.previewText,
-            sessionID: session.id,
-            clientMessageID: item.clientMessageID,
-            sendStatus: .sending,
-            turnPayload: item.payload,
-            userDelivery: .queued
+        return await createSession(
+            projectID: projectID,
+            payload: payload,
+            resume: resume,
+            clientMessageID: UUID().uuidString,
+            permissionSelection: permissionSelection
         )
-        setSessionListProjection(
-            sessionID: session.id,
-            preview: item.previewText,
-            source: .localUser,
-            clientMessageID: item.clientMessageID
-        )
-
-        // dispatching + awaitingStart 已能阻止重复派发。只有 accepted 回调或 turn/started
-        // 才能证明上游接收，派发窗口内不再乐观伪造 running。
-        freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
-        setStatusMessage(L10n.text("ui.the_queued_message_has_been_sent_waiting_for"))
-    }
-
-    func markQueuedTurnWaitingAfterDefiniteFailure(
-        clientMessageID: ClientMessageID,
-        message: String
-    ) {
-        guard let location = queuedTurnLocation(clientMessageID: clientMessageID) else { return }
-        _ = mutateAndPersistQueuedTurns {
-            guard var queue = queuedRunningTurnsBySessionID[location.sessionID],
-                  queue.indices.contains(location.index) else { return }
-            queue[location.index].dispatchState = .waiting
-            queue[location.index].lastError = message
-            queuedRunningTurnsBySessionID[location.sessionID] = queue
-        }
-        setStatusMessage(message)
-    }
-
-    func hasQueuedGoalTurn(sessionID: SessionID) -> Bool {
-        queuedRunningTurnsBySessionID[sessionID]?.contains(where: { $0.intent.startsGoal }) == true
-    }
-
-    func cancelQueuedRunningTurns(sessionID: SessionID, markMessagesFailed: Bool) {
-        let queued = queuedRunningTurnsBySessionID[sessionID] ?? []
-        queuedGuidanceDispatchClientMessageIDs.subtract(queued.map(\.clientMessageID))
-        _ = mutateAndPersistQueuedTurns {
-            setQueuedTurns([], sessionID: sessionID)
-        }
-        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        guard markMessagesFailed else {
-            return
-        }
-        for item in queued {
-            conversationStore.updateSendStatus(
-                clientMessageID: item.clientMessageID,
-                sessionID: sessionID,
-                status: .failed
-            )
-        }
-    }
-
-    func socketForQueuedDispatch(sessionID: SessionID) -> (any SessionWebSocketClient)? {
-        if selectedSessionID == sessionID,
-           connectedSessionID == sessionID,
-           case .connected = webSocketStatus {
-            return webSocket
-        }
-        guard queuedSessionReadyIDs.contains(sessionID) else {
-            return nil
-        }
-        return queuedSessionSockets[sessionID]
-    }
-
-    func ensureQueuedSessionMonitoring(sessionID: SessionID) {
-        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false,
-              connectionTermination == nil,
-              !appStore.requiresRePairing,
-              appStore.isConfigured,
-              !isAppInBackground,
-              !isNetworkUnavailable,
-              let session = sessionsByID[sessionID]
-        else {
-            return
-        }
-
-        if selectedSessionID == sessionID {
-            if queuedSessionSockets[sessionID] != nil {
-                stopQueuedSessionMonitoring(sessionID: sessionID)
-            }
-            if connectedSessionID != sessionID || webSocket == nil {
-                connectWebSocket(session, replayBufferedEvents: true, allowNonRunning: true)
-            }
-            return
-        }
-        guard queuedSessionSockets[sessionID] == nil else {
-            return
-        }
-        guard let credentialFingerprint = appStore.authenticatedCredentialFingerprint else {
-            return
-        }
-
-        let generation = (queuedSessionSocketGenerationByID[sessionID] ?? 0) + 1
-        queuedSessionSocketGenerationByID[sessionID] = generation
-        let eventLease = HostSessionLease(
-            hostScope: appStore.activeHostScope,
-            sessionID: sessionID
-        )
-        let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
-        socket.onStatus = { [weak self] status in
-            Task { @MainActor in
-                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
-                    return
-                }
-                switch status {
-                case .connected:
-                    self?.queuedSessionReadyIDs.insert(sessionID)
-                    self?.dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
-                case .failed(let message):
-                    self?.queuedSessionReadyIDs.remove(sessionID)
-                    self?.setStatusMessage(L10n.format("ui.failed_to_connect_to_queue_to_be_sent", message))
-                    self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
-                case .terminated(let reason):
-                    guard let self else { return }
-                    self.queuedSessionReadyIDs.remove(sessionID)
-                    let socketFingerprint = self.queuedSessionCredentialFingerprintByID[sessionID]
-                    if reason == .credentialsInvalid,
-                       !self.appStore.isCurrentCredentialFingerprint(socketFingerprint) {
-                        self.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
-                        return
-                    }
-                    self.terminateConnection(reason)
-                case .disconnected:
-                    self?.queuedSessionReadyIDs.remove(sessionID)
-                    self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
-                case .connecting:
-                    break
-                }
-            }
-        }
-        socket.onEvent = { [weak self] event in
-            Task { @MainActor in
-                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
-                    return
-                }
-                await self?.applyRuntimeEvent(event, lease: eventLease)
-            }
-        }
-        socket.onSendAccepted = { [weak self] clientMessageID in
-            Task { @MainActor in
-                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true,
-                      let clientMessageID else { return }
-                _ = self?.handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID)
-            }
-        }
-        socket.onSendFailure = { [weak self] clientMessageID, message in
-            Task { @MainActor in
-                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true,
-                      let clientMessageID else { return }
-                _ = self?.handleQueuedSendFailure(
-                    clientMessageID: clientMessageID,
-                    sessionID: sessionID,
-                    message: message
-                )
-            }
-        }
-        socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
-            Task { @MainActor in
-                guard let self else {
-                    return
-                }
-                let isCurrentConnection = self.isCurrentQueuedSessionSocket(
-                    sessionID: sessionID,
-                    generation: generation
-                )
-                guard isCurrentConnection ||
-                        self.canReconcileTurnOutcomeFromRetiredSocket(
-                            sessionID: sessionID,
-                            outcome: outcome,
-                            hostScope: eventLease.hostScope
-                        ) else {
-                    return
-                }
-                self.handleTurnSendOutcome(
-                    clientMessageID: clientMessageID,
-                    sessionID: sessionID,
-                    outcome: outcome
-                )
-            }
-        }
-        socket.onApprovalDecisionFailure = { _, _ in }
-        socket.onUserInputResponseFailure = { _, _ in }
-        socket.onControlFailure = { _ in }
-        queuedSessionSockets[sessionID] = socket
-        queuedSessionCredentialFingerprintByID[sessionID] = credentialFingerprint
-        socket.connect(sessionID: sessionID, replayBufferedEvents: true)
-    }
-
-    func ensureAllQueuedSessionMonitoring() {
-        for sessionID in queuedRunningTurnsBySessionID.keys {
-            ensureQueuedSessionMonitoring(sessionID: sessionID)
-        }
-    }
-
-    func isCurrentQueuedSessionSocket(sessionID: SessionID, generation: Int) -> Bool {
-        queuedSessionSockets[sessionID] != nil
-            && queuedSessionSocketGenerationByID[sessionID] == generation
-    }
-
-    func stopQueuedSessionMonitoringIfIdle(sessionID: SessionID) {
-        guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false else { return }
-        guard queuedSessionSockets[sessionID] != nil || queuedSessionReconnectTasks[sessionID] != nil else {
-            return
-        }
-        stopQueuedSessionMonitoring(sessionID: sessionID)
-    }
-
-    func stopQueuedSessionMonitoring(sessionID: SessionID) {
-        markDispatchingQueuedTurnsNeedsConfirmation(
-            sessionID: sessionID,
-            message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
-        )
-        queuedSessionSocketGenerationByID[sessionID, default: 0] += 1
-        queuedSessionReconnectTasks.removeValue(forKey: sessionID)?.cancel()
-        queuedSessionReadyIDs.remove(sessionID)
-        queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
-        let socket = queuedSessionSockets.removeValue(forKey: sessionID)
-        socket?.disconnect()
-    }
-
-    func scheduleQueuedSessionReconnect(sessionID: SessionID, generation: Int) {
-        guard isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation),
-              queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false else { return }
-        markDispatchingQueuedTurnsNeedsConfirmation(
-            sessionID: sessionID,
-            message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
-        )
-        let socket = queuedSessionSockets.removeValue(forKey: sessionID)
-        queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
-        queuedSessionSocketGenerationByID[sessionID, default: generation] += 1
-        socket?.onStatus = nil
-        socket?.disconnect()
-        queuedSessionReconnectTasks[sessionID]?.cancel()
-        queuedSessionReconnectTasks[sessionID] = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            } catch {
-                return
-            }
-            guard let self else { return }
-            self.queuedSessionReconnectTasks.removeValue(forKey: sessionID)
-            self.ensureQueuedSessionMonitoring(sessionID: sessionID)
-        }
-    }
-
-    func stopAllQueuedSessionMonitoring() {
-        let sessionIDs = Set(queuedSessionSockets.keys).union(queuedSessionReconnectTasks.keys)
-        for sessionID in sessionIDs {
-            stopQueuedSessionMonitoring(sessionID: sessionID)
-        }
-    }
-
-    func markDispatchingQueuedTurnsNeedsConfirmation(
-        sessionID: SessionID,
-        message: String
-    ) {
-        // 当前连接退役后，即使 turn/start 已 accepted，也可能错过紧随其后的 started；
-        // 清掉仅属于该连接的门闩，恢复时交给 REST 快照重新判定 active turn。
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        guard queuedRunningTurnsBySessionID[sessionID]?.contains(where: {
-            $0.dispatchState == .dispatching
-        }) == true else {
-            return
-        }
-        _ = mutateAndPersistQueuedTurns {
-            guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
-            for index in queue.indices where queue[index].dispatchState == .dispatching {
-                queue[index].dispatchState = .needsConfirmation
-                queue[index].lastError = message
-            }
-            queuedRunningTurnsBySessionID[sessionID] = queue
-        }
-    }
-
-    @discardableResult
-    func handleQueuedSendAccepted(
-        clientMessageID: ClientMessageID,
-        sessionID: SessionID,
-        disposition explicitDisposition: QueuedTurnAcceptedDisposition? = nil
-    ) -> Bool {
-        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
-              location.sessionID == sessionID,
-              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
-              item.dispatchState == .dispatching || item.dispatchState == .needsConfirmation
-        else {
-            return false
-        }
-        let wasGuidance = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
-        let ignoredStaleActiveTurnID: TurnID?
-        if wasGuidance,
-           case .awaitingStart = explicitDisposition {
-            ignoredStaleActiveTurnID = item.expectedTurnID
-        } else {
-            ignoredStaleActiveTurnID = nil
-        }
-        let disposition = reconciledAcceptedDisposition(
-            sessionID: sessionID,
-            disposition: explicitDisposition
-                ?? (wasGuidance
-                    ? .guidance
-                    : .awaitingStart(turnID: nil)),
-            ignoringActiveTurnID: ignoredStaleActiveTurnID
-        )
-
-        guard mutateAndPersistQueuedTurns({
-            guard var queue = queuedRunningTurnsBySessionID[sessionID],
-                  queue.indices.contains(location.index) else { return }
-            queue.remove(at: location.index)
-            switch disposition {
-            case .awaitingStart(let turnID):
-                let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
-                for index in queue.indices where queue[index].dispatchState == .waiting {
-                    if let turnID {
-                        queue[index].waitsForAcceptedTurnStart = nil
-                        queue[index].blockedCompletionID = nil
-                        queue[index].expectedTurnID = turnID
-                    } else {
-                        queue[index].waitsForAcceptedTurnStart = true
-                        queue[index].blockedCompletionID = blockedCompletionID
-                        queue[index].expectedTurnID = nil
-                    }
-                }
-            case .superseded(_, let activeTurnID):
-                for index in queue.indices where queue[index].dispatchState == .waiting {
-                    queue[index].waitsForAcceptedTurnStart = nil
-                    queue[index].blockedCompletionID = nil
-                    queue[index].expectedTurnID = activeTurnID
-                }
-            case .terminal:
-                for index in queue.indices where queue[index].dispatchState == .waiting {
-                    queue[index].waitsForAcceptedTurnStart = nil
-                    queue[index].blockedCompletionID = nil
-                    queue[index].expectedTurnID = nil
-                }
-            case .threadClosed:
-                for index in queue.indices where queue[index].dispatchState == .waiting {
-                    queue[index].waitsForAcceptedTurnStart = nil
-                    queue[index].blockedCompletionID = nil
-                    queue[index].expectedTurnID = nil
-                }
-            case .guidance:
-                break
-            }
-            setQueuedTurns(queue, sessionID: sessionID)
-        }) else {
-            return true
-        }
-        switch disposition {
-        case .awaitingStart(let turnID):
-            if turnID != nil {
-                queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-            }
-            if wasGuidance, let turnID {
-                // stale guidance 在 RPC 前确认 active turn 缺失后会降级为新的 turn/start。
-                // 只有这一条显式 accepted 路径可以把 ACK 中的新 turn 设为本地权威状态；
-                // terminal / superseded 已在上面的 disposition 对账中被改写，不会复活旧 turn。
-                updateSession(sessionID) { session in
-                    session.status = SessionStatus.running.rawValue
-                    session.activeTurnID = turnID
-                }
-            }
-        case .guidance:
-            break
-        case .terminal(let turnID):
-            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-            let terminalStatus = turnID.flatMap {
-                conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
-            } == .failed ? SessionStatus.failed : .completed
-            updateSession(sessionID) { session in
-                guard session.activeTurnID == nil
-                        || session.activeTurnID == turnID else {
-                    return
-                }
-                // external activity 误判可能已把已完成会话重写为 running；ACK 必须恢复终态。
-                session.status = terminalStatus.rawValue
-                session.activeTurnID = nil
-            }
-        case .superseded(let turnID, let activeTurnID):
-            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-            updateSession(sessionID) { session in
-                guard session.activeTurnID == nil
-                        || session.activeTurnID == turnID
-                        || session.activeTurnID == activeTurnID else {
-                    return
-                }
-                session.status = SessionStatus.running.rawValue
-                session.activeTurnID = activeTurnID
-            }
-        case .threadClosed(let turnID):
-            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-            updateSession(sessionID) { session in
-                guard session.activeTurnID == nil
-                        || session.activeTurnID == turnID else {
-                    return
-                }
-                session.status = "closed"
-                session.activeTurnID = nil
-            }
-        }
-        conversationStore.updateSendStatus(
-            clientMessageID: clientMessageID,
-            sessionID: sessionID,
-            status: .sent
-        )
-        conversationStore.compactTurnPayloadAfterSendAccepted(
-            clientMessageID: clientMessageID,
-            sessionID: sessionID
-        )
-        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
-        if case .terminal = disposition {
-            // 终态早于 ACK 时，对应 completion 已经过去；持久化移除首项后立即推进 FIFO。
-            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
-        }
-        return true
-    }
-
-    @discardableResult
-    func handleQueuedSendFailure(
-        clientMessageID: ClientMessageID,
-        sessionID: SessionID,
-        message: String
-    ) -> Bool {
-        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
-              location.sessionID == sessionID,
-              queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching
-        else {
-            return false
-        }
-        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
-        _ = mutateAndPersistQueuedTurns {
-            guard var queue = queuedRunningTurnsBySessionID[sessionID],
-                  queue.indices.contains(location.index) else { return }
-            queue[location.index].dispatchState = .needsConfirmation
-            queue[location.index].lastError = L10n.format("ui.uncertain_sending_result_value", message)
-            queuedRunningTurnsBySessionID[sessionID] = queue
-        }
-        conversationStore.updateSendStatus(
-            clientMessageID: clientMessageID,
-            sessionID: sessionID,
-            status: .failed
-        )
-        clearForegroundActivity(sessionID: sessionID)
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
-        return true
-    }
-
-    @discardableResult
-    func handleQueuedActiveTurnConflict(
-        clientMessageID: ClientMessageID,
-        sessionID: SessionID,
-        activeTurnID: TurnID
-    ) -> Bool {
-        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
-              location.sessionID == sessionID,
-              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
-              item.dispatchState == .dispatching else {
-            return false
-        }
-        // guidance fallback 已发现权威的新 active turn；清掉旧 steer 标记，
-        // 后续等待项再派发时必须完全按普通 turn/start 处理。
-        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        guard mutateAndPersistQueuedTurns({
-            guard var queue = queuedRunningTurnsBySessionID[sessionID],
-                  queue.indices.contains(location.index) else { return }
-            queue[location.index].dispatchState = .waiting
-            queue[location.index].expectedTurnID = activeTurnID
-            queue[location.index].lastError = nil
-            queuedRunningTurnsBySessionID[sessionID] = queue
-        }) else {
-            return true
-        }
-        conversationStore.appendLocalUser(
-            item.previewText,
-            sessionID: sessionID,
-            clientMessageID: clientMessageID,
-            sendStatus: .local,
-            turnPayload: item.payload,
-            userDelivery: .queued
-        )
-        ensureQueuedSessionMonitoring(sessionID: sessionID)
-        return true
-    }
-
-    @discardableResult
-    func handleQueuedSendRejected(
-        clientMessageID: ClientMessageID,
-        sessionID: SessionID,
-        message: String
-    ) -> Bool {
-        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
-              location.sessionID == sessionID,
-              queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching else {
-            return false
-        }
-        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
-        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        _ = mutateAndPersistQueuedTurns {
-            guard var queue = queuedRunningTurnsBySessionID[sessionID],
-                  queue.indices.contains(location.index) else { return }
-            queue.remove(at: location.index)
-            setQueuedTurns(queue, sessionID: sessionID)
-        }
-        conversationStore.updateSendStatus(
-            clientMessageID: clientMessageID,
-            sessionID: sessionID,
-            status: .failed
-        )
-        clearForegroundActivity(sessionID: sessionID)
-        clearSessionListProjection(sessionID: sessionID, clientMessageID: clientMessageID)
-        setErrorMessage(L10n.format("ui.sending_failed_value", message))
-        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
-        return true
-    }
-
-    func reconcilePersistedQueuedTurns() async {
-        guard !queuedRunningTurnsBySessionID.isEmpty,
-              connectionTermination == nil,
-              !appStore.requiresRePairing,
-              !isNetworkUnavailable
-        else {
-            return
-        }
-        let client: any SessionStoreAPIClient
-        do {
-            client = try clientFactory()
-        } catch {
-            return
-        }
-
-        // 每个有待发项的 thread 只做一次有界快照/历史核对。这里宁可要求用户确认重试，
-        // 也不在 client_message_id 是否已落库不明确时盲目重放。
-        for sessionID in Array(queuedRunningTurnsBySessionID.keys) {
-            var authoritativeSession = sessionsByID[sessionID]
-            if authoritativeSession == nil {
-                do {
-                    let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
-                    let aligned = session(response.session, in: nil)
-                    upsert(aligned)
-                    authoritativeSession = aligned
-                } catch {
-                    continue
-                }
-            }
-
-            let ambiguousIDs = Set(
-                (queuedRunningTurnsBySessionID[sessionID] ?? [])
-                    .filter { $0.dispatchState == .needsConfirmation }
-                    .map(\.clientMessageID)
-            )
-            if !ambiguousIDs.isEmpty,
-               let page = try? await client.messagesPage(
-                    sessionID: sessionID,
-                    before: nil,
-                    limit: 60,
-                    loadMode: .full
-               ) {
-                let deliveredIDs = Set(page.messages.compactMap(\.clientMessageID)).intersection(ambiguousIDs)
-                if !deliveredIDs.isEmpty {
-                    _ = mutateAndPersistQueuedTurns {
-                        guard let queue = queuedRunningTurnsBySessionID[sessionID] else { return }
-                        setQueuedTurns(
-                            queue.filter { !deliveredIDs.contains($0.clientMessageID) },
-                            sessionID: sessionID
-                        )
-                    }
-                }
-            }
-
-            guard let authoritativeSession,
-                  queuedRunningTurnsBySessionID[sessionID]?.first?.dispatchState == .waiting else {
-                ensureQueuedSessionMonitoring(sessionID: sessionID)
-                continue
-            }
-            _ = mutateAndPersistQueuedTurns {
-                guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
-                for index in queue.indices where queue[index].dispatchState == .waiting {
-                    if let activeTurnID = authoritativeSession.activeTurnID {
-                        // 权威快照已确认上一条真正开始，持久化门闩可以转成具体 turn 等待。
-                        queue[index].expectedTurnID = activeTurnID
-                        queue[index].waitsForAcceptedTurnStart = nil
-                        queue[index].blockedCompletionID = nil
-                    } else if queue[index].waitsForAcceptedTurnStart != true {
-                        // 普通等待项在权威快照 idle 时可恢复派发；accepted-but-not-started
-                        // 门闩仍等待事件回放，避免瞬时 idle 把下一条注入尚未显现的 turn。
-                        queue[index].expectedTurnID = nil
-                    }
-                }
-                queuedRunningTurnsBySessionID[sessionID] = queue
-            }
-            ensureQueuedSessionMonitoring(sessionID: sessionID)
-            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
-        }
     }
 
     func interruptSelectedTurn() {
@@ -1640,15 +1058,33 @@ extension SessionStore {
         }
 
         if let session = selectedSession,
-           session.isRunning,
-           let clientMessageID = message.clientMessageID {
+           let clientMessageID = message.clientMessageID,
+           session.isRunning
+            || queuedRunningTurnsBySessionID[session.id]?.isEmpty == false
+            || pendingPermissionTurnBoundariesBySessionID[session.id]?.isEmpty == false
+            || queuedTurnAwaitingStartSessionIDs.contains(session.id) {
             guard canControlSession(session) else {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
             }
             let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
             let resolvedPayload = await payloadResolvingRequiredModel(payload)
-            if let activeTurnID = session.activeTurnID {
+            let persistedRetryRequirement = permissionTurnRetryRequirementsByClientMessageID[clientMessageID]
+            let pendingRetryRequirement = pendingPermissionTurnBoundariesBySessionID[session.id]?
+                .first(where: { $0.clientMessageID == clientMessageID })
+            let cachedPermissionSelection = composerPermissionSelection(for: .session(session.id))
+            let retryPermissionSelection = persistedRetryRequirement?.permissionSelection
+                ?? pendingRetryRequirement?.permissionSelection
+                ?? (cachedPermissionSelection?.requiresNewTurn == true
+                    ? ComposerPermissionSelectionSnapshot(
+                        options: resolvedPayload.options,
+                        requiresNewTurn: true
+                    )
+                    : nil)
+            if session.activeTurnID != nil
+                || queuedRunningTurnsBySessionID[session.id]?.isEmpty == false
+                || pendingPermissionTurnBoundariesBySessionID[session.id]?.isEmpty == false
+                || queuedTurnAwaitingStartSessionIDs.contains(session.id) {
                 let queueCount = queuedRunningTurnsBySessionID[session.id]?.count ?? 0
                 guard queueCount < Self.queuedTurnLimitPerSession else {
                     setErrorMessage(L10n.format("ui.each_session_retains_a_maximum_of_value_messages", Self.queuedTurnLimitPerSession))
@@ -1657,16 +1093,53 @@ extension SessionStore {
                 let intent: QueuedTurnIntent = resolvedPayload.options.collaborationMode == .plan
                     ? .plan
                     : .standard
+                let requiresFreshTurn = retryPermissionSelection != nil
                 let item = QueuedTurnEntry(
                     sessionID: session.id,
                     projectID: session.projectID,
                     payload: resolvedPayload,
                     clientMessageID: clientMessageID,
                     intent: intent,
-                    expectedTurnID: activeTurnID
+                    expectedTurnID: session.activeTurnID,
+                    requiresFreshTurn: requiresFreshTurn ? true : nil
                 )
                 guard mutateAndPersistQueuedTurns({
-                    queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                    var queue = queuedRunningTurnsBySessionID[session.id] ?? []
+                    if let pendingRetryRequirement,
+                       let boundaries = pendingPermissionTurnBoundariesBySessionID[session.id],
+                       let boundaryIndex = boundaries.firstIndex(where: {
+                           $0.clientMessageID == pendingRetryRequirement.clientMessageID
+                       }) {
+                        // uncertain 项离开队列后，重试必须回到原边界位置；否则后续项会挡在
+                        // retained boundary 前面，使 dispatcher 永久无法匹配 FIFO 头部。
+                        let earlierBoundaryIDs = Set(
+                            boundaries[..<boundaryIndex].map(\.clientMessageID)
+                        )
+                        let insertionIndex: Int
+                        if let previousIndex = queue.lastIndex(where: {
+                            earlierBoundaryIDs.contains($0.clientMessageID)
+                        }) {
+                            insertionIndex = previousIndex + 1
+                        } else {
+                            insertionIndex = 0
+                        }
+                        queue.insert(item, at: insertionIndex)
+                    } else {
+                        queue.append(item)
+                    }
+                    queuedRunningTurnsBySessionID[session.id] = queue
+                    permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+                    if requiresFreshTurn,
+                       let retryPermissionSelection,
+                       pendingRetryRequirement == nil {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                                sessionID: session.id,
+                                clientMessageID: clientMessageID,
+                                permissionSelection: retryPermissionSelection
+                            )
+                        )
+                    }
                 }) else {
                     return false
                 }
@@ -1691,11 +1164,39 @@ extension SessionStore {
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
+            let addedPendingBoundary = retryPermissionSelection != nil && pendingRetryRequirement == nil
+            if retryPermissionSelection != nil || persistedRetryRequirement != nil {
+                guard mutateAndPersistQueuedTurns({
+                    permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+                    if addedPendingBoundary, let retryPermissionSelection {
+                        pendingPermissionTurnBoundariesBySessionID[session.id, default: []].append(
+                            PendingPermissionTurnBoundary(
+                                sessionID: session.id,
+                                clientMessageID: clientMessageID,
+                                permissionSelection: retryPermissionSelection
+                            )
+                        )
+                    }
+                }) else {
+                    return false
+                }
+            }
             // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
             guard socket.sendTurn(resolvedPayload, clientMessageID: clientMessageID) else {
+                _ = mutateAndPersistQueuedTurns {
+                    if addedPendingBoundary {
+                        _ = removePendingPermissionTurnBoundary(
+                            sessionID: session.id,
+                            clientMessageID: clientMessageID
+                        )
+                    }
+                    if let persistedRetryRequirement {
+                        permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = persistedRetryRequirement
+                    }
+                }
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
@@ -1706,8 +1207,69 @@ extension SessionStore {
             return true
         }
 
-        // 会话已经结束或失败时，沿用普通发送路径重新创建/恢复后端 thread。
-        return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        // 会话已经结束或失败时，普通发送会生成新 ID。权限重试必须先把旧要求原子迁移成
+        // 这次请求的 pending boundary，并继续复用原 client_message_id 等精确 started。
+        guard let clientMessageID = message.clientMessageID else {
+            return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        }
+        let persistedRetryRequirement = permissionTurnRetryRequirementsByClientMessageID[clientMessageID]
+        let originalPendingLocation = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID)
+        guard let retryRequirement = persistedRetryRequirement ?? originalPendingLocation?.boundary else {
+            return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+        }
+        let resume = selectedSession
+        guard let projectID = resume?.projectID ?? selectedProjectID else {
+            setErrorMessage(L10n.text("ui.please_select_the_project_first"))
+            return false
+        }
+        let targetSessionID = resume?.id ?? retryRequirement.sessionID
+        let reboundBoundary = PendingPermissionTurnBoundary(
+            sessionID: targetSessionID,
+            clientMessageID: clientMessageID,
+            permissionSelection: retryRequirement.permissionSelection
+        )
+        guard mutateAndPersistQueuedTurns({
+            permissionTurnRetryRequirementsByClientMessageID.removeValue(forKey: clientMessageID)
+            if let originalPendingLocation {
+                _ = removePendingPermissionTurnBoundary(
+                    sessionID: originalPendingLocation.sessionID,
+                    clientMessageID: clientMessageID
+                )
+            }
+            pendingPermissionTurnBoundariesBySessionID[targetSessionID, default: []].append(reboundBoundary)
+        }) else {
+            return false
+        }
+
+        let didSend = await createSession(
+            projectID: projectID,
+            payload: message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt),
+            resume: resume,
+            clientMessageID: clientMessageID
+        )
+        guard !didSend else {
+            return true
+        }
+        _ = mutateAndPersistQueuedTurns {
+            if let currentLocation = pendingPermissionTurnBoundaryLocation(clientMessageID: clientMessageID) {
+                _ = removePendingPermissionTurnBoundary(
+                    sessionID: currentLocation.sessionID,
+                    clientMessageID: clientMessageID
+                )
+            }
+            if let originalPendingLocation {
+                var boundaries = pendingPermissionTurnBoundariesBySessionID[originalPendingLocation.sessionID] ?? []
+                boundaries.insert(
+                    originalPendingLocation.boundary,
+                    at: min(originalPendingLocation.index, boundaries.count)
+                )
+                pendingPermissionTurnBoundariesBySessionID[originalPendingLocation.sessionID] = boundaries
+            }
+            if let persistedRetryRequirement {
+                permissionTurnRetryRequirementsByClientMessageID[clientMessageID] = persistedRetryRequirement
+            }
+        }
+        return false
     }
 
     @discardableResult
@@ -1763,15 +1325,6 @@ extension SessionStore {
         let reconnectSessionID = connectedSessionID
             ?? (webSocketReconnectTask == nil ? nil : selectedSessionID)
             ?? networkSuspendedSessionID
-        // 退到后台前先把当前实际持有前台连接的 Codex thread 交给 agentd。
-        // active turn 不需要在这里等待：服务端会返回 scheduled，并在 turn idle 后释放 writer。
-        // 有本地排队 turn 时沿用切会话的 guard，避免后台释放后丢失仍待发送的队列上下文。
-        if let handoffSessionID = connectedSessionID ?? selectedSessionID,
-           let handoffSession = sessionsByID[handoffSessionID],
-           supportsCodexThreadManagement(handoffSession),
-           queuedRunningTurnsBySessionID[handoffSessionID]?.isEmpty != false {
-            releaseThreadWriterWhenIdleInBackground(handoffSessionID)
-        }
         if let reconnectSessionID, sessionsByID[reconnectSessionID] != nil {
             if isNetworkUnavailable {
                 networkSuspendedSessionID = reconnectSessionID
@@ -1918,8 +1471,8 @@ extension SessionStore {
         tokenBudget: Int64?
     ) async -> Bool {
         if let session = sessionsByID[threadID],
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return false
         }
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1978,8 +1531,8 @@ extension SessionStore {
             return
         }
         if let session = sessionsByID[sessionID],
-           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+           isProtocolReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.read_only")
             return
         }
         isUpdatingThreadGoal = true

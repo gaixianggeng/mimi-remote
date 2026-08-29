@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UserNotifications
 
 /// 本地通知只携带路由元数据，不携带 Token、消息正文或工作目录。
@@ -154,12 +155,28 @@ struct MimiRemoteApp: App {
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
 
+    /// 紧凑布局的会话搜索走系统 `.searchable`，而系统在 iOS 26 上给它铺的是
+    /// Liquid Glass——一屏里其它 chrome 全是扁平磨砂，只有它一块玻璃。
+    /// `.searchable` 没有换材质的 API，只能用 appearance proxy 覆盖底色。
+    ///
+    /// 用动态 UIColor 而不是定值：闭包在绘制时才求值，深浅色切换能自动跟上。
+    /// 局限是切换主题预设不会改变 trait，颜色要等下一次 trait 变化或重启才刷新。
+    private static func installFlatSearchFieldAppearance(themeStore: ThemeStore) {
+        UISearchTextField.appearance().backgroundColor = UIColor { traits in
+            let scheme: ColorScheme = traits.userInterfaceStyle == .dark ? .dark : .light
+            // selectionFill 是主题里的中性色阶填充：浅色下比页面底暗、深色下比页面底亮，
+            // 与磨砂 chrome 的明暗方向一致（纯 surface 在浅色下反而会比底色更亮）。
+            return UIColor(themeStore.tokens(for: scheme).selectionFill)
+        }
+    }
+
     init() {
         let appStore = AppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         let contextStore = SessionContextStore()
         let themeStore = ThemeStore()
+        Self.installFlatSearchFieldAppearance(themeStore: themeStore)
         let workspaceAppearanceStore = WorkspaceAppearanceStore()
         // 冷启动先把唯一 endpoint 下的旧偏好归入当前 Profile，避免用户直接打开
         // “个性化”时短暂看到默认风格，并在修改设置后覆盖原来的 Emoji 选择。

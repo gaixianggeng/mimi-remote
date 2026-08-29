@@ -64,6 +64,7 @@ actor ReconnectDelayRecorder {
 }
 
 final class MockWebSocketClient: SessionWebSocketClient {
+    var turnDeliveryMode: TurnDeliveryMode = .direct
     var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
@@ -508,7 +509,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     /// 需要区分 unsupported / failed 时用这个；它优先于 snapshot 便捷 handler。
     let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
-    let externalActivityResponses: [ExternalActivityResponse?]
     let supportsLatestTurnHistoryPage: Bool
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
@@ -559,7 +559,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedSessionArchivesStorage: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
-    private(set) var requestedThreadHandoffs: [SessionID] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
@@ -569,7 +568,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
     private(set) var requestedRateLimitProviders: [String] = []
-    private(set) var externalActivityCallCount = 0
 
     init(
         projects: [AgentProject],
@@ -626,7 +624,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
-        externalActivityResponses: [ExternalActivityResponse?] = [],
         supportsLatestTurnHistoryPage: Bool = true
     ) {
         self.projectsResult = projects
@@ -686,7 +683,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.accountTokenUsageHandler = accountTokenUsageHandler
         self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
-        self.externalActivityResponses = externalActivityResponses
         self.supportsLatestTurnHistoryPage = supportsLatestTurnHistoryPage
     }
 
@@ -695,15 +691,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
             return try await projectsHandler()
         }
         return projectsResult
-    }
-
-    func externalActivities() async throws -> ExternalActivityResponse? {
-        let index = min(externalActivityCallCount, max(0, externalActivityResponses.count - 1))
-        externalActivityCallCount += 1
-        guard !externalActivityResponses.isEmpty else {
-            return nil
-        }
-        return externalActivityResponses[index]
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
@@ -1149,11 +1136,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func setThreadName(threadID: String, name: String) async throws {
         requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
-    }
-
-    func releaseThreadWriterWhenIdle(threadID: String) async throws -> ThreadHandoffResponse {
-        requestedThreadHandoffs.append(threadID)
-        return ThreadHandoffResponse(threadID: threadID, status: .scheduled)
     }
 
     func startReview(

@@ -151,6 +151,14 @@ struct WorkbenchNavigationState: Equatable {
         return sessionID
     }
 
+    /// 路由先于 SessionStore 选择提交时，详情只能显示稳定底板，不能短暂复用上一个会话。
+    func canPresentSessionDetail(selectedSessionID: SessionID?) -> Bool {
+        guard let detailSessionID = route.detailSessionID else {
+            return true
+        }
+        return selectedSessionID == detailSessionID
+    }
+
     /// 宽屏详情不是一次 push，系统不会自动提供返回工作区的按钮；紧凑布局由外层
     /// `NavigationStack` 管理 path，保留系统返回即可，避免顶栏出现两个返回控件。
     func showsWorkspaceBackButton(usesCompactNavigation: Bool) -> Bool {
@@ -202,7 +210,7 @@ struct WorkbenchNavigationState: Equatable {
             switch commit.reason {
             case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
-                applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
+                applyRoot(route.rootPage)
                 restoreMeIfNeeded(
                     preservesMe,
                     usesCompactNavigation: usesCompactNavigation
@@ -348,9 +356,9 @@ struct WorkbenchNavigationState: Equatable {
     ) -> WorkbenchNavigationEffect? {
         switch destination {
         case .sessions:
-            applyRoot(.sessions, usesCompactNavigation: usesCompactNavigation)
+            applyRoot(.sessions)
         case .workspaces:
-            applyRoot(.workspaces, usesCompactNavigation: usesCompactNavigation)
+            applyRoot(.workspaces)
         case .me:
             selection = .me
             if usesCompactNavigation {
@@ -375,22 +383,19 @@ struct WorkbenchNavigationState: Equatable {
         return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
     }
 
-    private mutating func applyRoot(
-        _ page: WorkbenchRootPage,
-        usesCompactNavigation: Bool
-    ) {
+    private mutating func applyRoot(_ page: WorkbenchRootPage) {
         pendingSessionSelectionID = nil
         switch page {
         case .sessions:
             route = .sessions
             selection = .sessions
-            guard usesCompactNavigation else { return }
+            // 宽屏期间也要同步隐藏的紧凑 Tab。否则旋转后首帧会先显示旧 Tab，
+            // 再由布局回调纠正，导致 iPad 顶栏第一次落到单独一行。
             compactSelectedTab = .sessions
             compactSessionPath = []
         case .workspaces:
             route = .workspaces
             selection = .workspaces
-            guard usesCompactNavigation else { return }
             compactSelectedTab = .workspaces
             compactWorkspacePath = []
         }
@@ -552,12 +557,12 @@ struct WorkbenchNavigationState: Equatable {
 extension View {
     func themedWorkbenchNavigationChrome(tokens: ThemeTokens, colorScheme: ColorScheme) -> some View {
         // 会话工作台嵌在 NavigationSplitView 里，系统导航栏默认会透出平台背景。
-        // 这里统一让导航栏和状态栏区域吃主题色，避免 iPad 横屏顶部出现黑色断层。
+        // 这里统一让导航栏和状态栏区域吃工作台画布色，避免滚动边缘露出另一种色温。
         //
         // 但底色只在滚动到边缘时才该出现：强制 `.visible` 会钉死一条不透明实色条和一道发丝线，
         // 同时把顶栏按钮压成贴在实色上的图标。这里改为把主题色交给 scroll edge effect，
         // 让系统自己决定何时显形。
-        toolbarBackground(tokens.background, for: .navigationBar)
+        toolbarBackground(tokens.workbenchCanvasBackground, for: .navigationBar)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
 
@@ -574,7 +579,7 @@ extension View {
             toolbarBackground(
                 reduceTransparency
                     ? AnyShapeStyle(tokens.elevatedSurface)
-                    : AnyShapeStyle(.ultraThickMaterial),
+                    : AnyShapeStyle(WorkbenchMaterial.surface),
                 for: .tabBar
             )
             .toolbarBackground(.visible, for: .tabBar)
@@ -655,9 +660,10 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
-        // 会话行只按可用宽度选密度，不按设备类型：iPhone 竖屏与 iPad 竖屏读的是同一批对象，
-        // 没有理由把项目锚点在手机上缩成 12pt。只有 Slide Over 这类真正窄的窗口才回退 compact。
-        prefersSessionTableDensity = containerWidth >= 360
+        // 会话行只按可用宽度选密度，不按设备类型。阈值必须复用 SessionIndexRowDensity 持有的
+        // 那一个：这里只是会话页测量到自身宽度之前的种子值，和工作区各写一个字面量时，
+        // 同一台设备会先按一档渲染再翻成另一档。
+        prefersSessionTableDensity = containerWidth >= SessionIndexRowDensity.tableWidthThreshold
     }
 }
 
@@ -679,6 +685,14 @@ enum WorkbenchChromeIconMetrics {
     static let symbolSize: CGFloat = 15
     static let symbolFrame: CGFloat = 18
     static let minimumHitTarget: CGFloat = 44
+    /// 顶栏磨砂圆的视觉直径。取 40 而不是 44，是因为这正是系统给自己的工具栏圆
+    /// 分配的尺寸——实测把 label 硬设成 44pt，系统会压回 40pt。
+    static let toolbarCircleDiameter: CGFloat = 40
+    /// iPad 紧凑布局里设备入口是 TabView 的浮层，不受导航栏排版约束，要自己对齐到
+    /// Tab 胶囊与顶栏按钮的中心线（iPad mini 竖屏实测三者都在 y=53.8pt）。
+    /// 磨砂圆统一成 40pt 之后浮层原点正好落在那条线上，所以这里是 0；
+    /// 日后若改动 `toolbarCircleDiameter` 或浮层的 padding，要重新标定这个值。
+    static let compactHostSwitcherCenterOffset: CGFloat = 0
 }
 
 struct WorkbenchChromeIcon: View {
@@ -695,9 +709,22 @@ struct WorkbenchChromeIcon: View {
     }
 }
 
-/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass
-/// 的高光边缘与折射。同一套材质覆盖所有 chrome，避免一屏出现两种玻璃浓度。
-/// Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
+/// 全 App 唯一的材质档位。
+///
+/// 任何需要“看得出后面有东西在动、但读不出内容”的表面都用这一档。过去按控件重要性
+/// 在 `.ultraThin` / `.thin` / `.regular` / `.ultraThick` 之间挑，结果是一屏能同时看到
+/// 三四种模糊浓度——顶栏按钮、Composer、路径条各是一档，体感上互相打架。
+///
+/// 需要更强遮蔽的表面靠在材质上叠一层主题色 tint 解决，**不要换一档材质**：加 tint 是
+/// 在同一层模糊结果上着色，换档位则是换一种质感。也不要给 Material 本身加 opacity，
+/// 那会把已经合成的模糊重新混回清晰背景。
+enum WorkbenchMaterial {
+    /// 扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass 的高光边缘与折射。
+    static let surface: Material = .regularMaterial
+}
+
+/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂。同一套材质覆盖所有 chrome，
+/// 避免一屏出现两种玻璃浓度。Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
 struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     let shape: ChromeShape
     let tokens: ThemeTokens
@@ -711,7 +738,7 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
             if reduceTransparency {
                 shape.fill(tokens.elevatedSurface)
             } else {
-                shape.fill(.regularMaterial)
+                shape.fill(WorkbenchMaterial.surface)
             }
 
             if tintLevel > 0 {
@@ -728,10 +755,56 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
     }
 }
 
+/// 顶栏图标控件的统一入口。
+///
+/// iOS 26 会给每个 `ToolbarItem` 自动附加一层系统 Liquid Glass 底板。那层玻璃有高光
+/// 边缘和折射，和工作区胶囊、侧栏按钮共用的扁平磨砂是两种材质——同屏出现就是最刺眼的
+/// 那档冲突（工作区顶栏磨砂、会话页顶栏玻璃，切 Tab 就能看出来）。这里统一关掉系统
+/// 底板，改由 `WorkbenchChromeMaterial` 提供同一档磨砂。
+///
+/// `content` 自己负责画表面——图标按钮和 Menu 都应该在**自己的 label 上**调用
+/// `workbenchChromeCircle`，而不是套在 `Button` / `Menu` 外面：外层的 44pt 框撑不开
+/// 控件的命中区域，只会让图标保持原尺寸可点。
+///
+/// 需要在 `ToolbarItem` 上再挂 `matchedTransitionSource` 的调用方无法复用这个包装，
+/// 请在自己的 `#available(iOS 26.0, *)` 分支里同时补上 `sharedBackgroundVisibility(.hidden)`。
+@ToolbarContentBuilder
+func workbenchChromeToolbarItem<Content: View>(
+    placement: ToolbarItemPlacement,
+    @ViewBuilder content: () -> Content
+) -> some ToolbarContent {
+    let chrome = content()
+    if #available(iOS 26.0, *) {
+        ToolbarItem(placement: placement) { chrome }
+            .sharedBackgroundVisibility(.hidden)
+    } else {
+        ToolbarItem(placement: placement) { chrome }
+    }
+}
+
 extension View {
-    /// 顶栏图标按钮统一成 44pt 磨砂圆。调用方仍需在 ToolbarItem 上加
-    /// `.sharedBackgroundVisibility(.hidden)`，否则 iPadOS/iOS 26 自动附加的玻璃底板
-    /// 会叠在这层磨砂下面，形成两层背景。
+    /// 顶栏（`ToolbarItem`）专用：磨砂圆**只作为背景绘制，不参与布局**。
+    ///
+    /// 不能在这里用 `workbenchChromeCircle`。给 ToolbarItem 的 label 硬设 44pt frame
+    /// 会和导航栏的高度协商打架：系统会把它压回 40pt，而这次压缩会让详情列算错安全区。
+    /// 表现是宽屏下从工作区点进会话时 Composer 卡在半空、下方一大片空白，唤起并收起
+    /// 键盘（强制重算一次安全区）才恢复。三次隔离构建定位到就是这个 frame。
+    ///
+    /// 背景不影响父视图尺寸，所以这里画多大都不会动导航栏度量；命中区域仍由系统
+    /// 按工具栏项的标准规则提供。
+    func workbenchToolbarChromeCircle(tokens: ThemeTokens) -> some View {
+        background {
+            WorkbenchChromeMaterial(shape: Circle(), tokens: tokens)
+                .frame(
+                    width: WorkbenchChromeIconMetrics.toolbarCircleDiameter,
+                    height: WorkbenchChromeIconMetrics.toolbarCircleDiameter
+                )
+        }
+    }
+
+    /// 顶栏图标按钮统一成 44pt 磨砂圆。放进 `ToolbarItem` 时不要直接用这个，
+    /// 走 `workbenchChromeToolbarItem`：它会同时关掉 iPadOS/iOS 26 自动附加的
+    /// 共享玻璃底板，否则那层玻璃会叠在这层磨砂下面，形成两层背景。
     func workbenchChromeCircle(tokens: ThemeTokens) -> some View {
         frame(
             width: WorkbenchChromeIconMetrics.minimumHitTarget,
@@ -753,6 +826,7 @@ extension View {
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
                 scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                    .overlay(alignment: .top) { WorkbenchTopScrollEdgeBoost() }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -848,13 +922,13 @@ struct WorkbenchSidebarContainer<
     }
 
     private var floatingSurfaceBackground: some View {
-        // 大型导航面与普通项目卡复用同一实色；动态玻璃只保留给局部按钮。
+        // 大型导航面与普通项目卡复用同一实色；局部控件一律走扁平磨砂，不引入第二种材质。
         Rectangle()
             .fill(tokens.sidebarSurfaceBackground)
     }
 }
 
-/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用系统玻璃与 SF Symbol 补回入口。
+/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用磨砂圆与 SF Symbol 补回入口。
 struct WorkbenchFloatingSidebarRevealButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
@@ -887,7 +961,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
             brand
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // 收起与展开共用同一个系统玻璃按钮，保证触摸、指针和按压反馈完全一致。
+            // 收起与展开共用同一个磨砂按钮，保证触摸、指针和按压反馈完全一致。
             WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: onCollapse)
                 .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
         }
@@ -898,48 +972,19 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     }
 }
 
-/// 结构切换只保留一层系统按钮玻璃；Reduce Transparency 使用等尺寸实色回退。
+/// 结构切换与其它 chrome 共用同一档扁平磨砂，不走 Liquid Glass：侧栏浮层背景本身是
+/// 实色，玻璃后面没有内容可折射，只会渲染成一枚发亮的高光圆，和旁边工作区胶囊的磨砂
+/// 对不上。Reduce Transparency 由 `WorkbenchChromeMaterial` 内部退成等尺寸实色。
 private struct WorkbenchFloatingSidebarToggleButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    @ViewBuilder
     var body: some View {
-        if #available(iOS 26.0, *), !reduceTransparency {
-            button
-                .buttonStyle(.plain)
-                // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
-                // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
-                .glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            button
-                .buttonStyle(.plain)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(tokens.elevatedSurface)
-                    } else {
-                        // iOS 18–25 使用稳定的系统材质，不模拟 Liquid Glass 的折射与高光。
-                        Circle().fill(.regularMaterial)
-                    }
-                }
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border, lineWidth: 1)
-                }
-        }
-    }
-
-    private var button: some View {
         Button(action: action) {
             WorkbenchChromeIcon(systemName: "sidebar.left")
-                .frame(
-                    width: WorkbenchChromeIconMetrics.minimumHitTarget,
-                    height: WorkbenchChromeIconMetrics.minimumHitTarget
-                )
-                .contentShape(Circle())
+                .workbenchChromeCircle(tokens: tokens)
         }
+        .buttonStyle(.plain)
         .foregroundStyle(tokens.primaryText)
         // 与触控、指针和 VoiceOver 共用同一个 action，不新增第二套 visibility 状态。
         .keyboardShortcut("s", modifiers: [.control, .command])
@@ -947,15 +992,11 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
 }
 
 extension View {
-    /// 主操作在 iOS 26+ 使用原生突出玻璃；旧系统回退到系统强调按钮，
-    /// 只降低材质表现，不改变按钮的 action、禁用态、键盘快捷键或无障碍语义。
-    @ViewBuilder
+    /// 主操作是唯一允许脱离磨砂的 chrome：它靠实心主题色表达“这一屏的下一步”，
+    /// 而不是靠材质厚度。全系统统一使用系统强调按钮，不再在 iOS 26 上换成
+    /// `glassProminent`——那会让同一个按钮在新旧系统上分别是玻璃和实色两种质感。
     func workbenchProminentActionStyle() -> some View {
-        if #available(iOS 26.0, *) {
-            buttonStyle(.glassProminent)
-        } else {
-            buttonStyle(.borderedProminent)
-        }
+        buttonStyle(.borderedProminent)
     }
 }
 
@@ -1106,6 +1147,7 @@ struct RelatedSessionConversationView: View {
     let relation: SessionContextSubagent
     let parentSessionID: SessionID
     let showsCloseButton: Bool
+    var shouldHideTabBar = false
     let onClose: () -> Void
 
     @State private var isLoading = true
@@ -1176,7 +1218,7 @@ struct RelatedSessionConversationView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
         .accessibilityIdentifier("subagent.conversation.\(relation.id)")
         .task(id: relation.id) {
             isLoading = true
@@ -1249,7 +1291,7 @@ struct RelatedSessionConversationView: View {
         .foregroundStyle(tokens.secondaryText)
         .frame(maxWidth: .infinity, minHeight: 44)
         .padding(.horizontal, 12)
-        .background(.regularMaterial)
+        .background(WorkbenchMaterial.surface)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(tokens.border.opacity(0.72))
@@ -1354,6 +1396,86 @@ enum WorkbenchPageLayout {
             + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
             + compactTabBarBreathingRoom
     }
+
+    // 把系统可用性结果显式传入，让 iPadOS 26 的位置变化可脱离真实运行环境单测。
+    static func hasBottomTabBar(
+        isPhone: Bool,
+        isHorizontallyCompact: Bool,
+        isIOS26OrLater: Bool
+    ) -> Bool {
+        isPhone || (isHorizontallyCompact && !isIOS26OrLater)
+    }
+
+    static func usesIndependentCompactNavigationStacks(hasBottomTabBar: Bool) -> Bool {
+        // 底部 Tab 由每个 Tab 自己持有导航栈，根页 toolbar 才有明确宿主；顶部 Tab
+        // 则共用外层栈，让详情覆盖整个 TabView，避免进入与返回时改变顶部布局基准。
+        hasBottomTabBar
+    }
+
+}
+
+/// 会话详情导航层的材质策略。紧凑与宽屏只在降级路径上不同，iOS 26 的正常透明度
+/// 路径共用同一条渐变底衬 + soft scroll edge 语义，让 iPhone、iPad 竖屏和 iPad 横屏
+/// 得到同等的顶部分离。
+struct SessionNavigationMaterialModifier: ViewModifier {
+    let usesCompactNavigation: Bool
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            // 关闭透明度后不做任何采样：紧凑用输入层实色，宽屏继续贴合阅读画布。
+            content
+                .toolbarBackground(
+                    usesCompactNavigation ? tokens.inputBackground : tokens.conversationCanvasBackground,
+                    for: .navigationBar
+                )
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if #available(iOS 26.0, *) {
+            content
+                // 导航栏底板必须保持隐藏。只要给 navigationBar 设了可见 background，系统就不再
+                // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
+                // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
+                // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
+                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else if usesCompactNavigation {
+            content
+                // 旧系统没有 scroll edge blur，继续用一层完整 Material 保证可读性。
+                .toolbarBackground(WorkbenchMaterial.surface, for: .navigationBar)
+                .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        } else {
+            // 会话详情的宽屏导航边缘与正文共用同一画布，避免滚动到边缘时
+            // 全局工作台暖底重新显形，把纸白阅读层切成两种色温。
+            content
+                .toolbarBackground(tokens.conversationCanvasBackground, for: .navigationBar)
+                .toolbarColorScheme(colorScheme, for: .navigationBar)
+        }
+    }
+}
+
+@MainActor
+enum SessionNavigationTitlePresentation {
+    static func pendingSubtitle(session: AgentSession?) -> String {
+        let project = session?.project.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return project.isEmpty ? L10n.text("ui.session") : project
+    }
+
+    static func subtitleFont(layout: WorkbenchLayout, themeStore: ThemeStore) -> Font {
+        if layout.usesCompactPhoneNavigationTypography {
+            // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
+            return themeStore.uiFont(.caption2, weight: .medium)
+        }
+        // 紧凑 iPad 继续使用原有 subheadline；宽屏布局继续使用 caption2。
+        return layout.usesCompactNavigation
+            ? .subheadline.weight(.regular)
+            : .caption2.weight(.medium)
+    }
 }
 
 private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {
@@ -1361,6 +1483,15 @@ private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {
 }
 
 private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+/// Tab 栏是否位于屏幕**底部**。iPhone 始终是；iPad 按横向 size class 与系统版本适配。
+///
+/// 这不等同于 `workbenchHasCompactTabBar`：那个只回答「有没有紧凑 Tab 栏」，
+/// 两个平台都为真。页面要决定「右下角能不能放浮起按钮」时必须问这一个——
+/// 底部已经站着一条浮动 Tab 栏时再浮一颗按钮，同一个角上叠两层浮动材质，层级会塌。
+private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
@@ -1373,6 +1504,11 @@ extension EnvironmentValues {
     var workbenchHasCompactTabBar: Bool {
         get { self[WorkbenchHasCompactTabBarKey.self] }
         set { self[WorkbenchHasCompactTabBarKey.self] = newValue }
+    }
+
+    var workbenchHasBottomTabBar: Bool {
+        get { self[WorkbenchHasBottomTabBarKey.self] }
+        set { self[WorkbenchHasBottomTabBarKey.self] = newValue }
     }
 }
 
@@ -1625,5 +1761,75 @@ struct CombinedUsageRingsGraphic: View {
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
+    }
+}
+
+/// 顶部滚动边缘的加深层。
+///
+/// 系统 `.soft` scroll edge 提供的正是我们要的整片玻璃质感，但强度固定且偏弱：正文滚到
+/// 标题后方时仍能逐字辨读，和标题、状态副标题抢视线。强度不可调，而且**一旦给
+/// navigationBar 设了可见的 `toolbarBackground`，系统就不再做这层渐进模糊**，只会铺一块
+/// 平底板——`.thinMaterial`、`.ultraThinMaterial` 乃至画布色渐变都一样，结果是「挡住了但
+/// 后面还看得清」，比原本更差。
+///
+/// 所以底板保持隐藏，改在滚动内容之上再叠一层同样是玻璃的 `.ultraThinMaterial`：它是
+/// 二次采样，真正加深模糊而不是把内容压淡；用渐变 mask 收边，材质自身的直角边界不可见，
+/// 下沿精确落到全透明，因此不会出现横贯全宽的硬边或明度断层。整体观感仍是"顶部一整片
+/// 玻璃"，只是比系统默认更实。
+@available(iOS 26.0, *)
+private struct WorkbenchTopScrollEdgeBoost: View {
+    /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
+    private let fadeTail: CGFloat = 56
+
+    /// 收边采样点数。9 个点足以让 smoothstep 在 56pt 内看不出分段。
+    private static let falloffSampleCount: Int = 9
+
+    /// 收边曲线。等距线性渐变在"满强度结束、斜坡开始"那一点存在斜率突变，人眼会把这种
+    /// 一阶不连续读成一条横线（Mach band）——正是要避免的分界线。这里用 smoothstep
+    /// `t²(3−2t)` 采样：两端斜率都为 0，接进满强度段和接进全透明处都没有折点，
+    /// 整条收边不存在任何可定位的边界。
+    ///
+    /// 每一步都写死类型并用普通循环展开：交给类型推导去解
+    /// `stops:` 里的 map + 混合字面量算术，Swift 类型检查器会在较慢的机器上超时
+    /// （CI 报 "unable to type-check this expression in reasonable time"）。
+    private static func falloffStops(holdStop: CGFloat) -> [Gradient.Stop] {
+        var stops: [Gradient.Stop] = []
+        stops.reserveCapacity(falloffSampleCount)
+        let lastIndex: CGFloat = CGFloat(falloffSampleCount - 1)
+        for index in 0..<falloffSampleCount {
+            let progress: CGFloat = CGFloat(index) / lastIndex
+            let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
+            let alpha: Double = Double(1.0 - eased)
+            let location: CGFloat = holdStop + (1.0 - holdStop) * progress
+            stops.append(Gradient.Stop(color: Color.black.opacity(alpha), location: location))
+        }
+        return stops
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            // 让出安全区后，proxy 汇报的正是被让出的顶部 inset（状态栏 + 导航控制层）。
+            let topInset: CGFloat = proxy.safeAreaInsets.top
+            let height: CGFloat = max(topInset + fadeTail, 1)
+            // 导航控制层范围内保持满强度，只在其下沿之后开始收边。
+            let holdStop: CGFloat = min(0.9, max(0.05, (topInset - 4) / height))
+            Rectangle()
+                // 这里是全 App 唯一不走 `WorkbenchMaterial.surface` 的地方，而且是有意的：
+                // 它不是一块表面，是叠在系统 soft scroll edge 之上的**第二次采样**，
+                // 实际观感 = 系统边缘虚化 + 这一层。换成同一档 surface 会把顶部压成
+                // 明显比其它表面更浓的一块，正好制造这次要消掉的浓度差。
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        stops: Self.falloffStops(holdStop: holdStop),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
     }
 }

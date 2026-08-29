@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use alleycat_bridge_core::pool::ProcessPool;
 pub use alleycat_bridge_core::pool::{
-    DEFAULT_IDLE_TTL, DEFAULT_MAX_PROCESSES, PoolError, ThreadId,
+    DEFAULT_IDLE_TTL, DEFAULT_MAX_PROCESSES, PoolError, ProcessAdmission, ThreadId,
 };
-use alleycat_bridge_core::pool::{ProcessAdmission, ProcessPool};
 use alleycat_bridge_core::{LocalLauncher, ProcessLauncher};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -156,6 +156,8 @@ impl ClaudePool {
                 cwd.as_ref(),
                 false,
                 model,
+                None,
+                None,
                 append_system_prompt,
             )
             .await?;
@@ -173,8 +175,16 @@ impl ClaudePool {
         model: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
-        self.spawn_with_capacity_check(thread_id, cwd.as_ref(), true, model, append_system_prompt)
-            .await
+        self.spawn_with_capacity_check(
+            thread_id,
+            cwd.as_ref(),
+            true,
+            model,
+            None,
+            None,
+            append_system_prompt,
+        )
+        .await
     }
 
     /// Reserved counterpart of [`Self::acquire_for_resume`], for callers that
@@ -194,6 +204,8 @@ impl ClaudePool {
             cwd.as_ref(),
             true,
             model,
+            None,
+            None,
             append_system_prompt,
         )
         .await
@@ -212,6 +224,8 @@ impl ClaudePool {
         cwd: impl AsRef<Path>,
         resume: bool,
         model: Option<String>,
+        effort_level: Option<String>,
+        permission_mode: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<(Arc<ClaudeProcessHandle>, ProcessAdmission), PoolError> {
         self.spawn_with_capacity_check_and_admission(
@@ -219,6 +233,8 @@ impl ClaudePool {
             cwd.as_ref(),
             resume,
             model,
+            effort_level,
+            permission_mode,
             append_system_prompt,
         )
         .await
@@ -247,7 +263,7 @@ impl ClaudePool {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let synthetic_id = format!("utility_{}", Uuid::now_v7());
-        self.spawn_with_capacity_check(synthetic_id, &cwd, false, None, None)
+        self.spawn_with_capacity_check(synthetic_id, &cwd, false, None, None, None, None)
             .await
     }
 
@@ -347,6 +363,8 @@ impl ClaudePool {
         cwd: &Path,
         resume: bool,
         model: Option<String>,
+        effort_level: Option<String>,
+        permission_mode: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
         let (handle, admission) = self
@@ -355,6 +373,8 @@ impl ClaudePool {
                 cwd,
                 resume,
                 model,
+                effort_level,
+                permission_mode,
                 append_system_prompt,
             )
             .await?;
@@ -371,6 +391,8 @@ impl ClaudePool {
         cwd: &Path,
         resume: bool,
         model: Option<String>,
+        effort_level: Option<String>,
+        permission_mode: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<(Arc<ClaudeProcessHandle>, ProcessAdmission), PoolError> {
         let _spawn_guard = self.spawn_lock.lock().await;
@@ -385,6 +407,8 @@ impl ClaudePool {
             cwd: cwd.to_path_buf(),
             claude_bin: self.claude_bin.clone(),
             model,
+            effort_level,
+            permission_mode,
             append_system_prompt,
             resume,
             bypass_permissions: self.policy.bypass_permissions,

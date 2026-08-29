@@ -131,14 +131,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if !appServerServerRequestAllowed(p.runtimeID, frame.Method) {
-			return payload, false, &appServerGatewayPolicyError{
-				id:      frame.ID,
-				message: "app-server server request 尚未被移动端支持：" + strings.TrimSpace(frame.Method),
-				data: map[string]any{
-					"reason": "unsupported_server_request",
-					"method": strings.TrimSpace(frame.Method),
-				},
-			}
+			// 共享 App Server 可能产生 Desktop 私有反向请求。Mimi 不是该
+			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
+			return payload, false, nil
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -149,16 +144,8 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
 			return payload, false, nil
 		}
-		if rewritten, ok := p.rewriteOwnedThreadHandoffLifecycle(&frame, payload); ok {
-			// coordinator 自己触发的 archive 生命周期不是用户结束会话。改写为
-			// 私有通知，让新版 iOS 只失效 resume binding，跳过 closed 终态投影。
-			return rewritten, true, nil
-		}
 		p.clearPendingServerRequestsForNotification(&frame)
 		p.rememberReplayedServerRequests(&frame)
-		// 用户停留在完成页时也要释放 resident app-server 的 writer lock。
-		// coordinator 先留出续问/本地队列窗口；新的 turn/start 会取消该任务。
-		p.scheduleThreadHandoffAfterTerminal(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 				payload = redacted
@@ -642,7 +629,7 @@ func (p *appServerGatewayPolicy) sanitizeThreadSearchResponse(payload []byte, pe
 		}
 		threadID := strings.TrimSpace(thread.ID)
 		cwd := strings.TrimSpace(thread.CWD)
-		// 0.144.2 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
+		// 0.147.0 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
 		// 悄悄解释成 agentd 当前目录，也不能把 trim 后与客户端看到值不同的 thread 登记进授权表。
 		if threadID == "" || threadID != thread.ID || cwd == "" || cwd != thread.CWD || !filepath.IsAbs(cwd) {
 			continue
@@ -821,18 +808,13 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("app-server request 缺少 id")
 	}
 	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
-	gatewayOwnedTurn := false
-	if p != nil && p.router != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" &&
-		strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") &&
-		threadID != "" && turnID != "" {
-		owned, err := p.router.codexGatewayOwnsTurn(threadID, turnID)
-		if err != nil {
-			// request 本身是只读投影，可以继续展示；归属不可确认时不放宽后续
-			// response，仍由 external guard fail-closed。
-			log.Printf("gateway server request ownership unavailable method=%s err=%v",
-				sanitizeGatewayDiagnostic(method), err)
-		} else {
-			gatewayOwnedTurn = owned
+	var requestedPermissions map[string]any
+	if isPermissionsApprovalMethod(method) {
+		params, err := decodeGatewayParams(rawParams)
+		if err == nil {
+			if raw, ok := params["permissions"].(map[string]any); ok {
+				requestedPermissions, _ = sanitizedGatewayPermissionProfile(raw)
+			}
 		}
 	}
 	p.mu.Lock()
@@ -846,12 +828,12 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("gateway pending server request 过多")
 	}
 	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
-		method:           method,
-		threadID:         threadID,
-		turnID:           turnID,
-		itemID:           itemID,
-		gatewayOwnedTurn: gatewayOwnedTurn,
-		createdAt:        now,
+		method:               method,
+		threadID:             threadID,
+		turnID:               turnID,
+		itemID:               itemID,
+		requestedPermissions: requestedPermissions,
+		createdAt:            now,
 	}
 	return nil
 }

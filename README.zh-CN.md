@@ -144,72 +144,57 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
     Gateway["你的 Mac<br/>agentd 安全网关"]
-    Codex["Codex<br/>共享 daemon 或受管 app-server"]
+    Codex["Codex<br/>共享 Unix App Server"]
+    Desktop["Codex Desktop<br/>SSH 主机"]
     Claude["Claude Code<br/>实验 bridge"]
 
     Mobile <-->|"局域网或 Tailscale<br/>实时会话与审批"| Gateway
     Gateway <--> Codex
+    Desktop <-->|"SSH app-server proxy"| Codex
     Gateway <--> Claude
 ```
 
 这个仓库包含完整链路：iPhone / iPad 原生 App、Mac 菜单栏宿主、Go `agentd` 网关，以及 Claude Code 兼容 bridge。移动端只连接你自己的 Mac，项目文件、会话历史和 Runtime 凭证都留在宿主机。
 
 - **直连、响应快：**通过私有网络上的 REST 与 WebSocket 实时传递输出、追问、任务控制和审批，不经过 Mimi 运营的应用层中转。
-- **真正的会话接力：**Codex 可选择与 Codex Desktop 共用官方 local daemon，让 Mac 上空闲的原会话无需 fork 就能在移动端继续；默认和回滚链路仍使用独立受管 app-server。
+- **单一共享的 Codex 运行时：**`agentd`、本机 Desktop SSH 主机和远程 Desktop SSH 主机都通过 `codex app-server proxy` 连接同一个 Unix App Server。Desktop 普通本地模式与 OpenClaw 保持独立，agentd 不通过私有 IPC 控制它们。
 - **双 Runtime、统一体验：**Codex 是主 Runtime；可选的 Claude Code bridge 把会话与审批适配到同一套结构化移动界面。
 - **边界小而明确：**`agentd` 在 Mac 上完成认证、工作区授权和 Runtime 路由。Mac 需要保持唤醒并能从私有网络访问。
 
-协议细节与准确能力边界见[项目现状](docs/project-status.md)、[Codex 共享 daemon](docs/codex-shared-daemon.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
+协议细节与准确能力边界见[项目现状](docs/project-status.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
 ## 开始前检查
 
 安装前先确认：
 
-- **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及已在宿主电脑安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
+- **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的 Mac，以及已在这台 Mac 安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
 - **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
 - **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
 - **当前 iOS 安装方式：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装公开版本；Beta 构建继续通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 提供。也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
-- **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
+- **仅开发者需要：**普通 macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
 
 ## 快速开始
 
 ### 首次安装只需四步
 
 1. **准备 Codex：**在宿主电脑安装 Codex CLI，完成 Runtime 自身认证并确认已经就绪；Mimi Remote 不配置 Provider 凭证或计费。
-2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
+2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 macOS 宿主，完成首次设置并确认服务已就绪。
 3. **安装 iOS App：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 下载 Mimi Remote，或加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) 获取 Beta 构建；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
 4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
-推荐使用平台正式安装包：Windows 使用一键 EXE 安装器（有证书时使用 Authenticode 签名；无证书时明确标记为 `unsigned-release`），macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
+macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。App 内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
 
-### Windows 安装
+### Windows Desktop 接入
 
-要求 Windows 10/11 x64，并已在当前 Windows 用户下安装和登录 Codex CLI。普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`，先在 PowerShell 验证 SHA-256 与 Authenticode：
+MIM-207 不再支持 Windows 作为 `agentd` 宿主。共享运行时依赖 POSIX SSH 目标、Unix Socket 和 Mac 工作区路径。Windows 安装包已暂停发布；仓库中保留的安装器源码会在停服或替换文件前明确阻止安装。
 
-```powershell
-$setup = Get-Item .\Mimi-Remote-Setup-*.exe
-(Get-FileHash $setup -Algorithm SHA256).Hash
-(Get-AuthenticodeSignature $setup).Status
-```
-
-先检查 `.metadata.json` 的 `signing`：`authenticode-pfx` 必须对应 `Valid`；`unsigned-release` 应对应 `NotSigned`，其 EXE 文件名包含 `-unsigned`，并可能触发 Microsoft Defender SmartScreen。未签名版本只应从本仓库正式 Release 下载，并在 SHA-256 与同 Release 的 sidecar 完全一致后运行。安装器按当前用户安装，已经内置 `agentd.exe`、`alleycat-claude-bridge.exe` 与原生 `mimi-remote-tray.exe`，不要求 Go 或 Rust；它会注册 limited 权限的登录任务、启动服务、等待真实就绪并启动通知区域托盘。托盘可查看 Endpoint 与 Codex/Claude 状态，并提供启动、停止、重启、配对、Doctor 和日志入口。配置与 Token 位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`，覆盖升级或普通卸载不会删除它们。
-
-局域网访问默认关闭；没有 Tailscale 且没有明确勾选 LAN 时，新安装只监听 loopback。勾选后，安装器先要求默认 Windows 网络配置文件为“专用网络”，清理 Windows 弹窗可能为 `agentd.exe` 自动创建的额外入站规则，再创建唯一的 Private profile、LocalSubnet 受限规则，最后扩大到 LAN 监听。运行时会拒绝 Public/Any 或其它非托管入站 Allow 规则。Public 网络不会触发放宽防火墙边界；只应把可信的 Wi-Fi 或以太网改为“专用网络”。配对地址优先使用系统默认路由对应的物理网卡，并排除 Hyper-V、WSL、容器和仅 VPN 可见的虚拟网卡。也可以使用以下命令：
-
-```powershell
-$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
-& $agentd status
-& $agentd pair --qr-only
-& $agentd doctor --fix
-& $agentd logs -n 200
-& $agentd restart --no-pair
-```
+Windows 只作为 Codex Desktop 客户端使用：在 Codex Desktop 中添加这台 Mac 的 SSH 主机，以拥有共享 App Server 的同一个 macOS 用户登录，再打开共享工作区。Mimi Remote 仍连接这台 Mac 上的 `agentd`。
 
 ### Mac 安装
 
 要求：
 
-- macOS 26 或更高版本；
+- macOS 15 或更高版本；
 - 已安装并登录 Codex CLI；
 - Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络。
 
@@ -228,7 +213,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
+首次启动前先启用“远程登录”，并确认 `ssh 127.0.0.1 codex --version` 无需输入登录密码即可成功。`agentd up` 会生成用户私有配置，通过 localhost SSH 接入共享 Unix App Server，完成真实协议初始化后再显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 SSH App Server](docs/shared-ssh-app-server.md)。
 
 Homebrew / CLI 常用命令：
 
@@ -246,7 +231,7 @@ agentd stop
 `agentd restart` 在 macOS 上使用 launchd 原子重启，允许从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
 Agent、自动化或远程日志场景使用 `agentd up --no-pair` / `agentd restart --no-pair`，避免把二维码、Endpoint 和长期访问码写入任务输出。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告，不包含完整 setup 结果；需要配对时再由用户在本机终端运行 `agentd pair --qr-only`。
 
-Windows、macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
+macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
 如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
 
@@ -276,7 +261,7 @@ Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd
 
 ## Claude Code 实验通道
 
-Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Windows 安装器和 Mac DMG 都已经内置兼容 bridge；Windows `authenticode-pfx` 安装包与 Mac DMG 保留平台代码身份，`unsigned-release` Windows 包则没有。不要为这些安装方式重复执行 `cargo install`。
+Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Mac DMG 已内置兼容 bridge，并保留平台代码身份；不要为这种安装方式重复执行 `cargo install`。
 
 只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
@@ -303,7 +288,7 @@ command -v alleycat-claude-bridge
 }
 ```
 
-空 `bridge_bin` 表示使用 Windows 安装器或 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持平台对应的用户私有权限，不要把完整文件打印到日志或聊天中。
+空 `bridge_bin` 表示使用 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持平台对应的用户私有权限，不要把完整文件打印到日志或聊天中。
 
 然后验证：
 

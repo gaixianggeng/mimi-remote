@@ -12,7 +12,7 @@ import (
 func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan string, 4)
+	done := make(chan string, 5)
 	var clientWriteMu sync.Mutex
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
@@ -43,7 +43,6 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	go func() {
 		done <- pingGatewayConnection(ctx, upstream, &upstreamWriteMu, "upstream_ping_write")
 	}()
-
 	reason := <-done
 	cancel()
 	_ = client.Close()
@@ -109,7 +108,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 			return gatewayCloseReason("upstream_write", err)
 		}
 		monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
-		r.scheduleAutoThreadTitleFromTurn(forwardPayload, policy, func(threadID string, title string) {
+		r.scheduleAutoThreadTitleFromMessage(forwardPayload, policy, func(threadID string, title string) {
 			// thread/name/set 由独立 loopback 连接执行，它产生的 notification 只回到
 			// 那条连接；这里给发起会话的移动端补发同形通知，让 UI 无需轮询即可更新。
 			notification, err := json.Marshal(map[string]any{

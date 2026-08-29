@@ -13,6 +13,7 @@
     "minimum_client_revision": "X-Mimi-Minimum-Client-Protocol-Revision"
   },
   "capabilities": [
+    "codex_remote_full_access_v1",
     "file_upload_v1"
   ]
 }

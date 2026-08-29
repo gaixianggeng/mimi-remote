@@ -2,10 +2,8 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,7 +23,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -59,7 +56,7 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 		t.Fatalf("config metadata 应返回 gateway ws url：%v", body)
 	}
 	runtime, ok := body["runtime"].(map[string]any)
-	if !ok || runtime["managed"] != true || runtime["transport"] != "ws" || runtime["gateway_available"] != true {
+	if !ok || runtime["managed"] != false || runtime["transport"] != "ssh" || runtime["gateway_available"] != true {
 		t.Fatalf("runtime metadata 异常：%v", body)
 	}
 	projects, ok := body["projects"].([]any)
@@ -93,41 +90,11 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	}
 	capabilities, ok := channels[0].(map[string]any)["capabilities"].(map[string]any)
 	if !ok || capabilities["rename"] != true || capabilities["compact"] != true ||
-		capabilities["review"] != true || capabilities["external_activity"] != true {
-		t.Fatalf("Codex channel 应声明 rename/compact/review/external_activity 能力：%v", channels[0])
+		capabilities["review"] != true {
+		t.Fatalf("Codex channel 应声明 rename/compact/review 能力：%v", channels[0])
 	}
-}
-
-func TestAppServerGatewayUsesOfficialUnixDaemonTransport(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 不支持 Unix socket")
-	}
-	codexHome, err := os.MkdirTemp("/tmp", "mimi-gateway.")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(codexHome) })
-	router := &Router{cfg: config.Config{
-		AppServer: config.AppServerConfig{Transport: "unix", Managed: true, Listen: "unix://"},
-		Codex:     config.CodexConfig{Env: map[string]string{"CODEX_HOME": codexHome}},
-	}}
-	upstreamURL, err := router.appServerUpstreamWebSocketURL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if upstreamURL != appserver.LocalDaemonHandshakeURL() {
-		t.Fatalf("Unix daemon 必须使用官方 WebSocket handshake URL：%q", upstreamURL)
-	}
-	headers, err := router.appServerUpstreamHeaders()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(headers) != 0 {
-		t.Fatalf("Unix socket 由文件权限鉴权，不应注入 WS token：%v", headers)
-	}
-	dialer, err := router.appServerUpstreamDialer(time.Second)
-	if err != nil || dialer.NetDialContext == nil {
-		t.Fatalf("Unix transport 必须提供 UDS dialer：dialer=%+v err=%v", dialer, err)
+	if _, exists := capabilities["external_activity"]; exists {
+		t.Fatalf("Codex channel 不应再暴露 Desktop external_activity 能力：%v", channels[0])
 	}
 }
 
@@ -163,7 +130,7 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	}
 	capabilities := claude["capabilities"].(map[string]any)
 	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false ||
-		capabilities["rate_limits"] != true || capabilities["external_activity"] != false {
+		capabilities["rate_limits"] != true {
 		t.Fatalf("Claude channel 不应声明 Codex 专属能力：%v", capabilities)
 	}
 	methods := claude["methods"].([]any)
@@ -401,6 +368,49 @@ func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 	}
 	if !foundSafeValue {
 		t.Fatalf("Claude bridge 环境必须强制关闭 bypass permissions：%v", env)
+	}
+}
+
+func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("http_proxy", "http://127.0.0.1:10808")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
+	env := buildClaudeBridgeEnv(map[string]string{
+		"https_proxy": "http://127.0.0.1:18080",
+	})
+
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			canonical := strings.ToUpper(key)
+			if _, exists := values[canonical]; exists {
+				t.Fatalf("代理环境变量不应因大小写重复：%v", env)
+			}
+			values[canonical] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://127.0.0.1:10808" ||
+		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
+		values["NO_PROXY"] != "localhost,127.0.0.1" {
+		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
+	}
+}
+
+func TestClaudeGatewayRedactsProxyCredentialsFromDiagnostics(t *testing.T) {
+	proxy := "http://alice:hunter%402@proxy.example:8080"
+	line := sanitizeClaudeBridgeDiagnostic(
+		"connect failed proxy="+proxy+" fallback=socks5://bob:secret@proxy.example:1080",
+		[]string{proxy},
+	)
+	for _, secret := range []string{"alice", "hunter%402", "bob", "secret"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("proxy credential %q leaked in diagnostic: %s", secret, line)
+		}
+	}
+	if !strings.Contains(line, "<redacted proxy>") || !strings.Contains(line, "socks5://<redacted>@") {
+		t.Fatalf("diagnostic should retain useful redacted structure: %s", line)
 	}
 }
 
@@ -1009,38 +1019,25 @@ func TestClaudeBridgeProbeRefreshesCheapResultWhenStale(t *testing.T) {
 	}
 }
 
-func TestAppServerGatewaySendsConfiguredUpstreamToken(t *testing.T) {
+func TestAppServerGatewayDoesNotUseLegacyUpstreamWSToken(t *testing.T) {
 	upstreamToken := "upstream-capability-token"
-	upstreamURL, received, _ := fakeAppServerUpstreamWithAuth(t, upstreamToken, nil)
+	upstreamURL, _, connections := fakeAppServerUpstreamWithAuth(t, upstreamToken, nil)
 	handler, projectDir := appServerGatewayRouterFixtureWithTokenFile(t, upstreamURL, upstreamToken)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-
-	conn := dialAuthedGateway(t, server.URL)
-	defer conn.Close()
-
-	authorized := []byte(fmt.Sprintf(
-		`{"id":8,"method":"thread/start","params":{"cwd":%q,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write"}}`,
-		projectDir,
-	))
-	if err := conn.WriteMessage(websocket.TextMessage, authorized); err != nil {
-		t.Fatal(err)
+	_ = projectDir
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{"Authorization": {"Bearer " + testToken}})
+	if err != nil || conn == nil {
+		t.Fatalf("外侧 WebSocket 应先完成 Upgrade：resp=%v err=%v", response, err)
 	}
-
-	select {
-	case got := <-received:
-		params := decodeGatewayParamsForTest(t, got)
-		if params["cwd"] != projectDir ||
-			params["approvalPolicy"] != "on-request" ||
-			params["approvalsReviewer"] != "user" ||
-			params["sandbox"] != "workspace-write" {
-			t.Fatalf("合法帧必须保留安全参数后转发：got=%s want-base=%s", got, authorized)
-		}
-		if _, ok := params["model"]; ok {
-			t.Fatalf("默认模型应由 app-server rollout 决定，gateway 不应补 model：got=%s", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("fake upstream 未收到合法帧，可能 upstream Authorization 未发送")
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	errFrame := readGatewayError(t, conn)
+	if !strings.Contains(errFrame.message, "CODEX_UPSTREAM_UNAVAILABLE") {
+		t.Fatalf("未携带旧 WS token 时应安全报告 upstream 不可用：%+v", errFrame)
+	}
+	if connections.Load() == 0 {
+		t.Fatal("共享 SSH gateway 应至少尝试一次无旧 token 的连接")
 	}
 }
 
@@ -1149,31 +1146,24 @@ func TestRelayDiagnosticsSanitizesClientWebSocketCloseText(t *testing.T) {
 	t.Fatal("超时未观察到客户端关闭诊断样本")
 }
 
-func TestAppServerGatewayRejectsEmptyUpstreamTokenFileBeforeDial(t *testing.T) {
+func TestAppServerGatewayIgnoresRemovedUpstreamTokenFile(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	tokenFile := filepath.Join(t.TempDir(), "empty-token")
 	if err := os.WriteFile(tokenFile, []byte(" \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
-		cfg.AppServer.WSTokenFile = tokenFile
-	})
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{
 		"Authorization": []string{"Bearer " + testToken},
 	})
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("空 upstream token file 不应连接成功")
+	if err != nil || conn == nil {
+		t.Fatalf("共享 SSH 不应读取旧 token file：resp=%v err=%v", resp, err)
 	}
-	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("空 upstream token file 应返回 503，resp=%v err=%v", resp, err)
-	}
-	if connections.Load() != 0 {
-		t.Fatalf("上游 token 配置无效时不应拨 upstream，connections=%d", connections.Load())
-	}
+	_ = conn.Close()
+	waitForGatewayConnectionCount(t, connections, 1)
 }
 
 func TestAppServerGatewayDoesNotDialUpstreamBeforeValidClientUpgrade(t *testing.T) {
@@ -1206,39 +1196,21 @@ func TestAppServerGatewayDoesNotDialUpstreamBeforeValidClientUpgrade(t *testing.
 	}
 }
 
-func TestAppServerGatewayDoesNotExposeTokenFilePath(t *testing.T) {
+func TestAppServerGatewayConfigHasNoLegacyTokenFilePath(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	secretPath := filepath.Join(t.TempDir(), "private-machine-secret-token-path")
-	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
-		cfg.AppServer.WSTokenFile = secretPath
-	})
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{
 		"Authorization": []string{"Bearer " + testToken},
 	})
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("缺失 upstream token file 不应连接成功")
+	if err != nil || conn == nil {
+		t.Fatalf("删除旧 token file 配置后 gateway 应正常连接：err=%v path=%s", err, secretPath)
 	}
-	if resp == nil {
-		t.Fatalf("缺失 upstream token file 应返回 HTTP 错误，err=%v", err)
-	}
-	defer resp.Body.Close()
-	body, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("缺失 upstream token file 应返回 503，got=%d body=%s", resp.StatusCode, body)
-	}
-	if bytes.Contains(body, []byte(secretPath)) || bytes.Contains(body, []byte(filepath.Base(secretPath))) {
-		t.Fatalf("移动端错误响应不能泄漏电脑 token file 路径：%s", body)
-	}
-	if connections.Load() != 0 {
-		t.Fatalf("token file 不可用时不应拨 upstream，connections=%d", connections.Load())
-	}
+	_ = conn.Close()
+	waitForGatewayConnectionCount(t, connections, 1)
 }
 
 func TestAppServerGatewayDialFailureDoesNotExposeUpstreamURL(t *testing.T) {
@@ -1251,12 +1223,7 @@ func TestAppServerGatewayDialFailureDoesNotExposeUpstreamURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	upstreamURL := "ws://" + closedAddress + "/private-upstream-url?access_token=secret-query"
-	handler, router, _ := buildAppServerGatewayFixture(t, upstreamURL, nil)
-	var recoveryCalls atomic.Int64
-	router.recoverSharedCodexDaemon = func(context.Context) error {
-		recoveryCalls.Add(1)
-		return fmt.Errorf("recovery unavailable")
-	}
+	handler, _, _ := buildAppServerGatewayFixture(t, upstreamURL, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -1281,202 +1248,6 @@ func TestAppServerGatewayDialFailureDoesNotExposeUpstreamURL(t *testing.T) {
 		if bytes.Contains(payload, []byte(secret)) {
 			t.Fatalf("移动端 WebSocket 错误不能泄漏 upstream URL，secret=%q payload=%s", secret, payload)
 		}
-	}
-	if recoveryCalls.Load() != 1 {
-		t.Fatalf("共享 daemon 首次拨号失败应只触发一次稳定 owner 恢复：%d", recoveryCalls.Load())
-	}
-}
-
-func TestSharedDaemonRecoverySerializesAndCachesRecentResult(t *testing.T) {
-	var calls atomic.Int32
-	var nowMu sync.Mutex
-	nowValue := time.Unix(1_700_000_000, 0)
-	now := func() time.Time {
-		nowMu.Lock()
-		defer nowMu.Unlock()
-		return nowValue
-	}
-	recovery := newSharedDaemonRecovery(now, 30*time.Second, func(context.Context) error {
-		calls.Add(1)
-		time.Sleep(20 * time.Millisecond)
-		return fmt.Errorf("daemon unavailable")
-	})
-
-	var wg sync.WaitGroup
-	errorsSeen := make(chan error, 8)
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errorsSeen <- recovery(context.Background())
-		}()
-	}
-	wg.Wait()
-	close(errorsSeen)
-	for err := range errorsSeen {
-		if err == nil || !strings.Contains(err.Error(), "unavailable") {
-			t.Fatalf("并发调用必须复用同一次失败：%v", err)
-		}
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("冷却期内只能实际恢复一次：calls=%d", calls.Load())
-	}
-
-	nowMu.Lock()
-	nowValue = nowValue.Add(31 * time.Second)
-	nowMu.Unlock()
-	_ = recovery(context.Background())
-	if calls.Load() != 2 {
-		t.Fatalf("冷却期后应允许再次尝试：calls=%d", calls.Load())
-	}
-}
-
-func TestSharedDaemonRecoveryRechecksDiskConfigAfterDisable(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	codexHome := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(codexHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg, registry, manager, checker, _ := appServerGatewayBaseFixture(t)
-	cfg.Runtime.Type = "codex_app_server"
-	cfg.Codex.Env = map[string]string{"CODEX_HOME": codexHome, "TERM": "xterm-256color"}
-	cfg.ScanRoots = []string{filepath.Join(home, "missing-network-volume")}
-	fallback := &config.AppServerFallbackConfig{
-		Transport: "ws",
-		Managed:   true,
-		Listen:    "ws://127.0.0.1:4555",
-	}
-	cfg.AppServer = config.AppServerConfig{
-		Transport:      "unix",
-		Managed:        true,
-		Listen:         appserver.LocalDaemonListen,
-		SharedFallback: fallback,
-	}
-	configPath := filepath.Join(home, "config.json")
-	writeConfig := func(value config.Config) {
-		raw, err := json.MarshalIndent(value, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeConfig(cfg)
-	if err := config.ValidateSharedDaemonRecoveryOwnership(configPath, cfg.Codex.Bin, cfg.Codex.Env); err != nil {
-		t.Fatalf("无关 scan_root 不可读不能阻断 shared owner 复核：%v", err)
-	}
-
-	_, router := NewRouterWithRuntimeInstallationIDAndOptions(
-		cfg,
-		registry,
-		manager,
-		checker,
-		"test",
-		"",
-		nil,
-		RouterOptions{ConfigPath: configPath},
-	)
-	t.Cleanup(router.claudeBridge.shutdown)
-	if router.recoverSharedCodexDaemon == nil {
-		t.Fatal("Mimi shared unix Router 必须安装恢复器")
-	}
-
-	cfg.AppServer = config.AppServerConfig{
-		Transport: "ws",
-		Managed:   fallback.Managed,
-		Listen:    fallback.Listen,
-	}
-	writeConfig(cfg)
-	err := router.recoverSharedCodexDaemon(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "当前配置已取消 Mimi 共享 daemon") {
-		t.Fatalf("旧 Router 在 disable 后必须被磁盘配置撤销恢复权：%v", err)
-	}
-}
-
-func TestSharedDaemonRecoveryWaiterHonorsCancellation(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(context.Context) error {
-		close(entered)
-		<-release
-		return nil
-	})
-	firstDone := make(chan error, 1)
-	go func() { firstDone <- recovery(context.Background()) }()
-	<-entered
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	startedAt := time.Now()
-	if err := recovery(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("等待中的 gateway 连接必须响应取消：%v", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
-		t.Fatalf("取消的 waiter 不应等待完整恢复：%s", elapsed)
-	}
-	close(release)
-	if err := <-firstDone; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSharedDaemonRecoveryStarterCancellationDoesNotPoisonCooldown(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(ctx context.Context) error {
-		calls.Add(1)
-		close(entered)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-release:
-			return nil
-		}
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	firstDone := make(chan error, 1)
-	go func() { firstDone <- recovery(ctx) }()
-	<-entered
-	cancel()
-	if err := <-firstDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("发起请求取消后应立即返回，但不能取消共享恢复：%v", err)
-	}
-	close(release)
-	if err := recovery(context.Background()); err != nil {
-		t.Fatalf("后续请求应复用后台恢复成功结果：%v", err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("首个请求取消不能触发第二次恢复或污染冷却：calls=%d", calls.Load())
-	}
-}
-
-func TestSharedDaemonRecoveryPanicStillReleasesWaiters(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	recovery := newSharedDaemonRecovery(time.Now, time.Minute, func(context.Context) error {
-		calls.Add(1)
-		close(entered)
-		<-release
-		panic("test recovery panic")
-	})
-
-	results := make(chan error, 2)
-	go func() { results <- recovery(context.Background()) }()
-	<-entered
-	go func() { results <- recovery(context.Background()) }()
-	close(release)
-	for range 2 {
-		if err := <-results; err == nil || !strings.Contains(err.Error(), "恢复异常") {
-			t.Fatalf("panic 必须转换成可缓存错误并唤醒等待者：%v", err)
-		}
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("panic 时并发 waiter 仍只能共享一次尝试：calls=%d", calls.Load())
 	}
 }
 
@@ -1540,23 +1311,6 @@ func TestAppServerGatewayLimitsConcurrentCodexConnections(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("关闭连接后 Codex gateway 名额未及时归还")
-}
-
-func TestAppServerGatewayRejectsNonLoopbackUpstreamBeforeDial(t *testing.T) {
-	handler, _ := appServerGatewayRouterFixtureWithConfig(t, "ws://203.0.113.10:4222", nil)
-	server := httptest.NewServer(handler)
-	defer server.Close()
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL(server.URL, appServerGatewayPath), http.Header{
-		"Authorization": []string{"Bearer " + testToken},
-	})
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("非 loopback upstream 不应连接成功")
-	}
-	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("非 loopback upstream 应返回 503，resp=%v err=%v", resp, err)
-	}
 }
 
 func TestAppServerGatewayRejectsUnsafeMethodWithoutForwarding(t *testing.T) {
@@ -1865,13 +1619,14 @@ func TestAppServerGatewayAuthorizesThreadIDsFromThreadListResponse(t *testing.T)
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-authorized")
 
 	readFrame := []byte(`{"id":31,"method":"thread/read","params":{"threadId":"thread-authorized","includeTurns":true}}`)
+	expectedReadFrame := []byte(`{"id":31,"method":"thread/read","params":{"includeTurns":false,"threadId":"thread-authorized"}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, readFrame); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case got := <-received:
-		if !bytes.Equal(got, readFrame) {
-			t.Fatalf("已授权 thread/read 必须原样转发：got=%s want=%s", got, readFrame)
+		if !bytes.Equal(got, expectedReadFrame) {
+			t.Fatalf("thread/read 必须强制关闭整段历史：got=%s want=%s", got, expectedReadFrame)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到已授权 thread/read")
@@ -3059,9 +2814,7 @@ func appServerGatewayRouterFixtureWithTokenFile(t *testing.T, upstreamURL string
 	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
-		cfg.AppServer.WSTokenFile = tokenFile
-	})
+	return appServerGatewayRouterFixtureWithConfig(t, upstreamURL, nil)
 }
 
 func appServerGatewayRouterFixtureWithConfig(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, string) {
@@ -3082,15 +2835,15 @@ func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize fu
 	t.Helper()
 	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
-		Transport:   "ws",
-		Managed:     true,
-		Listen:      upstreamURL,
-		WSTokenFile: testAppServerTokenFile(t, "test-upstream-token"),
+		Transport: "ssh",
+		SSHTarget: upstreamURL,
 	}
 	if customize != nil {
 		customize(&cfg)
 	}
-	handler, router := NewRouterWithRuntime(cfg, registry, manager, checker, "test", nil)
+	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(cfg, registry, manager, checker, "test", "", nil, RouterOptions{
+		AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
+	})
 	// Any fixture that reaches the Claude gateway starts a resident bridge;
 	// without this they leak a process per test.
 	t.Cleanup(router.claudeBridge.shutdown)
@@ -3332,6 +3085,17 @@ func readUpstreamFrame(t *testing.T, received <-chan []byte) []byte {
 		t.Fatal("fake upstream 未收到帧")
 	}
 	return nil
+}
+
+func waitForGatewayConnectionCount(t *testing.T, connections *atomic.Int64, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for connections.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := connections.Load(); got != want {
+		t.Fatalf("gateway 应建立 %d 条 proxy：connections=%d", want, got)
+	}
 }
 
 func readTestFileEventually(t *testing.T, path string) []byte {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -20,11 +19,6 @@ const gatewayDefaultCollaborationInstructions = `# Collaboration Mode: Default
 You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
-
-var (
-	errAppServerExternalThreadActive        = errors.New("Codex Desktop 正在运行此会话")
-	errAppServerExternalActivityUnavailable = errors.New("无法确认 Codex Desktop 会话是否空闲")
-)
 
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
 	return p.validateClientFrameContext(context.Background(), messageType, payload)
@@ -46,28 +40,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		if frame.ID != nil && (len(frame.Result) > 0 || len(frame.Error) > 0) {
 			rewritten, err := p.validateClientResponse(payload, &frame)
 			if err != nil {
-				policyErr := &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
-				if errors.Is(err, errAppServerExternalThreadActive) ||
-					errors.Is(err, errAppServerExternalActivityUnavailable) {
-					reason := "external_thread_active"
-					if errors.Is(err, errAppServerExternalActivityUnavailable) {
-						reason = "external_activity_unavailable"
-					}
-					policyErr.data = map[string]any{
-						"reason":         reason,
-						"accepted":       false,
-						"retryable":      true,
-						"retry_after_ms": int64(1000),
-						// 反向 response 不属于客户端 pending RPC。移动端据此把
-						// fire-and-forget 的审批/补充输入恢复成可重试卡片。
-						"response_to_server_request": true,
-					}
-					if pending, ok := p.pendingServerRequest(frame.ID); ok {
-						policyErr.data["server_request_method"] = pending.method
-						policyErr.data["thread_id"] = pending.threadID
-					}
-				}
-				return nil, policyErr
+				return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 			}
 			return rewritten, nil
 		}
@@ -90,41 +63,6 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
-	}
-	if err := p.guardExternalDesktopThread(method, params); err != nil {
-		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
-		p.forgetPending(frame.ID)
-		reason := "external_thread_active"
-		if errors.Is(err, errAppServerExternalActivityUnavailable) {
-			reason = "external_activity_unavailable"
-		}
-		return nil, &appServerGatewayPolicyError{
-			id:      frame.ID,
-			message: err.Error(),
-			data: map[string]any{
-				"reason":         reason,
-				"accepted":       false,
-				"retryable":      true,
-				"retry_after_ms": int64(1000),
-			},
-		}
-	}
-	p.rememberThreadHandoffCapability(method, params)
-	if err := p.guardThreadHandoffContext(ctx, method, params); err != nil {
-		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
-		p.forgetPending(frame.ID)
-		policyErr := &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
-		if errors.Is(err, errAppServerThreadHandoffExecuting) {
-			// 这个错误在 frame 写入 upstream 前产生，accepted=false 是 iOS 能够
-			// 安全重发相同 turn/start 的关键证据，不能退化成 uncertain。
-			policyErr.data = map[string]any{
-				"reason":         "thread_handoff_in_progress",
-				"accepted":       false,
-				"retryable":      true,
-				"retry_after_ms": appServerThreadHandoffRetryAfter.Milliseconds(),
-			}
-		}
-		return nil, policyErr
 	}
 	if policyErr := p.reserveHistoryRequest(frame.ID, method, params, len(payload)); policyErr != nil {
 		p.forgetPending(frame.ID)
@@ -149,7 +87,6 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
 	}
-	p.router.registerGatewayTurnStart(p.runtimeID, method, rewritten)
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
 }
@@ -157,107 +94,6 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
 	_, ok := appServerAllowedMethodsForRuntime(p.runtimeID)[method]
 	return ok
-}
-
-func (p *appServerGatewayPolicy) guardThreadHandoff(method string, params map[string]any) error {
-	return p.guardThreadHandoffContext(context.Background(), method, params)
-}
-
-func (p *appServerGatewayPolicy) guardThreadHandoffContext(ctx context.Context, method string, params map[string]any) error {
-	if normalizeAppServerRuntimeID(p.runtimeID) != "codex" || !gatewayMethodReclaimsThread(method) {
-		return nil
-	}
-	threadID, ok := gatewayStringParam(params, "threadId")
-	if !ok {
-		return nil
-	}
-	if err := p.router.reclaimCodexThreadHandoff(ctx, threadID); err != nil {
-		if errors.Is(err, errAppServerThreadHandoffExecuting) {
-			return fmt.Errorf("%s.threadId 正在完成跨应用交接，请稍后重试：%w", method, errAppServerThreadHandoffExecuting)
-		}
-		return fmt.Errorf("%s.threadId 无法取消跨应用交接：%w", method, err)
-	}
-	return nil
-}
-
-func gatewayMethodReclaimsThread(method string) bool {
-	switch method {
-	case "thread/resume", "thread/fork", "thread/name/set", "thread/compact/start",
-		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
-		"review/start", "turn/start", "turn/steer", "turn/interrupt":
-		return true
-	default:
-		return false
-	}
-}
-
-func (p *appServerGatewayPolicy) guardExternalDesktopThread(method string, params map[string]any) error {
-	if p == nil || p.router == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
-		!gatewayMethodRequiresExternalIdle(method) {
-		return nil
-	}
-	threadID, ok := gatewayStringParam(params, "threadId")
-	if !ok {
-		return nil
-	}
-	sharedBackend := strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix")
-	return p.guardExternalDesktopThreadID(method, threadID, sharedBackend)
-}
-
-func (p *appServerGatewayPolicy) guardExternalDesktopThreadID(
-	operation string,
-	threadID string,
-	sharedBackend bool,
-) error {
-	if sharedBackend && p.router.externalActivity == nil {
-		return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝写入：%w", operation, errAppServerExternalActivityUnavailable)
-	}
-	active, err := p.router.codexDesktopThreadActive(threadID)
-	if err != nil {
-		log.Printf("external activity guard unavailable: %v", err)
-		if sharedBackend {
-			// shared unix 下 Desktop 与手机写入同一个 runtime。观测失效时继续写
-			// 会重新制造双 writer；宁可短暂只读，也不能影响 Codex 原生任务。
-			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝写入：%w", operation, errAppServerExternalActivityUnavailable)
-		}
-		// 独立 WS 没有共同 writer，继续保留历史可用性策略。
-		return nil
-	}
-	if active {
-		return fmt.Errorf("%s.threadId 当前由 Codex Desktop 运行，请等待本轮结束后重试：%w", operation, errAppServerExternalThreadActive)
-	}
-	return nil
-}
-
-func gatewayMethodRequiresExternalIdle(method string) bool {
-	switch method {
-	case "thread/fork", "thread/name/set", "thread/compact/start",
-		"thread/archive", "thread/unarchive", "thread/goal/set", "thread/goal/clear",
-		"review/start", "turn/start", "turn/steer", "turn/interrupt":
-		return true
-	default:
-		return false
-	}
-}
-
-func (p *appServerGatewayPolicy) rememberThreadHandoffCapability(method string, params map[string]any) {
-	if p == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" || method != "initialize" {
-		return
-	}
-	capabilities, _ := params["capabilities"].(map[string]any)
-	capable, _ := capabilities["mimiThreadHandoff"].(bool)
-	p.mu.Lock()
-	p.threadHandoffCapable = capable
-	p.mu.Unlock()
-}
-
-func (p *appServerGatewayPolicy) supportsThreadHandoff() bool {
-	if p == nil {
-		return false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.threadHandoffCapable
 }
 
 func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any, validated appServerGatewayValidatedParams) error {
@@ -342,8 +178,9 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
 		}
-	case "thread/read", "thread/turns/list", "thread/name/set", "thread/compact/start", "thread/unsubscribe",
-		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start":
+	case "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/settings/update",
+		"thread/name/set", "thread/compact/start", "thread/unsubscribe", "thread/goal/get", "thread/goal/set",
+		"thread/goal/clear", "review/start":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
@@ -370,6 +207,31 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				method: method, threadID: threadID,
 			}); err != nil {
 				return err
+			}
+		}
+		if method == "thread/items/list" || method == "thread/queue/list" {
+			if err := validateGatewaySimplePageParams(method, params, 250); err != nil {
+				return err
+			}
+		}
+		if method == "thread/items/list" {
+			if turnID, exists := params["turnId"]; exists && turnID != nil {
+				if text, ok := turnID.(string); !ok || strings.TrimSpace(text) == "" {
+					return fmt.Errorf("thread/items/list.turnId 必须是非空字符串或 null")
+				}
+			}
+			if direction, exists := params["sortDirection"]; exists && direction != nil {
+				if text, ok := direction.(string); !ok || (text != "asc" && text != "desc") {
+					return fmt.Errorf("thread/items/list.sortDirection 只支持 asc/desc")
+				}
+			}
+		}
+		if method == "thread/settings/update" {
+			if gatewayThreadRejectsWrites(thread) {
+				return fmt.Errorf("%s.threadId 是只读子会话，不能修改设置", method)
+			}
+			if validated.hasCWD && (!scopeOK || scope.id != thread.scopeID) {
+				return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 			}
 		}
 		if method == "thread/goal/set" {
@@ -416,6 +278,24 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 		}
+	case "thread/queue/add":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能接受输入", method)
+		}
+		if _, ok := gatewayStringParam(params, "clientUserMessageId"); !ok {
+			return fmt.Errorf("%s.clientUserMessageId 不能为空", method)
+		}
+		if err := p.validateThreadInputPaths(method, params, thread); err != nil {
+			return err
+		}
 	case "turn/steer":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
@@ -456,11 +336,26 @@ func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
 
 func gatewayMethodMutatesThread(method string) bool {
 	switch method {
-	case "thread/name/set", "thread/compact/start", "thread/goal/set", "thread/goal/clear", "review/start":
+	case "thread/name/set", "thread/compact/start", "thread/goal/set", "thread/goal/clear", "thread/settings/update", "review/start":
 		return true
 	default:
 		return false
 	}
+}
+
+func validateGatewaySimplePageParams(method string, params map[string]any, maxLimit int64) error {
+	if value, ok := params["limit"]; ok && value != nil {
+		limit, valid := gatewayJSONNumberInt64(value)
+		if !valid || limit <= 0 || limit > maxLimit {
+			return fmt.Errorf("%s.limit 必须是 1 到 %d 的整数", method, maxLimit)
+		}
+	}
+	if value, ok := params["cursor"]; ok && value != nil {
+		if text, valid := value.(string); !valid || strings.TrimSpace(text) == "" || len(text) > 2048 {
+			return fmt.Errorf("%s.cursor 必须是有效游标", method)
+		}
+	}
+	return nil
 }
 
 func (p *appServerGatewayPolicy) validateThreadInputPaths(method string, params map[string]any, thread appServerGatewayAllowedThread) error {
@@ -497,26 +392,21 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 	if !ok {
 		return nil, fmt.Errorf("JSON-RPC response id 未由 app-server 发起")
 	}
-	if err := p.guardExternalDesktopServerResponse(request); err != nil {
-		// 拒绝发生在写入 upstream 之前，pending 必须保留；Desktop turn 完成后
-		// 移动端可安全重试，断线重放也仍有真实 outstanding request。
-		return nil, err
-	}
 	var rewritten []byte
-	if len(frame.Error) > 0 {
-		rewritten = payload
-	} else if len(frame.Result) == 0 {
-		return nil, fmt.Errorf("JSON-RPC response 缺少 result")
-	} else if !isPermissionsApprovalMethod(request.method) {
-		rewritten = payload
-	} else {
+	if isPermissionsApprovalMethod(request.method) {
 		var err error
-		rewritten, err = rewriteGatewayPermissionsApprovalResponse(payload)
+		rewritten, err = rewriteGatewayPermissionsApprovalResponse(payload, request.requestedPermissions)
 		if err != nil {
 			return nil, err
 		}
+	} else if len(frame.Error) > 0 {
+		rewritten = payload
+	} else if len(frame.Result) == 0 {
+		return nil, fmt.Errorf("JSON-RPC response 缺少 result")
+	} else {
+		rewritten = payload
 	}
-	// 只有 external guard、response 结构和必要改写全部成功后才消费 pending。
+	// 只有 response 结构和必要改写全部成功后才消费 pending。
 	// 坏帧或策略拒绝仍可重试，且断线重放仍对应真实 outstanding request。
 	if _, ok := p.consumePendingServerRequest(frame.ID); !ok {
 		return nil, fmt.Errorf("JSON-RPC response id 已被处理")
@@ -524,55 +414,23 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 	return rewritten, nil
 }
 
-func (p *appServerGatewayPolicy) guardExternalDesktopServerResponse(
-	request appServerGatewayPendingServerRequest,
-) error {
-	if p == nil || p.router == nil || normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
-		!strings.EqualFold(strings.TrimSpace(p.router.cfg.AppServer.Transport), "unix") {
-		// 独立 WS backend 与 Claude bridge 不共享 Desktop writer，保留原行为。
-		return nil
-	}
-	threadID := strings.TrimSpace(request.threadID)
-	if threadID == "" {
-		return fmt.Errorf("%s.threadId 缺失，无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
-	}
-	if request.gatewayOwnedTurn && strings.TrimSpace(request.turnID) != "" {
-		if p.router.externalActivity == nil {
-			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
-		}
-		activities, err := p.router.externalActivity.Snapshot()
-		if err != nil {
-			log.Printf("external activity guard unavailable: %v", err)
-			return fmt.Errorf("%s.threadId 暂时无法确认 Desktop 是否空闲，已拒绝响应：%w", request.method, errAppServerExternalActivityUnavailable)
-		}
-		for _, activity := range activities {
-			if strings.TrimSpace(activity.ThreadID) != threadID ||
-				!strings.EqualFold(strings.TrimSpace(activity.Source), "codex_desktop") ||
-				!strings.EqualFold(strings.TrimSpace(activity.State), "running") {
-				continue
-			}
-			if strings.TrimSpace(activity.TurnID) == strings.TrimSpace(request.turnID) {
-				// claim TTL 到期只会让同一个长时间等待审批的 iPad turn 被
-				// tracker 保守重分类为 Desktop；pending 上捕获的原始归属仍然
-				// 允许完成这一个 response。不同或缺失 TurnID 继续 fail-closed。
-				continue
-			}
-			return fmt.Errorf("%s.threadId 当前由 Codex Desktop 运行，请等待本轮结束后重试：%w", request.method, errAppServerExternalThreadActive)
-		}
-		return nil
-	}
-	return p.guardExternalDesktopThreadID(request.method, threadID, true)
-}
-
-func rewriteGatewayPermissionsApprovalResponse(payload []byte) ([]byte, error) {
+func rewriteGatewayPermissionsApprovalResponse(payload []byte, requested map[string]any) ([]byte, error) {
 	var frame map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	if err := decoder.Decode(&frame); err != nil {
 		return nil, fmt.Errorf("JSON-RPC response 无效")
 	}
+	granted := map[string]any{}
+	if result, ok := frame["result"].(map[string]any); ok {
+		if candidate, ok := result["permissions"].(map[string]any); ok {
+			if normalized, valid := sanitizedGatewayPermissionProfile(candidate); valid && gatewayJSONSubset(normalized, requested) {
+				granted = normalized
+			}
+		}
+	}
 	frame["result"] = map[string]any{
-		"permissions":      map[string]any{},
+		"permissions":      granted,
 		"scope":            "turn",
 		"strictAutoReview": true,
 	}
@@ -582,6 +440,234 @@ func rewriteGatewayPermissionsApprovalResponse(payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("重写 permissions approval response 失败：%w", err)
 	}
 	return rewritten, nil
+}
+
+func gatewayJSONSubset(candidate any, requested any) bool {
+	switch typed := candidate.(type) {
+	case map[string]any:
+		available, ok := requested.(map[string]any)
+		if !ok {
+			return len(typed) == 0
+		}
+		for key, value := range typed {
+			requestedValue, exists := available[key]
+			if !exists || !gatewayJSONSubset(value, requestedValue) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		available, ok := requested.([]any)
+		if !ok {
+			return len(typed) == 0
+		}
+		used := make([]bool, len(available))
+		for _, value := range typed {
+			matched := false
+			for index, requestedValue := range available {
+				if !used[index] && gatewayJSONSubset(value, requestedValue) {
+					used[index] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(candidate, requested)
+	}
+}
+
+func sanitizedGatewayPermissionProfile(raw map[string]any) (map[string]any, bool) {
+	if !gatewayObjectHasOnlyKeys(raw, "fileSystem", "network") {
+		return nil, false
+	}
+	safe := map[string]any{}
+	if value, exists := raw["fileSystem"]; exists && value != nil {
+		fileSystem, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		normalized, ok := sanitizedGatewayFileSystemPermissions(fileSystem)
+		if !ok {
+			return nil, false
+		}
+		safe["fileSystem"] = normalized
+	}
+	if value, exists := raw["network"]; exists && value != nil {
+		network, ok := value.(map[string]any)
+		if !ok || !gatewayObjectHasOnlyKeys(network, "enabled") {
+			return nil, false
+		}
+		normalized := map[string]any{}
+		if enabled, exists := network["enabled"]; exists && enabled != nil {
+			value, ok := enabled.(bool)
+			if !ok {
+				return nil, false
+			}
+			normalized["enabled"] = value
+		}
+		safe["network"] = normalized
+	}
+	return safe, true
+}
+
+func sanitizedGatewayFileSystemPermissions(raw map[string]any) (map[string]any, bool) {
+	if !gatewayObjectHasOnlyKeys(raw, "entries", "globScanMaxDepth", "read", "write") {
+		return nil, false
+	}
+	safe := map[string]any{}
+	for _, key := range []string{"read", "write"} {
+		value, exists := raw[key]
+		if !exists || value == nil {
+			continue
+		}
+		items, ok := value.([]any)
+		if !ok {
+			return nil, false
+		}
+		normalized := make([]any, 0, len(items))
+		for _, item := range items {
+			path, ok := item.(string)
+			path = strings.TrimSpace(path)
+			if !ok || path == "" || strings.ContainsRune(path, '\x00') {
+				return nil, false
+			}
+			normalized = append(normalized, path)
+		}
+		safe[key] = normalized
+	}
+	if value, exists := raw["globScanMaxDepth"]; exists && value != nil {
+		depth, ok := gatewayJSONNumberInt64(value)
+		if !ok || depth < 1 {
+			return nil, false
+		}
+		safe["globScanMaxDepth"] = depth
+	}
+	if value, exists := raw["entries"]; exists && value != nil {
+		items, ok := value.([]any)
+		if !ok {
+			return nil, false
+		}
+		normalized := make([]any, 0, len(items))
+		for _, item := range items {
+			entry, ok := item.(map[string]any)
+			if !ok || !gatewayObjectHasOnlyKeys(entry, "access", "path") {
+				return nil, false
+			}
+			access, ok := entry["access"].(string)
+			if !ok || (access != "read" && access != "write" && access != "deny") {
+				return nil, false
+			}
+			path, ok := entry["path"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			normalizedPath, ok := sanitizedGatewayFileSystemPath(path)
+			if !ok {
+				return nil, false
+			}
+			normalized = append(normalized, map[string]any{"access": access, "path": normalizedPath})
+		}
+		safe["entries"] = normalized
+	}
+	return safe, true
+}
+
+func sanitizedGatewayFileSystemPath(raw map[string]any) (map[string]any, bool) {
+	pathType, ok := raw["type"].(string)
+	if !ok {
+		return nil, false
+	}
+	switch pathType {
+	case "path":
+		path, ok := raw["path"].(string)
+		path = strings.TrimSpace(path)
+		if !ok || path == "" || strings.ContainsRune(path, '\x00') || !gatewayObjectHasOnlyKeys(raw, "type", "path") {
+			return nil, false
+		}
+		return map[string]any{"type": pathType, "path": path}, true
+	case "glob_pattern":
+		pattern, ok := raw["pattern"].(string)
+		if !ok || strings.TrimSpace(pattern) == "" || strings.ContainsRune(pattern, '\x00') || !gatewayObjectHasOnlyKeys(raw, "type", "pattern") {
+			return nil, false
+		}
+		return map[string]any{"type": pathType, "pattern": pattern}, true
+	case "special":
+		value, ok := raw["value"].(map[string]any)
+		if !ok || !gatewayObjectHasOnlyKeys(raw, "type", "value") {
+			return nil, false
+		}
+		normalized, ok := sanitizedGatewaySpecialFileSystemPath(value)
+		if !ok {
+			return nil, false
+		}
+		return map[string]any{"type": pathType, "value": normalized}, true
+	default:
+		return nil, false
+	}
+}
+
+func sanitizedGatewaySpecialFileSystemPath(raw map[string]any) (map[string]any, bool) {
+	kind, ok := raw["kind"].(string)
+	if !ok {
+		return nil, false
+	}
+	switch kind {
+	case "root", "minimal", "tmpdir", "slash_tmp":
+		if !gatewayObjectHasOnlyKeys(raw, "kind") {
+			return nil, false
+		}
+		return map[string]any{"kind": kind}, true
+	case "project_roots":
+		if !gatewayObjectHasOnlyKeys(raw, "kind", "subpath") {
+			return nil, false
+		}
+		safe := map[string]any{"kind": kind}
+		if subpath, exists := raw["subpath"]; exists && subpath != nil {
+			value, ok := subpath.(string)
+			if !ok || strings.ContainsRune(value, '\x00') {
+				return nil, false
+			}
+			safe["subpath"] = value
+		}
+		return safe, true
+	case "unknown":
+		if !gatewayObjectHasOnlyKeys(raw, "kind", "path", "subpath") {
+			return nil, false
+		}
+		path, ok := raw["path"].(string)
+		if !ok || strings.TrimSpace(path) == "" || strings.ContainsRune(path, '\x00') {
+			return nil, false
+		}
+		safe := map[string]any{"kind": kind, "path": path}
+		if subpath, exists := raw["subpath"]; exists && subpath != nil {
+			value, ok := subpath.(string)
+			if !ok || strings.ContainsRune(value, '\x00') {
+				return nil, false
+			}
+			safe["subpath"] = value
+		}
+		return safe, true
+	default:
+		return nil, false
+	}
+}
+
+func gatewayObjectHasOnlyKeys(value map[string]any, allowed ...string) bool {
+	set := make(map[string]struct{}, len(allowed))
+	for _, key := range allowed {
+		set[key] = struct{}{}
+	}
+	for key := range value {
+		if _, ok := set[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func isPermissionsApprovalMethod(method string) bool {
@@ -597,6 +683,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = map[string]any{}
 	case "skills/list":
 		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
+	case "permissionProfile/list":
+		sanitized = sanitizedGatewayPermissionProfileListParams(params, validated.cwd)
 	case "plugin/installed":
 		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
@@ -604,9 +692,17 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "thread/search":
 		sanitized = sanitizedGatewayThreadSearchParams(params)
 	case "thread/read":
-		sanitized = copyGatewayParams(params, "threadId", "includeTurns")
+		sanitized = map[string]any{"threadId": params["threadId"], "includeTurns": false}
 	case "thread/turns/list":
 		sanitized = sanitizedGatewayThreadTurnsListParams(params)
+	case "thread/items/list":
+		sanitized = copyGatewayParams(params, "threadId", "turnId", "cursor", "limit", "sortDirection")
+	case "thread/queue/list":
+		sanitized = copyGatewayParams(params, "threadId", "cursor", "limit")
+	case "thread/queue/add":
+		sanitized = copyGatewayParams(params, "threadId", "input", "clientUserMessageId")
+	case "thread/settings/update":
+		sanitized = sanitizedGatewayThreadSettingsParams(runtimeID, params, validated.cwd)
 	case "thread/goal/get", "thread/goal/clear":
 		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/goal/set":
@@ -633,7 +729,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	// 无 cwd thread/list 的连接级 opaque cursor 会在 capability 校验时就地
 	// 还原；即使 sanitized 与已变更的 params 相等，也必须重建 frame，不能把
 	// 客户端 token 从原始 payload 直接透传给 upstream。
-	if reflect.DeepEqual(params, sanitized) && method != "thread/list" {
+	if reflect.DeepEqual(params, sanitized) && method != "thread/list" && !validated.rewroteLocalImagePath {
 		return payload, nil
 	}
 	var frame map[string]any
@@ -667,6 +763,18 @@ func sanitizedGatewaySkillsListParams(params map[string]any, cwd string) map[str
 func sanitizedGatewayPluginInstalledParams(cwd string) map[string]any {
 	// @ 候选只需要当前授权工作区内已安装的插件；不开放安装建议，避免把只读入口变成安装入口。
 	return map[string]any{"cwds": []any{cwd}}
+}
+
+func sanitizedGatewayPermissionProfileListParams(params map[string]any, cwd string) map[string]any {
+	// 权限配置档案由当前工作区配置层解析；只保留受控 cwd 与分页字段。
+	safe := map[string]any{"cwd": cwd}
+	if cursor, ok := gatewayStringParam(params, "cursor"); ok {
+		safe["cursor"] = cursor
+	}
+	if limit, ok := gatewayJSONNumberInt64(params["limit"]); ok && limit >= 0 && limit <= 250 {
+		safe["limit"] = limit
+	}
+	return safe
 }
 
 func sanitizedGatewayGoalSetParams(params map[string]any) map[string]any {
@@ -784,7 +892,7 @@ func sanitizedGatewayThreadListParams(runtimeID string, params map[string]any) m
 }
 
 func sanitizedGatewayThreadSearchParams(params map[string]any) map[string]any {
-	// searchTerm 是唯一必填字段，统一 trim；其余只重建 0.144.2 schema 中的字段，
+	// searchTerm 是唯一必填字段，统一 trim；其余只重建 0.147.0 schema 中的字段，
 	// 未知字段一律丢弃，避免未来/恶意 JSON 绕过 gateway 的显式策略边界。
 	safe := copyGatewayParams(params, "cursor", "limit", "sortDirection", "sortKey", "archived", "sourceKinds")
 	if searchTerm, ok := params["searchTerm"].(string); ok {
@@ -1150,9 +1258,28 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
 		}
 	}
-	safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
-	workspaceWrite := normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
+	workspaceWrite := false
+	fullAccess := false
+	preserveSettings := method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params)
+	// 被动恢复只建立订阅，不能改写共享 Thread 的权限或审批设置。
+	// 用户明确修改设置时应单独调用 thread/settings/update。
+	if !preserveSettings {
+		if runtimeID == "codex" {
+			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+				safe["permissions"] = profileID
+				fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
+			} else {
+				safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
+				workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+				requestedSandbox, requestedSandboxOK := gatewayStringParam(params, "sandbox")
+				fullAccess = requestedSandboxOK && normalizePolicyValue(requestedSandbox) == "dangerfullaccess"
+			}
+		} else {
+			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
+			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+		}
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
+	}
 	return safe
 }
 
@@ -1199,10 +1326,29 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
 		safe["collaborationMode"] = collaborationMode
 	}
-	safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
-	sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
-	workspaceWrite := normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite)
+	workspaceWrite := false
+	fullAccess := false
+	preserveSettings := gatewayPreservesThreadPermissionSettings(params)
+	if !preserveSettings {
+		if runtimeID == "codex" {
+			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+				safe["permissions"] = profileID
+				fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
+			} else {
+				safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
+				sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
+				workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+				requestedSandbox, _ := params["sandboxPolicy"].(map[string]any)
+				requestedType, requestedTypeOK := gatewayStringParam(requestedSandbox, "type")
+				fullAccess = requestedTypeOK && normalizePolicyValue(requestedType) == "dangerfullaccess"
+			}
+		} else {
+			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
+			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
+			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+		}
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
+	}
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort
@@ -1210,8 +1356,35 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	return safe
 }
 
+func gatewayPreservesThreadPermissionSettings(params map[string]any) bool {
+	preserve, _ := params[gatewayPreserveThreadPermissionsParam].(bool)
+	return preserve
+}
+
 func sanitizedGatewayTurnSteerParams(params map[string]any) map[string]any {
 	return copyGatewayParams(params, "threadId", "input", "clientUserMessageId", "expectedTurnId")
+}
+
+func sanitizedGatewayThreadSettingsParams(runtimeID string, params map[string]any, cwd string) map[string]any {
+	safe := copyGatewayParams(params, "threadId", "cwd", "model", "serviceTier", "effort", "summary", "personality")
+	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
+		safe["collaborationMode"] = collaborationMode
+	}
+	workspaceWrite := false
+	fullAccess := false
+	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+		safe["permissions"] = profileID
+		fullAccess = strings.EqualFold(profileID, ":danger-full-access")
+	} else if value, exists := params["sandboxPolicy"]; exists && value != nil {
+		safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, value, cwd)
+		policy := safe["sandboxPolicy"].(map[string]any)
+		workspaceWrite = normalizePolicyValue(policy["type"].(string)) == "workspacewrite"
+		fullAccess = normalizePolicyValue(policy["type"].(string)) == "dangerfullaccess"
+	}
+	if _, exists := params["approvalPolicy"]; exists {
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
+	}
+	return safe
 }
 
 func logGatewayForwardedClientTurnSummary(method string, payload []byte) {
@@ -1374,12 +1547,17 @@ func sanitizedGatewayCollaborationMode(raw any) (map[string]any, bool) {
 	}, true
 }
 
-func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool) (string, string) {
+func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool, fullAccess bool) (string, string) {
 	policy, _ := gatewayStringParam(params, "approvalPolicy")
 	reviewer, _ := gatewayStringParam(params, "approvalsReviewer")
+	// 完全访问本身就是用户的显式无审批选择。旧版 App 仍会同时发送 on-request，
+	// Gateway 在这里归一化为 never；缺省 sandbox 不会被当成显式授权。
+	if fullAccess {
+		return "never", "user"
+	}
 	// 自动审批只允许在归一化后的 workspace-write 沙盒中生效。审批与沙盒在这里强绑定，
 	// 防止已认证客户端拼出 auto_review + danger-full-access 绕过用户确认。
-	// never / networkAccess 仍由 validateGatewayPolicyParams 统一拦截。
+	// networkAccess 仍由 validateGatewayPolicyParams 统一拦截。
 	if workspaceWrite && normalizePolicyValue(policy) == "onrequest" && reviewer == "auto_review" {
 		return "on-request", reviewer
 	}

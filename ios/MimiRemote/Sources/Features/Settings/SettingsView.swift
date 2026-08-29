@@ -114,6 +114,7 @@ struct SettingsView: View {
                 settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
             }
         }
+        .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
         // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
         // 重建，但不会再销毁负责呈现相机的宿主。
         .fullScreenCover(
@@ -144,6 +145,9 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func settingsContent(tokens: ThemeTokens, resolvedColorScheme: ColorScheme) -> some View {
+        // 顶层“我的”与会话、工作区共用画布；独立设置 sheet 继续保留主题背景。
+        let canvasBackground = showsDoneButton ? tokens.background : tokens.workbenchCanvasBackground
+
         Group {
             if isInitialSetup {
                 InitialPairingView(
@@ -151,10 +155,10 @@ struct SettingsView: View {
                     onRequestProfileRename: { profileRenamePresentation.present($0) }
                 )
             } else {
-                settingsForm(tokens: tokens)
+                settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
-                    .background(tokens.background.ignoresSafeArea())
+                    .background(canvasBackground.ignoresSafeArea())
             }
         }
         // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
@@ -214,7 +218,7 @@ struct SettingsView: View {
         )
     }
 
-    private func settingsForm(tokens: ThemeTokens) -> some View {
+    private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
         let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
 
@@ -352,18 +356,6 @@ struct SettingsView: View {
 
             Section {
                 NavigationLink {
-                    ExperimentalFeaturesSettingsView()
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.experimental_features"),
-                        value: L10n.text("ui.enable_on_mac"),
-                        systemImage: "flask"
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.experimentalFeatures")
-
-                NavigationLink {
                     DiagnosticsAndSupportSettingsView(
                         showsHistoryDiagnostics: developerModeEnabled
                     )
@@ -406,7 +398,8 @@ struct SettingsView: View {
         // 分组之间靠留白划分，行本身不再套在圆角白卡里。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .listRowBackground(Color.clear)
-        .themedSettingsForm(tokens: tokens)
+        .scrollContentBackground(.hidden)
+        .background(canvasBackground.ignoresSafeArea())
         // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
         .contentMargins(
             .bottom,
@@ -419,7 +412,6 @@ struct SettingsView: View {
                 return
             }
             let preflightSucceeded = await appStore.preflightConnection()
-            _ = await appStore.testConnectionOnFirstSettingsAppearanceIfNeeded()
             let hasConnectedStatus: Bool
             if case .connected = appStore.connectionStatus {
                 hasConnectedStatus = true
@@ -429,14 +421,11 @@ struct SettingsView: View {
             guard (preflightSucceeded || hasConnectedStatus), appStore.isConfigured else {
                 return
             }
-            // 用 channel/model 元数据判断 Claude 是否真正接入；设置页独立打开时也要刷新，
-            // 不能依赖用户先进入 Conversation 才出现 Claude 用量卡。
-            await sessionStore.refreshAppServerModelOptions()
-            await sessionStore.refreshCodexUsage()
-            if sessionStore.hasClaudeRuntimeChannel {
-                await sessionStore.refreshClaudeUsage()
-            }
-            await sessionStore.refreshAccountTokenUsage()
+            // 完整连接测速可能持续数秒。账号概览与它并行刷新，Token 活动才能及时命中
+            // agentd 的最近快照，不再长时间停留在“刷新后显示”的 idle 状态。
+            async let connectionTest: Bool = appStore.testConnectionOnFirstSettingsAppearanceIfNeeded()
+            async let accountOverview: Void = sessionStore.refreshSettingsAccountOverview()
+            _ = await (connectionTest, accountOverview)
             let hasNotLoadedInitialData = sessionStore.projects.isEmpty
                 && sessionStore.statusMessage == nil
             guard sessionStore.errorMessage != nil || hasNotLoadedInitialData else {
@@ -634,6 +623,8 @@ struct SettingsValueLabel: View {
 
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     let onRequestProfileRename: (ConnectionProfile) -> Void
@@ -648,7 +639,13 @@ private struct ConnectionManagementView: View {
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(themeStore.tokens(for: colorScheme).background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
+        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
         .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }
@@ -768,7 +765,7 @@ private struct ConnectionSpeedTestView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.connection_speed_test"))
         .tint(tokens.accent)
     }

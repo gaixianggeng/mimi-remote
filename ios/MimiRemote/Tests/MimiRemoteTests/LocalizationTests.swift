@@ -61,6 +61,15 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
+    func testRunningSessionCountAccessibilityCopyIsLocalized() {
+        let english = L10n.text("ui.running_sessions_count", language: .english)
+        let simplifiedChinese = L10n.text("ui.running_sessions_count", language: .simplifiedChinese)
+
+        XCTAssertEqual(L10n.formatTemplate(english, arguments: [1]), "Running sessions: 1")
+        XCTAssertEqual(L10n.formatTemplate(english, arguments: [3]), "Running sessions: 3")
+        XCTAssertEqual(L10n.formatTemplate(simplifiedChinese, arguments: [3]), "正在运行的会话：3")
+    }
+
     func testToolActivitySemanticLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
             ("ui.query_linear_issues", "Query Linear issues", "查询 Linear Issue"),
@@ -90,8 +99,6 @@ final class LocalizationTests: XCTestCase {
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
             ("ui.experimental_features", "Experimental Features", "实验功能"),
-            ("ui.enable_on_mac", "Enable on Mac", "在 Mac 上开启"),
-            ("ui.how_to_enable_on_mac", "How to enable on Mac", "如何在 Mac 上开启"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
@@ -103,34 +110,22 @@ final class LocalizationTests: XCTestCase {
         }
     }
 
-    func testCodexDesktopExperimentGuideHasCompleteLocalizedSteps() {
-        let expectedEnglish = [
-            "Click the Mimi icon in the Mac menu bar.",
-            "Choose Experimental Features…",
-            "Turn on Share Codex Desktop sessions (experimental).",
-            "Save any running tasks. In the Mac experiment window, choose Apply Settings and Fully Restart Codex Desktop, then confirm.",
-            "When the status says Environment configured, continue the same idle session once to verify sharing.",
-        ]
-        let expectedChinese = [
-            "在 Mac 菜单栏中点按 Mimi 图标。",
-            "选择“实验功能…”。",
-            "开启“共享 Codex Desktop 会话（实验）”。",
-            "保存正在运行的任务，然后在 Mac 的实验功能窗口中点击“应用设置并完全重启 Codex Desktop”，并确认应用。",
-            "确认状态显示“环境已配置”，再用同一条空闲会话完成一次跨端续写验证。",
-        ]
-
-        XCTAssertEqual(CodexDesktopExperimentGuide.stepKeys.count, 5)
+    func testActiveWriterConflictExplainsRecoveryAction() {
         XCTAssertEqual(
-            CodexDesktopExperimentGuide.stepKeys.map {
-                L10n.text($0, language: .english)
-            },
-            expectedEnglish
+            L10n.text("ui.codex_active_writer_conflict", language: .english),
+            "Close the session in the other app before continuing here."
         )
         XCTAssertEqual(
-            CodexDesktopExperimentGuide.stepKeys.map {
-                L10n.text($0, language: .simplifiedChinese)
-            },
-            expectedChinese
+            L10n.text("ui.codex_active_writer_conflict", language: .simplifiedChinese),
+            "请先在那边关闭会话，才能在这里继续。"
+        )
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in another app")
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在另一个应用中打开")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
+        XCTAssertEqual(
+            L10n.text("ui.this_session_contains_large_images_or_tool_output", language: .simplifiedChinese),
+            "已显示最近记录。较大的图片和工具输出暂未加载。"
         )
     }
 

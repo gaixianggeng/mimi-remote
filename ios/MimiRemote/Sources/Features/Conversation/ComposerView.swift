@@ -91,7 +91,7 @@ struct ComposerView: View {
 
         // 外层保持透明，由底部输入面板承担唯一主表面；面板内部依靠实色和间距分组，
         // 不再叠加玻璃材质、键帽高光或投影。
-        VStack(alignment: .leading, spacing: 10) {
+        let presentedContent = VStack(alignment: .leading, spacing: 10) {
             queuedTurnTray
             // iPhone 把会话状态并入唯一 Composer 外壳；iPad 继续使用独立托盘，
             // 保留宽屏上的信息密度与既有收起布局。
@@ -107,6 +107,7 @@ struct ComposerView: View {
                 .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
+            sharedThreadSettingsNotice
             composerInputRow(tokens: tokens)
         }
         // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
@@ -226,6 +227,8 @@ struct ComposerView: View {
         } message: { issue in
             Text(issue.message)
         }
+
+        let scopeObservedContent = presentedContent
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -237,7 +240,7 @@ struct ComposerView: View {
             showsAdvancedOptionsSheet = false
         }
         .onChange(of: defaultPermissionModeID) { _, _ in
-            applyDefaultPermissionMode()
+            applyDefaultPermissionModeForActiveScope()
         }
         .onChange(of: voiceInputProviderRawValue) { _, _ in
             // 提供方变化是语音会话边界；旧引擎的迟到结果不能写入新选择下的草稿。
@@ -245,10 +248,19 @@ struct ComposerView: View {
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
+            enforceComposerTurnSettingsPolicy()
+            Task { @MainActor in
+                await refreshPermissionProfilesForCurrentCWD()
+            }
+        }
+        .onChange(of: composerTurnSettingsPolicy) { _, _ in
+            enforceComposerTurnSettingsPolicy()
         }
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
+
+        let observedContent = scopeObservedContent
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
@@ -284,10 +296,23 @@ struct ComposerView: View {
             }
             clampModelSelectionToSelectedSessionRuntime()
         }
+
+        return observedContent
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
             if !canGuide {
                 guidedFollowUpEnabled = false
             }
+        }
+        .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
+            guard let boundary,
+                  activeComposerDraftScope == .session(boundary.sessionID) else {
+                return
+            }
+            composerState.markPermissionSelectionApplied(boundary.permissionSelection)
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
         }
         .onChange(of: sessionStore.selectedSessionID) { _, _ in
             // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后恢复安全的
@@ -302,18 +327,14 @@ struct ComposerView: View {
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
         .task {
-            switchComposerDraftScope(to: currentComposerDraftScope)
-            clampModelSelectionToSelectedSessionRuntime()
-            applyDefaultPermissionMode()
-            voiceInput.prewarm()
-            await sessionStore.refreshAppServerModelOptions()
-            await sessionStore.refreshCapabilities()
+            await prepareComposer()
         }
         .onDisappear {
             synchronizeComposerTextBeforeDraftScopeChange()
@@ -322,9 +343,35 @@ struct ComposerView: View {
                 composerState.modelSelectionSnapshot(),
                 for: activeComposerDraftScope
             )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
+    }
+
+    @MainActor
+    private func prepareComposer() async {
+        switchComposerDraftScope(to: currentComposerDraftScope)
+        clampModelSelectionToSelectedSessionRuntime()
+        restoreComposerPermissionSelection(for: currentComposerDraftScope)
+        voiceInput.prewarm()
+        await sessionStore.refreshAppServerModelOptions()
+        await sessionStore.refreshCapabilities()
+        await refreshPermissionProfilesForCurrentCWD()
+    }
+
+    @MainActor
+    private func refreshPermissionProfilesForCurrentCWD() async {
+        let requestedCWD = permissionProfileCWD
+        await sessionStore.refreshPermissionProfiles(cwd: requestedCWD)
+        guard !Task.isCancelled,
+              requestedCWD == permissionProfileCWD,
+              sessionStore.permissionProfilesCWD == requestedCWD
+        else { return }
+        clampPermissionProfileToAvailableOptions()
     }
 
     @discardableResult
@@ -357,15 +404,17 @@ struct ComposerView: View {
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
-            let accepted = await sessionStore.sendTurn(submitted.payload, runningDelivery: runningDelivery)
+            let accepted = await sessionStore.sendTurn(
+                submitted.payload,
+                runningDelivery: runningDelivery,
+                permissionSelection: submitted.permissionSelection
+            )
             if !accepted {
                 await MainActor.run {
                     restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
                 }
             } else {
                 await MainActor.run {
-                    // 提交时已经同步清过对应 cache。这里不能再次删除，否则发送期间
-                    // 输入的下一条草稿会被成功回调误删。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -402,7 +451,8 @@ struct ComposerView: View {
             let accepted = await sessionStore.startGoalTurn(
                 payload: submitted.payload,
                 objective: objective,
-                runningDelivery: runningDelivery
+                runningDelivery: runningDelivery,
+                permissionSelection: submitted.permissionSelection
             )
             if !accepted {
                 await MainActor.run {
@@ -410,7 +460,6 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    // 与普通发送保持一致：成功回调不二次触碰草稿 cache。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -440,6 +489,33 @@ struct ComposerView: View {
         )
     }
 
+    var composerTurnSettingsPolicy: ComposerTurnSettingsPolicy {
+        let scope = currentComposerDraftScope
+        guard case .session(let sessionID) = scope,
+              let session = sessionStore.selectedSession,
+              session.id == sessionID else {
+            return .editable
+        }
+        return ComposerTurnSettingsPolicy.resolve(
+            scope: scope,
+            sessionRuntimeProvider: normalizedRuntimeProvider(session.runtimeProvider ?? session.source),
+            isLocalSession: session.source == "local",
+            isArchivedSession: sessionStore.isSessionArchived(sessionID)
+        )
+    }
+
+    func enforceComposerTurnSettingsPolicy() {
+        guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return
+        }
+        showsModelGridPicker = false
+        showsAdvancedOptionsSheet = false
+        showsAddContentPanel = false
+        if composerState.isPlanModeSelected {
+            setSendMode(.standard)
+        }
+    }
+
     func switchComposerDraftScope(to nextScope: ComposerDraftScopeKey) {
         guard activeComposerDraftScope != nextScope else {
             return
@@ -455,25 +531,29 @@ struct ComposerView: View {
         synchronizeComposerTextBeforeDraftScopeChange()
         let outgoingDraft = composerState.draftSnapshot()
         let outgoingModelSelection = composerState.modelSelectionSnapshot()
+        let outgoingPermissionSelection = composerState.permissionSelectionSnapshot()
         sessionStore.saveComposerDraft(outgoingDraft, for: previousScope)
         sessionStore.saveComposerModelSelection(outgoingModelSelection, for: previousScope)
+        sessionStore.saveComposerPermissionSelection(outgoingPermissionSelection, for: previousScope)
         if isOptimisticHandoff {
             // local:* 只是创建接口返回前的临时身份。服务端 ID 回来时迁移当前可见草稿，
             // 避免用户正在输入的追加指令和模型选择被新 scope 的默认值覆盖。
             sessionStore.saveComposerDraft(outgoingDraft, for: nextScope)
             sessionStore.saveComposerModelSelection(outgoingModelSelection, for: nextScope)
+            sessionStore.saveComposerPermissionSelection(outgoingPermissionSelection, for: nextScope)
             sessionStore.removeComposerDraft(for: previousScope)
             sessionStore.removeComposerModelSelection(for: previousScope)
+            sessionStore.removeComposerPermissionSelection(for: previousScope)
         }
         cancelVoiceInteraction(clearStatus: true)
 
-        applyDefaultPermissionMode()
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
         restoreComposerModelSelection(for: nextScope)
+        restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
@@ -510,6 +590,26 @@ struct ComposerView: View {
         composerState.updateTurnOptions { options in
             applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
         }
+    }
+
+    func restoreComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
+        if let snapshot = sessionStore.composerPermissionSelection(for: scope) {
+            composerState.restorePermissionSelectionSnapshot(snapshot)
+        } else if case .session(let sessionID) = scope,
+                  let boundary = sessionStore.latestPendingPermissionTurnBoundary(for: sessionID) {
+            // 重启后恢复最后一次提交的选择；FIFO 仍由 SessionStore 从第一条边界开始推进。
+            composerState.restorePermissionSelectionSnapshot(boundary.permissionSelection)
+        } else if case .session(let sessionID) = scope,
+                  !sessionID.hasPrefix("local:"),
+                  selectedSessionRuntimeProviderForModelMenu != "claude" {
+            composerState.preserveThreadPermissionSettings()
+        } else {
+            applyDefaultPermissionMode()
+        }
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: scope
+        )
     }
 
     func resetComposerSendModeAfterSubmit() {
@@ -586,10 +686,11 @@ struct ComposerView: View {
     }
 
     var canUseGuidedFollowUp: Bool {
-        guard let session = sessionStore.selectedSession else {
-            return false
-        }
-        return canChooseRunningFollowUpDelivery && session.activeTurnID != nil
+        guard let session = sessionStore.selectedSession else { return false }
+        return canChooseRunningFollowUpDelivery
+            && session.activeTurnID != nil
+            && !composerState.permissionSelectionRequiresNewTurn
+            && !sessionStore.hasPendingPermissionTurnBoundaryForSelectedSession
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -972,43 +1073,21 @@ struct ComposerView: View {
         shape: RoundedRectangle,
         tokens: ThemeTokens
     ) -> some View {
-        if colorScheme == .light {
-            if reduceTransparency || colorSchemeContrast == .increased {
-                // 增强对比度靠实线边界定义卡片，阴影保持克制，避免和描边叠成脏边。
-                shape
-                    .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
-            } else if isPhoneComposer {
-                // Material 必须保持完整强度才能真正采样并虚化后方正文；不能直接给
-                // Material 加 opacity，那会把已经合成的模糊结果重新混回清晰背景。
-                // 顶部使用 soft scroll edge，Composer 降到更轻一档的 thinMaterial；
-                // 亮度仍由单层轻 tint 稳住，避免繁忙正文重新穿透成可读文字。
-                shape
-                    .fill(.thinMaterial)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(0.14))
-                    }
-                    .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.05), radius: 8, y: 3)
-            } else {
-                // 输入卡和侧栏共用清晰白色；短接触阴影收住边缘，轻环境阴影只表达少量浮起。
-                // 半径与偏移刻意收紧，避免 r20 / y10 在暖底上形成第三圈模糊白色。
-                shape
-                    .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
-                    .shadow(color: Color.black.opacity(0.035), radius: 8, y: 3)
-            }
-        } else if reduceTransparency {
-            shape.fill(tokens.elevatedSurface)
-        } else {
-            // 深色输入区继续作为底部唯一的功能材质层；这次只收敛已确认有问题的浅色层级，
-            // 避免连带改变已完成运行态验收的深色 Composer。
-            shape
-                .fill(.thinMaterial)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(0.46))
-                }
-        }
+        // 输入卡是实色面，不是材质层。
+        //
+        // 正文由 `safeAreaInset` 让位，卡片后方压根没有内容可供 Material 采样折射；
+        // 之前那层 Material + tint + 两道阴影只在暖白画布上折射出第三圈模糊白边，
+        // 花了成本却买不到任何虚化。参考实现（Claude iOS）同样是一块实色近白面，
+        // 只靠单层柔和阴影与画布分离，这里对齐同一档质感。
+        let fill = colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+        // 增强对比度时边界交给描边，阴影再压一档，避免和实线描边叠成脏边。
+        let shadowOpacity: Double = colorSchemeContrast == .increased
+            ? 0.05
+            : (colorScheme == .light ? 0.06 : 0.22)
+
+        shape
+            .fill(fill)
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
     }
 
     func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
@@ -1167,7 +1246,7 @@ struct ComposerView: View {
         if composerState.isGoalModeSelected {
             return sessionStore.selectedThreadGoal == nil ? L10n.text("ui.describe_the_target_task") : L10n.text("ui.request_subsequent_changes_to_goals")
         }
-        if composerState.isPlanModeSelected {
+        if composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected {
             return L10n.text("ui.describe_the_issues_to_plan_for_first")
         }
         if canChooseRunningFollowUpDelivery {
@@ -1200,7 +1279,9 @@ struct ComposerView: View {
         } else {
             HStack(spacing: 10) {
                 addContentButton
-                modelPickerControl
+                if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                    modelPickerControl
+                }
                 followUpDeliveryMenu
                 Spacer(minLength: 0)
                 composerOptionsMenu
@@ -1265,7 +1346,10 @@ struct ComposerView: View {
 
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
-        AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
+        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
 
     @inline(never)
@@ -1277,20 +1361,20 @@ struct ComposerView: View {
     func compactToolControlsBox() -> AnyView {
         return AnyView(
             CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(showsRestingSurface: true),
-                microphoneControl: compactMicrophoneControlBox(showsRestingSurface: true)
+                optionsControl: compactOptionsControlBox(),
+                microphoneControl: compactMicrophoneControlBox()
             )
         )
     }
 
     @inline(never)
-    func compactOptionsControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(composerOptionsMenu(showsRestingSurface: showsRestingSurface))
+    func compactOptionsControlBox() -> AnyView {
+        AnyView(composerOptionsMenu)
     }
 
     @inline(never)
-    func compactMicrophoneControlBox(showsRestingSurface: Bool) -> AnyView {
-        AnyView(voiceMicControl(showsRestingSurface: showsRestingSurface))
+    func compactMicrophoneControlBox() -> AnyView {
+        AnyView(voiceMicControl)
     }
 
     @inline(never)
@@ -1299,23 +1383,21 @@ struct ComposerView: View {
     }
 
     var composerOptionsMenu: some View {
-        composerOptionsMenu(showsRestingSurface: true)
-    }
-
-    func composerOptionsMenu(showsRestingSurface: Bool) -> some View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
-            runSettingsMenu
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                runSettingsMenu
 
-            Divider()
+                Divider()
 
-            Button {
-                setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
-            } label: {
-                Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                Button {
+                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                } label: {
+                    Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                }
+                .accessibilityIdentifier("composer.mode.plan")
             }
-            .accessibilityIdentifier("composer.mode.plan")
 
             Button {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
@@ -1332,8 +1414,8 @@ struct ComposerView: View {
             composerToolbarControlLabel(
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
                 systemImage: "slider.horizontal.3",
-                isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
-                showsRestingSurface: showsRestingSurface,
+                isSelected: (composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected)
+                    || composerState.isGoalModeSelected,
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
@@ -1346,7 +1428,7 @@ struct ComposerView: View {
 
     var composerOptionsAccessibilityValue: String {
         var values: [String] = []
-        if composerState.isPlanModeSelected {
+        if composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected {
             values.append(L10n.text("ui.planning_mode"))
         } else if composerState.isGoalModeSelected {
             values.append(L10n.text("ui.target_task"))
@@ -1364,10 +1446,6 @@ struct ComposerView: View {
     }
 
     var voiceMicControl: some View {
-        voiceMicControl(showsRestingSurface: true)
-    }
-
-    func voiceMicControl(showsRestingSurface: Bool) -> some View {
         VoiceMicButton(
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
@@ -1376,7 +1454,6 @@ struct ComposerView: View {
             onTap: {
                 toggleVoiceInput()
             },
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer
         )
         .layoutPriority(0)
@@ -1408,8 +1485,10 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
             }
-            hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
-                setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
+                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                }
             }
         }
         .frame(width: 0, height: 0)
@@ -1530,6 +1609,9 @@ struct ComposerView: View {
     }
 
     func setSendMode(_ mode: ComposerSendMode) {
+        guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return
+        }
         composerState.setSendMode(mode)
         let scope = activeComposerDraftScope == .none ? currentComposerDraftScope : activeComposerDraftScope
         persistComposerSendMode(mode, for: scope)
@@ -1542,7 +1624,6 @@ struct ComposerView: View {
         isSelected: Bool = false,
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
-        showsRestingSurface: Bool = true,
         usesCondensedTitle: Bool = false,
         accessibilityLabel: String
     ) -> some View {
@@ -1554,7 +1635,6 @@ struct ComposerView: View {
             tint: tint,
             titleMaxWidth: titleMaxWidth,
             accessibilityLabel: accessibilityLabel,
-            showsRestingSurface: showsRestingSurface,
             usesPhoneStyle: isPhoneComposer,
             usesCondensedTitle: usesCondensedTitle
         )
@@ -1608,13 +1688,6 @@ struct ComposerView: View {
                         .fill(isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear)
                         .padding(4)
                 }
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: usesCompactComposerMetrics ? 22 : 12,
-                        isEmphasized: isGuidedSelected
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1722,35 +1795,19 @@ struct ComposerView: View {
     }
 
     var permissionMenu: some View {
-        Menu {
-            Section(L10n.text("ui.permission_mode")) {
-                ForEach(availablePermissionModes) { mode in
-                    Button {
-                        setPermissionMode(mode)
-                    } label: {
-                        Label(
-                            mode.title,
-                            systemImage: composerState.permissionMode == mode ? "checkmark" : mode.systemImage
-                        )
-                    }
-                    .accessibilityHint(mode.detail)
-                }
-            }
-            Section(L10n.text("ui.current_effect")) {
-                Text(composerState.permissionMode.detail)
-                Text(permissionWireSummary)
-            }
-        } label: {
-            composerToolbarControlLabel(
-                title: composerState.permissionMode.title,
-                systemImage: composerState.permissionMode.systemImage,
-                tint: permissionTint,
-                accessibilityLabel: L10n.text("ui.permission_mode")
-            )
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.permission_mode"))
-        .accessibilityValue(permissionTitle)
+        ComposerPermissionMenu(
+            permissionModes: availablePermissionModes,
+            permissionProfiles: availablePermissionProfiles,
+            selectedMode: composerState.permissionMode,
+            selectedProfileID: selectedPermissionProfileID,
+            activeProfileID: activePermissionProfile?.id,
+            permissionAccessibilityValue: permissionTitle,
+            tint: permissionTint,
+            reduceMotion: reduceMotion,
+            usesPhoneStyle: isPhoneComposer,
+            onSelectMode: { setPermissionMode($0) },
+            onSelectProfile: { setPermissionProfile($0) }
+        )
     }
 
     // 录音/准备/转写的实时状态，作为状态行中段的胶囊。波形单独订阅 levelMeter，
@@ -1818,44 +1875,6 @@ struct ComposerView: View {
         }
         .fixedSize(horizontal: true, vertical: false)
         .transition(.scale(scale: 0.9).combined(with: .opacity))
-    }
-
-    func applyDefaultPermissionMode() {
-        let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
-        composerState.applyPermissionMode(safePermissionMode(stored))
-    }
-
-    func setPermissionMode(_ mode: ComposerPermissionMode) {
-        let safeMode = safePermissionMode(mode)
-        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
-        if selectedSessionRuntimeProviderForModelMenu != "claude" {
-            defaultPermissionModeID = safeMode.rawValue
-        }
-        composerState.applyPermissionMode(safeMode)
-    }
-
-    var availablePermissionModes: [ComposerPermissionMode] {
-        if selectedSessionRuntimeProviderForModelMenu == "claude" {
-            return [.requestApproval, .readOnly, .autoApprove]
-        }
-        return ComposerPermissionMode.allCases
-    }
-
-    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
-        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
-        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
-        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
-        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .autoApprove
-            : mode
-    }
-
-    func clampPermissionSelectionToSelectedSessionRuntime() {
-        let safeMode = safePermissionMode(composerState.permissionMode)
-        guard safeMode != composerState.permissionMode else {
-            return
-        }
-        composerState.applyPermissionMode(safeMode)
     }
 
 }

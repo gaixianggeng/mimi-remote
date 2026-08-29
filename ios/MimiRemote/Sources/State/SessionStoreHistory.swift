@@ -23,6 +23,7 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         resume: AgentSession?,
         clientMessageID: ClientMessageID? = nil,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
@@ -74,6 +75,39 @@ extension SessionStore {
             clientMessageID: clientMessageID,
             prompt: prompt
         )
+        var registeredPermissionBoundaryClientMessageID: ClientMessageID?
+        if permissionSelection?.requiresNewTurn == true,
+           let permissionSelection,
+           let clientMessageID,
+           let optimisticSessionID {
+            guard mutateAndPersistQueuedTurns({
+                pendingPermissionTurnBoundariesBySessionID[optimisticSessionID, default: []].append(
+                    PendingPermissionTurnBoundary(
+                        sessionID: optimisticSessionID,
+                        clientMessageID: clientMessageID,
+                        permissionSelection: permissionSelection
+                    )
+                )
+            }) else {
+                return false
+            }
+            registeredPermissionBoundaryClientMessageID = clientMessageID
+        }
+        defer {
+            if let registeredPermissionBoundaryClientMessageID {
+                _ = mutateAndPersistQueuedTurns {
+                    guard let location = pendingPermissionTurnBoundaryLocation(
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    ) else {
+                        return
+                    }
+                    _ = removePendingPermissionTurnBoundary(
+                        sessionID: location.sessionID,
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    )
+                }
+            }
+        }
         var optimisticSelectionLease: SessionSelectionLease?
         if let optimisticSessionID {
             // 本地草稿或带首轮输入的新会话先发布运行态占位；服务端确认后再用
@@ -118,6 +152,13 @@ extension SessionStore {
                 clientMessageID: clientMessageID
             ))
             let responseSession = self.session(response.session, in: workspace)
+            let queuesInitialInput = response.requiresQueuedInitialInput == true
+            if let clientMessageID {
+                migratePendingPermissionTurnBoundary(
+                    clientMessageID: clientMessageID,
+                    to: responseSession.id
+                )
+            }
 
             if let optimisticSessionID,
                optimisticSessionID != responseSession.id {
@@ -146,16 +187,31 @@ extension SessionStore {
             }
             upsert(responseSession)
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
-            if !payload.isEmpty, let activeTurnID = responseSession.activeTurnID {
-                // create/resume 内部的 turn/start 已由 app-server 接受；在历史补拉前登记，
-                // 防止同一 Desktop-origin rollout 的轮询快照把本轮误判成 Mac 接管。
-                recordLocallyStartedTurn(
-                    sessionID: responseSession.id,
-                    turnID: activeTurnID,
-                    restoreSelectedConnection: false
-                )
-            }
             insertExpandedProjectID(responseSession.projectID)
+
+            if queuesInitialInput, let clientMessageID {
+                let intent: QueuedTurnIntent = payload.options.collaborationMode == .plan
+                    ? .plan
+                    : .standard
+                let item = QueuedTurnEntry(
+                    sessionID: responseSession.id,
+                    projectID: responseSession.projectID,
+                    payload: payload,
+                    clientMessageID: clientMessageID,
+                    intent: intent,
+                    expectedTurnID: responseSession.activeTurnID,
+                    requiresFreshTurn: permissionSelection?.requiresNewTurn == true ? true : nil
+                )
+                guard mutateAndPersistQueuedTurns({
+                    if queuedRunningTurnsBySessionID[responseSession.id]?.contains(where: {
+                        $0.clientMessageID == clientMessageID
+                    }) != true {
+                        queuedRunningTurnsBySessionID[responseSession.id, default: []].append(item)
+                    }
+                }) else {
+                    throw AgentAPIError.invalidResponse
+                }
+            }
 
             let responseSelectionLease: SessionSelectionLease?
             if let optimisticSessionID, let optimisticSelectionLease {
@@ -202,7 +258,7 @@ extension SessionStore {
                 // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
                 didLoadInitialHistory = false
             }
-            if !prompt.isEmpty {
+            if !prompt.isEmpty, !queuesInitialInput {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -216,7 +272,7 @@ extension SessionStore {
                     )
                 }
                 setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
-            } else {
+            } else if prompt.isEmpty {
                 conversationStore.appendSystem(L10n.text("ui.an_interactive_session_has_been_started"), sessionID: responseSession.id)
             }
             if let firstMessage = response.firstMessage {
@@ -236,6 +292,13 @@ extension SessionStore {
                 setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
                 setErrorMessage(nil)
             }
+            if queuesInitialInput {
+                // thread/start 等待期间即使用户切换了会话，首条输入也已持久化，
+                // 必须用独立会话监听继续 queue/add，不能依赖当前 selection。
+                ensureQueuedSessionMonitoring(sessionID: responseSession.id)
+                dispatchNextQueuedRunningTurnIfIdle(sessionID: responseSession.id)
+            }
+            registeredPermissionBoundaryClientMessageID = nil
             return true
         } catch {
             if case CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -293,6 +356,8 @@ extension SessionStore {
             }
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
+                // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
+                // Composer 仍会错误地保持可发送状态。
                 setErrorMessage(error.localizedDescription)
             }
             return false
@@ -475,8 +540,6 @@ extension SessionStore {
         let job = HistoryLoadJob(
             token: jobToken,
             sessionSignature: signature,
-            externalActivityRevision: externalActivityBySessionID[session.id]?.revision,
-            externalActivityTurnID: externalActivityBySessionID[session.id]?.turnID,
             loadMode: loadMode,
             cachePolicy: cachePolicy,
             recoveryGeneration: recoveryGeneration,
@@ -640,18 +703,6 @@ extension SessionStore {
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
-        if job.loadMode == .full,
-           let activityRevision = job.externalActivityRevision,
-           let activityTurnID = job.externalActivityTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !activityTurnID.isEmpty,
-           externalActivityBySessionID[sessionID]?.revision == activityRevision,
-           externalActivityBySessionID[sessionID]?.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) == activityTurnID,
-           result.page.messages.contains(where: { $0.turnID == activityTurnID }) {
-            externalActivityHistoryRevisionBySessionID[sessionID] = activityRevision
-            // 手动/恢复 full 再次成功后，撤销此前的 turn 级降级，后续 revision 可恢复 latest full。
-            externalActivityHistoryAttemptBySessionID.removeValue(forKey: sessionID)
-            externalActivityHistoryFallbackBySessionID.removeValue(forKey: sessionID)
-        }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -729,16 +780,6 @@ extension SessionStore {
                 }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
                     deferredFullHistorySessionIDs.insert(sessionID)
-                    if let revision = job.externalActivityRevision {
-                        recordExternalActivityHistoryFallback(
-                            sessionID: sessionID,
-                            attempt: ExternalActivityHistoryAttempt(
-                                revision: revision,
-                                turnID: normalizedExternalActivityTurnID(job.externalActivityTurnID)
-                            ),
-                            mode: .economy
-                        )
-                    }
                 }
                 let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
@@ -757,27 +798,7 @@ extension SessionStore {
                     noticeMessageOverride: effectiveQuiet ? nil : message
                 )
             case .economy where policyFailure.reason == "history_response_too_large":
-                if let revision = job.externalActivityRevision {
-                    let turnID = normalizedExternalActivityTurnID(job.externalActivityTurnID)
-                    let attempt = ExternalActivityHistoryAttempt(revision: revision, turnID: turnID)
-                    if turnID == nil {
-                        // 未知 turn 不能使用跨 revision 的 `.skip`，否则运行中的后续输出会永久冻结。
-                        // 保留既有 economy fallback，仅记住本 revision 已尝试；新 revision 仍只重试 economy。
-                        recordExternalActivityHistoryAttempt(
-                            sessionID: sessionID,
-                            attempt: attempt,
-                            hostScope: appStore.activeHostScope
-                        )
-                    } else {
-                        // economy 也确定超限后，同一 turn 的 revision churn 只能跳过网络对账；
-                        // 新 turn 与 terminal 会清理该降级并恢复 full。
-                        recordExternalActivityHistoryFallback(
-                            sessionID: sessionID,
-                            attempt: attempt,
-                            mode: .skip
-                        )
-                    }
-                }
+                break
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
@@ -1200,6 +1221,10 @@ extension SessionStore {
             page.messages,
             sessionID: sessionID,
             authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+        )
+        reconcilePendingPermissionTurnBoundaries(
+            sessionID: sessionID,
+            historyMessages: page.messages
         )
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }
@@ -2190,8 +2215,8 @@ extension SessionStore {
                 disconnectWebSocket()
             }
         } else if autoAttach {
-            // 非运行会话回前台也重新订阅：连接重建后 resume 的权威状态能纠正误判，
-            // 期间完成的输出走状态级回放 + 静默补拉，不再依赖手动刷新。
+            // 非运行会话回前台仍恢复页面连接。连接只读取持久化历史；发送时再由 gateway
+            // 按当前 owner 建立写入路径，期间完成的输出由静默补拉兜底。
             connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
             scheduleQuietHistoryRefresh(for: session)
         } else if connectedSessionID != nil {
@@ -3337,15 +3362,6 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
-        externalActivityHistoryRevisionBySessionID = externalActivityHistoryRevisionBySessionID.filter {
-            validSessionIDs.contains($0.key)
-        }
-        externalActivityHistoryAttemptBySessionID = externalActivityHistoryAttemptBySessionID.filter {
-            validSessionIDs.contains($0.key)
-        }
-        externalActivityHistoryFallbackBySessionID = externalActivityHistoryFallbackBySessionID.filter {
-            validSessionIDs.contains($0.key)
-        }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {
@@ -3379,9 +3395,6 @@ extension SessionStore {
         let runtimeActivities = runtimeActivityBySessionID.filter { validSessionIDs.contains($0.key) }
         if runtimeActivities != runtimeActivityBySessionID {
             runtimeActivityBySessionID = runtimeActivities
-        }
-        locallyStartedTurnIDBySessionID = locallyStartedTurnIDBySessionID.filter {
-            validSessionIDs.contains($0.key)
         }
     }
 

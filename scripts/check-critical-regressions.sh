@@ -73,6 +73,8 @@ grep -Fq -- '-only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests'
   || fail "iOS runner 未选择会话生命周期连续性回归。"
 grep -Fq 'SessionListLifecycleCoordinatorTests' "$map_doc" \
   || fail "${map_doc} 未记录会话生命周期连续性回归。"
+grep -Fq -- '-only-testing:MimiRemoteTests/SessionListPresentationTests' "$runner" \
+  || fail "iOS runner 未选择会话列表展示回归。"
 grep -Fq 'func TestFileUploadCapabilityRolloutMatrix(' \
   internal/httpapi/capability_rollout_test.go \
   || fail "Go 缺少 capability enabled/disabled/dependency 矩阵。"
@@ -100,7 +102,7 @@ critical_swift_tests=(
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeTests.swift|testCodexAppServerFakeSmokeCoversThreadTurnAndApproval"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure"
-  "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread"
+  "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationRuntimeFlowTests.swift|testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes"

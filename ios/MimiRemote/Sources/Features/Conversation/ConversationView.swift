@@ -28,7 +28,8 @@ struct ConversationView: View {
             historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
             quotaNotice: sessionStore.selectedQuotaNotice,
             webSocketStatus: sessionStore.webSocketStatus,
-            errorMessage: sessionStore.errorMessage
+            // writer 冲突在输入区提供唯一恢复入口；顶部不再重复一条泛化错误。
+            errorMessage: sessionStore.selectedSessionHasActiveWriterConflict ? nil : sessionStore.errorMessage
         )
 
         GeometryReader { proxy in
@@ -51,10 +52,9 @@ struct ConversationView: View {
                     .zIndex(1)
                 ConversationTimelineView(
                     layout: layout,
-                    // 顶部 underlap 只由设备与辅助功能决定；WebSocket 错误、额度提示等
+                    // 顶部 underlap 只由辅助功能偏好决定；WebSocket 错误、额度提示等
                     // 瞬态业务状态不得切换 List 的 safe-area 几何，否则材质会消失并跳动。
                     allowsTopUnderlap: Self.shouldAllowTopUnderlap(
-                        isPhone: UIDevice.current.userInterfaceIdiom == .phone,
                         reduceTransparency: reduceTransparency
                     )
                 )
@@ -74,10 +74,16 @@ struct ConversationView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {
                     Spacer(minLength: 0)
-                    ComposerView(
-                        availableWidth: composerWidth,
-                        initialGoalStatusExpanded: initialGoalStatusExpanded
-                    )
+                    Group {
+                        if sessionStore.selectedSessionHasActiveWriterConflict {
+                            writerConflictCard(isRetrying: sessionStore.webSocketStatus == .connecting)
+                        } else {
+                            ComposerView(
+                                availableWidth: composerWidth,
+                                initialGoalStatusExpanded: initialGoalStatusExpanded
+                            )
+                        }
+                    }
                         // 确定宽度阻止固定尺寸的工具按钮反向撑大输入卡和上方目标栏。
                         .frame(width: composerWidth)
                     Spacer(minLength: 0)
@@ -96,8 +102,11 @@ struct ConversationView: View {
         }
     }
 
-    static func shouldAllowTopUnderlap(isPhone: Bool, reduceTransparency: Bool) -> Bool {
-        isPhone && !reduceTransparency
+    /// 顶部滚动边缘是设备无关的材质语义：iPhone、iPad 竖屏和 iPad 横屏共用同一条
+    /// 规则，只有 Reduce Transparency 会退回实色。按 idiom 分叉会让 iPad 横屏永远
+    /// 拿不到顶部过渡，正文直接贴着标题滚过去。
+    static func shouldAllowTopUnderlap(reduceTransparency: Bool) -> Bool {
+        !reduceTransparency
     }
 
     /// 半透明底衬只有在系统自带 soft scroll edge 时才成立：它最深也只有 10–12%，
@@ -187,7 +196,7 @@ struct ConversationView: View {
     private func historySavingsBannerMessage(_ notice: HistorySavingsNotice) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.33percent")
+            Image(systemName: notice.kind == .summaryLoaded ? "doc.text.magnifyingglass" : "gauge.with.dots.needle.33percent")
                 .font(themeStore.uiFont(.body, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .frame(width: 22, height: 22)
@@ -360,6 +369,71 @@ struct ConversationView: View {
 
     private var statusChipBackground: Color {
         themeStore.tokens(for: colorScheme).elevatedSurface
+    }
+
+    private func writerConflictCard(isRetrying: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 14) {
+                writerConflictMessage(tokens: tokens)
+                Spacer(minLength: 12)
+                writerConflictRetryButton(isRetrying: isRetrying)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                writerConflictMessage(tokens: tokens)
+                writerConflictRetryButton(isRetrying: isRetrying)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.elevatedSurface, in: shape)
+        .overlay {
+            shape.strokeBorder(tokens.warning.opacity(0.32), lineWidth: 0.75)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func writerConflictMessage(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "lock")
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+                .frame(width: 24, height: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.text("ui.codex_active_writer_conflict_title"))
+                    .font(themeStore.uiFont(.body, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(L10n.text("ui.codex_active_writer_conflict"))
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func writerConflictRetryButton(isRetrying: Bool) -> some View {
+        Button {
+            sessionStore.retrySelectedSessionWriterAccess()
+        } label: {
+            Group {
+                if isRetrying {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(L10n.text("ui.retry"))
+                }
+            }
+            .frame(minWidth: 64, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .disabled(isRetrying)
+        .accessibilityHint(L10n.text("ui.codex_active_writer_conflict"))
     }
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {

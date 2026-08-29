@@ -421,6 +421,64 @@ simulator_is_booted() {
   '
 }
 
+simulator_ui_warning() {
+  echo "警告：$1。Simulator 界面不是必需步骤，将继续构建、安装并启动。" >&2
+}
+
+current_developer_dir() {
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    printf '%s\n' "$DEVELOPER_DIR"
+    return 0
+  fi
+
+  if ! command -v xcode-select >/dev/null 2>&1; then
+    return 1
+  fi
+  xcode-select -p
+}
+
+open_simulator_ui() {
+  local developer_dir
+  if ! developer_dir="$(current_developer_dir 2>/dev/null)" || [[ -z "$developer_dir" ]]; then
+    simulator_ui_warning "无法解析当前 Developer 目录"
+    return 0
+  fi
+
+  if [[ ! -d "$developer_dir" ]]; then
+    simulator_ui_warning "Developer 目录不存在：$developer_dir"
+    return 0
+  fi
+
+  local resolved_developer_dir
+  if ! resolved_developer_dir="$(cd "$developer_dir" 2>/dev/null && pwd -P)"; then
+    simulator_ui_warning "无法解析 Developer 目录：$developer_dir"
+    return 0
+  fi
+  local xcode_contents_dir
+  if ! xcode_contents_dir="$(cd "$resolved_developer_dir/.." 2>/dev/null && pwd -P)"; then
+    simulator_ui_warning "无法解析 Xcode 包目录：$developer_dir"
+    return 0
+  fi
+
+  local ui_app=""
+  if [[ -d "$resolved_developer_dir/Applications/Simulator.app" ]]; then
+    ui_app="$resolved_developer_dir/Applications/Simulator.app"
+  elif [[ -d "$xcode_contents_dir/Applications/DeviceHub.app" ]]; then
+    ui_app="$xcode_contents_dir/Applications/DeviceHub.app"
+  else
+    simulator_ui_warning "找不到 Simulator 或 DeviceHub 界面应用"
+    return 0
+  fi
+
+  if ! command -v "$OPEN_BIN" >/dev/null 2>&1 && [[ ! -x "$OPEN_BIN" ]]; then
+    simulator_ui_warning "找不到或无法执行 open 命令：$OPEN_BIN"
+    return 0
+  fi
+  if ! "$OPEN_BIN" "$ui_app"; then
+    simulator_ui_warning "打开界面应用失败：$ui_app"
+  fi
+}
+
 run_xcodebuild() {
   local action="$1"
   shift
@@ -546,11 +604,10 @@ case "$command_name" in
       exit 0
     fi
 
-    require_command "$OPEN_BIN"
     if ! simulator_is_booted "$SELECTED_ID"; then
       "$XCRUN_BIN" simctl boot "$SELECTED_ID"
     fi
-    "$OPEN_BIN" -a Simulator
+    open_simulator_ui
     "$XCRUN_BIN" simctl bootstatus "$SELECTED_ID" -b
     run_xcodebuild build "$@"
 

@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -87,6 +85,10 @@ var appServerAllowedMethods = map[string]struct{}{
 	"thread/fork":             {},
 	"thread/read":             {},
 	"thread/turns/list":       {},
+	"thread/items/list":       {},
+	"thread/queue/add":        {},
+	"thread/queue/list":       {},
+	"thread/settings/update":  {},
 	"thread/name/set":         {},
 	"thread/compact/start":    {},
 	"thread/unsubscribe":      {},
@@ -100,6 +102,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"permissionProfile/list":  {},
 	"skills/list":             {},
 	"plugin/installed":        {},
 	"account/rateLimits/read": {},
@@ -114,6 +117,7 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 	"execCommandApproval":                   {},
 	"item/commandExecution/requestApproval": {},
 	"item/fileChange/requestApproval":       {},
+	"item/fileRead/requestApproval":         {},
 	"item/permissions/requestApproval":      {},
 	"item/tool/requestUserInput":            {},
 	"mcpServer/elicitation/request":         {},
@@ -194,7 +198,6 @@ type appServerChannelCapability struct {
 	Compact          bool `json:"compact"`
 	Review           bool `json:"review"`
 	RateLimits       bool `json:"rate_limits"`
-	ExternalActivity bool `json:"external_activity"`
 }
 
 type appServerChannelPolicy struct {
@@ -243,14 +246,8 @@ type appServerGatewayPolicy struct {
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
 	globalListCursors     map[string]string
-	// 旧版 iOS 不会在 auto-handoff 后清理本地 resume binding。只有显式声明
-	// 私有 capability 的新版客户端才能启用 turn/completed 自动交接。
-	threadHandoffCapable bool
-	// archive 广播与 closed/notLoaded 在不同 upstream 连接上的到达次序没有保证。
-	// 记录已确认由 coordinator 发起的 archive，直到对应 unarchive 到达。
-	threadHandoffLifecycle map[string]time.Time
-	beforePendingRemember  func()
-	beforeManagedComplete  func()
+	beforePendingRemember func()
+	beforeManagedComplete func()
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -271,12 +268,12 @@ type appServerGatewayPendingClientRequest struct {
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method           string
-	threadID         string
-	turnID           string
-	itemID           string
-	gatewayOwnedTurn bool
-	createdAt        time.Time
+	method               string
+	threadID             string
+	turnID               string
+	itemID               string
+	requestedPermissions map[string]any
+	createdAt            time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {
@@ -313,6 +310,7 @@ type appServerGatewayValidatedParams struct {
 	hasCWD                     bool
 	cwdScope                   gatewayScope
 	cwdScopeOK                 bool
+	rewroteLocalImagePath      bool
 	pendingManagedWorktreePath string
 }
 
@@ -382,10 +380,10 @@ func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
 	upstream, _ := r.appServerUpstreamWebSocketURL()
 	meta := appServerRuntimeMetadata{
 		Type:               firstNonEmpty(r.cfg.Runtime.Type, "codex_app_server"),
-		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ws"),
-		Managed:            r.cfg.AppServer.Managed,
+		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ssh"),
+		Managed:            false,
 		GatewayAvailable:   upstream != "",
-		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.Listen) != "",
+		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.SSHTarget) != "",
 	}
 	if provider, ok := r.runtime.(appServerDiagnosticsProvider); ok {
 		// metadata 只暴露运行态计数，不返回 codex home、token 或 stderr 等敏感细节。
@@ -449,7 +447,8 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		Protocol:         "app_server_jsonrpc_ws",
 		GatewayWSURL:     r.appServerGatewayURLForRuntime(req, "codex"),
 		GatewayAvailable: codexUpstream != "",
-		Managed:          r.cfg.AppServer.Managed,
+		Managed:          false,
+		Lifecycle:        "shared_ssh",
 		Methods:          appServerAllowedMethodList(),
 		Capabilities: appServerChannelCapability{
 			Streaming:        true,
@@ -463,7 +462,6 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Compact:          true,
 			Review:           true,
 			RateLimits:       true,
-			ExternalActivity: true,
 		},
 		Policy: appServerChannelPolicy{
 			ApprovalPolicies: []string{"on-request"},
@@ -593,7 +591,6 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
 		return
 	}
-
 	client, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		log.Printf("app-server gateway ws upgrade failed err=%v", err)
@@ -601,24 +598,26 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	}
 	defer client.Close()
 
-	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
-	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
-	// 收到可重试错误，而不是每次都白等 10s。外侧握手已完成后才拨号，确保畸形握手不会占用 upstream。
-	dialStart := time.Now()
-	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
-	dialDuration := time.Since(dialStart)
-	if err != nil && r.recoverSharedCodexDaemon != nil {
-		// 只在一次真实客户端连接失败后恢复，避免 readyz 轮询不停拉进程。恢复仍
-		// 走 appserver.EnsureLocalDaemon -> launchd owner，绝不由 HTTP handler spawn。
-		recoverCtx, cancel := context.WithTimeout(req.Context(), 35*time.Second)
-		recoverErr := r.recoverSharedCodexDaemon(recoverCtx)
-		cancel()
-		if recoverErr == nil {
-			dialStart = time.Now()
-			upstream, _, err = dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
-			dialDuration = time.Since(dialStart)
+	// 正常链路直接建立这一条连接，避免为每个移动端连接额外创建 readiness proxy。
+	// 只有首次拨号失败时才进入带 single-flight 的 Socket 探测/bootstrap，然后重试一次。
+	// 外侧握手必须先成功，畸形请求和超额连接不能触发任何 SSH 子进程。
+	dialUpstream := func() (*websocket.Conn, time.Duration, error) {
+		dialStart := time.Now()
+		conn, response, dialErr := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return conn, time.Since(dialStart), dialErr
+	}
+	upstream, dialDuration, err := dialUpstream()
+	if err != nil {
+		readyCtx, cancelReady := context.WithTimeout(req.Context(), 15*time.Second)
+		readyErr := r.appServerSSH.EnsureReady(readyCtx)
+		cancelReady()
+		if readyErr == nil {
+			upstream, dialDuration, err = dialUpstream()
 		} else {
-			log.Printf("shared Codex daemon recovery failed: %v", recoverErr)
+			err = readyErr
 		}
 	}
 	if err != nil {
@@ -668,89 +667,19 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		if _, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); err != nil {
-			return "", err
-		}
-		return appserver.LocalDaemonHandshakeURL(), nil
+	if r.appServerSSH == nil {
+		return "", fmt.Errorf("app_server SSH transport 未配置")
 	}
-	raw := strings.TrimSpace(r.cfg.AppServer.Listen)
-	if raw == "" {
-		return "", fmt.Errorf("app_server.listen 未配置，无法启用 app-server raw gateway")
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "ws://" + raw
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("app_server.listen 不是合法 URL：%w", err)
-	}
-	switch parsed.Scheme {
-	case "ws", "wss":
-	case "http":
-		parsed.Scheme = "ws"
-	case "https":
-		parsed.Scheme = "wss"
-	default:
-		return "", fmt.Errorf("app_server.listen 仅支持 ws/wss/http/https")
-	}
-	if parsed.Host == "" {
-		return "", fmt.Errorf("app_server.listen 缺少 host")
-	}
-	if !isLoopbackGatewayHost(parsed.Hostname()) {
-		return "", fmt.Errorf("app_server.listen 只允许 loopback upstream")
-	}
-	if parsed.Path == "" {
-		parsed.Path = "/"
-	}
-	return parsed.String(), nil
-}
-
-func isLoopbackGatewayHost(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return appserver.CodexAppServerWebSocketURL, nil
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		// Unix socket 由 0700 目录 + 0600 socket 约束同一用户，不使用 WebSocket Bearer。
-		return nil, nil
-	}
-	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
-	if tokenFile == "" {
-		if r.cfg.AppServer.Managed {
-			return nil, fmt.Errorf("app_server.ws_token_file 未配置；managed app-server 必须使用独立 upstream token")
-		}
-		return nil, nil
-	}
-	raw, err := os.ReadFile(tokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("读取 app_server.ws_token_file 失败：%w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return nil, fmt.Errorf("app_server.ws_token_file 为空")
-	}
-	headers := http.Header{}
-	// app-server upstream capability token 和 iPad 访问 agentd 的 token 分离，避免把外侧 token 复用到本机上游。
-	headers.Set("Authorization", "Bearer "+token)
-	return headers, nil
+	return nil, nil
 }
 
 func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
-	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix") {
-		socketPath, err := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env)
-		if err != nil {
-			return websocket.Dialer{}, err
-		}
-		return appserver.LocalDaemonWebSocketDialer(socketPath, timeout), nil
+	if r.appServerSSH == nil {
+		return websocket.Dialer{}, fmt.Errorf("app_server SSH transport 未配置")
 	}
-	return websocket.Dialer{HandshakeTimeout: timeout}, nil
+	return r.appServerSSH.WebSocketDialer(timeout)
 }

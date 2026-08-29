@@ -4,6 +4,10 @@ package setup
 
 import "os/exec"
 
-func lookupUsableCodexExecutable(file string) (string, error) {
+func lookupUsableExecutable(file string) (string, error) {
 	return exec.LookPath(file)
+}
+
+func lookupUsableCodexExecutable(file string) (string, error) {
+	return lookupUsableExecutable(file)
 }

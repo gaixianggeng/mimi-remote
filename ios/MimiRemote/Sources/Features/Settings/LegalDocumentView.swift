@@ -76,7 +76,7 @@ struct LegalDocumentView: View {
             .padding(.vertical, 16)
             .textSelection(.enabled)
         }
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
     }

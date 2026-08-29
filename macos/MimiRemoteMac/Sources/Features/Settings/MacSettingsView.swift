@@ -35,10 +35,19 @@ struct MacSettingsView: View {
 
             Section("实验功能") {
                 Button(ExperimentMenuRouting.menuTitle) {
-                    // 通用设置保留唯一导航入口；开关和重启确认只在实验功能窗口维护。
+                    // 通用设置保留唯一导航入口；实验配置只在实验功能窗口维护。
                     openWindow(id: ExperimentMenuRouting.windowID)
                 }
-                Text("Claude 与 Codex Desktop 的实验开关、状态和重启操作集中在同一窗口。")
+                Text("Claude 实验开关和状态集中在同一窗口。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("文件访问") {
+                Button("打开完全磁盘访问权限设置…") {
+                    store.openFullDiskAccessSettings()
+                }
+                Text("只有 agentd 需要读取 macOS 保护的目录时，才需要授予完全磁盘访问权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

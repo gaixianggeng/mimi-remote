@@ -18,162 +18,22 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
-func TestSharedDaemonRuntimeDiagnosticCheckClassifiesResourceAndOwnerStates(t *testing.T) {
-	limit := 8192
-	usage := 75.0
-	tests := []struct {
-		name      string
-		status    appserver.SharedDaemonDiagnostics
-		err       error
-		wantOK    bool
-		wantLevel string
-		wantText  string
-	}{
-		{
-			name: "healthy stable owner",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 100, OpenFileDescriptors: 80,
-				DirectChildProcesses: 2, EffectiveFDSoftLimit: &limit,
-				OwnerState:    appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateHealthy,
-			},
-			wantOK: true, wantText: "80/8192",
-		},
-		{
-			name: "degraded is warning",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 101, OpenFileDescriptors: 6144,
-				DirectChildProcesses: 9, EffectiveFDSoftLimit: &limit,
-				FDUsagePercent: &usage, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateDegraded,
-			},
-			wantLevel: "warning", wantText: "75.0%",
-		},
-		{
-			name: "critical blocks doctor",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 102, OpenFileDescriptors: 7800,
-				EffectiveFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateCritical,
-			},
-			wantLevel: "error", wantText: "接近耗尽",
-		},
-		{
-			name: "external owner stays informational",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 103, OpenFileDescriptors: 90,
-				OwnerState:    appserver.SharedDaemonOwnerStateExternal,
-				ResourceState: appserver.SharedDaemonResourceStateUnknown,
-			},
-			wantOK: true, wantText: "外部 owner",
-		},
-		{
-			name: "migration pending blocks doctor",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 104, OpenFileDescriptors: 200,
-				OwnerState: appserver.SharedDaemonOwnerStateMigrationPending,
-			},
-			wantLevel: "error", wantText: "尚未作用",
-		},
-		{
-			name: "stable unknown effective limit stays informational",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 106, OpenFileDescriptors: 7800,
-				OwnerTargetFDSoftLimit: &limit, OwnerState: appserver.SharedDaemonOwnerStateStable,
-				ResourceState: appserver.SharedDaemonResourceStateUnknown,
-			},
-			wantOK: true, wantText: "当前进程未验证",
-		},
-		{
-			name: "claimed owner without lifecycle pid is warning",
-			status: appserver.SharedDaemonDiagnostics{
-				Supported: true, ListenerPID: 107, OpenFileDescriptors: 82,
-				OwnerState: appserver.SharedDaemonOwnerStateClaimedUnverified,
-			},
-			wantLevel: "warning", wantText: "未返回 listener PID",
-		},
-		{
-			name: "observation failure is warning",
-			err:  errors.New("dial unix /Users/secret/.codex/app-server.sock: permission denied"), wantLevel: "warning", wantText: "无法读取",
-		},
-	}
-
-	checker := &Checker{}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			check := sharedDaemonRuntimeDiagnosticCheck(testCase.status, testCase.err)
-			results := checker.results([]Check{check})
-			got := results.Checks[0]
-			if got.OK != testCase.wantOK || got.Level != testCase.wantLevel && testCase.wantLevel != "" {
-				t.Fatalf("诊断等级错误：%+v", got)
-			}
-			if !strings.Contains(got.Message, testCase.wantText) {
-				t.Fatalf("诊断文案缺少 %q：%+v", testCase.wantText, got)
-			}
-			if strings.Contains(got.Fix, "/Users/secret") {
-				t.Fatalf("Doctor 修复建议泄露了底层 socket 路径：%+v", got)
-			}
-			if testCase.wantLevel == "error" && results.OK {
-				t.Fatalf("阻断状态必须让 doctor 失败：%+v", results)
-			}
-			if testCase.wantLevel == "warning" && !results.OK {
-				t.Fatalf("warning 不应让 doctor 失败：%+v", results)
-			}
-		})
-	}
+type fakeDoctorSSHTransport struct {
+	checkErr error
+	readyErr error
 }
 
-func TestSharedDaemonChecksTreatUnmanagedUnixFallbackAsExternal(t *testing.T) {
-	fallback := &config.AppServerFallbackConfig{Transport: "ws", Managed: true}
-	checker := &Checker{
-		cfg: config.Config{AppServer: config.AppServerConfig{
-			Transport:      "unix",
-			Managed:        false,
-			SharedFallback: fallback,
-		}},
-	}
-	if check := checker.sharedDaemonOwnerCheck(context.Background()); check.Name != "" {
-		t.Fatalf("外部 Unix listener 不应检查 Mimi LaunchAgent owner：%+v", check)
-	}
-
-	stableOwner := true
-	checker.sharedDaemonDiagnostics = func(
-		_ context.Context,
-		options appserver.LocalDaemonOptions,
-	) (appserver.SharedDaemonDiagnostics, error) {
-		stableOwner = options.StableOwner
-		return appserver.SharedDaemonDiagnostics{
-			Supported:  true,
-			OwnerState: appserver.SharedDaemonOwnerStateExternal,
-		}, nil
-	}
-	check := checker.sharedDaemonRuntimeCheck(context.Background())
-	if stableOwner {
-		t.Fatal("managed=false 时不能仅凭 shared_fallback 宣称 stable owner")
-	}
-	if !check.OK || !strings.Contains(check.Message, "外部 owner") {
-		t.Fatalf("外部 Unix listener 应保持只读信息诊断：%+v", check)
-	}
+func (f fakeDoctorSSHTransport) CheckRemoteCodex(context.Context) (string, error) {
+	return "0.149.1", f.checkErr
 }
+func (f fakeDoctorSSHTransport) EnsureReady(context.Context) error { return f.readyErr }
+func (fakeDoctorSSHTransport) SSHCheckCommand() string             { return "ssh 127.0.0.1 codex --version" }
 
-func TestSharedDaemonOwnerInspectionFailureDoesNotLeakRawError(t *testing.T) {
-	rawErr := errors.New("读取 /Users/secret/Library/LaunchAgents/com.example.codex.plist 失败：permission denied")
-	check := sharedDaemonOwnerInspectionFailureCheck(rawErr)
-
-	if check.OK || check.Name != "codex-daemon-owner" {
-		t.Fatalf("owner 检查失败应保留阻断检查语义：%+v", check)
+func TestMain(m *testing.M) {
+	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) {
+		return fakeDoctorSSHTransport{}, nil
 	}
-	for field, value := range map[string]string{
-		"message": check.Message,
-		"fix":     check.Fix,
-	} {
-		if strings.Contains(value, "/Users/secret") || strings.Contains(value, rawErr.Error()) {
-			t.Fatalf("owner 检查不应把底层错误写入 %s：%q", field, value)
-		}
-	}
-	if !strings.Contains(check.Fix, "共享 Codex daemon") || !strings.Contains(check.Fix, "权限") {
-		t.Fatalf("owner 检查失败应给出共享功能和权限方向的固定修复建议：%+v", check)
-	}
+	os.Exit(m.Run())
 }
 
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
@@ -188,7 +48,7 @@ func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: secret},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -219,7 +79,7 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID: "demo", Name: "Demo", Path: t.TempDir(),
@@ -247,34 +107,14 @@ func TestCheckerMarksMissingTailscaleAsWarning(t *testing.T) {
 	}
 }
 
-func TestManagedDaemonLifecycleFailureBlocksDoctor(t *testing.T) {
-	checker := &Checker{}
-	results := checker.results([]Check{{
-		Name:    "codex-daemon-lifecycle",
-		Message: "standalone 缺失",
-	}})
-	if results.OK || len(results.Checks) != 1 || results.Checks[0].Level != "error" {
-		t.Fatalf("managed Unix 冷启动条件缺失必须阻断 doctor：%+v", results)
-	}
-
-	external := checker.results([]Check{{
-		Name:    "codex-daemon-lifecycle-external",
-		Message: "外部 owner 生命周期不可验证",
-	}})
-	if !external.OK || len(external.Checks) != 1 || external.Checks[0].Level != "warning" {
-		t.Fatalf("external Unix 生命周期由部署方负责，应保留 warning：%+v", external)
-	}
-}
-
 func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:  "127.0.0.1:8787",
 		Auth:    config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime: config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{
-			Transport: "ws",
-			Managed:   false,
-			Listen:    "ws://127.0.0.1:4222",
+			Transport: "ssh",
+			SSHTarget: "127.0.0.1",
 		},
 		Codex:  config.CodexConfig{Bin: filepath.Join(t.TempDir(), "missing-codex")},
 		Claude: config.ClaudeConfig{Enabled: true, BridgeBin: filepath.Join(t.TempDir(), "missing-bridge")},
@@ -390,7 +230,7 @@ func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -418,7 +258,7 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "0.0.0.0:8390"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "-oBad"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -433,6 +273,34 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	}
 }
 
+func TestCheckerRejectsNonSSHAppServer(t *testing.T) {
+	binDir := t.TempDir()
+	codexPath := writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", SSHTarget: "127.0.0.1"},
+		Codex:     config.CodexConfig{Bin: codexPath},
+		Projects: []config.ProjectConfig{{
+			ID: "demo", Name: "Demo", Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if results.OK {
+		t.Fatalf("non-SSH App Server must not pass doctor: %+v", results)
+	}
+	for _, check := range results.Checks {
+		if check.Name == "app-server" && !check.OK && strings.Contains(check.Fix, "transport") {
+			return
+		}
+	}
+	t.Fatalf("doctor must explain the SSH-only boundary: %+v", results.Checks)
+}
+
 func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
@@ -443,7 +311,7 @@ func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -537,7 +405,7 @@ func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
 	}
 }
 
-func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
+func TestCheckerCheckPortDoesNotProbeSharedAppServerPort(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
 	codexPath = writeFakeCodexWithAppServerHelp(t, codexPath)
@@ -550,7 +418,7 @@ func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
 		Listen:    "127.0.0.1:0",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://" + listener.Addr().String()},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -560,15 +428,15 @@ func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
 	})
 
 	results := checker.Run(context.Background(), true)
-	if results.OK {
-		t.Fatalf("app-server upstream 端口被占用时 doctor --check-port 应失败：%+v", results)
+	if !results.OK {
+		t.Fatalf("SSH App Server 没有本地 TCP listen 端口，不应阻断 doctor：%+v", results)
 	}
-	if !hasCheckMessage(results, "app-server-port", "端口不可监听") {
-		t.Fatalf("应报告 app-server-port 占用：%+v", results.Checks)
+	if hasCheck(results, "app-server-port") {
+		t.Fatalf("不应再检查已删除的 WS listen 端口：%+v", results.Checks)
 	}
 }
 
-func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
+func TestCheckerFailsWhenSSHInitializeFails(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
 	codexPath = writeFakeExecutable(t, codexPath)
@@ -578,7 +446,7 @@ func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -586,13 +454,37 @@ func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
 			Path: t.TempDir(),
 		}},
 	})
+	previous := newDoctorSSHTransport
+	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) {
+		return fakeDoctorSSHTransport{readyErr: context.DeadlineExceeded}, nil
+	}
+	defer func() { newDoctorSSHTransport = previous }()
 
 	results := checker.Run(context.Background(), false)
 	if results.OK {
-		t.Fatalf("缺少 app-server ws flags 时 doctor 应失败：%+v", results)
+		t.Fatalf("SSH proxy initialize 失败时 doctor 应失败：%+v", results)
 	}
 	if !hasCheck(results, "codex-app-server") {
 		t.Fatalf("应包含 codex-app-server 检查：%+v", results.Checks)
+	}
+}
+
+func TestCheckerFailsWhenRemoteCodexVersionIsUnsupported(t *testing.T) {
+	checker := newTestChecker(t, config.Config{
+		Listen: "127.0.0.1:8787", Auth: config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
+		Projects:  []config.ProjectConfig{{ID: "demo", Name: "Demo", Path: t.TempDir()}},
+	})
+	previous := newDoctorSSHTransport
+	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) {
+		return fakeDoctorSSHTransport{checkErr: errors.New("远端 Codex 0.149.0 低于最低兼容版本 0.149.1")}, nil
+	}
+	defer func() { newDoctorSSHTransport = previous }()
+
+	results := checker.Run(context.Background(), false)
+	if results.OK || !hasCheck(results, "codex-app-server") {
+		t.Fatalf("远端 Codex 版本不足必须让 doctor 失败：%+v", results)
 	}
 }
 
@@ -659,46 +551,23 @@ func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 	})
 }
 
-func TestCheckerChecksConfigAndManagedAppServerTokenFiles(t *testing.T) {
+func TestCheckerChecksConfigFileWithoutLegacyAppServerToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	tokenPath := filepath.Join(t.TempDir(), "app-server-token")
 	if err := os.WriteFile(configPath, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tokenPath, []byte("upstream-secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := config.Config{
-		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, WSTokenFile: tokenPath},
+		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 	}
 	checker := NewChecker("test", cfg, &projects.Registry{}, configPath)
 
 	configCheck := checker.configFileCheck()
-	tokenCheck := checker.appServerTokenFileCheck()
-	if !configCheck.OK || !tokenCheck.OK {
-		t.Fatalf("0600 配置与 token file 应通过：config=%+v token=%+v", configCheck, tokenCheck)
+	if !configCheck.OK {
+		t.Fatalf("0600 配置应通过：config=%+v", configCheck)
 	}
 	results := checker.Run(context.Background(), false)
-	if !hasCheck(results, "config-file") || !hasCheck(results, "app-server-token-file") {
-		t.Fatalf("doctor Run 应包含两个敏感文件检查：%+v", results.Checks)
-	}
-
-	if runtime.GOOS == "windows" {
-		return
-	}
-	if err := os.Chmod(tokenPath, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	tokenCheck = checker.appServerTokenFileCheck()
-	if tokenCheck.OK || !strings.Contains(tokenCheck.Message, "权限过宽") {
-		t.Fatalf("token file group 可读时应失败：%+v", tokenCheck)
-	}
-
-	cfg.AppServer.WSTokenFile = ""
-	missingTokenChecker := NewChecker("test", cfg, &projects.Registry{}, configPath)
-	missingCheck := missingTokenChecker.appServerTokenFileCheck()
-	if missingCheck.OK || !strings.Contains(missingCheck.Message, "未配置") {
-		t.Fatalf("托管 app-server 缺少 token file 应失败：%+v", missingCheck)
+	if !hasCheck(results, "config-file") || hasCheck(results, "app-server-token-file") {
+		t.Fatalf("doctor Run 不应再检查已删除的 token file：%+v", results.Checks)
 	}
 }
 
@@ -722,12 +591,11 @@ func hasCheckMessage(results Results, name, want string) bool {
 
 func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 	t.Helper()
-	if cfg.AppServer.Managed && strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
-		tokenPath := filepath.Join(t.TempDir(), "app-server-token")
-		if err := os.WriteFile(tokenPath, []byte("test-upstream-token"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cfg.AppServer.WSTokenFile = tokenPath
+	if strings.TrimSpace(cfg.AppServer.Transport) == "" {
+		cfg.AppServer.Transport = "ssh"
+	}
+	if strings.TrimSpace(cfg.AppServer.SSHTarget) == "" {
+		cfg.AppServer.SSHTarget = "127.0.0.1"
 	}
 	registry, err := projects.NewRegistry(cfg.Projects)
 	if err != nil {
@@ -765,7 +633,7 @@ func writeFakeCodexWithAppServerHelp(t *testing.T, path string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		path += ".cmd"
-		body := "@echo off\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
+		body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.149.0\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}

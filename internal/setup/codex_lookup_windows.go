@@ -9,10 +9,9 @@ import (
 	"time"
 )
 
-// WindowsApps package resources can be discoverable by LookPath while their
-// ACL denies CreateProcess to an ordinary desktop process. Probe candidates
-// before persisting them so the service never records an unusable path.
-func lookupUsableCodexExecutable(file string) (string, error) {
+// lookupUsableExecutable 只确认 Windows 候选路径可以真实启动。Claude 与
+// Codex 的版本格式不同，因此通用探测不能附带 Codex 版本规则。
+func lookupUsableExecutable(file string) (string, error) {
 	path, err := exec.LookPath(file)
 	if err != nil {
 		return "", err
@@ -26,4 +25,11 @@ func lookupUsableCodexExecutable(file string) (string, error) {
 		return "", exec.ErrNotFound
 	}
 	return path, nil
+}
+
+// WindowsApps package resources can be discoverable by LookPath while their
+// ACL denies CreateProcess to an ordinary desktop process. Probe candidates
+// before persisting them so the service never records an unusable path.
+func lookupUsableCodexExecutable(file string) (string, error) {
+	return lookupUsableExecutable(file)
 }

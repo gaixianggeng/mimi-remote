@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,64 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	}
 	if !cfg.AppServer.AutoTitle {
 		t.Fatal("新安装默认应启用 Mac 端会话标题生成")
+	}
+}
+
+func TestLoadNormalizesLegacyZeroClaudeBridgeLimit(t *testing.T) {
+	clearAgentdEnv(t)
+	projectDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Claude.Enabled = true
+	cfg.Claude.BridgeBin = executable
+	cfg.Claude.MaxConcurrentBridges = 0
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: projectDir}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy setup config should remain startable after Claude activation: %v", err)
+	}
+	if loaded.Claude.MaxConcurrentBridges != DefaultClaudeMaxConcurrentBridges {
+		t.Fatalf("legacy zero bridge limit was not normalized: got=%d want=%d", loaded.Claude.MaxConcurrentBridges, DefaultClaudeMaxConcurrentBridges)
+	}
+}
+
+func TestLoadRejectsExplicitZeroClaudeBridgeLimitFromEnvironment(t *testing.T) {
+	clearAgentdEnv(t)
+	projectDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Claude.Enabled = true
+	cfg.Claude.BridgeBin = executable
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: projectDir}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTD_CLAUDE_MAX_CONCURRENT_BRIDGES", "0")
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("an explicit zero bridge limit from the environment must remain invalid")
 	}
 }
 
@@ -150,25 +209,6 @@ func TestPlatformDefaultPathIgnoresAgentdConfig(t *testing.T) {
 	}
 }
 
-func TestIsPlatformDefaultPathResolvesEquivalentDirectorySymlink(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	platformDefault := PlatformDefaultPath()
-	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	aliasRoot := filepath.Join(t.TempDir(), "config-alias")
-	if err := os.Symlink(filepath.Dir(platformDefault), aliasRoot); err != nil {
-		t.Fatal(err)
-	}
-
-	if !IsPlatformDefaultPath(filepath.Join(aliasRoot, filepath.Base(platformDefault))) {
-		t.Fatal("同一默认配置目录的 symlink 路径应视为平台默认配置")
-	}
-	if IsPlatformDefaultPath(filepath.Join(t.TempDir(), "custom.json")) {
-		t.Fatal("自定义配置不能取得用户全局 shared-daemon owner")
-	}
-}
-
 func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	platformDefault := PlatformDefaultPath()
@@ -181,9 +221,6 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	caseVariant := filepath.Join(filepath.Dir(platformDefault), "Config.json")
 	_, variantErr := os.Stat(caseVariant)
 	if variantErr == nil {
-		if !IsPlatformDefaultPath(caseVariant) {
-			t.Fatal("大小写不敏感卷上的同一默认文件必须取得全局 owner 权限")
-		}
 		left, err := ConfigPathIdentity(platformDefault)
 		if err != nil {
 			t.Fatal(err)
@@ -200,25 +237,15 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 	if !os.IsNotExist(variantErr) {
 		t.Fatal(variantErr)
 	}
-	if IsPlatformDefaultPath(caseVariant) {
-		t.Fatal("大小写敏感卷上的不同文件不能共享 owner")
-	}
-}
-
-func TestIsPlatformDefaultPathRejectsDifferentHardLinkEntry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	platformDefault := PlatformDefaultPath()
-	if err := os.MkdirAll(filepath.Dir(platformDefault), 0o755); err != nil {
+	left, err := ConfigPathIdentity(platformDefault)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(platformDefault, []byte("{}\n"), 0o600); err != nil {
+	right, err := ConfigPathIdentity(caseVariant)
+	if err != nil {
 		t.Fatal(err)
 	}
-	hardLink := filepath.Join(t.TempDir(), "config-hardlink.json")
-	if err := os.Link(platformDefault, hardLink); err != nil {
-		t.Fatal(err)
-	}
-	if IsPlatformDefaultPath(hardLink) {
-		t.Fatal("不同 hard-link 目录项不能取得平台默认配置的全局 owner 权限")
+	if left == right {
+		t.Fatalf("大小写敏感卷上的不同文件必须取得不同配置锁：left=%q right=%q", left, right)
 	}
 }

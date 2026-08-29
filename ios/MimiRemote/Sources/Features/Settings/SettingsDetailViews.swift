@@ -730,7 +730,7 @@ struct AppearanceView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
@@ -1197,7 +1197,7 @@ struct DefaultModelSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -1421,112 +1421,41 @@ private extension DefaultModelRuntime {
         }
     }
 }
+extension View {
+    func settingsCanvasBackground(tokens: ThemeTokens) -> some View {
+        modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
+    }
 
-/// iOS 只能说明和引导，不能伪装成能够修改 Mac launchd 环境的远程开关。
-/// 真正的启用入口继续由 Mimi Remote Mac 持有，确保配置、Desktop 重启与失败回滚在同一台电脑完成。
-enum CodexDesktopExperimentGuide {
-    static let stepKeys = [
-        "ui.codex_experiment_step_open_mimi_menu",
-        "ui.codex_experiment_step_choose_experiments",
-        "ui.codex_experiment_step_enable_sharing",
-        "ui.codex_experiment_step_restart_desktop",
-        "ui.codex_experiment_step_verify_session",
-    ]
-}
-
-struct ExperimentalFeaturesSettingsView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Form {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label {
-                        Text(L10n.text("ui.share_codex_desktop_sessions_experimental"))
-                            .font(themeStore.uiFont(.headline, weight: .semibold))
-                            .foregroundStyle(tokens.primaryText)
-                    } icon: {
-                        Image(systemName: "desktopcomputer")
-                            .foregroundStyle(tokens.accent)
-                    }
-
-                    Text(L10n.text("ui.codex_experiment_summary"))
-                        .font(themeStore.uiFont(.subheadline))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, 8)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("settings.experimentalFeatures.codexSharing")
-            } footer: {
-                Text(L10n.text("ui.codex_experiment_warning"))
-            }
-
-            Section {
-                ForEach(Array(CodexDesktopExperimentGuide.stepKeys.enumerated()), id: \.offset) { index, key in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text(String(index + 1))
-                            .font(themeStore.uiFont(.footnote, weight: .semibold))
-                            .foregroundStyle(tokens.accent)
-                            .frame(width: 28, height: 28)
-                            .background(tokens.accent.opacity(0.12), in: Circle())
-                            .accessibilityHidden(true)
-
-                        Text(L10n.text(key))
-                            .font(themeStore.uiFont(.body))
-                            .foregroundStyle(tokens.primaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                    }
-                    .padding(.vertical, 6)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(
-                        L10n.format(
-                            "ui.step_value_value",
-                            index + 1,
-                            L10n.text(key)
-                        )
-                    )
-                    .accessibilityIdentifier("settings.experimentalFeatures.step.\(index + 1)")
-                }
-            } header: {
-                Text(L10n.text("ui.how_to_enable_on_mac"))
-                    .textCase(nil)
-            } footer: {
-                Text(L10n.text("ui.codex_experiment_mac_only_note"))
-            }
-
-            Section {
-                Label {
-                    Text(L10n.text("ui.codex_experiment_service_note"))
-                        .font(themeStore.uiFont(.subheadline))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(tokens.accent)
-                }
-                .padding(.vertical, 6)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("settings.experimentalFeatures.serviceNote")
-            } header: {
-                Text(L10n.text("ui.before_you_use_it"))
-                    .textCase(nil)
-            }
-        }
-        .themedSettingsForm(tokens: tokens)
-        .navigationTitle(L10n.text("ui.experimental_features"))
-        .navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier("settings.experimentalFeatures.detail")
+    func themedSettingsForm(tokens: ThemeTokens) -> some View {
+        scrollContentBackground(.hidden)
+            .settingsCanvasBackground(tokens: tokens)
     }
 }
 
-extension View {
-    func themedSettingsForm(tokens: ThemeTokens) -> some View {
-        scrollContentBackground(.hidden)
-            .background(tokens.background.ignoresSafeArea())
+private struct SettingsCanvasBackgroundModifier: ViewModifier {
+    @Environment(\.settingsUsesWorkbenchCanvas) private var settingsUsesWorkbenchCanvas
+
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        content.background(
+            (settingsUsesWorkbenchCanvas
+                ? tokens.workbenchCanvasBackground
+                : tokens.background
+            ).ignoresSafeArea()
+        )
+    }
+}
+
+/// 同一套设置详情既会从“我的”进入，也会在独立设置 sheet 内导航；
+/// 由入口传递画布类型，避免详情页自行猜测呈现方式。
+private struct SettingsUsesWorkbenchCanvasKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var settingsUsesWorkbenchCanvas: Bool {
+        get { self[SettingsUsesWorkbenchCanvasKey.self] }
+        set { self[SettingsUsesWorkbenchCanvasKey.self] = newValue }
     }
 }

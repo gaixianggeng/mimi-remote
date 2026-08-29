@@ -96,6 +96,9 @@ actor EventReducer {
             if let goal = context.goal, let id = context.sessionID ?? metadata.sessionID ?? context.threadID {
                 output.goalUpdates.append((id, goal))
             }
+        case .permissionProfileUpdated:
+            // SessionStoreConnection 在进入通用 reducer 前更新权限状态；这里不生成会话时间线事件。
+            break
         case .goalUpdated(let goal, let metadata):
             let id = metadata.sessionID ?? goal.threadID
             output.goalUpdates.append((id, goal))

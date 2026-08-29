@@ -455,6 +455,15 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "model/list")
     }
 
+    func permissionProfileList(cwd: String, limit: Int? = nil, cursor: String? = nil) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "permissionProfile/list", params: CodexAppServerJSONValue.objectValue([
+            "cwd": .string(path),
+            "limit": limit.map { .int(Int64($0)) },
+            "cursor": cursor.map { .string($0) }
+        ]))
+    }
+
     func skillsList(cwd: String, forceReload: Bool = false) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "skills/list", params: .object([
@@ -508,6 +517,25 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
     }
 
+    func threadStartForSharedQueue(
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        var params = safeThreadRuntimeParams(cwd: path)
+        options.threadParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
+        params["effort"] = options.reasoningEffort.map { .string($0.rawValue) }
+        params["summary"] = options.reasoningSummary.map { .string($0.rawValue) }
+        params["collaborationMode"] = options.turnParams(projectPath: path)["collaborationMode"] ?? nil
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/start",
+            params: .object(params.compactMapValues { $0 })
+        )
+    }
+
     func threadResume(threadID: String, projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {
@@ -552,6 +580,30 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params.compactMapValues { $0 }))
     }
 
+    func threadResumePreservingSharedState(
+        threadID: String,
+        cwd: String,
+        includeInitialTurnsPage: Bool = true
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        var params: [String: CodexAppServerJSONValue] = [
+            "threadId": .string(threadID),
+            "cwd": .string(path),
+            "excludeTurns": .bool(true),
+            // Shared SSH 中恢复只建立监听，不能让 gateway 写入 Mimi 的默认权限设置。
+            "mimiPreserveThreadPermissions": .bool(true)
+        ]
+        if includeInitialTurnsPage {
+            params["initialTurnsPage"] = .object([
+                "limit": .int(5),
+                "sortDirection": .string("desc"),
+                "itemsView": .string("summary")
+            ])
+        }
+        try validateRemoteSafeParams(params.mapValues { Optional($0) }, projectPath: path)
+        return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params))
+    }
+
     func threadFork(threadID: String, cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
@@ -564,11 +616,58 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/fork", params: .object(params.compactMapValues { $0 }))
     }
 
-    func threadRead(threadID: String, includeTurns: Bool = true) -> CodexAppServerRequestSpec {
+    func threadRead(threadID: String, includeTurns: Bool = false) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/read", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
             "includeTurns": .bool(includeTurns)
         ]))
+    }
+
+    func threadQueueAdd(
+        threadID: String,
+        cwd: String,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let params: [String: CodexAppServerJSONValue?] = [
+            "threadId": .string(threadID),
+            "input": payload.appServerInput,
+            "clientUserMessageId": .string(clientMessageID)
+        ]
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/queue/add",
+            params: .object(params.compactMapValues { $0 })
+        )
+    }
+
+    func threadQueueList(
+        threadID: String,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/queue/list", params: .object([
+            "threadId": .string(threadID),
+            "cursor": cursor.map(CodexAppServerJSONValue.string),
+            "limit": .int(Int64(limit))
+        ].compactMapValues { $0 }))
+    }
+
+    func threadItemsList(
+        threadID: String,
+        turnID: TurnID? = nil,
+        cursor: String? = nil,
+        limit: Int = 100,
+        sortDirection: String = "desc"
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/items/list", params: .object([
+            "threadId": .string(threadID),
+            "turnId": turnID.map(CodexAppServerJSONValue.string),
+            "cursor": cursor.map(CodexAppServerJSONValue.string),
+            "limit": .int(Int64(limit)),
+            "sortDirection": .string(sortDirection)
+        ].compactMapValues { $0 }))
     }
 
     func threadTurnsList(
@@ -792,14 +891,23 @@ struct CodexAppServerRequestBuilder {
         if let cwd = params["cwd"]??.stringValue, cwd != projectPath {
             throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.cwd_must_be_from_project_allowlist"))
         }
-        if normalizedDangerToken(params["approvalPolicy"]??.stringValue) == "never" {
-            throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.approvalpolicy_never_is_prohibited"))
+        if normalizedDangerToken(params["approvalPolicy"]??.stringValue) == "never",
+           !usesExplicitFullAccess(params) {
+            throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.approvalpolicy_never_requires_full_access"))
         }
         try validateNoDangerousConfig(params["config"] ?? nil)
+        if let profileID = params["permissions"]??.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard !profileID.isEmpty, profileID.utf8.count <= 256 else {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_id_is_invalid"))
+            }
+            if (params["sandbox"] ?? nil) != nil || (params["sandboxPolicy"] ?? nil) != nil {
+                throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.permission_profile_cannot_be_combined_with_legacy_sandbox"))
+            }
+        }
         guard let sandbox = params["sandboxPolicy"]??.objectValue else {
             return
         }
-        // 默认允许用户批准下的最高文件系统权限，但仍不默认打开网络访问。
+        // 完全访问可以显式关闭审批，但仍不默认打开网络访问。
         if sandbox["networkAccess"]?.boolValue == true {
             throw CodexAppServerRequestBuilderError.unsafeParameter(L10n.text("ui.remote_network_access_is_prohibited_by_default"))
         }
@@ -819,6 +927,18 @@ struct CodexAppServerRequestBuilder {
             .lowercased()
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: "_", with: "")
+    }
+
+    private func usesExplicitFullAccess(_ params: [String: CodexAppServerJSONValue?]) -> Bool {
+        if params["permissions"]??.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == ":danger-full-access" {
+            return true
+        }
+        if normalizedDangerToken(params["sandbox"]??.stringValue) == "dangerfullaccess" {
+            return true
+        }
+        return normalizedDangerToken(params["sandboxPolicy"]??.objectValue?["type"]?.stringValue) == "dangerfullaccess"
     }
 
     private func collectWorkspaceInputPaths(_ input: CodexAppServerJSONValue?) throws -> [String] {

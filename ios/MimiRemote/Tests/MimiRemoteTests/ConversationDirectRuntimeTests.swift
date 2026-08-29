@@ -404,7 +404,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(notification?.params?["thread_id"]?.stringValue, "thr_reverse")
     }
 
-    func testDirectRuntimeRestoresApprovalCardAfterGatewayRejectsReverseResponse() async {
+    func testDirectRuntimeDoesNotResurrectApprovalAfterRejectedReverseResponse() async {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "reverse-response-rejection"
@@ -432,32 +432,7 @@ extension ConversationDataFlowTests {
         ))
 
         let events = await runtime.bufferedEvents(sessionID: "thr_reverse", replayPolicy: .all)
-        XCTAssertTrue(events.contains {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        XCTAssertTrue(events.contains {
-            if case .approvalRequest(let approval, let metadata) = $0 {
-                return approval.id == "cmd_reverse" && metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        XCTAssertTrue(events.contains {
-            if case .warning(let warning, let metadata) = $0 {
-                return warning.code == "external_thread_active"
-                    && metadata.sessionID == "thr_reverse"
-            }
-            return false
-        })
-        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_reverse")
-        XCTAssertTrue(pending.contains {
-            if case .approvalRequest(let approval, _) = $0 {
-                return approval.id == "cmd_reverse"
-            }
-            return false
-        })
+        XCTAssertTrue(events.isEmpty, "rejected 仅表示另一入口未接受响应，不能复活卡片或生成警告")
     }
 
     func testCodexAppServerConnectionBuffersInboundStreamsWithoutDroppingOldEvents() async throws {
@@ -767,7 +742,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(approvalResponse.id, .int(99))
         XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
 
-        transport.enqueue(#"{"id":100,"method":"item/permissions/requestApproval","params":{"threadId":"thr_direct","turnId":"turn_direct_2","itemId":"perm_direct","permissions":{"sandbox":"danger-full-access","networkAccess":true}}}"#)
+        transport.enqueue(#"{"id":100,"method":"item/permissions/requestApproval","params":{"threadId":"thr_direct","turnId":"turn_direct_2","itemId":"perm_direct","permissions":{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}}]},"network":{"enabled":true}}}}"#)
         for _ in 0..<200 where !events.contains(where: {
             if case .approvalRequest(let approval, _) = $0 {
                 return approval.id == "perm_direct"
@@ -779,7 +754,13 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(socket.sendApprovalDecision(approvalID: "perm_direct", decision: "accept", message: nil))
         let permissionsResponse = try await waitForFakeAppServerResponse(transport, id: .int(100))
         XCTAssertEqual(permissionsResponse.id, .int(100))
-        XCTAssertEqual(permissionsResponse.result?["permissions"]?.objectValue?.isEmpty, true)
+        let grantedPermissions = try XCTUnwrap(permissionsResponse.result?["permissions"]?.objectValue)
+        XCTAssertEqual(
+            grantedPermissions["fileSystem"]?.objectValue?["entries"]?.arrayValue?.first?
+                .objectValue?["path"]?.objectValue?["path"]?.stringValue,
+            "/tmp/report.txt"
+        )
+        XCTAssertEqual(grantedPermissions["network"]?.objectValue?["enabled"]?.boolValue, true)
         XCTAssertEqual(permissionsResponse.result?["scope"]?.stringValue, "turn")
         XCTAssertEqual(permissionsResponse.result?["strictAutoReview"]?.boolValue, true)
         XCTAssertNil(permissionsResponse.result?["decision"])
@@ -838,7 +819,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project)
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -849,7 +832,7 @@ extension ConversationDataFlowTests {
         assertInitializeEnablesExperimentalAPI(initialize)
         transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
         let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
-        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_delta_guidance","sessionId":"thr_delta_guidance","preview":"delta 回填","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/delta-guidance","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"delta 回填","turns":[]}],"nextCursor":null}"#)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_delta_guidance","sessionId":"thr_delta_guidance","preview":"delta 回填","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/delta-guidance","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"delta 回填","turns":[]}],"nextCursor":null}"#)
         _ = try await listTask.value
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
@@ -2160,7 +2143,9 @@ extension ConversationDataFlowTests {
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
+            configProvider: {
+                makeDirectAppServerConfig(project: project)
+            }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
 
@@ -2176,7 +2161,7 @@ extension ConversationDataFlowTests {
         let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let read = try decodeAppServerRequest(readMessages[2])
         XCTAssertEqual(read.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
         _ = try await sessionTask.value
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
@@ -2189,7 +2174,7 @@ extension ConversationDataFlowTests {
         let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
         let resume = try decodeAppServerRequest(resumeMessages[3])
         XCTAssertEqual(resume.method, "thread/resume")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
 
         for _ in 0..<200 where !statuses.contains(.connected) {
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -2291,47 +2276,6 @@ extension ConversationDataFlowTests {
         }, "requestUserInput 完成后不能投影成 approvalResolved")
 
         socket.disconnect()
-    }
-
-    func testDirectRuntimeServesEarlierHistoryFromCacheWithoutRefetch() async throws {
-        let project = AgentProject(id: "proj_hist", name: "Hist", path: "/tmp/hist")
-        let transport = FakeCodexAppServerTransport()
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "outer-token",
-            transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
-        )
-        let client = CodexAppServerSessionAPIClient(runtime: runtime)
-
-        // 首屏 before=nil：触发一次整段 thread/read。
-        let firstPageTask = Task {
-            try await client.messagesPage(sessionID: "thr_hist", before: nil, limit: 2)
-        }
-
-        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
-        let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
-
-        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
-        let read = try decodeAppServerRequest(readMessages[2])
-        XCTAssertEqual(read.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist","sessionId":"thr_hist","preview":"hist","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist","turns":[{"id":"turn_h","startedAt":1780490000,"items":[{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]},{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"userMessage","id":"item_2","content":[{"type":"text","text":"m2"}]}]}]}}}"#)
-
-        let firstPage = try await firstPageTask.value
-        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2"])
-        XCTAssertTrue(firstPage.hasMoreBefore)
-        let cursor = try XCTUnwrap(firstPage.previousCursor)
-
-        // 翻看更早 before=cursor：必须命中缓存，能取回最早的 m0，并且不再发第二次 thread/read。
-        let earlier = try await client.messagesPage(sessionID: "thr_hist", before: cursor, limit: 2)
-        XCTAssertEqual(earlier.messages.map(\.content), ["m0"])
-        XCTAssertFalse(earlier.hasMoreBefore)
-
-        let sent = await transport.sentMessages()
-        let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
-        XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
     }
 
     func testDirectRuntimePreservesHistoryImagePayloadAsLazyMedia() async throws {

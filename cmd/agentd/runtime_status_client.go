@@ -9,7 +9,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
+
+type runtimeStatusResult struct {
+	payload map[string]any
+	err     error
+}
 
 // runtime status 探测单独放在客户端文件，避免主入口继续膨胀，同时保持 setup/status 共用同一校验逻辑。
 func runtimeStatusURL(endpoint string) (string, error) {
@@ -21,10 +28,14 @@ func fetchServiceRuntimeStatus(
 	endpoint string,
 	token string,
 	timeout time.Duration,
+	refresh bool,
 ) (map[string]any, error) {
 	target, err := runtimeStatusURL(endpoint)
 	if err != nil {
 		return nil, err
+	}
+	if refresh {
+		target += "?refresh=wait"
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -61,6 +72,38 @@ func fetchServiceRuntimeStatus(
 		return nil, err
 	}
 	return payload, nil
+}
+
+func fetchRuntimeStatusForCommand(endpoint string, token string, refresh bool) runtimeStatusResult {
+	timeout := runtimebudget.CachedHTTPTimeout
+	if refresh {
+		timeout = runtimebudget.ForcedRefreshHTTPTimeout
+	}
+	payload, err := fetchServiceRuntimeStatus(
+		context.Background(),
+		endpoint,
+		token,
+		timeout,
+		refresh,
+	)
+	return runtimeStatusResult{payload: payload, err: err}
+}
+
+func attachRuntimeStatus(
+	status map[string]any,
+	result runtimeStatusResult,
+	refresh bool,
+) error {
+	if result.err != nil {
+		// 普通后台状态继续兼容旧服务；用户显式刷新必须暴露失败，
+		// 让托盘保留 last-good 状态并显示刷新错误。
+		if refresh {
+			return fmt.Errorf("强制刷新运行时状态失败：%w", result.err)
+		}
+		return nil
+	}
+	status["runtime_status"] = result.payload
+	return nil
 }
 
 func validateRuntimeStatusPayload(payload map[string]any) error {

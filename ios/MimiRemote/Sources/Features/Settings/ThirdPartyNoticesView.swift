@@ -58,7 +58,7 @@ struct ThirdPartyNoticesView: View {
             .padding(.vertical, 16)
             .textSelection(.enabled)
         }
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.open_source_license"))
         .navigationBarTitleDisplayMode(.inline)
     }

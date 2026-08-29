@@ -3,6 +3,19 @@ import os
 import UserNotifications
 
 extension SessionStore {
+    func refreshSettingsAccountOverview() async {
+        // Token 活动在 agentd 已有 12 小时快照，必须先发请求才能立即命中。
+        // 模型目录和额度查询可能较慢，不能把低频活动快照排在它们之后。
+        async let tokenActivity: Void = refreshAccountTokenUsage()
+
+        await refreshAppServerModelOptions()
+        await refreshCodexUsage()
+        if hasClaudeRuntimeChannel {
+            await refreshClaudeUsage()
+        }
+        await tokenActivity
+    }
+
     func refreshAccountTokenUsage(forceRefresh: Bool = false) async {
         let hostScope = appStore.activeHostScope
         guard accountTokenUsageRefreshHostScope != hostScope else {
@@ -107,7 +120,6 @@ enum SessionListRequestSource: String {
     case libraryIndex
     case restore
     case selectedProject
-    case externalActivity
     case workspaceForeground
     case workspaceLoadMore
 }
@@ -269,34 +281,12 @@ struct HistoryLoadSignature: Equatable {
     }
 }
 
-struct ExternalActivityHistoryAttempt: Equatable {
-    let revision: String
-    let turnID: TurnID?
-}
-
-enum ExternalActivityHistoryFallbackMode: Equatable {
-    /// full 已确定不可用，但 economy 仍可按 revision 对账；瞬时失败只重试 economy。
-    case economy
-    /// 当前 turn 缺少安全分页边界，或连 economy 也确定超限；等新 turn/terminal 再 full。
-    case skip
-}
-
-struct ExternalActivityHistoryFallback: Equatable {
-    let turnID: TurnID?
-    let mode: ExternalActivityHistoryFallbackMode
-}
-
 // 会话首屏历史按 session 维度复用，而不是按选中动作复用。
 // 用户来回切会话、前台恢复、手动刷新可能同时触发 before=nil 请求；
 // 这里保留一轮加载的 task 和 session 快照，用来避免同一个大 session 反复请求。
 struct HistoryLoadJob {
     let token: Int
     let sessionSignature: HistoryLoadSignature
-    /// 请求开始时观察到的外部活动 revision。完成时只推进这一精确水位，避免把请求期间
-    /// 新出现的 revision 误记成已被旧快照覆盖。
-    let externalActivityRevision: String?
-    /// 与 revision 同时捕获的 turn。只有结果页确实包含这个 turn，才证明快照覆盖了该 revision。
-    let externalActivityTurnID: TurnID?
     let loadMode: HistoryMessagesPage.LoadMode
     /// 恢复代次要求 bypass 时，不能加入一个更早创建的 reuseRecent job。
     let cachePolicy: HistoryFirstPageCachePolicy
@@ -1273,6 +1263,14 @@ enum QueuedTurnDispatchState: String, Codable, Equatable {
     case needsConfirmation
 }
 
+/// 权限选择改变后，必须等同一条消息真正开始新的 turn 才能解除边界。
+/// 只保存提交时的快照，迟到的旧事件不能清掉用户后来选择的权限。
+struct PendingPermissionTurnBoundary: Codable, Equatable {
+    let sessionID: SessionID
+    let clientMessageID: ClientMessageID
+    let permissionSelection: ComposerPermissionSelectionSnapshot
+}
+
 struct QueuedTurnEntry: Codable, Equatable, Identifiable {
     var id: ClientMessageID { clientMessageID }
 
@@ -1284,10 +1282,16 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
     let createdAt: Date
     var dispatchState: QueuedTurnDispatchState
     var expectedTurnID: TurnID?
+    // true 表示该队列项不能被 steer 到旧 turn，必须作为新的 turn/start 派发。
+    // Optional 保持旧 v1 队列 JSON 缺少该字段时仍可解码。
+    var requiresFreshTurn: Bool?
     // 上一条 turn/start 已获接受、但 started 事件尚未到达时，后续项必须跨重启继续等待；
     // blockedCompletionID 用来识别并忽略触发上一条派发的重复 completed 事件。
     var waitsForAcceptedTurnStart: Bool?
     var blockedCompletionID: TurnID?
+    // SSH shared queue 的 durable receipt。只有同一 client id 的 started 事件才能释放下一项。
+    var serverSubmissionID: String?
+    var serverStartedTurnID: TurnID?
     var lastAttemptAt: Date?
     var lastError: String?
 
@@ -1300,8 +1304,11 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         createdAt: Date = Date(),
         dispatchState: QueuedTurnDispatchState = .waiting,
         expectedTurnID: TurnID? = nil,
+        requiresFreshTurn: Bool? = nil,
         waitsForAcceptedTurnStart: Bool? = nil,
         blockedCompletionID: TurnID? = nil,
+        serverSubmissionID: String? = nil,
+        serverStartedTurnID: TurnID? = nil,
         lastAttemptAt: Date? = nil,
         lastError: String? = nil
     ) {
@@ -1313,8 +1320,11 @@ struct QueuedTurnEntry: Codable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.dispatchState = dispatchState
         self.expectedTurnID = expectedTurnID
+        self.requiresFreshTurn = requiresFreshTurn
         self.waitsForAcceptedTurnStart = waitsForAcceptedTurnStart
         self.blockedCompletionID = blockedCompletionID
+        self.serverSubmissionID = serverSubmissionID
+        self.serverStartedTurnID = serverStartedTurnID
         self.lastAttemptAt = lastAttemptAt
         self.lastError = lastError
     }
@@ -1341,6 +1351,74 @@ struct QueuedTurnProfileSnapshot: Codable, Equatable {
     var version = Self.schemaVersion
     let profileID: String
     var queuesBySessionID: [SessionID: [QueuedTurnEntry]]
+    var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]]
+    /// 明确拒绝的权限消息已离开队列，但重试时仍必须恢复 fresh-turn 约束。
+    var permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary]
+
+    init(
+        version: Int = Self.schemaVersion,
+        profileID: String,
+        queuesBySessionID: [SessionID: [QueuedTurnEntry]],
+        pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:],
+        permissionTurnRetryRequirementsByClientMessageID: [ClientMessageID: PendingPermissionTurnBoundary] = [:]
+    ) {
+        self.version = version
+        self.profileID = profileID
+        self.queuesBySessionID = queuesBySessionID
+        self.pendingPermissionTurnBoundariesBySessionID = pendingPermissionTurnBoundariesBySessionID
+        self.permissionTurnRetryRequirementsByClientMessageID = permissionTurnRetryRequirementsByClientMessageID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case profileID
+        case queuesBySessionID
+        case pendingPermissionTurnBoundariesBySessionID
+        case permissionTurnRetryRequirementsByClientMessageID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        profileID = try container.decode(String.self, forKey: .profileID)
+        queuesBySessionID = try container.decode(
+            [SessionID: [QueuedTurnEntry]].self,
+            forKey: .queuesBySessionID
+        )
+        // 已发布的 v1 文件没有这些字段。早期 MIM-189 开发版还把每个 Session 编码成单条边界。
+        if let boundaries = try? container.decode(
+            [SessionID: [PendingPermissionTurnBoundary]].self,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        ) {
+            pendingPermissionTurnBoundariesBySessionID = boundaries
+        } else if let legacyBoundaries = try? container.decode(
+            [SessionID: PendingPermissionTurnBoundary].self,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        ) {
+            pendingPermissionTurnBoundariesBySessionID = legacyBoundaries.mapValues { [$0] }
+        } else {
+            pendingPermissionTurnBoundariesBySessionID = [:]
+        }
+        permissionTurnRetryRequirementsByClientMessageID = try container.decodeIfPresent(
+            [ClientMessageID: PendingPermissionTurnBoundary].self,
+            forKey: .permissionTurnRetryRequirementsByClientMessageID
+        ) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(profileID, forKey: .profileID)
+        try container.encode(queuesBySessionID, forKey: .queuesBySessionID)
+        try container.encode(
+            pendingPermissionTurnBoundariesBySessionID,
+            forKey: .pendingPermissionTurnBoundariesBySessionID
+        )
+        try container.encode(
+            permissionTurnRetryRequirementsByClientMessageID,
+            forKey: .permissionTurnRetryRequirementsByClientMessageID
+        )
+    }
 }
 
 enum QueuedTurnStoreError: LocalizedError {
@@ -1688,8 +1766,7 @@ extension SessionStore {
         )
         let previewProjected = sessionApplyingListProjection(preserved)
         let monotonicRecency = sessionPreservingRecencyFloor(previewProjected)
-        let recentProjected = sessionApplyingRecentActivityProjection(monotonicRecency)
-        return sessionApplyingExternalActivity(recentProjected)
+        return sessionApplyingRecentActivityProjection(monotonicRecency)
     }
 
     /// 子 Agent ownership 和创建时间属于线程身份，而非一次列表响应的瞬时字段。
@@ -1724,21 +1801,6 @@ extension SessionStore {
             result.isSubagent = true
         }
         return result
-    }
-
-    func sessionApplyingExternalActivity(_ incoming: AgentSession) -> AgentSession {
-        guard let activity = externalActivityBySessionID[incoming.id],
-              activity.state == "running" else {
-            return incoming
-        }
-        var projected = incoming
-        projected.status = SessionStatus.running.rawValue
-        projected.activeTurnID = activity.turnID
-        projected.pendingApproval = nil
-        projected.pendingUserInput = nil
-        projected.updatedAt = max(incoming.updatedAt ?? .distantPast, activity.lastActivityAt)
-        projected.recencyAt = max(incoming.recencyAt ?? .distantPast, activity.lastActivityAt)
-        return projected
     }
 
     func sessionPreservingRecencyFloor(_ incoming: AgentSession) -> AgentSession {
