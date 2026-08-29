@@ -579,8 +579,8 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
-        // iPhone 竖屏与 iPad 竖屏共用同一套会话行结构，项目锚点不再按设备缩小。
-        XCTAssertTrue(layout.prefersSessionTableDensity)
+        // 390pt 的 iPhone 使用 compact 身份列，避免 table 的固定列挤压摘要。
+        XCTAssertFalse(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -673,7 +673,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         )
     }
 
-    func testSessionTableDensityFallsBackOnlyBelowSlideOverWidth() {
+    func testSessionTableDensityUsesSharedWidthThreshold() {
         let slideOverPad = WorkbenchLayout(
             containerWidth: 320,
             horizontalSizeClass: .compact,
@@ -695,9 +695,9 @@ final class ResponsiveLayoutTests: XCTestCase {
             isPad: true
         )
 
-        // 只有 Slide Over 这类真正窄的窗口才放弃锚点列；手机与分屏都保留同一套结构。
+        // iPhone 与 Slide Over 都使用 compact；达到共享阈值的 iPad 分栏才使用 table。
         XCTAssertFalse(slideOverPad.prefersSessionTableDensity)
-        XCTAssertTrue(phonePortrait.prefersSessionTableDensity)
+        XCTAssertFalse(phonePortrait.prefersSessionTableDensity)
         XCTAssertTrue(splitViewPad.prefersSessionTableDensity)
         XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }

@@ -258,7 +258,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { transport },
             configProvider: {
-                makeDirectAppServerConfig(project: project, transport: "unix")
+                makeDirectAppServerConfig(project: project)
             }
         )
         let apiClient = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -276,7 +276,7 @@ extension ConversationDataFlowTests {
         transportResponse(
             transport,
             id: threadList.id,
-            result: #"{"data":[{"id":"thr_guidance_fallback","sessionId":"thr_guidance_fallback","preview":"stale active","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/guidance-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"stale active","turns":[]}],"nextCursor":null}"#
+            result: #"{"data":[{"id":"thr_guidance_fallback","sessionId":"thr_guidance_fallback","preview":"stale active","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/guidance-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"stale active","turns":[]}],"nextCursor":null}"#
         )
         _ = try await listTask.value
 
@@ -291,7 +291,7 @@ extension ConversationDataFlowTests {
         transportResponse(
             transport,
             id: resume.id,
-            result: #"{"thread":{"id":"thr_guidance_fallback","sessionId":"thr_guidance_fallback","preview":"stale active","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491002,"status":{"type":"idle"},"path":null,"cwd":"/tmp/guidance-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"stale active","turns":[]}}"#
+            result: #"{"thread":{"id":"thr_guidance_fallback","sessionId":"thr_guidance_fallback","preview":"stale active","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491002,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/guidance-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"stale active","turns":[]}}"#
         )
         for _ in 0..<200 where !statuses.contains(.connected) {
             try await Task.sleep(nanoseconds: 10_000_000)

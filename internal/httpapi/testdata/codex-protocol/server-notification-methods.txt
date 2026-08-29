@@ -2,6 +2,7 @@ account/login/completed
 account/rateLimits/updated
 account/updated
 app/list/updated
+autoApprovalReview/strictReviewRequired
 command/exec/outputDelta
 configWarning
 deprecationNotice
@@ -35,6 +36,7 @@ model/safetyBuffering/updated
 model/verification
 process/exited
 process/outputDelta
+project/changed
 remoteControl/status/changed
 serverRequest/resolved
 skills/changed
@@ -47,6 +49,8 @@ thread/environment/disconnected
 thread/goal/cleared
 thread/goal/updated
 thread/name/updated
+thread/project/updated
+thread/queue/changed
 thread/realtime/closed
 thread/realtime/error
 thread/realtime/itemAdded
@@ -55,6 +59,7 @@ thread/realtime/sdp
 thread/realtime/started
 thread/realtime/transcript/delta
 thread/realtime/transcript/done
+thread/reverted
 thread/settings/updated
 thread/started
 thread/status/changed

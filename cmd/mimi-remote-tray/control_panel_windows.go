@@ -205,6 +205,10 @@ type controlPanel struct {
 	networkValue    uintptr
 	projectsLabel   uintptr
 	projectsValue   uintptr
+	codexLabel      uintptr
+	codexValue      uintptr
+	claudeLabel     uintptr
+	claudeValue     uintptr
 	footerLabel     uintptr
 
 	refresh   uintptr
@@ -237,8 +241,10 @@ type controlPanel struct {
 	pairingView          bool
 	pairingLoading       bool
 
-	statusColor      uint32
-	statusBackground uint32
+	statusColor       uint32
+	statusBackground  uint32
+	codexStatusColor  uint32
+	claudeStatusColor uint32
 }
 
 type controlPanelPresentation struct {
@@ -249,8 +255,12 @@ type controlPanelPresentation struct {
 	VersionValue     string
 	NetworkValue     string
 	ProjectsValue    string
+	CodexValue       string
+	ClaudeValue      string
 	StatusColor      uint32
 	StatusBackground uint32
+	CodexColor       uint32
+	ClaudeColor      uint32
 	RefreshEnabled   bool
 	StartEnabled     bool
 	RestartEnabled   bool
@@ -480,19 +490,23 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.statusLabel = p.createControl(instance, "STATIC", "正在检查服务", wsChild|wsVisible|ssLeft|ssNoPrefix, 58, 94, 470, 28, 0)
 	p.summaryLabel = p.createControl(instance, "STATIC", "正在读取本机服务状态…", wsChild|wsVisible|ssLeft|ssNoPrefix, 58, 124, 480, 24, 0)
 
-	p.endpointLabel = p.createControl(instance, "STATIC", "连接地址", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 168, 76, 20, 0)
-	p.endpointValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 168, 144, 20, 0)
-	p.versionLabel = p.createControl(instance, "STATIC", "服务版本", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 168, 58, 20, 0)
-	p.versionValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 382, 168, 158, 20, 0)
-	p.networkLabel = p.createControl(instance, "STATIC", "网络", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 207, 76, 20, 0)
-	p.networkValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 207, 144, 20, 0)
-	p.projectsLabel = p.createControl(instance, "STATIC", "项目", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 207, 58, 20, 0)
-	p.projectsValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 382, 207, 158, 20, 0)
+	p.endpointLabel = p.createControl(instance, "STATIC", "连接地址", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 162, 76, 20, 0)
+	p.endpointValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 162, 144, 20, 0)
+	p.versionLabel = p.createControl(instance, "STATIC", "服务版本", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 162, 58, 20, 0)
+	p.versionValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 382, 162, 158, 20, 0)
+	p.networkLabel = p.createControl(instance, "STATIC", "网络", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 195, 76, 20, 0)
+	p.networkValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 195, 144, 20, 0)
+	p.projectsLabel = p.createControl(instance, "STATIC", "项目", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 195, 58, 20, 0)
+	p.projectsValue = p.createControl(instance, "STATIC", "—", wsChild|wsVisible|ssLeft|ssNoPrefix, 382, 195, 158, 20, 0)
+	p.codexLabel = p.createControl(instance, "STATIC", "Codex", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 228, 76, 20, 0)
+	p.codexValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 228, 144, 20, 0)
+	p.claudeLabel = p.createControl(instance, "STATIC", "Claude Code", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 228, 76, 20, 0)
+	p.claudeValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 400, 228, 140, 20, 0)
 
-	p.refresh = p.createControl(instance, "BUTTON", "刷新状态", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 264, 120, 42, panelRefresh)
-	p.start = p.createControl(instance, "BUTTON", "启动服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 264, 120, 42, panelStart)
-	p.restart = p.createControl(instance, "BUTTON", "重新启动", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 264, 120, 42, panelRestart)
-	p.stop = p.createControl(instance, "BUTTON", "停止服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 264, 120, 42, panelStop)
+	p.refresh = p.createControl(instance, "BUTTON", "刷新状态", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 270, 120, 42, panelRefresh)
+	p.start = p.createControl(instance, "BUTTON", "启动服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 270, 120, 42, panelStart)
+	p.restart = p.createControl(instance, "BUTTON", "重新启动", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 270, 120, 42, panelRestart)
+	p.stop = p.createControl(instance, "BUTTON", "停止服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 270, 120, 42, panelStop)
 
 	p.pair = p.createControl(instance, "BUTTON", "配对设备", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 366, 120, 50, panelPair)
 	p.doctor = p.createControl(instance, "BUTTON", "运行诊断", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 366, 120, 50, panelDoctor)
@@ -513,6 +527,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
+		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 		p.pairTitle, p.pairSummary, p.pairEndpoint, p.pairExpiry, p.pairWarning,
 		p.pairBack, p.pairCopy, p.pairRefresh,
@@ -528,6 +543,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 		p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
+		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 	}
 	p.pairingControls = []uintptr{
@@ -542,6 +558,7 @@ func (p *controlPanel) applyFonts() {
 		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
+		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 		p.pairTitle, p.pairSummary, p.pairEndpoint, p.pairExpiry, p.pairWarning,
 		p.pairBack, p.pairCopy, p.pairRefresh, p.footerLabel,
@@ -556,7 +573,9 @@ func (p *controlPanel) applyFonts() {
 	setControlPanelFont(p.versionValue, p.valueFont)
 	setControlPanelFont(p.networkValue, p.valueFont)
 	setControlPanelFont(p.projectsValue, p.valueFont)
-	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
+	setControlPanelFont(p.codexValue, p.valueFont)
+	setControlPanelFont(p.claudeValue, p.valueFont)
+	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.codexLabel, p.claudeLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
 		setControlPanelFont(control, p.smallFont)
 	}
 	for _, control := range []uintptr{p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.pairBack, p.pairCopy, p.pairRefresh} {
@@ -577,18 +596,22 @@ func (p *controlPanel) layoutControls() {
 		{p.statusDotLabel, 31, 94, 24, 28},
 		{p.statusLabel, 58, 94, 470, 28},
 		{p.summaryLabel, 58, 124, 480, 24},
-		{p.endpointLabel, 48, 168, 76, 20},
-		{p.endpointValue, 134, 168, 144, 20},
-		{p.versionLabel, 314, 168, 58, 20},
-		{p.versionValue, 382, 168, 158, 20},
-		{p.networkLabel, 48, 207, 76, 20},
-		{p.networkValue, 134, 207, 144, 20},
-		{p.projectsLabel, 314, 207, 58, 20},
-		{p.projectsValue, 382, 207, 158, 20},
-		{p.refresh, 32, 264, 120, 42},
-		{p.start, 162, 264, 120, 42},
-		{p.restart, 292, 264, 120, 42},
-		{p.stop, 422, 264, 120, 42},
+		{p.endpointLabel, 48, 162, 76, 20},
+		{p.endpointValue, 134, 162, 144, 20},
+		{p.versionLabel, 314, 162, 58, 20},
+		{p.versionValue, 382, 162, 158, 20},
+		{p.networkLabel, 48, 195, 76, 20},
+		{p.networkValue, 134, 195, 144, 20},
+		{p.projectsLabel, 314, 195, 58, 20},
+		{p.projectsValue, 382, 195, 158, 20},
+		{p.codexLabel, 48, 228, 76, 20},
+		{p.codexValue, 134, 228, 144, 20},
+		{p.claudeLabel, 314, 228, 76, 20},
+		{p.claudeValue, 400, 228, 140, 20},
+		{p.refresh, 32, 270, 120, 42},
+		{p.start, 162, 270, 120, 42},
+		{p.restart, 292, 270, 120, 42},
+		{p.stop, 422, 270, 120, 42},
 		{p.pair, 32, 366, 120, 50},
 		{p.doctor, 162, 366, 120, 50},
 		{p.doctorFix, 292, 366, 120, 50},
@@ -704,6 +727,10 @@ func (p *controlPanel) syncFromApplication() {
 	setControlPanelText(p.versionValue, presentation.VersionValue)
 	setControlPanelText(p.networkValue, presentation.NetworkValue)
 	setControlPanelText(p.projectsValue, presentation.ProjectsValue)
+	setControlPanelText(p.codexValue, presentation.CodexValue)
+	setControlPanelText(p.claudeValue, presentation.ClaudeValue)
+	p.codexStatusColor = presentation.CodexColor
+	p.claudeStatusColor = presentation.ClaudeColor
 	setControlPanelEnabled(p.refresh, presentation.RefreshEnabled)
 	setControlPanelEnabled(p.start, presentation.StartEnabled)
 	setControlPanelEnabled(p.restart, presentation.RestartEnabled)
@@ -881,6 +908,7 @@ func formatPairingExpiry(value string) string {
 }
 
 func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool, pairingBusy bool) controlPanelPresentation {
+	neutralRuntimeColor := rgbColor(101, 101, 110)
 	presentation := controlPanelPresentation{
 		StateTitle:       "正在检查服务",
 		StateBadge:       "正在检查",
@@ -889,8 +917,12 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 		VersionValue:     "—",
 		NetworkValue:     "—",
 		ProjectsValue:    "—",
+		CodexValue:       "正在检查",
+		ClaudeValue:      "正在检查",
 		StatusColor:      rgbColor(91, 96, 108),
 		StatusBackground: rgbColor(239, 240, 243),
+		CodexColor:       neutralRuntimeColor,
+		ClaudeColor:      neutralRuntimeColor,
 		RefreshEnabled:   !busy,
 		StartEnabled:     !busy && !status.ProcessOK,
 		RestartEnabled:   !busy && status.ProcessOK,
@@ -900,19 +932,29 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 		FixEnabled:       !busy,
 		LogsEnabled:      !busy,
 	}
-	if statusErr != nil {
+	if statusErr != nil && status.Version == "" {
 		presentation.StateTitle = "无法读取服务状态"
 		presentation.StateBadge = "不可用"
 		presentation.StateSummary = compactControlPanelError(statusErr)
 		presentation.StatusColor = rgbColor(184, 42, 50)
 		presentation.StatusBackground = rgbColor(255, 239, 240)
 		presentation.NetworkValue = "检查失败"
+		presentation.CodexValue = "不可用"
+		presentation.ClaudeValue = "不可用"
+		presentation.CodexColor = presentation.StatusColor
+		presentation.ClaudeColor = presentation.StatusColor
 	} else if status.Version != "" {
 		presentation.StateTitle = status.lifecycleTitle()
 		presentation.EndpointValue = compactControlPanelEndpoint(status.Endpoint)
 		presentation.VersionValue = fallbackText(firstNonEmpty(status.ServerVersion, status.Version), "未知")
 		presentation.NetworkValue = compactControlPanelNetwork(status.NetworkStatus)
 		presentation.ProjectsValue = fmt.Sprintf("%d", status.Projects)
+		codex := makeControlPanelRuntimePresentation(status.RuntimeStatus, "codex", status.ProcessOK)
+		claude := makeControlPanelRuntimePresentation(status.RuntimeStatus, "claude", status.ProcessOK)
+		presentation.CodexValue = codex.Value
+		presentation.CodexColor = codex.Color
+		presentation.ClaudeValue = claude.Value
+		presentation.ClaudeColor = claude.Color
 		switch {
 		case status.lifecycleTitle() == "运行正常":
 			presentation.StateTitle = "服务运行正常"
@@ -933,6 +975,9 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 			presentation.StatusColor = rgbColor(184, 42, 50)
 			presentation.StatusBackground = rgbColor(255, 239, 240)
 		}
+		if statusErr != nil {
+			presentation.StateSummary = "刷新失败，当前显示上次状态：" + compactControlPanelError(statusErr)
+		}
 	}
 	if busy {
 		presentation.StateBadge = "处理中"
@@ -941,6 +986,62 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 		presentation.StatusBackground = rgbColor(242, 237, 248)
 	}
 	return presentation
+}
+
+type controlPanelRuntimePresentation struct {
+	Value string
+	Color uint32
+}
+
+// 只使用 agentd 返回的脱敏运行时快照。available 只表示运行时可用，
+// 不能提升为“已连接”；Claude 关闭时用“未配置”说明用户仍需完成设置。
+func makeControlPanelRuntimePresentation(snapshot *runtimeStatus, runtimeID string, processAvailable bool) controlPanelRuntimePresentation {
+	neutral := controlPanelRuntimePresentation{Value: "暂不可用", Color: rgbColor(101, 101, 110)}
+	if !processAvailable {
+		return controlPanelRuntimePresentation{Value: "不可用", Color: rgbColor(184, 42, 50)}
+	}
+	if snapshot == nil {
+		return neutral
+	}
+	// 过期状态不能继续显示成确定的“已连接”或“未配置”。手动刷新会
+	// 等待新探测；定时刷新期间则明确告诉用户旧快照正在被替换。
+	if snapshot.Stale {
+		if snapshot.Refreshing {
+			return controlPanelRuntimePresentation{Value: "正在刷新", Color: neutral.Color}
+		}
+		return controlPanelRuntimePresentation{Value: "状态已过期", Color: rgbColor(154, 91, 0)}
+	}
+	var selected *runtimeEntry
+	for index := range snapshot.Runtimes {
+		if strings.EqualFold(strings.TrimSpace(snapshot.Runtimes[index].ID), runtimeID) {
+			selected = &snapshot.Runtimes[index]
+			break
+		}
+	}
+	if selected == nil {
+		return controlPanelRuntimePresentation{Value: "状态未知", Color: neutral.Color}
+	}
+	if !selected.Enabled || strings.EqualFold(strings.TrimSpace(selected.State), "disabled") {
+		return controlPanelRuntimePresentation{Value: "未配置", Color: neutral.Color}
+	}
+	if snapshot.Refreshing && strings.EqualFold(strings.TrimSpace(selected.Reason), "refresh_in_progress") {
+		return controlPanelRuntimePresentation{Value: "正在检查", Color: neutral.Color}
+	}
+	switch strings.ToLower(strings.TrimSpace(selected.State)) {
+	case "connected":
+		return controlPanelRuntimePresentation{Value: "已连接", Color: rgbColor(35, 126, 58)}
+	case "available":
+		return controlPanelRuntimePresentation{Value: "运行时可用", Color: rgbColor(32, 99, 184)}
+	case "signed_out":
+		return controlPanelRuntimePresentation{Value: "未登录", Color: rgbColor(154, 91, 0)}
+	case "unavailable":
+		if strings.EqualFold(strings.TrimSpace(selected.Reason), "refresh_in_progress") {
+			return controlPanelRuntimePresentation{Value: "正在检查", Color: neutral.Color}
+		}
+		return controlPanelRuntimePresentation{Value: "不可用", Color: rgbColor(184, 42, 50)}
+	default:
+		return controlPanelRuntimePresentation{Value: "状态未知", Color: neutral.Color}
+	}
 }
 
 func compactControlPanelEndpoint(endpoint string) string {
@@ -1135,9 +1236,10 @@ func (p *controlPanel) paint(window uintptr) {
 		p.drawPairingQRCode(dc, p.scaledRect(46, 98, 260, 312))
 	} else {
 		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 326), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
-		drawPanelRoundedRect(dc, p.scaledRect(32, 154, 552, 244), p.scale32(10), rgbColor(249, 249, 251), rgbColor(232, 232, 236))
-		drawPanelLine(dc, p.scale32(48), p.scale32(198), p.scale32(536), p.scale32(198), rgbColor(229, 229, 233), max(1, p.scale(1)))
-		drawPanelLine(dc, p.scale32(298), p.scale32(166), p.scale32(298), p.scale32(232), rgbColor(229, 229, 233), max(1, p.scale(1)))
+		drawPanelRoundedRect(dc, p.scaledRect(32, 154, 552, 254), p.scale32(10), rgbColor(249, 249, 251), rgbColor(232, 232, 236))
+		drawPanelLine(dc, p.scale32(48), p.scale32(188), p.scale32(536), p.scale32(188), rgbColor(229, 229, 233), max(1, p.scale(1)))
+		drawPanelLine(dc, p.scale32(48), p.scale32(221), p.scale32(536), p.scale32(221), rgbColor(229, 229, 233), max(1, p.scale(1)))
+		drawPanelLine(dc, p.scale32(298), p.scale32(160), p.scale32(298), p.scale32(248), rgbColor(229, 229, 233), max(1, p.scale(1)))
 	}
 	drawPanelRoundedRect(dc, p.scaledRect(16, 340, 568, 440), p.scale32(14), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
 	drawPanelRoundedRect(dc, p.scaledRect(430, 20, 560, 54), p.scale32(17), p.statusBackground, p.statusBackground)
@@ -1196,6 +1298,10 @@ func (p *controlPanel) staticTextColor(control uintptr) uint32 {
 	switch control {
 	case p.statusDotLabel, p.statusLabel, p.badgeLabel:
 		return p.statusColor
+	case p.codexValue:
+		return p.codexStatusColor
+	case p.claudeValue:
+		return p.claudeStatusColor
 	case p.titleLabel, p.pairTitle, p.endpointValue, p.versionValue, p.networkValue, p.projectsValue:
 		return rgbColor(27, 27, 31)
 	default:
@@ -1209,7 +1315,8 @@ func (p *controlPanel) staticBackgroundBrush(control uintptr) uintptr {
 		return p.backgroundBrush
 	case p.badgeLabel:
 		return p.statusBrush
-	case p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue, p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue:
+	case p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue, p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
+		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue:
 		return p.detailBrush
 	default:
 		return p.cardBrush

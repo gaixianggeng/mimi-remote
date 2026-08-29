@@ -177,11 +177,11 @@ func (r *CodexAppServerRuntime) CreateSession(ctx context.Context, req RuntimeCr
 func (r *CodexAppServerRuntime) SessionDetail(ctx context.Context, id string, afterSeq int64) (SessionDetail, error) {
 	r.refreshRateLimits(ctx)
 	threadID := threadIDFromMobileSessionID(id)
-	var response appServerThreadEnvelope
-	if err := r.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &response); err != nil {
+	thread, err := r.readThreadPaginated(ctx, threadID)
+	if err != nil {
 		return SessionDetail{}, err
 	}
-	snapshot, ok := r.snapshotFromThread(response.Thread, projects.Project{}, false)
+	snapshot, ok := r.snapshotFromThread(thread, projects.Project{}, false)
 	if !ok {
 		if cached, hit := r.cachedSnapshot(id); hit {
 			snapshot = cached
@@ -214,11 +214,11 @@ func (r *CodexAppServerRuntime) StopSession(ctx context.Context, id string) erro
 }
 
 func (r *CodexAppServerRuntime) SessionMessages(ctx context.Context, id string, before string, limit int) (codexhistory.MessagePage, error) {
-	var response appServerThreadEnvelope
-	if err := r.call(ctx, "thread/read", map[string]any{"threadId": threadIDFromMobileSessionID(id), "includeTurns": true}, &response); err != nil {
+	thread, err := r.readThreadPaginated(ctx, threadIDFromMobileSessionID(id))
+	if err != nil {
 		return emptyMessagePage(), nil
 	}
-	messages := messagesFromAppServerThread(response.Thread)
+	messages := messagesFromAppServerThread(thread)
 	return paginateAppServerMessages(messages, before, limit), nil
 }
 
@@ -771,7 +771,7 @@ func (r *CodexAppServerRuntime) call(ctx context.Context, method string, params 
 
 func appServerRuntimeMethodAllowed(method string) bool {
 	switch method {
-	case "thread/list", "thread/start", "thread/resume", "thread/read", "turn/start", "turn/interrupt", "account/rateLimits/read":
+	case "thread/list", "thread/start", "thread/resume", "thread/read", "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt", "account/rateLimits/read":
 		return true
 	default:
 		return false
@@ -1242,13 +1242,13 @@ func (r *CodexAppServerRuntime) startTurn(ctx context.Context, threadID string, 
 }
 
 func (r *CodexAppServerRuntime) findActiveTurn(ctx context.Context, id string) string {
-	var response appServerThreadEnvelope
-	if err := r.call(ctx, "thread/read", map[string]any{"threadId": threadIDFromMobileSessionID(id), "includeTurns": true}, &response); err != nil {
+	thread, err := r.readThreadPaginated(ctx, threadIDFromMobileSessionID(id))
+	if err != nil {
 		return ""
 	}
-	for i := len(response.Thread.Turns) - 1; i >= 0; i-- {
-		if response.Thread.Turns[i].Status == "inProgress" {
-			return response.Thread.Turns[i].ID
+	for i := len(thread.Turns) - 1; i >= 0; i-- {
+		if thread.Turns[i].Status == "inProgress" {
+			return thread.Turns[i].ID
 		}
 	}
 	return ""

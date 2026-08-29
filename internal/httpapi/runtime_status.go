@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,10 +15,11 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
 const (
-	runtimeStatusRefreshTimeout = 9 * time.Second
+	runtimeStatusRefreshTimeout = runtimebudget.ProbeGenerationTimeout
 	runtimeStatusSuccessTTL     = 5 * time.Minute
 	runtimeStatusFailureTTL     = 15 * time.Second
 	runtimeQuotaFallbackTTL     = 15 * time.Minute
@@ -56,13 +56,16 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	hasResult  bool
-	snapshot   runtimeStatusResponse
-	refreshing bool
-	closed     bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	hasResult   bool
+	snapshot    runtimeStatusResponse
+	refreshing  bool
+	refreshGen  uint64
+	refreshDone map[uint64]chan struct{}
+	forceNext   bool
+	closed      bool
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -77,6 +80,7 @@ func newRuntimeStatusSnapshotCache(
 		timeout:     runtimeStatusRefreshTimeout,
 		successTTL:  runtimeStatusSuccessTTL,
 		failureTTL:  runtimeStatusFailureTTL,
+		refreshDone: make(map[uint64]chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -102,11 +106,7 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 			}
 		}
 	}
-	if !c.refreshing && !c.closed {
-		c.refreshing = true
-		c.wg.Add(1)
-		go c.refresh()
-	}
+	c.startRefreshLocked()
 	if c.hasResult {
 		response := c.snapshot
 		response.Refreshing = c.refreshing
@@ -118,7 +118,62 @@ func (c *runtimeStatusSnapshotCache) Snapshot() runtimeStatusResponse {
 	return response
 }
 
-func (c *runtimeStatusSnapshotCache) refresh() {
+// Refresh bypasses the TTL and waits for a probe that starts after this call.
+// If a background probe is already running, manual callers share one follow-up
+// generation. If the caller times out, the old result remains explicitly stale.
+func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusResponse {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	var target uint64
+	if c.refreshing {
+		// The running probe started before this request. Queue exactly one
+		// follow-up generation so the returned sample is later than the click.
+		target = c.refreshGen + 1
+		c.forceNext = true
+	} else {
+		c.startRefreshLocked()
+		target = c.refreshGen
+	}
+	done := c.refreshDoneLocked(target)
+	c.mu.Unlock()
+
+	completed := false
+	if done != nil {
+		select {
+		case <-done:
+			completed = true
+		case <-ctx.Done():
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hasResult {
+		response := c.snapshot
+		response.Refreshing = c.refreshing
+		response.Stale = c.refreshing && !completed
+		return response
+	}
+	response := c.placeholder()
+	response.Refreshing = c.refreshing
+	return response
+}
+
+func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
+	if c.refreshing || c.closed {
+		return
+	}
+	c.refreshing = true
+	c.refreshGen++
+	generation := c.refreshGen
+	c.refreshDoneLocked(generation)
+	c.wg.Add(1)
+	go c.refresh(generation)
+}
+
+func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 	response := c.probe(ctx)
@@ -126,12 +181,41 @@ func (c *runtimeStatusSnapshotCache) refresh() {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.closed && c.ctx.Err() == nil {
+		c.snapshot = response
+		c.hasResult = true
+	}
+	c.closeRefreshDoneLocked(generation)
 	c.refreshing = false
-	if c.closed || c.ctx.Err() != nil {
+	if !c.closed && c.forceNext {
+		c.forceNext = false
+		c.startRefreshLocked()
+	} else if c.closed {
+		for pendingGeneration := range c.refreshDone {
+			c.closeRefreshDoneLocked(pendingGeneration)
+		}
+	}
+}
+
+func (c *runtimeStatusSnapshotCache) refreshDoneLocked(generation uint64) chan struct{} {
+	if generation == 0 || c.closed {
+		return nil
+	}
+	done := c.refreshDone[generation]
+	if done == nil {
+		done = make(chan struct{})
+		c.refreshDone[generation] = done
+	}
+	return done
+}
+
+func (c *runtimeStatusSnapshotCache) closeRefreshDoneLocked(generation uint64) {
+	done := c.refreshDone[generation]
+	if done == nil {
 		return
 	}
-	c.snapshot = response
-	c.hasResult = true
+	close(done)
+	delete(c.refreshDone, generation)
 }
 
 func (c *runtimeStatusSnapshotCache) Close() {
@@ -210,35 +294,17 @@ func (r *Router) storeClaudeRuntimeQuota(limits *runtimeRateLimits) {
 // runtimeAccountStatus 只包含菜单栏需要的脱敏状态。账号邮箱、Token、Keychain
 // 内容和上游原始错误都不能进入这个结构，避免 status CLI 或日志扩大凭据暴露面。
 type runtimeAccountStatus struct {
-	ID                    string                     `json:"id"`
-	Title                 string                     `json:"title"`
-	Enabled               bool                       `json:"enabled"`
-	State                 runtimeConnectionState     `json:"state"`
-	Transport             string                     `json:"transport,omitempty"`
-	Shared                bool                       `json:"shared,omitempty"`
-	DaemonRestartRequired *bool                      `json:"daemon_restart_required,omitempty"`
-	CodexHome             string                     `json:"codex_home,omitempty"`
-	Version               string                     `json:"version,omitempty"`
-	StartedAt             *time.Time                 `json:"started_at,omitempty"`
-	AuthMode              string                     `json:"auth_mode,omitempty"`
-	PlanType              string                     `json:"plan_type,omitempty"`
-	Reason                string                     `json:"reason,omitempty"`
-	RateLimits            *runtimeRateLimits         `json:"rate_limits,omitempty"`
-	SharedDaemon          *runtimeSharedDaemonStatus `json:"shared_daemon,omitempty"`
-}
-
-// runtimeSharedDaemonStatus 只提供定位资源耗尽所需的数值与枚举。命令行、环境、
-// socket/owner 路径均不进入本机状态接口，避免为了可观测性扩大敏感信息面。
-type runtimeSharedDaemonStatus struct {
-	ListenerPID            int        `json:"listener_pid"`
-	ListenerStartedAt      *time.Time `json:"listener_started_at,omitempty"`
-	OpenFileDescriptors    int        `json:"open_file_descriptors"`
-	DirectChildProcesses   int        `json:"direct_child_processes"`
-	OwnerTargetFDSoftLimit *int       `json:"owner_target_fd_soft_limit,omitempty"`
-	EffectiveFDSoftLimit   *int       `json:"effective_fd_soft_limit,omitempty"`
-	FDUsagePercent         *float64   `json:"fd_usage_percent,omitempty"`
-	OwnerState             string     `json:"owner_state"`
-	ResourceState          string     `json:"resource_state"`
+	ID         string                 `json:"id"`
+	Title      string                 `json:"title"`
+	Enabled    bool                   `json:"enabled"`
+	State      runtimeConnectionState `json:"state"`
+	Transport  string                 `json:"transport,omitempty"`
+	Version    string                 `json:"version,omitempty"`
+	StartedAt  *time.Time             `json:"started_at,omitempty"`
+	AuthMode   string                 `json:"auth_mode,omitempty"`
+	PlanType   string                 `json:"plan_type,omitempty"`
+	Reason     string                 `json:"reason,omitempty"`
+	RateLimits *runtimeRateLimits     `json:"rate_limits,omitempty"`
 }
 
 type runtimeRateLimits struct {
@@ -305,27 +371,17 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.withLiveSharedDaemonMigrationStatus(r.runtimeStatus.Snapshot()))
-}
-
-func (r *Router) withLiveSharedDaemonMigrationStatus(response runtimeStatusResponse) runtimeStatusResponse {
-	if r.sharedDaemonMigrationRequired == nil {
-		return response
+	var response runtimeStatusResponse
+	switch req.URL.Query().Get("refresh") {
+	case "":
+		response = r.runtimeStatus.Snapshot()
+	case "wait":
+		response = r.runtimeStatus.Refresh(req.Context())
+	default:
+		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
+		return
 	}
-	required, err := r.sharedDaemonMigrationRequired()
-	if err != nil {
-		// 读取失败时保持 nil（未知），不能错误授权一次会中断客户端的迁移。
-		return response
-	}
-	response.Runtimes = append([]runtimeAccountStatus(nil), response.Runtimes...)
-	for index := range response.Runtimes {
-		if strings.EqualFold(response.Runtimes[index].ID, "codex") {
-			value := required
-			response.Runtimes[index].DaemonRestartRequired = &value
-			break
-		}
-	}
-	return response
+	writeJSON(w, http.StatusOK, response)
 }
 
 // SetCodexRuntimeStartedAt 连接 serve 层托管的 resident Codex 进程与本机状态接口。
@@ -395,7 +451,6 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 				Enabled:   true,
 				State:     runtimeStateUnavailable,
 				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
 				StartedAt: r.codexRuntimeStartTime(),
 				Reason:    "refresh_in_progress",
 			},
@@ -421,26 +476,8 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		Enabled:   true,
 		State:     runtimeStateUnavailable,
 		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-		Shared:    strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "unix"),
 		StartedAt: r.codexRuntimeStartTime(),
 		Reason:    "upstream_unavailable",
-	}
-	var diagnostics <-chan sharedDaemonDiagnosticsResult
-	if status.Shared && r.sharedDaemonDiagnostics != nil {
-		result := make(chan sharedDaemonDiagnosticsResult, 1)
-		diagnostics = result
-		go func() {
-			value, err := r.sharedDaemonDiagnostics(ctx)
-			result <- sharedDaemonDiagnosticsResult{value: value, err: err}
-		}()
-		defer func() {
-			status.SharedDaemon = awaitRuntimeSharedDaemonDiagnostics(ctx, diagnostics)
-		}()
-	}
-	if status.Shared {
-		if socketPath, pathErr := appserver.LocalDaemonSocketPath(r.cfg.Codex.Env); pathErr == nil {
-			status.CodexHome = filepath.Dir(filepath.Dir(socketPath))
-		}
 	}
 	upstreamURL, err := r.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -496,54 +533,6 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		status.Reason = "quota_refresh_in_progress"
 	}
 	return status
-}
-
-type sharedDaemonDiagnosticsResult struct {
-	value appserver.SharedDaemonDiagnostics
-	err   error
-}
-
-func awaitRuntimeSharedDaemonDiagnostics(
-	ctx context.Context,
-	results <-chan sharedDaemonDiagnosticsResult,
-) *runtimeSharedDaemonStatus {
-	if results == nil {
-		return nil
-	}
-	// 账号和资源探测并行执行；这里只给内核/launchctl 取证一个很短的收尾窗口，
-	// 不能让可选诊断拖垮原有 runtime 状态刷新。
-	timer := time.NewTimer(500 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case result := <-results:
-		if result.err != nil || !result.value.Supported {
-			return nil
-		}
-		return newRuntimeSharedDaemonStatus(result.value)
-	case <-ctx.Done():
-		return nil
-	case <-timer.C:
-		return nil
-	}
-}
-
-func newRuntimeSharedDaemonStatus(value appserver.SharedDaemonDiagnostics) *runtimeSharedDaemonStatus {
-	var startedAt *time.Time
-	if !value.ListenerStartedAt.IsZero() {
-		copy := value.ListenerStartedAt.UTC()
-		startedAt = &copy
-	}
-	return &runtimeSharedDaemonStatus{
-		ListenerPID:            value.ListenerPID,
-		ListenerStartedAt:      startedAt,
-		OpenFileDescriptors:    value.OpenFileDescriptors,
-		DirectChildProcesses:   value.DirectChildProcesses,
-		OwnerTargetFDSoftLimit: value.OwnerTargetFDSoftLimit,
-		EffectiveFDSoftLimit:   value.EffectiveFDSoftLimit,
-		FDUsagePercent:         value.FDUsagePercent,
-		OwnerState:             string(value.OwnerState),
-		ResourceState:          string(value.ResourceState),
-	}
 }
 
 func applyCodexAccount(status *runtimeAccountStatus, response runtimeAccountResponse) {

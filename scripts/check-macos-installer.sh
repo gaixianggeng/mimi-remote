@@ -181,36 +181,19 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 
-photo_usage_description="$(
-  plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" 2>/dev/null || true
-)"
-if [[ -z "$photo_usage_description" ]]; then
-  echo "Mac 安装包校验失败：App 缺少照片图库用途说明。" >&2
+if plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" >/dev/null 2>&1; then
+  echo "Mac 安装包校验失败：App 仍包含已移除的照片图库用途说明。" >&2
   exit 1
 fi
-
-read_signed_entitlement() {
-  local binary_path="$1"
-  local entitlement_key="$2"
-  local escaped_entitlement_key
-  local signed_entitlements
-  # plutil 把点号当作 key path 分隔符；entitlement 名称中的点必须逐个转义。
-  escaped_entitlement_key="${entitlement_key//./\\.}"
-  signed_entitlements="$(codesign -d --entitlements - --xml "$binary_path" 2>/dev/null)" || return 1
-  plutil -extract "$escaped_entitlement_key" raw -o - - <<<"$signed_entitlements" 2>/dev/null
-}
 
 photos_entitlement="com.apple.security.personal-information.photos-library"
-app_photos_entitlement="$(read_signed_entitlement "$APP_PATH" "$photos_entitlement" || true)"
-if [[ "$app_photos_entitlement" != "true" ]]; then
-  echo "Mac 安装包校验失败：App 必须声明照片图库 entitlement。" >&2
-  exit 1
-fi
-agent_photos_entitlement="$(read_signed_entitlement "$AGENT_PATH" "$photos_entitlement" || true)"
-if [[ "$agent_photos_entitlement" != "true" ]]; then
-  echo "Mac 安装包校验失败：agentd 必须声明照片图库 entitlement。" >&2
-  exit 1
-fi
+for binary_path in "$APP_PATH" "$AGENT_PATH"; do
+  signed_entitlements="$(codesign -d --entitlements - --xml "$binary_path" 2>/dev/null || true)"
+  if grep -Fq "$photos_entitlement" <<<"$signed_entitlements"; then
+    echo "Mac 安装包校验失败：${binary_path} 仍包含已移除的照片图库 entitlement。" >&2
+    exit 1
+  fi
+done
 
 # 运行时按 Info.plist 的 CFBundleExecutable 解析 TCC 责任进程；最终 Release 包仍只应
 # 包含这个主程序，避免把 Debug/Preview dylib 或其他未预期入口带进安装产物。
@@ -349,4 +332,4 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、照片图库权限、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"

@@ -91,12 +91,6 @@ extension CodexAppServerSessionRuntime {
                 }
             }
         }
-        if let sessionID,
-           !resolved.approvalSessionIDs.contains(sessionID),
-           !resolved.userInputSessionIDs.contains(sessionID),
-           terminalSessionBarriers[sessionID] == nil {
-            resolved.approvalSessionIDs.append(sessionID)
-        }
         discardBufferedResolvedInteractionRequests(sessionID: sessionID, requestIDs: Set(ids))
         return resolved
     }

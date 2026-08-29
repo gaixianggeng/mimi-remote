@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -63,81 +61,6 @@ func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T)
 	claude := response.Runtimes[1]
 	if claude.ID != "claude" || claude.Enabled || claude.State != runtimeStateDisabled {
 		t.Fatalf("未启用 Claude 应保留灰态行：%+v", claude)
-	}
-}
-
-func TestRuntimeStatusOverlaysLiveSharedDaemonMigrationMarker(t *testing.T) {
-	required := true
-	router := &Router{
-		sharedDaemonMigrationRequired: func() (bool, error) { return required, nil },
-	}
-	cached := runtimeStatusResponse{Runtimes: []runtimeAccountStatus{
-		{ID: "codex", Title: "Codex"},
-		{ID: "claude", Title: "Claude"},
-	}}
-
-	first := router.withLiveSharedDaemonMigrationStatus(cached)
-	if first.Runtimes[0].DaemonRestartRequired == nil || !*first.Runtimes[0].DaemonRestartRequired {
-		t.Fatalf("必须覆盖实时待迁移状态：%+v", first.Runtimes[0])
-	}
-	if cached.Runtimes[0].DaemonRestartRequired != nil {
-		t.Fatal("实时覆盖不能污染五分钟缓存")
-	}
-	required = false
-	second := router.withLiveSharedDaemonMigrationStatus(cached)
-	if second.Runtimes[0].DaemonRestartRequired == nil || *second.Runtimes[0].DaemonRestartRequired {
-		t.Fatalf("清除标记后下一次请求必须立即变为 false：%+v", second.Runtimes[0])
-	}
-
-	router.sharedDaemonMigrationRequired = func() (bool, error) {
-		return false, fmt.Errorf("permission denied")
-	}
-	unknown := router.withLiveSharedDaemonMigrationStatus(cached)
-	if unknown.Runtimes[0].DaemonRestartRequired != nil {
-		t.Fatal("标记读取失败必须保持未知，不能授权迁移")
-	}
-}
-
-func TestRuntimeSharedDaemonDiagnosticsAreSanitized(t *testing.T) {
-	limit := 8192
-	effectiveLimit := 4096
-	usage := 12.5
-	startedAt := time.Date(2026, time.August, 14, 0, 20, 20, 0, time.UTC)
-	diagnostic := newRuntimeSharedDaemonStatus(appserver.SharedDaemonDiagnostics{
-		Supported:              true,
-		ListenerPID:            10306,
-		ListenerStartedAt:      startedAt,
-		OpenFileDescriptors:    1024,
-		DirectChildProcesses:   3,
-		OwnerTargetFDSoftLimit: &limit,
-		EffectiveFDSoftLimit:   &effectiveLimit,
-		FDUsagePercent:         &usage,
-		OwnerState:             appserver.SharedDaemonOwnerStateStable,
-		ResourceState:          appserver.SharedDaemonResourceStateHealthy,
-	})
-	if diagnostic.ListenerPID != 10306 || diagnostic.OpenFileDescriptors != 1024 ||
-		diagnostic.OwnerTargetFDSoftLimit == nil || *diagnostic.OwnerTargetFDSoftLimit != 8192 ||
-		diagnostic.EffectiveFDSoftLimit == nil || *diagnostic.EffectiveFDSoftLimit != 4096 ||
-		diagnostic.OwnerState != "stable" || diagnostic.ResourceState != "healthy" {
-		t.Fatalf("共享 daemon 诊断映射错误：%+v", diagnostic)
-	}
-	raw, err := json.Marshal(diagnostic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serialized := string(raw)
-	for _, sensitive := range []string{"socket", "command", "environment", "/Users/tester"} {
-		if strings.Contains(strings.ToLower(serialized), strings.ToLower(sensitive)) {
-			t.Fatalf("runtime daemon 诊断不能泄露 %q：%s", sensitive, serialized)
-		}
-	}
-}
-
-func TestRuntimeSharedDaemonDiagnosticsFailureIsOmitted(t *testing.T) {
-	results := make(chan sharedDaemonDiagnosticsResult, 1)
-	results <- sharedDaemonDiagnosticsResult{err: fmt.Errorf("permission denied")}
-	if status := awaitRuntimeSharedDaemonDiagnostics(context.Background(), results); status != nil {
-		t.Fatalf("可选资源诊断失败时必须省略字段：%+v", status)
 	}
 }
 
@@ -620,6 +543,132 @@ func TestRuntimeStatusSuccessfulSnapshotStaysFreshForFiveMinutes(t *testing.T) {
 	now = base.Add(5 * time.Minute)
 	if snapshot := cache.Snapshot(); !snapshot.Refreshing || !snapshot.Stale {
 		t.Fatalf("5 分钟后应后台刷新并继续返回旧快照：%+v", snapshot)
+	}
+}
+
+func TestRuntimeStatusManualRefreshBypassesFreshTTL(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 8, 0, 0, 0, time.UTC)
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probes.Add(1)
+			checkedAt := now
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: runtimeStateConnected,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	cache.now = func() time.Time { return now }
+	defer cache.Close()
+
+	first := cache.Refresh(context.Background())
+	if first.Refreshing || first.Stale || probes.Load() != 1 {
+		t.Fatalf("首次手动刷新结果异常：snapshot=%+v probes=%d", first, probes.Load())
+	}
+	now = now.Add(time.Minute)
+	second := cache.Refresh(context.Background())
+	if second.CheckedAt == nil || !second.CheckedAt.Equal(now) || second.Refreshing || second.Stale {
+		t.Fatalf("五分钟 TTL 内的手动刷新仍应返回新快照：%+v", second)
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("手动刷新必须绕过成功 TTL：probes=%d", probes.Load())
+	}
+}
+
+func TestRuntimeStatusManualRefreshRunsAfterInflightBackgroundProbe(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var probes atomic.Int32
+	var accountState atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probe := probes.Add(1)
+			observed := accountState.Load()
+			if probe == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			state := runtimeStateSignedOut
+			if observed == 1 {
+				state = runtimeStateConnected
+			}
+			checkedAt := time.Now().UTC()
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: state,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	defer cache.Close()
+
+	_ = cache.Snapshot()
+	<-firstStarted
+	accountState.Store(1)
+	result := make(chan runtimeStatusResponse, 1)
+	go func() { result <- cache.Refresh(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	if got := probes.Load(); got != 1 {
+		t.Fatalf("manual refresh must wait for the in-flight probe before its follow-up: probes=%d", got)
+	}
+	close(releaseFirst)
+
+	select {
+	case response := <-result:
+		if got := probes.Load(); got != 2 {
+			t.Fatalf("manual refresh must run one follow-up probe: probes=%d", got)
+		}
+		if len(response.Runtimes) != 1 || response.Runtimes[0].State != runtimeStateConnected {
+			t.Fatalf("manual refresh returned the pre-click sample: %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual refresh did not finish after the follow-up probe")
+	}
+}
+
+func TestRuntimeStatusHandlerWaitRefreshBypassesCache(t *testing.T) {
+	checkedAt := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probes.Add(1)
+			current := checkedAt
+			return runtimeStatusResponse{
+				CheckedAt: &current,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: runtimeStateConnected,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	defer cache.Close()
+	_ = cache.Refresh(context.Background())
+	checkedAt = checkedAt.Add(time.Minute)
+
+	router := &Router{runtimeStatus: cache}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/runtime/status?refresh=wait", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	router.runtimeStatusHandler(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("强制刷新 HTTP 状态 = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response runtimeStatusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.CheckedAt == nil || !response.CheckedAt.Equal(checkedAt) || response.Refreshing || response.Stale {
+		t.Fatalf("强制刷新端点未等待新快照：%+v", response)
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("强制刷新端点必须绕过缓存：probes=%d", probes.Load())
 	}
 }
 

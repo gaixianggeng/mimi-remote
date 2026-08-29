@@ -2,6 +2,7 @@ import Foundation
 
 enum TurnSendOutcome: Equatable {
     case accepted(turnID: TurnID?)
+    case serverQueued(submissionID: String, startedTurnID: TurnID?)
     case guidanceAccepted
     case acceptedTerminal(turnID: TurnID?)
     case acceptedSuperseded(
@@ -10,12 +11,17 @@ enum TurnSendOutcome: Equatable {
     )
     case acceptedThreadClosed(turnID: TurnID?)
     case activeTurnConflict(activeTurnID: TurnID, message: String)
-    case retryableExternalThreadActive(message: String, retryAfterMilliseconds: Int)
     case rejected(message: String)
     case uncertain(message: String)
 }
 
+enum TurnDeliveryMode: Equatable {
+    case direct
+    case sharedServerQueue
+}
+
 protocol SessionWebSocketClient: AnyObject {
+    var turnDeliveryMode: TurnDeliveryMode { get }
     var onEvent: (@MainActor (AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
@@ -38,6 +44,8 @@ protocol SessionWebSocketClient: AnyObject {
 }
 
 extension SessionWebSocketClient {
+    var turnDeliveryMode: TurnDeliveryMode { .direct }
+
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
     }
@@ -328,10 +336,7 @@ actor CodexAppServerConnection {
             // app-server 要求客户端声明能力；这里保持最小能力集，避免移动端误触实验外的鉴权路径。
             "capabilities": .object([
                 "experimentalApi": .bool(true),
-                "requestAttestation": .bool(false),
-                // gateway 会在转发给 Codex 前剥离该私有字段。它只用于让新版
-                // agentd 确认客户端能处理 auto-handoff 产生的 notLoaded。
-                "mimiThreadHandoff": .bool(true)
+                "requestAttestation": .bool(false)
             ])
         ])
         do {
@@ -500,7 +505,7 @@ actor CodexAppServerConnection {
            error.data?.objectValue?["response_to_server_request"]?.boolValue == true {
             // server request 的 response 是 fire-and-forget，不在 pendingResponses
             // 中。gateway 拒绝它时转成私有通知，让 runtime 恢复审批/输入卡片，
-            // 避免界面显示“已发送”而实际 shared daemon 没有收到。
+            // 避免界面显示“已发送”而实际 owning runtime 没有收到。
             let requestID: CodexAppServerJSONValue
             switch response.id {
             case .int(let value): requestID = .int(value)

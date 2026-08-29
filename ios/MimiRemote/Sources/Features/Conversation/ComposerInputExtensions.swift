@@ -4,6 +4,17 @@ import SwiftUI
 
 // 权限选择、能力降级和队列边界属于输入状态协作，不让 ComposerView 主体继续增长。
 extension ComposerView {
+    @ViewBuilder
+    var sharedThreadSettingsNotice: some View {
+        if composerTurnSettingsPolicy == .sharedThreadManaged {
+            Label(ComposerTurnSettingsPolicy.sharedThreadNotice, systemImage: "desktopcomputer")
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("composer.sharedThreadSettingsNotice")
+        }
+    }
+
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
         composerState.applyPermissionMode(safePermissionMode(stored))
@@ -429,7 +440,7 @@ extension ComposerView {
                 pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                showsPermissionSettings: isPhoneComposer,
+                showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
                 showsCameraAction: showsCameraAttachmentAction,
@@ -507,7 +518,9 @@ extension ComposerView {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     skillPickerButton
-                    permissionMenu
+                    if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                        permissionMenu
+                    }
                 }
             }
             .scrollIndicators(.hidden)
@@ -929,7 +942,8 @@ extension ComposerView {
     func submitDraftButton(showLabels: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isGoalMode = composerState.isGoalModeSelected
-        let isPlanMode = composerState.isPlanModeSelected
+        let isPlanMode = composerTurnSettingsPolicy.allowsTurnSettingsEditing
+            && composerState.isPlanModeSelected
         let isGuidedFollowUp = !isGoalMode && !isPlanMode && canUseGuidedFollowUp && guidedFollowUpEnabled
         let title: String
         if composerState.voiceDraftNeedsReview {

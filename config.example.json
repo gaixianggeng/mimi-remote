@@ -8,10 +8,8 @@
     "type": "codex_app_server"
   },
   "app_server": {
-    "transport": "ws",
-    "managed": true,
-    "listen": "ws://127.0.0.1:4222",
-    "ws_token_file": "/Users/you/Library/Application Support/mimi-remote/app-server-ws-token",
+    "transport": "ssh",
+    "ssh_target": "127.0.0.1",
     "auto_title": true
   },
   "voice": {

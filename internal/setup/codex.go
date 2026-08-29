@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type codexBinResolver func(configured string) (string, error)
@@ -28,7 +27,6 @@ func ResolveCodexBin(configured string) (string, error) {
 func resolveCodexBin(configured string, lookPath executableLookup, platformCandidates []string) (string, error) {
 	candidates := append([]string{strings.TrimSpace(configured), "codex"}, platformCandidates...)
 	seen := map[string]struct{}{}
-	var compatibilityErr error
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -41,9 +39,6 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 
 		resolved, err := lookPath(candidate)
 		if err != nil {
-			if compatibilityErr == nil && errors.Is(err, appserver.ErrIndependentWriterCapabilityUnavailable) {
-				compatibilityErr = err
-			}
 			continue
 		}
 		if strings.TrimSpace(resolved) == "" {
@@ -54,9 +49,6 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 			continue
 		}
 		return filepath.Clean(absolute), nil
-	}
-	if compatibilityErr != nil {
-		return "", compatibilityErr
 	}
 	return "", fmt.Errorf("配置路径、PATH 和桌面 App 中都没有可执行的 Codex CLI")
 }
@@ -116,6 +108,9 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 	original, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
+		return "", false, err
 	}
 	document := map[string]json.RawMessage{}
 	if err := json.Unmarshal(original, &document); err != nil {
@@ -180,20 +175,15 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 			}
 			return nil
 		}
-		// codex.bin 是 stable-owner 身份的一部分。先取得 daemon operation
-		// lock，再以同一 raw snapshot CAS 提交。auto owner 可由新 agentd
-		// 按新路径重建；manual pending 必须保留，Doctor 不能替用户确认迁移。
-		// 当前 daemon 不会被停止，原生 Codex 流程不受影响。
 		commitCtx, cancelCommit := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancelCommit()
-		writeErr = commitConfigRepairingOwnedSharedDaemonIdentity(
-			commitCtx,
-			cfgPath,
-			validateOriginal,
-			func() error {
-				return writePrivateFileAtomicallyCAS(cfgPath, original, updated)
-			},
-		)
+		writeErr = withConfigCommitLock(commitCtx, cfgPath, func() error {
+			if err := validateOriginal(); err != nil {
+				return err
+			}
+			// 已在统一配置锁内完成原始字节复核，不能再调用会重复获取同一把锁的 CAS 写入。
+			return writePrivateFileAtomically(cfgPath, updated)
+		})
 	} else {
 		writeErr = writeConfig(cfgPath, updated)
 	}

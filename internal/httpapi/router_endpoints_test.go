@@ -824,9 +824,7 @@ func TestReadyzRequiresBearerAndReturns503WhenDoctorFails(t *testing.T) {
 }
 
 func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
-	const upstreamToken = "readyz-independent-upstream-token"
-	upstreamURL, _, connections := fakeAppServerUpstreamWithAuth(t, upstreamToken, nil)
-	tokenFile := testAppServerTokenFile(t, upstreamToken)
+	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		// readiness 只证明当前已启动的服务可承接请求；缺失的 CLI/Claude bridge
 		// 由完整 doctor 报告，不得让高频 readyz 执行外部进程或制造假离线。
@@ -837,10 +835,8 @@ func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
 		}
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
-			Transport:   "ws",
-			Managed:     false,
-			Listen:      upstreamURL,
-			WSTokenFile: tokenFile,
+			Transport: "ssh",
+			SSHTarget: upstreamURL,
 		}
 	})
 

@@ -2,40 +2,6 @@ import Foundation
 
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
-    func releaseStaleApprovalRequest(_ request: CodexAppServerServerRequest) {
-        removePendingApprovalRequest(request)
-        guard let connection else {
-            return
-        }
-        let sessionID = approvalSessionID(for: request)
-        let params = request.params?.objectValue ?? [:]
-        let result = approvalResponse(
-            method: request.method,
-            params: params,
-            decision: staleReleaseDecision(from: params)
-        )
-        Task { [connection, sessionID] in
-            // 释放失败（连接已断或 app-server 已自行清理）无所谓：下次 resume 仍会重新走这套判断。
-            do {
-                try await connection.respond(to: request, result: result)
-                if let sessionID {
-                    self.emitApprovalResolved(sessionID: sessionID)
-                }
-            } catch {}
-        }
-    }
-
-    // 释放旧审批要用 app-server 真正支持的“放弃”决策才能把请求 terminal 化，否则它会一直挂在挂起表里、
-    // 每次 resume 又被重放。命令/文件审批的 availableDecisions 通常是 ["accept", "cancel"]，没有 decline，
-    // 所以优先选 cancel/reject；只有在请求没带 availableDecisions 时（如旧 mock）才退回 decline。
-    func staleReleaseDecision(from params: [String: CodexAppServerJSONValue]) -> String {
-        let available = (params["availableDecisions"]?.arrayValue ?? []).compactMap { $0.stringValue?.lowercased() }
-        for candidate in ["cancel", "reject", "deny", "decline"] where available.contains(candidate) {
-            return candidate
-        }
-        return "decline"
-    }
-
     // 只有仍在活动的通知才算实时信号；表示回合/线程结束或权威状态变化的通知不能算，
     // 否则会把合法的 history 降级也挡掉。
     func recordLiveSignal(from notification: CodexAppServerNotification) {

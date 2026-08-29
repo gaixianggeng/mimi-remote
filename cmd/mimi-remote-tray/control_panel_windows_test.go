@@ -31,6 +31,73 @@ func TestControlPanelPresentationForReadyService(t *testing.T) {
 	}
 }
 
+func TestControlPanelPresentationSeparatesCodexAndClaudeConnectionStates(t *testing.T) {
+	status := agentStatus{
+		Version:   "1.2.3",
+		ProcessOK: true,
+		ServiceOK: true,
+		DoctorOK:  true,
+		RuntimeStatus: &runtimeStatus{Runtimes: []runtimeEntry{
+			{ID: "codex", Enabled: true, State: "connected"},
+			{ID: "claude", Enabled: false, State: "disabled"},
+		}},
+	}
+	presentation := makeControlPanelPresentation(status, nil, false, false)
+	if presentation.CodexValue != "已连接" {
+		t.Fatalf("Codex state = %q, want 已连接", presentation.CodexValue)
+	}
+	if presentation.ClaudeValue != "未配置" {
+		t.Fatalf("Claude Code state = %q, want 未配置", presentation.ClaudeValue)
+	}
+	if presentation.CodexColor == presentation.ClaudeColor {
+		t.Fatal("connected and unconfigured runtimes should use different colors")
+	}
+}
+
+func TestControlPanelRuntimePresentationSupportsRuntimeStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot *runtimeStatus
+		want     string
+	}{
+		{name: "available", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "available"}}}, want: "运行时可用"},
+		{name: "signed out", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "signed_out"}}}, want: "未登录"},
+		{name: "unavailable", snapshot: &runtimeStatus{Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "unavailable"}}}, want: "不可用"},
+		{name: "refreshing", snapshot: &runtimeStatus{Refreshing: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "unavailable", Reason: "refresh_in_progress"}}}, want: "正在检查"},
+		{name: "stale", snapshot: &runtimeStatus{Stale: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "connected"}}}, want: "状态已过期"},
+		{name: "stale refreshing", snapshot: &runtimeStatus{Stale: true, Refreshing: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: true, State: "connected"}}}, want: "正在刷新"},
+		{name: "stale disabled refreshing", snapshot: &runtimeStatus{Stale: true, Refreshing: true, Runtimes: []runtimeEntry{{ID: "codex", Enabled: false, State: "disabled"}}}, want: "正在刷新"},
+		{name: "missing runtime", snapshot: &runtimeStatus{}, want: "状态未知"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := makeControlPanelRuntimePresentation(testCase.snapshot, "codex", true)
+			if got.Value != testCase.want {
+				t.Fatalf("runtime state = %q, want %q", got.Value, testCase.want)
+			}
+		})
+	}
+}
+
+func TestControlPanelRuntimeStatusDoesNotDependOnCodexReadiness(t *testing.T) {
+	status := agentStatus{
+		Version:   "1.2.3",
+		ProcessOK: true,
+		ServiceOK: false,
+		RuntimeStatus: &runtimeStatus{Runtimes: []runtimeEntry{
+			{ID: "codex", Enabled: true, State: "unavailable"},
+			{ID: "claude", Enabled: true, State: "connected"},
+		}},
+	}
+	presentation := makeControlPanelPresentation(status, nil, false, false)
+	if presentation.CodexValue != "不可用" {
+		t.Fatalf("Codex state = %q, want 不可用", presentation.CodexValue)
+	}
+	if presentation.ClaudeValue != "已连接" {
+		t.Fatalf("Claude state = %q, want 已连接", presentation.ClaudeValue)
+	}
+}
+
 func TestControlPanelPresentationForStoppedService(t *testing.T) {
 	status := agentStatus{Version: "1.2.3"}
 	presentation := makeControlPanelPresentation(status, nil, false, false)
@@ -103,6 +170,17 @@ func TestControlPanelPresentationHandlesPairingAndStatusErrors(t *testing.T) {
 	}
 	if !strings.Contains(presentation.StateSummary, "first line second line") {
 		t.Fatalf("error summary lost useful context: %q", presentation.StateSummary)
+	}
+}
+
+func TestControlPanelPresentationKeepsLastGoodStatusAfterRefreshError(t *testing.T) {
+	status := agentStatus{Version: "1.2.3", ProcessOK: true, ServiceOK: true, DoctorOK: true}
+	presentation := makeControlPanelPresentation(status, errors.New("refresh timed out"), false, false)
+	if presentation.StateTitle != "服务运行正常" || presentation.StartEnabled || !presentation.StopEnabled {
+		t.Fatalf("refresh error replaced the last good service state: %#v", presentation)
+	}
+	if !strings.Contains(presentation.StateSummary, "当前显示上次状态") {
+		t.Fatalf("refresh warning is missing: %q", presentation.StateSummary)
 	}
 }
 

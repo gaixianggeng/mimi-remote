@@ -163,7 +163,7 @@ jobs:
                 -PfxPath $pfx `
                 -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
             } else {
-              Write-Warning 'Windows signing secrets are absent. Publishing an unsigned installer that may trigger Microsoft Defender SmartScreen.'
+              Write-Warning 'Windows signing secrets are absent. Building an unsigned compatibility-check installer for the private Actions artifact.'
               ./scripts/build-windows-installer.ps1 `
                 -Version ($env:RELEASE_TAG).TrimStart('v') `
                 -OutputDirectory dist-windows `
@@ -270,29 +270,3 @@ jobs:
         env:
           MIMI_REQUIRE_MACOS_SIGNATURE: "1"
         run: bash ./scripts/check-release-artifacts.sh
-
-  publish-windows:
-    needs:
-      - source-trust
-      - release
-      - verify-windows
-    if: github.repository == 'gaixianggeng/mimi-remote'
-    runs-on: windows-latest
-    timeout-minutes: 10
-    environment: production-release
-    permissions:
-      contents: write
-    steps:
-      - name: Download verified Windows installer
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: mimi-remote-windows-installer
-          path: dist-windows
-
-      - name: Upload Windows installer to GitHub Release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $files = Get-ChildItem -LiteralPath dist-windows -File
-          gh release upload $env:RELEASE_TAG $files.FullName --clobber --repo $env:GITHUB_REPOSITORY

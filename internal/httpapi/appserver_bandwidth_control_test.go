@@ -190,6 +190,36 @@ func TestAppServerGatewayRejectsDuplicateInflightHistoryAndReleases(t *testing.T
 	}
 }
 
+func TestAppServerGatewayAllowsConcurrentItemPagesForDifferentTurns(t *testing.T) {
+	monitor := newRelayMonitor()
+	policy := &appServerGatewayPolicy{
+		router:         &Router{monitor: monitor},
+		runtimeID:      "codex",
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets: map[string]appServerGatewayHistoryBudget{},
+	}
+	firstParams := map[string]any{
+		"threadId": "thread-items", "turnId": "turn-a", "limit": json.Number("250"), "sortDirection": "asc",
+	}
+	firstID := json.RawMessage(`201`)
+	if err := policy.reserveHistoryRequest(&firstID, "thread/items/list", firstParams, 128); err != nil {
+		t.Fatalf("首个 Turn items 请求应进入 in-flight：%+v", err)
+	}
+
+	secondParams := cloneGatewayParamsForTest(firstParams)
+	secondParams["turnId"] = "turn-b"
+	secondID := json.RawMessage(`202`)
+	if err := policy.reserveHistoryRequest(&secondID, "thread/items/list", secondParams, 128); err != nil {
+		t.Fatalf("不同 turnId 的 items 请求不应被误判为重复：%+v", err)
+	}
+
+	duplicateID := json.RawMessage(`203`)
+	duplicateErr := policy.reserveHistoryRequest(&duplicateID, "thread/items/list", firstParams, 128)
+	if duplicateErr == nil || duplicateErr.data["reason"] != "history_request_in_flight" {
+		t.Fatalf("同一 turnId 和分页参数仍应拒绝重复 in-flight：%+v", duplicateErr)
+	}
+}
+
 func TestAppServerGatewayCountsThreadListResponseAgainstBudgets(t *testing.T) {
 	oldCap := appServerGatewayHistoryResponseCapBytes
 	oldLocalBudget := appServerGatewayHistoryBudgetMaxResponseBytes

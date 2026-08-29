@@ -178,15 +178,17 @@ grep -Fq -- '--require-team-signing' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有提供 App/agentd/bridge Team ID 一致性校验。"
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
-grep -Fq 'com.apple.security.personal-information.photos-library' \
+! grep -Fq 'com.apple.security.personal-information.photos-library' \
   macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
-  || fail "Mac App 没有声明照片图库 entitlement。"
-grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
-  || fail "Mac App 没有声明照片图库用途说明。"
-grep -Fq -- '--codex-daemon-supervisor' macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift \
-  || fail "Mac App 缺少共享 daemon 的 TCC 责任进程入口。"
-grep -Fq 'CodexDaemonSupervisorInvocation.parse' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \
-  || fail "Mac App 主入口没有在触碰 SwiftUI 之前分叉 supervisor 模式。"
+  || fail "Mac App 仍声明已移除的照片图库 entitlement。"
+! grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
+  || fail "Mac App 仍声明已移除的照片图库用途说明。"
+[[ ! -e macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift ]] \
+  || fail "Mac App 仍包含已移除的 Codex shared daemon supervisor。"
+grep -Fq -- 'CommandLine.arguments.contains("--codex-daemon-supervisor")' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \
+  || fail "Mac App 缺少旧 shared daemon supervisor 的无 UI 退场保护。"
+! grep -Fq -- '--codex-desktop-sync' macos/MimiRemoteMac/Sources/Infrastructure/AgentCommandClient.swift \
+  || fail "Mac App 仍包含已移除的 Desktop IPC 实验开关。"
 grep -Fq 'main_executable_count' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Contents/MacOS 主可执行文件唯一性。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
@@ -215,8 +217,10 @@ grep -Fq 'scripts/check-windows-installer.ps1' .github/workflows/release.yml \
   || fail "Release workflow 没有校验 Windows 安装器。"
 grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
   || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
-grep -Fq 'Mimi-Remote-Setup-' .github/workflows/release.yml \
-  || fail "Release workflow 没有发布 Windows 安装器。"
+grep -Fq 'Upload verified Windows installer' .github/workflows/release.yml \
+  || fail "Release workflow 没有保留 Windows 兼容性验证 artifact。"
+! grep -Fq 'publish-windows:' .github/workflows/release.yml \
+  || fail "MIM-207 期间不得公开发布 Windows agentd 安装包。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

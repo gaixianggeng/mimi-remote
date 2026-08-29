@@ -214,7 +214,6 @@ extension ConversationDataFlowTests {
             configProvider: {
                 makeDirectAppServerConfig(
                     project: project,
-                    transport: "unix",
                     allowedMethods: [
                         "initialize",
                         "initialized",
@@ -226,7 +225,7 @@ extension ConversationDataFlowTests {
             }
         )
         let threadID = "thr_unsubscribe_lease"
-        let thread = #"{"id":"thr_unsubscribe_lease","sessionId":"thr_unsubscribe_lease","preview":"订阅代次","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/unsubscribe-lease","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"订阅代次","turns":[]}"#
+        let thread = #"{"id":"thr_unsubscribe_lease","sessionId":"thr_unsubscribe_lease","preview":"订阅代次","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/unsubscribe-lease","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"订阅代次","turns":[]}"#
 
         let pageTask = Task {
             try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
