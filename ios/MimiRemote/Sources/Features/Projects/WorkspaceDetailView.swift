@@ -316,7 +316,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isArchived: sessionStore.isSessionArchived(session.id),
                         reminder: sessionStore.sessionReminder(for: session.id),
                         isObserving: sessionStore.isSessionObserving(session),
-                        isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                         isUnread: isUnread,
                         density: rowDensity,
                         branch: SessionListPresentation.branchToDisplay(

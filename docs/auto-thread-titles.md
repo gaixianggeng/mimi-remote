@@ -2,11 +2,11 @@
 
 ## 目标
 
-新建 Codex 会话发送第一条用户请求后，由 Mac 端自动生成简短标题并持久化到 app-server。移动端应尽快看到标题，但标题生成不能阻塞正常对话，也不能把 Codex 凭据或本机 app-server capability token 下放到 iPhone / iPad。
+新建 Codex 会话发送第一条用户请求后，由 Mac 端自动生成简短标题并持久化到 app-server。移动端应尽快看到标题，但标题生成不能阻塞正常对话，也不能把 Codex 凭据下放到 iPhone / iPad。
 
 MVP 只覆盖通过 Mimi Remote 新建的 Codex 会话：
 
-- `thread/start` 新建后，首个成功转发的 `turn/start` 触发一次；
+- `thread/start` 新建后，首个成功转发的 `thread/queue/add` 触发一次；非 SSH 旧客户端的 `turn/start` 仍兼容；
 - `thread/resume`、历史线程、Claude 实验通道不触发；
 - 用户或其他客户端已经设置名称时不覆盖；
 - 失败时保留移动端现有的首条消息预览，不影响 Turn 生命周期。
@@ -24,10 +24,10 @@ sequenceDiagram
     Gateway->>Codex: 安全改写后转发
     Codex-->>Gateway: 新 thread
     Gateway-->>iOS: 新 thread
-    iOS->>Gateway: 首个 turn/start
-    Gateway->>Codex: 先转发正常 Turn
+    iOS->>Gateway: 首个 thread/queue/add
+    Gateway->>Codex: 先转发正常队列消息
     Gateway-->>Title: 异步提交 threadId + cwd + 首条请求摘要
-    Title->>Codex: 独立 loopback WS + initialize
+    Title->>Codex: 独立 SSH proxy WebSocket + initialize
     Title->>Codex: thread/read（名称为空？）
     Title->>Codex: ephemeral thread/start（read-only / never）
     Title->>Codex: turn/start（low effort + outputSchema）
@@ -38,7 +38,7 @@ sequenceDiagram
     Gateway-->>iOS: thread/name/updated
 ```
 
-选择独立 WebSocket，而不是复用移动端的 upstream WebSocket，原因是同一连接上的 JSON-RPC response、notification 和 server request 都由移动端会话状态机消费。后台任务复用该连接会引入 request id 冲突和事件串流污染。独立连接继续使用 Mac 上已有 token 文件，并且只访问 loopback app-server。
+选择独立 SSH proxy WebSocket，而不是复用移动端的 upstream WebSocket，原因是同一连接上的 JSON-RPC response、notification 和 server request 都由移动端会话状态机消费。后台任务复用该连接会引入 request id 冲突和事件串流污染。标题任务只关闭自己的 SSH proxy，不停止共享 Unix App Server。
 
 app-server 会让其他已初始化连接监听新建 thread。`agentd` 因此在启动标题 Turn 前登记内部 ephemeral thread ID，并在两分钟 tombstone 窗口内丢弃这些 thread 的 notification，避免内部 Agent Message、状态或用量事件进入移动端时间线。
 
@@ -50,7 +50,7 @@ app-server 会让其他已初始化连接监听新建 thread。`agentd` 因此�
 
 Gateway 在处理 `thread/start` 成功响应时，只给当前连接内的 thread 标记一次性资格。资格不会写入用于断线恢复的全局授权缓存，因此重连后的 `thread/resume` 不会误触发。
 
-正常 `turn/start` 通过安全校验并成功写给 app-server 后，Gateway 才原子消费资格并提交标题任务。任务按 `threadId` 去重，全局只运行一个模型生成，最多保留 32 个待处理任务；每个任务超时 30 秒。进程关闭时统一取消并等待任务退出。
+正常 `thread/queue/add` 通过安全校验并成功写给 app-server 后，Gateway 才原子消费资格并提交标题任务。任务按 `threadId` 去重，全局只运行一个模型生成，最多保留 32 个待处理任务；每个任务超时 30 秒。进程关闭时统一取消并等待任务退出。
 
 ### Tool、权限与上下文
 

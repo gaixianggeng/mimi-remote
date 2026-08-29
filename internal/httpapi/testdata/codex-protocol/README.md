@@ -4,11 +4,11 @@
 
 这里仅保存项目固定 Codex CLI 版本，以及 `ClientRequest`、`ServerRequest`、`ServerNotification` 的方法名列表。完整 JSON Schema 由检查脚本临时生成，不提交到仓库。
 
-当前快照基于 Codex CLI `0.147.0`：
+当前快照基于 Codex CLI `0.149.1`：
 
-- ClientRequest：133 个方法
+- ClientRequest：150 个方法
 - ServerRequest：11 个方法
-- ServerNotification：70 个方法
+- ServerNotification：75 个方法
 
 ## 检查
 

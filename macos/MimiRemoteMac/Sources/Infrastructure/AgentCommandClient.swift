@@ -10,23 +10,12 @@ struct AgentCommandClient: Sendable {
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
     ) async throws -> ClaudeConfigurationResult
-    var configureCodexSharing: @Sendable (
-        _ enabled: Bool
-    ) async throws -> CodexSharingConfigurationResult = { enabled in
-        CodexSharingConfigurationResult(enabled: enabled)
-    }
-    var disableCodexSharingAfterDesktopExit: @Sendable () async throws -> CodexSharingConfigurationResult = {
-        CodexSharingConfigurationResult(enabled: false)
-    }
-    var restartCodexSharing: @Sendable () async throws -> Void = {}
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
 }
 
 extension AgentCommandClient {
-    static let confirmedCodexSharingDisableTimeout: Duration = .seconds(115)
-
     static func live(
         executor: ProcessExecutor = .shared,
         bundle: Bundle = .main
@@ -112,8 +101,8 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: arguments,
                     allowFailure: true,
-                    // Doctor --fix 可能等待 daemon/config 两把跨进程锁，并在提交后
-                    // 重新跑完整检查；给它覆盖事务上界的时间，避免配置已提交却因
+                    // Doctor --fix 可能等待服务诊断和配置提交，并在提交后重新跑
+                    // 完整检查；给它覆盖事务上界的时间，避免配置已提交却因
                     // 客户端过早终止而漏掉 restart_required。
                     timeout: .seconds(90)
                 )
@@ -133,44 +122,6 @@ extension AgentCommandClient {
                     ),
                     timeout: .seconds(10)
                 ))
-            },
-            configureCodexSharing: { enabled in
-                let binary = try requireEmbeddedBinary()
-                return try decode(
-                    CodexSharingConfigurationResult.self,
-                    from: try await execute(
-                        binary: binary,
-                        arguments: codexSharingConfigurationArguments(enabled: enabled),
-                        // 后端为 owner 安装、daemon 就绪和失败回滚预留 45 秒；
-                        // 调用端必须更长，不能在事务清理完成前强杀子进程。
-                        timeout: .seconds(50)
-                    )
-                )
-            },
-            disableCodexSharingAfterDesktopExit: {
-                let binary = try requireEmbeddedBinary()
-                return try decode(
-                    CodexSharingConfigurationResult.self,
-                    from: try await execute(
-                        binary: binary,
-                        arguments: codexSharingDisableAfterDesktopExitArguments(),
-                        // Go 内层会分别等待跨进程锁并执行最多 90 秒的关闭事务；
-                        // 客户端再留出命令启动和 JSON 收尾时间，不能提前终止。
-                        timeout: confirmedCodexSharingDisableTimeout,
-                        forceKillAfterTimeout: true
-                    )
-                )
-            },
-            restartCodexSharing: {
-                let binary = try requireEmbeddedBinary()
-                _ = try await execute(
-                    binary: binary,
-                    arguments: codexSharingRestartArguments(),
-                    timeout: .seconds(50),
-                    // 迁移的 agentd 是短命 control CLI；超时后只回收它本身，
-                    // 不触碰共享 Codex daemon。其他通用命令保持普通 TERM 语义。
-                    forceKillAfterTimeout: true
-                )
             },
             setLANAccess: { enabled in
                 let binary = try requireEmbeddedBinary()
@@ -236,34 +187,6 @@ extension AgentCommandClient {
         return arguments
     }
 
-    static func codexSharingConfigurationArguments(enabled: Bool) -> [String] {
-        [
-            "runtime",
-            "--codex-sharing=\(enabled ? "enabled" : "disabled")",
-            "--json",
-        ]
-    }
-
-    static func codexSharingRestartArguments() -> [String] {
-        [
-            "runtime",
-            "--codex-sharing-restart",
-            // 该 client 只会在设置页确认后的 HostStore 迁移闭包中调用；后端
-            // 拒绝缺少此显式确认的普通 CLI，避免脚本误绕过 Desktop 退出顺序。
-            "--codex-sharing-restart-confirmed",
-        ]
-    }
-
-    static func codexSharingDisableAfterDesktopExitArguments() -> [String] {
-        [
-            "runtime",
-            "--codex-sharing=disabled",
-            // 该参数只由设置页确认后的 Desktop 退出回调传入。Go 端仍会
-            // 独立复核进程已退出；这里不是鉴权，也不能绕过安全检查。
-            "--codex-sharing-disable-confirmed",
-            "--json",
-        ]
-    }
 }
 
 enum AgentClientError: LocalizedError {

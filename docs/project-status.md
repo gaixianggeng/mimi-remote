@@ -1,6 +1,6 @@
 # Mimi Remote 项目现状与关键决策
 
-更新日期：2026-08-12
+更新日期：2026-08-29
 
 ## 目标
 
@@ -18,8 +18,9 @@ Mimi Remote 的目标是让 iPhone / iPad 安全连接用户自己的 Mac，在�
 iPhone / iPad SwiftUI App
   -> Mac Tailscale 或同一局域网 Endpoint:8787
   -> agentd Bearer 鉴权、工作区授权和 JSON-RPC 安全校验
-  -> 显式启用时：官方 Codex local daemon Unix socket（与 Codex Desktop 共用）
-  -> 默认/回滚时：managed loopback codex app-server WebSocket:4222
+  -> localhost SSH -> codex app-server proxy
+  -> ~/.codex/app-server-control/app-server-control.sock
+  -> 与本机/远程 Desktop SSH 主机共享的 Unix App Server
   -> 本机 Codex 凭证、线程状态和项目目录
 ```
 
@@ -28,12 +29,13 @@ iPhone / iPad SwiftUI App
 ### 已确定的边界
 
 - `agentd` 是薄网关，不复制一套 Codex 业务协议。
-- macOS 可显式启用官方 local daemon，让 Desktop 与移动端共用同一个 thread writer；daemon 由 Mimi 安装的用户 LaunchAgent 直接调用官方 CLI 创建，agentd 不再成为它的直接启动者。既有 daemon 只记录待迁移状态，必须由用户确认才会中断并切换 owner；外部 Unix backend 永远只 attach、不接管。Desktop 只有打开但没有运行 turn 时，移动端可以在原 thread 继续，不创建 fork。启用失败时不改配置，关闭时恢复原 WS 配置并卸载 Mimi 的 owner job。
-- 共享 daemon 不等于并发写：Desktop 正在运行的 turn 仍按 external activity 只读；共享模式观测失败时也会 fail-closed 拒绝写入。客户端不能靠 `thread/unsubscribe`、archive/unarchive 或猜测 idle 状态抢占另一个进程。
+- Codex 生产链路只使用官方 SSH bootstrap、`app-server proxy` 和默认 Unix Socket。main 不读取或控制 Codex Desktop 私有 IPC，也不使用 `app-server daemon` 生命周期。
+- Mimi、本机 Desktop SSH 主机和远程 Desktop SSH 主机共享同一个 Unix App Server。Desktop 普通本地模式与 OpenClaw 保持独立，agentd 不枚举或停止它们。
+- 从共享实验版本升级前，必须先在旧版本中关闭 Codex Desktop 共享。新版本检测到旧配置、LaunchAgent job、plist 或 Mimi ownership 环境时会拒绝启动，并保持文件和进程不变；它不会在后台终止 Desktop 任务。旧 LaunchAgent 若用 `--codex-daemon-supervisor` 启动新 App，新 App 只退出该后台进程，不会恢复 daemon 或误开第二个菜单栏实例。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
 - Codex 默认保持网络关闭；只有用户显式选择 `danger-full-access` 或 `:danger-full-access` 时允许 `approvalPolicy=never`，其它模式继续由 Gateway 收敛审批策略。
-- iPad 只保存外侧 `agentd` Token；访问 loopback app-server 的 capability token 只保存在 Mac。
+- iPad 只保存外侧 `agentd` Token；SSH host key、密钥和 Unix Socket 都留在 Mac。
 - 项目目录、`browse_roots` 内明确打开的目录和 agentd 管理的 Worktree 都要绑定到真实 canonical cwd，不能跨授权根切换。
 - 任意 shell 不是移动端 MVP。远程命令只允许执行配置中的 action，并保留确认、超时和输出截断。
 

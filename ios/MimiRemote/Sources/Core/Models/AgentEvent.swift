@@ -796,7 +796,10 @@ struct CodexAppServerEventProjector {
             )
         case "item/started":
             rememberAgentMessageKind(from: params, metadata: metadata)
-            return startedProcessItemEvent(params: params, metadata: metadata)
+            // Codex 0.149.1 在 userMessage item/started 的 item.clientId 回传客户端 ID。
+            // shared queue 只用这个精确字段确认 receipt，不根据 turn/started 猜 FIFO。
+            return completedUserMessageEvent(params: params, metadata: metadata)
+                ?? startedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             let event = completedUserMessageEvent(params: params, metadata: metadata)
@@ -905,6 +908,9 @@ struct CodexAppServerEventProjector {
         let item = params["item"]?.objectValue
         let itemID = firstString(in: params, keys: ["itemId", "item_id", "requestId", "request_id", "callId", "approvalId"]) ?? item?["id"]?.stringValue
         let messageID = firstString(in: params, keys: ["messageId", "message_id"]) ?? appServerMessageID(turnID: turnID, itemID: itemID)
+        let turnClientMessageID = params["turn"]?.objectValue?["items"]?.arrayValue?
+            .compactMap(\.objectValue)
+            .first(where: { $0["type"]?.stringValue == "userMessage" })?["clientId"]?.stringValue
         let seq = nextSeq(for: sessionID)
         return AgentEventMetadata(
             seq: seq,
@@ -913,7 +919,8 @@ struct CodexAppServerEventProjector {
             itemID: itemID,
             messageID: messageID,
             clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"])
-                ?? item?["clientId"]?.stringValue,
+                ?? item?["clientId"]?.stringValue
+                ?? turnClientMessageID,
             revision: Int(seq),
             createdAt: nil
         )

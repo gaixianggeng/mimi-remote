@@ -356,18 +356,6 @@ struct SettingsView: View {
 
             Section {
                 NavigationLink {
-                    ExperimentalFeaturesSettingsView()
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.experimental_features"),
-                        value: L10n.text("ui.enable_on_mac"),
-                        systemImage: "flask"
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.experimentalFeatures")
-
-                NavigationLink {
                     DiagnosticsAndSupportSettingsView(
                         showsHistoryDiagnostics: developerModeEnabled
                     )

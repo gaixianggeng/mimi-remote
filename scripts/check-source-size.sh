@@ -34,7 +34,7 @@ exception_reason() {
       printf '%s' 'App Server 网关回归矩阵，后续按鉴权、会话和历史消息场景拆分'
       ;;
     internal/httpapi/appserver_gateway_policy_test.go)
-      printf '%s' '共享 App Server writer 与反向响应策略回归矩阵，后续按请求和响应策略拆分'
+      printf '%s' 'App Server 网关 writer 与反向响应策略回归矩阵，后续按请求和响应策略拆分'
       ;;
     ios/MimiRemote/Tests/MimiRemoteTests/CodexAppServerProtocolTests.swift)
       printf '%s' 'Codex App Server 协议兼容回归矩阵，后续按传输与反向请求职责拆分'

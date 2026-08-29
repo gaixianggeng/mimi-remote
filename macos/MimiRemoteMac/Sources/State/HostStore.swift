@@ -21,11 +21,6 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
-    private(set) var codexDesktopStatus = CodexDesktopStatus()
-    private(set) var isUpdatingCodexDesktop = false
-    private(set) var codexDesktopTransitionPhase: CodexDesktopTransitionPhase?
-    private(set) var codexDesktopError: String?
-    private(set) var photoLibraryAuthorization: PhotoLibraryAuthorization
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
@@ -40,65 +35,15 @@ final class HostStore {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
 
-    var codexDesktopEnabled: Bool {
-        codexDesktopStatus.enabled
-    }
-
-    var isCodexDesktopBusy: Bool {
-        isUpdatingCodexDesktop
-    }
-
-    var canChangeCodexDesktop: Bool {
-        owner == .macApp
-            && !isBusy
-            && !isUpdatingCodexDesktop
-            && lifecycle != .loading
-            && lifecycle != .starting
-    }
-
-    var canRestartCodexDesktop: Bool {
-        codexDesktopStatus.appInstalled
-            && (codexDesktopStatus.appRunning
-                || codexDaemonMigrationRequired
-                || codexDisableNeedsFinalization
-                || codexDesktopStatus.environment.pendingEnabled != nil)
-            && owner == .macApp
-            && !isBusy
-            && !isUpdatingCodexDesktop
-            && codexDesktopStatus.state == .pendingRestart
-    }
-
-    var codexDesktopStatusTitle: String {
-        if let codexDesktopTransitionPhase {
-            return codexDesktopTransitionPhase.title
-        }
-        return ExperimentPresentation.codexStatusTitle(for: codexDesktopStatus.state)
-    }
-
-    var codexDesktopStatusDetail: String {
-        if let codexDesktopTransitionPhase {
-            return codexDesktopTransitionPhase.detail
-        }
-        // 具体错误仍保留在 Store 供诊断和重试使用；展示层仅在待处理/失败边界附上
-        // 脱敏后的诊断摘要，避免把底层协议错误（例如裸 -32600）直接暴露给用户。
-        return ExperimentPresentation.codexStatusDetail(
-            for: codexDesktopStatus.state,
-            error: codexDesktopError
-        )
-    }
-
     var experimentMenuStatusText: String? {
-        ExperimentPresentation.menuStatusText(
-            owner: owner,
-            codexState: codexDesktopStatus.state
-        )
+        guard owner == .macApp else { return "不可管理" }
+        if isUpdatingClaude { return "正在更新" }
+        return claudeEnabled ? "Claude 已启用" : nil
     }
 
     var experimentMenuAccessibilityLabel: String {
-        ExperimentPresentation.menuAccessibilityLabel(
-            owner: owner,
-            codexState: codexDesktopStatus.state
-        )
+        guard let status = experimentMenuStatusText else { return "实验功能" }
+        return "实验功能，\(status)"
     }
 
     var claudeStatusTitle: String {
@@ -146,38 +91,20 @@ final class HostStore {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
     }
 
-    private var codexDaemonMigrationRequired: Bool {
-        codexRuntime?.daemonRestartRequired == true && !codexDaemonMigrationCommittedLocally
-    }
-
-    /// 旧版半回滚或本次关闭事务中断时，只要目标仍是 disabled、后端仍共享，
-    /// 或 launchd 里仍有 Mimi 专属 marker，就必须保留显式恢复入口。
-    private var codexDisableNeedsFinalization: Bool {
-        codexDesktopStatus.environment.pendingEnabled == false
-            || (!codexDesktopEnabled
-                && (codexBackendIsShared || codexDesktopStatus.environment.sessionEpoch != nil))
-    }
-
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
-    private let codexDesktop: CodexDesktopIntegrationClient
-    private let photoLibraryAccess: PhotoLibraryAccessClient
+    private let systemPrivacySettings: SystemPrivacySettingsClient
     private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
-    private var didPreparePhotoLibraryAccess = false
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
     private var lastStatusRefreshAt: Date?
-    // 每次开始 agent.status() 都先分配单调序号。只允许最新请求落地，避免
-    // 迁移前已发出的 marker=true 在提交后的 fresh false 之后迟到并覆盖 UI。
+    // 每次开始 agent.status() 都先分配单调序号，只允许最新请求落地。
     private var statusRequestSequence: UInt64 = 0
-    // Go runtime 命令成功返回就是迁移提交点。其后的 status/inspect 可能仍读到
-    // 瞬时旧值或失败，不能反向把已清 marker 的操作显示成失败或再次执行。
-    private var codexDaemonMigrationCommittedLocally = false
 
     init(
         agent: AgentCommandClient,
@@ -185,8 +112,7 @@ final class HostStore {
         homebrew: HomebrewServiceClient,
         health: HealthClient,
         logs: AgentLogClient,
-        codexDesktop: CodexDesktopIntegrationClient = .noop,
-        photoLibraryAccess: PhotoLibraryAccessClient = .noop,
+        systemPrivacySettings: SystemPrivacySettingsClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {
             NSApplication.shared.terminate(nil)
         }
@@ -196,9 +122,7 @@ final class HostStore {
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
-        self.codexDesktop = codexDesktop
-        self.photoLibraryAccess = photoLibraryAccess
-        photoLibraryAuthorization = photoLibraryAccess.authorizationStatus()
+        self.systemPrivacySettings = systemPrivacySettings
         self.terminateApplication = terminateApplication
     }
 
@@ -209,8 +133,7 @@ final class HostStore {
             homebrew: .live(),
             health: .live,
             logs: .live,
-            codexDesktop: .live(),
-            photoLibraryAccess: .live
+            systemPrivacySettings: .live
         )
     }
 
@@ -218,7 +141,6 @@ final class HostStore {
         guard !didBootstrap else { return }
         didBootstrap = true
         lifecycle = .loading
-        await bootstrapCodexDesktop()
         homebrewLoaded = await homebrew.isLoaded()
         launchesAtLogin = services.mainAppStatus() == .enabled
 
@@ -245,7 +167,6 @@ final class HostStore {
             await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
             await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
-            await reconcileCodexDesktopAtLaunch()
         }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
@@ -277,7 +198,6 @@ final class HostStore {
             await enableLoginLaunchBestEffort()
             owner = .macApp
             try await registerMacAgentAndWaitForReady()
-            await reconcileCodexDesktopAtLaunch()
         } catch {
             fail(error)
         }
@@ -318,7 +238,6 @@ final class HostStore {
             owner = .macApp
             _ = await reconcileClaudeConfigurationAtLaunch()
             try await registerMacAgentAndWaitForReady()
-            await reconcileCodexDesktopAtLaunch()
         } catch {
             let takeoverError = error
             await rollbackAfterFailedTakeover(oldAgent: oldAgent, cause: takeoverError)
@@ -378,7 +297,6 @@ final class HostStore {
                 await startMacAgentIfNeeded()
             }
         }
-        await refreshCodexDesktopStatus()
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             scheduleRuntimeStatusFollowUp()
         }
@@ -501,9 +419,8 @@ final class HostStore {
         }
         isBusy = false
         if restartMacAgent {
-            // Doctor 改写 codex.bin、token 路径或整份配置后，resident agentd
-            // 仍持有旧快照。正常注销/注册一次，让 shared owner 以新身份在锁内
-            // 重建；不会停止当前 Codex daemon，也不会退出 Desktop。
+            // Doctor 改写配置后，resident agentd 仍持有旧快照；重新登记一次
+            // 让服务加载新配置。这个动作不会退出或重新打开 Codex Desktop。
             await restartService()
         } else if restartHomebrewAgent {
             await restartHomebrewAfterDoctorRepair()
@@ -549,185 +466,8 @@ final class HostStore {
         services.openLoginItemsSettings()
     }
 
-    func openPhotosPrivacySettings() {
-        photoLibraryAccess.openPhotosPrivacySettings()
-    }
-
     func openFullDiskAccessSettings() {
-        photoLibraryAccess.openFullDiskAccessSettings()
-    }
-
-    func setCodexDesktopEnabled(_ enabled: Bool) async {
-        guard !isUpdatingCodexDesktop else { return }
-        guard owner == .macApp, !isBusy else {
-            codexDesktopError = "请先启动并接管 Mimi Remote Mac 服务，再修改 Codex Desktop 共享设置。"
-            return
-        }
-        isBusy = true
-        isUpdatingCodexDesktop = true
-        codexDesktopTransitionPhase = enabled ? .preparingSharedService : .closingDesktop
-        codexDesktopError = nil
-        defer {
-            codexDesktopTransitionPhase = nil
-            isUpdatingCodexDesktop = false
-            isBusy = false
-        }
-
-        do {
-            if enabled {
-                await preparePhotoLibraryAccessForCodexDesktopSharing()
-                // 先让 agentd 确保官方 app-server/local daemon 已就绪，再写入
-                // Desktop 的 launchd 环境；backend 失败时绝不能留下无效 env。
-                let sharing = try await configureCodexSharingAndReloadIfNeeded(true)
-                let snapshot: CodexDesktopEnvironmentSnapshot
-                do {
-                    let runtimeCodexHome = try await waitForCodexRuntimeShared(true)
-                    guard sharing.codexHome == nil || sharing.codexHome == runtimeCodexHome else {
-                        throw AgentClientError.commandFailed("agentd 返回的 CODEX_HOME 前后不一致，已停止配置。")
-                    }
-                    snapshot = try await codexDesktop.setEnabled(
-                        enabled,
-                        runtimeCodexHome
-                    )
-                } catch {
-                    // backend 是先切换的一端。只有本次命令真正改过配置时才回滚，
-                    // 既有 Unix 用户的显式配置不能因 Desktop 环境冲突被擅自关闭。
-                    if sharing.changed {
-                        do {
-                            _ = try await configureCodexSharingAndReloadIfNeeded(false)
-                            _ = try await waitForCodexRuntimeShared(false)
-                        } catch let rollbackError {
-                            throw AgentClientError.commandFailed(
-                                "配置 Codex Desktop 环境失败：\(error.localizedDescription)；agentd 自动恢复也失败：\(rollbackError.localizedDescription)"
-                            )
-                        }
-                    }
-                    throw error
-                }
-                applyCodexDesktopSnapshot(snapshot)
-                return
-            }
-            // 设置页已经取得用户确认。禁用事务严格执行“退出旧 Desktop → 停止并
-            // 验证共享 daemon → 提交 WS → 恢复 launchd 环境 → 按原状态重开”。
-            // 任一步失败都不会在旧 Desktop 存活时提交独立 backend。
-            let hadPendingDisable = codexDesktopStatus.environment.pendingEnabled == false
-            var didCommitDisable = false
-            let snapshot = try await codexDesktop.restartAndSetEnabled(
-                false,
-                codexHome: nil,
-                afterTermination: {
-                    self.codexDesktopTransitionPhase = .waitingForRunningTasks
-                    _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
-                        forceReload: hadPendingDisable
-                    )
-                    didCommitDisable = true
-                    self.recordCommittedCodexMigration()
-                }
-            )
-            applyCodexDesktopSnapshot(snapshot)
-            if didCommitDisable {
-                await refreshAfterCommittedCodexMigration()
-            }
-        } catch {
-            codexDesktopError = error.localizedDescription
-            await preserveCodexDesktopErrorState()
-        }
-    }
-
-    /// 这是唯一会触碰 Codex Desktop 进程的入口，设置页必须先显示确认 alert。
-    /// 失败时保留 pending restart，让用户可以按错误提示保存任务后重试。
-    func restartCodexDesktop() async {
-        guard !isUpdatingCodexDesktop else { return }
-        guard owner == .macApp, !isBusy else {
-            codexDesktopError = "请先等待 Mimi Remote Mac 服务操作完成，再重启 Codex Desktop。"
-            return
-        }
-        guard codexDesktopStatus.appInstalled else {
-            codexDesktopError = "未检测到 Codex Desktop。"
-            return
-        }
-        guard codexDesktopStatus.appRunning
-            || codexDaemonMigrationRequired
-            || codexDisableNeedsFinalization
-            || codexDesktopStatus.environment.pendingEnabled != nil
-        else {
-            codexDesktopError = "Codex Desktop 当前未运行，也没有待迁移的共享 daemon。"
-            return
-        }
-
-        isBusy = true
-        isUpdatingCodexDesktop = true
-        codexDesktopTransitionPhase = .preparingRestart
-        codexDesktopError = nil
-        defer {
-            codexDesktopTransitionPhase = nil
-            isUpdatingCodexDesktop = false
-            isBusy = false
-        }
-        var didCommitDaemonMigration = false
-        let hadPendingDisable = codexDesktopStatus.environment.pendingEnabled == false
-        do {
-            // 先读取一次真实状态，避免只凭设置页缓存决定是否需要 terminate。
-            // 即便这里看到 running，live runtime 仍会在实际执行时再取快照，
-            // 覆盖用户在两次读取之间自行退出 Desktop 的竞态。
-            let currentDesktop = try await codexDesktop.inspect()
-            if !currentDesktop.appRunning,
-               currentDesktop.pendingEnabled == nil,
-               codexDaemonMigrationRequired || codexDisableNeedsFinalization
-            {
-                // Desktop 本来已退出时只提交待处理的 backend 切换，不擅自打开
-                // App。禁用路径会在提交 WS 前确认旧 listener 与 loaded job 消失。
-                if codexDesktopEnabled {
-                    codexDesktopTransitionPhase = .preparingSharedService
-                    try await agent.restartCodexSharing()
-                } else {
-                    // 旧版半回滚可能只留下 launchd 环境而 Desktop 已经退出。
-                    // 先清理旧 daemon 并提交 WS，再恢复环境；中途失败时 Desktop
-                    // 保持关闭，不能让它按独立环境重新连到仍共享的 backend。
-                    codexDesktopTransitionPhase = .waitingForRunningTasks
-                    _ = try await disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
-                        forceReload: hadPendingDisable
-                    )
-                    let disabledEnvironment = try await codexDesktop.setEnabled(false, nil)
-                    applyCodexDesktopSnapshot(disabledEnvironment)
-                }
-                didCommitDaemonMigration = true
-                recordCommittedCodexMigration()
-                await refreshAfterCommittedCodexMigration()
-                return
-            }
-            codexDesktopTransitionPhase = .closingDesktop
-            let snapshot = try await codexDesktop.restartAndApply(afterTermination: {
-                // 用户确认后，backend 迁移严格位于旧 Desktop 退出与新实例打开
-                // 之间。禁用只有在旧 Unix listener 和 loaded job 均消失后才提交 WS。
-                let targetEnabled = self.codexDesktopStatus.environment.pendingEnabled
-                    ?? self.codexDesktopEnabled
-                if targetEnabled {
-                    self.codexDesktopTransitionPhase = .preparingSharedService
-                    if self.codexDaemonMigrationRequired {
-                        try await self.agent.restartCodexSharing()
-                        didCommitDaemonMigration = true
-                        self.recordCommittedCodexMigration()
-                    }
-                } else {
-                    self.codexDesktopTransitionPhase = .waitingForRunningTasks
-                    _ = try await self.disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
-                        forceReload: hadPendingDisable
-                    )
-                    didCommitDaemonMigration = true
-                    self.recordCommittedCodexMigration()
-                }
-            })
-            applyCodexDesktopSnapshot(snapshot)
-            if didCommitDaemonMigration {
-                await refreshAfterCommittedCodexMigration()
-            }
-        } catch {
-            codexDesktopError = error.localizedDescription
-            // 不强制终止也不再并发启动第二个实例；terminate/open 超时或拒绝
-            // 时，当前进程仍在运行，状态必须继续显示 pending restart。
-            await preserveCodexDesktopErrorState(forcePending: true)
-        }
+        systemPrivacySettings.openFullDiskAccessSettings()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) async {
@@ -1011,165 +751,6 @@ final class HostStore {
         }
     }
 
-    private func bootstrapCodexDesktop() async {
-        do {
-            let snapshot = try await codexDesktop.bootstrap()
-            applyCodexDesktopSnapshot(snapshot)
-        } catch {
-            codexDesktopError = error.localizedDescription
-            await preserveCodexDesktopErrorState()
-        }
-    }
-
-    /// 启动时不会替用户开启共享，也不会终止 Desktop。只有 UserDefaults 已记录
-    /// 用户曾显式启用、且 agentd 已确认同一个 Unix backend 时，才恢复当前登录
-    /// 会话中会丢失的 launchd 环境；这样注销/登录后无需再次手动关开 Toggle。
-    private func reconcileCodexDesktopAtLaunch() async {
-        do {
-            var inspected = try await codexDesktop.inspect()
-            if inspected.hasLocalPreference, inspected.enabled {
-                var runtimeCodexHome = codexBackendIsShared
-                    ? codexRuntime?.codexHome
-                    : nil
-                let environmentNeedsRestore = inspected.environmentValue != "1"
-                    || inspected.codexHome == nil
-
-                if environmentNeedsRestore,
-                   runtimeCodexHome == nil,
-                   shouldWaitForCodexSharedRuntimeAtLaunch
-                {
-                    // 登录后 launchd 会清空 setenv 写入的三项环境，而 agentd 的
-                    // runtime snapshot 可能比 HTTP readiness 晚几秒返回。用户已经
-                    // 显式启用共享时必须在这里有界等待，否则这次启动会永久跳过
-                    // 恢复，随后 Desktop 又会抢先拉起独立 stdio app-server。
-                    runtimeCodexHome = try await waitForCodexRuntimeShared(true)
-                }
-
-                if let runtimeCodexHome,
-                   inspected.environmentValue != "1"
-                    || inspected.codexHome != runtimeCodexHome
-                {
-                    inspected = try await codexDesktop.setEnabled(true, runtimeCodexHome)
-                }
-            }
-            codexDesktopError = nil
-            applyCodexDesktopSnapshot(inspected)
-        } catch {
-            codexDesktopError = error.localizedDescription
-            await preserveCodexDesktopErrorState()
-        }
-    }
-
-    /// nil 表示 agentd 尚未返回 Codex runtime；shared=true 但未 ready 也需要继续等。
-    /// 明确的 websocket/non-shared runtime 则立即停止，不能为了恢复 Desktop 环境
-    /// 擅自改变用户已经选择的后端配置。
-    private var shouldWaitForCodexSharedRuntimeAtLaunch: Bool {
-        guard let runtime = codexRuntime else { return true }
-        return runtime.shared == true
-    }
-
-    private func configureCodexSharingAndReloadIfNeeded(
-        _ enabled: Bool,
-        allowUnregistered: Bool = false
-    ) async throws -> CodexSharingConfigurationResult {
-        let result = try await agent.configureCodexSharing(enabled)
-        guard result.enabled == enabled else {
-            throw AgentClientError.commandFailed(
-                result.message.isEmpty
-                    ? (enabled ? "agentd 未能启用 Codex Desktop 共享。" : "agentd 未能关闭 Codex Desktop 共享。")
-                    : result.message
-            )
-        }
-        guard result.restartRequired else { return result }
-
-        if allowUnregistered, services.agentStatus() != .enabled {
-            // 新 setup 尚未登记 LaunchAgent；后续首次 register 会直接使用新配置。
-            return result
-        }
-        do {
-            try await reloadMacAgentForConfigurationChange()
-        } catch {
-            let reloadError = error
-            // CLI 已经原子提交配置，但服务重载可能在 unregister/register 中途失败。
-            // 只有本次命令真正改过配置时才反向写回并再重载；外部既有配置不接管。
-            guard result.changed else { throw reloadError }
-            do {
-                let rollback = try await agent.configureCodexSharing(!enabled)
-                if rollback.restartRequired {
-                    try await reloadMacAgentForConfigurationChange()
-                }
-            } catch let rollbackError {
-                throw AgentClientError.commandFailed(
-                    "重载 Codex 共享配置失败：\(reloadError.localizedDescription)；自动恢复配置也失败：\(rollbackError.localizedDescription)"
-                )
-            }
-            throw reloadError
-        }
-        return result
-    }
-
-    /// 只在 Codex Desktop 已由受控流程正常退出后调用。Go 端会再次检查 Desktop
-    /// 状态，并在提交 WS 配置前验证旧 Unix listener、PID 与 loaded job 均已消失。
-    /// 配置一旦安全提交，服务重载失败也不反向启动共享 daemon，避免重新制造双后端。
-    private func disableCodexSharingAfterDesktopExitAndReloadIfNeeded(
-        forceReload: Bool = false
-    ) async throws
-        -> CodexSharingConfigurationResult
-    {
-        let result = try await agent.disableCodexSharingAfterDesktopExit()
-        guard !result.enabled else {
-            throw AgentClientError.commandFailed(
-                result.message.isEmpty
-                    ? "agentd 未能关闭 Codex Desktop 共享。"
-                    : result.message
-            )
-        }
-        if result.restartRequired || forceReload {
-            codexDesktopTransitionPhase = .startingIndependentService
-            try await reloadMacAgentForConfigurationChange()
-        }
-        // 外部管理的 Unix backend 不属于 Mimi，显式关闭只恢复 Desktop 环境，
-        // 不等待它变成 WS，也不停止外部进程。
-        if result.transport?.caseInsensitiveCompare("unix") != .orderedSame {
-            codexDesktopTransitionPhase = .startingIndependentService
-            _ = try await waitForCodexRuntimeShared(false)
-        }
-        return result
-    }
-
-    private func waitForCodexRuntimeShared(_ expected: Bool) async throws -> String? {
-        var lastRuntime: AgentRuntimeStatus?
-        for attempt in 0..<12 {
-            try Task.checkCancellation()
-            if let current = try? await fetchAndApplyLatestStatus() {
-                lastRuntime = current.runtimeStatus?.runtimes.first(where: {
-                    $0.id.caseInsensitiveCompare("codex") == .orderedSame
-                })
-                if let runtime = lastRuntime {
-                    let isShared = runtime.shared == true
-                        && runtime.transport?.caseInsensitiveCompare("unix") == .orderedSame
-                    if expected {
-                        let runtimeReady = isShared
-                            && (runtime.state == .connected || runtime.state == .available)
-                            && runtime.codexHome?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                        if runtimeReady {
-                            return runtime.codexHome
-                        }
-                    } else if !isShared {
-                        return nil
-                    }
-                }
-            }
-            if attempt < 11 {
-                try await Task.sleep(for: .seconds(1))
-            }
-        }
-        let detail = expected
-            ? "agentd 尚未确认 Codex Desktop 的 Unix 共享已就绪（需要 connected/available 与 CODEX_HOME）。"
-            : "agentd 关闭 Codex Desktop 共享后仍未返回确认。"
-        throw AgentClientError.commandFailed(detail)
-    }
-
     private func reloadMacAgentForConfigurationChange() async throws {
         try validateMacAgentConfiguration()
         lifecycle = .starting
@@ -1259,11 +840,6 @@ final class HostStore {
         allowAutomaticRepair: Bool = true
     ) async throws {
         try validateMacAgentConfiguration()
-        if codexDesktopStatus.environment.hasLocalPreference,
-           codexDesktopStatus.environment.enabled
-        {
-            await preparePhotoLibraryAccessForCodexDesktopSharing()
-        }
         do {
             try services.registerAgent()
             try await waitForMacAgentReady()
@@ -1287,18 +863,6 @@ final class HostStore {
                 )
             }
         }
-    }
-
-    /// 照片授权由可见 App 请求，避免后台 agentd 启动时静默触发 TCC 弹窗。
-    /// 用户拒绝时仍允许 Codex Desktop 共享继续启用，并保留设置页的手动修复入口。
-    private func preparePhotoLibraryAccessForCodexDesktopSharing() async {
-        guard !didPreparePhotoLibraryAccess else { return }
-        didPreparePhotoLibraryAccess = true
-
-        let current = photoLibraryAccess.authorizationStatus()
-        photoLibraryAuthorization = current
-        guard current == .notDetermined else { return }
-        photoLibraryAuthorization = await photoLibraryAccess.requestAuthorization()
     }
 
     private func waitForMacAgentUnregistered() async throws {
@@ -1449,21 +1013,10 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        // 本地提交标记只遮蔽命令成功前留在内存里的旧 pending 快照。下一份
-        // 真正携带 daemonRestartRequired 的服务端状态无论 true/false 都是新事实：
-        // false 确认提交，true 则表示服务端又检测到新的 unmanaged owner。
-        if codexDaemonMigrationCommittedLocally,
-           let runtime = current.runtimeStatus?.runtimes.first(where: {
-               $0.id.caseInsensitiveCompare("codex") == .orderedSame
-           }),
-           runtime.daemonRestartRequired != nil {
-            codexDaemonMigrationCommittedLocally = false
-        }
         let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
-        refreshCodexDesktopPresentation()
         if resolved.serviceOK {
             lifecycle = .ready
         } else if resolved.processOK {
@@ -1480,17 +1033,6 @@ final class HostStore {
         return statusRequestSequence
     }
 
-    private func invalidateInFlightStatusRequests() {
-        statusRequestSequence &+= 1
-    }
-
-    private func recordCommittedCodexMigration() {
-        codexDaemonMigrationCommittedLocally = true
-        // Go 命令返回就是提交点。必须在重新打开 Desktop 的 await 之前立刻
-        // 作废迁移前请求，不能等 application.open 完成后再处理迟到旧状态。
-        invalidateInFlightStatusRequests()
-    }
-
     @discardableResult
     private func applyStatusResponse(_ current: AgentStatus, sequence: UInt64) -> Bool {
         guard sequence == statusRequestSequence else { return false }
@@ -1502,154 +1044,6 @@ final class HostStore {
         let sequence = nextStatusRequestSequence()
         let current = try await agent.status()
         return applyStatusResponse(current, sequence: sequence) ? current : nil
-    }
-
-    private func refreshAfterCommittedCodexMigration() async {
-        // 这些读取只刷新展示，不是第二个提交门。任一瞬时失败都保留 Go 已提交
-        // 的成功事实，Desktop 重开顺序也不受 12 秒轮询影响。
-        // recordCommittedCodexMigration 已在 Go 成功的同一同步段作废旧请求；
-        // 这里再发出新的权威刷新，失败也不反向改变提交事实。
-        _ = try? await fetchAndApplyLatestStatus()
-        if let snapshot = try? await codexDesktop.inspect() {
-            applyCodexDesktopSnapshot(snapshot)
-        } else {
-            refreshCodexDesktopPresentation()
-        }
-    }
-
-    private func applyCodexDesktopSnapshot(
-        _ snapshot: CodexDesktopEnvironmentSnapshot,
-        forcePending: Bool = false
-    ) {
-        let state = codexDesktopState(
-            for: snapshot,
-            forcePending: forcePending
-        )
-        codexDesktopStatus = CodexDesktopStatus(
-            environment: snapshot,
-            state: state,
-            error: codexDesktopError
-        )
-    }
-
-    private func refreshCodexDesktopPresentation() {
-        applyCodexDesktopSnapshot(codexDesktopStatus.environment)
-    }
-
-    private func refreshCodexDesktopStatus() async {
-        do {
-            let snapshot = try await codexDesktop.inspect()
-            codexDesktopError = nil
-            applyCodexDesktopSnapshot(snapshot)
-        } catch is CancellationError {
-            return
-        } catch {
-            // 显式刷新必须暴露读取失败，不能继续把旧的进程/环境快照显示成实时状态。
-            codexDesktopError = error.localizedDescription
-            applyCodexDesktopSnapshot(codexDesktopStatus.environment)
-        }
-    }
-
-    private func codexDesktopState(
-        for snapshot: CodexDesktopEnvironmentSnapshot,
-        forcePending: Bool = false
-    ) -> CodexDesktopStatusState {
-        if let codexDesktopError {
-            if codexDesktopError.contains("外部") || codexDesktopError.contains("已被其他程序") {
-                return .externalConflict
-            }
-            if (forcePending || snapshot.pendingEnabled != nil),
-               snapshot.appRunning
-                   || codexDaemonMigrationRequired
-                   || codexDisableNeedsFinalization
-                   || snapshot.pendingEnabled != nil
-            {
-                return .pendingRestart
-            }
-            return .failed
-        }
-        if snapshot.appInstalled == false {
-            return .notInstalled
-        }
-        if snapshot.pendingEnabled != nil {
-            return .pendingRestart
-        }
-        if snapshot.enabled, codexDaemonMigrationRequired {
-            return .pendingRestart
-        }
-        if snapshot.restartRequired, snapshot.appRunning {
-            return .pendingRestart
-        }
-        if !snapshot.enabled {
-            // 共享 backend 尚未完成关闭，或旧版半回滚留下 Mimi 专属 marker 时，
-            // 必须继续提供“应用设置”入口。只有确认流程完成后才能显示已关闭。
-            if codexBackendIsShared || snapshot.sessionEpoch != nil {
-                return .pendingRestart
-            }
-            if snapshot.environmentValue == "1" {
-                return .externalConflict
-            }
-            return .disabled
-        }
-        if snapshot.environmentValue != nil, snapshot.environmentValue != "1" {
-            return .externalConflict
-        }
-        if snapshot.enabled,
-           snapshot.writtenValue == "1",
-           !snapshot.ownsEnvironment
-        {
-            // 旧登录会话的官方值即使与当前外部值相同，也没有匹配的 Mimi
-            // ownership epoch；显示冲突，避免用户以为禁用时可以安全删除它。
-            return .externalConflict
-        }
-        if snapshot.enabled,
-           snapshot.writtenCodexHome != nil,
-           !snapshot.ownsCodexHome
-        {
-            return .externalConflict
-        }
-        if snapshot.environmentValue != "1" || snapshot.codexHome == nil {
-            return .backendNotShared
-        }
-        if !codexBackendIsShared {
-            return .backendNotShared
-        }
-        if snapshot.codexHome != codexRuntime?.codexHome {
-            return .externalConflict
-        }
-        return .ready
-    }
-
-    private var codexBackendIsShared: Bool {
-        guard let runtime = codexRuntime else { return false }
-        // transport/shared 是后端明确声明的互操作契约；旧 JSON 缺字段时不能
-        // 根据 title/id 猜测已共享，避免 UI 给出错误的“已就绪”。
-        return runtime.shared == true
-            && runtime.transport?.caseInsensitiveCompare("unix") == .orderedSame
-            && (runtime.state == .connected || runtime.state == .available)
-            && runtime.codexHome?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
-    private func preserveCodexDesktopErrorState(forcePending: Bool = false) async {
-        if let snapshot = try? await codexDesktop.inspect() {
-            applyCodexDesktopSnapshot(snapshot, forcePending: forcePending)
-        } else {
-            let current = codexDesktopStatus
-            let shouldKeepPending = forcePending
-                || current.environment.pendingEnabled != nil
-            let state: CodexDesktopStatusState = shouldKeepPending
-                && (current.appRunning
-                    || codexDaemonMigrationRequired
-                    || codexDisableNeedsFinalization
-                    || current.environment.pendingEnabled != nil)
-                ? .pendingRestart
-                : .failed
-            codexDesktopStatus = CodexDesktopStatus(
-                environment: current.environment,
-                state: state,
-                error: codexDesktopError
-            )
-        }
     }
 
     private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
