@@ -140,6 +140,93 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testReturningToSessionListCancelsHistoryItemEnrichment() async {
+        let project = makeProject(id: "proj_cancel_history_item_enrichment")
+        let session = makeSession(
+            id: "cancel_history_item_enrichment",
+            projectID: project.id,
+            title: "取消分页补齐",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        store.historyLoadedQualityBySessionID[session.id] = .enriching
+        let turn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn-cancel"),
+            "status": .string("completed")
+        ]
+        let firstContinuation = HistoryTurnItemsContinuation(
+            turnID: "turn-cancel",
+            turn: turn,
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+        store.applyHistoryFirstPage(
+            HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:summary",
+                    role: "assistant",
+                    content: "首屏文案",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: "turn-cancel",
+                    itemID: "summary"
+                )],
+                itemContinuations: [firstContinuation]
+            ),
+            sessionID: session.id
+        )
+
+        await client.waitForHistoryItemRequestCount(1)
+        store.returnToSessionList()
+
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id])
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .summary)
+        XCTAssertNil(store.selectedSessionID)
+
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:late",
+                    role: "assistant",
+                    content: "迟到内容",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnID: "turn-cancel",
+                    itemID: "late"
+                )],
+                itemIDs: ["late"],
+                continuation: firstContinuation.continuing(
+                    cursor: "page-2",
+                    loadedItemCount: 1,
+                    hasVisibleUserMessage: false
+                )
+            )
+        )
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(conversationStore.messages(for: session.id).map(\.content), ["首屏文案"])
+        XCTAssertEqual(client.requestedItemContinuations.count, 1)
+    }
+
     func testWorkspaceSessionAgeBoundaryStartsAtFirstSessionOlderThanTwelveHours() {
         let project = makeProject(id: "proj_workspace_age_boundary")
         let now = Date(timeIntervalSince1970: 200_000)

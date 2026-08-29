@@ -394,6 +394,9 @@ extension SessionStore {
             sessionID: nil,
             reason: .invalidation
         )
+        if let previousSession {
+            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+        }
         if let previousSession, previousSession.isLocalDraft {
             discardLocalDraft(previousSession)
         }

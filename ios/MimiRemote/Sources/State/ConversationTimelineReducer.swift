@@ -336,6 +336,14 @@ struct ConversationTimelineReducer {
         if lhs.message.createdAt != rhs.message.createdAt {
             return lhs.message.createdAt < rhs.message.createdAt
         }
+        if lhs.message.turnID == rhs.message.turnID,
+           lhs.message.turnID != nil,
+           let leftOrdinal = lhs.message.timelineOrdinal,
+           let rightOrdinal = rhs.message.timelineOrdinal,
+           leftOrdinal != rightOrdinal {
+            // 同一 Turn 的分页 Item 可能共用 Turn 时间；此时协议序号才是跨页稳定顺序。
+            return leftOrdinal < rightOrdinal
+        }
         switch (lhs.snapshotIndex, rhs.snapshotIndex) {
         case (.some(let left), .some(let right)) where left != right:
             return left < right

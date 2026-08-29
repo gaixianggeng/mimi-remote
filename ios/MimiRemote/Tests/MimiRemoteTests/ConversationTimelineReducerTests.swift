@@ -345,6 +345,54 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(result.messages.map(\.content), ["快照 A", "本地计划", "快照 B"])
     }
 
+    func testPagedItemsWithSameTurnTimeKeepTimelineOrdinalOrder() {
+        let reducer = ConversationTimelineReducer()
+        let createdAt = Date(timeIntervalSince1970: 100)
+        func item(_ ordinal: Int64) -> ConversationMessage {
+            ConversationMessage(
+                stableID: "item-\(ordinal)",
+                turnID: "turn-paged",
+                itemID: "item-\(ordinal)",
+                role: .assistant,
+                content: "item-\(ordinal)",
+                createdAt: createdAt,
+                timelineOrdinal: ordinal
+            )
+        }
+
+        let firstPage = reducer.rebase(snapshot: [item(0), item(1)], current: [])
+        let secondPage = reducer.rebase(snapshot: [item(2), item(3)], current: firstPage.messages)
+
+        XCTAssertFalse(secondPage.hadOrderingCycle)
+        XCTAssertEqual(secondPage.messages.compactMap(\.timelineOrdinal), [0, 1, 2, 3])
+    }
+
+    func testTimelineOrdinalDoesNotOrderItemsAcrossTurns() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let current = ConversationMessage(
+            stableID: "turn-b-item",
+            turnID: "turn-b",
+            itemID: "turn-b-item",
+            role: .assistant,
+            content: "turn B",
+            createdAt: createdAt,
+            timelineOrdinal: 0
+        )
+        let snapshot = ConversationMessage(
+            stableID: "turn-a-item",
+            turnID: "turn-a",
+            itemID: "turn-a-item",
+            role: .assistant,
+            content: "turn A",
+            createdAt: createdAt,
+            timelineOrdinal: 10
+        )
+
+        let result = ConversationTimelineReducer().rebase(snapshot: [snapshot], current: [current])
+
+        XCTAssertEqual(result.messages.map(\.content), ["turn A", "turn B"])
+    }
+
     func testPartialSnapshotMovesInjectedUserAheadOfLaterLiveReplies() {
         let turnID = "turn-guidance-order"
         let clientMessageID = "client-guidance-order"
