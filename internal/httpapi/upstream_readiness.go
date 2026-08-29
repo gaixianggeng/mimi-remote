@@ -6,13 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 )
 
 const (
-	appServerReadinessProbeTimeout = 750 * time.Millisecond
+	appServerReadinessProbeTimeout = 8 * time.Second
 	appServerReadinessSuccessTTL   = 10 * time.Second
 	appServerReadinessFailureTTL   = time.Second
 )
@@ -95,28 +93,12 @@ func (p *appServerReadinessProbe) Check(ctx context.Context) error {
 }
 
 func (r *Router) probeAppServerUpstream(ctx context.Context) error {
-	upstreamURL, err := r.appServerUpstreamWebSocketURL()
-	if err != nil {
-		return err
+	if r.appServerSSH == nil {
+		return errors.New("app-server SSH transport 未配置")
 	}
-	headers, err := r.appServerUpstreamHeaders()
-	if err != nil {
-		return err
-	}
-	if headers == nil || headers.Get("Authorization") == "" {
-		return errors.New("app-server upstream 未配置独立 capability token")
-	}
-	dialer := websocket.Dialer{HandshakeTimeout: appServerReadinessProbeTimeout}
-	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
-	if response != nil && response.Body != nil {
-		// 鉴权失败等响应正文不进入 readyz 或日志。
-		_ = response.Body.Close()
-	}
-	if err != nil {
-		return err
-	}
-	_ = conn.Close()
-	return nil
+	// EnsureReady 使用真实 proxy WebSocket 完成 initialize，不把单纯 TCP/WS
+	// 握手误判为 App Server 可承接请求。
+	return r.appServerSSH.EnsureReady(ctx)
 }
 
 func (r *Router) appServerUpstreamReadinessCheck(ctx context.Context) doctor.Check {
@@ -134,15 +116,15 @@ func appServerReadinessCheckFromError(err error) doctor.Check {
 			Name:    "app-server-upstream",
 			OK:      false,
 			Level:   "error",
-			Message: "Codex app-server upstream 暂不可用或鉴权失败",
-			Fix:     "检查 agentd logs、Codex app-server 状态和独立 capability token file",
+			Message: "Codex app-server SSH upstream 暂不可用",
+			Fix:     "检查 agentd logs，并运行 ssh 127.0.0.1 codex --version",
 		}
 	}
 	return doctor.Check{
 		Name:    "app-server-upstream",
 		OK:      true,
 		Level:   "ok",
-		Message: "Codex app-server upstream WebSocket 握手和独立鉴权可用",
+		Message: "Codex app-server SSH proxy initialize 可用",
 	}
 }
 

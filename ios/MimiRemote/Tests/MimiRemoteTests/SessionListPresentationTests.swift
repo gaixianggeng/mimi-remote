@@ -130,6 +130,216 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(session.preview, original)
     }
 
+    func testDistinctPreviewDropsTheTitlePrefixItRepeats() {
+        // 真实数据：标题和 preview 都由首条用户消息派生，preview 只是多带一段。
+        let session = makeSession(
+            id: "redundant",
+            title: "我在测试 App的权限。",
+            preview: "我在测试 App的权限。 帮我在 Linear 上使用 MCP 查一下"
+        )
+
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: session),
+            "帮我在 Linear 上使用 MCP 查一下"
+        )
+        XCTAssertEqual(session.preview, "我在测试 App的权限。 帮我在 Linear 上使用 MCP 查一下")
+    }
+
+    func testDistinctPreviewIsEmptyWhenItOnlyRepeatsTheTitle() {
+        let identical = makeSession(
+            id: "identical",
+            title: "更新 Windows 安装包部署",
+            preview: "更新 Windows 安装包部署"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: identical), "")
+
+        // 标题被省略号截断时，省略号不该阻止前缀判定。
+        let truncatedTitle = makeSession(
+            id: "truncated-title",
+            title: "嗯，目前 windows 应该还不止…",
+            preview: "嗯，目前 windows 应该还不止"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: truncatedTitle), "")
+
+        // 反向：preview 是更早的截断版本，标题反而更长。
+        let truncatedPreview = makeSession(
+            id: "truncated-preview",
+            title: "清理已经无关的 worktree 分支",
+            preview: "清理已经无关的 worktree…"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: truncatedPreview), "")
+
+        // 去掉标题前缀后只剩标点，第二行没有信息量。
+        let punctuationOnly = makeSession(
+            id: "punctuation",
+            title: "拉取最新代码",
+            preview: "拉取最新代码。"
+        )
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: punctuationOnly), "")
+    }
+
+    func testDistinctPreviewKeepsGenuinelyDifferentText() {
+        let session = makeSession(
+            id: "distinct",
+            title: "PR #232 CI flow error",
+            preview: "已经定位到 verify-windows 的 shutdown 抖动"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: session),
+            "已经定位到 verify-windows 的 shutdown 抖动"
+        )
+
+        // 前缀太短的"撞头"是巧合，不是重复。
+        let shortStem = makeSession(id: "short", title: "修", preview: "修一下 CI 的超时时间")
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: shortStem),
+            "修一下 CI 的超时时间"
+        )
+
+        // Markdown 清洗规则与 previewDisplayText 保持一致。
+        let markdown = makeSession(id: "markdown", title: "Alpha", preview: " **Beta**\n> `gamma`\t  delta ")
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(for: markdown),
+            "Beta gamma delta"
+        )
+
+        let missing = makeSession(id: "missing", title: "Alpha", preview: nil)
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: missing), "")
+    }
+
+    func testDistinctPreviewKeepsOrdinaryWordPrefixesInBothDirections() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "Swift",
+                preview: "SwiftUI navigation bug"
+            ),
+            "SwiftUI navigation bug"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话列表需要优化"
+            ),
+            "工作区会话列表需要优化"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "修复输入区布局",
+                preview: "修复"
+            ),
+            "修复"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话列表需要优化",
+                preview: "工作区会话"
+            ),
+            "工作区会话"
+        )
+
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "工作区会话",
+                preview: "工作区会话：列表需要优化"
+            ),
+            "列表需要优化"
+        )
+    }
+
+    func testWorkspaceBranchIdentityOnlyShowsWhenMultipleValidBranchesExist() {
+        XCTAssertNil(SessionListPresentation.branchToDisplay("main", among: ["main", " main ", nil, " "]))
+        XCTAssertEqual(
+            SessionListPresentation.branchToDisplay(" feature/login ", among: ["main", " feature/login ", nil]),
+            "feature/login"
+        )
+        XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
+    }
+
+    func testWorkspaceIdentityFallsBackToDirectoryWithoutChangingGlobalProjectFallback() {
+        let directory = "/Users/me/worktrees/codex-ipad-agent/mim-202"
+        let session = makeSession(
+            id: "directory-fallback",
+            project: "codex-ipad-agent",
+            dir: directory
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.identityFallbackText(for: session, fallback: .directory),
+            "mim-202"
+        )
+        XCTAssertTrue(
+            SessionIndexRow.identityFallbackAccessibilityLabel(
+                for: session,
+                fallback: .directory
+            ).contains(directory)
+        )
+        XCTAssertEqual(
+            SessionIndexRow.identityFallbackText(for: session, fallback: .project),
+            "codex-ipad-agent"
+        )
+    }
+
+    func testTimestampTextUsesInjectedNowAndCalendar() {
+        let calendar = makeCalendar(timeZone: "Asia/Shanghai")
+        let now = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 12, minute: 0)
+        let today = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 9, minute: 30)
+        let yesterday = makeDate(calendar, year: 2025, month: 4, day: 8, hour: 23, minute: 59)
+        let earlier = makeDate(calendar, year: 2025, month: 3, day: 1, hour: 10)
+
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: today,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "09:30"
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(for: yesterday, now: now, calendar: calendar),
+            L10n.text("ui.yesterday")
+        )
+        XCTAssertEqual(
+            SessionListPresentation.timestampText(
+                for: earlier,
+                now: now,
+                calendar: calendar,
+                locale: Locale(identifier: "en_US_POSIX")
+            ),
+            "3/1"
+        )
+        XCTAssertEqual(SessionListPresentation.timestampText(for: nil, now: now, calendar: calendar), "")
+    }
+
+    func testCompactSupplementaryPreviewLineLimitPrioritizesSearchSnippet() {
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .large
+            ),
+            2
+        )
+        XCTAssertEqual(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .large
+            ),
+            1
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: true,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+        XCTAssertNil(
+            SessionIndexRow.compactSupplementaryPreviewLineLimit(
+                hasSearchSnippet: false,
+                dynamicTypeSize: .accessibility3
+            )
+        )
+    }
+
     func testSidebarSectionsUsePriorityOrderAndStableDeduplication() {
         let approval = ApprovalSummary(
             id: "approval",
@@ -163,11 +373,13 @@ final class SessionListPresentationTests: XCTestCase {
         let pinned = makeSession(id: "pinned")
         let recent = makeSession(id: "recent")
         let duplicatePinned = makeSession(id: "pinned", status: SessionStatus.running.rawValue)
+        let now = Date(timeIntervalSince1970: 10_000)
 
         let sections = SessionListPresentation.sidebarSections(
             sessions: [needApproval, needInput, running, waitingWithoutPayload, justCompleted, pinned, recent, duplicatePinned],
             pinnedIDs: Set(["need-approval", "pinned"]),
-            unreadIDs: Set(["completed", "running"])
+            completionObservedAtByID: [justCompleted.id: now.addingTimeInterval(-60)],
+            now: now
         )
 
         XCTAssertEqual(
@@ -186,18 +398,103 @@ final class SessionListPresentationTests: XCTestCase {
         ])
     }
 
-    func testSidebarJustCompletedKeepsFiveAndReturnsOverflowAfterDeduplication() throws {
-        let completed = (0..<7).map { makeSession(id: "completed-\($0)") }
+    func testSidebarJustCompletedKeepsFiveAndLetsOverflowContinueIntoPinnedAndRecent() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let completed = (0..<7).map { index in
+            makeSession(
+                id: "completed-\(index)",
+                recencyAt: now.addingTimeInterval(-Double(index))
+            )
+        }
+        // 输入重复 ID 后仍只占一个槽；第 6、7 个完成候选不能被静默吞掉。
         let sessions = completed + [completed[2]]
         let sections = SessionListPresentation.sidebarSections(
             sessions,
-            unreadIDs: Set(completed.map(\.id))
+            pinnedIDs: [completed[5].id],
+            completionObservedAtByID: Dictionary(
+                uniqueKeysWithValues: completed.map { ($0.id, now.addingTimeInterval(-60)) }
+            ),
+            now: now
         )
 
-        let section = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
-        XCTAssertEqual(section.sessions.map(\.id), (0..<5).map { "completed-\($0)" })
-        XCTAssertEqual(section.overflowCount, 2)
-        XCTAssertEqual(section.overflow, 2)
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        let pinned = try XCTUnwrap(sections.first { $0.kind == .pinned })
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(justCompleted.sessions.map(\.id), (0..<5).map { "completed-\($0)" })
+        XCTAssertEqual(justCompleted.overflowCount, 0)
+        XCTAssertEqual(pinned.sessions.map(\.id), ["completed-5"])
+        XCTAssertEqual(recent.sessions.map(\.id), ["completed-6"])
+        XCTAssertTrue(sections.allSatisfy { $0.overflowCount == 0 })
+    }
+
+    func testSidebarJustCompletedUsesTwoHourWindowBoundaryAndOldTasksBecomeRecent() throws {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let inside = makeSession(
+            id: "inside-window",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let atBoundary = makeSession(
+            id: "at-boundary",
+            recencyAt: now.addingTimeInterval(-120)
+        )
+        let outside = makeSession(
+            id: "outside-window",
+            recencyAt: now.addingTimeInterval(-180)
+        )
+        let completionObservedAtByID: [SessionID: Date] = [
+            inside.id: now.addingTimeInterval(-60 * 60),
+            atBoundary.id: now.addingTimeInterval(-2 * 60 * 60),
+            outside.id: now.addingTimeInterval(-(2 * 60 * 60 + 1)),
+        ]
+
+        let sections = SessionListPresentation.sidebarSections(
+            [inside, atBoundary, outside],
+            completionObservedAtByID: completionObservedAtByID,
+            now: now,
+            justCompletedWindow: 2 * 60 * 60
+        )
+
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(justCompleted.sessions.map(\.id), [inside.id, atBoundary.id])
+        XCTAssertEqual(recent.sessions.map(\.id), [outside.id])
+    }
+
+    func testSidebarJustCompletedRanksByObservedCompletionTimeNotSessionRecency() throws {
+        let now = Date(timeIntervalSince1970: 30_000)
+        // 活动时间故意反向：较新的完成观察对应较旧的会话 recency，避免排序规则被混淆。
+        let olderSession = makeSession(
+            id: "older-session",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let newerCompletion = makeSession(
+            id: "newer-completion",
+            recencyAt: now.addingTimeInterval(-600)
+        )
+        let oldestCompletion = makeSession(
+            id: "oldest-completion",
+            recencyAt: now.addingTimeInterval(-1)
+        )
+
+        let sections = SessionListPresentation.sidebarSections(
+            [olderSession, newerCompletion, oldestCompletion],
+            completionObservedAtByID: [
+                olderSession.id: now.addingTimeInterval(-30 * 60),
+                newerCompletion.id: now.addingTimeInterval(-5 * 60),
+                oldestCompletion.id: now.addingTimeInterval(-60 * 60),
+            ],
+            now: now,
+            justCompletedLimit: 2
+        )
+
+        let justCompleted = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        XCTAssertEqual(
+            justCompleted.sessions.map(\.id),
+            [newerCompletion.id, olderSession.id],
+            "刚完成候选和输出都应按本地观察时间倒序，而不是复用会话活动时间排序"
+        )
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+        XCTAssertEqual(recent.sessions.map(\.id), [oldestCompletion.id])
     }
 
     func testSidebarRecentIsFallbackWhenAllEarlierGroupsAreEmpty() {
@@ -207,6 +504,75 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections.map(\.kind), [.recent])
         XCTAssertEqual(sections[0].sessions.map(\.id), (0..<8).map { "recent-\($0)" })
         XCTAssertEqual(sections[0].overflowCount, 0)
+    }
+
+    func testSidebarUsesOneGroupHeaderForAdjacentProjectsInRunningAndJustCompleted() {
+        let first = makeSession(id: "project-a-first", projectID: "project-a")
+        let adjacentSameProject = makeSession(id: "project-a-second", projectID: "project-a")
+        let differentProject = makeSession(id: "project-b", projectID: "project-b")
+        let separatedSameProject = makeSession(id: "project-a-third", projectID: "project-a")
+        let missingProject = makeSession(id: "missing-project", projectID: "")
+
+        XCTAssertTrue(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: first,
+                previousSession: nil,
+                in: .running
+            )
+        )
+        XCTAssertFalse(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: adjacentSameProject,
+                previousSession: first,
+                in: .running
+            ),
+            "运行中的相邻同项目只在第一行展示菊花和头像"
+        )
+        XCTAssertFalse(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: adjacentSameProject,
+                previousSession: first,
+                in: .justCompleted
+            ),
+            "刚完成的相邻同项目也应合并头像"
+        )
+        XCTAssertTrue(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: differentProject,
+                previousSession: adjacentSameProject,
+                in: .running
+            )
+        )
+        XCTAssertTrue(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: separatedSameProject,
+                previousSession: differentProject,
+                in: .running
+            ),
+            "同项目被其他项目隔开后要重新展示头像"
+        )
+        for kind in [
+            SessionSidebarSectionKind.needYou,
+            .pinned,
+            .recent,
+        ] {
+            XCTAssertTrue(
+                SessionListPresentation.startsSidebarProjectGroup(
+                    for: adjacentSameProject,
+                    previousSession: first,
+                    in: kind
+                ),
+                "\(kind.rawValue) 不在本次合并范围，仍应逐行展示项目身份"
+            )
+        }
+        XCTAssertTrue(
+            SessionListPresentation.startsSidebarProjectGroup(
+                for: missingProject,
+                previousSession: missingProject,
+                in: .running
+            ),
+            "缺少项目 ID 时不能把未知会话误合并"
+        )
     }
 
     func testSidebarKeepsLocalDraftInRunningSection() throws {
@@ -245,67 +611,6 @@ final class SessionListPresentationTests: XCTestCase {
         let running = try XCTUnwrap(sections.first { $0.kind == .running })
 
         XCTAssertEqual(running.sessions.map(\.id), [newer.id, olderPinned.id])
-    }
-
-    func testSidebarProjectAnchorsAppearOnceAcrossSectionsAndInterleavedRows() {
-        let sections = [
-            SessionSidebarSection(
-                kind: .needYou,
-                sessions: [makeSession(id: "a-need", projectID: "project-a")]
-            ),
-            SessionSidebarSection(
-                kind: .running,
-                sessions: [
-                    makeSession(id: "b-running", projectID: "project-b"),
-                    makeSession(id: "a-running", projectID: "project-a"),
-                ]
-            ),
-            SessionSidebarSection(
-                kind: .recent,
-                sessions: [
-                    makeSession(id: "a-recent", projectID: "project-a"),
-                    makeSession(id: "b-recent", projectID: "project-b"),
-                ]
-            ),
-        ]
-
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections),
-            Set(["a-need", "b-running"])
-        )
-    }
-
-    func testSidebarProjectAnchorFollowsSameSessionWhenUnreadMovesToRecent() {
-        let completed = makeSession(id: "a-completed", projectID: "project-a")
-        let olderSameProject = makeSession(id: "a-older", projectID: "project-a")
-        let otherProject = makeSession(id: "b-recent", projectID: "project-b")
-        let orderedSessions = [completed, olderSameProject, otherProject]
-
-        let beforeOpening = SessionListPresentation.sidebarSections(
-            orderedSessions,
-            unreadIDs: [completed.id]
-        )
-        let afterOpening = SessionListPresentation.sidebarSections(orderedSessions)
-
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: beforeOpening),
-            Set([completed.id, otherProject.id])
-        )
-        XCTAssertEqual(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: afterOpening),
-            Set([completed.id, otherProject.id])
-        )
-    }
-
-    func testSingleProjectSidebarDoesNotAddRedundantProjectAnchor() {
-        let sections = SessionListPresentation.sidebarSections([
-            makeSession(id: "first", projectID: "project-a"),
-            makeSession(id: "second", projectID: "project-a"),
-        ])
-
-        XCTAssertTrue(
-            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections).isEmpty
-        )
     }
 
     func testDirectoryTailPrefersDirFallsBackToProjectAndHandlesTrailingSlashes() {
@@ -353,6 +658,40 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(
             SessionIndexRowDensity.resolved(prefersTable: false, dynamicTypeSize: .large),
             .compact
+        )
+    }
+
+    func testSessionRowAccessibilityValueKeepsHiddenStatusAndUnreadSemantics() {
+        let completed = AgentSessionDisplayStatus(
+            title: "Completed",
+            systemImage: "checkmark.circle",
+            tone: .complete,
+            showsSpinner: false
+        )
+        let active = AgentSessionDisplayStatus(
+            title: "Running",
+            systemImage: "circle",
+            tone: .active,
+            showsSpinner: false
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: completed,
+                sessionStatus: SessionStatus.completed.rawValue,
+                isUnread: true,
+                showsNeutralHistoryStatus: false
+            ),
+            "Completed, \(L10n.text("ui.unread_result"))"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: active,
+                sessionStatus: SessionStatus.running.rawValue,
+                isUnread: false,
+                showsNeutralHistoryStatus: false
+            ),
+            ""
         )
     }
 

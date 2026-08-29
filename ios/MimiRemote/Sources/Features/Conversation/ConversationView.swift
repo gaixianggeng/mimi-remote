@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct ConversationView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
@@ -26,7 +28,8 @@ struct ConversationView: View {
             historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
             quotaNotice: sessionStore.selectedQuotaNotice,
             webSocketStatus: sessionStore.webSocketStatus,
-            errorMessage: sessionStore.errorMessage
+            // writer 冲突在输入区提供唯一恢复入口；顶部不再重复一条泛化错误。
+            errorMessage: sessionStore.selectedSessionHasActiveWriterConflict ? nil : sessionStore.errorMessage
         )
 
         GeometryReader { proxy in
@@ -44,8 +47,22 @@ struct ConversationView: View {
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
-                ConversationTimelineView(layout: layout)
+                    // 状态提示只占用自己的布局高度，不能改变导航栏与时间线的材质模式；
+                    // List 扩展进顶部安全区后也始终让提示保持在正文之上。
+                    .zIndex(1)
+                ConversationTimelineView(
+                    layout: layout,
+                    // 顶部 underlap 只由辅助功能偏好决定；WebSocket 错误、额度提示等
+                    // 瞬态业务状态不得切换 List 的 safe-area 几何，否则材质会消失并跳动。
+                    allowsTopUnderlap: Self.shouldAllowTopUnderlap(
+                        reduceTransparency: reduceTransparency
+                    )
+                )
             }
+            // 测量层必须先占满 NavigationStack 实际分配的详情列，再把结果回写给
+            // ConversationLayout。若跟随 List / Composer 的 intrinsic width 收缩，
+            // 固定宽度的 Composer 会把下一帧继续锁在最小 240pt，形成宽度反馈环。
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onGeometryChange(for: CGFloat.self) { geometry in
                 geometry.size.width
             } action: { width in
@@ -57,101 +74,86 @@ struct ConversationView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {
                     Spacer(minLength: 0)
-                    ComposerView(
-                        availableWidth: composerWidth,
-                        initialGoalStatusExpanded: initialGoalStatusExpanded
-                    )
+                    Group {
+                        if sessionStore.selectedSessionHasActiveWriterConflict {
+                            writerConflictCard(isRetrying: sessionStore.webSocketStatus == .connecting)
+                        } else {
+                            ComposerView(
+                                availableWidth: composerWidth,
+                                initialGoalStatusExpanded: initialGoalStatusExpanded
+                            )
+                        }
+                    }
                         // 确定宽度阻止固定尺寸的工具按钮反向撑大输入卡和上方目标栏。
                         .frame(width: composerWidth)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, layout.horizontalInset)
+                .padding(.horizontal, layout.composerHorizontalInset)
                 .padding(.top, layout.composerTopPadding)
                 .padding(.bottom, layout.composerBottomPadding)
-                // 不再铺一层近实色 dock：安全区直接沿用会话主背景，只让 Composer
-                // 自己承担唯一的功能材质层，底部视觉不会与消息系统切成两块。
+                .background {
+                    composerReadabilityBackdrop(tokens: tokens)
+                }
             }
-            .background(tokens.background.ignoresSafeArea())
+            .background(tokens.conversationCanvasBackground.ignoresSafeArea())
             .task(id: sessionStore.selectedSession?.id) {
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
         }
     }
 
-    @ViewBuilder
-    private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.statusDisplay != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
-            Group {
-                if model.runtimeActivitySnapshot != nil {
-                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                        statusStripContainer(model: model, now: timeline.date)
-                    }
-                } else {
-                    // 只有运行心跳需要秒级刷新；普通错误/状态条保持静态，减少整页重算。
-                    statusStripContainer(model: model, now: Date())
-                }
-            }
-            .padding(.horizontal, layout.horizontalInset)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+    /// 顶部滚动边缘是设备无关的材质语义：iPhone、iPad 竖屏和 iPad 横屏共用同一条
+    /// 规则，只有 Reduce Transparency 会退回实色。按 idiom 分叉会让 iPad 横屏永远
+    /// 拿不到顶部过渡，正文直接贴着标题滚过去。
+    static func shouldAllowTopUnderlap(reduceTransparency: Bool) -> Bool {
+        !reduceTransparency
+    }
+
+    /// 半透明底衬只有在系统自带 soft scroll edge 时才成立：它最深也只有 10–12%，
+    /// 真正把正文虚化掉的是滚动边缘效果。紧凑宽度的 composerBottomPadding 是 0，
+    /// 底衬又要一路盖到 home indicator，没有 soft edge 的 iOS 18–25 会让正文
+    /// 以近乎全对比度从输入卡下沿滚过去，所以旧系统必须退回实色。
+    static func usesTranslucentComposerBackdrop(
+        isPhone: Bool,
+        reduceTransparency: Bool,
+        hasSoftScrollEdge: Bool
+    ) -> Bool {
+        isPhone && !reduceTransparency && hasSoftScrollEdge
+    }
+
+    static var systemProvidesSoftScrollEdge: Bool {
+        if #available(iOS 26.0, *) {
+            return true
         }
+        return false
     }
 
     @ViewBuilder
-    private func statusStripContainer(model: ConversationScreenModel, now: Date) -> some View {
-        VStack(spacing: 8) {
+    private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
+        if model.errorMessage != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
+            statusStripContainer(model: model)
+                .padding(.horizontal, layout.horizontalInset)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+        }
+    }
+
+    private func statusStripContainer(model: ConversationScreenModel) -> some View {
+        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(spacing: 8) {
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
             }
             if let notice = model.quotaNotice {
                 quotaLimitBanner(notice)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+            if let message, !message.isEmpty {
+                HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    statusStripContent(model: model, now: now, stacksVertically: false)
+                    errorChip(message)
                     Spacer(minLength: 0)
-                }
-                statusStripContent(model: model, now: now, stacksVertically: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statusStripContent(model: ConversationScreenModel, now: Date, stacksVertically: Bool) -> some View {
-        let status = model.statusDisplay
-        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let runtimeDisplay = RuntimeActivityDisplay.make(
-            snapshot: model.runtimeActivitySnapshot,
-            webSocketStatus: model.webSocketStatus,
-            now: now
-        )
-
-        if status != nil || message?.isEmpty == false {
-            if stacksVertically {
-                VStack(spacing: 8) {
-                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                HStack(spacing: 8) {
-                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func statusStripChips(
-        status: AgentSessionDisplayStatus?,
-        message: String?,
-        runtimeDisplay: RuntimeActivityDisplay?
-    ) -> some View {
-        if let status {
-            statusChip(status, runtimeDisplay: runtimeDisplay)
-        }
-        if let message, !message.isEmpty {
-            errorChip(message)
         }
     }
 
@@ -165,38 +167,6 @@ struct ConversationView: View {
             .padding(.vertical, 6)
             .background(statusChipBackground)
             .clipShape(Capsule())
-    }
-
-    private func statusChip(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> some View {
-        let displayTone = runtimeDisplay?.tone ?? status.tone
-        return HStack(alignment: .center, spacing: 7) {
-            if status.showsSpinner {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(tint(for: displayTone))
-                    .frame(width: 16, height: 16, alignment: .center)
-            } else {
-                Image(systemName: runtimeDisplay?.systemImage ?? status.systemImage)
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .frame(width: 16, height: 16, alignment: .center)
-            }
-            Text(statusText(status, runtimeDisplay: runtimeDisplay))
-        }
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .foregroundStyle(tint(for: displayTone))
-        .lineLimit(1)
-        .minimumScaleFactor(0.82)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(statusChipBackground)
-        .clipShape(Capsule())
-    }
-
-    private func statusText(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> String {
-        if let runtimeDisplay {
-            return L10n.format("ui.current_value_value", status.title, runtimeDisplay.detailText)
-        }
-        return L10n.format("ui.current_value", status.title)
     }
 
     private func historySavingsBanner(_ notice: HistorySavingsNotice) -> some View {
@@ -226,7 +196,7 @@ struct ConversationView: View {
     private func historySavingsBannerMessage(_ notice: HistorySavingsNotice) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.33percent")
+            Image(systemName: notice.kind == .summaryLoaded ? "doc.text.magnifyingglass" : "gauge.with.dots.needle.33percent")
                 .font(themeStore.uiFont(.body, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .frame(width: 22, height: 22)
@@ -397,15 +367,102 @@ struct ConversationView: View {
         }
     }
 
-    private func tint(for tone: AgentSessionStatusTone) -> Color {
-        themeStore.tokens(for: colorScheme).tint(for: tone)
-    }
-
     private var statusChipBackground: Color {
         themeStore.tokens(for: colorScheme).elevatedSurface
     }
 
-    private var workbenchSecondaryText: Color {
-        themeStore.tokens(for: colorScheme).secondaryText
+    private func writerConflictCard(isRetrying: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 14) {
+                writerConflictMessage(tokens: tokens)
+                Spacer(minLength: 12)
+                writerConflictRetryButton(isRetrying: isRetrying)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                writerConflictMessage(tokens: tokens)
+                writerConflictRetryButton(isRetrying: isRetrying)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.elevatedSurface, in: shape)
+        .overlay {
+            shape.strokeBorder(tokens.warning.opacity(0.32), lineWidth: 0.75)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func writerConflictMessage(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "lock")
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+                .frame(width: 24, height: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.text("ui.codex_active_writer_conflict_title"))
+                    .font(themeStore.uiFont(.body, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(L10n.text("ui.codex_active_writer_conflict"))
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func writerConflictRetryButton(isRetrying: Bool) -> some View {
+        Button {
+            sessionStore.retrySelectedSessionWriterAccess()
+        } label: {
+            Group {
+                if isRetrying {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(L10n.text("ui.retry"))
+                }
+            }
+            .frame(minWidth: 64, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .disabled(isRetrying)
+        .accessibilityHint(L10n.text("ui.codex_active_writer_conflict"))
+    }
+
+    private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
+        let usesTranslucentBackdrop = Self.usesTranslucentComposerBackdrop(
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+            reduceTransparency: reduceTransparency,
+            hasSoftScrollEdge: Self.systemProvidesSoftScrollEdge
+        )
+        return Group {
+            if !usesTranslucentBackdrop {
+                // 辅助功能、iPad，以及没有 soft scroll edge 的旧系统都使用确定性实色。
+                tokens.conversationCanvasBackground
+            } else {
+                // 只保留一条连续衰减。此前在 inset 上沿额外拼接 28pt 渐变，交界处会从
+                // 32% 背景色突然跳回透明，在深色代码块上形成一条明显的亮带。
+                // 字形虚化继续交给 Composer 自身的 Material，避免叠加第二层采样。
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        tokens.conversationCanvasBackground.opacity(0.04),
+                        tokens.conversationCanvasBackground.opacity(colorScheme == .light ? 0.10 : 0.12)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

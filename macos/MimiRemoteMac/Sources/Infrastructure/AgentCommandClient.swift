@@ -37,13 +37,15 @@ extension AgentCommandClient {
             binary: URL,
             arguments: [String],
             allowFailure: Bool = false,
-            timeout: Duration = .seconds(15)
+            timeout: Duration = .seconds(15),
+            forceKillAfterTimeout: Bool = false
         ) async throws -> CommandResult {
             let result = try await executor.run(
                 executable: binary,
                 arguments: arguments,
                 timeout: timeout,
-                environment: environment
+                environment: environment,
+                forceKillAfterTimeout: forceKillAfterTimeout
             )
             if result.status != 0 && !allowFailure {
                 throw AgentClientError.commandFailed(
@@ -99,7 +101,10 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: arguments,
                     allowFailure: true,
-                    timeout: .seconds(20)
+                    // Doctor --fix 可能等待服务诊断和配置提交，并在提交后重新跑
+                    // 完整检查；给它覆盖事务上界的时间，避免配置已提交却因
+                    // 客户端过早终止而漏掉 restart_required。
+                    timeout: .seconds(90)
                 )
                 if fix {
                     return try decode(DoctorFixResults.self, from: result)
@@ -181,6 +186,7 @@ extension AgentCommandClient {
         }
         return arguments
     }
+
 }
 
 enum AgentClientError: LocalizedError {

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -187,7 +185,10 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 	if err != nil {
 		return "", false, err
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: autoThreadTitleTimeout}
+	dialer, err := g.router.appServerUpstreamDialer(autoThreadTitleTimeout)
+	if err != nil {
+		return "", false, err
+	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -513,7 +514,7 @@ func truncateRunes(value string, limit int) string {
 	return strings.TrimSpace(value)
 }
 
-func (r *Router) scheduleAutoThreadTitleFromTurn(
+func (r *Router) scheduleAutoThreadTitleFromMessage(
 	payload []byte,
 	policy *appServerGatewayPolicy,
 	notify func(threadID string, title string),
@@ -531,7 +532,11 @@ func (r *Router) scheduleAutoThreadTitleFromTurn(
 
 func (p *appServerGatewayPolicy) takeAutoThreadTitleRequest(payload []byte) (autoThreadTitleRequest, bool) {
 	var frame appServerGatewayFrame
-	if json.Unmarshal(payload, &frame) != nil || strings.TrimSpace(frame.Method) != "turn/start" {
+	if json.Unmarshal(payload, &frame) != nil {
+		return autoThreadTitleRequest{}, false
+	}
+	method := strings.TrimSpace(frame.Method)
+	if method != "thread/queue/add" && method != "turn/start" {
 		return autoThreadTitleRequest{}, false
 	}
 	params, err := decodeGatewayParams(frame.Params)
@@ -550,7 +555,8 @@ func (p *appServerGatewayPolicy) takeAutoThreadTitleRequest(payload []byte) (aut
 		p.mu.Unlock()
 		return autoThreadTitleRequest{}, false
 	}
-	// 首条成功转发的 turn/start 永久消费资格。即使生成失败，也不在后续用户
+	// 首条成功转发的 queue/add（兼容非 SSH 旧客户端的 turn/start）永久消费资格。
+	// 即使生成失败，也不在后续用户
 	// 消息上重试并产生一个与首条需求无关的标题。
 	thread.autoTitleEligible = false
 	p.allowedThreads[threadID] = thread

@@ -1264,7 +1264,9 @@ struct AgentErrorPayload: Codable, Hashable {
 
 enum ClaudeAuthenticationRecovery {
     static let errorCode = "claude_authentication_required"
-    static let loginCommand = "claude"
+    // 这是可直接粘贴到 Mac 终端执行的 CLI 命令；`/login` 只是在
+    // Claude Code 交互会话内部使用的 slash command，不能作为终端命令复制。
+    static let loginCommand = "claude auth login"
 
     static func matches(_ payload: AgentErrorPayload) -> Bool {
         if payload.code?.caseInsensitiveCompare(errorCode) == .orderedSame {

@@ -23,7 +23,9 @@ type agentStatus struct {
 }
 
 type runtimeStatus struct {
-	Runtimes []runtimeEntry `json:"runtimes"`
+	Refreshing bool           `json:"refreshing"`
+	Stale      bool           `json:"stale"`
+	Runtimes   []runtimeEntry `json:"runtimes"`
 }
 
 type runtimeEntry struct {

@@ -95,6 +95,119 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testUnregisterTimeoutRetriesOnceThenRegistersAfterStateConverges() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusCalls.increment() == 1 ? Self.stoppedStatus : Self.readyStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+                if call == 2 {
+                    registrationState = .notRegistered
+                }
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-1", "unregister-2", "register-mac",
+        ])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testSecondUnregisterTimeoutFailsWithoutThirdUnregisterOrRegister() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                let call = unregisterCalls.increment()
+                events.append("unregister-\(call)")
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1", "unregister-2"])
+        XCTAssertEqual(unregisterCalls.current, 2)
+        XCTAssertEqual(registrationState, .enabled)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .failed(store.lastError ?? ""))
+        XCTAssertTrue(store.lastError?.contains("服务停止超时") == true)
+    }
+
+    func testUnregisterRequiresApprovalDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                registrationState = .requiresApproval
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+        XCTAssertTrue(store.lastError?.contains("登录项") == true)
+    }
+
+    func testUnregisterCancellationDoesNotRetry() async {
+        let events = EventRecorder()
+        let unregisterCalls = CallCounter()
+        let firstUnregister = expectation(description: "first unregister called")
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { Self.stoppedStatus },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: {
+                unregisterCalls.increment()
+                events.append("unregister-1")
+                firstUnregister.fulfill()
+            }
+        )
+
+        let bootstrapTask = Task { await store.bootstrap() }
+        await fulfillment(of: [firstUnregister], timeout: 1)
+        bootstrapTask.cancel()
+        await bootstrapTask.value
+
+        XCTAssertEqual(events.values, ["unregister-1"])
+        XCTAssertEqual(unregisterCalls.current, 1)
+        XCTAssertFalse(events.values.contains("register-mac"))
+    }
+
     func testEnabledAgentStatusFailureTriggersOneBoundedReregistration() async {
         let events = EventRecorder()
         let statusEvents = EventRecorder()
@@ -419,24 +532,6 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(store.homebrewLoaded)
     }
 
-    func testTakeoverStopsHomebrewThenStartsBundledAgent() async {
-        let events = EventRecorder()
-        let store = makeStore(
-            configExists: true,
-            homebrewLoaded: true,
-            registerAgent: { events.append("register-mac") },
-            homebrewStop: { events.append("stop-homebrew") }
-        )
-        await store.bootstrap()
-
-        await store.takeOverHomebrew()
-
-        XCTAssertEqual(events.values, ["stop-homebrew", "register-mac"])
-        XCTAssertEqual(store.owner, .macApp)
-        XCTAssertEqual(store.lifecycle, .ready)
-        XCTAssertNotNil(store.pairing)
-    }
-
     func testTakeoverRejectsInvalidAppBeforeStoppingHomebrew() async {
         let events = EventRecorder()
         let message = "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。"
@@ -592,6 +687,75 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(store.owner, .homebrew)
         XCTAssertEqual(store.lifecycle, .migrationRequired)
+    }
+
+    func testDoctorRestartsMacAgentAfterConfigurationRepair() async {
+        let events = EventRecorder()
+        var registrationState = ServiceRegistrationState.notRegistered
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                events.append("status")
+                return Self.readyStatus
+            },
+            doctor: { fix in
+                events.append("doctor-\(fix)")
+                return DoctorFixResults(
+                    fixes: ["已恢复 Codex CLI 路径"],
+                    results: Self.readyStatus.doctor,
+                    restartRequired: true
+                )
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            healthCheck: { _ in false }
+        )
+        await store.bootstrap()
+
+        await store.runDoctor(fix: true)
+
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(events.values, [
+            "register-mac", "status",
+            "doctor-true", "unregister-mac", "register-mac", "status",
+        ])
+    }
+
+    func testDoctorRestartsHomebrewAfterConfigurationRepair() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            doctor: { fix in
+                events.append("doctor-\(fix)")
+                return DoctorFixResults(
+                    fixes: ["已恢复 Codex CLI 路径"],
+                    results: Self.readyStatus.doctor,
+                    restartRequired: true
+                )
+            },
+            homebrewStart: { events.append("start-homebrew") },
+            homebrewStop: { events.append("stop-homebrew") }
+        )
+        await store.bootstrap()
+
+        await store.runDoctor(fix: true)
+
+        XCTAssertEqual(store.owner, .homebrew)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(events.values, [
+            "doctor-true", "stop-homebrew", "start-homebrew",
+        ])
     }
 
     func testFailedHomebrewRestoreReturnsToMacAgent() async {
@@ -852,7 +1016,8 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
-    private func makeStore(
+
+    func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
@@ -861,6 +1026,9 @@ final class HostStoreTests: XCTestCase {
         markAgentRegistrationCurrent: @escaping @MainActor () -> Void = {},
         status: @escaping @Sendable () async throws -> AgentStatus = {
             HostStoreTests.readyStatus
+        },
+        doctor: @escaping @Sendable (Bool) async throws -> DoctorFixResults = { _ in
+            DoctorFixResults(fixes: [], results: HostStoreTests.readyStatus.doctor)
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
@@ -885,13 +1053,12 @@ final class HostStoreTests: XCTestCase {
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
-        let doctor = readyStatus.doctor
         let agent = AgentCommandClient(
             configExists: { configExists },
             setup: { _ in Self.pairing },
             status: status,
             statusAt: { _ in readyStatus },
-            doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
+            doctor: doctor,
             configureClaude: configureClaude,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
@@ -1042,13 +1209,13 @@ private final class LaggingAgentRegistration {
     }
 }
 
-private enum TestError: LocalizedError {
+enum TestError: LocalizedError {
     case expected
 
     var errorDescription: String? { "预期的测试错误" }
 }
 
-private final class EventRecorder: @unchecked Sendable {
+final class EventRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String] = []
 
@@ -1080,5 +1247,46 @@ private final class CallCounter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+}
+
+private final class SuspendedStatusGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var suspended = false
+    private var released = false
+
+    func suspendReturning<T: Sendable>(_ value: T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                suspended = true
+                condition.broadcast()
+                while !released {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume(returning: value)
+            }
+        }
+    }
+
+    func waitUntilSuspended() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                while !suspended {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func resume() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
     }
 }

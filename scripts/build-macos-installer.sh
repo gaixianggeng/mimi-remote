@@ -5,6 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_PATH="$ROOT_DIR/macos/MimiRemoteMac/MimiRemoteMac.xcodeproj"
 SCHEME="MimiRemoteMac"
 OUTPUT_DIR="$ROOT_DIR/dist-macos"
+DMG_BACKGROUND_PATH="$ROOT_DIR/scripts/assets/macos-installer/dmg-background.png"
+DMG_WINDOW_WIDTH=660
+DMG_WINDOW_HEIGHT=400
+DMG_APP_POSITION_X=170
+DMG_APP_POSITION_Y=185
+DMG_APPLICATIONS_POSITION_X=490
+DMG_APPLICATIONS_POSITION_Y=185
 VERSION=""
 BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"
 SNAPSHOT=0
@@ -78,7 +85,7 @@ if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [[ "$BUILD_NUMBER" == "0" ]]; then
   exit 2
 fi
 
-for command_name in base64 codesign ditto hdiutil lipo openssl plutil security shasum spctl xcodebuild xcrun; do
+for command_name in base64 codesign ditto hdiutil lipo openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -86,6 +93,17 @@ for command_name in base64 codesign ditto hdiutil lipo openssl plutil security s
 done
 if [[ ! -f "$PROJECT_PATH/project.pbxproj" ]]; then
   echo "Mac 安装包构建失败：缺少 $PROJECT_PATH。" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_BACKGROUND_PATH" ]]; then
+  echo "Mac 安装包构建失败：缺少 DMG 背景资产 $DMG_BACKGROUND_PATH。" >&2
+  exit 1
+fi
+DMG_BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$DMG_BACKGROUND_PATH")"
+DMG_BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
+DMG_BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
+if [[ "$DMG_BACKGROUND_WIDTH" != "$DMG_WINDOW_WIDTH" || "$DMG_BACKGROUND_HEIGHT" != "$DMG_WINDOW_HEIGHT" ]]; then
+  echo "Mac 安装包构建失败：DMG 背景必须是 ${DMG_WINDOW_WIDTH}x${DMG_WINDOW_HEIGHT}，实际为 ${DMG_BACKGROUND_WIDTH}x${DMG_BACKGROUND_HEIGHT}。" >&2
   exit 1
 fi
 if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
@@ -97,8 +115,27 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 WORK_DIR="$(mktemp -d -t mimi-macos-installer)"
 KEYCHAIN_PATH=""
 KEYCHAIN_LIST_FILE=""
+DMG_MOUNT_DIR=""
+DMG_MOUNTED=0
+
+detach_dmg() {
+  if [[ "$DMG_MOUNTED" != "1" ]]; then
+    return 0
+  fi
+  if ! hdiutil detach "$DMG_MOUNT_DIR" -quiet >/dev/null 2>&1; then
+    # Finder 偶尔会在保存 .DS_Store 时短暂占用卷；强制卸载仍只针对本次临时镜像。
+    if ! hdiutil detach "$DMG_MOUNT_DIR" -force -quiet >/dev/null 2>&1; then
+      echo "Mac 安装包构建失败：无法卸载临时 DMG 挂载点 $DMG_MOUNT_DIR。" >&2
+      return 1
+    fi
+  fi
+  DMG_MOUNTED=0
+}
 
 cleanup() {
+  if [[ "$DMG_MOUNTED" == "1" ]]; then
+    detach_dmg || true
+  fi
   if [[ -n "$KEYCHAIN_LIST_FILE" && -f "$KEYCHAIN_LIST_FILE" ]]; then
     # 恢复用户原有的 Keychain 搜索列表，避免本地正式构建污染开发环境。
     set --
@@ -125,6 +162,77 @@ decode_base64() {
     return
   fi
   printf '%s' "$value" | base64 -D > "$output" 2>/dev/null
+}
+
+configure_dmg_layout() {
+  local mount_path="$1"
+
+  # 先在可写 DMG 中让 Finder 写入 .DS_Store，再压缩为 UDZO，避免压缩后无法保存布局。
+  osascript - \
+    "$mount_path" \
+    "$DMG_WINDOW_WIDTH" \
+    "$DMG_WINDOW_HEIGHT" \
+    "$DMG_APP_POSITION_X" \
+    "$DMG_APP_POSITION_Y" \
+    "$DMG_APPLICATIONS_POSITION_X" \
+    "$DMG_APPLICATIONS_POSITION_Y" <<'APPLESCRIPT'
+on run argv
+  set mountPath to item 1 of argv
+  set windowWidth to (item 2 of argv) as integer
+  set windowHeight to (item 3 of argv) as integer
+  set appPositionX to (item 4 of argv) as integer
+  set appPositionY to (item 5 of argv) as integer
+  set applicationsPositionX to (item 6 of argv) as integer
+  set applicationsPositionY to (item 7 of argv) as integer
+
+  tell application "Finder"
+    -- hdiutil 使用显式 mountpoint 时，Finder 中的卷名可能变成挂载目录名，
+    -- 因此必须按实际路径取得窗口，不能依赖 -volname。
+    set mountedAlias to (POSIX file mountPath) as alias
+    set mountedDisk to disk of mountedAlias
+    open mountedDisk
+
+    set dmgWindow to missing value
+    repeat with attempt from 1 to 20
+      try
+        set dmgWindow to «class cwnd» of mountedDisk
+        -- 读取 bounds 触发 Finder 对窗口对象的实际解析，而不是只拿到延迟 specifier。
+        set ignoredBounds to «class pbnd» of dmgWindow
+        exit repeat
+      on error errorMessage
+        if attempt = 20 then
+          error ("Finder 无法打开 DMG 窗口：" & errorMessage)
+        end if
+      end try
+      delay 0.25
+    end repeat
+    if dmgWindow is missing value then
+      error "Finder 在 5 秒内没有打开 DMG 窗口。"
+    end if
+
+    set «class pvew» of dmgWindow to «constant ecvwicnv»
+    set «class tbvi» of dmgWindow to false
+    set «class stvi» of dmgWindow to false
+    set «class pbvi» of dmgWindow to false
+    set «class sbwi» of dmgWindow to 0
+    set «class pbnd» of dmgWindow to {100, 100, 100 + windowWidth, 100 + windowHeight}
+
+    set iconViewOptions to «class icop» of dmgWindow
+    set «class iarr» of iconViewOptions to «constant earrnarr»
+    set «class lvis» of iconViewOptions to 112
+    set «class fsiz» of iconViewOptions to 13
+    set «class lpos» of iconViewOptions to «constant eposlbot»
+    set «class ibkg» of iconViewOptions to (POSIX file (mountPath & "/.background/dmg-background.png")) as alias
+
+    set position of item "Mimi Remote Mac.app" of dmgWindow to {appPositionX, appPositionY}
+    set position of item "Applications" of dmgWindow to {applicationsPositionX, applicationsPositionY}
+    update mountedDisk
+    delay 1
+    close dmgWindow
+    delay 1
+  end tell
+end run
+APPLESCRIPT
 }
 
 submit_and_wait_for_notarization() {
@@ -295,6 +403,7 @@ if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
     "$AGENT_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -316,6 +425,7 @@ else
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
     "$AGENT_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -328,19 +438,47 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 DMG_ROOT="$WORK_DIR/dmg-root"
+DMG_WRITABLE_PATH="$WORK_DIR/Mimi-Remote-Mac-writable.dmg"
 DMG_PATH="$WORK_DIR/Mimi-Remote-Mac.dmg"
 mkdir -p "$DMG_ROOT"
 ditto "$APP_PATH" "$DMG_ROOT/Mimi Remote Mac.app"
 ln -s /Applications "$DMG_ROOT/Applications"
+mkdir -p "$DMG_ROOT/.background"
+ditto "$DMG_BACKGROUND_PATH" "$DMG_ROOT/.background/dmg-background.png"
 
-echo "==> 生成 DMG"
+echo "==> 生成可写 DMG 并写入 Finder 拖放布局"
 hdiutil create \
   -quiet \
   -volname "Mimi Remote Mac ${VERSION}" \
   -srcfolder "$DMG_ROOT" \
+  -format UDRW \
+  "$DMG_WRITABLE_PATH"
+
+DMG_ATTACH_OUTPUT=""
+if ! DMG_ATTACH_OUTPUT="$(hdiutil attach -readwrite -nobrowse "$DMG_WRITABLE_PATH")"; then
+  echo "Mac 安装包构建失败：无法以可写模式挂载临时 DMG。" >&2
+  exit 1
+fi
+# Finder 会把背景图保存为 alias。使用 /Volumes 下的真实卷挂载点，
+# 才能让 alias 在用户之后挂载最终 DMG 时重新解析。
+DMG_MOUNT_DIR="$(awk -F '\t' '$NF ~ /^\/Volumes\// { mount_path=$NF } END { print mount_path }' <<<"$DMG_ATTACH_OUTPUT")"
+if [[ -z "$DMG_MOUNT_DIR" || ! -d "$DMG_MOUNT_DIR" ]]; then
+  echo "Mac 安装包构建失败：无法解析临时 DMG 挂载点。" >&2
+  printf '%s\n' "$DMG_ATTACH_OUTPUT" >&2
+  exit 1
+fi
+DMG_MOUNTED=1
+configure_dmg_layout "$DMG_MOUNT_DIR"
+sync
+detach_dmg
+
+# App 在签名后没有再被修改；仅将写好 Finder 元数据的镜像压缩，保持签名、公证输入稳定。
+hdiutil convert \
+  -quiet \
+  "$DMG_WRITABLE_PATH" \
   -format UDZO \
   -imagekey zlib-level=9 \
-  "$DMG_PATH"
+  -o "$DMG_PATH"
 
 if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   echo "==> 签名并提交 Apple Notary Service"

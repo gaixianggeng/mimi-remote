@@ -1,34 +1,239 @@
 import AVFoundation
 import PhotosUI
 import SwiftUI
+
+// 权限选择、能力降级和队列边界属于输入状态协作，不让 ComposerView 主体继续增长。
+extension ComposerView {
+    @ViewBuilder
+    var sharedThreadSettingsNotice: some View {
+        if composerTurnSettingsPolicy == .sharedThreadManaged {
+            Label(ComposerTurnSettingsPolicy.sharedThreadNotice, systemImage: "desktopcomputer")
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("composer.sharedThreadSettingsNotice")
+        }
+    }
+
+    func applyDefaultPermissionMode() {
+        let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
+        composerState.applyPermissionMode(safePermissionMode(stored))
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    func applyDefaultPermissionModeForActiveScope() {
+        // 设置页的“默认权限”只面向新会话。已有 Thread 在用户未点击当前输入区的
+        // 权限按钮时必须继续沿用服务端设置，不能因全局偏好变化而被静默覆盖。
+        switch activeComposerDraftScope {
+        case .newSession:
+            applyDefaultPermissionMode()
+        case .session(let sessionID) where sessionID.hasPrefix("local:"):
+            applyDefaultPermissionMode()
+        case .none, .session:
+            break
+        }
+    }
+
+    func setPermissionMode(_ mode: ComposerPermissionMode) {
+        let safeMode = safePermissionMode(mode)
+        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
+        if selectedSessionRuntimeProviderForModelMenu != "claude" {
+            defaultPermissionModeID = safeMode.rawValue
+        }
+        composerState.applyPermissionMode(
+            safeMode,
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        )
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: profile.id) {
+            setPermissionMode(builtInMode)
+            return
+        }
+        composerState.updatePermissionSelection(
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        ) { options in
+            options.preservesThreadPermissionSettings = false
+            options.permissionProfileID = profile.id
+            options.approvalPolicy = .forPermissionProfileID(profile.id)
+            options.approvalsReviewer = "user"
+            options.networkAccess = false
+        }
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+
+    var permissionProfileCWD: String? {
+        let path = sessionStore.selectedSession?.dir ?? sessionStore.selectedProject?.path
+        return path?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+    }
+
+    var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
+        guard selectedSessionRuntimeProviderForModelMenu != "claude",
+              sessionStore.permissionProfilesCWD == permissionProfileCWD
+        else {
+            return []
+        }
+        // 三个内建档案与上方用户权限模式完全重复，只把真正的自定义档案放进高级入口。
+        return sessionStore.appServerPermissionProfiles.filter {
+            ComposerPermissionMode(builtInPermissionProfileID: $0.id) == nil
+        }
+    }
+
+    var selectedPermissionProfileID: String? {
+        if let profileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty {
+            return profileID
+        }
+        return composerState.turnOptions.preservesThreadPermissionSettings
+            ? activePermissionProfile?.id
+            : nil
+    }
+
+    var activePermissionProfile: CodexAppServerActivePermissionProfile? {
+        guard let sessionID = sessionStore.selectedSessionID else {
+            return nil
+        }
+        return sessionStore.activePermissionProfileBySessionID[sessionID]
+    }
+
+    func clampPermissionProfileToAvailableOptions() {
+        guard let explicitProfileID = composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty else { return }
+        if let builtInMode = ComposerPermissionMode(builtInPermissionProfileID: explicitProfileID) {
+            composerState.applyPermissionMode(
+                builtInMode,
+                sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+            )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            return
+        }
+        guard availablePermissionProfiles.contains(where: { $0.id == explicitProfileID }) else {
+            composerState.resetUnavailablePermissionProfile(
+                sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+            )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            return
+        }
+    }
+
+    var availablePermissionModes: [ComposerPermissionMode] {
+        if selectedSessionRuntimeProviderForModelMenu == "claude" {
+            return [.requestApproval, .readOnly, .autoApprove]
+        }
+        return ComposerPermissionMode.allCases
+    }
+
+    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
+        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
+        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
+        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
+        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
+            ? .autoApprove
+            : mode
+    }
+
+    func clampPermissionSelectionToSelectedSessionRuntime() {
+        let safeMode = safePermissionMode(composerState.permissionMode)
+        guard safeMode != composerState.permissionMode else {
+            return
+        }
+        composerState.applyPermissionMode(
+            safeMode,
+            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
+        )
+        sessionStore.saveComposerPermissionSelection(
+            composerState.permissionSelectionSnapshot(),
+            for: activeComposerDraftScope
+        )
+    }
+}
 import UIKit
+
+enum ComposerTextLayoutPolicy {
+    static func minimumHeight(
+        isPhone: Bool,
+        usesCompactMetrics: Bool,
+        fontLineHeight: CGFloat
+    ) -> CGFloat {
+        guard isPhone else {
+            return usesCompactMetrics ? 72 : 92
+        }
+        // 36pt 只承载一行正文；外围卡片 padding 继续提供可点击余量。
+        // 大字号按真实行高增长，避免 Dynamic Type 首行被裁切。
+        return max(36, ceil(fontLineHeight) + 8)
+    }
+
+    static func maximumHeight(
+        isPhone: Bool,
+        usesCompactMetrics: Bool,
+        fontLineHeight: CGFloat
+    ) -> CGFloat {
+        guard isPhone else {
+            return usesCompactMetrics ? 220 : 300
+        }
+        let minimum = minimumHeight(
+            isPhone: true,
+            usesCompactMetrics: usesCompactMetrics,
+            fontLineHeight: fontLineHeight
+        )
+        // 标准字号约五行后转为内部滚动；辅助功能字号最多增至 180pt，
+        // 避免输入区吞掉整块会话阅读空间。
+        return max(minimum, min(180, ceil(fontLineHeight * 5.2)))
+    }
+}
 
 struct ComposerToolbarControlLabel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
     let title: String?
-    let systemImage: String
+    let systemImage: String?
     let trailingSystemImage: String?
     let isSelected: Bool
     let tint: Color?
     let titleMaxWidth: CGFloat?
     let accessibilityLabel: String
+    var usesPhoneStyle = false
+    var usesCondensedTitle = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        // 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
-        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.primaryText)
+        let cornerRadius: CGFloat = title == nil ? 22 : (usesPhoneStyle ? 20 : 12)
+        let surfaceInset: CGFloat = usesPhoneStyle ? 2 : 4
+        let restingForeground = restingForeground(tokens: tokens)
+        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? restingForeground)
 
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                // 收起态和编辑态共用同一套中等视觉尺寸；44pt 命中区保持不变。
-                // 16pt 是原先次操作 14pt 与主操作 17pt 之间的稳定中值。
-                .font(themeStore.uiFont(size: 16, weight: .semibold))
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(
+                        themeStore.uiFont(
+                            size: usesPhoneStyle ? 17 : 16,
+                            weight: usesPhoneStyle ? .medium : .semibold
+                        )
+                    )
+            }
             if let title {
                 Text(title)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .frame(maxWidth: titleMaxWidth, alignment: .leading)
             }
             if let trailingSystemImage {
@@ -37,26 +242,119 @@ struct ComposerToolbarControlLabel: View {
                     .accessibilityHidden(true)
             }
         }
-        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .font(
+            usesPhoneStyle && usesCondensedTitle
+                ? themeStore.uiFont(size: 15, weight: .medium)
+                : themeStore.uiFont(
+                    usesPhoneStyle ? .body : .caption,
+                    weight: usesPhoneStyle ? .medium : .semibold
+                )
+        )
         .foregroundStyle(foreground)
         .frame(height: 44)
-        .padding(.horizontal, title == nil ? 0 : 12)
+        .padding(
+            .horizontal,
+            title == nil ? 0 : (usesPhoneStyle ? (usesCondensedTitle ? 12 : 14) : 12)
+        )
         .frame(minWidth: 44)
         .background {
-            RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(isSelected ? tokens.accent : Color.clear)
-                .padding(4)
+                .padding(surfaceInset)
         }
-        .modifier(
-            ComposerFlatControlSurface(
-                tokens: tokens,
-                cornerRadius: title == nil ? 22 : 12,
-                isEmphasized: isSelected
-            )
-        )
-        .contentShape(RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
+    ///
+    /// 键帽底色去掉之后，iPhone 上唯一的纯文字控件（模型标签）如果继续用正文墨色，
+    /// 就会和右侧实心发送键抢同一档视觉重量——一行里两个"最重"的东西。
+    /// 模型名表达的是"当前用什么"这一上下文，不是与发送并列的动作，压到次级灰；
+    /// 图标按钮本身是动作，保持正文墨色。
+    private func restingForeground(tokens: ThemeTokens) -> Color {
+        guard usesPhoneStyle else { return tokens.primaryText }
+        return usesCondensedTitle ? tokens.conversationSecondaryText : tokens.conversationPrimaryText
+    }
+}
+
+/// 权限配置菜单单独形成泛型边界，避免继续放大 ComposerView 已经很长的视图类型。
+struct ComposerPermissionMenu: View {
+    let permissionModes: [ComposerPermissionMode]
+    let permissionProfiles: [CodexAppServerPermissionProfileSummary]
+    let selectedMode: ComposerPermissionMode
+    let selectedProfileID: String?
+    let activeProfileID: String?
+    let permissionAccessibilityValue: String
+    let tint: Color
+    let reduceMotion: Bool
+    let usesPhoneStyle: Bool
+    let onSelectMode: (ComposerPermissionMode) -> Void
+    let onSelectProfile: (CodexAppServerPermissionProfileSummary) -> Void
+
+    var body: some View {
+        Menu {
+            Section(L10n.text("ui.permission_mode")) {
+                ForEach(permissionModes) { mode in
+                    Button {
+                        onSelectMode(mode)
+                    } label: {
+                        Label(mode.title, systemImage: modeIcon(mode))
+                    }
+                    .accessibilityHint(mode.detail)
+                }
+            }
+            if !permissionProfiles.isEmpty {
+                Section(L10n.text("ui.advanced_permission_profiles")) {
+                    ForEach(permissionProfiles) { profile in
+                        Button {
+                            onSelectProfile(profile)
+                        } label: {
+                            Label(profile.id, systemImage: profileIcon(profile))
+                        }
+                        .accessibilityHint(profile.description ?? L10n.text("ui.use_named_permission_profile"))
+                    }
+                }
+            }
+            Section(L10n.text("ui.permission_status")) {
+                if let activeProfileID {
+                    Text(L10n.format("ui.current_turn_permission_value", displayName(for: activeProfileID)))
+                }
+                Text(L10n.format("ui.next_turn_permission_value", selectedPermissionName))
+            }
+        } label: {
+            ComposerToolbarControlLabel(
+                title: selectedProfileID ?? selectedMode.title,
+                systemImage: selectedProfileID == nil ? selectedMode.systemImage : "shield.lefthalf.filled",
+                trailingSystemImage: nil,
+                isSelected: false,
+                tint: tint,
+                titleMaxWidth: nil,
+                accessibilityLabel: L10n.text("ui.permission_mode"),
+                usesPhoneStyle: usesPhoneStyle,
+                usesCondensedTitle: false
+            )
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.permission_mode"))
+        .accessibilityValue(permissionAccessibilityValue)
+    }
+
+    private func modeIcon(_ mode: ComposerPermissionMode) -> String {
+        selectedProfileID == nil && selectedMode == mode ? "checkmark" : mode.systemImage
+    }
+
+    private func profileIcon(_ profile: CodexAppServerPermissionProfileSummary) -> String {
+        selectedProfileID == profile.id ? "checkmark" : "shield.lefthalf.filled"
+    }
+
+    private var selectedPermissionName: String {
+        selectedProfileID.map { displayName(for: $0) } ?? selectedMode.title
+    }
+
+    private func displayName(for profileID: String) -> String {
+        ComposerPermissionMode(builtInPermissionProfileID: profileID)?.title ?? profileID
     }
 }
 
@@ -64,42 +362,50 @@ struct ComposerToolbarControlLabel: View {
 /// Menu/Popover。真正的复杂子树由 ComposerView 的独立非内联方法逐个构建。
 struct CompactComposerToolbarShell: View {
     let leadingControls: AnyView
-    let optionsControl: AnyView
-    let microphoneControl: AnyView
+    let toolControls: AnyView
     let submitControl: AnyView
+    var spacing: CGFloat = 8
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: spacing) {
             leadingControls
             Spacer(minLength: 0)
-            optionsControl
-            microphoneControl
+            toolControls
             submitControl
         }
         .frame(maxWidth: .infinity)
     }
 }
 
-/// 左侧连续胶囊同样保持固定类型；每个复杂控件先在独立栈帧里擦除，
+/// 设置与语音各自保留 44pt 命中区和独立键帽；6pt 间隔表达同组关系，
+/// 不再用一整块胶囊把两个不同动作粘在一起。
+struct CompactComposerToolControlsShell: View {
+    let optionsControl: AnyView
+    let microphoneControl: AnyView
+
+    var body: some View {
+        HStack(spacing: 6) {
+            optionsControl
+            microphoneControl
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// 左侧控件保持固定类型，但视觉上各自成面；每个复杂控件先在独立栈帧里擦除，
 /// 再传入这里组合，防止真机在收集泛型元数据时触发 __chkstk_darwin。
 struct CompactComposerLeadingControlsShell: View {
     let addControl: AnyView
     let modelControl: AnyView
     let deliveryControl: AnyView?
-    let backgroundColor: Color
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 6) {
             addControl
             modelControl
             if let deliveryControl {
                 deliveryControl
             }
-        }
-        .background {
-            Capsule()
-                .fill(backgroundColor)
-                .padding(.vertical, 4)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -134,7 +440,7 @@ extension ComposerView {
                 pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                showsPermissionSettings: isPhoneComposer,
+                showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
                 showsCameraAction: showsCameraAttachmentAction,
@@ -198,7 +504,7 @@ extension ComposerView {
             shape.fill(tokens.elevatedSurface)
         } else {
             shape
-                .fill(.thinMaterial)
+                .fill(WorkbenchMaterial.surface)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
                 }
@@ -208,14 +514,70 @@ extension ComposerView {
     // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，
     // 不改变“无需先点开开关即可操作”的默认形态。
     var composerContextControlsRow: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                skillPickerButton
-                permissionMenu
+        HStack(spacing: 8) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    skillPickerButton
+                    if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                        permissionMenu
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if canCollapseIPadComposer {
+                Button(action: collapseIPadComposer) {
+                    Image(systemName: "chevron.down")
+                        .font(themeStore.uiFont(.caption, weight: .bold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .accessibilityHidden(true)
+                }
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                .accessibilityLabel(L10n.text("ui.collapse_input_box"))
+                .accessibilityIdentifier("composer.collapse")
             }
         }
-        .scrollIndicators(.hidden)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// iPad 收起态是独立的一行卡片，不保留 iPad 完整 Composer 的工具栏。
+    /// 附件条位于外层 `body`，因此这里仅替换输入卡本身，不会清理附件状态。
+    func collapsedIPadComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        return Button(action: expandIPadComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .padding(8)
+        .frame(maxWidth: .infinity)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
+        .overlay {
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .tint(tokens.accent)
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedComposerText)
+        .accessibilityIdentifier("composer.expand")
     }
 
     var selectedVoiceInputProvider: VoiceInputProvider {
@@ -226,9 +588,18 @@ extension ComposerView {
         UIDevice.current.userInterfaceIdiom == .phone
     }
 
-    var canCollapsePhoneComposer: Bool {
-        isPhoneComposer &&
-            composerState.attachments.isEmpty &&
+    var isIPadComposer: Bool {
+#if targetEnvironment(macCatalyst)
+        false
+#else
+        UIDevice.current.userInterfaceIdiom == .pad
+#endif
+    }
+
+    /// iPad 可保留附件并收起；正在录音、转写、等待语音确认或 Skill 自动完成时，
+    /// 必须继续展示完整编辑器，避免移除 UITextView 破坏进行中的输入上下文。
+    var canCollapseIPadComposer: Bool {
+        isIPadComposer &&
             !composerState.voiceDraftNeedsReview &&
             !isVoicePressActive &&
             !voiceInput.isPreparing &&
@@ -237,40 +608,49 @@ extension ComposerView {
             activeSkillQuery == nil
     }
 
-    var usesCollapsedPhoneComposer: Bool {
-        isPhoneComposerCollapsed && canCollapsePhoneComposer
+    var usesCollapsedIPadComposer: Bool {
+        isComposerCollapsed && canCollapseIPadComposer
     }
 
-    var collapsedPhoneComposerText: String {
+    var collapsedComposerText: String {
         let text = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? composerPlaceholderText : text
     }
 
-    func expandPhoneComposer() {
-        guard isPhoneComposer else { return }
-        isPhoneComposerCollapsed = false
+    func expandIPadComposer() {
+        guard isIPadComposer else { return }
+        expandComposer()
+    }
+
+    func expandComposer() {
+        isComposerCollapsed = false
         // 焦点请求只服务于这一次“点开输入框”；UITextView 消费后会清空 token，
         // 后续因附件或语音状态重建完整输入框时不会再次误弹键盘。
         composerTextFocusRequestID = UUID()
     }
 
-    func collapsePhoneComposer() {
-        guard canCollapsePhoneComposer else { return }
+    func collapseIPadComposer() {
+        guard canCollapseIPadComposer else { return }
+        collapseComposer()
+    }
+
+    func collapseComposer() {
         // 先让输入法提交 marked text，再把最终文本同步回草稿；折叠只改变展示，不丢编辑状态。
         composerTextSubmitBridge.resignFirstResponder()
         synchronizeComposerTextBeforeDraftScopeChange()
         composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
         activeSkillQuery = nil
-        isPhoneComposerCollapsed = true
+        isComposerCollapsed = true
     }
 
-    func collapsePhoneComposerAfterSubmit() {
+    func resetPhoneComposerAfterSubmit() {
         guard isPhoneComposer else { return }
-        // takeDraftForSubmit 已清空稳定草稿；移除 UIKit 编辑器前也清空其文本，避免失焦回调把已发送内容写回来。
+        // takeDraftForSubmit 已清空稳定草稿；iPhone 不再移除编辑器，而是同步清空同一个
+        // UITextView 并回到一行。先清 UIKit 再失焦，防止旧正文被结束编辑回调写回。
         composerTextExternalRevision += 1
-        composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
+        composerTextSubmitBridge.resetTextAfterSubmit(to: composerState.draft)
+        measuredComposerTextHeight = 0
         activeSkillQuery = nil
-        isPhoneComposerCollapsed = true
     }
 
     @ViewBuilder
@@ -562,7 +942,8 @@ extension ComposerView {
     func submitDraftButton(showLabels: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isGoalMode = composerState.isGoalModeSelected
-        let isPlanMode = composerState.isPlanModeSelected
+        let isPlanMode = composerTurnSettingsPolicy.allowsTurnSettingsEditing
+            && composerState.isPlanModeSelected
         let isGuidedFollowUp = !isGoalMode && !isPlanMode && canUseGuidedFollowUp && guidedFollowUpEnabled
         let title: String
         if composerState.voiceDraftNeedsReview {
@@ -570,8 +951,18 @@ extension ComposerView {
         } else {
             title = isGoalMode ? L10n.text("ui.send_target") : isPlanMode ? L10n.text("ui.generate_plan") : isGuidedFollowUp ? L10n.text("ui.guide") : L10n.text("ui.send")
         }
-        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : "paperplane.fill")
+        let usesPhonePrimaryStyle = isPhoneComposer && !showLabels
+        let standardSendSymbol = usesPhonePrimaryStyle ? "arrow.up" : "paperplane.fill"
+        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : standardSendSymbol)
         let enabled = canSubmitDraft
+        let cornerRadius: CGFloat = showLabels ? 12 : 22
+        let surfaceInset: CGFloat = usesPhonePrimaryStyle ? 2 : 4
+        let foreground: Color = enabled
+            ? tokens.primaryActionForeground
+            : (usesPhonePrimaryStyle ? tokens.composerInactiveActionForeground : tokens.tertiaryText)
+        let fill: Color = enabled
+            ? tokens.primaryAction
+            : (usesPhonePrimaryStyle ? tokens.composerInactiveActionSurface : .clear)
 
         // 自绘成与“按住说话”同高同圆角的实心主按钮，让语音/发送成为右侧一组协调的主操作，
         // 而不是一个系统 prominent 小按钮配一个自定义大胶囊那种割裂感。
@@ -580,30 +971,28 @@ extension ComposerView {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: symbol)
-                    .font(themeStore.uiFont(size: 16, weight: .bold))
+                    .font(
+                        themeStore.uiFont(
+                            size: usesPhonePrimaryStyle ? 17 : 16,
+                            weight: usesPhonePrimaryStyle ? .semibold : .bold
+                        )
+                    )
                 if showLabels {
                     Text(title)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(enabled ? tokens.primaryActionForeground : tokens.tertiaryText)
+            .foregroundStyle(foreground)
             .frame(height: 44)
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
             .background {
-                RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous)
-                    .fill(enabled ? tokens.primaryAction : Color.clear)
-                    .padding(4)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+                    .padding(surfaceInset)
             }
-            .modifier(
-                ComposerFlatControlSurface(
-                    tokens: tokens,
-                    cornerRadius: showLabels ? 12 : 22,
-                    isEmphasized: enabled
-                )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .keyboardShortcut(.return, modifiers: .command)
@@ -639,14 +1028,22 @@ extension ComposerView {
     }
 
     var permissionTitle: String {
-        "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
-    }
-
-    var permissionWireSummary: String {
-        "\(composerState.turnOptions.approvalPolicy.rawValue) · \(composerState.turnOptions.approvalsReviewer)"
+        if composerState.turnOptions.preservesThreadPermissionSettings,
+           activePermissionProfile == nil {
+            return L10n.text("ui.follow_the_current_thread_permissions")
+        }
+        if let profileID = selectedPermissionProfileID {
+            return activePermissionProfile.map {
+                L10n.format("ui.current_turn_permission_value", $0.id)
+            } ?? L10n.format("ui.next_turn_permission_value", profileID)
+        }
+        return "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
     }
 
     var permissionTint: Color {
+        if selectedPermissionProfileID != nil {
+            return themeStore.tokens(for: colorScheme).accent
+        }
         switch composerState.permissionMode {
         case .requestApproval:
             return themeStore.tokens(for: colorScheme).accent
@@ -660,16 +1057,19 @@ extension ComposerView {
     }
 
     var composerMinHeight: CGFloat {
-        // 始终保留约三至四行的可点击编辑空间，输入第一行文字时也不缩小。输入区是页面
-        // 主操作，不应退化成附着在工具栏上方的窄缝；更大的落点也更适合 iPad 键盘与触控笔。
-        usesCompactComposerMetrics ? 72 : 92
+        ComposerTextLayoutPolicy.minimumHeight(
+            isPhone: isPhoneComposer,
+            usesCompactMetrics: usesCompactComposerMetrics,
+            fontLineHeight: composerUIFont.lineHeight
+        )
     }
 
     var composerMaxHeight: CGFloat {
-        if usesCompactComposerMetrics {
-            return 220
-        }
-        return 300
+        ComposerTextLayoutPolicy.maximumHeight(
+            isPhone: isPhoneComposer,
+            usesCompactMetrics: usesCompactComposerMetrics,
+            fontLineHeight: composerUIFont.lineHeight
+        )
     }
 
     var composerTextHeight: CGFloat {

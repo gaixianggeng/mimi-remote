@@ -1,4 +1,5 @@
 @preconcurrency import Foundation
+import Darwin
 
 struct CommandResult: Equatable, Sendable {
     let status: Int32
@@ -31,7 +32,8 @@ actor ProcessExecutor {
         arguments: [String],
         timeout: Duration = .seconds(15),
         outputLimit: Int = 1_048_576,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        forceKillAfterTimeout: Bool = false
     ) async throws -> CommandResult {
         let process = Process()
         process.executableURL = executable
@@ -48,29 +50,47 @@ actor ProcessExecutor {
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
+        // hosted runner 上 Process.isRunning 可能在子进程仍存活时返回 false；
+        // 启动成功后固定 PID，并以 waitUntilExit 返回后取消 timeout task 作为
+        // 唯一退出门控，避免依赖 Foundation 的运行态缓存。
+        let processIdentifier = process.processIdentifier
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
         async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
 
         let timeoutState = LockedFlag()
-        let timeoutTask = Task.detached {
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, process.isRunning else { return }
+        let processFinished = LockedFlag()
+        // 不能把 timeout 也放进 Swift cooperative executor：stdout、stderr 和
+        // waitUntilExit 都可能同步阻塞，在小规格 CI/用户机器上会占满可用线程，
+        // 让本应唤醒并回收进程的 timeout task 永远得不到调度。
+        let timeoutWorkItem = DispatchWorkItem {
+            guard !processFinished.value else { return }
             timeoutState.set()
-            process.terminate()
-        }
-
-        let status = await withTaskCancellationHandler {
-            await Task.detached {
-                process.waitUntilExit()
-                return process.terminationStatus
-            }.value
-        } onCancel: {
-            if process.isRunning {
-                process.terminate()
+            // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
+            // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
+            // “正在更新”。两秒后只强制回收这个短命 control CLI，不触碰
+            // Desktop 或其 IPC 连接；配置文件仍保持原子写入，可安全重试。
+            _ = Darwin.kill(processIdentifier, SIGTERM)
+            guard forceKillAfterTimeout else { return }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                // waitUntilExit 已返回时会先标记 finished；二次检查避免误伤
+                // 已退出 control command 之后复用同一 PID 的新进程。
+                guard !processFinished.value else { return }
+                _ = Darwin.kill(processIdentifier, SIGKILL)
             }
         }
-        timeoutTask.cancel()
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: Self.dispatchDeadline(after: timeout),
+            execute: timeoutWorkItem
+        )
+
+        let status = await withTaskCancellationHandler {
+            await Self.waitUntilExit(process)
+        } onCancel: {
+            _ = Darwin.kill(processIdentifier, SIGTERM)
+        }
+        processFinished.set()
+        timeoutWorkItem.cancel()
 
         let stdout = try await stdoutRead
         let stderr = try await stderrRead
@@ -91,25 +111,55 @@ actor ProcessExecutor {
         let exceededLimit: Bool
     }
 
+    private static func dispatchDeadline(after duration: Duration) -> DispatchTime {
+        let components = duration.components
+        let seconds = max(
+            0,
+            Double(components.seconds) + Double(components.attoseconds) / 1e18
+        )
+        return .now() + seconds
+    }
+
+    private static func waitUntilExit(_ process: Process) async -> Int32 {
+        await withCheckedContinuation { continuation in
+            // Process.waitUntilExit 是同步阻塞 API。不能用 Task.detached 包装，
+            // 否则会占住 Swift cooperative executor 的 worker。
+            Thread.detachNewThread {
+                process.waitUntilExit()
+                continuation.resume(returning: process.terminationStatus)
+            }
+        }
+    }
+
     private static func readBounded(_ handle: FileHandle, limit: Int) async throws -> BoundedRead {
-        try await Task.detached {
-            var collected = Data()
-            var exceeded = false
-            var total = 0
-            while true {
-                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-                if chunk.isEmpty { break }
-                total += chunk.count
-                if collected.count < limit {
-                    let remaining = limit - collected.count
-                    collected.append(chunk.prefix(remaining))
-                }
-                if total > limit {
-                    exceeded = true
+        try await withCheckedThrowingContinuation { continuation in
+            // FileHandle.read(upToCount:) 同样是同步阻塞 API；每次命令最多使用
+            // stdout/stderr 两条短命专用线程，避免挤占 timeout 所需的异步 worker。
+            Thread.detachNewThread {
+                do {
+                    var collected = Data()
+                    var exceeded = false
+                    var total = 0
+                    while true {
+                        let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                        if chunk.isEmpty { break }
+                        total += chunk.count
+                        if collected.count < limit {
+                            let remaining = limit - collected.count
+                            collected.append(chunk.prefix(remaining))
+                        }
+                        if total > limit {
+                            exceeded = true
+                        }
+                    }
+                    continuation.resume(
+                        returning: BoundedRead(data: collected, exceededLimit: exceeded)
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
-            return BoundedRead(data: collected, exceededLimit: exceeded)
-        }.value
+        }
     }
 }
 

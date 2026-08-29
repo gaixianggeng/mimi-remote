@@ -97,6 +97,21 @@ struct MenuBarContentView: View {
                     .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
+                    title: ExperimentMenuRouting.menuTitle,
+                    systemImage: "flask",
+                    trailingText: store.experimentMenuStatusText,
+                    accessibilityLabel: store.experimentMenuAccessibilityLabel
+                ) {
+                    // 菜单首层只导航，不直接切换实验开关：配置执行需要保留
+                    // HostStore 的单 writer、确认和重启语义，避免误触改变服务状态。
+                    presentWindow(.experiments)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
+                MenuActionRow(
                     title: "设置",
                     systemImage: "gearshape"
                 ) {
@@ -933,6 +948,8 @@ private struct MenuActionRow: View {
     var role: ButtonRole?
     var showsDisclosure = true
     var isWorking = false
+    var trailingText: String?
+    var accessibilityLabel: String?
     let action: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -948,6 +965,11 @@ private struct MenuActionRow: View {
                     .font(.callout.weight(.medium))
                     .foregroundStyle(labelColor)
                 Spacer(minLength: 0)
+                if let trailingText {
+                    Text(trailingText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
@@ -973,6 +995,7 @@ private struct MenuActionRow: View {
         .buttonStyle(MenuPressButtonStyle())
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityLabel(accessibilityLabel ?? title)
         .onHover { hovering in
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
                 isHovered = hovering

@@ -1,0 +1,49 @@
+name: Mac App CI
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+    paths:
+      - "macos/MimiRemoteMac/**"
+      - "scripts/test-macos-app.sh"
+      - ".github/workflows/macos-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    # Debug 门禁复用 DerivedData 内缓存，且不再误用 Cargo release profile；
+    # 15 分钟为冷 runner 保留充足余量，同时避免异常构建再次黑盒等待半小时。
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          go version
+          rustc --version
+
+      - name: Build and test Mac App
+        env:
+          MACOS_DERIVED_DATA_PATH: ${{ runner.temp }}/MimiRemoteMacDerivedData
+          # Build phase 总是执行；把 Go/Rust 增量产物放到 runner 临时目录，
+          # 同一 job 内可复用且不会污染 checkout。脚本仍会按配置/架构隔离。
+          MACOS_EMBED_CACHE_DIR: ${{ runner.temp }}/MimiRemoteMacEmbedCache
+        run: bash ./scripts/test-macos-app.sh

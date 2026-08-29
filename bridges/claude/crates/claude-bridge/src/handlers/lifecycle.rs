@@ -1,6 +1,6 @@
 //! `initialize` / `initialized` plus the `account/*` and `feedback/upload`
 //! shapes. The bridge does not own claude's authentication (the user runs
-//! `claude /login` themselves), so the account methods are stubs that report
+//! `claude auth login` themselves), so the account methods are stubs that report
 //! "no account, no auth required".
 
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ pub fn handle_initialized(_state: &Arc<ConnectionState>) {
 
 // === account/* ============================================================
 //
-// claude's auth lives outside the bridge: the user runs `claude /login`
+// claude's auth lives outside the bridge: the user runs `claude auth login`
 // (or sets `ANTHROPIC_API_KEY`) and the spawned claude process picks it up.
 // The bridge has nothing to authenticate, so every account method synthesizes
 // the "no account, no auth required" answer codex clients tolerate.

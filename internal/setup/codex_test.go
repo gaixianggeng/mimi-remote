@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
@@ -142,5 +144,32 @@ func TestRepairCodexBinDoesNotRewriteValidAbsolutePath(t *testing.T) {
 	}
 	if repaired || writeCalled || path != "/valid/codex" {
 		t.Fatalf("有效绝对路径不应重写：path=%q repaired=%v write=%v", path, repaired, writeCalled)
+	}
+}
+
+func TestRepairCodexBinRejectsLegacySharingBeforeResolvingOrWriting(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"ws","shared_fallback":{"transport":"ws"}},"codex":{"bin":"codex"}}`)
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolverCalled := false
+	writerCalled := false
+	_, _, err := repairCodexBin(cfgPath, func(string) (string, error) {
+		resolverCalled = true
+		return "/tmp/codex", nil
+	}, func(string, []byte) error {
+		writerCalled = true
+		return nil
+	})
+	if !errors.Is(err, config.ErrLegacyAppServerConfiguration) {
+		t.Fatalf("legacy sharing must fail closed: %v", err)
+	}
+	if resolverCalled || writerCalled {
+		t.Fatalf("legacy sharing must be rejected before repair: resolve=%t write=%t", resolverCalled, writerCalled)
+	}
+	stored, readErr := os.ReadFile(cfgPath)
+	if readErr != nil || !reflect.DeepEqual(stored, original) {
+		t.Fatalf("legacy config must stay byte-identical: err=%v raw=%s", readErr, stored)
 	}
 }

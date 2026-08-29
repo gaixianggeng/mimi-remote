@@ -1,14 +1,14 @@
 import Foundation
 
 /// Projects/Git 请求必须把主机身份和 client 一起冻结；endpoint 切换后不能重新从全局工厂取 client。
-private struct ProjectsGitHostLease {
+struct ProjectsGitHostLease {
     let scope: HostScope
     let client: any SessionStoreAPIClient
 }
 
 // 文件预览、命令动作、Git、项目列表与网络恢复按工作区能力集中。
 extension SessionStore {
-    private func captureProjectsGitHostLease() throws -> ProjectsGitHostLease {
+    func captureProjectsGitHostLease() throws -> ProjectsGitHostLease {
         let scope = appStore.activeHostScope
         let client = try clientFactory()
         return ProjectsGitHostLease(scope: scope, client: client)
@@ -22,7 +22,7 @@ extension SessionStore {
         !Task.isCancelled && isProjectsGitHostCurrent(lease)
     }
 
-    private func requireCurrentProjectsGitHost(_ lease: ProjectsGitHostLease) throws {
+    func requireCurrentProjectsGitHost(_ lease: ProjectsGitHostLease) throws {
         guard canApplyProjectsGitResult(lease) else {
             throw CancellationError()
         }
@@ -993,8 +993,8 @@ extension SessionStore {
     /// 又经过 toggle 把同一操作翻转两次。
     @discardableResult
     func setSessionArchivedRemote(_ session: AgentSession, archived shouldArchive: Bool) async -> Bool {
-        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
-            setStatusMessage(L10n.text("ui.mac_observe_only"))
+        guard !isProtocolReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.read_only"))
             return false
         }
 
@@ -1236,7 +1236,7 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
+        !isProtocolReadOnlySession(session)
             && !session.isLocalDraft
             && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
@@ -1564,49 +1564,6 @@ extension SessionStore {
         }
     }
 
-    /// 工作区详情按 Runtime 独立分页。opaque cursor 原样归属于当前 Runtime，View 只缓存展示窗口；
-    /// canonical Store 仍吸收 raw rows，保证打开会话时已有正确的路由和上下文。
-    func workspaceRuntimeSessionsPage(
-        projectID: String,
-        runtimeProvider: String,
-        cursor: String?,
-        limit: Int,
-        excludingListableSessionIDs: Set<SessionID> = []
-    ) async throws -> SessionsPage {
-        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
-            throw CancellationError()
-        }
-        let lease = try captureProjectsGitHostLease()
-        let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
-        let page = try await sessionListPageFillingPresentationWindow(
-            client: lease.client,
-            workspace: workspace,
-            runtimeProvider: normalizedRuntime,
-            cursor: cursor,
-            limit: max(1, limit),
-            consistency: .authoritative,
-            source: cursor == nil ? .workspaceForeground : .workspaceLoadMore,
-            expectedHostScope: lease.scope,
-            excludingListableSessionIDs: excludingListableSessionIDs
-        )
-        try requireCurrentProjectsGitHost(lease)
-
-        let prepared = sessions(page.sessions, in: workspace).map(sessionPreparedForStorage)
-        mergeSessionPage(prepared)
-        clearWorkspaceUnavailable(workspace.id)
-
-        let listable = prepared.filter { session in
-            isListableSession(session)
-                && !excludingListableSessionIDs.contains(session.id)
-                && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedRuntime
-        }
-        return SessionsPage(
-            sessions: SessionIndexStore.sortedSessions(listable),
-            nextCursor: page.nextCursor,
-            hasMore: page.hasMore
-        )
-    }
-
     func refreshSelectedProjectSessions(showLoading: Bool = true) async {
         guard let selectedProjectID else {
             return
@@ -1620,10 +1577,58 @@ extension SessionStore {
 
     /// 为单一全局侧栏加载跨工作区轻量索引。只取 thread/list 首屏，不读取任何消息历史。
     func refreshSessionLibraryIndex(authoritative: Bool = false) async {
+        let hostScope = appStore.activeHostScope
+        while !Task.isCancelled {
+            if let existing = sessionLibraryIndexRefreshJob {
+                guard existing.hostScope == hostScope else {
+                    existing.task.cancel()
+                    retireSessionLibraryIndexRefreshJob(id: existing.id)
+                    continue
+                }
+
+                await existing.task.value
+                retireSessionLibraryIndexRefreshJob(id: existing.id)
+                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                if authoritative, !existing.authoritative {
+                    // 手动权威刷新可以等待正在执行的弱刷新，但不能被它冒充完成。
+                    continue
+                }
+                return
+            }
+
+            let jobID = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performSessionLibraryIndexRefresh(
+                    authoritative: authoritative,
+                    hostScope: hostScope
+                )
+            }
+            sessionLibraryIndexRefreshJob = SessionLibraryIndexRefreshJob(
+                id: jobID,
+                hostScope: hostScope,
+                authoritative: authoritative,
+                task: task
+            )
+            await task.value
+            retireSessionLibraryIndexRefreshJob(id: jobID)
+            return
+        }
+    }
+
+    private func retireSessionLibraryIndexRefreshJob(id: UUID) {
+        guard sessionLibraryIndexRefreshJob?.id == id else { return }
+        sessionLibraryIndexRefreshJob = nil
+    }
+
+    private func performSessionLibraryIndexRefresh(
+        authoritative: Bool,
+        hostScope: HostScope
+    ) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
-        let hostScope = appStore.activeHostScope
+        guard appStore.activeHostScope == hostScope else { return }
         let generation = appStore.connectionGeneration
         defer {
             if appStore.activeHostScope == hostScope {

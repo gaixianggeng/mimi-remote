@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MacSettingsView: View {
     let store: HostStore
+    @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
     var body: some View {
@@ -32,30 +33,21 @@ struct MacSettingsView: View {
                 }
             }
 
-            Section("Claude") {
-                Toggle("启用 Claude 实验通道", isOn: Binding(
-                    get: { store.claudeEnabled },
-                    set: { enabled in
-                        Task { await store.setClaudeEnabled(enabled) }
-                    }
-                ))
-                .disabled(!store.canChangeClaude)
-
-                LabeledContent("运行状态") {
-                    HStack(spacing: 6) {
-                        if store.isUpdatingClaude {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(store.isUpdatingClaude ? "正在更新" : store.claudeStatusTitle)
-                    }
+            Section("实验功能") {
+                Button(ExperimentMenuRouting.menuTitle) {
+                    // 通用设置保留唯一导航入口；实验配置只在实验功能窗口维护。
+                    openWindow(id: ExperimentMenuRouting.windowID)
                 }
-
-                Text(store.claudeStatusDetail)
+                Text("Claude 实验开关和状态集中在同一窗口。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
 
-                Text("需要本机安装并登录 Claude Code。启用或关闭时会安全地重新加载 agentd；Codex 主通道不受影响。")
+            Section("文件访问") {
+                Button("打开完全磁盘访问权限设置…") {
+                    store.openFullDiskAccessSettings()
+                }
+                Text("只有 agentd 需要读取 macOS 保护的目录时，才需要授予完全磁盘访问权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -68,7 +60,7 @@ struct MacSettingsView: View {
         }
         .formStyle(.grouped)
         .scenePadding()
-        .frame(width: 500, height: 540)
+        .frame(width: 500, height: 640)
         .alert("恢复 Homebrew 服务？", isPresented: $confirmsRestore) {
             Button("取消", role: .cancel) {}
             Button("停止 App 服务并恢复", role: .destructive) {

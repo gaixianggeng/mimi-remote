@@ -64,7 +64,7 @@ if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
 fi
 DMG_PATH="$(cd "$(dirname "$DMG_PATH")" && pwd)/$(basename "$DMG_PATH")"
 
-for command_name in arch codesign file find hdiutil lipo plutil shasum spctl sysctl xcrun; do
+for command_name in arch codesign file find hdiutil lipo osascript plutil shasum sips spctl strings sysctl xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -80,23 +80,34 @@ if [[ -f "$SHA_PATH" ]]; then
   )
 fi
 
-MOUNT_DIR="$(mktemp -d -t mimi-macos-installer-check)"
+MOUNT_DIR=""
+MOUNT_TARGET=""
 MOUNTED=0
 cleanup() {
   if [[ "$MOUNTED" == "1" ]]; then
-    hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || true
+    if ! hdiutil detach "$MOUNT_TARGET" -quiet >/dev/null 2>&1; then
+      # Finder 的运行态校验可能短暂占用卷；强制卸载仅针对本次只读校验挂载。
+      hdiutil detach "$MOUNT_TARGET" -force -quiet >/dev/null 2>&1 || true
+    fi
   fi
-  rmdir "$MOUNT_DIR" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+ATTACH_OUTPUT="$(hdiutil attach -nobrowse -readonly "$DMG_PATH")"
+MOUNT_TARGET="$(awk -F '\t' '$1 ~ /^\/dev\/disk/ { device=$1; sub(/[[:space:]]+$/, "", device); print device; exit }' <<<"$ATTACH_OUTPUT")"
 MOUNTED=1
+MOUNT_DIR="$(awk -F '\t' '$NF ~ /^\/Volumes\// { mount_path=$NF } END { print mount_path }' <<<"$ATTACH_OUTPUT")"
+if [[ -z "$MOUNT_TARGET" || -z "$MOUNT_DIR" || ! -d "$MOUNT_DIR" ]]; then
+  echo "Mac 安装包校验失败：无法解析 DMG 挂载点。" >&2
+  printf '%s\n' "$ATTACH_OUTPUT" >&2
+  exit 1
+fi
 APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
+INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
 if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
   echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude bridge 或 LaunchAgent。" >&2
@@ -106,10 +117,91 @@ if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" 
   echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
   exit 1
 fi
+BACKGROUND_PATH="$MOUNT_DIR/.background/dmg-background.png"
+if [[ ! -f "$BACKGROUND_PATH" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 Finder 背景 PNG。" >&2
+  exit 1
+fi
+BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$BACKGROUND_PATH")"
+BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+if [[ "$BACKGROUND_WIDTH" != "660" || "$BACKGROUND_HEIGHT" != "400" ]]; then
+  echo "Mac 安装包校验失败：Finder 背景必须是 660x400，实际为 ${BACKGROUND_WIDTH}x${BACKGROUND_HEIGHT}。" >&2
+  exit 1
+fi
+if [[ ! -f "$MOUNT_DIR/.DS_Store" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 Finder 布局元数据 .DS_Store。" >&2
+  exit 1
+fi
+FINDER_METADATA="$(strings -a "$MOUNT_DIR/.DS_Store")"
+if [[ "$FINDER_METADATA" != *"backgroundImageAlias"* || "$FINDER_METADATA" != *"dmg-background.png"* ]]; then
+  echo "Mac 安装包校验失败：Finder 布局未保存可恢复的背景图 alias。" >&2
+  exit 1
+fi
+
+# 真实打开只读卷，验证 Finder 确实恢复了图标视图、窗口和位置。
+if ! osascript - "$MOUNT_DIR" <<'APPLESCRIPT'
+on run argv
+  set mountPath to item 1 of argv
+  tell application "Finder"
+    set mountedAlias to (POSIX file mountPath) as alias
+    set mountedDisk to disk of mountedAlias
+    open mountedDisk
+    set dmgWindow to missing value
+    try
+      repeat with attempt from 1 to 20
+        try
+          set dmgWindow to «class cwnd» of mountedDisk
+          set ignoredBounds to «class pbnd» of dmgWindow
+          exit repeat
+        on error errorMessage
+          if attempt = 20 then error ("Finder 无法打开 DMG 窗口：" & errorMessage)
+        end try
+        delay 0.25
+      end repeat
+      if dmgWindow is missing value then error "Finder 在 5 秒内没有打开 DMG 窗口。"
+      if «class pvew» of dmgWindow is not «constant ecvwicnv» then error "DMG 未使用图标视图。"
+      if «class pbnd» of dmgWindow is not {100, 100, 760, 500} then error "DMG 窗口尺寸或位置不正确。"
+      if position of item "Mimi Remote Mac.app" of dmgWindow is not {170, 185} then error "App 图标位置不正确。"
+      if position of item "Applications" of dmgWindow is not {490, 185} then error "Applications 图标位置不正确。"
+      close dmgWindow
+    on error errorMessage number errorNumber
+      if dmgWindow is not missing value then close dmgWindow
+      error errorMessage number errorNumber
+    end try
+  end tell
+end run
+APPLESCRIPT
+then
+  echo "Mac 安装包校验失败：Finder 无法完整还原品牌拖放布局。" >&2
+  exit 1
+fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
+
+if plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" >/dev/null 2>&1; then
+  echo "Mac 安装包校验失败：App 仍包含已移除的照片图库用途说明。" >&2
+  exit 1
+fi
+
+photos_entitlement="com.apple.security.personal-information.photos-library"
+for binary_path in "$APP_PATH" "$AGENT_PATH"; do
+  signed_entitlements="$(codesign -d --entitlements - --xml "$binary_path" 2>/dev/null || true)"
+  if grep -Fq "$photos_entitlement" <<<"$signed_entitlements"; then
+    echo "Mac 安装包校验失败：${binary_path} 仍包含已移除的照片图库 entitlement。" >&2
+    exit 1
+  fi
+done
+
+# 运行时按 Info.plist 的 CFBundleExecutable 解析 TCC 责任进程；最终 Release 包仍只应
+# 包含这个主程序，避免把 Debug/Preview dylib 或其他未预期入口带进安装产物。
+main_executable_count="$(find "$APP_PATH/Contents/MacOS" -maxdepth 1 -type f -perm -111 | wc -l | tr -d " ")"
+if [[ "$main_executable_count" != "1" ]]; then
+  echo "Mac 安装包校验失败：Contents/MacOS 必须恰好有一个可执行文件，实际 ${main_executable_count} 个。" >&2
+  exit 1
+fi
 
 # macOS 27 的前向兼容通知由 Rosetta 进程启动触发。Apple silicon 上显式选择
 # arm64，避免版本探针继承调用方的翻译架构偏好，反而由发布检查制造误报。

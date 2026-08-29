@@ -6,7 +6,7 @@
 
 ## 方案
 
-当前生产形态是 iPad App 直连 `agentd` 的 app-server WebSocket gateway。`agentd` 只负责鉴权、项目 allowlist、托管本机 Codex app-server，以及转发安全校验后的 JSON-RPC frame。客户端发起的 request 和客户端回给 app-server server request 的 response 都必须经过 gateway 校验。
+当前生产形态是 iPad App 直连 `agentd` 的鉴权 WebSocket gateway。`agentd` 负责鉴权、项目 allowlist，并通过 SSH proxy 连接共享 Unix App Server。它不拥有 App Server 生命周期。客户端发起的 request 和客户端回给 app-server server request 的 response 都必须经过 gateway 校验。
 
 ### 生产可达路径
 
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | HTTP 路由 | `cmd/agentd/main.go` 的 `httpapi.NewRouterWithRuntime(..., nil)` | 生产路由没有注入旧 `SessionRuntime`。 |
 | app-server gateway | `internal/httpapi/appserver_gateway.go` | iPad 的 `/api/app-server/ws` 主链路，负责方法白名单、cwd allowlist、thread 授权和策略校验。 |
-| managed app-server | `internal/appserver/managed.go` 的 `StartManagedWebSocket` | 当前只启动 WebSocket transport 的 Codex app-server。 |
+| SSH app-server transport | `internal/appserver/ssh.go` | 每条移动端协议连接拥有一个 SSH proxy；共享 Unix App Server 独立存活。 |
 | 本机自动配对 | `/api/pair/local` + Catalyst `AppStore.preflightConnection` | 仅接受 TCP 来源和 Host 均为 loopback、带原生客户端请求头且无浏览器 `Origin` 的 POST；领取凭据后仍须通过真实 gateway 握手才提交 Keychain。按单用户开发机建模。 |
 | 工作区授权 | `internal/projects` + `/api/projects` + `/api/workspaces/resolve` | iPad 可使用配置项目、`browse_roots` 内明确打开的具体目录和 agentd 管理的 Worktree；所有请求都绑定 canonical cwd。 |
 | iOS 直连 runtime | `CodexAppServerSessionRuntime.swift` | iOS 端直接构造 app-server JSON-RPC 请求并处理 notification/server request。 |
@@ -32,7 +32,7 @@
 | `internal/httpapi/appserver_runtime.go` | 旧 REST runtime 适配层，当前生产未注入。 | P2 阶段再决定删除、收缩或保留为测试 fixture。 |
 | `internal/httpapi/runtime.go` | 旧 `SessionRuntime` 接口，生产传 `nil`。 | 和旧 runtime 一起处理。 |
 | `internal/session/session.go` | 旧 PTY session manager，生产只创建 manager 供诊断/兼容，主链路不调用 `Create`。 | 先不删，P2 做可达性复核后清理。 |
-| `internal/appserver/client.go` 的 stdio client | 当前生产使用 WebSocket managed app-server。 | P2 阶段清理或降级为测试支持代码。 |
+| `internal/appserver/client.go` 的 stdio client | 当前生产使用 SSH proxy 连接共享 Unix App Server。 | P2 阶段清理或降级为测试支持代码。 |
 
 ## 实现
 

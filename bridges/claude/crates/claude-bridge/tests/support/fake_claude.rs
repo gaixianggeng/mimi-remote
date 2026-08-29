@@ -29,6 +29,19 @@
 //! - `FAKE_CLAUDE_INIT_DELAY_MS`: optional delay before emitting the
 //!   `system/init`. Defaults to 0. Used by tests that need to exercise
 //!   `wait_for_init` slow paths.
+//! - `FAKE_CLAUDE_EXIT_ON_CONTROL_ONCE`: optional marker path. The first fake
+//!   generation atomically creates the marker and exits after receiving a
+//!   control request but before replying. Later generations reply normally.
+//! - `FAKE_CLAUDE_EXIT_ON_CONTROL_ALWAYS`: when non-empty, every generation
+//!   exits after receiving a control request. This verifies that recovery
+//!   changes transport instead of repeating the same failed request.
+//! - `FAKE_CLAUDE_REJECT_EFFORT_CONTROL`: when non-empty, replies to
+//!   `apply_flag_settings` with an unknown-control error while keeping the
+//!   process alive. This models an older Claude CLI.
+//! - `FAKE_CLAUDE_REJECT_EFFORT_ARG`: when non-empty, exits during argument
+//!   parsing if `--effort` is present. This models older CLI argument parsing.
+//! - `FAKE_CLAUDE_ARGV_LOG`: optional JSONL file; records each generation's
+//!   argv so recovery tests can assert which values were passed at spawn time.
 //! - A script line `{"type":"exit_once","marker":"/tmp/path"}` atomically
 //!   creates `marker` and exits the first fake process that reaches it.
 //!   Later processes skip the directive. This models one crashed Claude
@@ -50,6 +63,10 @@ use serde_json::{Value, json};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
+    record_argv(&args);
+    if rejects_effort_argument(&args) {
+        return ExitCode::from(25);
+    }
     let session_id = arg_value(&args, "--session-id").unwrap_or_else(|| "fake-session".to_string());
     let cwd = arg_value(&args, "--add-dir")
         .or_else(|| {
@@ -123,10 +140,27 @@ fn main() -> ExitCode {
         };
 
         if inbound.get("type").and_then(Value::as_str) == Some("control_request") {
+            if exit_on_control() {
+                return ExitCode::from(24);
+            }
             let request_id = inbound
                 .get("request_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if rejects_effort_control(&inbound) {
+                emit(
+                    &mut out,
+                    &json!({
+                        "type": "control_response",
+                        "response": {
+                            "request_id": request_id,
+                            "subtype": "error",
+                            "error": "unknown control request: apply_flag_settings"
+                        }
+                    }),
+                );
+                continue;
+            }
             emit(
                 &mut out,
                 &json!({
@@ -297,18 +331,66 @@ fn run_script<W: Write>(out: &mut W, steps: &[ScriptStep], session_id: &str, tur
             }
             ScriptStep::Sleep(d) => thread::sleep(*d),
             ScriptStep::ExitOnce(marker) => {
-                if fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(marker)
-                    .is_ok()
-                {
+                if create_marker_once(marker) {
                     return true;
                 }
             }
         }
     }
     false
+}
+
+fn exit_on_control() -> bool {
+    if env::var_os("FAKE_CLAUDE_EXIT_ON_CONTROL_ALWAYS")
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return true;
+    }
+    env::var_os("FAKE_CLAUDE_EXIT_ON_CONTROL_ONCE")
+        .filter(|path| !path.is_empty())
+        .is_some_and(|path| create_marker_once(std::path::Path::new(&path)))
+}
+
+fn rejects_effort_argument(args: &[String]) -> bool {
+    env::var_os("FAKE_CLAUDE_REJECT_EFFORT_ARG")
+        .filter(|value| !value.is_empty())
+        .is_some()
+        && args.iter().any(|arg| arg == "--effort")
+}
+
+fn rejects_effort_control(inbound: &Value) -> bool {
+    env::var_os("FAKE_CLAUDE_REJECT_EFFORT_CONTROL")
+        .filter(|value| !value.is_empty())
+        .is_some()
+        && inbound
+            .get("request")
+            .and_then(Value::as_object)
+            .and_then(|request| request.get("subtype"))
+            .and_then(Value::as_str)
+            == Some("apply_flag_settings")
+}
+
+fn record_argv(args: &[String]) {
+    let Ok(path) = env::var("FAKE_CLAUDE_ARGV_LOG") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = serde_json::to_writer(&mut file, args);
+    let _ = writeln!(file);
+}
+
+fn create_marker_once(path: &std::path::Path) -> bool {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .is_ok()
 }
 
 fn substitute_session(value: &mut Value, session_id: &str) {

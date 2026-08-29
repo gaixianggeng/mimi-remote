@@ -39,10 +39,12 @@ struct UnifiedWorkbenchShell: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         GeometryReader { proxy in
+            let interfaceIdiom = UIDevice.current.userInterfaceIdiom
             let layout = WorkbenchLayout(
                 containerWidth: proxy.size.width,
                 horizontalSizeClass: horizontalSizeClass,
-                isPad: UIDevice.current.userInterfaceIdiom == .pad
+                isPad: interfaceIdiom == .pad,
+                isPhone: interfaceIdiom == .phone
             )
 
             Group {
@@ -215,19 +217,123 @@ struct UnifiedWorkbenchShell: View {
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
-            bottomSafeAreaInset: bottomSafeAreaInset
+        let isIOS26OrLater: Bool
+        if #available(iOS 26.0, *) {
+            isIOS26OrLater = true
+        } else {
+            isIOS26OrLater = false
+        }
+        let hasBottomTabBar = WorkbenchPageLayout.hasBottomTabBar(
+            isPhone: layout.isPhone,
+            isHorizontallyCompact: horizontalSizeClass == .compact,
+            isIOS26OrLater: isIOS26OrLater
         )
+        // iPadOS 18 起 regular-width iPad 已把 Tab 栏放在顶部；18–25 只有 compact-width
+        // iPad 仍回到底部，26 起两种 iPad 宽度都在顶部。iPhone 始终保留底部 Tab 栏。
+        // 仍按底部 Tab 栏预留 118pt，会在列表底部留下一整块空气，
+        // 也会把右下角浮起的新建按钮顶离屏幕边缘、看起来既不贴边又压住内容。
+        let bottomChromeClearance = hasBottomTabBar
+            ? WorkbenchPageLayout.compactBottomChromeClearance(
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
+        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
+        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
+        let showsTabletHostSwitcher = !layout.isPhone
+            && !sessionStore.isSessionSearchPresented
+            && (
+                navigationState.compactSelectedTab == .sessions
+                    ? navigationState.compactSessionPath.isEmpty
+                    : navigationState.compactSelectedTab == .workspaces
+                        && navigationState.compactWorkspacePath.isEmpty
+            )
 
-        return TabView(selection: compactTabBinding(layout: layout)) {
-            NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
-                sessionList(
-                    layout: layout,
-                    bottomContentMargin: bottomChromeClearance
+        return compactNavigationRoot(
+            layout: layout,
+            tokens: tokens,
+            bottomContentMargin: bottomChromeClearance,
+            hasBottomTabBar: hasBottomTabBar
+        )
+        .overlay(alignment: .topLeading) {
+            if showsTabletHostSwitcher {
+                compactTabletHostSwitcher(layout: layout, tokens: tokens)
+                    .padding(.leading, 10)
+                    // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
+                    // TabView overlay 的原点比那条线高，这里补回来；数值随
+                    // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
+                    .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
+            }
+        }
+        // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
+        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
+        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
+        .environment(\.workbenchHasCompactTabBar, true)
+        // 页面按系统 Tab 栏的实际位置决定右下角能不能放浮起按钮。
+        .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
+        .themedWorkbenchNavigationChrome(
+            tokens: tokens,
+            colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
+        )
+    }
+
+    @ViewBuilder
+    private func compactNavigationRoot(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomContentMargin: CGFloat,
+        hasBottomTabBar: Bool
+    ) -> some View {
+        let usesIndependentStacks = WorkbenchPageLayout.usesIndependentCompactNavigationStacks(
+            hasBottomTabBar: hasBottomTabBar
+        )
+        if usesIndependentStacks {
+            compactTabs(
+                layout: layout,
+                tokens: tokens,
+                bottomContentMargin: bottomContentMargin,
+                usesIndependentStacks: true
+            )
+        } else {
+            // 顶部 Tab 的详情必须位于 TabView 之外。这样 push/pop 只切换一个导航容器，
+            // 系统不会在同一转场里再独立改变顶部 Tab 的安全区和导航标题位置。
+            NavigationStack(
+                path: compactPathBinding(
+                    for: navigationState.compactSelectedTab,
+                    layout: layout
                 )
-                    .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(destination, layout: layout, tokens: tokens)
-                    }
+            ) {
+                compactTabs(
+                    layout: layout,
+                    tokens: tokens,
+                    bottomContentMargin: bottomContentMargin,
+                    usesIndependentStacks: false
+                )
+                .navigationDestination(for: AppDestination.self) { destination in
+                    compactDestination(
+                        destination,
+                        layout: layout,
+                        tokens: tokens,
+                        shouldHideTabBar: false
+                    )
+                }
+            }
+        }
+    }
+
+    private func compactTabs(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomContentMargin: CGFloat,
+        usesIndependentStacks: Bool
+    ) -> some View {
+        TabView(selection: compactTabBinding(layout: layout)) {
+            compactTabRoot(
+                for: .sessions,
+                usesIndependentStack: usesIndependentStacks,
+                layout: layout,
+                tokens: tokens
+            ) {
+                sessionList(layout: layout, bottomContentMargin: bottomContentMargin)
             }
             .tabItem {
                 Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
@@ -235,11 +341,13 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.sessions)
 
-            NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
+            compactTabRoot(
+                for: .workspaces,
+                usesIndependentStack: usesIndependentStacks,
+                layout: layout,
+                tokens: tokens
+            ) {
                 workspaces(layout: layout)
-                    .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(destination, layout: layout, tokens: tokens)
-                    }
             }
             .tabItem {
                 Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
@@ -260,13 +368,63 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
-        // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
-        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
-        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
-        .environment(\.workbenchHasCompactTabBar, true)
-        .themedWorkbenchNavigationChrome(
-            tokens: tokens,
-            colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
+    }
+
+    @ViewBuilder
+    private func compactTabRoot<Content: View>(
+        for tab: CompactWorkbenchTab,
+        usesIndependentStack: Bool,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if usesIndependentStack {
+            NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
+                content()
+                    .navigationDestination(for: AppDestination.self) { destination in
+                        compactDestination(
+                            destination,
+                            layout: layout,
+                            tokens: tokens,
+                            shouldHideTabBar: true
+                        )
+                    }
+            }
+        } else {
+            content()
+        }
+    }
+
+    /// TabView 上的自由浮层。命中区域保持 44pt，但磨砂圆按顶栏那档画成 40pt——
+    /// 它和导航栏里的「···」「+」在同一条视线上，直径不一致会立刻被看出来。
+    private func compactTabletHostSwitcher(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens
+    ) -> some View {
+        HostSwitcherMenu(
+            presentation: .toolbar,
+            manageConnections: { openConnectionSettings(layout: layout) }
+        )
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // 设备入口移到 Shell 后仍需保持会话页原有的收键盘行为。
+                dismissSessionSearchKeyboard()
+            }
+        )
+        .frame(
+            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+            height: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .contentShape(Circle())
+        .workbenchToolbarChromeCircle(tokens: tokens)
+    }
+
+    private func dismissSessionSearchKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
         )
     }
 
@@ -345,7 +503,8 @@ struct UnifiedWorkbenchShell: View {
             )
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        // gutter、主列表与会话画布共用宽屏基底，任何两块相邻面之间都不留同亮度色差。
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .overlay(alignment: .topLeading) {
             if showsClosedControls {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
@@ -664,10 +823,13 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
-        let sections = sidebarMonitorSections
-        let projectAnchorSessionIDs = SessionListPresentation.sidebarProjectAnchorSessionIDs(
-            in: sections
-        )
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            sidebarListContent(tokens: tokens, layout: layout, now: context.date)
+        }
+    }
+
+    private func sidebarListContent(tokens: ThemeTokens, layout: WorkbenchLayout, now: Date) -> some View {
+        let sections = sidebarMonitorSections(now: now)
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -689,11 +851,16 @@ struct UnifiedWorkbenchShell: View {
 
             ForEach(sections) { section in
                 Section {
-                    ForEach(section.sessions) { session in
+                    // index 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
+                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
-                            showsProjectAnchor: projectAnchorSessionIDs.contains(session.id),
+                            startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
+                                for: session,
+                                previousSession: index > 0 ? section.sessions[index - 1] : nil,
+                                in: section.kind
+                            ),
                             layout: layout
                         )
                     }
@@ -770,7 +937,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionLink(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool,
+        startsProjectGroup: Bool,
         layout: WorkbenchLayout
     ) -> some View {
         Group {
@@ -781,7 +948,7 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        startsProjectGroup: startsProjectGroup
                     )
                         .contentShape(Rectangle())
                 }
@@ -796,16 +963,11 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        showsProjectAnchor: showsProjectAnchor
+                        startsProjectGroup: startsProjectGroup
                     )
                 }
             }
         }
-        .accessibilityValue(
-            sessionStore.isHistorySessionUnread(session)
-                ? L10n.text("ui.unread_result")
-                : ""
-        )
         .sessionRowActions(session)
         .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -816,14 +978,17 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionRow(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        showsProjectAnchor: Bool
+        startsProjectGroup: Bool
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
             kind: kind,
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
-            projectIcon: showsProjectAnchor
+            completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
+            // 运行组头承担状态和项目身份；后续同项目行隐藏标记，Row 固定占位保持标题对齐。
+            showsStateMarker: kind != .running || startsProjectGroup,
+            projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]
                     ?? workspaceAppearanceStore.projectIconContent(
                         profileID: appStore.activeHostScope.profileID,
@@ -834,14 +999,15 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private var sidebarMonitorSections: [SessionSidebarSection] {
+    private func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
         let chronologicallySortedSessions = sessionStore.sortedAllSessions.isEmpty
             ? SessionStore.sortedSessions(sessionStore.sessionLibrarySessions)
             : sessionStore.sortedAllSessions
         return SessionListPresentation.sidebarSections(
             sessions: chronologicallySortedSessions,
             pinnedIDs: sessionStore.pinnedSessionIDs,
-            unreadIDs: sessionStore.unreadHistorySessionIDs
+            completionObservedAtByID: sessionStore.historyCompletionObservedAtBySessionID,
+            now: now
         )
     }
 
@@ -932,7 +1098,8 @@ struct UnifiedWorkbenchShell: View {
     private func compactDestination(
         _ destination: AppDestination,
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        shouldHideTabBar: Bool
     ) -> some View {
         switch destination {
         case .sessions:
@@ -945,8 +1112,13 @@ struct UnifiedWorkbenchShell: View {
                 showsDoneButton: false,
                 embedsNavigationStack: false
             )
-        case .session:
-            sessionDetail(layout: layout, tokens: tokens)
+        case .session(let sessionID):
+            sessionDetail(
+                destinationSessionID: sessionID,
+                layout: layout,
+                tokens: tokens,
+                shouldHideTabBar: shouldHideTabBar
+            )
         case .subagent(let parentID, let childID):
             if let relation = selectedRelatedSubagent,
                relation.id == childID,
@@ -955,6 +1127,7 @@ struct UnifiedWorkbenchShell: View {
                     relation: relation,
                     parentSessionID: parentID,
                     showsCloseButton: false,
+                    shouldHideTabBar: shouldHideTabBar,
                     onClose: {}
                 )
             } else {
@@ -1000,7 +1173,7 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         bottomContentMargin: CGFloat? = nil
     ) -> some View {
-        let manageConnections: (() -> Void)? = layout.usesCompactNavigation
+        let manageConnections: (() -> Void)? = layout.usesCompactNavigation && layout.isPhone
             ? { openConnectionSettings(layout: layout) }
             : nil
 
@@ -1017,8 +1190,7 @@ struct UnifiedWorkbenchShell: View {
             },
             manageConnections: manageConnections,
             prefersTableDensity: layout.prefersSessionTableDensity,
-            // 只有侧栏在场时标题才是重复表达；单列导航没有侧栏，隐藏标题会让顶栏失去页面身份。
-            hidesNavigationTitle: !layout.usesCompactNavigation,
+            usesCompactNavigation: layout.usesCompactNavigation,
             bottomContentMargin: bottomContentMargin
                 ?? (layout.usesCompactNavigation
                     ? WorkbenchPageLayout.defaultCompactBottomChromeClearance
@@ -1029,7 +1201,7 @@ struct UnifiedWorkbenchShell: View {
 
     private func workspaces(layout: WorkbenchLayout) -> some View {
         let manageConnections: (() -> Void)?
-        if layout.usesCompactNavigation {
+        if layout.usesCompactNavigation && layout.isPhone {
             manageConnections = {
                 openConnectionSettings(layout: layout)
             }
@@ -1056,11 +1228,38 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func sessionDetail(layout: WorkbenchLayout, tokens: ThemeTokens) -> some View {
-        WorkspaceView {
-            open(.workspaces, layout: layout)
+    private func sessionDetail(
+        destinationSessionID: SessionID? = nil,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        shouldHideTabBar: Bool = false
+    ) -> some View {
+        // 紧凑导航的退出页必须保留自己的会话身份。pop 同帧全局 route 已回到根页，
+        // 若继续从 route 取 ID，退出中的标题会在转场结束前被替换。
+        let detailSessionID = destinationSessionID ?? navigationState.route.detailSessionID
+        let canPresentSessionDetail = navigationState.canPresentSessionDetail(
+            selectedSessionID: sessionStore.selectedSessionID
+        )
+        let detailSession = detailSessionID.flatMap { sessionStore.sessionsByID[$0] }
+        let detailTitle = detailSession?.title
+            ?? (canPresentSessionDetail ? sessionStore.selectedSession?.title : nil)
+            ?? L10n.text("ui.session")
+        let navigationTitleSession = detailSession
+            ?? (canPresentSessionDetail ? sessionStore.selectedSession : nil)
+
+        return Group {
+            if canPresentSessionDetail {
+                WorkspaceView {
+                    open(.workspaces, layout: layout)
+                }
+            } else {
+                // 导航已经指向目标会话、SessionStore 还未提交选择时，只保留稳定底板。
+                // 这段窗口通常不足一帧，但不能让上一个会话的正文或空态借机出现。
+                tokens.conversationCanvasBackground
+                    .accessibilityHidden(true)
+            }
         }
-        .navigationTitle(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
+        .navigationTitle(detailTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if navigationState.showsWorkspaceBackButton(
@@ -1081,19 +1280,34 @@ struct UnifiedWorkbenchShell: View {
                     .accessibilityIdentifier("sessionDetail.workspaceBack")
                 }
             }
+            // 第一帧就使用最终的两行标题和右侧菜单槽。目标会话尚未完成选择时只禁用动作，
+            // 不替换 ToolbarContent，避免 push 过程中导航栏重新测量。
             ToolbarItem(placement: .principal) {
-                // 会话详情优先展示当前任务；Mac 切换保留在上一级主界面，避免全局信息挤占标题。
-                Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
-                    .font(.headline)
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .multilineTextAlignment(.center)
-                    .frame(width: layout.titleMaxWidth)
-                    .accessibilityIdentifier("sessionDetail.title")
+                Group {
+                    if canPresentSessionDetail,
+                       sessionStore.selectedRuntimeActivitySnapshot != nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            sessionDetailNavigationTitle(
+                                session: navigationTitleSession,
+                                usesSelectedSessionState: true,
+                                layout: layout,
+                                tokens: tokens,
+                                now: context.date
+                            )
+                        }
+                    } else {
+                        sessionDetailNavigationTitle(
+                            session: navigationTitleSession,
+                            usesSelectedSessionState: canPresentSessionDetail,
+                            layout: layout,
+                            tokens: tokens,
+                            now: Date()
+                        )
+                    }
+                }
             }
             if layout.usesCompactNavigation {
-                ToolbarItem(placement: .topBarTrailing) {
+                workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let session = sessionStore.selectedSession {
                             SessionActionMenuContent(
@@ -1120,13 +1334,15 @@ struct UnifiedWorkbenchShell: View {
                         }
                     } label: {
                         WorkbenchChromeIcon(systemName: "ellipsis")
-                            .foregroundStyle(tokens.secondaryText)
+                            .foregroundStyle(tokens.primaryText.opacity(0.72))
+                            .workbenchToolbarChromeCircle(tokens: tokens)
                     }
+                    .disabled(!canPresentSessionDetail)
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
-            } else {
+            } else if canPresentSessionDetail {
                 if let session = sessionStore.selectedSession {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    workbenchChromeToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             SessionActionMenuContent(
                                 session: session,
@@ -1135,6 +1351,7 @@ struct UnifiedWorkbenchShell: View {
                         } label: {
                             WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
+                                .workbenchToolbarChromeCircle(tokens: tokens)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
                     }
@@ -1143,7 +1360,7 @@ struct UnifiedWorkbenchShell: View {
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
+                workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     workbenchToolbarIconButton(
                         systemImage: "arrow.clockwise",
                         accessibilityLabel: L10n.text("ui.refresh_current_session"),
@@ -1153,16 +1370,23 @@ struct UnifiedWorkbenchShell: View {
                         Task { await sessionStore.refreshCurrentContext() }
                     }
                 }
-                // iOS 26+ 用固定间隔保持独立玻璃组；旧系统直接沿用普通工具栏间距。
+                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死，不靠系统按内容估算。
                 if #available(iOS 26.0, *) {
                     ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 }
                 inspectorToolbarItem(layout: layout, tokens: tokens)
             }
         }
-        .background(tokens.background.ignoresSafeArea())
-        .toolbar(.hidden, for: .tabBar)
-        .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
+        .background(tokens.conversationCanvasBackground.ignoresSafeArea())
+        .toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
+        .modifier(
+            SessionNavigationMaterialModifier(
+                usesCompactNavigation: layout.usesCompactNavigation,
+                tokens: tokens,
+                colorScheme: themeStore.resolvedColorScheme(for: colorScheme),
+                reduceTransparency: reduceTransparency
+            )
+        )
         .sessionActionSheets(presentation: $sessionActionPresentation)
         .environment(
             \.openSubagentSession,
@@ -1222,6 +1446,8 @@ struct UnifiedWorkbenchShell: View {
                 compactPath(for: tab)
             },
             set: { path in
+                guard tab != .me,
+                      tab == navigationState.compactSelectedTab else { return }
                 let expectedPath = compactPath(for: tab)
                 guard path != expectedPath else { return }
                 if case .subagent = expectedPath.last,
@@ -1259,9 +1485,14 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func compactPath(for tab: CompactWorkbenchTab) -> [AppDestination] {
-        tab == .workspaces
-            ? navigationState.compactWorkspacePath
-            : navigationState.compactSessionPath
+        switch tab {
+        case .sessions:
+            return navigationState.compactSessionPath
+        case .workspaces:
+            return navigationState.compactWorkspacePath
+        case .me:
+            return []
+        }
     }
 
     private func open(
@@ -1552,9 +1783,11 @@ struct UnifiedWorkbenchShell: View {
                     .transitionSourceID,
                 in: presentationNamespace
             )
+            // 按钮自带磨砂圆，系统共享玻璃必须关掉，否则是两层背景。
+            .sharedBackgroundVisibility(.hidden)
         } else {
             // iOS 18–25 仍可打开 Inspector，只取消依赖新 Toolbar API 的 zoom 来源。
-            ToolbarItem(placement: .topBarTrailing) {
+            workbenchChromeToolbarItem(placement: .topBarTrailing) {
                 inspectorToolbarButton(
                     layout: layout,
                     tokens: tokens,
@@ -1582,7 +1815,9 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("sessionDetail.inspector")
     }
 
-    /// 顶栏交给系统工具栏材质和命中区域处理；这里只表达图标与激活状态，避免自绘圆形再叠一层系统玻璃。
+    /// 顶栏图标按钮的统一形态：44pt 扁平磨砂圆，和工作区胶囊、侧栏控件同一档材质。
+    /// 调用方必须把它放进 `workbenchChromeToolbarItem`（或自行 `sharedBackgroundVisibility(.hidden)`），
+    /// 否则 iOS 26 的系统玻璃底板会叠在这层磨砂下面。
     private func workbenchToolbarIconButton(
         systemImage: String,
         accessibilityLabel: String,
@@ -1592,19 +1827,132 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
+            // 磨砂圆只作为背景，不参与布局；外层 ToolbarItem 负责关掉
+            // iOS 26 自动附加的系统玻璃底板。
             WorkbenchChromeIcon(systemName: systemImage)
+                .workbenchToolbarChromeCircle(tokens: tokens)
         }
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
         .accessibilityLabel(accessibilityLabel)
     }
 
-    private var sessionTitleSubtitle: String {
+    private func sessionDetailNavigationTitle(
+        session: AgentSession?,
+        usesSelectedSessionState: Bool,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        now: Date
+    ) -> some View {
+        let showsStatus = usesSelectedSessionState && selectedSessionShowsNavigationStatus
+        let subtitle = usesSelectedSessionState
+            ? sessionTitleSubtitle(now: now)
+            : SessionNavigationTitlePresentation.pendingSubtitle(session: session)
+        let subtitleColor = usesSelectedSessionState
+            ? sessionTitleSubtitleColor(tokens: tokens, now: now)
+            : tokens.secondaryText
+        return VStack(spacing: 1) {
+            // 标题只保留一行当前任务；普通状态收进固定副标题槽，
+            // 避免 running / idle 切换时把整条时间线向下推。
+            Text(session?.title ?? L10n.text("ui.session"))
+                .font(.headline)
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            HStack(spacing: 5) {
+                if showsStatus {
+                    Circle()
+                        .fill(subtitleColor)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                }
+                Text(subtitle)
+                    .font(
+                        SessionNavigationTitlePresentation.subtitleFont(
+                            layout: layout,
+                            themeStore: themeStore
+                        )
+                    )
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(width: layout.titleMaxWidth)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(session?.title ?? L10n.text("ui.session"))
+        .accessibilityValue(
+            usesSelectedSessionState ? sessionTitleAccessibilityValue(now: now) : subtitle
+        )
+        .accessibilityIdentifier("sessionDetail.title")
+    }
+
+    private func sessionTitleSubtitle(now: Date) -> String {
         guard let session = sessionStore.selectedSession else {
             return L10n.text("ui.session")
         }
+
+        if selectedSessionShowsNavigationStatus {
+            let status = session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity)
+            if let snapshot = sessionStore.selectedRuntimeActivitySnapshot {
+                let elapsed = RuntimeActivityDisplay.compactClockDuration(
+                    now.timeIntervalSince(snapshot.turnStartedAt)
+                )
+                return "\(status.title) · \(elapsed)"
+            }
+            return status.title
+        }
+
         let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
         return project.isEmpty ? session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).title : project
+    }
+
+    private func sessionTitleAccessibilityValue(now: Date) -> String {
+        guard let session = sessionStore.selectedSession else {
+            return L10n.text("ui.session")
+        }
+        guard selectedSessionShowsNavigationStatus else {
+            return sessionTitleSubtitle(now: now)
+        }
+
+        let status = session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity)
+        if let runtimeDisplay = RuntimeActivityDisplay.make(
+            snapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            webSocketStatus: sessionStore.webSocketStatus,
+            now: now
+        ) {
+            // 视觉副标题只留状态和时长；连接诊断仍完整提供给 VoiceOver。
+            return "\(status.title) · \(runtimeDisplay.detailText)"
+        }
+        return status.title
+    }
+
+    private var selectedSessionShowsNavigationStatus: Bool {
+        guard let session = sessionStore.selectedSession else {
+            return false
+        }
+        return session.isRunning ||
+            sessionStore.selectedForegroundActivity != nil ||
+            session.pendingApproval != nil ||
+            session.status == SessionStatus.failed.rawValue ||
+            session.status == SessionStatus.waitingForInput.rawValue ||
+            session.status == SessionStatus.waitingForApproval.rawValue
+    }
+
+    private func sessionTitleSubtitleColor(tokens: ThemeTokens, now: Date) -> Color {
+        guard selectedSessionShowsNavigationStatus else {
+            return tokens.tertiaryText
+        }
+        if let runtimeDisplay = RuntimeActivityDisplay.make(
+            snapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            webSocketStatus: sessionStore.webSocketStatus,
+            now: now
+        ) {
+            return tokens.tint(for: runtimeDisplay.tone)
+        }
+        return selectedSessionStatusColor(tokens: tokens)
     }
 
     private func selectedSessionStatusColor(tokens: ThemeTokens) -> Color {
@@ -1646,345 +1994,5 @@ struct UnifiedWorkbenchShell: View {
         case .terminated: return .red
         case .disconnected: return tokens.tertiaryText
         }
-    }
-}
-
-private struct NewSessionSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @AppStorage("newSession.lastWorkspaceID") private var lastWorkspaceID = ""
-    @AppStorage("newSession.lastRuntime") private var lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
-    @State private var selectedWorkspaceID = ""
-    @State private var isCreating = false
-    @State private var didLeaveSheetForCreation = false
-    @State private var creationErrorMessage: String?
-
-    let onCreated: (SessionID) -> Void
-    let onOpenWorkspaces: () -> Void
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        NavigationStack {
-            Group {
-                if sessionStore.sidebarProjects.isEmpty {
-                    ContentUnavailableView {
-                        Label(L10n.text("ui.no_workspace_yet"), systemImage: "folder.badge.plus")
-                    } description: {
-                        Text(L10n.text("ui.first_open_a_project_directory_on_your_mac"))
-                    } actions: {
-                        Button(L10n.text("ui.go_to_work_area")) {
-                            dismiss()
-                            onOpenWorkspaces()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(tokens.primaryAction)
-                    }
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 26) {
-                            workspaceSection(tokens: tokens)
-                            runtimeSection(tokens: tokens)
-
-                            if let creationErrorMessage {
-                                Label(creationErrorMessage, systemImage: "exclamationmark.circle.fill")
-                                    .font(themeStore.uiFont(.caption))
-                                    .foregroundStyle(tokens.warning)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(12)
-                                    .background(tokens.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .accessibilityIdentifier("newSession.creationError")
-                            }
-                        }
-                        .frame(maxWidth: 520)
-                        .padding(.horizontal, horizontalSizeClass == .compact ? 20 : 24)
-                        .padding(.top, 22)
-                        .padding(.bottom, 32)
-                        .frame(maxWidth: .infinity, alignment: .top)
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .background(tokens.background)
-                }
-            }
-            .navigationTitle(L10n.text("ui.new_session"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.text("ui.cancel")) { dismiss() }
-                        .disabled(isCreating)
-                        .keyboardShortcut(.cancelAction)
-                        .accessibilityIdentifier("newSession.cancel")
-                }
-                if !sessionStore.sidebarProjects.isEmpty {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            Task { await createSession() }
-                        } label: {
-                            if isCreating {
-                                HStack(spacing: 6) {
-                                    ProgressView().controlSize(.small)
-                                    Text(L10n.text("ui.creating"))
-                                }
-                            } else {
-                                Text(L10n.text("ui.create"))
-                            }
-                        }
-                        .frame(minWidth: 48)
-                        .workbenchProminentActionStyle()
-                        .disabled(isCreating || selectedProject == nil)
-                        .tint(tokens.primaryAction)
-                        .keyboardShortcut(.defaultAction)
-                        .accessibilityIdentifier("newSession.create")
-                    }
-                }
-            }
-        }
-        .onAppear {
-            synchronizeWorkspaceSelection()
-            normalizeRuntimeSelection()
-        }
-        .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
-            synchronizeWorkspaceSelection()
-        }
-        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, _ in
-            normalizeRuntimeSelection()
-        }
-        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
-            guard isCreating,
-                  let sessionID,
-                  sessionID.hasPrefix("local:") else { return }
-            leaveSheetForCreatedSession(sessionID)
-        }
-        // iPhone 默认用紧凑高度展示完整配置，减少大面积空白；iPad 继续交给系统 form 尺寸适配。
-        .modifier(NewSessionPresentationModifier(isCompact: horizontalSizeClass == .compact))
-        .interactiveDismissDisabled(isCreating)
-    }
-
-    private func workspaceSection(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(
-                title: L10n.text("ui.workspace"),
-                subtitle: L10n.text("ui.the_session_will_run_in_the_selected_directory"),
-                tokens: tokens
-            )
-
-            if let project = selectedProject ?? sessionStore.sidebarProjects.first {
-                Menu {
-                    ForEach(sessionStore.sidebarProjects) { candidate in
-                        Button {
-                            // 工作区属于创建参数，选择时只更新 Sheet 本地状态，不提前切换全局会话上下文。
-                            selectedWorkspaceID = candidate.id
-                            creationErrorMessage = nil
-                        } label: {
-                            if candidate.id == selectedWorkspaceID {
-                                Label(workspaceMenuTitle(for: candidate), systemImage: "checkmark")
-                            } else {
-                                Text(workspaceMenuTitle(for: candidate))
-                            }
-                        }
-                    }
-                } label: {
-                    workspaceSummary(project, tokens: tokens)
-                }
-                .buttonStyle(.plain)
-                .disabled(isCreating)
-                .accessibilityLabel(L10n.text("ui.select_workspace"))
-                .accessibilityValue(L10n.format("ui.workspace_selection_accessibility", project.name, compactWorkspacePath(project.path)))
-                .accessibilityIdentifier("newSession.workspace")
-            }
-        }
-    }
-
-    private func runtimeSection(tokens: ThemeTokens) -> some View {
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
-
-        return VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(
-                title: L10n.text("ui.runtime"),
-                subtitle: L10n.text("ui.select_the_agent_responsible_for_performing_the_task"),
-                tokens: tokens
-            )
-
-            if choices.count > 1 {
-                Picker(L10n.text("ui.runtime"), selection: $lastRuntimeID) {
-                    ForEach(choices) { choice in
-                        Text(runtimeTitle(for: choice))
-                            .tag(choice.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(isCreating)
-                .accessibilityIdentifier("newSession.runtime")
-            } else {
-                HStack(spacing: 12) {
-                    Image(systemName: "terminal.fill")
-                        .font(themeStore.uiFont(size: 16, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
-                        .frame(width: 36, height: 36)
-                        .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Codex")
-                            .font(themeStore.uiFont(.body, weight: .semibold))
-                            .foregroundStyle(tokens.primaryText)
-                        Text(L10n.text("ui.the_only_runtime_currently_available"))
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.tertiaryText)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(themeStore.uiFont(size: 20, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
-                }
-                .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity, minHeight: 64)
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(tokens.border.opacity(0.76), lineWidth: 1)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("newSession.runtime")
-            }
-
-            Text(L10n.text("ui.cannot_be_switched_during_runtime_after_creation"))
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.tertiaryText)
-        }
-    }
-
-    private func sectionHeader(title: String, subtitle: String, tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(themeStore.uiFont(.headline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-            Text(subtitle)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.tertiaryText)
-        }
-    }
-
-    private func workspaceSummary(_ project: AgentProject, tokens: ThemeTokens) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "folder.fill")
-                .font(themeStore.uiFont(size: 17, weight: .semibold))
-                .foregroundStyle(tokens.primaryAction)
-                .frame(width: 38, height: 38)
-                .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(project.name)
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-
-                Text(compactWorkspacePath(project.path))
-                    .font(themeStore.codeFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "chevron.up.chevron.down")
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.tertiaryText)
-                .frame(width: 24, height: 24)
-        }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: 70)
-        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tokens.border.opacity(0.76), lineWidth: 1)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    private func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
-        choice == .codex ? "Codex" : "Claude Code"
-    }
-
-    private func compactWorkspacePath(_ path: String) -> String {
-        let components = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard path.hasPrefix("/"),
-              components.count >= 2,
-              components.first == "Users" else {
-            return path
-        }
-        // 隐去本机用户名既能降低视觉噪音，也避免在远程屏幕共享时反复暴露完整绝对路径。
-        let relativeComponents = components.dropFirst(2)
-        return relativeComponents.isEmpty ? "~" : "~/" + relativeComponents.joined(separator: "/")
-    }
-
-    private func workspaceMenuTitle(for project: AgentProject) -> String {
-        let hasDuplicateName = sessionStore.sidebarProjects.filter { $0.name == project.name }.count > 1
-        guard hasDuplicateName else { return project.name }
-
-        let components = project.path.split(separator: "/", omittingEmptySubsequences: true)
-        let parentName = components.dropLast().last.map(String.init) ?? compactWorkspacePath(project.path)
-        return "\(project.name) — \(parentName)"
-    }
-
-    private var selectedProject: AgentProject? {
-        sessionStore.sidebarProjects.first { $0.id == selectedWorkspaceID }
-    }
-
-    private func synchronizeWorkspaceSelection() {
-        let projects = sessionStore.sidebarProjects
-        guard !projects.contains(where: { $0.id == selectedWorkspaceID }) else { return }
-
-        if projects.contains(where: { $0.id == lastWorkspaceID }) {
-            selectedWorkspaceID = lastWorkspaceID
-        } else if let selected = sessionStore.selectedProject,
-                  projects.contains(where: { $0.id == selected.id }) {
-            selectedWorkspaceID = selected.id
-        } else {
-            selectedWorkspaceID = projects.first?.id ?? ""
-        }
-    }
-
-    private func normalizeRuntimeSelection() {
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
-        guard choices.contains(where: { $0.rawValue == lastRuntimeID }) else {
-            lastRuntimeID = choices.first?.rawValue ?? WorkspaceSessionRuntimeChoice.codex.rawValue
-            return
-        }
-    }
-
-    private func createSession() async {
-        guard let project = selectedProject else { return }
-        isCreating = true
-        creationErrorMessage = nil
-        defer { isCreating = false }
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
-        // 创建前再次按当前通道能力校验，避免 Sheet 打开期间通道状态变化造成错误路由。
-        let choice = choices.first(where: { $0.rawValue == lastRuntimeID }) ?? .codex
-        lastWorkspaceID = project.id
-        await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
-        guard let sessionID = sessionStore.selectedSessionID else {
-            creationErrorMessage = sessionStore.errorMessage ?? L10n.text("ui.creation_failed_please_try_again_later")
-            return
-        }
-        leaveSheetForCreatedSession(sessionID)
-    }
-
-    private func leaveSheetForCreatedSession(_ sessionID: SessionID) {
-        guard !didLeaveSheetForCreation else { return }
-        didLeaveSheetForCreation = true
-        dismiss()
-        onCreated(sessionID)
     }
 }

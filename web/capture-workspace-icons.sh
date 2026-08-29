@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 #
+# 已过时——网站当前不再使用本脚本的产物。
+# web/assets 里是真机截图，命名为 {ipad,iphone}-{workspace,sessions}-{light,dark}.png，
+# 页面按深浅色而不是按语言切换；本脚本仍输出旧的 ipad-icons-{en,zh}.png，
+# 跑一遍只会多出页面不加载的文件。要继续用请先按上面的命名改写。
+#
 # 从固定 M5 iPad Simulator 的当前 Debug App 采集个性化工作区图标素材。
 # 中英文各启动一次真实 App；网站再用 CSS 裁出工作区卡片区域。
 set -euo pipefail
@@ -24,12 +29,12 @@ echo "==> 确认固定目标与设备占用"
 bash "$IOS_DEV" target
 bash "$IOS_DEV" leases
 
-SIMULATOR_ID="$(bash "$IOS_DEV" destination | sed -nE 's/.*id=([^,}]+).*/\1/p')"
+SIMULATOR_ID="$(bash "$IOS_DEV" test-destination | sed -nE 's/.*id=([^,}]+).*/\1/p')"
 if [[ -z "$SIMULATOR_ID" ]]; then
   echo "无法解析固定 Simulator UDID。" >&2
   exit 3
 fi
-DERIVED_DATA="$(bash "$IOS_DEV" derived-data-path)"
+DERIVED_DATA="$(bash "$IOS_DEV" test-derived-data-path)"
 
 echo "==> 通过统一脚本构建、安装并启动 Debug App"
 bash "$IOS_DEV" run

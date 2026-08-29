@@ -2,6 +2,7 @@ import Foundation
 
 enum TurnSendOutcome: Equatable {
     case accepted(turnID: TurnID?)
+    case serverQueued(submissionID: String, startedTurnID: TurnID?)
     case guidanceAccepted
     case acceptedTerminal(turnID: TurnID?)
     case acceptedSuperseded(
@@ -14,7 +15,13 @@ enum TurnSendOutcome: Equatable {
     case uncertain(message: String)
 }
 
+enum TurnDeliveryMode: Equatable {
+    case direct
+    case sharedServerQueue
+}
+
 protocol SessionWebSocketClient: AnyObject {
+    var turnDeliveryMode: TurnDeliveryMode { get }
     var onEvent: (@MainActor (AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
@@ -37,6 +44,8 @@ protocol SessionWebSocketClient: AnyObject {
 }
 
 extension SessionWebSocketClient {
+    var turnDeliveryMode: TurnDeliveryMode { .direct }
+
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
     }
@@ -215,12 +224,35 @@ private struct PendingCodexAppServerResponse {
     let timeoutTask: Task<Void, Never>
 }
 
+/// JSON-RPC 请求 id 的全进程分配器：每条连接都从上一条连接用完的地方继续，
+/// 绝不从 1 重来。
+///
+/// Claude 常驻 bridge 的回放环里可能还留着上一条连接未被消费的响应帧。id 一旦
+/// 被复用，那条陈旧响应就会兑现新连接里编号相同的请求——而 `model/list` 与
+/// `thread/list` 的结果都是 `{data, nextCursor}`，模型目录会被原样投影成最近
+/// 会话列表（MIM-120）。响应帧里没有 method，客户端事后无从分辨，只能靠 id 不
+/// 复用来根除。
+///
+/// 起点按进程随机：App 重启后 bridge 那边仍是同一个常驻会话，固定起点同样会撞。
+private enum CodexAppServerRequestIDAllocator {
+    private static let lock = NSLock()
+    // 上界留足余量，保证 id 始终落在 JSON number 的精确整数区间内。
+    nonisolated(unsafe) private static var next: Int64 = .random(in: 1...(1 << 40))
+
+    static func allocate() -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = next
+        next &+= 1
+        return id
+    }
+}
+
 actor CodexAppServerConnection {
     private let transport: CodexAppServerTransport
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let requestTimeoutNanoseconds: UInt64
-    private var nextRequestNumber: Int64 = 1
     private var pendingResponses: [CodexAppServerRequestID: PendingCodexAppServerResponse] = [:]
     private var receiveTask: Task<Void, Never>?
     private var isConnected = false
@@ -469,6 +501,26 @@ actor CodexAppServerConnection {
     }
 
     private func resolve(_ response: CodexAppServerResponse) {
+        if let error = response.error,
+           error.data?.objectValue?["response_to_server_request"]?.boolValue == true {
+            // server request 的 response 是 fire-and-forget，不在 pendingResponses
+            // 中。gateway 拒绝它时转成私有通知，让 runtime 恢复审批/输入卡片，
+            // 避免界面显示“已发送”而实际 owning runtime 没有收到。
+            let requestID: CodexAppServerJSONValue
+            switch response.id {
+            case .int(let value): requestID = .int(value)
+            case .string(let value): requestID = .string(value)
+            case .null: requestID = .null
+            }
+            var params = error.data?.objectValue ?? [:]
+            params["requestId"] = requestID
+            params["message"] = .string(error.message)
+            notificationContinuation?.yield(CodexAppServerNotification(
+                method: "_mimi/serverRequestResponse/rejected",
+                params: .object(params)
+            ))
+            return
+        }
         guard let pending = pendingResponses.removeValue(forKey: response.id) else {
             return
         }
@@ -519,9 +571,6 @@ actor CodexAppServerConnection {
     }
 
     private func nextRequestID() -> CodexAppServerRequestID {
-        defer {
-            nextRequestNumber += 1
-        }
-        return .int(nextRequestNumber)
+        .int(CodexAppServerRequestIDAllocator.allocate())
     }
 }

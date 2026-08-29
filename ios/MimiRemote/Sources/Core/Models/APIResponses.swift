@@ -270,38 +270,6 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
     }
 }
 
-struct ExternalSessionActivity: Codable, Hashable, Identifiable {
-    let threadID: SessionID
-    let projectID: String
-    let source: String
-    let state: String
-    let turnID: TurnID?
-    let revision: String
-    let lastActivityAt: Date
-
-    var id: SessionID { threadID }
-
-    enum CodingKeys: String, CodingKey {
-        case threadID = "thread_id"
-        case projectID = "project_id"
-        case source
-        case state
-        case turnID = "turn_id"
-        case revision
-        case lastActivityAt = "last_activity_at"
-    }
-}
-
-struct ExternalActivityResponse: Codable, Hashable {
-    let activities: [ExternalSessionActivity]
-    let scannedAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case activities
-        case scannedAt = "scanned_at"
-    }
-}
-
 struct CodexAppServerChannelBridgeMetadata: Codable, Hashable {
     let name: String?
     let version: String?

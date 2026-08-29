@@ -2,6 +2,22 @@ name: Public Repository Safety
 
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: full-history 或 pull-request
+        required: false
+        default: full-history
+        type: string
+      base_sha:
+        description: pull-request 模式的 base commit
+        required: false
+        default: ""
+        type: string
+      head_sha:
+        description: pull-request 模式的 head commit
+        required: false
+        default: ""
+        type: string
   push:
     branches:
       - main
@@ -24,14 +40,117 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Plan repository safety checks
+        id: safety
+        shell: bash
+        env:
+          SAFETY_MODE: ${{ inputs.mode || 'full-history' }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          case "$SAFETY_MODE" in
+            pull-request)
+              bash ./scripts/check-public-repo-safety.sh \
+                --pull-request \
+                --base "$BASE_SHA" \
+                --head "$HEAD_SHA" \
+                --plan \
+                --github-output "$GITHUB_OUTPUT"
+              ;;
+            full-history)
+              bash ./scripts/check-public-repo-safety.sh \
+                --full-history \
+                --plan \
+                --github-output "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "未知 Public Repository Safety 模式：$SAFETY_MODE" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Setup Go
+        if: steps.safety.outputs.third_party == 'true'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install repository safety tools
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ripgrep
+        shell: bash
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            rg --version
+            exit 0
+          fi
+
+          if [[ "${RUNNER_ARCH:-}" != "X64" ]]; then
+            echo "不支持的 runner 架构：${RUNNER_ARCH:-<未设置>}，仅支持 X64。" >&2
+            exit 1
+          fi
+
+          : "${RUNNER_TEMP:?RUNNER_TEMP 未设置。}"
+          : "${GITHUB_PATH:?GITHUB_PATH 未设置。}"
+
+          ripgrep_asset="ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+          ripgrep_url="https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+          ripgrep_sha256="33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+          ripgrep_root="ripgrep-15.2.0-x86_64-unknown-linux-musl"
+          ripgrep_dir="$(mktemp -d "${RUNNER_TEMP}/ripgrep.XXXXXX")"
+          archive_path="${ripgrep_dir}/${ripgrep_asset}"
+          extract_dir="${ripgrep_dir}/extract"
+          rg_path="${extract_dir}/${ripgrep_root}/rg"
+          mkdir -p "$extract_dir"
+
+          # 固定官方归档并校验摘要，避免包管理器更新超时或引入未锁定来源。
+          curl \
+            --proto '=https' \
+            --tlsv1.2 \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --retry-max-time 60 \
+            --connect-timeout 10 \
+            --max-time 120 \
+            --output "$archive_path" \
+            "$ripgrep_url"
+
+          if ! printf '%s  %s\n' "$ripgrep_sha256" "$archive_path" | sha256sum --check --status -; then
+            echo "ripgrep 下载文件 SHA-256 校验失败。" >&2
+            exit 1
+          fi
+
+          tar --extract --gzip --file "$archive_path" --directory "$extract_dir"
+          if [[ ! -x "$rg_path" ]]; then
+            echo "ripgrep 归档中缺少可执行文件：$rg_path" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$(dirname "$rg_path")" >> "$GITHUB_PATH"
+          "$rg_path" --version
 
       - name: Check public repository safety
-        run: bash ./scripts/check-public-repo-safety.sh
+        shell: bash
+        env:
+          SAFETY_MODE: ${{ inputs.mode || 'full-history' }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          case "$SAFETY_MODE" in
+            pull-request)
+              bash ./scripts/check-public-repo-safety.sh \
+                --pull-request \
+                --base "$BASE_SHA" \
+                --head "$HEAD_SHA"
+              ;;
+            full-history)
+              bash ./scripts/check-public-repo-safety.sh --full-history
+              ;;
+            *)
+              echo "未知 Public Repository Safety 模式：$SAFETY_MODE" >&2
+              exit 1
+              ;;
+          esac

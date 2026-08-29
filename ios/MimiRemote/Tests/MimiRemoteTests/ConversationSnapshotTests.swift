@@ -68,9 +68,53 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testWorkspaceOpenCurrentDirectoryButton() {
-        let view = WorkspaceOpenCurrentDirectoryButton(
-            directoryName: "gaixiaotongxue",
+    // 路径条要在深路径下仍然只占一行高度，并从绝对路径的左侧开始展示。
+    func testWorkspaceCurrentDirectoryBreadcrumbKeepsSingleRow() {
+        let view = WorkspaceCurrentDirectoryCard(
+            path: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios/MimiRemote",
+            rootPath: "/Users/example/code",
+            parentPath: "/Users/example/code/codex-ipad-agent/very-long-project-folder/ios",
+            isBrowsing: false,
+            isOpening: false,
+            onNavigate: { _ in }
+        )
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 390)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .sizeThatFits)
+        )
+    }
+
+    // 授权浏览根之上的层级不可进入，但绝对路径必须仍然可读：那段前缀按原文保留成
+    // 不可点文本，可点层级从浏览根开始。锁住这个边界表达，避免又被压回省略号。
+    func testWorkspaceCurrentDirectoryBreadcrumbKeepsUnreachablePrefixReadable() {
+        let view = WorkspaceCurrentDirectoryCard(
+            path: "/Users/example/code/app",
+            rootPath: "/Users/example/code",
+            parentPath: "/Users/example/code",
+            isBrowsing: false,
+            isOpening: false,
+            onNavigate: { _ in }
+        )
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 390)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .sizeThatFits)
+        )
+    }
+
+    func testWorkspaceOpenCurrentDirectoryToolbarButton() {
+        let view = WorkspaceOpenCurrentDirectoryToolbarButton(
             isOpening: false,
             isDisabled: false,
             action: {}
@@ -78,12 +122,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(makeThemeStore())
         .environment(\.colorScheme, .light)
         .padding(20)
-        .frame(width: 390, height: 110)
         .background(Color(uiColor: .systemGroupedBackground))
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
+            as: .image(precision: 0.98, layout: .sizeThatFits)
         )
     }
 
@@ -831,29 +874,17 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 430, height: 900)
     }
 
-    func testConversationBubbleAlignment() {
-        assertSnapshot(
+    func testConversationBubbleAlignment() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeSeededConversation(),
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
-    func testDefaultDarkConversationPalette() {
-        assertSnapshot(
+    func testDefaultDarkConversationPalette() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeSeededConversation(colorScheme: .dark),
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
@@ -889,10 +920,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testRichMarkdownConversationRendering() {
-        assertSnapshot(
+    func testRichMarkdownConversationRendering() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeRichMarkdownConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
@@ -909,18 +940,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testMixedActivityAndImageConversationRendering() async {
+    func testMixedActivityAndImageConversationRendering() async throws {
         let view = await makeMixedActivityConversation()
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 900)
-                )
-            )
+            size: CGSize(width: 1024, height: 900)
         )
     }
 
@@ -978,10 +1003,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testUnavailableUserImageGalleryRemainsLegibleInLightTheme() {
-        assertSnapshot(
+    func testUnavailableUserImageGalleryRemainsLegibleInLightTheme() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeUnavailableUserImageGallery(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
+            size: CGSize(width: 1024, height: 900)
         )
     }
 
@@ -1006,10 +1031,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testCommentaryAndTrailingProcessRendering() {
-        assertSnapshot(
+    func testCommentaryAndTrailingProcessRendering() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeCommentaryAndTrailingProcessConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 430, height: 900))
+            size: CGSize(width: 430, height: 900)
         )
     }
 
@@ -1283,6 +1308,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: false,
             isGoalUpdating: false,
             // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
@@ -1367,61 +1393,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testComposerSendModeLabelsUseConsistentModeSuffix() {
-        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
-        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
-        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
-        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
-    }
-
-    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
-        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: false,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-        let expanded = ComposerStatusTraySurfaceStyle.resolve(
-            isExpanded: true,
-            scheme: .dark,
-            reduceTransparency: false
-        )
-
-        XCTAssertEqual(collapsed.materialStrength, .thin)
-        XCTAssertEqual(expanded.materialStrength, .regular)
-        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
-        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
-        XCTAssertEqual(collapsed.borderOpacity, 0.58)
-        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
-    }
-
-    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .light,
-                reduceTransparency: false
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.05)
-        }
-    }
-
-    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
-        for isExpanded in [false, true] {
-            let style = ComposerStatusTraySurfaceStyle.resolve(
-                isExpanded: isExpanded,
-                scheme: .dark,
-                reduceTransparency: true
-            )
-
-            XCTAssertEqual(style.materialStrength, .opaque)
-            XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.borderOpacity, 0.58)
-        }
-    }
-
     func testExpandedGoalTrayDarkMaterialSeparatesBackdropContent() {
         let themeStore = makeThemeStore()
         let goal = ThreadGoal(
@@ -1439,6 +1410,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             quotaNotice: nil,
             usage: nil,
             goal: goal,
+            placement: .standalone,
             isGoalExpanded: true,
             isGoalUpdating: false,
             goalErrorMessage: nil,
@@ -1691,7 +1663,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
             SessionIndexRow(
@@ -1702,7 +1673,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }
@@ -1773,7 +1743,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 isUnread: true,
                 density: .compact
             )
@@ -1785,7 +1754,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                isExternalReadOnly: false,
                 density: .compact
             )
         }
@@ -1808,16 +1776,15 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             height: CGFloat,
             colorScheme: ColorScheme,
             prefersTable: Bool,
-            hidesNavigationTitle: Bool,
             bottomContentMargin: CGFloat,
             dynamicTypeSize: DynamicTypeSize,
             increasedContrast: Bool
         )] = [
-            ("iphone-390-light", 390, 844, .light, false, false, 84, .large, false),
-            ("ipad-mini-744-light", 744, 980, .light, true, true, 84, .large, false),
-            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, true, 16, .large, true),
-            ("split-375-light", 375, 812, .light, false, false, 84, .large, false),
-            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, true, 16, .accessibility3, false),
+            ("iphone-390-light", 390, 844, .light, false, 84, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, true, 84, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, 16, .large, true),
+            ("split-375-light", 375, 812, .light, false, 84, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, 16, .accessibility3, false),
         ]
 
         for scenario in scenarios {
@@ -1826,7 +1793,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 height: scenario.height,
                 colorScheme: scenario.colorScheme,
                 prefersTable: scenario.prefersTable,
-                hidesNavigationTitle: scenario.hidesNavigationTitle,
                 bottomContentMargin: scenario.bottomContentMargin,
                 dynamicTypeSize: scenario.dynamicTypeSize
             )
@@ -1880,6 +1846,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             preview: "",
             recencyAt: Date().addingTimeInterval(-3 * 60)
         )
+        let completedObservedAt = Date().addingTimeInterval(-3 * 60)
 
         let view = VStack(spacing: 0) {
             List {
@@ -1906,6 +1873,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .needYou,
                         isSelected: false,
                         isRecentlyCompleted: false,
+                        completionObservedAt: nil,
                         projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
@@ -1919,7 +1887,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .running,
                         isSelected: true,
                         isRecentlyCompleted: false,
-                        projectIcon: nil,
+                        completionObservedAt: nil,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: RuntimeActivitySnapshot(
                             turnStartedAt: Date().addingTimeInterval(-12 * 60),
                             lastActivityAt: Date()
@@ -1935,7 +1904,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .justCompleted,
                         isSelected: false,
                         isRecentlyCompleted: true,
-                        projectIcon: nil,
+                        completionObservedAt: completedObservedAt,
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
                     .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -2033,7 +2003,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         height: CGFloat,
         colorScheme: ColorScheme,
         prefersTable: Bool,
-        hidesNavigationTitle: Bool,
         bottomContentMargin: CGFloat,
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
@@ -2179,14 +2148,16 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         sessionStore.sidebarProjects = [project, secondProject]
         sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]
+        // 主列表继续验证 Mimi 本地未读；浮动侧栏的“刚完成”使用独立的完成观察时间。
         sessionStore.setUnreadHistorySessionIDs([historyRows[1].id, historyRows[5].id])
         sessionStore.selectedSessionID = historyRows[0].id
 
         return NavigationStack {
             SessionListView(
-                manageConnections: {},
+                manageConnections: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth ? {} : nil,
                 prefersTableDensity: prefersTable,
-                hidesNavigationTitle: hidesNavigationTitle,
+                // 与生产布局一致：iPhone / iPad mini 竖屏使用紧凑导航，宽屏才显示完整搜索框。
+                usesCompactNavigation: width < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth,
                 bottomContentMargin: bottomContentMargin
             )
         }

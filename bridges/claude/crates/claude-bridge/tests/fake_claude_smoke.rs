@@ -66,6 +66,8 @@ async fn fake_claude_emits_system_init_then_replies_to_user_envelope() {
         cwd: cwd.path().to_path_buf(),
         claude_bin: fake_claude_path(),
         model: None,
+        effort_level: None,
+        permission_mode: None,
         append_system_prompt: None,
         resume: false,
         bypass_permissions: true,

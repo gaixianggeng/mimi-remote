@@ -16,6 +16,37 @@ type setupFileTransactionOps struct {
 	syncDir func(dir string) error
 }
 
+// writeConfigAtomically 只提交 SSH 配置文件，不创建、轮换或删除旧 app-server token file。
+func writeConfigAtomically(configPath string, configRaw []byte, ops setupFileTransactionOps) error {
+	configPath = filepath.Clean(configPath)
+	configExisted, err := regularFileOrMissing(configPath, "配置文件")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(configPath)
+	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
+	if err != nil {
+		return fmt.Errorf("暂存配置文件失败：%w", err)
+	}
+	defer ops.remove(stagedConfig)
+	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
+	if err != nil {
+		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
+	}
+	if configBackup != "" {
+		defer ops.remove(configBackup)
+	}
+	if err := ops.rename(stagedConfig, configPath); err != nil {
+		return fmt.Errorf("提交配置文件失败：%w", err)
+	}
+	if err := ops.syncDir(dir); err != nil {
+		rollbackErr := restoreSetupTarget(configPath, configBackup, configExisted, ops)
+		rollbackSyncErr := ops.syncDir(dir)
+		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
+	}
+	return nil
+}
+
 func defaultSetupFileTransactionOps() setupFileTransactionOps {
 	return setupFileTransactionOps{
 		stage:   stagePrivateFile,
@@ -24,73 +55,6 @@ func defaultSetupFileTransactionOps() setupFileTransactionOps {
 		remove:  os.Remove,
 		syncDir: syncDirectory,
 	}
-}
-
-func writeSetupFilesAtomically(configPath string, tokenPath string, configRaw []byte, tokenRaw []byte, ops setupFileTransactionOps) error {
-	configPath = filepath.Clean(configPath)
-	tokenPath = filepath.Clean(tokenPath)
-	if configPath == tokenPath {
-		return fmt.Errorf("配置文件与 app-server token file 不能使用同一路径")
-	}
-	configExisted, err := regularFileOrMissing(configPath, "配置文件")
-	if err != nil {
-		return err
-	}
-	tokenExisted, err := regularFileOrMissing(tokenPath, "app-server token file")
-	if err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(configPath)
-	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw)
-	if err != nil {
-		return fmt.Errorf("暂存 app-server token file 失败：%w", err)
-	}
-	defer ops.remove(stagedToken)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
-	if err != nil {
-		return fmt.Errorf("暂存配置文件失败：%w", err)
-	}
-	defer ops.remove(stagedConfig)
-
-	// 恢复点使用同目录 hard link，既不改动旧 inode，也能完整保留旧内容、mode、owner 与扩展属性。
-	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
-	if err != nil {
-		return fmt.Errorf("创建 app-server token file 恢复点失败：%w", err)
-	}
-	if tokenBackup != "" {
-		defer ops.remove(tokenBackup)
-	}
-	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
-	if err != nil {
-		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
-	}
-	if configBackup != "" {
-		defer ops.remove(configBackup)
-	}
-
-	// 两个新文件都已经 0600 + fsync 后才进入提交阶段。先换 token，再换引用它的 config；
-	// config rename 失败时立即把 token 恢复到旧 inode，避免运行中的服务看到单独轮换的新凭证。
-	if err := ops.rename(stagedToken, tokenPath); err != nil {
-		return fmt.Errorf("提交 app-server token file 失败：%w", err)
-	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
-		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
-		syncErr := ops.syncDir(dir)
-		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))
-	}
-
-	if err := ops.syncDir(dir); err != nil {
-		// 目录 fsync 也是提交的一部分；失败时按相反语义恢复两份旧文件。首次安装则删除刚提交的文件。
-		rollbackErr := errors.Join(
-			restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops),
-			restoreSetupTarget(configPath, configBackup, configExisted, ops),
-		)
-		rollbackSyncErr := ops.syncDir(dir)
-		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
-	}
-
-	return nil
 }
 
 func regularFileOrMissing(path string, label string) (bool, error) {

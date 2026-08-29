@@ -111,73 +111,6 @@ struct WorkspaceProjectIconTile: View {
     }
 }
 
-enum WorkspaceStripLayout {
-    static let horizontalPadding: CGFloat = 24
-    /// 44pt 同时是 Apple 的最小命中尺寸和整条控件带的高度：选中项展开成带名称的胶囊，
-    /// 其余收缩成头像圆，因此一行就能放下全部工作区，不再需要 138pt 的卡片。
-    static let chipHeight: CGFloat = 44
-    static let chipSpacing: CGFloat = 8
-    /// 胶囊行 + 上下呼吸；工作区身份和状态改由下方状态行承担。
-    /// 顶部只收紧上下留白，保留 44pt 胶囊命中区。
-    static let stripHeight: CGFloat = 56
-    /// 头像在展开与收缩两种形态下保持同一光学尺寸，切换时只有胶囊在变宽。
-    static let chipIconSize: CGFloat = 28
-    /// 胶囊行、状态行与详情内容共用同一个最大宽度，宽屏下三者左右边界一致。
-    static let maxContentWidth: CGFloat = 920
-
-    static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
-        max(0, viewportWidth - horizontalPadding * 2)
-    }
-
-    /// 粗略估算一行胶囊的总宽度，用来挑展开档位。
-    /// 只需要够准到"多展开一个会不会挤"，估偏了也不会让胶囊够不到——
-    /// 外层始终是可横向滚动的，这是它和 ViewThatFits 判定的关键区别。
-    static func estimatedRowWidth(names: [String], expandedNames: Set<String>) -> CGFloat {
-        guard !names.isEmpty else { return 0 }
-        let widths = names.map { name -> CGFloat in
-            guard expandedNames.contains(name) else { return chipHeight }
-            // 图标 + 间距 + 文字 + 左右内边距。CJK 按一个字 ~14pt、其余 ~7.5pt 估。
-            let textWidth = name.reduce(CGFloat.zero) { partial, character in
-                partial + (character.isASCII ? 7.5 : 14)
-            }
-            return chipIconSize + 8 + textWidth + 24
-        }
-        return widths.reduce(0, +) + chipSpacing * CGFloat(names.count - 1)
-    }
-
-    /// 把有限的“展开名称”名额以选中项为中心向两侧发放。
-    /// 名额为偶数时优先给右侧，符合从左到右的阅读顺序。
-    static func centeredNameWindow(
-        projectIDs: [String],
-        limit: Int,
-        aroundIndex selected: Int?
-    ) -> Set<String> {
-        guard limit > 0, !projectIDs.isEmpty else { return [] }
-        guard limit < projectIDs.count else { return Set(projectIDs) }
-
-        let center = selected.map { min(max($0, 0), projectIDs.count - 1) } ?? 0
-        var lower = center
-        var upper = center
-        var chosen = [center]
-
-        while chosen.count < limit {
-            let canGoUpper = upper + 1 < projectIDs.count
-            let canGoLower = lower - 1 >= 0
-            guard canGoUpper || canGoLower else { break }
-
-            if canGoUpper, chosen.count.isMultiple(of: 2) == false || !canGoLower {
-                upper += 1
-                chosen.append(upper)
-            } else if canGoLower {
-                lower -= 1
-                chosen.append(lower)
-            }
-        }
-
-        return Set(chosen.map { projectIDs[$0] })
-    }
-}
-
 enum WorkspaceSessionAgeBoundary {
     static let staleInterval: TimeInterval = 12 * 60 * 60
 
@@ -192,27 +125,6 @@ enum WorkspaceSessionAgeBoundary {
             !excludingSessionIDs.contains(session.id) &&
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
-    }
-}
-
-/// 会话页只在分支真正能帮助区分 worktree 时逐行展示它。
-///
-/// 同一页只有一个非空分支时，重复的分支元数据会挤压标题和预览；
-/// 出现多个分支时才保留每行的分支名，让它承担 worktree 区分作用。
-enum WorkspaceSessionBranchPresentation {
-    static func normalizedBranch(_ branch: String?) -> String? {
-        let value = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value, !value.isEmpty else { return nil }
-        return value
-    }
-
-    static func shouldShowBranches(_ branches: [String?]) -> Bool {
-        Set(branches.compactMap(normalizedBranch)).count > 1
-    }
-
-    static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
-        guard shouldShowBranches(branches) else { return nil }
-        return normalizedBranch(branch)
     }
 }
 
@@ -325,7 +237,10 @@ struct WorkspaceRootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
+    @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
@@ -344,9 +259,13 @@ struct WorkspaceRootView: View {
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
-    /// 胶囊行的真实可用宽度，用来挑展开档位。0 表示尚未量到。
-    @State private var measuredStripWidth: CGFloat = 0
-
+    @State private var workspaceStripViewportWidth: CGFloat = 0
+    /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
+    /// 因此可以安全地用来决定要不要把 Runtime 筛选器并进这一行。
+    @State private var workspaceStripContainerWidth: CGFloat = 0
+    @State private var pagerSelectionIsUserDriven = false
+    @State private var pendingHapticWorkspaceID: String?
+    @State private var suppressedHapticWorkspaceID: String?
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
@@ -446,6 +365,7 @@ struct WorkspaceRootView: View {
             }
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
+            pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
         .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
@@ -457,7 +377,7 @@ struct WorkspaceRootView: View {
             OpenWorkspaceSheet { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
-                selectedWorkspaceID = workspaceID
+                selectWorkspace(id: workspaceID)
             }
         }
         .sheet(item: $gitInspectionTarget) { target in
@@ -475,7 +395,8 @@ struct WorkspaceRootView: View {
             }
             .presentationDetents([.large])
         }
-        .background(tokens.background.ignoresSafeArea())
+        // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
     }
 
     private func migrateLegacyWorkspaceAppearance() {
@@ -492,6 +413,21 @@ struct WorkspaceRootView: View {
         UIDevice.current.userInterfaceIdiom == .pad && manageConnections != nil
     }
 
+    /// 设备入口是否占用胶囊行的横向预算。宽屏由顶栏或侧栏承载它，这一行就整条留给工作区。
+    private var showsHostSwitcherInStrip: Bool {
+        !usesTabletTopBarHostSwitcher && manageConnections != nil
+    }
+
+    /// 宽度够时 Runtime 筛选器并入胶囊行，内容头部整条消失；不够时退回列表上方独立一行。
+    /// 判定统一由 `WorkspaceStripLayout` 处理，保证底部 Tab 栏始终保留行内新建入口。
+    private var usesInlineRuntimePicker: Bool {
+        WorkspaceStripLayout.usesInlineRuntimePicker(
+            viewportWidth: workspaceStripContainerWidth,
+            showsHostSwitcherInStrip: showsHostSwitcherInStrip,
+            hasBottomTabBar: hasBottomTabBar
+        )
+    }
+
     @ViewBuilder
     private func navigationContent(tokens: ThemeTokens) -> some View {
         if usesTabletTopBarHostSwitcher, let manageConnections {
@@ -500,15 +436,26 @@ struct WorkspaceRootView: View {
                 .accessibilityIdentifier("workspace.browser")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        HostSwitcherMenu(
-                            presentation: .toolbar,
-                            manageConnections: manageConnections
-                        )
-                    }
-                    // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
                     if #available(iOS 26.0, *) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            HostSwitcherMenu(
+                                presentation: .toolbar,
+                                manageConnections: manageConnections
+                            )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
+                        }
+                        // 按钮自带磨砂圆；关掉系统共享玻璃，否则两层背景叠在一起。
+                        .sharedBackgroundVisibility(.hidden)
+                        // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
+                    } else {
+                        ToolbarItem(placement: .topBarLeading) {
+                            HostSwitcherMenu(
+                                presentation: .toolbar,
+                                manageConnections: manageConnections
+                            )
+                            .workbenchToolbarChromeCircle(tokens: tokens)
+                        }
                     }
                 }
         } else {
@@ -520,15 +467,37 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func openDirectoryButton(tokens: ThemeTokens) -> some View {
+    /// 「打开目录」不再是钉在行尾的工具栏圆钮，而是胶囊行末尾的虚线胶囊：
+    /// 与项目胶囊同高同形，待在它所添加的那个列表里面，读作「在这一排后面再加一个」。
+    /// 它仍然是个加号，但形状、材质和所处层次都与右下角浮起的新建会话按钮不同，
+    /// 因此两个加号不会互相冒充——一个添工作区，一个建会话。
+    private func addWorkspaceChip(tokens: ThemeTokens) -> some View {
         Button {
             isPresentingOpenWorkspace = true
         } label: {
-            WorkbenchChromeIcon(systemName: "folder.badge.plus")
-                .workbenchChromeCircle(tokens: tokens)
+            Image(systemName: "plus")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(
+                    width: WorkspaceStripLayout.addChipVisualSize,
+                    height: WorkspaceStripLayout.addChipVisualSize
+                )
+                .background {
+                    Capsule()
+                        .strokeBorder(
+                            tokens.border,
+                            style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                        )
+                }
+                // 视觉比项目胶囊小一圈——它是次级动作，不该和工作区身份等重；
+                // 但外层仍撑满 44pt 行高，命中区不跟着缩。
+                .frame(
+                    width: WorkspaceStripLayout.chipHeight,
+                    height: WorkspaceStripLayout.chipHeight
+                )
+                .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(tokens.secondaryText)
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.open_directory"))
         .accessibilityIdentifier("workspace.toolbar.openDirectory")
     }
@@ -549,7 +518,7 @@ struct WorkspaceRootView: View {
                 // 选中工作区的分支、Git 状态和活跃时间收进一行状态摘要。
                 projectPager(tokens: tokens)
             }
-            .background(tokens.background.ignoresSafeArea())
+            .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         }
     }
 
@@ -558,7 +527,11 @@ struct WorkspaceRootView: View {
     /// 要等落定才更新，滑到一半上方胶囊不动、松手才跳，正好丢掉跟手感。
     /// 分页物理特性（跟手、速度投射、可中断反向）由系统提供，不自己写 DragGesture。
     private func projectPager(tokens: ThemeTokens) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // scrollTransition 闭包是 Sendable；先冻结成值类型快照，避免直接跨隔离域读取 Environment。
+        let allowsSpatialMotion = !reduceMotion
+        let projectCount = sessionStore.sidebarProjects.count
+
+        return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 0) {
                 ForEach(sessionStore.sidebarProjects) { project in
                     // 状态行下沉进详情视图，与会话列表共用同一组内边距并紧贴列表：
@@ -577,8 +550,8 @@ struct WorkspaceRootView: View {
                     // 手指走，所以缩放是 1:1 可中断的，而不是松手后再播一段固定动画。
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                         content
-                            .scaleEffect(phase.isIdentity ? 1 : 0.93)
-                            .opacity(phase.isIdentity ? 1 : 0.55)
+                            .scaleEffect(!allowsSpatialMotion || phase.isIdentity ? 1 : 0.97)
+                            .opacity(!allowsSpatialMotion || phase.isIdentity ? 1 : 0.72)
                     }
                     .id(project.id)
                 }
@@ -588,6 +561,30 @@ struct WorkspaceRootView: View {
         .scrollTargetBehavior(.paging)
         // 直接绑定唯一的选择来源：点胶囊会滚动分页，滑动分页会回写胶囊选中态。
         .scrollPosition(id: $selectedWorkspaceID, anchor: .center)
+        .onScrollGeometryChange(for: CGFloat?.self) { geometry in
+            WorkspacePagerTransition.pagePosition(
+                contentOffsetX: geometry.contentOffset.x,
+                leadingInset: geometry.contentInsets.leading,
+                viewportWidth: geometry.containerSize.width,
+                pageCount: projectCount
+            )
+        } action: { _, pagePosition in
+            pagerTransitionState.update(pagePosition: pagePosition)
+        }
+        .onScrollPhaseChange { _, phase in
+            switch phase {
+            case .tracking, .interacting, .decelerating:
+                if !pagerSelectionIsUserDriven {
+                    MimiHaptics.prepare(.snap)
+                }
+                pagerSelectionIsUserDriven = true
+            case .idle:
+                pagerSelectionIsUserDriven = false
+            case .animating:
+                // 系统分页可能在手势后进入动画阶段；保留来源直到真正停止。
+                break
+            }
+        }
         .scrollIndicators(.hidden)
     }
 
@@ -604,7 +601,7 @@ struct WorkspaceRootView: View {
                 .tint(tokens.primaryAction)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
     }
 
@@ -664,7 +661,7 @@ struct WorkspaceRootView: View {
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.emptyState")
     }
@@ -694,19 +691,25 @@ struct WorkspaceRootView: View {
                 // 真实宽度，不参与布局协商。
                 ScrollView(.horizontal, showsIndicators: false) {
                     projectChips(
-                        expandedNameLimit: expandedNameLimit(forWidth: measuredStripWidth),
-                        tokens: tokens
+                        tokens: tokens,
+                        restingNameDisclosure: WorkspaceStripLayout.restingNameDisclosure(
+                            viewportWidth: workspaceStripViewportWidth,
+                            projectCount: sessionStore.sidebarProjects.count
+                        )
                     )
                 }
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.width
-                } action: { newWidth in
-                    guard newWidth > 0, measuredStripWidth != newWidth else { return }
-                    measuredStripWidth = newWidth
+                } action: { width in
+                    guard width > 0, workspaceStripViewportWidth != width else { return }
+                    workspaceStripViewportWidth = width
                 }
-                .onChange(of: selectedWorkspaceID) { _, selectedID in
+                .onChange(of: selectedWorkspaceID) { previousID, selectedID in
+                    handleWorkspaceSelectionHaptic(previousID: previousID, selectedID: selectedID)
                     guard let selectedID else { return }
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    // 首次恢复选择直接定位，避免页面刚出现就自行滑动；后续切换与正文分页
+                    // 共用同一个临界阻尼 token，快速反向点击会从当前画面连续改向。
+                    withAnimation(previousID == nil ? nil : workspaceSelectionAnimation) {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
@@ -719,51 +722,38 @@ struct WorkspaceRootView: View {
                 }
             }
 
-            // “打开目录”与切换工作区是同一类操作，和胶囊行齐平；
-            // 它固定在行尾，不参与胶囊的横向滚动。
-            openDirectoryButton(tokens: tokens)
+            // 宽屏把 Runtime 筛选器收进这一行，整条内容头部因此可以整体消失。
+            // 分隔线和间距是刻意的：让这一行读成「左导航／右工具」的工具条，
+            // 而不是一排并列的同级选择器——项目、添加目录和 Runtime 筛选并不同级。
+            if usesInlineRuntimePicker {
+                Divider()
+                    .frame(height: 22)
+                    .padding(.horizontal, 4)
+
+                WorkspaceRuntimePicker(
+                    selection: $selectedSessionRuntime,
+                    claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                )
+            }
         }
         .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
         .frame(height: WorkspaceStripLayout.stripHeight)
+        // 只观测已经排好的整行宽度，不参与布局协商；插不插筛选器都读到同一个值。
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard width > 0, workspaceStripContainerWidth != width else { return }
+            workspaceStripContainerWidth = width
+        }
         .accessibilityLabel(L10n.text("ui.workspace_list"))
     }
 
-    /// 在给定宽度下能展开多少个名称。从最宽的档位往下退，取第一个装得下的。
-    private func expandedNameLimit(forWidth width: CGFloat) -> Int {
-        // 宽度尚未量到时按全展开渲染：胶囊行始终可横向滚动，
-        // 首帧偏宽只是多展开几个名字，而塌成 0 会让整行只剩一个胶囊。
-        guard width > 0 else { return .max }
-        let projects = sessionStore.sidebarProjects
-        guard !projects.isEmpty else { return 0 }
-
-        let names = projects.map(\.name)
-        let selectedIndex = projects.firstIndex { $0.id == selectedWorkspaceID }
-        let ids = projects.map(\.id)
-
-        for limit in [Int.max, 8, 6, 4, 3, 2, 1] {
-            let expandedIDs = WorkspaceStripLayout.centeredNameWindow(
-                projectIDs: ids,
-                limit: limit,
-                aroundIndex: selectedIndex
-            )
-            let expandedNames = Set(
-                zip(ids, names).compactMap { expandedIDs.contains($0.0) ? $0.1 : nil }
-            )
-            let estimate = WorkspaceStripLayout.estimatedRowWidth(
-                names: names,
-                expandedNames: expandedNames
-            )
-            if estimate <= width {
-                return limit
-            }
-        }
-        return 0
-    }
-
-    /// 各档位共用同一份胶囊构造，只有展开名称的数量不同；
-    /// 分支结构必须一致，否则 ViewThatFits 切换档位时会重建整行而不是平滑改宽。
-    /// `expandedNameLimit` 为 0 表示只展开选中项。
-    private func projectChips(expandedNameLimit: Int, tokens: ThemeTokens) -> some View {
+    /// 所有项目始终保留同一份 View 身份；名称不插入/移除，而是按分页进度裁切宽度，
+    /// 这样反向横滑可以直接沿当前画面恢复，不会重建 HStack 或跳回逻辑选中态。
+    private func projectChips(
+        tokens: ThemeTokens,
+        restingNameDisclosure: CGFloat
+    ) -> some View {
         let profileID = appStore.activeHostScope.profileID
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
@@ -776,14 +766,7 @@ struct WorkspaceRootView: View {
             profileID: profileID,
             projectIDs: projectIDs
         )
-        // 名额以选中项为中心向两侧分配。从最左边开始发会让选中项右侧的邻居先被收缩，
-        // 视线跟着选择移动时出现断裂——这正是“滑到哪个才放大哪个”被破坏的原因。
         let selectedIndex = sessionStore.sidebarProjects.firstIndex { $0.id == selectedWorkspaceID }
-        let expandedNameIDs = WorkspaceStripLayout.centeredNameWindow(
-            projectIDs: projectIDs,
-            limit: expandedNameLimit,
-            aroundIndex: selectedIndex
-        )
 
         // 胶囊数量等于本机工作区数量，且每个都很轻；用 HStack 而不是 LazyHStack，
         // 否则选中项展开时宽度动画会因为懒加载复用而跳变。
@@ -807,11 +790,13 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: [],
                         unavailableEmoji: [],
                         gitSummary: nil,
-                        hasRunningSession: false,
+                        runningSessionCount: 0,
                         isUnavailable: false,
-                        isSelected: false,
-                        showsName: expandedNameLimit > 0,
-                        distanceFromSelection: 0,
+                        isSelected: index == 0,
+                        projectIndex: index,
+                        distanceFromSelection: index,
+                        restingNameDisclosure: restingNameDisclosure,
+                        pagerTransitionState: pagerTransitionState,
                         allowsCustomization: false,
                         tokens: tokens,
                         action: {},
@@ -831,6 +816,7 @@ struct WorkspaceRootView: View {
                         )
                     let displayedEmoji = emojiAssignments[project.id]
                         ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
+                    let projectIndex = projectIDs.firstIndex(of: project.id) ?? 0
                     let unavailableCharacterIDs: Set<String> =
                         projectIDs.count
                             <= WorkspaceAppearanceStore.characters(for: iconStyle).count
@@ -858,16 +844,18 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: unavailableCharacterIDs,
                         unavailableEmoji: unavailableEmoji,
                         gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
-                        hasRunningSession: projectSessions.contains(where: \.isRunning),
+                        runningSessionCount: projectSessions.filter(\.isRunning).count,
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         isSelected: selectedWorkspaceID == project.id,
-                        showsName: expandedNameIDs.contains(project.id) || selectedWorkspaceID == project.id,
-                        distanceFromSelection: selectedIndex.map { abs(($0) - (projectIDs.firstIndex(of: project.id) ?? $0)) } ?? 0,
+                        projectIndex: projectIndex,
+                        distanceFromSelection: selectedIndex.map { abs($0 - projectIndex) } ?? 0,
+                        restingNameDisclosure: restingNameDisclosure,
+                        pagerTransitionState: pagerTransitionState,
                         allowsCustomization: true,
                         tokens: tokens
                     ) {
                         // 工作区页面只更新本地浏览选择，避免切换胶囊时意外改变当前会话上下文。
-                        selectedWorkspaceID = project.id
+                        selectWorkspace(project)
                     } onOpenGitChanges: {
                         gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
                     } onConfirmRemove: {
@@ -875,11 +863,62 @@ struct WorkspaceRootView: View {
                     }
                     .id(project.id)
                 }
+
+                // 「添加工作区」跟着胶囊一起横滚，而不是钉在行尾：
+                // 它必须待在它所添加的那个列表里面，「在这一排后面再加一个」才成立。
+                addWorkspaceChip(tokens: tokens)
             }
         }
-        // 这里不能加 maxWidth 约束：ViewThatFits 靠子视图的固有宽度判断放不放得下，
-        // 一旦声明 .infinity，展开态会永远“合身”，窄屏上就退不回压缩态。
         .padding(.vertical, 8)
+    }
+
+    /// 项目切换属于高频状态变化，使用无回弹、可重定向的统一 spring。
+    /// Reduce Motion 下禁用空间动画，保留明确的静态选中态。
+    private var workspaceSelectionAnimation: Animation? {
+        let motion = MimiMotion.stateTransition.resolve(reduceMotion: reduceMotion)
+        return motion.allowsSpatialMotion ? motion.animation : nil
+    }
+    private func selectWorkspace(_ project: AgentProject) {
+        selectWorkspace(id: project.id, providesHaptic: true)
+    }
+    private func selectWorkspace(id: String, providesHaptic: Bool = false) {
+        guard selectedWorkspaceID != id else { return }
+        if providesHaptic {
+            pendingHapticWorkspaceID = id
+            suppressedHapticWorkspaceID = nil
+            MimiHaptics.prepare(.snap)
+        } else {
+            pendingHapticWorkspaceID = nil
+            suppressedHapticWorkspaceID = id
+        }
+        withAnimation(workspaceSelectionAnimation) {
+            selectedWorkspaceID = id
+        }
+    }
+    private func handleWorkspaceSelectionHaptic(previousID: String?, selectedID: String?) {
+        let shouldFire = WorkspaceSelectionHapticPolicy.shouldFire(
+            previousID: previousID,
+            selectedID: selectedID,
+            isExplicitSelection: pendingHapticWorkspaceID == selectedID,
+            isUserPaging: pagerSelectionIsUserDriven,
+            isSuppressed: suppressedHapticWorkspaceID == selectedID
+        )
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = nil
+        if shouldFire {
+            MimiHaptics.fire(.snap)
+        }
+    }
+    /// 目录恢复和数据同步不代表用户发起了导航；禁止隐式动画，避免首次进入工作区自行滑动。
+    private func restoreWorkspaceSelection(_ id: String?) {
+        guard selectedWorkspaceID != id else { return }
+        pendingHapticWorkspaceID = nil
+        suppressedHapticWorkspaceID = id
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedWorkspaceID = id
+        }
     }
 
     /// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
@@ -922,6 +961,8 @@ struct WorkspaceRootView: View {
         return WorkspaceDetailView(
             statusLine: statusLine(),
             showsStatusLine: showsStatusLine,
+            // 胶囊行已经承载筛选器时，详情页不再自己画一条筛选行。
+            showsInlineRuntimePicker: usesInlineRuntimePicker,
             // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
             // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
             recentSessions: WorkspaceSessionPresentation.visibleSessions(
@@ -981,7 +1022,7 @@ struct WorkspaceRootView: View {
     private func synchronizeSelection() {
         let projects = sessionStore.sidebarProjects
         guard !projects.isEmpty else {
-            selectedWorkspaceID = nil
+            restoreWorkspaceSelection(nil)
             return
         }
         if let selectedWorkspaceID,
@@ -991,17 +1032,17 @@ struct WorkspaceRootView: View {
         if let selectedWorkspaceID {
             let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
             if projects.contains(where: { $0.id == retainedID }) {
-                self.selectedWorkspaceID = retainedID
+                restoreWorkspaceSelection(retainedID)
                 return
             }
         }
-        selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
+        restoreWorkspaceSelection(sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        } ?? projects.first?.id
+        } ?? projects.first?.id)
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        guard selectedWorkspaceID != project.id else { return }
+        // 当前浏览选择可以被移出；目录列表变化后，现有同步逻辑会选择剩余目录。
         runtimeSessionPagesByKey = runtimeSessionPagesByKey.filter { $0.key.workspaceID != project.id }
         sessionLoadStates = sessionLoadStates.filter { $0.key.workspaceID != project.id }
         sessionLoadInvocationTokens.remove { $0.workspaceID == project.id }
@@ -1209,17 +1250,6 @@ struct WorkspaceRootView: View {
 
 }
 
-private enum WorkspaceSessionLoadState: Equatable {
-    case idle
-    case loading
-    case loaded
-    case failed(String)
-
-    var isLoading: Bool {
-        self == .loading
-    }
-}
-
 /// 44pt 的项目胶囊：选中项展开成带名称的胶囊，其余收缩成头像圆，整行只占一条控件带。
 /// 原来 316×138pt 卡片上有三个可见操作，胶囊只留得下“选中”；Git 变更、换图标和移除目录
 /// 都是低频操作，收进长按菜单。分支与 Git 状态改由页面的状态行承担。
@@ -1236,14 +1266,16 @@ private struct WorkspaceProjectChip: View {
     let unavailableEmoji: Set<String>
     /// 胶囊本身不再展示 Git 摘要；这里只用来决定“Git 变更”菜单项是否可用。
     let gitSummary: GitStatusResponse?
-    let hasRunningSession: Bool
+    let runningSessionCount: Int
     let isUnavailable: Bool
     let isSelected: Bool
-    /// 展开名称与选中是两件事：宽度够时所有胶囊都展开，选中仍只由亮度和字重表达。
-    let showsName: Bool
+    let projectIndex: Int
     /// 距选中项的档数。只用来做透明度和图标微缩的衰减，不改变行高——
     /// 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖动。
     let distanceFromSelection: Int
+    /// 宽屏信息密度底值。名称可半展开，但选中材质仍只读取分页进度。
+    let restingNameDisclosure: CGFloat
+    @ObservedObject var pagerTransitionState: WorkspacePagerTransitionState
     let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void
@@ -1252,41 +1284,70 @@ private struct WorkspaceProjectChip: View {
 
     @State private var isPresentingIconPicker = false
     @State private var isPresentingRemoveConfirmation = false
+    @State private var measuredNameWidth: CGFloat = 0
 
     var body: some View {
+        let progress = selectionProgress
+        let restingNameWidth = min(
+            measuredNameWidth,
+            WorkspaceStripLayout.restingNameWidth
+        ) * restingNameDisclosure
+        let nameWidth = restingNameWidth + (measuredNameWidth - restingNameWidth) * progress
+        let restingNameOpacity = min(1, restingNameDisclosure * 1.6)
+        let nameOpacity = restingNameOpacity + (1 - restingNameOpacity) * progress
+        let distanceOpacityFloor = 0.42 + 0.26 * Double(restingNameDisclosure)
+
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
                 iconTile
 
-                if showsName {
-                    Text(project.name)
-                        .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
+                Text(project.name)
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(
+                        tokens.secondaryText.mix(
+                            with: tokens.primaryText,
+                            by: Double(progress)
+                        )
+                    )
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.leading, 8)
+                    .frame(width: nameWidth, alignment: .leading)
+                    .clipped()
+                    .opacity(Double(nameOpacity))
+                    .background {
+                        // 非选中项首帧的可见文字宽度可能为 0；若直接测裁切后的 Text，
+                        // 宽屏底值永远没有机会展开。背景副本固定按完整内容测量，但不参与布局。
+                        Text(project.name)
+                            .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.leading, 8)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self) { proxy in
+                                proxy.size.width
+                            } action: { width in
+                                guard width > 0, measuredNameWidth != width else { return }
+                                measuredNameWidth = width
+                            }
+                    }
             }
-            .padding(.horizontal, showsName ? 12 : 8)
+            .padding(.horizontal, 8 + 4 * progress)
             .frame(height: WorkspaceStripLayout.chipHeight)
-            // 选中与未选中共用同一块磨砂：差别只在中性提亮和是否展开名称，
-            // 一行里不会出现两种材质浓度。
+            // 中性提亮和名称宽度读取同一份 0...1 进度，旧项目退场与新项目进入同帧发生。
             .background {
-                WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens, isTinted: isSelected)
+                WorkbenchChromeMaterial(
+                    shape: Capsule(),
+                    tokens: tokens,
+                    tintLevel: Double(progress)
+                )
             }
             // 波形衰减：越远离选中项越淡。只动透明度，不动行高——
             // 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖。
-            .opacity(showsName ? 1 : max(0.42, 1 - Double(distanceFromSelection) * 0.16))
+            .opacity(max(distanceOpacityFloor, 1 - Double(visualDistance) * 0.16))
             .contentShape(Capsule())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .animation(
-            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.86),
-            value: showsName
-        )
-        .animation(
-            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.9),
-            value: distanceFromSelection
-        )
         .contextMenu { contextActions }
         .popover(isPresented: $isPresentingIconPicker, arrowEdge: .top) {
             iconPicker
@@ -1312,6 +1373,22 @@ private struct WorkspaceProjectChip: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("workspace.card.\(project.id)")
     }
+    /// Reduce Motion 下只在分页落定后静态切换；正常模式完全读取系统滚动的呈现位置。
+    private var selectionProgress: CGFloat {
+        guard !reduceMotion, let pagePosition = pagerTransitionState.pagePosition else {
+            return isSelected ? 1 : 0
+        }
+        return WorkspacePagerTransition.selectionProgress(
+            projectIndex: projectIndex,
+            pagePosition: pagePosition
+        )
+    }
+    private var visualDistance: CGFloat {
+        guard !reduceMotion, let pagePosition = pagerTransitionState.pagePosition else {
+            return CGFloat(distanceFromSelection)
+        }
+        return abs(CGFloat(projectIndex) - pagePosition)
+    }
 
     @ViewBuilder
     private var contextActions: some View {
@@ -1333,14 +1410,12 @@ private struct WorkspaceProjectChip: View {
             .accessibilityIdentifier("workspace.card.icon.\(project.id)")
         }
 
-        if !isSelected {
-            Button(role: .destructive) {
-                isPresentingRemoveConfirmation = true
-            } label: {
-                Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
-            }
-            .accessibilityIdentifier("workspace.remove.request.\(project.id)")
+        Button(role: .destructive) {
+            isPresentingRemoveConfirmation = true
+        } label: {
+            Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
         }
+        .accessibilityIdentifier("workspace.remove.request.\(project.id)")
     }
 
     @ViewBuilder
@@ -1354,24 +1429,27 @@ private struct WorkspaceProjectChip: View {
             tokens: tokens
         )
         .overlay(alignment: .topTrailing) {
-            runningIndicator
+            runningCountBadge
         }
         .opacity(isUnavailable ? 0.62 : 1)
     }
 
     @ViewBuilder
-    private var runningIndicator: some View {
-        if hasRunningSession {
-            // 收缩态没有名称也没有状态行，这颗点是“这个工作区有会话在跑”的唯一信号，
-            // 因此用语义绿而不是原卡片上的中性灰——它不与选中态的梅紫争焦点。
-            Circle()
-                .fill(tokens.success)
-                .frame(width: 9, height: 9)
+    private var runningCountBadge: some View {
+        if let badgeText = WorkspaceRunningCountBadge.displayText(for: runningSessionCount) {
+            // 数字明确说明这是工作区内的聚合数量，不再让一颗绿点同时冒充连接和会话状态。
+            Text(badgeText)
+                .font(themeStore.uiFont(size: 9, weight: .bold))
+                .foregroundStyle(runningCountForeground)
+                .monospacedDigit()
+                .frame(minWidth: 14, minHeight: 14)
+                .padding(.horizontal, badgeText.count > 1 ? 1.5 : 0)
+                .background(tokens.success, in: Capsule())
                 .overlay {
-                    Circle()
-                        .stroke(tokens.background, lineWidth: 1.5)
+                    Capsule()
+                        .stroke(tokens.background, lineWidth: 1.25)
                 }
-                .offset(x: 2, y: -2)
+                .offset(x: 3, y: -3)
                 .accessibilityHidden(true)
         }
     }
@@ -1400,10 +1478,20 @@ private struct WorkspaceProjectChip: View {
         }
     }
 
+    private var runningCountForeground: Color {
+        // Gruvbox Light 的暖白压在橄榄绿上只有约 3.22:1；纯黑可提升到约 5.38:1。
+        if tokens.preset == .gruvbox, tokens.resolvedScheme == .light {
+            return .black
+        }
+        return tokens.background
+    }
+
     private var accessibilitySummary: String {
         let statusParts = [
             isUnavailable ? L10n.text("ui.need_to_retry") : nil,
-            hasRunningSession ? L10n.text("ui.running") : nil
+            runningSessionCount > 0
+                ? L10n.format("ui.running_sessions_count", runningSessionCount)
+                : nil
         ].compactMap { $0 }
         let status = statusParts.isEmpty
             ? L10n.text("ui.git_status_unknown")
@@ -1417,581 +1505,4 @@ private struct WorkspaceProjectChip: View {
             selected
         )
     }
-}
-
-/// 泛型视图不能持有静态存储属性，而每行重建 DateFormatter 又很贵；
-/// 这两个格式化器与具体视图无关，提到文件级共享一份。
-/// 工作区最近会话行的几何。左槽不再放运行时品牌图标：这一屏已经被项目胶囊和
-/// Codex/Claude 筛选器各锁定一次，逐行重复的图标是常量，只会和标题抢横向空间。
-/// 槽位改成状态导轨，宽度收到一颗圆点，分隔线与标题左缘对齐（同 Mail 的未读点）。
-private enum WorkspaceSessionRowMetrics {
-    static let horizontalPadding: CGFloat = 14
-    static let railWidth: CGFloat = 10
-    static let railSpacing: CGFloat = 10
-    /// 工作区行是「续上的入口」，条数少但每条重要：三行内容 + 更松的行高，
-    /// 和会话页 44pt 的搜索结果节奏拉开距离。
-    static let minHeight: CGFloat = 72
-    static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
-}
-
-/// 会话按「现在要不要你」分三段。三段共用同一套分组容器，状态差异只由
-/// 行内导轨和文案表达，避免一部分有实体背景、另一部分直接铺在页面上造成视觉失衡。
-enum WorkspaceSessionGroup: String, CaseIterable {
-    case needsAttention
-    case running
-    case recent
-
-    var title: String {
-        switch self {
-        case .needsAttention:
-            return L10n.text("ui.workspace_group_needs_attention")
-        case .running:
-            return L10n.text("ui.workspace_group_running")
-        case .recent:
-            return L10n.text("ui.workspace_group_recent")
-        }
-    }
-
-    static func of(_ session: AgentSession, status: AgentSessionDisplayStatus) -> WorkspaceSessionGroup {
-        // 失败和等待用户都属于「需要处理」，即使会话仍标记为运行中。
-        if status.tone == .danger || status.tone == .warning {
-            return .needsAttention
-        }
-        return session.isRunning ? .running : .recent
-    }
-
-    static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
-        allCases.filter(groups.contains)
-    }
-}
-
-/// 会话行左槽只表达执行状态，未读改由右端紫点承担，避免同一颗圆点既像状态又像项目色。
-private enum WorkspaceSessionRailState {
-    case failed
-    case waiting
-    case running
-
-    static func resolve(
-        status: AgentSessionDisplayStatus,
-        isRunning: Bool
-    ) -> WorkspaceSessionRailState? {
-        switch status.tone {
-        case .danger:
-            return .failed
-        case .warning:
-            return .waiting
-        case .active, .complete, .neutral:
-            // 普通历史会话不点圆点：空槽本身表示「不需要你」。
-            return isRunning ? .running : nil
-        }
-    }
-
-    func color(tokens: ThemeTokens) -> Color {
-        switch self {
-        case .failed:
-            return .red
-        case .waiting:
-            return tokens.warning
-        case .running:
-            return tokens.success
-        }
-    }
-}
-
-/// 工作区会话的统一内容面板。容器只承担分组，不承担状态编码：浅色用白色 Surface
-/// 稳住下半屏，深色只比页面底亮一档，避免连续分组读成三块高对比“黑砖”。
-/// 行本身没有圆角、填充或阴影，仍靠发丝线维持紧凑列表密度。
-private struct WorkspaceSessionGroupPanel: ViewModifier {
-    let tokens: ThemeTokens
-
-    func body(content: Content) -> some View {
-        content
-            .workbenchSurface(tokens: tokens, role: .groupedPanel)
-    }
-}
-
-private enum WorkspaceSessionRowFormatters {
-    static let time: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Hm")
-        return formatter
-    }()
-
-    static let date: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter
-    }()
-}
-
-private struct WorkspaceDetailView<StatusLine: View>: View {
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
-    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
-    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
-    @State private var isLoadingMoreSessions = false
-
-    let statusLine: StatusLine
-    let showsStatusLine: Bool
-    let recentSessions: [AgentSession]
-    let unreadHistorySessionIDs: Set<SessionID>
-    let sessionLoadState: WorkspaceSessionLoadState
-    let hasInitialSessionContent: Bool
-    let canLoadMoreSessions: Bool
-    @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
-    let currentDate: () -> Date
-    let onRefreshSessions: () -> Void
-    let onLoadMoreSessions: () async -> Void
-    let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
-    let onOpenSession: (AgentSession) -> Void
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                recentSessionsSection(tokens: tokens)
-            }
-            .padding(
-                .horizontal,
-                hasCompactTabBar
-                    ? WorkbenchPageLayout.compactPadding
-                    : WorkbenchPageLayout.regularPadding
-            )
-            .padding(.top, 16)
-            // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
-            .padding(
-                .bottom,
-                hasCompactTabBar
-                    ? bottomChromeClearance
-                    : WorkbenchPageLayout.regularPadding
-            )
-            .frame(maxWidth: 920, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-        }
-        .scrollIndicators(.hidden)
-        .background(tokens.background.ignoresSafeArea())
-    }
-
-    private func recentSessionsSection(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            recentSessionsHeader(tokens: tokens)
-
-            // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
-            // 它是这个列表的说明文字，夹在筛选行上方会重新读成悬空的元数据。
-            if showsStatusLine {
-                statusLine
-                    .padding(.bottom, 2)
-            }
-
-            if sessionLoadState.isLoading, !hasInitialSessionContent {
-                // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
-                recentSessionPlaceholders(tokens: tokens)
-            } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
-                ContentUnavailableView {
-                    Label(L10n.text("ui.unable_to_load_session"), systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(message)
-                } actions: {
-                    Button(L10n.text("ui.reload"), action: onRefreshSessions)
-                }
-                .frame(maxWidth: .infinity, minHeight: 150)
-                .workbenchSurface(tokens: tokens, role: .groupedPanel)
-            } else if recentSessions.isEmpty {
-                ContentUnavailableView(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right", description: Text(L10n.text("ui.after_a_new_session_is_created_in_this")))
-                    .frame(maxWidth: .infinity, minHeight: 150)
-                    .workbenchSurface(tokens: tokens, role: .groupedPanel)
-            } else {
-                groupedSessionSections(tokens: tokens)
-            }
-        }
-    }
-
-    /// 需要处理 / 正在运行 / 最近会话三段共用分组级内容面板；
-    /// 面板内部仍是紧凑行与发丝线，不退回逐行卡片。
-    /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
-    @ViewBuilder
-    private func groupedSessionSections(tokens: ThemeTokens) -> some View {
-        let grouped = Dictionary(grouping: recentSessions) { session in
-            WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
-        }
-        let branchValues = recentSessions.map(\.gitBranchName)
-        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
-
-        VStack(alignment: .leading, spacing: 18) {
-            ForEach(populatedGroups, id: \.self) { group in
-                let sessions = grouped[group] ?? []
-                VStack(alignment: .leading, spacing: 8) {
-                    sectionHeader(group, count: sessions.count, tokens: tokens)
-                    sessionGroupBody(
-                        group,
-                        sessions: sessions,
-                        branchValues: branchValues,
-                        showsLoadMore: group == populatedGroups.last,
-                        tokens: tokens
-                    )
-                }
-            }
-        }
-    }
-
-    private func sectionHeader(
-        _ group: WorkspaceSessionGroup,
-        count: Int,
-        tokens: ThemeTokens
-    ) -> some View {
-        // 计数推到行尾，跟系统列表（「最近通话  12」）一致；贴在标题后面会读成标题的一部分。
-        HStack(spacing: 8) {
-            Text(group.title)
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-
-            Spacer(minLength: 8)
-
-            // 计数只在有多条时才有意义；一条时数字只是重复了下面那一行。
-            if count > 1 {
-                Text("\(count)")
-                    .font(themeStore.uiFont(.subheadline))
-                    .foregroundStyle(tokens.tertiaryText)
-                    .monospacedDigit()
-            }
-        }
-        .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .accessibilityElement(children: .combine)
-    }
-
-    @ViewBuilder
-    private func sessionGroupBody(
-        _ group: WorkspaceSessionGroup,
-        sessions: [AgentSession],
-        branchValues: [String?],
-        showsLoadMore: Bool,
-        tokens: ThemeTokens
-    ) -> some View {
-        let firstStaleIndex = group == .recent
-            ? WorkspaceSessionAgeBoundary.firstStaleIndex(
-                in: sessions,
-                excludingSessionIDs: sessionStore.pinnedSessionIDs,
-                now: currentDate()
-            )
-            : nil
-
-        VStack(spacing: 0) {
-            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                if index == firstStaleIndex {
-                    twelveHourBoundary(tokens: tokens)
-                } else if index > 0 {
-                    Divider()
-                        .overlay(tokens.border.opacity(0.62))
-                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
-                }
-
-                Button {
-                    onOpenSession(session)
-                } label: {
-                    recentSessionRow(
-                        session,
-                        branchValues: branchValues,
-                        tokens: tokens
-                    )
-                }
-                .buttonStyle(.plain)
-                .sessionRowActions(session)
-                .accessibilityIdentifier("workspace.session.\(session.id)")
-            }
-
-            // 加载入口跟随当前最后一个可见分组；即使首屏全是待处理或运行会话，也能继续取回历史。
-            if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
-                Divider()
-                    .overlay(tokens.border.opacity(0.62))
-
-                loadMoreButton(tokens: tokens)
-            }
-        }
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
-    }
-
-    private func loadMoreButton(tokens: ThemeTokens) -> some View {
-        Button {
-            guard !isLoadingMoreSessions else { return }
-            isLoadingMoreSessions = true
-            Task {
-                await onLoadMoreSessions()
-                isLoadingMoreSessions = false
-            }
-        } label: {
-            HStack(spacing: 7) {
-                if isLoadingMoreSessions {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "chevron.down")
-                        .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
-                }
-                Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
-            }
-            .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isLoadingMoreSessions)
-        .accessibilityLabel(
-            isLoadingMoreSessions
-                ? L10n.text("ui.loading")
-                : L10n.text("ui.show_more")
-        )
-        .accessibilityIdentifier("workspace.sessions.loadMore")
-    }
-
-    /// 一行同时承担两件事：左端图标用当前运行时开新会话，右端切换运行时。
-    /// Codex/Claude 这个维度整屏只出现一次，主操作也不再占用独立的大卡片。
-    private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 12) {
-            newSessionButton(tokens: tokens)
-
-            Spacer(minLength: 8)
-
-            WorkspaceRuntimePicker(
-                selection: $selectedRuntime,
-                claudeChannelAvailable: claudeChannelAvailable
-            )
-        }
-    }
-
-    private func newSessionButton(tokens: ThemeTokens) -> some View {
-        Button {
-            // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
-            onStartSession(selectedRuntime)
-        } label: {
-            WorkbenchChromeIcon(systemName: "square.and.pencil")
-                .foregroundStyle(tokens.primaryText)
-                .workbenchChromeCircle(tokens: tokens)
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.new_session"))
-        .accessibilityValue(selectedRuntime.title)
-        .accessibilityIdentifier("workspace.sessions.newSession")
-    }
-
-    private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
-        ZStack {
-            // 直接复用普通列表分隔线的位置，只在中间留出文案缺口，
-            // 避免“默认分隔线 + 分组分隔线”叠成两道横线。
-            Rectangle()
-                .fill(tokens.border.opacity(0.62))
-                .frame(height: 0.5)
-
-            Text(L10n.text("ui.twelve_hours_ago"))
-                .font(themeStore.uiFont(.caption2, weight: .medium))
-                .foregroundStyle(tokens.tertiaryText)
-                .padding(.horizontal, 8)
-                // 文案缺口必须与分组面板共用同一个 token，深色模式才不会露出矩形色块。
-                .background(tokens.contentPanelBackground)
-                .fixedSize()
-        }
-        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
-        .padding(.trailing, WorkspaceSessionRowMetrics.horizontalPadding)
-        .padding(.vertical, 7)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
-    }
-
-    private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 0) {
-            ForEach(0..<3, id: \.self) { index in
-                HStack(spacing: WorkspaceSessionRowMetrics.railSpacing) {
-                    Color.clear
-                        .frame(width: WorkspaceSessionRowMetrics.railWidth)
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 210, height: 12)
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 128, height: 9)
-                    }
-                    Spacer(minLength: 8)
-                }
-                .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-                .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
-
-                if index < 2 {
-                    Divider()
-                        .overlay(tokens.border.opacity(0.62))
-                        .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
-                }
-            }
-        }
-        .redacted(reason: .placeholder)
-        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
-    }
-
-    private func recentSessionRow(
-        _ session: AgentSession,
-        branchValues: [String?],
-        tokens: ThemeTokens
-    ) -> some View {
-        let status = session.displayStatus(foregroundActivity: nil)
-        let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
-
-        let railState = WorkspaceSessionRailState.resolve(
-            status: status,
-            isRunning: session.isRunning
-        )
-
-        // 状态点跟标题行对齐；垂直居中会让它浮在预览行旁边。
-        return HStack(alignment: .top, spacing: WorkspaceSessionRowMetrics.railSpacing) {
-            sessionStateRail(railState, tokens: tokens)
-                .padding(.top, 7)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    if sessionStore.isSessionPinned(session.id) {
-                        SessionPinnedBadge(compact: true)
-                    }
-
-                    Text(session.title)
-                        .font(themeStore.uiFont(.callout, weight: .medium))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-
-                    Spacer(minLength: 0)
-                }
-
-                // 工作区行显示会话页负担不起的东西：这条会话最后说了什么。
-                // 两个列表用同一种材质，靠载荷不同读成两个地方。
-                let preview = SessionListPresentation.previewDisplayText(for: session)
-                if !preview.isEmpty {
-                    Text(preview)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                // 元数据行：只有存在多个 worktree 分支时才把分支贴左，状态 / 时间 / 未读贴右。
-                // 单一分支时隐藏重复值，让标题和预览占满整行；时间戳不会挤在标题右边。
-                // 左端已有状态圆点，这里不再挂小菊花：圆点 + Spinner + 状态文字三样说同一件事。
-                HStack(spacing: 8) {
-                    if let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
-                        session.gitBranchName,
-                        among: branchValues
-                    ) {
-                        HStack(spacing: 4) {
-                            SessionBranchIcon(size: 10)
-                                .foregroundStyle(tokens.tertiaryText)
-                                .accessibilityHidden(true)
-
-                            Text(branch)
-                                .foregroundStyle(tokens.tertiaryText)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
-                    }
-
-                    Spacer(minLength: 8)
-
-                    if shouldShowRecentSessionStatus(session, status: status) {
-                        Text(status.title)
-                            .foregroundStyle(statusTone)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(status.title)
-                    }
-
-                    Text(sessionTimeText(for: session))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .fixedSize()
-
-                    if unreadHistorySessionIDs.contains(session.id) {
-                        SessionUnreadIndicator()
-                    } else {
-                        // 占位保证有无未读时右缘对齐，列表不会随未读状态左右跳动。
-                        Color.clear.frame(width: 7, height: 7)
-                    }
-                }
-                .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
-            }
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-        .frame(minHeight: WorkspaceSessionRowMetrics.minHeight)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(
-            unreadHistorySessionIDs.contains(session.id)
-                ? L10n.text("ui.unread_result")
-                : ""
-        )
-    }
-
-    /// 状态点脱离标题行独立成列，是为了让它落在固定的横坐标上。
-    /// 一列圆点对齐在同一条竖轴上，扫一眼就知道哪几条在跑、哪几条卡住了。
-    @ViewBuilder
-    private func sessionStateRail(
-        _ state: WorkspaceSessionRailState?,
-        tokens: ThemeTokens
-    ) -> some View {
-        Group {
-            if let state {
-                Circle()
-                    .fill(state.color(tokens: tokens))
-                    .frame(width: 7, height: 7)
-            } else {
-                Color.clear
-            }
-        }
-        .frame(width: WorkspaceSessionRowMetrics.railWidth)
-        .accessibilityHidden(true)
-    }
-
-    private func shouldShowRecentSessionStatus(
-        _ session: AgentSession,
-        status: AgentSessionDisplayStatus
-    ) -> Bool {
-        session.isRunning || status.tone == .warning || status.tone == .danger
-    }
-
-    /// 状态文字的颜色跟左端圆点保持同一套语义：等待用户橙、失败红、运行中绿。
-    private func recentSessionStatusColor(
-        for tone: AgentSessionStatusTone,
-        tokens: ThemeTokens
-    ) -> Color {
-        switch tone {
-        case .warning:
-            return tokens.warning
-        case .danger:
-            return .red
-        case .active:
-            return tokens.success
-        case .complete, .neutral:
-            return tokens.secondaryText
-        }
-    }
-
-    private func sessionTimeText(for session: AgentSession) -> String {
-        guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
-        if Calendar.current.isDate(date, inSameDayAs: currentDate()) {
-            return WorkspaceSessionRowFormatters.time.string(from: date)
-        }
-        return WorkspaceSessionRowFormatters.date.string(from: date)
-    }
-
 }

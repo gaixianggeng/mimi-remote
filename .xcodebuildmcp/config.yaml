@@ -3,7 +3,6 @@ sessionDefaults:
   projectPath: ./ios/MimiRemote/MimiRemote.xcodeproj
   scheme: MimiRemote
   configuration: Debug
-  simulatorName: iPad Pro 13-inch (M5)
-  useLatestOS: true
-  # DerivedData 必须在 session 中按已解析的 Simulator UDID 设置，不能静态共享。
+  # 不持久化任何 device/simulator 目标。日常 build/run 统一走 ios-dev.sh；
+  # 测试和快照按脚本解析结果在当前 session 同时设置 simulatorId 与 DerivedData。
   bundleId: com.gaixianggeng.mimi

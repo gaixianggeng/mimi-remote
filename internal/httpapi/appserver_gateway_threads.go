@@ -131,14 +131,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if !appServerServerRequestAllowed(p.runtimeID, frame.Method) {
-			return payload, false, &appServerGatewayPolicyError{
-				id:      frame.ID,
-				message: "app-server server request 尚未被移动端支持：" + strings.TrimSpace(frame.Method),
-				data: map[string]any{
-					"reason": "unsupported_server_request",
-					"method": strings.TrimSpace(frame.Method),
-				},
-			}
+			// 共享 App Server 可能产生 Desktop 私有反向请求。Mimi 不是该
+			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
+			return payload, false, nil
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -634,7 +629,7 @@ func (p *appServerGatewayPolicy) sanitizeThreadSearchResponse(payload []byte, pe
 		}
 		threadID := strings.TrimSpace(thread.ID)
 		cwd := strings.TrimSpace(thread.CWD)
-		// 0.144.2 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
+		// 0.147.0 schema 要求 Thread.id 与绝对 cwd。不能让 filepath.Abs 把相对路径
 		// 悄悄解释成 agentd 当前目录，也不能把 trim 后与客户端看到值不同的 thread 登记进授权表。
 		if threadID == "" || threadID != thread.ID || cwd == "" || cwd != thread.CWD || !filepath.IsAbs(cwd) {
 			continue
@@ -813,6 +808,15 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("app-server request 缺少 id")
 	}
 	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
+	var requestedPermissions map[string]any
+	if isPermissionsApprovalMethod(method) {
+		params, err := decodeGatewayParams(rawParams)
+		if err == nil {
+			if raw, ok := params["permissions"].(map[string]any); ok {
+				requestedPermissions, _ = sanitizedGatewayPermissionProfile(raw)
+			}
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -824,11 +828,12 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		return fmt.Errorf("gateway pending server request 过多")
 	}
 	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
-		method:    method,
-		threadID:  threadID,
-		turnID:    turnID,
-		itemID:    itemID,
-		createdAt: now,
+		method:               method,
+		threadID:             threadID,
+		turnID:               turnID,
+		itemID:               itemID,
+		requestedPermissions: requestedPermissions,
+		createdAt:            now,
 	}
 	return nil
 }
@@ -838,11 +843,16 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	if err != nil {
 		return "", "", ""
 	}
-	threadID, _ := gatewayStringParam(params, "threadId")
-	if threadID == "" {
-		threadID, _ = gatewayStringParam(params, "sessionId")
+	threadID := ""
+	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
+		if threadID, _ = gatewayStringParam(params, key); threadID != "" {
+			break
+		}
 	}
 	turnID, _ := gatewayStringParam(params, "turnId")
+	if turnID == "" {
+		turnID, _ = gatewayStringParam(params, "turn_id")
+	}
 	if turnID == "" {
 		if turn, ok := params["turn"].(map[string]any); ok {
 			turnID, _ = gatewayStringParam(turn, "id")
@@ -850,7 +860,10 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	}
 	itemID, _ := gatewayStringParam(params, "itemId")
 	if itemID == "" {
-		for _, key := range []string{"requestId", "approvalId", "callId"} {
+		itemID, _ = gatewayStringParam(params, "item_id")
+	}
+	if itemID == "" {
+		for _, key := range []string{"requestId", "request_id", "approvalId", "approval_id", "callId", "call_id"} {
 			if itemID, _ = gatewayStringParam(params, key); itemID != "" {
 				break
 			}
@@ -934,6 +947,18 @@ func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage
 	if ok {
 		delete(p.pendingServerRequests, key)
 	}
+	return request, ok
+}
+
+func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return appServerGatewayPendingServerRequest{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prunePendingServerRequestsLocked(time.Now())
+	request, ok := p.pendingServerRequests[key]
 	return request, ok
 }
 

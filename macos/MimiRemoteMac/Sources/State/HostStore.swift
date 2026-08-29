@@ -35,6 +35,17 @@ final class HostStore {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
 
+    var experimentMenuStatusText: String? {
+        guard owner == .macApp else { return "不可管理" }
+        if isUpdatingClaude { return "正在更新" }
+        return claudeEnabled ? "Claude 已启用" : nil
+    }
+
+    var experimentMenuAccessibilityLabel: String {
+        guard let status = experimentMenuStatusText else { return "实验功能" }
+        return "实验功能，\(status)"
+    }
+
     var claudeStatusTitle: String {
         guard owner != .homebrew else { return "等待接管 App 服务" }
         guard let runtime = claudeRuntime else {
@@ -76,17 +87,24 @@ final class HostStore {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("claude") == .orderedSame }
     }
 
+    private var codexRuntime: AgentRuntimeStatus? {
+        status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
+    }
+
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
+    private let systemPrivacySettings: SystemPrivacySettingsClient
     private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
     private var lastStatusRefreshAt: Date?
+    // 每次开始 agent.status() 都先分配单调序号，只允许最新请求落地。
+    private var statusRequestSequence: UInt64 = 0
 
     init(
         agent: AgentCommandClient,
@@ -94,6 +112,7 @@ final class HostStore {
         homebrew: HomebrewServiceClient,
         health: HealthClient,
         logs: AgentLogClient,
+        systemPrivacySettings: SystemPrivacySettingsClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {
             NSApplication.shared.terminate(nil)
         }
@@ -103,6 +122,7 @@ final class HostStore {
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
+        self.systemPrivacySettings = systemPrivacySettings
         self.terminateApplication = terminateApplication
     }
 
@@ -112,7 +132,8 @@ final class HostStore {
             services: .live,
             homebrew: .live(),
             health: .live,
-            logs: .live
+            logs: .live,
+            systemPrivacySettings: .live
         )
     }
 
@@ -371,16 +392,23 @@ final class HostStore {
         guard !isBusy else { return }
         isBusy = true
         lastError = nil
-        defer { isBusy = false }
+        var restartMacAgent = false
+        var restartHomebrewAgent = false
         do {
             let result = try await agent.doctor(fix)
             doctor = result.results
             appliedFixes = result.fixes
+            restartMacAgent = fix && result.restartRequired == true && owner == .macApp
+            restartHomebrewAgent = fix && result.restartRequired == true && owner == .homebrew
             switch owner {
             case .macApp:
-                await refreshMacAgentStatus()
+                if !restartMacAgent {
+                    await refreshMacAgentStatus()
+                }
             case .homebrew:
-                await refreshHomebrewStatus()
+                if !restartHomebrewAgent {
+                    await refreshHomebrewStatus()
+                }
             case .none:
                 if !result.results.ok {
                     lifecycle = .degraded(firstBlockingIssue(in: result.results))
@@ -388,6 +416,37 @@ final class HostStore {
             }
         } catch {
             lastError = error.localizedDescription
+        }
+        isBusy = false
+        if restartMacAgent {
+            // Doctor 改写配置后，resident agentd 仍持有旧快照；重新登记一次
+            // 让服务加载新配置。这个动作不会退出或重新打开 Codex Desktop。
+            await restartService()
+        } else if restartHomebrewAgent {
+            await restartHomebrewAfterDoctorRepair()
+        }
+    }
+
+    private func restartHomebrewAfterDoctorRepair() async {
+        guard !isBusy, owner == .homebrew else { return }
+        guard let binary = homebrew.installedAgentBinary() else {
+            fail(HomebrewServiceError.commandFailed("Doctor 已提交配置，但找不到 Homebrew agentd，无法重载。"))
+            return
+        }
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        defer { isBusy = false }
+        do {
+            try await homebrew.stop()
+            homebrewLoaded = false
+            try await homebrew.start()
+            try await waitForHomebrewReady(binary: binary)
+            homebrewLoaded = true
+            owner = .homebrew
+            lifecycle = .migrationRequired
+        } catch {
+            fail(error)
         }
     }
 
@@ -405,6 +464,10 @@ final class HostStore {
 
     func openLoginItemsSettings() {
         services.openLoginItemsSettings()
+    }
+
+    func openFullDiskAccessSettings() {
+        systemPrivacySettings.openFullDiskAccessSettings()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) async {
@@ -586,7 +649,8 @@ final class HostStore {
 
             let current: AgentStatus
             do {
-                current = try await agent.status()
+                guard let latest = try await fetchAndApplyLatestStatus() else { return }
+                current = latest
             } catch is CancellationError {
                 return
             } catch {
@@ -595,9 +659,6 @@ final class HostStore {
                 await repairEnabledMacAgent(after: error)
                 return
             }
-
-            status = current
-            doctor = current.doctor
             if !current.processOK {
                 // status 命令本身可以成功，但它可能明确报告 resident agentd 未运行。
                 // 首次打开必须把这种状态当作启动失败，自动做一次有界换代，而不是
@@ -615,7 +676,7 @@ final class HostStore {
                     fail(error)
                 }
             } else {
-                apply(current)
+                // fetchAndApplyLatestStatus 已经落地最新状态。
             }
         case .notRegistered:
             await registerAvailableMacAgent(recoveringMissingRecord: false)
@@ -716,8 +777,7 @@ final class HostStore {
     private func waitForClaudeRuntime(enabled: Bool) async throws {
         for attempt in 0..<12 {
             try Task.checkCancellation()
-            if let current = try? await agent.status() {
-                apply(current)
+            if let current = try? await fetchAndApplyLatestStatus() {
                 if let runtime = current.runtimeStatus?.runtimes.first(where: {
                     $0.id.caseInsensitiveCompare("claude") == .orderedSame
                 }) {
@@ -766,9 +826,8 @@ final class HostStore {
         var lastStatus: AgentStatus?
         for _ in 0..<15 {
             try Task.checkCancellation()
-            if let current = try? await agent.status() {
+            if let current = try? await fetchAndApplyLatestStatus() {
                 lastStatus = current
-                apply(current)
                 if current.serviceOK { return }
             }
             try await Task.sleep(for: .seconds(1))
@@ -827,9 +886,20 @@ final class HostStore {
 
     private func unregisterMacAgentAndWait(endpoint: String?) async throws {
         try await services.unregisterAgent()
-        // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
-        // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
-        try await waitForMacAgentUnregistered()
+        do {
+            // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
+            // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
+            try await waitForMacAgentUnregistered()
+        } catch let error as ServiceLifecycleError {
+            guard case .unregisterTimedOut = error else { throw error }
+
+            // macOS 27 的 BTM 在覆盖安装后偶尔会留下半注销的 job：第一次
+            // unregister 已返回，但状态一直停在 enabled。再做一次有界注销可
+            // 清掉这个残留；只有确认状态进入未注册后，调用方才允许重新注册。
+            try Task.checkCancellation()
+            try await services.unregisterAgent()
+            try await waitForMacAgentUnregistered()
+        }
         if let endpoint {
             try await waitForMacAgentStopped(endpoint: endpoint)
         }
@@ -871,7 +941,7 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             do {
-                apply(try await agent.status())
+                _ = try await fetchAndApplyLatestStatus()
             } catch is CancellationError {
                 return
             } catch {
@@ -956,6 +1026,24 @@ final class HostStore {
         } else {
             lifecycle = .stopped
         }
+    }
+
+    private func nextStatusRequestSequence() -> UInt64 {
+        statusRequestSequence &+= 1
+        return statusRequestSequence
+    }
+
+    @discardableResult
+    private func applyStatusResponse(_ current: AgentStatus, sequence: UInt64) -> Bool {
+        guard sequence == statusRequestSequence else { return false }
+        apply(current)
+        return true
+    }
+
+    private func fetchAndApplyLatestStatus() async throws -> AgentStatus? {
+        let sequence = nextStatusRequestSequence()
+        let current = try await agent.status()
+        return applyStatusResponse(current, sequence: sequence) ? current : nil
     }
 
     private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
@@ -1271,50 +1359,4 @@ final class HostStore {
         return store
     }
 #endif
-}
-
-private enum ServiceLifecycleError: LocalizedError {
-    case invalidConfiguration(String)
-    case unregisterTimedOut
-    case stopTimedOut
-    case requiresApproval
-    case agentRegistrationFailed(String)
-    case automaticRepairFailed(initial: String, recovery: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidConfiguration(let detail):
-            detail
-        case .unregisterTimedOut:
-            "服务停止超时，未继续启动；请稍后重试。"
-        case .stopTimedOut:
-            "旧服务仍占用当前 Endpoint，未继续启动新版本；请稍后重试。"
-        case .requiresApproval:
-            "请先在系统设置的登录项中允许 Mimi Remote Mac。"
-        case .agentRegistrationFailed(let detail):
-            "系统没有找到原服务记录，自动重新登记失败：\(detail)。请运行诊断并重试。"
-        case .automaticRepairFailed(let initial, let recovery):
-            "服务首次启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
-        }
-    }
-}
-
-private enum ClaudeRuntimeControlError: LocalizedError {
-    case signedOut
-    case unavailable
-    case disabled
-    case timedOut(enabled: Bool)
-
-    var errorDescription: String? {
-        switch self {
-        case .signedOut:
-            "Claude Code 尚未登录。"
-        case .unavailable:
-            "Claude Runtime 未能连接。"
-        case .disabled:
-            "服务重载后 Claude 仍处于关闭状态。"
-        case .timedOut(let enabled):
-            enabled ? "等待 Claude Runtime 连接超时。" : "等待 Claude Runtime 停止超时。"
-        }
-    }
 }

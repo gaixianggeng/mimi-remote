@@ -23,6 +23,7 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         resume: AgentSession?,
         clientMessageID: ClientMessageID? = nil,
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
@@ -74,6 +75,39 @@ extension SessionStore {
             clientMessageID: clientMessageID,
             prompt: prompt
         )
+        var registeredPermissionBoundaryClientMessageID: ClientMessageID?
+        if permissionSelection?.requiresNewTurn == true,
+           let permissionSelection,
+           let clientMessageID,
+           let optimisticSessionID {
+            guard mutateAndPersistQueuedTurns({
+                pendingPermissionTurnBoundariesBySessionID[optimisticSessionID, default: []].append(
+                    PendingPermissionTurnBoundary(
+                        sessionID: optimisticSessionID,
+                        clientMessageID: clientMessageID,
+                        permissionSelection: permissionSelection
+                    )
+                )
+            }) else {
+                return false
+            }
+            registeredPermissionBoundaryClientMessageID = clientMessageID
+        }
+        defer {
+            if let registeredPermissionBoundaryClientMessageID {
+                _ = mutateAndPersistQueuedTurns {
+                    guard let location = pendingPermissionTurnBoundaryLocation(
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    ) else {
+                        return
+                    }
+                    _ = removePendingPermissionTurnBoundary(
+                        sessionID: location.sessionID,
+                        clientMessageID: registeredPermissionBoundaryClientMessageID
+                    )
+                }
+            }
+        }
         var optimisticSelectionLease: SessionSelectionLease?
         if let optimisticSessionID {
             // 本地草稿或带首轮输入的新会话先发布运行态占位；服务端确认后再用
@@ -118,6 +152,13 @@ extension SessionStore {
                 clientMessageID: clientMessageID
             ))
             let responseSession = self.session(response.session, in: workspace)
+            let queuesInitialInput = response.requiresQueuedInitialInput == true
+            if let clientMessageID {
+                migratePendingPermissionTurnBoundary(
+                    clientMessageID: clientMessageID,
+                    to: responseSession.id
+                )
+            }
 
             if let optimisticSessionID,
                optimisticSessionID != responseSession.id {
@@ -146,16 +187,31 @@ extension SessionStore {
             }
             upsert(responseSession)
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
-            if !payload.isEmpty, let activeTurnID = responseSession.activeTurnID {
-                // create/resume 内部的 turn/start 已由 app-server 接受；在历史补拉前登记，
-                // 防止同一 Desktop-origin rollout 的轮询快照把本轮误判成 Mac 接管。
-                recordLocallyStartedTurn(
-                    sessionID: responseSession.id,
-                    turnID: activeTurnID,
-                    restoreSelectedConnection: false
-                )
-            }
             insertExpandedProjectID(responseSession.projectID)
+
+            if queuesInitialInput, let clientMessageID {
+                let intent: QueuedTurnIntent = payload.options.collaborationMode == .plan
+                    ? .plan
+                    : .standard
+                let item = QueuedTurnEntry(
+                    sessionID: responseSession.id,
+                    projectID: responseSession.projectID,
+                    payload: payload,
+                    clientMessageID: clientMessageID,
+                    intent: intent,
+                    expectedTurnID: responseSession.activeTurnID,
+                    requiresFreshTurn: permissionSelection?.requiresNewTurn == true ? true : nil
+                )
+                guard mutateAndPersistQueuedTurns({
+                    if queuedRunningTurnsBySessionID[responseSession.id]?.contains(where: {
+                        $0.clientMessageID == clientMessageID
+                    }) != true {
+                        queuedRunningTurnsBySessionID[responseSession.id, default: []].append(item)
+                    }
+                }) else {
+                    throw AgentAPIError.invalidResponse
+                }
+            }
 
             let responseSelectionLease: SessionSelectionLease?
             if let optimisticSessionID, let optimisticSelectionLease {
@@ -202,7 +258,7 @@ extension SessionStore {
                 // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
                 didLoadInitialHistory = false
             }
-            if !prompt.isEmpty {
+            if !prompt.isEmpty, !queuesInitialInput {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -216,7 +272,7 @@ extension SessionStore {
                     )
                 }
                 setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
-            } else {
+            } else if prompt.isEmpty {
                 conversationStore.appendSystem(L10n.text("ui.an_interactive_session_has_been_started"), sessionID: responseSession.id)
             }
             if let firstMessage = response.firstMessage {
@@ -236,6 +292,13 @@ extension SessionStore {
                 setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
                 setErrorMessage(nil)
             }
+            if queuesInitialInput {
+                // thread/start 等待期间即使用户切换了会话，首条输入也已持久化，
+                // 必须用独立会话监听继续 queue/add，不能依赖当前 selection。
+                ensureQueuedSessionMonitoring(sessionID: responseSession.id)
+                dispatchNextQueuedRunningTurnIfIdle(sessionID: responseSession.id)
+            }
+            registeredPermissionBoundaryClientMessageID = nil
             return true
         } catch {
             if case CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -293,6 +356,8 @@ extension SessionStore {
             }
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
+                // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
+                // Composer 仍会错误地保持可发送状态。
                 setErrorMessage(error.localizedDescription)
             }
             return false
@@ -337,12 +402,14 @@ extension SessionStore {
         return isStillFresh
     }
 
-    // quiet 模式用于切回已加载会话时的后台补拉：界面继续展示缓存，不出进度条，
-    // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。
+    // quiet 模式用于切回已加载会话时的后台补拉：默认界面继续展示缓存，不出进度条，
+    // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。选中会话可用 showsProgress
+    // 只打开轻量进度反馈，不改变 quiet 的失败和 notice 语义。
     @discardableResult
     func loadHistory(
         for session: AgentSession,
         quiet: Bool = false,
+        showsProgress: Bool? = nil,
         loadMode: HistoryMessagesPage.LoadMode = .full,
         force: Bool = false,
         reason: HistoryLoadReason = .automatic,
@@ -355,6 +422,14 @@ extension SessionStore {
         if session.isLocalDraft {
             return true
         }
+        // quiet 只控制失败、状态和 savings notice 是否打扰用户；选中的已缓存会话仍可
+        // 显示轻量历史补拉进度，避免消息区只有本地 user 气泡而看不出 assistant 仍在补齐。
+        let shouldShowProgress = showsProgress ?? !quiet
+        // 普通自动/权威打开只需要 progress；savings 横幅应只在用户明确选择
+        // full/summary，或策略层已经确认需要降级/重试时出现。否则每次短暂的
+        // 首屏请求都会先暴露“正在加载完整历史”的决策卡片，再在成功时立即消失。
+        let shouldShowSavingsNotice = !quiet
+            && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
             return true
         }
@@ -381,32 +456,57 @@ extension SessionStore {
                     // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
                     // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
                     // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
+                    if shouldShowProgress {
+                        promoteHistoryLoadJobForVisibleProgress(existing, sessionID: session.id)
+                    }
                     if !quiet {
                         promoteHistoryLoadJobForForegroundReporting(
                             existing,
                             sessionID: session.id,
-                            successStatusMessage: successStatusMessage
+                            successStatusMessage: successStatusMessage,
+                            showSavingsNotice: shouldShowSavingsNotice
                         )
-                        setHistoryLoadProgress(
-                            sessionID: session.id,
-                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
-                            fraction: 0.32
-                        )
+                        if shouldShowProgress {
+                            setHistoryLoadProgress(
+                                sessionID: session.id,
+                                title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
+                                fraction: 0.32
+                            )
+                        }
                         let didLoad = await awaitHistoryLoadJob(
                             existing,
                             session: session,
                             quiet: false,
                             successStatusMessage: successStatusMessage
                         )
-                        clearHistoryLoadProgress(sessionID: session.id)
+                        if shouldShowProgress {
+                            clearHistoryLoadProgress(
+                                sessionID: session.id,
+                                ifCurrentHistoryLoadJobToken: existing.token
+                            )
+                        }
                         return didLoad
                     }
-                    return await awaitHistoryLoadJob(
+                    if shouldShowProgress {
+                        setHistoryLoadProgress(
+                            sessionID: session.id,
+                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
+                            fraction: 0.32
+                        )
+                    }
+                    let didLoad = await awaitHistoryLoadJob(
                         existing,
                         session: session,
                         quiet: quiet,
                         successStatusMessage: successStatusMessage
                     )
+                    if shouldShowProgress {
+                        clearHistoryLoadProgress(
+                            sessionID: session.id,
+                            ifCurrentHistoryLoadJobToken: existing.token
+                        )
+                    }
+                    return didLoad
                 }
             } else {
                 switch reason {
@@ -446,12 +546,13 @@ extension SessionStore {
             allowPolicyRetry: allowPolicyRetry,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
             task: task,
+            showsProgress: shouldShowProgress,
             requiresForegroundReporting: !quiet,
             foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage,
             foregroundSelectionLease: quiet ? nil : currentSelectionLease()
         )
         historyLoadJobsBySessionID[session.id] = job
-        if !quiet {
+        if shouldShowSavingsNotice {
             setHistoryLoadNotice(
                 sessionID: session.id,
                 kind: loadMode == .full ? .loadingFull : .loadingSummary,
@@ -461,16 +562,19 @@ extension SessionStore {
             )
         }
 
-        if !quiet {
+        if shouldShowProgress {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.ready_to_load_full_history") : L10n.text("ui.prepare_to_load_abbreviated_history"), fraction: 0.08)
         }
         defer {
-            if !quiet {
-                clearHistoryLoadProgress(sessionID: session.id)
+            if shouldShowProgress {
+                clearHistoryLoadProgress(
+                    sessionID: session.id,
+                    ifCurrentHistoryLoadJobToken: jobToken
+                )
             }
         }
 
-        if !quiet {
+        if shouldShowProgress {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"), fraction: 0.32)
         }
         return await awaitHistoryLoadJob(job, session: session, quiet: quiet, successStatusMessage: successStatusMessage)
@@ -479,7 +583,8 @@ extension SessionStore {
     func promoteHistoryLoadJobForForegroundReporting(
         _ job: HistoryLoadJob,
         sessionID: SessionID,
-        successStatusMessage: String?
+        successStatusMessage: String?,
+        showSavingsNotice: Bool
     ) {
         guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             return
@@ -490,19 +595,31 @@ extension SessionStore {
             current.foregroundSuccessStatusMessage = successStatusMessage
         }
         historyLoadJobsBySessionID[sessionID] = current
-        setHistoryLoadNotice(
-            sessionID: sessionID,
-            kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
-            message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
-        )
+        if showSavingsNotice {
+            setHistoryLoadNotice(
+                sessionID: sessionID,
+                kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
+                message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
+            )
+        }
     }
 
-    func scheduleQuietHistoryRefresh(for session: AgentSession) {
+    func promoteHistoryLoadJobForVisibleProgress(_ job: HistoryLoadJob, sessionID: SessionID) {
+        guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
+            return
+        }
+        // quiet 后台 job 被当前会话的可见 waiter 加入后，后续缩页/summary 替代任务
+        // 也必须继承这项能力，不能只靠外层 defer 清理旧 token 的进度。
+        current.showsProgress = true
+        historyLoadJobsBySessionID[sessionID] = current
+    }
+
+    func scheduleQuietHistoryRefresh(for session: AgentSession, showsProgress: Bool = false) {
         Task { [weak self] in
             guard let self, self.selectedSessionID == session.id else {
                 return
             }
-            await self.loadHistory(for: session, quiet: true)
+            await self.loadHistory(for: session, quiet: true, showsProgress: showsProgress)
         }
     }
 
@@ -521,6 +638,20 @@ extension SessionStore {
     func hasLoadedFullHistorySnapshot(sessionID: SessionID) -> Bool {
         conversationStore.hasLoadedHistory(sessionID: sessionID)
             && historyLoadedQualityBySessionID[sessionID] == .full
+    }
+
+    /// 重连预检只需要判断“刚刚是否已经拿到过同会话的完整首屏”。这里故意忽略
+    /// thread/read 刷新的 metadata signature：resume 后的短暂断流会更新 session 元数据，
+    /// 但在 4 秒缓存窗内立刻绕过缓存重拉同一大页只会放大弱网开销。超过短窗后仍按
+    /// 正常恢复链路补拉，真正断线期间的消息也会由事件回放与后续历史对账兜底。
+    func hasRecentFullHistoryFirstPage(sessionID: SessionID, now: Date = Date()) -> Bool {
+        guard hasLoadedFullHistorySnapshot(sessionID: sessionID) else { return false }
+        return historyFirstPageCacheByKey.contains { key, entry in
+            key.profileID == appStore.activeHostScope.profileID
+                && key.sessionID == sessionID
+                && key.loadMode == .full
+                && now.timeIntervalSince(entry.loadedAt) < historyFirstPageCacheTTL
+        }
     }
 
     func awaitHistoryLoadJob(
@@ -637,6 +768,7 @@ extension SessionStore {
                     return await loadHistory(
                         for: session,
                         quiet: effectiveQuiet,
+                        showsProgress: current.showsProgress,
                         loadMode: .full,
                         force: true,
                         reason: .automatic,
@@ -657,6 +789,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
@@ -664,6 +797,8 @@ extension SessionStore {
                     recoveryGeneration: job.recoveryGeneration,
                     noticeMessageOverride: effectiveQuiet ? nil : message
                 )
+            case .economy where policyFailure.reason == "history_response_too_large":
+                break
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
@@ -682,6 +817,7 @@ extension SessionStore {
                 return await loadHistory(
                     for: session,
                     quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
@@ -913,7 +1049,22 @@ extension SessionStore {
             // best-effort 取消旧 job；即使底层请求已发出，token 校验也会阻止迟到结果覆盖当前视图。
             job.task.cancel()
             historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+            // 新 job 可能继续保持 quiet；先清掉旧代可见进度，由替代 job
+            // 按自己的 showsProgress 选择是否重新写入。
+            clearHistoryLoadProgress(sessionID: sessionID)
         }
+    }
+
+    func clearHistoryLoadProgress(
+        sessionID: SessionID,
+        ifCurrentHistoryLoadJobToken token: Int
+    ) {
+        // 旧 job 被权威重开/恢复任务取代后可能才结束 await；只允许当前代清进度，
+        // 避免旧 waiter 把新 job 刚写入的加载反馈误删。
+        guard historyLoadJobTokenBySessionID[sessionID] == token else {
+            return
+        }
+        clearHistoryLoadProgress(sessionID: sessionID)
     }
 
     func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind, message customMessage: String? = nil) {
@@ -1070,6 +1221,10 @@ extension SessionStore {
             page.messages,
             sessionID: sessionID,
             authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+        )
+        reconcilePendingPermissionTurnBoundaries(
+            sessionID: sessionID,
+            historyMessages: page.messages
         )
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }
@@ -2060,8 +2215,8 @@ extension SessionStore {
                 disconnectWebSocket()
             }
         } else if autoAttach {
-            // 非运行会话回前台也重新订阅：连接重建后 resume 的权威状态能纠正误判，
-            // 期间完成的输出走状态级回放 + 静默补拉，不再依赖手动刷新。
+            // 非运行会话回前台仍恢复页面连接。连接只读取持久化历史；发送时再由 gateway
+            // 按当前 owner 建立写入路径，期间完成的输出由静默补拉兜底。
             connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
             scheduleQuietHistoryRefresh(for: session)
         } else if connectedSessionID != nil {
@@ -3240,9 +3395,6 @@ extension SessionStore {
         let runtimeActivities = runtimeActivityBySessionID.filter { validSessionIDs.contains($0.key) }
         if runtimeActivities != runtimeActivityBySessionID {
             runtimeActivityBySessionID = runtimeActivities
-        }
-        locallyStartedTurnIDBySessionID = locallyStartedTurnIDBySessionID.filter {
-            validSessionIDs.contains($0.key)
         }
     }
 

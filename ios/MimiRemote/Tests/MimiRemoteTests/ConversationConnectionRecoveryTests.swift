@@ -265,6 +265,122 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(appStore.requiresRePairing)
     }
 
+    func testActiveWriterConflictStopsReconnectAndShowsSharedSetupGuidance() async throws {
+        let project = makeProject(id: "proj_active_writer_conflict")
+        let running = makeSession(
+            id: "sess_active_writer_conflict",
+            projectID: project.id,
+            title: "Desktop 会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let rawFailure = "app-server 错误 -32600：already has an active writer"
+        socket.emitStatus(.failed(rawFailure))
+        try await waitForWebSocketStatus(.failed(rawFailure), store: store)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 1, "单 writer 冲突不能进入无意义的自动重连")
+        XCTAssertEqual(
+            store.errorMessage,
+            L10n.text("ui.codex_active_writer_conflict")
+        )
+        XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+
+        // writer 结论必须保持到下一次 thread/resume 成功。显式退役旧 socket 或随后出现
+        // 普通连接错误，都不能让 Composer 在尚未取得 writer 时重新出现。
+        store.applyWebSocketStatus(.disconnected, sessionID: running.id)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        store.applyWebSocketStatus(.failed("temporary transport error"), sessionID: running.id)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+
+        store.retrySelectedSessionWriterAccess()
+        XCTAssertEqual(sockets.count, 2, "用户显式重试时必须建立新连接，不能复用冲突 socket")
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict, "重试完成前必须继续锁定 Composer")
+
+        let retrySocket = try XCTUnwrap(sockets.last)
+        retrySocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertFalse(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertTrue(store.canSendInSelectedSession)
+    }
+
+    func testActiveWriterSendFailureShowsDesktopSyncGuidance() async throws {
+        let project = makeProject(id: "proj_active_writer_send_failure")
+        let running = makeSession(
+            id: "sess_active_writer_send_failure",
+            projectID: project.id,
+            title: "Desktop 会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        socket.onSendFailure?(
+            nil,
+            "app-server 错误 -32600：thread \(running.id) already has an active writer"
+        )
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(
+            store.errorMessage,
+            L10n.text("ui.codex_active_writer_conflict")
+        )
+        XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
+        XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
+        XCTAssertFalse(store.canSendInSelectedSession)
+    }
+
     func testLateOlderNetworkPathUpdateCannotOverwriteSatisfiedState() async throws {
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
@@ -1099,6 +1215,77 @@ extension ConversationDataFlowTests {
         await refreshTask.value
     }
 
+    func testConcurrentSessionLibraryRefreshesShareControlledGlobalTraversal() async throws {
+        let project = makeProject(id: "proj_library_global_singleflight")
+        let gate = SessionLibraryGlobalRequestGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                await gate.blockUntilReleased()
+                return SessionsPage(sessions: [])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let first = Task { await store.refreshSessionLibraryIndex() }
+        await gate.waitForEntryCount(1)
+        let second = Task { await store.refreshSessionLibraryIndex() }
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            1,
+            "两个 View 同时挂载时必须共享同一轮无 cwd thread/list"
+        )
+
+        await gate.releaseAll()
+        await first.value
+        await second.value
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 1)
+    }
+
+    func testAuthoritativeSessionLibraryRefreshRunsAfterSharedFastTraversal() async throws {
+        let project = makeProject(id: "proj_library_global_authoritative_upgrade")
+        let gate = SessionLibraryGlobalRequestGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                await gate.blockUntilReleased()
+                return SessionsPage(sessions: [])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let fast = Task { await store.refreshSessionLibraryIndex() }
+        await gate.waitForEntryCount(1)
+        let authoritative = Task {
+            await store.refreshSessionLibraryIndex(authoritative: true)
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 1)
+
+        await gate.releaseAll()
+        await fast.value
+        await authoritative.value
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            2,
+            "权威刷新必须先共享在途弱刷新，再独立执行一轮，不能把弱结果冒充完成"
+        )
+    }
+
     func testRecentSessionsUsesLatestActivityAcrossEveryWorkspace() async {
         let projects = (0..<9).map { makeProject(id: "proj_recent_\($0)") }
         let workspaces = projects.enumerated().map { index, project in
@@ -1578,7 +1765,7 @@ extension ConversationDataFlowTests {
             project: project,
             allowedMethods: [
                 "initialize", "initialized", "thread/list", "thread/start", "thread/read",
-                "thread/turns/list", "turn/start", "turn/interrupt"
+                "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt"
             ]
         )
         let codexTransport = FakeCodexAppServerTransport()
@@ -1622,7 +1809,7 @@ extension ConversationDataFlowTests {
         }
         // sentMessages[3] 仍是上一条 economy 请求；full 请求从下一个下标开始等待。
         let fullRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 4)
-        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
         transportResponse(codexTransport, id: fullRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         let fullPage = try await fullTask.value
         XCTAssertEqual(fullPage.loadMode, .full)
@@ -1853,5 +2040,158 @@ extension ConversationDataFlowTests {
         let closedContext = await runtime.contextsBySessionID["thr_claude_terminal_ack"]
         XCTAssertEqual(closedContext?.session.status, "closed")
         XCTAssertNil(closedContext?.activeTurnID)
+    }
+
+    // 上游在 turn/completed 后可能推送 notLoaded。这个通知必须使下一次发送重新
+    // thread/resume，不能沿用旧绑定直接 turn/start。
+    func testNotLoadedNotificationClearsResumeBindingBeforeNextTurn() async throws {
+        let project = AgentProject(id: "proj_not_loaded_recovery", name: "Not Loaded Recovery", path: "/tmp/not-loaded-recovery")
+        let threadID = "thread_not_loaded_recovery"
+        let threadJSON = appServerThreadJSON(
+            id: threadID,
+            cwd: project.path,
+            source: "appServer",
+            updatedAt: 1780494000,
+            statusType: "active"
+        )
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: [
+                "initialize", "initialized", "thread/read", "thread/resume", "turn/start"
+            ]
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+
+        let connectTask = Task {
+            try await runtime.connectForEvents(sessionID: threadID)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 1)
+        transportResponse(transport, id: read.id, result: #"{"thread":\#(threadJSON)}"#)
+        let initialResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        transportResponse(transport, id: initialResume.id, result: #"{"thread":\#(threadJSON)}"#)
+        try await connectTask.value
+        let didResumeInitially = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertTrue(didResumeInitially)
+
+        // 通过真实 FakeTransport 通知泵注入 agentd 的终态状态变化。
+        transport.enqueue(#"{"method":"thread/status/changed","params":{"threadId":"\#(threadID)","status":{"type":"notLoaded"}}}"#)
+        for _ in 0..<200 {
+            if await runtime.threadsResumedOnConnection.contains(threadID) == false {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let didResumeAfterNotLoaded = await runtime.threadsResumedOnConnection.contains(threadID)
+        XCTAssertFalse(didResumeAfterNotLoaded)
+
+        let messagesBeforeNextTurn = await transport.sentMessages()
+        let nextTurnTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: threadID,
+                payload: CodexAppServerTurnPayload(prompt: "重新连接后继续"),
+                clientMessageID: "client_not_loaded_recovery"
+            )
+        }
+        let resumedBeforeTurn = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: messagesBeforeNextTurn.count
+        )
+        XCTAssertEqual(resumedBeforeTurn.params?.objectValue?["threadId"]?.stringValue, threadID)
+        transportResponse(transport, id: resumedBeforeTurn.id, result: #"{"thread":\#(threadJSON)}"#)
+        let nextTurnStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeNextTurn.count
+        )
+        let messagesAfterNextTurn = await transport.sentMessages()
+        let nextResumeIndex = try XCTUnwrap(messagesAfterNextTurn.firstIndex { text in
+            (try? decodeAppServerRequest(text).method) == "thread/resume"
+        })
+        let nextTurnIndex = try XCTUnwrap(messagesAfterNextTurn.firstIndex { text in
+            (try? decodeAppServerRequest(text).method) == "turn/start"
+        })
+        XCTAssertLessThan(nextResumeIndex, nextTurnIndex)
+        transportResponse(
+            transport,
+            id: nextTurnStart.id,
+            result: #"{"turn":{"id":"turn_not_loaded_recovery","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780494001,"completedAt":null,"durationMs":null}}"#
+        )
+        let nextTurnOutcome = try await nextTurnTask.value
+        XCTAssertEqual(nextTurnOutcome, .active(turnID: "turn_not_loaded_recovery"))
+    }
+
+    // MIM-120 根因侧：Claude 常驻 bridge 的回放环里可能还留着上一条连接的响应帧。
+    // 只要新连接的请求 id 从 1 重来，旧 model/list 响应就可能兑现新的 thread/list。
+    func testRequestIDsNeverRepeatAcrossConnections() async throws {
+        let firstTransport = FakeCodexAppServerTransport()
+        let firstConnection = CodexAppServerConnection(transport: firstTransport)
+        try await connectFakeAppServer(firstConnection, transport: firstTransport)
+        let firstTask = Task { try await firstConnection.send(CodexAppServerRequestSpec(method: "thread/list")) }
+        let firstRequest = try await waitForFakeAppServerRequest(firstTransport, method: "thread/list")
+        await firstConnection.disconnect()
+        _ = try? await firstTask.value
+
+        let secondTransport = FakeCodexAppServerTransport()
+        let secondConnection = CodexAppServerConnection(transport: secondTransport)
+        try await connectFakeAppServer(secondConnection, transport: secondTransport)
+        let secondTask = Task { try await secondConnection.send(CodexAppServerRequestSpec(method: "thread/list")) }
+        let secondRequest = try await waitForFakeAppServerRequest(secondTransport, method: "thread/list")
+
+        XCTAssertNotEqual(firstRequest.id, secondRequest.id, "重连后的请求 id 不能复用上一条连接的编号")
+
+        // 回放过来的陈旧 model/list 响应带着旧连接的 id，必须无人认领地落地。
+        await secondConnection.ingestTextForTesting(
+            #"{"id":\#(try jsonFragment(for: firstRequest.id)),"result":{"data":[{"id":"sonnet"}],"nextCursor":null}}"#
+        )
+        transportResponse(secondTransport, id: secondRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+
+        let page = try await secondTask.value
+        XCTAssertEqual(page?.objectValue?["data"]?.arrayValue?.count, 0, "thread/list 只能被自己的响应兑现")
+        await secondConnection.disconnect()
+    }
+}
+
+private actor SessionLibraryGlobalRequestGate {
+    private var entryCount = 0
+    private var isReleased = false
+    private var blockedContinuations: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func blockUntilReleased() async {
+        entryCount += 1
+        let readyWaiters = entryWaiters.filter { entryCount >= $0.count }
+        entryWaiters.removeAll { entryCount >= $0.count }
+        readyWaiters.forEach { $0.continuation.resume() }
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            blockedContinuations.append(continuation)
+        }
+    }
+
+    func waitForEntryCount(_ count: Int) async {
+        guard entryCount < count else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append((count, continuation))
+        }
+    }
+
+    func releaseAll() {
+        isReleased = true
+        let continuations = blockedContinuations
+        blockedContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 }

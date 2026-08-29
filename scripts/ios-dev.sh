@@ -28,22 +28,27 @@ SELECTED_NAME=""
 SELECTED_DESTINATION=""
 SELECTED_DERIVED_DATA=""
 SELECTED_TRANSPORT=""
+SELECTED_REASON=""
 
 usage() {
   cat <<'EOF'
 用法：
   bash ./scripts/ios-dev.sh [build|build-for-testing|test|run]
   bash ./scripts/ios-dev.sh target
-  bash ./scripts/ios-dev.sh destination
-  bash ./scripts/ios-dev.sh prepare
-  bash ./scripts/ios-dev.sh derived-data-path
+  bash ./scripts/ios-dev.sh test-destination
+  bash ./scripts/ios-dev.sh test-derived-data-path
   bash ./scripts/ios-dev.sh leases
 
 默认目标：
-  build/run: USB 真机 → 本地网络真机 → 固定 iPad Simulator
+  build/run: USB 真机 → 本地网络真机 → 无可达真机时固定 iPad Simulator
+             已连接真机全部忙时明确失败，不静默切换到 Simulator
   test:      精确固定 iPad Pro 13-inch (M5)，忙或缺失时明确失败
   Scheme:    MimiRemote
   Config:    Debug
+
+统一入口：
+  日常编译、部署和运行只调用本脚本。deploy-ipad.sh 是内部真机执行器；
+  XcodeBuildMCP 的 Simulator workflow 只用于测试、快照和明确的兼容性验收。
 
 可选覆盖：
   IOS_TARGET_MODE         auto（默认）、device 或 simulator
@@ -55,6 +60,9 @@ usage() {
   IOS_DERIVED_DATA_PATH   覆盖本次 Simulator DerivedData
   IOS_DEVICE_DERIVED_DATA_PATH 覆盖本次真机 DerivedData
   IOS_DEVICE_LEASE_WAIT_SECONDS 固定测试设备忙时的等待秒数，默认 0（明确失败）
+
+兼容别名：destination / prepare、derived-data-path 仍分别等同于
+test-destination、test-derived-data-path。
 
 租约按 UDID 跨 Worktree 原子占用，并记录 PID、Codex Task、Worktree、命令、
 DerivedData 和开始时间。脚本不会创建、擦除或删除 Simulator，也不会关闭其他任务的设备。
@@ -254,10 +262,12 @@ select_target() {
   local device_id="$2"
   local device_name="$3"
   local device_transport="${4:-}"
+  local selection_reason="${5:-}"
   SELECTED_KIND="$kind"
   SELECTED_ID="$device_id"
   SELECTED_NAME="$device_name"
   SELECTED_TRANSPORT="$device_transport"
+  SELECTED_REASON="$selection_reason"
   if [[ "$kind" == "device" ]]; then
     SELECTED_DESTINATION="platform=iOS,id=$device_id"
     SELECTED_DERIVED_DATA="$(device_derived_data_path "$device_id")"
@@ -297,7 +307,8 @@ select_available_build_target() {
       echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
       return 75
     fi
-    select_target simulator "$device_id" "$device_name"
+    select_target simulator "$device_id" "$device_name" "" \
+      "显式 Simulator 覆盖"
     return
   fi
 
@@ -316,7 +327,14 @@ select_available_build_target() {
   while IFS=$'\t' read -r device_id device_name device_transport; do
     [[ -n "$device_id" ]] || continue
     if ios_lease_device_is_available device "$device_id" "$device_name"; then
-      select_target device "$device_id" "$device_name" "$device_transport"
+      local selection_reason="检测到空闲 USB 真机"
+      [[ "$device_transport" == "localNetwork" ]] \
+        && selection_reason="没有空闲 USB 真机，使用可达的本地网络真机"
+      if [[ "$effective_mode" == "device" ]]; then
+        selection_reason="显式真机模式：${device_transport}"
+      fi
+      select_target device "$device_id" "$device_name" "$device_transport" \
+        "$selection_reason"
       return
     fi
     echo "==> 跳过占用设备：$device_name ($device_id) · $IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
@@ -331,6 +349,14 @@ select_available_build_target() {
     return 75
   fi
 
+  # 已经检测到可达真机但全部忙时，静默换成 Simulator 会让部署结果与
+  # 操作者预期相反。只有完全没有可达真机时，auto 才允许跨设备类型回退。
+  if [[ -n "$physical_records" ]]; then
+    echo "检测到可达真机，但所有真机都在使用中；本次不会自动部署到 Simulator。" >&2
+    echo "请等待真机释放、运行 leases 查看占用，或显式设置 IOS_TARGET_MODE=simulator。" >&2
+    return 75
+  fi
+
   simulator_record_value="$(resolve_simulator_record "" "$DEFAULT_SIMULATOR_NAME" 1)" || return
   IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
   if ! ios_lease_device_is_available simulator "$device_id" "$device_name"; then
@@ -338,7 +364,8 @@ select_available_build_target() {
     echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
     return 75
   fi
-  select_target simulator "$device_id" "$device_name"
+  select_target simulator "$device_id" "$device_name" "" \
+    "没有检测到可达的 USB 或本地网络真机，使用固定 fallback Simulator"
 }
 
 acquire_selected_target() {
@@ -370,7 +397,8 @@ select_fixed_test_target() {
   local record
   record="$(fixed_test_simulator_record)" || return
   IFS=$'\t' read -r SELECTED_ID SELECTED_NAME <<< "$record"
-  select_target simulator "$SELECTED_ID" "$SELECTED_NAME"
+  select_target simulator "$SELECTED_ID" "$SELECTED_NAME" "" \
+    "测试、快照与 CI 固定使用 M5 Simulator"
 }
 
 acquire_fixed_test_target() {
@@ -393,12 +421,71 @@ simulator_is_booted() {
   '
 }
 
+simulator_ui_warning() {
+  echo "警告：$1。Simulator 界面不是必需步骤，将继续构建、安装并启动。" >&2
+}
+
+current_developer_dir() {
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    printf '%s\n' "$DEVELOPER_DIR"
+    return 0
+  fi
+
+  if ! command -v xcode-select >/dev/null 2>&1; then
+    return 1
+  fi
+  xcode-select -p
+}
+
+open_simulator_ui() {
+  local developer_dir
+  if ! developer_dir="$(current_developer_dir 2>/dev/null)" || [[ -z "$developer_dir" ]]; then
+    simulator_ui_warning "无法解析当前 Developer 目录"
+    return 0
+  fi
+
+  if [[ ! -d "$developer_dir" ]]; then
+    simulator_ui_warning "Developer 目录不存在：$developer_dir"
+    return 0
+  fi
+
+  local resolved_developer_dir
+  if ! resolved_developer_dir="$(cd "$developer_dir" 2>/dev/null && pwd -P)"; then
+    simulator_ui_warning "无法解析 Developer 目录：$developer_dir"
+    return 0
+  fi
+  local xcode_contents_dir
+  if ! xcode_contents_dir="$(cd "$resolved_developer_dir/.." 2>/dev/null && pwd -P)"; then
+    simulator_ui_warning "无法解析 Xcode 包目录：$developer_dir"
+    return 0
+  fi
+
+  local ui_app=""
+  if [[ -d "$resolved_developer_dir/Applications/Simulator.app" ]]; then
+    ui_app="$resolved_developer_dir/Applications/Simulator.app"
+  elif [[ -d "$xcode_contents_dir/Applications/DeviceHub.app" ]]; then
+    ui_app="$xcode_contents_dir/Applications/DeviceHub.app"
+  else
+    simulator_ui_warning "找不到 Simulator 或 DeviceHub 界面应用"
+    return 0
+  fi
+
+  if ! command -v "$OPEN_BIN" >/dev/null 2>&1 && [[ ! -x "$OPEN_BIN" ]]; then
+    simulator_ui_warning "找不到或无法执行 open 命令：$OPEN_BIN"
+    return 0
+  fi
+  if ! "$OPEN_BIN" "$ui_app"; then
+    simulator_ui_warning "打开界面应用失败：$ui_app"
+  fi
+}
+
 run_xcodebuild() {
   local action="$1"
   shift
   echo "==> $SCHEME $CONFIGURATION · $action"
   echo "    destination: $SELECTED_DESTINATION"
   echo "    DerivedData: $SELECTED_DERIVED_DATA"
+  echo "    reason: $SELECTED_REASON"
 
   "$XCODEBUILD_BIN" \
     -project "$PROJECT_PATH" \
@@ -417,8 +504,10 @@ run_device_action() {
   local transport_label="USB"
   [[ "$SELECTED_TRANSPORT" == "localNetwork" ]] && transport_label="本地网络"
   echo "==> 使用已租用${transport_label}真机：$SELECTED_NAME ($SELECTED_ID)"
+  echo "    reason: $SELECTED_REASON"
   if [[ "$action" == "build" ]]; then
-    DEVICE_ID="$SELECTED_ID" \
+    IOS_UNIFIED_ENTRYPOINT=1 \
+      DEVICE_ID="$SELECTED_ID" \
       DEVICE_NAME="$SELECTED_NAME" \
       DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
       IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
@@ -426,7 +515,8 @@ run_device_action() {
       SKIP_LAUNCH=1 \
       bash "$ROOT_DIR/scripts/deploy-ipad.sh" "$@"
   else
-    DEVICE_ID="$SELECTED_ID" \
+    IOS_UNIFIED_ENTRYPOINT=1 \
+      DEVICE_ID="$SELECTED_ID" \
       DEVICE_NAME="$SELECTED_NAME" \
       DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
       IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
@@ -454,7 +544,7 @@ lease_command="bash ./scripts/ios-dev.sh $command_name"
 [[ $# -gt 0 ]] && lease_command="$lease_command $*"
 
 case "$command_name" in
-  destination|prepare)
+  test-destination|destination|prepare)
     require_command "$XCRUN_BIN"
     require_command ruby
     select_fixed_test_target
@@ -467,9 +557,11 @@ case "$command_name" in
     select_available_build_target
     printf '%s: %s (%s)\n' "$SELECTED_KIND" "$SELECTED_NAME" "$SELECTED_ID"
     [[ "$SELECTED_KIND" == "device" ]] && printf 'Connection: %s\n' "$SELECTED_TRANSPORT"
+    printf 'Policy: daily build/run\n'
+    printf 'Reason: %s\n' "$SELECTED_REASON"
     printf 'DerivedData: %s\n' "$SELECTED_DERIVED_DATA"
     ;;
-  derived-data-path)
+  test-derived-data-path|derived-data-path)
     require_command "$XCRUN_BIN"
     require_command ruby
     select_fixed_test_target
@@ -512,11 +604,10 @@ case "$command_name" in
       exit 0
     fi
 
-    require_command "$OPEN_BIN"
     if ! simulator_is_booted "$SELECTED_ID"; then
       "$XCRUN_BIN" simctl boot "$SELECTED_ID"
     fi
-    "$OPEN_BIN" -a Simulator
+    open_simulator_ui
     "$XCRUN_BIN" simctl bootstatus "$SELECTED_ID" -b
     run_xcodebuild build "$@"
 

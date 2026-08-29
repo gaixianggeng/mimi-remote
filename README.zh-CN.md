@@ -5,12 +5,12 @@
 <h1 align="center">Mimi Remote</h1>
 
 <p align="center">
-  <strong>让 Mac 继续干活，你不必一直守在 Mac 前。</strong>
+  <strong>Mac 上的 Agent 会话，接着在 iPhone 和 iPad 上用。</strong>
 </p>
 
 <p align="center">
-  开源、原生、本地优先的 Codex 移动工作台。<br />
-  iPhone 看进度，iPad 补方向，iPad Pro 做 Review 和 Git 收尾。
+  面向 Codex 与 Claude Code 的开源原生移动工作台。<br />
+  直连你的 Mac，让会话在设备间无缝接力，实时跟进任务、继续对话和处理审批。
 </p>
 
 <p align="center">
@@ -30,60 +30,67 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
 </p>
 
-<p align="center">
-  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/workspace.png" alt="Mimi Remote 在 iPad 上的工作区" width="100%" />
-</p>
+<table>
+  <tr>
+    <td width="33%" valign="middle" align="center">
+      <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote 在 iPhone 上以紧凑单列展示项目、最近会话与 Runtime 选择" width="88%" />
+    </td>
+    <td width="67%" valign="middle" align="center">
+      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote 在 iPad 上同时展示项目、最近会话与 Runtime 选择的工作区" width="96%" />
+    </td>
+  </tr>
+</table>
 
 <p align="center">
-  <sub>当前 Mimi Remote iPad 界面，基于实体设备截图与公开演示数据制作。</sub>
+  <sub>当前 Mimi Remote iPhone 与 iPad 工作区：能力一致，布局分别适配。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项目不运营中转服务、云账号或会话托管服务，Mac 始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
 
 Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 或 Tailscale，也不代表这些公司的官方产品。Codex 是主要支持的 Runtime；可选的 Claude Code bridge 仍处于实验阶段。
 
-> 当前还没有公开 App Store 版本。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装 iOS App，也可以从源码构建。
+> Mimi Remote 已在部分地区的 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 上架。[TestFlight](https://testflight.apple.com/join/jhGPbSk6) 继续提供 Beta 构建，开发者也可以从源码构建。
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>iPhone · 随时看一眼、补一句</strong><br />
-      <sub>读结果、补上下文、处理审批，或者及时停止一轮任务。</sub>
+      <strong>iPhone · 完整能力，紧凑布局</strong><br />
+      <sub>在单列界面中继续会话、跟进进度、处理审批和控制任务。</sub>
     </td>
     <td width="50%" align="center">
-      <strong>iPad · 控制始终留在上下文里</strong><br />
-      <sub>会话、待发送指令、模型、权限和输入区同时可见。</sub>
+      <strong>iPad · 完整能力，展开布局</strong><br />
+      <sub>同样的会话与控制在多栏工作台中展开，保留更多上下文。</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/zh-Hans/conversation.png" alt="Mimi Remote 在 iPhone 上的会话" width="58%" />
+      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的会话列表" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/sessions.png" alt="Mimi Remote 在 iPad 上的会话列表" width="72%" />
+      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote 在 iPad 上同时展示侧栏与会话列表" width="100%" />
     </td>
   </tr>
 </table>
 
-当前截图集覆盖工作区、会话、会话列表、含 Token 使用量的设置页和 Mac 连接页，提供 iPhone / iPad 与简体中文 / 英文两套版本。素材只使用 `/Users/demo`、占位凭证和公开演示文案，没有展示个人仓库、访问 Token、Endpoint 或 Tailnet 地址。完整说明见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
+两端共用完整的会话、审批与任务控制能力，区别只在布局、信息密度和输入方式。原生 SwiftUI 界面分别打磨了紧凑导航、宽屏分栏、触控反馈与过渡动画；开启 Reduce Motion 后，动态效果会降级为克制的淡化或静态反馈。这些图片直接复用 [`web/assets`](web/assets) 中的当前官网截图，全部来自 Debug 专用种子界面，其中的主机、项目、会话、路径和用量均为演示数据，不使用维护者的真实工作区或凭据。截图展示简体中文界面，App 同时支持英文。
 
-## 离开工位，不离开任务
+## 从 Mac 到移动端，会话继续
 
-真正高频的需求通常不是“在手机上开一个终端”，而是“Agent 趁我离开时做完了——我想看懂它改了什么，再决定下一步”。
+真正高频的需求通常不是“在手机上开一个终端”，而是离开 Mac 后仍能接着同一段 Agent 会话，不必重新解释上下文。
 
-- **看一眼：**任务是在思考、等待、失败，还是已经完成，不用重新打开 Mac。
-- **补一句：**追加上下文、排队下一条指令、切换模型或推理强度、回答问题、批准操作或中断当前 Turn。
-- **收个尾：**检查状态和 Diff、管理 Worktree、按文件或 Hunk 暂存、Commit、Push，并创建 Draft PR。
+- **接着做：**在 Mac、iPhone 与 iPad 之间继续已有会话，离开工位也不用重新开始。
+- **实时跟进：**查看任务正在思考、等待、失败还是已经完成，并持续读取结构化回复和执行过程。
+- **随时控制：**追加上下文、排队下一条指令、切换模型或推理强度、回答问题、批准操作或中断当前 Turn。
 
-iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界面会展开成项目、会话、正文与 Inspector 工作台，而不是简单把手机页面拉宽。
+需要完成更深入的开发收尾时，进阶工具还支持检查 Diff、管理 Worktree、按文件或 Hunk 暂存、Commit、Push 和创建 Draft PR；这些能力不是使用 Mimi Remote 的前提。
 
 ## 它不是口袋里的终端
 
-- Codex 的消息、推理、命令、Tool 调用、审批和执行过程会组成结构化时间线，不是一整屏终端日志。
+- Codex 与 Claude Code 的消息、推理、命令、Tool 调用、审批和执行过程会组成结构化时间线，不是一整屏终端日志。
 - 新建 Codex 会话由 Mac 端异步生成简短标题；生成失败不会阻塞对话，可通过 `app_server.auto_title` 关闭。
 - 模型、推理强度、Skill、速度、权限模式和待发送队列都留在 Composer 附近。
 - Markdown、图片、文件引用、语音输入和安全的 Quick Look 读取都按移动端内容呈现。
-- Worktree 与 Git 操作带预览、确认、超时和输出上限，不向手机暴露不受控的任意 Shell。
+- iPhone 与 iPad 的间距、层级、触控反馈和转场动画分别调校；Reduce Motion 下仍保留清晰的静态状态反馈。
 - 多个 Mac Profile 使用独立 Keychain Token；同一时间只保持一个活动连接，心智模型更简单。
 - 就绪检查、断线恢复、Doctor 和有上限的日志导出，让多数故障不必回到电脑前处理。
 
@@ -91,25 +98,25 @@ iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界�
 
 ## 设计围绕上下文，不围绕屏幕尺寸
 
-Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPad 是保留上下文的工作台，Mac 是紧凑的运行控制面，不会把同一张页面机械复制到所有端。
+Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPhone 用紧凑层级保持单手操作，iPad 展开为保留上下文的多栏工作台，Mac 则继续运行 Agent 并提供宿主控制面。设备改变的是呈现方式，不是可用能力。
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>用量状态集中可见</strong><br />
-      <sub>Token 使用量、语言、外观与权限集中在清晰的设置界面中。</sub>
+      <strong>外观与个性化是一等能力</strong><br />
+      <sub>可选择深浅色、工作区图标套装和编辑器风格主题。</sub>
     </td>
     <td width="50%" align="center">
-      <strong>Mac 连接状态明确</strong><br />
-      <sub>开始远程工作前即可确认配对信息与宿主连接状态。</sub>
+      <strong>用量与宿主状态集中可见</strong><br />
+      <sub>Token 周期、已连接 Mac、语言、模型和权限集中在「我的」。</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/settings.png" alt="Mimi Remote 在 iPad 上的设置与 Token 使用量" width="100%" />
+      <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的外观与工作区图标设置" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/mac-connection.png" alt="Mimi Remote 在 iPad 上的 Mac 连接设置" width="100%" />
+      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote 在 iPhone 深色模式下的 Token 用量、已连接 Mac 与偏好设置" width="58%" />
     </td>
   </tr>
 </table>
@@ -124,121 +131,70 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 
 这套层级有几个明确原则：
 
-- **保留上下文：**iPad 侧栏持续展示项目和会话，右侧内容按任务变化；设置使用 Sheet，工作台不会突然消失。
+- **保留上下文：**iPhone 用紧凑层级把当前任务放在手边；iPad 侧栏持续展示项目和会话，右侧内容按任务变化；两端切换布局但不削减会话能力。
 - **渐进披露复杂度：**高频状态和动作靠近任务，首次设置、配对、诊断和深层偏好进入独立界面。
 - **先看状态，再做动作：**连接健康度、Runtime 就绪状态、剩余额度和权限模式会先于可能改变或中断任务的控制项出现。
 - **遵循各平台习惯：**iPhone 是紧凑触屏层级，iPad 是多栏工作台，Mac 是高密度菜单栏工具，而不是把一套布局拉伸到三块屏幕。
 
-两张 iPad 细节图来自当前 MIM-80 实体设备截图集；Mac 菜单图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
+上面的移动端图片与当前 Mimi Remote 官网共用同一套素材，并且全部来自 Debug 专用种子界面。Mac 菜单图使用公开演示域名 `mimi-demo.local`；采集过程没有重启或替换已安装的 Mac 服务。这些公开截图均不包含真实 Token、私有地址、个人路径或线上项目内容。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    subgraph Mobile["移动设备"]
-        App["Mimi Remote<br/>SwiftUI 工作台"]
-        Keychain["Keychain<br/>每个 Mac Profile 一份访问 Token"]
-        Keychain -.-> App
-    end
+    Mobile["iPhone / iPad<br/>Mimi Remote"]
+    Gateway["你的 Mac<br/>agentd 安全网关"]
+    Codex["Codex<br/>共享 Unix App Server"]
+    Desktop["Codex Desktop<br/>SSH 主机"]
+    Claude["Claude Code<br/>实验 bridge"]
 
-    subgraph Mac["你的 Mac — 唯一控制面"]
-        Host["Mimi Remote Mac<br/>安装 · 配对 · Doctor · 服务生命周期"]
-        Agent["agentd<br/>认证 · REST API · WebSocket 网关 · 权限策略"]
-        Local["受限本地操作<br/>项目 · 文件 · Git · Worktree · Action"]
-        Codex["Codex app-server<br/>受管 loopback 进程"]
-        Bridge["alleycat-claude-bridge<br/>常驻 · 实验通道"]
-        Claude["Claude Code headless<br/>每个 thread 一个 stdio 进程"]
-        State["本机状态<br/>工作区 · 凭证 · 历史"]
-
-        Host -->|"启动与监控"| Agent
-        Agent -->|"校验后的本机 API"| Local
-        Agent -->|"过滤后的 JSON-RPC"| Codex
-        Agent -->|"稳定 session + cursor"| Bridge
-        Bridge -->|"stdio JSONL"| Claude
-        Local --> State
-        Codex --> State
-        Claude --> State
-    end
-
-    App -->|"Tailscale 或同一局域网<br/>Bearer Token · REST + WebSocket"| Agent
+    Mobile <-->|"局域网或 Tailscale<br/>实时会话与审批"| Gateway
+    Gateway <--> Codex
+    Desktop <-->|"SSH app-server proxy"| Codex
+    Gateway <--> Claude
 ```
 
-Mimi Remote 是原生客户端，不是另一台运行 Agent 的主机。所有远程请求都终止在你 Mac 上的 `agentd`；iOS 不会直接连接 Codex app-server、Claude Code、本机文件系统或项目维护者提供的云服务。
+这个仓库包含完整链路：iPhone / iPad 原生 App、Mac 菜单栏宿主、Go `agentd` 网关，以及 Claude Code 兼容 bridge。移动端只连接你自己的 Mac，项目文件、会话历史和 Runtime 凭证都留在宿主机。
 
-系统有三条清晰的调用路径：
+- **直连、响应快：**通过私有网络上的 REST 与 WebSocket 实时传递输出、追问、任务控制和审批，不经过 Mimi 运营的应用层中转。
+- **单一共享的 Codex 运行时：**`agentd`、本机 Desktop SSH 主机和远程 Desktop SSH 主机都通过 `codex app-server proxy` 连接同一个 Unix App Server。Desktop 普通本地模式与 OpenClaw 保持独立，agentd 不通过私有 IPC 控制它们。
+- **双 Runtime、统一体验：**Codex 是主 Runtime；可选的 Claude Code bridge 把会话与审批适配到同一套结构化移动界面。
+- **边界小而明确：**`agentd` 在 Mac 上完成认证、工作区授权和 Runtime 路由。Mac 需要保持唤醒并能从私有网络访问。
 
-1. **宿主生命周期：**Mimi Remote Mac 负责安装、配对、诊断、启动和监控 `agentd`，不经过每一条业务请求。命令行和 Linux 场景可以由 Homebrew 或 user-systemd 运行同一个 Go 服务。
-2. **受限本机能力：**项目发现、安全文件读取、Git、受管 Worktree、诊断、语音代理和配置 Action 都通过 `agentd` 的认证 REST API 完成，不需要绕经 Codex。
-3. **Agent 会话：**移动端只连接一个对外的 Codex-compatible JSON-RPC / WebSocket 网关。`agentd` 校验 runtime、method、由项目映射得到的工作目录、Payload 大小和连接预算，再把请求路由到主通道 Codex app-server 或实验通道 Claude bridge。
-
-Codex app-server 是由 `agentd` 管理的 loopback 进程，也是默认运行时。可选的常驻 Claude bridge 使用稳定 session key 和 replay cursor 承接移动端重连，并为每个活动 thread 管理一个 Claude Code headless stdio 进程。Provider 差异被限制在适配层内；移动端共用界面不代表两条通道功能完全一致。
-
-安全边界集中在 Mac：
-
-- 二维码只携带签名配对票据，不包含长期凭据；同一票据可在生成后的 10 分钟内重复兑换，换取到的长期 `agentd` Token 按 Mac Profile 保存到 Keychain。
-- app-server capability token 与 Provider 凭证不会离开 Mac；受管 app-server 只监听 loopback。
-- 客户端提交的项目 ID 必须通过配置中的项目 allowlist 解析；文件访问限制在项目根目录、`browse_roots` 和受管 Worktree。
-- Git 与 Worktree API 只暴露固定、经过参数校验的操作；通用命令必须预先配置为 Action，并受确认、超时、请求大小和输出上限约束。
-- 正常断线后通过 sequence / cursor 回放实时事件；超出回放窗口时读取本机权威历史，不会重新提交同一个 Turn。
-- 跨网络默认推荐 Tailscale；未安装时可在同一局域网直连。两种方式都不应把 `agentd` 暴露到公网。
-
-这套架构部署简单、边界可审计，但代价也很明确：Mac 必须保持唤醒并能从私有网络访问，`agentd` 与所选 Runtime 也必须健康。当前没有维护者运营的中继、云端状态同步或 APNs 后台执行链路。
-
-### Claude Code 为什么需要单独 bridge
-
-Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `agentd` 共用版本、CI 和发布入口。`agentd` 监督一个常驻 bridge，通过稳定 session key 把多次移动端 WebSocket 连接附着到同一运行时；每个 Claude thread 对应一个 Claude Code headless stdio JSONL 进程。
-
-该通道默认关闭并标记为实验功能。普通断线不会重新提交 `turn/start`，重连优先回放缺失事件，超出窗口时读取本机 Claude 历史；bridge 或 Mac 重启前尚未落盘的极短窗口仍可能丢失。`goal`、`archive` 和 `fork` 尚未开放，详细生命周期、权限和失败模式见 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
+协议细节与准确能力边界见[项目现状](docs/project-status.md)和 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
 ## 开始前检查
 
 安装前先确认：
 
-- **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及已在宿主电脑安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
+- **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的 Mac，以及已在这台 Mac 安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
 - **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
 - **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
-- **当前 iOS 安装方式：**尚无公开 App Store 包。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装；也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
-- **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
+- **当前 iOS 安装方式：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装公开版本；Beta 构建继续通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 提供。也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
+- **仅开发者需要：**普通 macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
 
 ## 快速开始
 
 ### 首次安装只需四步
 
 1. **准备 Codex：**在宿主电脑安装 Codex CLI，完成 Runtime 自身认证并确认已经就绪；Mimi Remote 不配置 Provider 凭证或计费。
-2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
-3. **安装 iOS App：**加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
+2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 macOS 宿主，完成首次设置并确认服务已就绪。
+3. **安装 iOS App：**在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 下载 Mimi Remote，或加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) 获取 Beta 构建；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
 4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
-推荐使用平台正式安装包：Windows 使用一键 EXE 安装器（有证书时使用 Authenticode 签名；无证书时明确标记为 `unsigned-release`），macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
+macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。App 内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
 
-### Windows 安装
+### Windows Desktop 接入
 
-要求 Windows 10/11 x64，并已在当前 Windows 用户下安装和登录 Codex CLI。普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`，先在 PowerShell 验证 SHA-256 与 Authenticode：
+MIM-207 不再支持 Windows 作为 `agentd` 宿主。共享运行时依赖 POSIX SSH 目标、Unix Socket 和 Mac 工作区路径。Windows 安装包已暂停发布；仓库中保留的安装器源码会在停服或替换文件前明确阻止安装。
 
-```powershell
-$setup = Get-Item .\Mimi-Remote-Setup-*.exe
-(Get-FileHash $setup -Algorithm SHA256).Hash
-(Get-AuthenticodeSignature $setup).Status
-```
-
-先检查 `.metadata.json` 的 `signing`：`authenticode-pfx` 必须对应 `Valid`；`unsigned-release` 应对应 `NotSigned`，其 EXE 文件名包含 `-unsigned`，并可能触发 Microsoft Defender SmartScreen。未签名版本只应从本仓库正式 Release 下载，并在 SHA-256 与同 Release 的 sidecar 完全一致后运行。安装器按当前用户安装，已经内置 `agentd.exe`、`alleycat-claude-bridge.exe` 与原生 `mimi-remote-tray.exe`，不要求 Go 或 Rust；它会注册 limited 权限的登录任务、启动服务、等待真实就绪并启动通知区域托盘。托盘可查看 Endpoint 与 Codex/Claude 状态，并提供启动、停止、重启、配对、Doctor 和日志入口。配置与 Token 位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`，覆盖升级或普通卸载不会删除它们。
-
-局域网访问默认关闭；没有 Tailscale 且没有明确勾选 LAN 时，新安装只监听 loopback。勾选后，安装器先要求默认 Windows 网络配置文件为“专用网络”，清理 Windows 弹窗可能为 `agentd.exe` 自动创建的额外入站规则，再创建唯一的 Private profile、LocalSubnet 受限规则，最后扩大到 LAN 监听。运行时会拒绝 Public/Any 或其它非托管入站 Allow 规则。Public 网络不会触发放宽防火墙边界；只应把可信的 Wi-Fi 或以太网改为“专用网络”。配对地址优先使用系统默认路由对应的物理网卡，并排除 Hyper-V、WSL、容器和仅 VPN 可见的虚拟网卡。也可以使用以下命令：
-
-```powershell
-$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
-& $agentd status
-& $agentd pair --qr-only
-& $agentd doctor --fix
-& $agentd logs -n 200
-& $agentd restart --no-pair
-```
+Windows 只作为 Codex Desktop 客户端使用：在 Codex Desktop 中添加这台 Mac 的 SSH 主机，以拥有共享 App Server 的同一个 macOS 用户登录，再打开共享工作区。Mimi Remote 仍连接这台 Mac 上的 `agentd`。
 
 ### Mac 安装
 
 要求：
 
-- macOS 26 或更高版本；
+- macOS 15 或更高版本；
 - 已安装并登录 Codex CLI；
 - Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络。
 
@@ -257,7 +213,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
+首次启动前先启用“远程登录”，并确认 `ssh 127.0.0.1 codex --version` 无需输入登录密码即可成功。`agentd up` 会生成用户私有配置，通过 localhost SSH 接入共享 Unix App Server，完成真实协议初始化后再显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 SSH App Server](docs/shared-ssh-app-server.md)。
 
 Homebrew / CLI 常用命令：
 
@@ -275,7 +231,7 @@ agentd stop
 `agentd restart` 在 macOS 上使用 launchd 原子重启，允许从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
 Agent、自动化或远程日志场景使用 `agentd up --no-pair` / `agentd restart --no-pair`，避免把二维码、Endpoint 和长期访问码写入任务输出。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告，不包含完整 setup 结果；需要配对时再由用户在本机终端运行 `agentd pair --qr-only`。
 
-Windows、macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
+macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
 如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
 
@@ -287,7 +243,7 @@ https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mi
 
 ### 安装 iOS App
 
-Mimi Remote 要求 iOS / iPadOS 18 或更高版本。最简单的安装方式是加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)。iOS 26+ 提供完整高级视觉与设备端语音体验；较早的受支持系统会对不可用能力进行明确降级。
+当前源码支持 iOS / iPadOS 18 或更高版本；App Store 的地区可用性和最低系统要求以各地区当前商店页面为准。在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装公开版本，或加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) 获取 Beta 构建。iOS 26+ 提供完整高级视觉与设备端语音体验；较早的受支持系统会对不可用能力进行明确降级。
 
 如需从源码构建，请使用安装了 Xcode 26 或更高版本和 XcodeGen 的 Mac：
 
@@ -305,7 +261,7 @@ Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd
 
 ## Claude Code 实验通道
 
-Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Windows 安装器和 Mac DMG 都已经内置兼容 bridge；Windows `authenticode-pfx` 安装包与 Mac DMG 保留平台代码身份，`unsigned-release` Windows 包则没有。不要为这些安装方式重复执行 `cargo install`。
+Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Mac DMG 已内置兼容 bridge，并保留平台代码身份；不要为这种安装方式重复执行 `cargo install`。
 
 只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
@@ -332,7 +288,7 @@ command -v alleycat-claude-bridge
 }
 ```
 
-空 `bridge_bin` 表示使用 Windows 安装器或 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持平台对应的用户私有权限，不要把完整文件打印到日志或聊天中。
+空 `bridge_bin` 表示使用 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持平台对应的用户私有权限，不要把完整文件打印到日志或聊天中。
 
 然后验证：
 
@@ -392,7 +348,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-日常 `build` / `run` 按 available、paired 且未占用的 USB 真机 → 当前本地网络可达的真机 → 固定 iPad Simulator 确定性回退。显式 `IOS_DEVICE_ID` / `IOS_DEVICE_NAME` 同时支持有线与无线真机，设备不可达时会明确失败；同一 UDID 切换连接方式时仍共用租约和 DerivedData。测试、视觉快照与 CI 精确固定 `iPad Pro 13-inch (M5)`，不会回退 iPad mini。设备连接方式和占用可通过 `bash ./scripts/ios-dev.sh leases` 查看。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
+日常编译与部署统一通过 `bash ./scripts/ios-dev.sh build|run`：按 available、paired 且未占用的 USB 真机 → 当前本地网络可达的真机选择；只有完全没有可达真机时才回退固定 iPad Simulator。检测到真机但全部忙时明确失败，不静默切换设备类型。显式 `IOS_DEVICE_ID` / `IOS_DEVICE_NAME` 同时支持有线与无线真机，设备不可达时会明确失败；同一 UDID 切换连接方式时仍共用租约和 DerivedData。测试、视觉快照与 CI 精确固定 `iPad Pro 13-inch (M5)`，不会回退 iPad mini。XcodeBuildMCP 仓库默认值不保存设备目标，其 Simulator workflow 只用于这些固定 Simulator 场景。目标原因、连接方式和占用可通过 `bash ./scripts/ios-dev.sh target` 与 `bash ./scripts/ios-dev.sh leases` 查看。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
 
 ### Claude bridge
 
@@ -412,18 +368,23 @@ bridge 只保留 Mimi Remote 需要的三个 crate；上游来源和 GPLv3-only 
 
 ## 验证
 
-提交前至少运行：
+先预览 committed、staged、unstaged 和未跟踪变更对应的验证计划；准备推送前只执行
+一次 quick：
 
 ```bash
-go test ./... -count=1
-go vet ./...
-bash ./scripts/check-codex-protocol.sh
-bash ./scripts/check-public-repo-safety.sh
-bash ./scripts/check-third-party-notices.sh
-bash ./scripts/check-ios-privacy-manifest.sh
-bash ./scripts/restart-agentd-dev-macos.sh --self-test
+bash ./scripts/verify-change.sh --plan
+bash ./scripts/verify-change.sh
+```
+
+纯文档和控制面改动不会启动语言构建；产品代码只验证直接受影响的栈，完整回归默认交给
+PR Gate。跨模块、协议、发布或明确高风险改动再运行
+`bash ./scripts/verify-change.sh --full`。相机、通知、Keychain、Tailscale/弱网、性能和
+发布前验收才需要真机。分层规则和专项排障命令见[贡献指南](CONTRIBUTING.md)。
+
+正式发布校验仍需独立于上述分层验证执行：
+
+```bash
 bash ./scripts/verify-release.sh
-cargo test --locked -p alleycat-claude-bridge
 ```
 
 正式 macOS Release 必须通过 Developer ID 签名和 Apple notarization；发布链路另外包含签名凭据预检、Darwin 归档身份校验、打包、Linux 安装、Git 历史凭据扫描、Action SHA 固定和协议漂移门禁，详见 [P0 / P1 发布清单](docs/p0-p1-roadmap.md)。
@@ -484,6 +445,7 @@ Mimi Remote 支持 iOS / iPadOS 18 及以上版本。iOS 26+ 继续使用 Liquid
 - [与 Litter 的能力对照](docs/litter-comparison.md)
 - [隐私政策](docs/privacy-policy.md)
 - [使用条款](docs/terms-of-use.md)
+- [商标与品牌使用政策](TRADEMARKS.md)
 - [支持说明](docs/support.md)
 - [安全政策](SECURITY.md)
 
@@ -495,7 +457,9 @@ Mimi Remote 不包含广告、分析 SDK 或开发者自建遥测，不把项目
 
 ## License
 
-Mimi Remote 自有的 iOS App、Go 后端和文档使用 [GNU GPLv3](LICENSE)，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。商业使用并未被禁止，但分发修改版或二进制时仍须遵守 GPLv3，包括向接收者提供对应源码和同等许可。
+Mimi Remote 自有的 iOS App、Mac App、Go 后端和文档使用 [GNU GPLv3](LICENSE)，并依据 GPLv3 第 7 节授予通过 Apple App Store 和 Google Play 分发的额外许可。允许商业使用和收费分发；但如果向第三方分发 GPL 覆盖的修改作品或目标代码，必须确保接收者取得该覆盖作品的 GPLv3 权利，并按 GPLv3 要求提供对应源码或合规的源码获取方式。不能把该覆盖作品作为不向接收者提供这些权利或源码获取方式的闭源产品分发；独立作品和第三方组件仍适用各自许可证。
+
+GPLv3 授予的是代码相关权利，不自动授予 Mimi Remote 名称、Logo、App 图标或官方发行身份。面向用户的修改版产品如果使用这些项目标识，必须遵守[商标与品牌使用政策](TRADEMARKS.md)；未经书面授权，应使用独立品牌且不得冒充官方版本。如实说明“基于 Mimi Remote”或兼容性仍然允许。
 
 [`bridges/claude`](bridges/claude) 源自 Alleycat 多位贡献者，保留独立的 [GPLv3-only](bridges/claude/LICENSE)；仓库根目录的商店分发额外许可不适用于这部分上游代码。
 

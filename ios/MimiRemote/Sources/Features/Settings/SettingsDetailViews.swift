@@ -548,6 +548,23 @@ struct CapabilityItemRow: View {
     }
 }
 
+enum WorkspaceIconStylePickerLayout {
+    /// iPhone 竖屏的 Form 内容区通常低于此宽度；iPad 详情区即使带侧栏，
+    /// 也会进入单行横滑，避免因为 8 项无法一次放下就退回两行并留下大片空白。
+    static let minimumSingleRowViewportWidth: CGFloat = 480
+
+    /// 按真实容器宽度决定信息密度，不按设备型号判断。单行不要求全部项目同时放下，
+    /// 超出的内容交给原生横向滚动；辅助功能字号继续两行，避免标题被过度压缩。
+    static func usesSingleRow(
+        viewportWidth: CGFloat,
+        itemCount: Int,
+        isAccessibilitySize: Bool
+    ) -> Bool {
+        guard viewportWidth > 0, itemCount > 0, !isAccessibilitySize else { return false }
+        return viewportWidth >= minimumSingleRowViewportWidth
+    }
+}
+
 struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -557,11 +574,13 @@ struct AppearanceView: View {
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
 
     let profileID: String
+    @State private var workspaceIconStyleViewportWidth: CGFloat = 0
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
         let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
         let tokens = themeStore.tokens(for: systemColorScheme)
+        let selectedWorkspaceIconStyle = workspaceAppearanceStore.style(profileID: profileID)
 
         Form {
             Section {
@@ -580,37 +599,45 @@ struct AppearanceView: View {
             .listRowBackground(tokens.elevatedSurface)
 
             Section {
-                LazyVGrid(
-                    columns: workspaceIconStyleColumns,
-                    alignment: .center,
-                    spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
-                ) {
-                    ForEach(selectableWorkspaceIconStyles) { style in
-                        let isSelected =
-                            workspaceAppearanceStore.style(profileID: profileID) == style
-                        Button {
-                            workspaceIconStyleBinding.wrappedValue = style
-                        } label: {
-                            WorkspaceIconStyleOptionLabel(
-                                style: style,
-                                isSelected: isSelected,
-                                tokens: tokens
-                            )
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.horizontal) {
+                        LazyHGrid(
+                            rows: workspaceIconStyleRows,
+                            alignment: .center,
+                            spacing: workspaceIconStyleColumnSpacing
+                        ) {
+                            ForEach(selectableWorkspaceIconStyles) { style in
+                                workspaceIconStyleOption(
+                                    style: style,
+                                    selectedStyle: selectedWorkspaceIconStyle,
+                                    tokens: tokens,
+                                    fixedWidth: workspaceIconStyleItemWidth
+                                )
+                            }
                         }
-                        .buttonStyle(
-                            WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
-                        )
-                        .accessibilityLabel(style.title)
-                        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
-                        .accessibilityAddTraits(isSelected ? .isSelected : [])
-                        .accessibilityIdentifier(
-                            "settings.workspaceIconStyle.option.\(style.rawValue)"
-                        )
+                        // 单行与双行都使用同一滚动容器；末端留白让最后一项完整停靠。
+                        .padding(.vertical, 6)
+                        .padding(.trailing, 12)
                     }
+                    .scrollIndicators(.hidden)
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .onAppear {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            // 只在进入页面时定位一次；避免双向 scrollPosition 在拖动期间
+                            // 持续写回状态并让整个 Form 重绘，保持手指与内容 1:1 跟随。
+                            scrollProxy.scrollTo(selectedWorkspaceIconStyle.id, anchor: .center)
+                        }
+                    }
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        guard width > 0, workspaceIconStyleViewportWidth != width else { return }
+                        workspaceIconStyleViewportWidth = width
+                    }
+                    .accessibilityIdentifier("settings.workspaceIconStyle")
                 }
-                // 常规字号固定四列快速扫读；新增风格自然换行，辅助功能字号减少列数。
-                .padding(.vertical, 6)
-                .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
             } footer: {
@@ -703,7 +730,7 @@ struct AppearanceView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
@@ -714,13 +741,30 @@ struct AppearanceView: View {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
     }
 
-    private var workspaceIconStyleColumns: [GridItem] {
-        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
-        let spacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 12 : 6
-        return Array(
-            repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
-            count: columnCount
-        )
+    private var workspaceIconStyleRows: [GridItem] {
+        let rowHeight: CGFloat = dynamicTypeSize.isAccessibilitySize ? 142 : 96
+        let rowSpacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 14 : 10
+        if WorkspaceIconStylePickerLayout.usesSingleRow(
+            viewportWidth: workspaceIconStyleViewportWidth,
+            itemCount: selectableWorkspaceIconStyles.count,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        ) {
+            return [GridItem(.fixed(rowHeight), spacing: 0)]
+        }
+        return [
+            GridItem(.fixed(rowHeight), spacing: rowSpacing),
+            GridItem(.fixed(rowHeight), spacing: 0)
+        ]
+    }
+
+    private var workspaceIconStyleColumnSpacing: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 12 : 8
+    }
+
+    private var workspaceIconStyleItemWidth: CGFloat {
+        // 普通字号压缩到接近头像实际宽度，在 iPhone 上展示四列并露出下一列；
+        // 辅助功能字号仍保留两行标题所需空间和充足触控区域。
+        dynamicTypeSize.isAccessibilitySize ? 132 : 88
     }
 
     private var selectableWorkspaceIconStyles: [WorkspaceIconStyle] {
@@ -741,6 +785,31 @@ struct AppearanceView: View {
                 )
             }
         )
+    }
+
+    private func workspaceIconStyleOption(
+        style: WorkspaceIconStyle,
+        selectedStyle: WorkspaceIconStyle,
+        tokens: ThemeTokens,
+        fixedWidth: CGFloat?
+    ) -> some View {
+        let isSelected = selectedStyle == style
+        return Button {
+            workspaceIconStyleBinding.wrappedValue = style
+        } label: {
+            WorkspaceIconStyleOptionLabel(
+                style: style,
+                isSelected: isSelected,
+                tokens: tokens
+            )
+        }
+        .buttonStyle(WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion))
+        .frame(width: fixedWidth)
+        .accessibilityLabel(style.title)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
+        .id(style.id)
     }
 
     private func iconName(for mode: ThemeMode) -> String {
@@ -1128,7 +1197,7 @@ struct DefaultModelSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
+        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -1352,10 +1421,41 @@ private extension DefaultModelRuntime {
         }
     }
 }
-
 extension View {
+    func settingsCanvasBackground(tokens: ThemeTokens) -> some View {
+        modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
+    }
+
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
-            .background(tokens.background.ignoresSafeArea())
+            .settingsCanvasBackground(tokens: tokens)
+    }
+}
+
+private struct SettingsCanvasBackgroundModifier: ViewModifier {
+    @Environment(\.settingsUsesWorkbenchCanvas) private var settingsUsesWorkbenchCanvas
+
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        content.background(
+            (settingsUsesWorkbenchCanvas
+                ? tokens.workbenchCanvasBackground
+                : tokens.background
+            ).ignoresSafeArea()
+        )
+    }
+}
+
+/// 同一套设置详情既会从“我的”进入，也会在独立设置 sheet 内导航；
+/// 由入口传递画布类型，避免详情页自行猜测呈现方式。
+private struct SettingsUsesWorkbenchCanvasKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var settingsUsesWorkbenchCanvas: Bool {
+        get { self[SettingsUsesWorkbenchCanvasKey.self] }
+        set { self[SettingsUsesWorkbenchCanvasKey.self] = newValue }
     }
 }

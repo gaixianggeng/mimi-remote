@@ -1,13 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +23,12 @@ const (
 	appServerGatewayPath        = "/api/app-server/ws"
 	appServerPolicyErrorCode    = -32080
 	appServerGatewayWriteWindow = 10 * time.Second
+	// 小帧继续使用原有 10 秒保护；历史大帧则按保守下行速率扩展期限。
+	// 这样不会拖慢正常链路，只避免 4–5 MiB 页面在弱网即将写完时被主动断开并整页重传。
+	appServerGatewayLargeFrameThreshold      = 256 << 10
+	appServerGatewayLargeFrameBytesPerSecond = 96 << 10
+	appServerGatewayLargeFrameMaxWriteWindow = 75 * time.Second
+	appServerGatewayPongGrace                = 20 * time.Second
 	// 个人/小团队场景通常只有 1–2 个移动端。保留重连余量，同时限制一个泄漏的 token
 	// 无限建立“移动端 WS + 本机 upstream WS”连接，避免耗尽文件描述符和 goroutine。
 	appServerGatewayMaxConnections = 8
@@ -43,22 +48,27 @@ const (
 )
 
 var (
-	appServerGatewayReadLimit                     int64 = 64 << 20
-	appServerGatewayPongWait                            = 60 * time.Second
-	appServerGatewayPingPeriod                          = 45 * time.Second
-	appServerGatewayPendingThreadTTL                    = 30 * time.Second
-	appServerGatewayPendingThreadMax                    = 128
-	appServerGatewayPendingClientRequestTTL             = 2 * time.Minute
-	appServerGatewayPendingClientRequestMax             = 256
-	appServerGatewayPendingServerRequestTTL             = 24 * time.Hour
-	appServerGatewayPendingServerRequestMax             = 256
-	appServerGatewayPendingHistoryRequestTTL            = 2 * time.Minute
-	appServerGatewayPendingHistoryRequestMax            = 256
-	appServerGatewayHistoryResponseCapBytes             = 5 << 20
-	appServerGatewayHistoryBudgetWindow                 = 15 * time.Second
-	appServerGatewayHistoryBudgetMaxRequests            = 6
-	appServerGatewayHistoryBudgetMaxRequestBytes        = int64(64 << 10)
-	appServerGatewayHistoryBudgetMaxResponseBytes       = int64(8 << 20)
+	appServerGatewayReadLimit  int64 = 64 << 20
+	appServerGatewayPingPeriod       = 45 * time.Second
+	// 大帧写入期间当前 reader 会同步等待 client WriteMessage，ping 也会等待同一把写锁。
+	// Pong 窗口必须覆盖“一整个 ping 周期 + 最大大帧写入 + 控制帧写入 + 网络余量”，
+	// 否则放宽写超时后反而可能被旧的 60 秒读超时提前断开，触发整页重传。
+	appServerGatewayPongWait = appServerGatewayPingPeriod +
+		appServerGatewayLargeFrameMaxWriteWindow + appServerGatewayWriteWindow +
+		appServerGatewayPongGrace
+	appServerGatewayPendingThreadTTL              = 30 * time.Second
+	appServerGatewayPendingThreadMax              = 128
+	appServerGatewayPendingClientRequestTTL       = 2 * time.Minute
+	appServerGatewayPendingClientRequestMax       = 256
+	appServerGatewayPendingServerRequestTTL       = 24 * time.Hour
+	appServerGatewayPendingServerRequestMax       = 256
+	appServerGatewayPendingHistoryRequestTTL      = 2 * time.Minute
+	appServerGatewayPendingHistoryRequestMax      = 256
+	appServerGatewayHistoryResponseCapBytes       = 5 << 20
+	appServerGatewayHistoryBudgetWindow           = 15 * time.Second
+	appServerGatewayHistoryBudgetMaxRequests      = 6
+	appServerGatewayHistoryBudgetMaxRequestBytes  = int64(64 << 10)
+	appServerGatewayHistoryBudgetMaxResponseBytes = int64(8 << 20)
 	// 5 Mbps 链路下单次 5 MiB payload 理论约需 8.4 秒；15 秒窗口保留协议和弱网余量。
 	// 8 MiB 总预算继续限制同一窗口内的重复大响应，避免放宽单次 cap 后独占链路。
 	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 8 << 20
@@ -75,6 +85,10 @@ var appServerAllowedMethods = map[string]struct{}{
 	"thread/fork":             {},
 	"thread/read":             {},
 	"thread/turns/list":       {},
+	"thread/items/list":       {},
+	"thread/queue/add":        {},
+	"thread/queue/list":       {},
+	"thread/settings/update":  {},
 	"thread/name/set":         {},
 	"thread/compact/start":    {},
 	"thread/unsubscribe":      {},
@@ -88,6 +102,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"permissionProfile/list":  {},
 	"skills/list":             {},
 	"plugin/installed":        {},
 	"account/rateLimits/read": {},
@@ -102,6 +117,7 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 	"execCommandApproval":                   {},
 	"item/commandExecution/requestApproval": {},
 	"item/fileChange/requestApproval":       {},
+	"item/fileRead/requestApproval":         {},
 	"item/permissions/requestApproval":      {},
 	"item/tool/requestUserInput":            {},
 	"mcpServer/elicitation/request":         {},
@@ -182,7 +198,6 @@ type appServerChannelCapability struct {
 	Compact          bool `json:"compact"`
 	Review           bool `json:"review"`
 	RateLimits       bool `json:"rate_limits"`
-	ExternalActivity bool `json:"external_activity"`
 }
 
 type appServerChannelPolicy struct {
@@ -253,11 +268,12 @@ type appServerGatewayPendingClientRequest struct {
 }
 
 type appServerGatewayPendingServerRequest struct {
-	method    string
-	threadID  string
-	turnID    string
-	itemID    string
-	createdAt time.Time
+	method               string
+	threadID             string
+	turnID               string
+	itemID               string
+	requestedPermissions map[string]any
+	createdAt            time.Time
 }
 
 type appServerGatewayPendingHistoryRequest struct {
@@ -294,6 +310,7 @@ type appServerGatewayValidatedParams struct {
 	hasCWD                     bool
 	cwdScope                   gatewayScope
 	cwdScopeOK                 bool
+	rewroteLocalImagePath      bool
 	pendingManagedWorktreePath string
 }
 
@@ -363,10 +380,10 @@ func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
 	upstream, _ := r.appServerUpstreamWebSocketURL()
 	meta := appServerRuntimeMetadata{
 		Type:               firstNonEmpty(r.cfg.Runtime.Type, "codex_app_server"),
-		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ws"),
-		Managed:            r.cfg.AppServer.Managed,
+		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ssh"),
+		Managed:            false,
 		GatewayAvailable:   upstream != "",
-		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.Listen) != "",
+		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.SSHTarget) != "",
 	}
 	if provider, ok := r.runtime.(appServerDiagnosticsProvider); ok {
 		// metadata 只暴露运行态计数，不返回 codex home、token 或 stderr 等敏感细节。
@@ -430,7 +447,8 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		Protocol:         "app_server_jsonrpc_ws",
 		GatewayWSURL:     r.appServerGatewayURLForRuntime(req, "codex"),
 		GatewayAvailable: codexUpstream != "",
-		Managed:          r.cfg.AppServer.Managed,
+		Managed:          false,
+		Lifecycle:        "shared_ssh",
 		Methods:          appServerAllowedMethodList(),
 		Capabilities: appServerChannelCapability{
 			Streaming:        true,
@@ -444,10 +462,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Compact:          true,
 			Review:           true,
 			RateLimits:       true,
-			ExternalActivity: true,
 		},
 		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request", "on-failure"},
+			ApprovalPolicies: []string{"on-request"},
 			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",
@@ -491,7 +508,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				RateLimits:       claudeRateLimitsAvailable,
 			},
 			Policy: appServerChannelPolicy{
-				ApprovalPolicies: []string{"on-request", "on-failure"},
+				ApprovalPolicies: []string{"on-request"},
 				SandboxModes:     []string{"read-only", "workspace-write"},
 				NetworkAccess:    false,
 				CWDScope:         "agentd_allowlist",
@@ -569,7 +586,11 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游鉴权不可用，请在电脑运行 agentd doctor")
 		return
 	}
-
+	dialer, err := r.appServerUpstreamDialer(4 * time.Second)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
+		return
+	}
 	client, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		log.Printf("app-server gateway ws upgrade failed err=%v", err)
@@ -577,13 +598,28 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	}
 	defer client.Close()
 
-	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
-	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
-	// 收到可重试错误，而不是每次都白等 10s。外侧握手已完成后才拨号，确保畸形握手不会占用 upstream。
-	dialer := websocket.Dialer{HandshakeTimeout: 4 * time.Second}
-	dialStart := time.Now()
-	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
-	dialDuration := time.Since(dialStart)
+	// 正常链路直接建立这一条连接，避免为每个移动端连接额外创建 readiness proxy。
+	// 只有首次拨号失败时才进入带 single-flight 的 Socket 探测/bootstrap，然后重试一次。
+	// 外侧握手必须先成功，畸形请求和超额连接不能触发任何 SSH 子进程。
+	dialUpstream := func() (*websocket.Conn, time.Duration, error) {
+		dialStart := time.Now()
+		conn, response, dialErr := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return conn, time.Since(dialStart), dialErr
+	}
+	upstream, dialDuration, err := dialUpstream()
+	if err != nil {
+		readyCtx, cancelReady := context.WithTimeout(req.Context(), 15*time.Second)
+		readyErr := r.appServerSSH.EnsureReady(readyCtx)
+		cancelReady()
+		if readyErr == nil {
+			upstream, dialDuration, err = dialUpstream()
+		} else {
+			err = readyErr
+		}
+	}
 	if err != nil {
 		r.monitor.recordGatewayDialFailure(dialDuration, err)
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")
@@ -631,68 +667,19 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
-	raw := strings.TrimSpace(r.cfg.AppServer.Listen)
-	if raw == "" {
-		return "", fmt.Errorf("app_server.listen 未配置，无法启用 app-server raw gateway")
+	if r.appServerSSH == nil {
+		return "", fmt.Errorf("app_server SSH transport 未配置")
 	}
-	if !strings.Contains(raw, "://") {
-		raw = "ws://" + raw
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("app_server.listen 不是合法 URL：%w", err)
-	}
-	switch parsed.Scheme {
-	case "ws", "wss":
-	case "http":
-		parsed.Scheme = "ws"
-	case "https":
-		parsed.Scheme = "wss"
-	default:
-		return "", fmt.Errorf("app_server.listen 仅支持 ws/wss/http/https")
-	}
-	if parsed.Host == "" {
-		return "", fmt.Errorf("app_server.listen 缺少 host")
-	}
-	if !isLoopbackGatewayHost(parsed.Hostname()) {
-		return "", fmt.Errorf("app_server.listen 只允许 loopback upstream")
-	}
-	if parsed.Path == "" {
-		parsed.Path = "/"
-	}
-	return parsed.String(), nil
-}
-
-func isLoopbackGatewayHost(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return appserver.CodexAppServerWebSocketURL, nil
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
-	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
-	if tokenFile == "" {
-		if r.cfg.AppServer.Managed {
-			return nil, fmt.Errorf("app_server.ws_token_file 未配置；managed app-server 必须使用独立 upstream token")
-		}
-		return nil, nil
+	return nil, nil
+}
+
+func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
+	if r.appServerSSH == nil {
+		return websocket.Dialer{}, fmt.Errorf("app_server SSH transport 未配置")
 	}
-	raw, err := os.ReadFile(tokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("读取 app_server.ws_token_file 失败：%w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return nil, fmt.Errorf("app_server.ws_token_file 为空")
-	}
-	headers := http.Header{}
-	// app-server upstream capability token 和 iPad 访问 agentd 的 token 分离，避免把外侧 token 复用到本机上游。
-	headers.Set("Authorization", "Bearer "+token)
-	return headers, nil
+	return r.appServerSSH.WebSocketDialer(timeout)
 }

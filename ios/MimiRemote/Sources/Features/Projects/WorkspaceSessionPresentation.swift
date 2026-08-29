@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct WorkspaceSessionPresentationKey: Hashable {
     let hostScope: HostScope
@@ -91,5 +92,74 @@ enum WorkspaceSessionPresentation {
     static func committedVisibleLimit(current: Int, target: Int, loadedCount: Int) -> Int {
         // 请求失败或远端短页时只提交真实可见数量，避免每次重试都把窗口额度空涨 20。
         max(max(1, current), min(max(1, target), max(0, loadedCount)))
+    }
+}
+
+/// 工作区只保留自己的分组节奏；会话行几何直接使用 `SessionIndexRowDensity`。
+enum WorkspaceSessionRowMetrics {
+    /// Runtime 菜单仍需要自己的标签内边距；它不参与会话行布局。
+    static let horizontalPadding: CGFloat = 8
+    /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
+    /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
+    static let sectionBoundarySpacing: CGFloat = 22
+    /// 小节标题到它所辖第一行之间的留白，明显小于 `sectionBoundarySpacing`，
+    /// 标题才会被读成"属于下面这段"而不是浮在两段中间。
+    static let sectionHeaderBottomSpacing: CGFloat = 6
+}
+
+/// 新建会话按钮浮在列表右下角。它不再与筛选器并排，因此可以画得比原来的 36pt 更实体；
+/// 54pt 同时把命中区带到 44pt 之上，不需要再叠一层透明 frame。
+enum WorkspaceSessionFabMetrics {
+    static let diameter: CGFloat = 54
+    /// 回到筛选行里的形态。必须收进 44pt 行高，因此比浮起态小一圈；
+    /// 命中区仍由外层 44pt frame 保证。
+    ///
+    /// 列表脱卡之后这一页最重的中间调没有了，一枚 36pt 的实心深紫盘旁边是 13pt 灰字，
+    /// 重量落差大到它成了唯一被看见的东西。它是主操作，该显眼，但不该是"只看得见它"。
+    /// 32pt 少掉约五分之一面积，仍然是全页唯一的实色圆钮。
+    static let inlineDiameter: CGFloat = 32
+    /// 距屏幕右下两条边的留白，两个方向取同一个值，按钮才落在视觉上的角上。
+    static let edgeInset: CGFloat = 20
+    /// 列表底部要额外让出的高度，保证最后一行能滚到浮起按钮**之上**被读到，
+    /// 而不是永远压在按钮底下。柔化边缘只负责让它淡出，让不让得开是另一回事。
+    static var contentBottomAllowance: CGFloat { diameter + edgeInset * 2 }
+}
+
+/// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
+/// 复用的会话行表达，避免把分组背景误读成会话状态。
+enum WorkspaceSessionGroup: String, CaseIterable {
+    case needsAttention
+    case running
+    case recent
+
+    var title: String {
+        switch self {
+        case .needsAttention:
+            return L10n.text("ui.workspace_group_needs_attention")
+        case .running:
+            return L10n.text("ui.workspace_group_running")
+        case .recent:
+            return L10n.text("ui.workspace_group_recent")
+        }
+    }
+
+    static func of(_ session: AgentSession, status: AgentSessionDisplayStatus) -> WorkspaceSessionGroup {
+        // 失败和等待用户都属于「需要处理」，即使会话仍标记为运行中。
+        if status.tone == .danger || status.tone == .warning {
+            return .needsAttention
+        }
+        return session.isRunning ? .running : .recent
+    }
+
+    static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
+        allCases.filter(groups.contains)
+    }
+}
+
+/// 工作区徽标表达聚合数量。个位数保持圆形，十个及以上封顶为 `9+`，避免撑大头像。
+enum WorkspaceRunningCountBadge {
+    static func displayText(for count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count > 9 ? "9+" : String(count)
     }
 }

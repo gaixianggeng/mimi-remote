@@ -43,9 +43,6 @@ type Router struct {
 	historyOutput  *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
 	capabilities   capabilityRegistry
-	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
-	// 它与本进程 app-server runtime 分离，不能被用于 resume、审批或中断外部 turn。
-	externalActivity externalActivitySource
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -80,15 +77,15 @@ type Router struct {
 	claudeRuntimeQuotaCheckedAt time.Time
 	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
 	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
-	accountTokenUsageMu       sync.RWMutex
-	accountTokenUsageResult   json.RawMessage
-	accountTokenUsageCachedAt time.Time
-	accountTokenUsageCacheTTL time.Duration
-
+	accountTokenUsageMu           sync.RWMutex
+	accountTokenUsageResult       json.RawMessage
+	accountTokenUsageCachedAt     time.Time
+	accountTokenUsageCacheTTL     time.Duration
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
 	codexGatewayMu                sync.Mutex
 	activeCodexGateway            int
+	appServerSSH                  appServerSSHTransport
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex
@@ -108,9 +105,16 @@ type Router struct {
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
-// 空 GatewayTurnClaimStorePath 保持纯内存行为，供普通测试和嵌入式调用使用。
+// 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
+// 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
-	GatewayTurnClaimStorePath string
+	ConfigPath   string
+	AppServerSSH appServerSSHTransport
+}
+
+type appServerSSHTransport interface {
+	EnsureReady(context.Context) error
+	WebSocketDialer(time.Duration) (websocket.Dialer, error)
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -160,13 +164,6 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	runtime SessionRuntime,
 	options RouterOptions,
 ) (http.Handler, *Router) {
-	externalActivity := externalActivitySource(codexhistory.NewDefaultExternalActivityTracker(registry))
-	if strings.TrimSpace(options.GatewayTurnClaimStorePath) != "" {
-		externalActivity = codexhistory.NewDefaultExternalActivityTrackerWithClaimStore(
-			registry,
-			options.GatewayTurnClaimStorePath,
-		)
-	}
 	fileUploads := newFileUploadStore(defaultFileUploadRoot())
 	r := &Router{
 		cfg:            cfg,
@@ -187,7 +184,6 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		historyOutput:               newAppServerHistoryOutputStore(),
 		fileUploads:                 fileUploads,
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
-		externalActivity:            externalActivity,
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
@@ -196,6 +192,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
+		appServerSSH:                options.AppServerSSH,
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
@@ -206,7 +203,6 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 			autoThreadTitleTimeout,
 		)
 	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
 	mux.HandleFunc("/api/health", r.healthz)
@@ -253,15 +249,12 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/voice/transcribe", authed(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/runtime/status", authed(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
-	mux.Handle("/api/app-server/external-activity", authed(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 
-// EnableTailscaleHostMetadata 只由生产 serve 入口启用。测试构造器默认不启动外部 CLI，
-// 保证协议 golden fixture 和无 Tailscale 环境仍然稳定、快速。
 func (r *Router) EnableTailscaleHostMetadata() {
 	if r == nil || r.tailscaleHostLookup != nil {
 		return

@@ -172,29 +172,19 @@ extension ConversationDataFlowTests {
         let unsubscribe = Task {
             try await runtime.unsubscribeThread(threadID: threadID)
         }
+        let unsubscribeStatus = try await unsubscribe.value
+        XCTAssertEqual(unsubscribeStatus, .notSubscribed)
+
+        await configGate.releaseFirstRequest()
         let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
         transportResponse(
             transport,
             id: initialize.id,
             result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
         )
-        let unsubscribeRequest = try await waitForFakeAppServerRequest(
-            transport,
-            method: "thread/unsubscribe",
-            after: 1
-        )
-        transportResponse(
-            transport,
-            id: unsubscribeRequest.id,
-            result: #"{"status":"unsubscribed"}"#
-        )
-        _ = try await unsubscribe.value
-
-        await configGate.releaseFirstRequest()
         let read = try await waitForFakeAppServerRequest(
             transport,
-            method: "thread/read",
-            after: 2
+            method: "thread/read"
         )
         transportResponse(transport, id: read.id, result: #"{"thread":\#(thread)}"#)
         try await staleConnect.value
@@ -202,7 +192,7 @@ extension ConversationDataFlowTests {
         let requests = await transport.sentMessages().compactMap {
             try? decodeAppServerRequest($0)
         }
-        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 1)
+        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 0)
         XCTAssertEqual(
             requests.filter { $0.method == "thread/resume" }.count,
             0,
@@ -235,7 +225,7 @@ extension ConversationDataFlowTests {
             }
         )
         let threadID = "thr_unsubscribe_lease"
-        let thread = #"{"id":"thr_unsubscribe_lease","sessionId":"thr_unsubscribe_lease","preview":"订阅代次","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/unsubscribe-lease","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"订阅代次","turns":[]}"#
+        let thread = #"{"id":"thr_unsubscribe_lease","sessionId":"thr_unsubscribe_lease","preview":"订阅代次","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/unsubscribe-lease","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"订阅代次","turns":[]}"#
 
         let pageTask = Task {
             try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)

@@ -4,22 +4,53 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "==> Go unit and gateway integration regressions"
-if command -v go >/dev/null 2>&1; then
-  go_bin="$(command -v go)"
-elif [[ -x /usr/local/go/bin/go ]]; then
-  # 从 Xcode/Codex 启动的非交互 shell 可能没有加载 /usr/local/go/bin。
-  go_bin="/usr/local/go/bin/go"
-else
-  echo "未找到 Go，请安装 Go 或将 go 加入 PATH" >&2
-  exit 1
+usage() {
+  cat <<'EOF'
+用法：
+  bash ./scripts/test-conversation-regressions.sh [--ios-only]
+
+默认执行 Go 与 iOS 关键链路回归。--ios-only 供已经由独立 Go 验证覆盖的
+iOS CI / full 验证使用，只跳过 Go 阶段，不改变任何 XCTest selector。
+EOF
+}
+
+ios_only=false
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --ios-only)
+      ios_only=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "不支持的参数：$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$ios_only" == false ]]; then
+  echo "==> Go unit and gateway integration regressions"
+  if command -v go >/dev/null 2>&1; then
+    go_bin="$(command -v go)"
+  elif [[ -x /usr/local/go/bin/go ]]; then
+    # 从 Xcode/Codex 启动的非交互 shell 可能没有加载 /usr/local/go/bin。
+    go_bin="/usr/local/go/bin/go"
+  else
+    echo "未找到 Go，请安装 Go 或将 go 加入 PATH" >&2
+    exit 1
+  fi
+  "$go_bin" test \
+    ./internal/auth \
+    ./internal/config \
+    ./internal/appserver \
+    ./internal/httpapi \
+    -count=1
 fi
-"$go_bin" test \
-  ./internal/auth \
-  ./internal/config \
-  ./internal/appserver \
-  ./internal/httpapi \
-  -count=1
 
 echo "==> iOS conversation regressions"
 # 这些测试组覆盖 Mimi Remote 对话请求链路和发布安全边界：
@@ -31,11 +62,13 @@ echo "==> iOS conversation regressions"
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
+# - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
+# - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
   -collect-test-diagnostics never \
@@ -47,7 +80,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure \
-  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
@@ -83,6 +116,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
+  -only-testing:MimiRemoteTests/SessionListPresentationTests \
   -only-testing:MimiRemoteTests/FileAttachmentModelsTests \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testConversationBubbleAlignment \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \
@@ -98,4 +132,5 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
-  -only-testing:MimiRemoteTests/ProtocolContractTests
+  -only-testing:MimiRemoteTests/ProtocolContractTests \
+  -only-testing:MimiRemoteTests/LocalizationTests

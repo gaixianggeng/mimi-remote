@@ -3,6 +3,7 @@ import Combine
 import Security
 import SwiftUI
 import UIKit
+import SnapshotTesting
 @testable import MimiRemote
 
 extension XCTestCase {
@@ -165,6 +166,7 @@ func occurrenceCount(of needle: String, in haystack: String) -> Int {
 final class FakeCodexAppServerTransport: CodexAppServerTransport {
     private let sentStore = FakeCodexAppServerSentStore()
     private let lifecycleStore = FakeCodexAppServerLifecycleStore()
+    private let historyItemsStore = FakeCodexHistoryItemsStore()
     private var receiveContinuation: AsyncThrowingStream<String, Error>.Continuation?
     private var receiveIterator: AsyncThrowingStream<String, Error>.Iterator
 
@@ -181,6 +183,38 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
 
     func send(_ text: String) async throws {
         await sentStore.append(text)
+        guard let request = try? decodeAppServerRequest(text),
+              let params = request.params?.objectValue else {
+            return
+        }
+        if request.method == "thread/turns/list",
+           params["cursor"] == nil,
+           let threadID = params["threadId"]?.stringValue,
+           let turns = historyItemsStore.turns(threadID: threadID) {
+            let response = CodexAppServerResponse(
+                id: request.id,
+                result: .object(["data": .array(turns), "nextCursor": .null]),
+                error: nil
+            )
+            if let data = try? JSONEncoder().encode(response) {
+                receiveContinuation?.yield(String(decoding: data, as: UTF8.self))
+            }
+            return
+        }
+        guard request.method == "thread/items/list",
+              let turnID = params["turnId"]?.stringValue,
+              let items = historyItemsStore.items(turnID: turnID) else { return }
+        let entries = items.map { item in
+            CodexAppServerJSONValue.object(["turnId": .string(turnID), "item": item])
+        }
+        let response = CodexAppServerResponse(
+            id: request.id,
+            result: .object(["data": .array(entries), "nextCursor": .null]),
+            error: nil
+        )
+        if let data = try? JSONEncoder().encode(response) {
+            receiveContinuation?.yield(String(decoding: data, as: UTF8.self))
+        }
     }
 
     func receive() async throws -> String? {
@@ -193,6 +227,11 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
     }
 
     func enqueue(_ text: String) {
+        if let data = text.data(using: .utf8),
+           let response = try? JSONDecoder().decode(CodexAppServerResponse.self, from: data),
+           let result = response.result {
+            registerEmbeddedHistoryItems(in: result)
+        }
         receiveContinuation?.yield(text)
     }
 
@@ -206,6 +245,62 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
 
     func closeCallCount() async -> Int {
         await lifecycleStore.closeCallCount
+    }
+
+    func registerHistoryItems(turnID: TurnID, items: [CodexAppServerJSONValue]) {
+        historyItemsStore.register(turnID: turnID, items: items)
+    }
+
+    private func registerEmbeddedHistoryItems(in result: CodexAppServerJSONValue) {
+        let resultObject = result.objectValue
+        let thread = resultObject?["thread"]?.objectValue
+        let turns = resultObject?["data"]?.arrayValue ?? thread?["turns"]?.arrayValue ?? []
+        if let threadID = thread?["id"]?.stringValue, !turns.isEmpty {
+            historyItemsStore.register(threadID: threadID, turns: turns)
+        }
+        for turn in turns {
+            guard let object = turn.objectValue,
+                  let turnID = object["id"]?.stringValue,
+                  let items = object["items"]?.arrayValue else {
+                continue
+            }
+            historyItemsStore.register(turnID: turnID, items: items)
+        }
+    }
+}
+
+private final class FakeCodexHistoryItemsStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var itemsByTurnID: [TurnID: [CodexAppServerJSONValue]] = [:]
+    private var turnsByThreadID: [SessionID: [CodexAppServerJSONValue]] = [:]
+
+    func register(turnID: TurnID, items: [CodexAppServerJSONValue]) {
+        lock.lock()
+        itemsByTurnID[turnID] = items
+        lock.unlock()
+    }
+
+    func items(turnID: TurnID) -> [CodexAppServerJSONValue]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return itemsByTurnID[turnID]
+    }
+
+    func register(threadID: SessionID, turns: [CodexAppServerJSONValue]) {
+        lock.lock()
+        turnsByThreadID[threadID] = turns.map { turn in
+            guard var object = turn.objectValue else { return turn }
+            object.removeValue(forKey: "items")
+            object["itemsView"] = .string("notLoaded")
+            return .object(object)
+        }
+        lock.unlock()
+    }
+
+    func turns(threadID: SessionID) -> [CodexAppServerJSONValue]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return turnsByThreadID[threadID]
     }
 }
 
@@ -441,7 +536,15 @@ func makeDirectAppServerConfig(
     allowedMethods: [String]? = nil,
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
-    let defaultAllowedMethods = ["initialize", "initialized", "thread/list", "thread/start", "thread/read", "turn/start", "turn/interrupt"]
+    let defaultAllowedMethods = [
+        "initialize", "initialized", "thread/list", "thread/start", "thread/read",
+        "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt"
+    ]
+    var resolvedAllowedMethods = allowedMethods ?? defaultAllowedMethods
+    if resolvedAllowedMethods.contains("thread/turns/list"),
+       !resolvedAllowedMethods.contains("thread/items/list") {
+        resolvedAllowedMethods.append("thread/items/list")
+    }
     return CodexAppServerConfigResponse(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
@@ -457,7 +560,7 @@ func makeDirectAppServerConfig(
         channels: channels,
         projects: [project],
         policy: CodexAppServerPolicyMetadata(
-            allowedMethods: allowedMethods ?? defaultAllowedMethods,
+            allowedMethods: resolvedAllowedMethods,
             projectsSource: "agentd_allowlist"
         )
     )
@@ -487,9 +590,15 @@ func appServerThreadListResult(_ rows: [String], nextCursor: String?) -> String 
     return #"{"data":[\#(rows.joined(separator: ","))]\#(encodedCursor)}"#
 }
 
-func appServerThreadJSON(id: String, cwd: String, source: String, updatedAt: Int) -> String {
+func appServerThreadJSON(
+    id: String,
+    cwd: String,
+    source: String,
+    updatedAt: Int,
+    statusType: String = "idle"
+) -> String {
     """
-    {"id":"\(id)","sessionId":"\(id)","preview":"\(id)","ephemeral":false,"modelProvider":"openai","createdAt":\(updatedAt - 10),"updatedAt":\(updatedAt),"status":{"type":"idle"},"path":null,"cwd":"\(cwd)","cliVersion":"0.0.0","source":"\(source)","threadSource":"user","name":"\(id)","turns":[]}
+    {"id":"\(id)","sessionId":"\(id)","preview":"\(id)","ephemeral":false,"modelProvider":"openai","createdAt":\(updatedAt - 10),"updatedAt":\(updatedAt),"status":{"type":"\(statusType)"},"path":null,"cwd":"\(cwd)","cliVersion":"0.0.0","source":"\(source)","threadSource":"user","name":"\(id)","turns":[]}
     """
 }
 
@@ -554,6 +663,13 @@ func jsonFragment(for id: CodexAppServerRequestID) throws -> String {
 }
 
 func transportResponse(_ transport: FakeCodexAppServerTransport, id: CodexAppServerRequestID, result: String) {
+    if let value = try? AgentAPIClient.decoder.decode(CodexAppServerJSONValue.self, from: Data(result.utf8)) {
+        for turn in value.objectValue?["data"]?.arrayValue?.compactMap(\.objectValue) ?? [] {
+            guard let turnID = turn["id"]?.stringValue,
+                  let items = turn["items"]?.arrayValue else { continue }
+            transport.registerHistoryItems(turnID: turnID, items: items)
+        }
+    }
     let encodedID = (try? jsonFragment(for: id)) ?? "null"
     transport.enqueue(#"{"id":\#(encodedID),"result":\#(result)}"#)
 }
@@ -926,6 +1042,87 @@ func distanceFromBottom(_ scrollView: UIScrollView) -> CGFloat {
 }
 
 @MainActor
+func isViewEffectivelyVisible(_ view: UIView, within rootView: UIView) -> Bool {
+    var currentView: UIView? = view
+    while let candidate = currentView {
+        if candidate.isHidden || candidate.alpha <= 0.01 || candidate.layer.opacity <= 0.01 {
+            return false
+        }
+        if candidate === rootView {
+            return true
+        }
+        currentView = candidate.superview
+    }
+    return false
+}
+
+@MainActor
+func conversationTimelineIsStabilizing(in rootView: UIView) -> Bool {
+    func findMarker(from view: UIView) -> UIView? {
+        if view.accessibilityIdentifier == ConversationTimelineView.stabilizingCoverAccessibilityIdentifier {
+            return view
+        }
+        for subview in view.subviews {
+            if let marker = findMarker(from: subview) {
+                return marker
+            }
+        }
+        return nil
+    }
+
+    guard let marker = findMarker(from: rootView) else {
+        return false
+    }
+    return isViewEffectivelyVisible(marker, within: rootView)
+}
+
+@MainActor
+func assertStabilizedConversationSnapshot<Content: View>(
+    of view: Content,
+    size: CGSize,
+    precision: Float = 0.98,
+    named: String? = nil,
+    file: StaticString = #filePath,
+    testName: String = #function,
+    line: UInt = #line
+) async throws {
+    let host = UIHostingController(rootView: view)
+    let windowScene = try XCTUnwrap(
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    )
+    let window = UIWindow(windowScene: windowScene)
+    window.frame = CGRect(origin: .zero, size: size)
+    window.rootViewController = host
+    window.makeKeyAndVisible()
+    defer { window.isHidden = true }
+
+    host.view.frame = window.bounds
+    host.view.setNeedsLayout()
+    host.view.layoutIfNeeded()
+    let presentationDeadline = Date().addingTimeInterval(8)
+    while conversationTimelineIsStabilizing(in: host.view),
+          Date() < presentationDeadline {
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 16_000_000)
+    }
+    XCTAssertFalse(
+        conversationTimelineIsStabilizing(in: host.view),
+        "会话快照必须等时间线完成首屏定位后再截图"
+    )
+
+    // 会话快照验证稳定后的内容与样式。先把真实 List 放进窗口并完成首屏定位，
+    // 避免离屏 SwiftUI 快照只截到稳定遮罩。
+    assertSnapshot(
+        of: host.view,
+        as: .image(precision: precision, size: size),
+        named: named,
+        file: file,
+        testName: testName,
+        line: line
+    )
+}
+
+@MainActor
 func waitForConversationTimelineAtBottom(
     in rootView: UIView,
     tolerance: CGFloat = 4,
@@ -938,7 +1135,9 @@ func waitForConversationTimelineAtBottom(
         rootView.layoutIfNeeded()
         if let scrollView = conversationTimelineScrollView(in: rootView) {
             latestScrollView = scrollView
-            if distanceFromBottom(scrollView) <= tolerance {
+            if distanceFromBottom(scrollView) <= tolerance,
+               isViewEffectivelyVisible(scrollView, within: rootView),
+               !conversationTimelineIsStabilizing(in: rootView) {
                 return scrollView
             }
         }

@@ -8,6 +8,87 @@ final class HostStatusStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testSingleProfileUsesKnownPlatformIconAndRefreshesUnknownPlatform() {
+        let knownProfile = ConnectionProfile(
+            id: "known",
+            displayName: "Mac",
+            endpoint: "http://127.0.0.1:8787",
+            lastSuccessfulAt: nil,
+            hostPlatform: .apple
+        )
+        let windowsProfile = ConnectionProfile(
+            id: "windows",
+            displayName: "Windows PC",
+            endpoint: "http://127.0.0.1:8787",
+            lastSuccessfulAt: nil,
+            hostPlatform: .windows
+        )
+        let unknownProfile = ConnectionProfile(
+            id: "unknown",
+            displayName: "Computer",
+            endpoint: "http://127.0.0.1:8787",
+            lastSuccessfulAt: nil
+        )
+
+        XCTAssertEqual(HostSwitcherMenu.iconKind(for: knownProfile), .apple)
+        XCTAssertEqual(HostSwitcherMenu.iconKind(for: windowsProfile), .windows11)
+        XCTAssertFalse(HostSwitcherMenu.needsPlatformRefresh([knownProfile]))
+        XCTAssertEqual(HostSwitcherMenu.iconKind(for: unknownProfile), .genericComputer)
+        XCTAssertTrue(HostSwitcherMenu.needsPlatformRefresh([unknownProfile]))
+    }
+
+    func testToolbarConnectionBadgeHidesHealthyStateAndUsesExplicitExceptions() {
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .connected("ok")
+            ),
+            .hidden
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .testing
+            ),
+            .progress
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: true,
+                connectionStatus: .connected("cached")
+            ),
+            .offline
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .failed("timeout")
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .idle
+            ),
+            .unknown
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: true,
+                isNetworkUnavailable: true,
+                connectionStatus: .failed("old failure")
+            ),
+            .progress,
+            "主动切换期间沿用即时进度反馈，结束后再显示最终异常状态"
+        )
+    }
+
     func testProbeRequestsOnlyInactiveProfileAndReusesSuccessTTL() async throws {
         let fixture = try makeFixture(
             inactiveExpectedInstallationID: "installation-b",

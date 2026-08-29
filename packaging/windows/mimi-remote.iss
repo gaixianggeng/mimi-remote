@@ -52,7 +52,7 @@ Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
 Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
-Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
+Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 Name: "{group}\Mimi Remote Logs"; Filename: "{cmd}"; Parameters: "/k """"{app}\agentd.exe"" logs -n 200"""; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 
 [Tasks]
@@ -74,6 +74,19 @@ var
 function Quote(const Value: String): String;
 begin
   Result := '"' + Value + '"';
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  // MIM-207 的共享运行时依赖 POSIX 远端命令、Unix Socket 和宿主工作区路径。
+  // 在任何停服、文件替换或计划任务修改前阻止旧 Windows host 安装路径。
+  MsgBox(
+    'This Mimi Remote version uses a shared SSH App Server and no longer supports Windows as the agentd host. ' +
+    'Run Mimi Remote Mac on the Mac that owns the shared App Server, then connect Codex Desktop for Windows to that Mac over SSH.',
+    mbError,
+    MB_OK
+  );
+  Result := False;
 end;
 
 procedure RemoveScheduledTask;
@@ -169,7 +182,7 @@ procedure InitializeAndVerifyManagedService;
 var
   ResultCode: Integer;
 begin
-  if not Exec(ExpandConstant('{app}\agentd.exe'), 'up --no-pair', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
+  if not Exec(ExpandConstant('{app}\agentd.exe'), 'up --no-pair --wait 30s', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to initialize Mimi Remote after installation.');
   end;
@@ -206,7 +219,7 @@ var
 begin
   SetLANAccessPolicy(Enabled);
   if not Exec(ExpandConstant('{app}\agentd.exe'),
-    'restart --no-pair',
+    'restart --no-pair --wait 30s',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to restart Mimi Remote after applying the Windows LAN access policy.');
@@ -285,8 +298,10 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopTrayApp;
+  // Stop agentd gracefully before replacing files. The managed agent owns a
+  // kill-on-close Job Object, so an unexpected exit also removes descendants.
   StopManagedService;
+  StopTrayApp;
   // Keep the existing task registered while files are replaced. The
   // registration script uses Register-ScheduledTask -Force, so an upgrade
   // updates the task in place and Inno's file rollback can still leave the
@@ -342,8 +357,8 @@ var
   FirewallMarker: Cardinal;
 begin
   if CurUninstallStep = usUninstall then begin
-    StopTrayApp;
     StopManagedService;
+    StopTrayApp;
     RemoveScheduledTask;
     if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and
        (FirewallMarker = 1) then begin

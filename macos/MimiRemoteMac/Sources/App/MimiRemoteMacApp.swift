@@ -1,6 +1,18 @@
 import SwiftUI
 
+/// Mimi Remote Mac 只运行菜单栏 App；后台 Codex App Server 由 agentd 托管。
 @main
+enum MimiRemoteMacMain {
+    static func main() {
+        // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
+        // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
+        if CommandLine.arguments.contains("--codex-daemon-supervisor") {
+            return
+        }
+        MimiRemoteMacApp.main()
+    }
+}
+
 struct MimiRemoteMacApp: App {
     @State private var store: HostStore
 
@@ -46,6 +58,11 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 720, height: 620)
 
+        Window("实验功能", id: ExperimentMenuRouting.windowID) {
+            ExperimentsView(store: store)
+        }
+        .defaultSize(width: 500, height: 680)
+
         Settings {
             MacSettingsView(store: store)
         }
@@ -69,4 +86,5 @@ enum AppWindow: String {
     case dashboard
     case pairing
     case diagnostics
+    case experiments
 }

@@ -2,18 +2,13 @@ import XCTest
 @testable import MimiRemote
 
 final class LocalizationTests: XCTestCase {
-    func testRuntimeCatalogUsesEnglishWhenTestLanguageIsEnglish() throws {
-        try XCTSkipUnless(
-            Locale.preferredLanguages.first?.lowercased().hasPrefix("en") == true,
-            "需使用 xcodebuild -testLanguage en 运行英文目录冒烟测试"
-        )
-
-        // 核心回归与英文 smoke 复用同一 App 容器。这里临时回到“跟随系统”，
-        // 避免前序快照测试残留的显式语言偏好覆盖 -testLanguage en。
+    func testRuntimeCatalogUsesStoredEnglishLanguage() {
+        // 日常核心回归固定 zh-Hans；显式写入 App 语言可在同一 XCTest 进程
+        // 验证英文资源确实被打包且运行时可选择，不必为每个 PR 再启动一次 Simulator。
         let defaults = UserDefaults.standard
         let hadStoredLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
         let previousLanguage = defaults.string(forKey: AppLanguage.preferenceKey)
-        defaults.removeObject(forKey: AppLanguage.preferenceKey)
+        defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
         defer {
             if hadStoredLanguage {
                 defaults.set(previousLanguage, forKey: AppLanguage.preferenceKey)
@@ -22,6 +17,7 @@ final class LocalizationTests: XCTestCase {
             }
         }
 
+        XCTAssertEqual(AppLanguage.stored(), .english)
         XCTAssertEqual(L10n.text("ui.settings"), "settings")
         XCTAssertEqual(
             L10n.format("ui.awaiting_approval_value_value", "Review diff", " · Low risk"),
@@ -65,6 +61,15 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
+    func testRunningSessionCountAccessibilityCopyIsLocalized() {
+        let english = L10n.text("ui.running_sessions_count", language: .english)
+        let simplifiedChinese = L10n.text("ui.running_sessions_count", language: .simplifiedChinese)
+
+        XCTAssertEqual(L10n.formatTemplate(english, arguments: [1]), "Running sessions: 1")
+        XCTAssertEqual(L10n.formatTemplate(english, arguments: [3]), "Running sessions: 3")
+        XCTAssertEqual(L10n.formatTemplate(simplifiedChinese, arguments: [3]), "正在运行的会话：3")
+    }
+
     func testToolActivitySemanticLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
             ("ui.query_linear_issues", "Query Linear issues", "查询 Linear Issue"),
@@ -93,6 +98,7 @@ final class LocalizationTests: XCTestCase {
             ("ui.token_activity", "Token Activity", "Token 活动"),
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
+            ("ui.experimental_features", "Experimental Features", "实验功能"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
@@ -102,6 +108,25 @@ final class LocalizationTests: XCTestCase {
             XCTAssertEqual(L10n.text(key, language: .english), english)
             XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
         }
+    }
+
+    func testActiveWriterConflictExplainsRecoveryAction() {
+        XCTAssertEqual(
+            L10n.text("ui.codex_active_writer_conflict", language: .english),
+            "Close the session in the other app before continuing here."
+        )
+        XCTAssertEqual(
+            L10n.text("ui.codex_active_writer_conflict", language: .simplifiedChinese),
+            "请先在那边关闭会话，才能在这里继续。"
+        )
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in another app")
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在另一个应用中打开")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
+        XCTAssertEqual(
+            L10n.text("ui.this_session_contains_large_images_or_tool_output", language: .simplifiedChinese),
+            "已显示最近记录。较大的图片和工具输出暂未加载。"
+        )
     }
 
     func testSessionRowStatefulActionLabelsAreLocalized() {

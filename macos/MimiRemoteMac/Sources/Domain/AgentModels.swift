@@ -142,6 +142,23 @@ struct AgentDoctorResults: Codable, Equatable, Sendable {
 struct DoctorFixResults: Codable, Equatable, Sendable {
     let fixes: [String]
     let results: AgentDoctorResults
+    let restartRequired: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case fixes
+        case results
+        case restartRequired = "restart_required"
+    }
+
+    init(
+        fixes: [String],
+        results: AgentDoctorResults,
+        restartRequired: Bool? = nil
+    ) {
+        self.fixes = fixes
+        self.results = results
+        self.restartRequired = restartRequired
+    }
 }
 
 struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {

@@ -102,8 +102,8 @@ final class StaticNetworkPathStatusSource: NetworkPathStatusSource {
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
-    func externalActivities() async throws -> ExternalActivityResponse?
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -164,6 +164,9 @@ protocol SessionStoreAPIClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
+    /// 仅在底层支持原生 turn 分页时返回最新完整 turn；旧 thread/read 实现返回 nil，
+    /// 调用方必须回退完整历史，不能把一条 message 误当成一个 turn。
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage?
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
@@ -205,12 +208,6 @@ extension SessionStoreAPIClient {
         SessionsPage(sessions: [])
     }
 
-    func externalActivities() async throws -> ExternalActivityResponse? {
-        // 旧 agentd/iOS 测试客户端没有该能力时明确返回 nil；nil 表示“不支持”，
-        // 与新 agentd 返回 activities=[]（支持但当前无活动）不能混为一谈。
-        nil
-    }
-
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         let value = runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return value.isEmpty || value == "codex" || value == "openai"
@@ -231,6 +228,10 @@ extension SessionStoreAPIClient {
         try await refreshAccountTokenUsage()
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
+        []
+    }
+
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
         []
     }
 
@@ -452,6 +453,10 @@ extension SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
         try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+    }
+
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        nil
     }
 
 }

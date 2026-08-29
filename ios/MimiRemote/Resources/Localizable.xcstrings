@@ -1590,13 +1590,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Access all files; MCP tools may still ask for approval"
+            "value": "Access all files without approval prompts; use only with trusted hosts"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可访问所有文件；MCP 工具仍可能请求审批"
+            "value": "可访问所有文件且不请求审批；仅用于可信主机"
           }
         }
       }
@@ -2704,19 +2704,19 @@
         }
       }
     },
-    "ui.approvalpolicy_never_is_prohibited": {
+    "ui.approvalpolicy_never_requires_full_access": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never is prohibited"
+            "value": "No-approval mode requires explicit Full Access"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "approvalPolicy=never 被禁止"
+            "value": "无审批模式必须显式选择完全访问"
           }
         }
       }
@@ -4179,13 +4179,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On the Mac running Mimi Remote, open Terminal and run claude to sign in again. Then return here and try again."
+            "value": "On the Mac running Mimi Remote, open Terminal and run claude auth login to sign in again. Then return here and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude 并按提示重新登录，然后回到这里重试。"
+            "value": "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude auth login 重新登录，然后回到这里重试。"
           }
         }
       }
@@ -4231,13 +4231,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copied claude. Run it in Terminal on your Mac."
+            "value": "Copied claude auth login. Run it in Terminal on your Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已复制 claude，请在 Mac 的终端运行。"
+            "value": "已复制 claude auth login，请在 Mac 的终端运行。"
           }
         }
       }
@@ -4940,6 +4940,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "接近 GitHub Primer 的代码审阅配色"
+          }
+        }
+      }
+    },
+    "ui.codex_active_writer_conflict": {
+      "comment": "Shown when another Codex app-server owns the session writer. Explain the recovery path without exposing the raw JSON-RPC error.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close the session in the other app before continuing here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在那边关闭会话，才能在这里继续。"
+          }
+        }
+      }
+    },
+    "ui.codex_active_writer_conflict_title": {
+      "comment": "Title for the blocking composer card shown after thread/resume confirms that another app owns the writer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open in another app"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在另一个应用中打开"
           }
         }
       }
@@ -6704,6 +6738,23 @@
         }
       }
     },
+    "ui.copy_login_command_hint": {
+      "comment": "VoiceOver hint for the Claude Code login command copy button.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copies claude auth login to the clipboard; it does not run the command."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将 claude auth login 复制到剪贴板，不会执行命令。"
+          }
+        }
+      }
+    },
     "ui.copy_original_json": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -6717,6 +6768,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "复制原始 JSON"
+          }
+        }
+      }
+    },
+    "ui.copy_path": {
+      "comment": "Session menu action that copies the session directory path.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制路径"
           }
         }
       }
@@ -6943,6 +7012,23 @@
         }
       }
     },
+    "ui.current_app_server_does_not_support_paginated_history_api": {
+      "comment": "User-facing App Server compatibility error. The placeholder is the unsupported method name.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current App Server does not support the paginated history API %@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 App Server 不支持分页历史接口 %@。"
+          }
+        }
+      }
+    },
     "ui.current_branch": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -6977,19 +7063,19 @@
         }
       }
     },
-    "ui.current_effect": {
+    "ui.permission_status": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Current effect"
+            "value": "Permission status"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前效果"
+            "value": "权限状态"
           }
         }
       }
@@ -7144,6 +7230,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前会话"
+          }
+        }
+      }
+    },
+    "ui.current_ssh_app_server_does_not_support_experimental_api": {
+      "comment": "User-facing shared SSH queue compatibility error. The placeholder is the unsupported method name.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current SSH App Server does not support the experimental API %@. The message was not sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 SSH App Server 不支持实验接口 %@，消息未发送。"
           }
         }
       }
@@ -7764,13 +7867,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Default run permissions for new input areas and after switching sessions. The permission buttons in the input area will also update this global default value simultaneously."
+            "value": "Default run permissions for new conversations. Existing threads keep their current permissions until you explicitly change them in the input area."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于新输入区和切换会话后的默认运行权限。输入区里的权限按钮也会同步更新这个全局默认值。"
+            "value": "用于新对话的默认运行权限。已有会话会沿用当前权限，直到你在输入区中明确修改。"
           }
         }
       }
@@ -13404,7 +13507,7 @@
       }
     },
     "ui.just_completed": {
-      "comment": "Sidebar section for unread sessions that have just reached a terminal state.",
+      "comment": "Sidebar section for sessions whose terminal transition was observed inside the short just-completed window.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -13839,13 +13942,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Load full history"
+            "value": "Load full content"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "加载完整历史"
+            "value": "加载完整内容"
           }
         }
       }
@@ -14513,23 +14616,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "电脑名称不能为空"
-          }
-        }
-      }
-    },
-    "ui.mac_observe_only": {
-      "comment": "Read-only status for a session currently running in Codex Desktop on the Mac.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mac · Observe only"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mac · 仅观察"
           }
         }
       }
@@ -24506,6 +24592,24 @@
         }
       }
     },
+    "ui.running_sessions_count": {
+      "comment": "Accessibility summary for the number of running sessions in one workspace.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running sessions: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行的会话：%@"
+          }
+        }
+      }
+    },
     "ui.sessions_count": {
       "comment": "Plural count used in the localized iOS UI.",
       "extractionState": "stale",
@@ -25019,6 +25123,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作区"
+          }
+        }
+      }
+    },
+    "ui.shared_ssh_queue_does_not_support_output_schema": {
+      "comment": "User-facing shared SSH queue compatibility error for structured output.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The shared SSH queue does not support outputSchema yet. The message was not sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享 SSH 队列暂不支持 outputSchema，消息未发送。"
           }
         }
       }
@@ -30048,19 +30169,36 @@
         }
       }
     },
+    "ui.this_session_already_has_a_mimi_message_waiting_for_app_server": {
+      "comment": "User-facing error shown when a shared queue submission is already in flight for this session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session already has a Mimi message waiting for App Server to start. The message was not sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话已有一条 Mimi 消息等待 App Server 开始，消息未发送。"
+          }
+        }
+      }
+    },
     "ui.this_session_contains_large_images_or_tool_output": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session contains large images or tool output that have been loaded using save mode."
+            "value": "Recent history is shown. Large images and tool output are not loaded."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此会话包含较大的图片或工具输出，已使用省流模式加载。"
+            "value": "已显示最近记录。较大的图片和工具输出暂未加载。"
           }
         }
       }
@@ -32255,6 +32393,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "改用手动连接"
+          }
+        }
+      }
+    },
+    "ui.use_shared_thread_settings_change_them_on_desktop": {
+      "comment": "Composer notice explaining that shared thread settings are managed by Desktop.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use shared thread settings; change them on Desktop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沿用共享线程设置；请在 Desktop 修改"
           }
         }
       }
@@ -34591,6 +34746,646 @@
         }
       }
     },
+    "ui.workspace_album_21": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adele — 21"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adele —《21》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_abbey_road": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Beatles — Abbey Road"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Beatles —《Abbey Road》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_atom_heart_mother": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — Atom Heart Mother"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 原子心之母"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_cities": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deserts Chang — City"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "张悬 —《城市》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_dark_side_of_the_moon": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — The Dark Side of the Moon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 月之暗面"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_morning_glory": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oasis — (What's the Story) Morning Glory?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oasis —《(What's the Story) Morning Glory?》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_norman_fucking_rockwell": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lana Del Rey — Norman Fucking Rockwell!"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lana Del Rey —《Norman Fucking Rockwell!》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_sos": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SZA — SOS"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SZA —《SOS》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_velvet_underground_nico": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Velvet Underground & Nico — The Velvet Underground & Nico"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Velvet Underground & Nico —《The Velvet Underground & Nico》"
+          }
+        }
+      }
+    },
+    "ui.workspace_album_wish_you_were_here": {
+      "comment": "Built-in Classic Albums workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — Wish You Were Here"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pink Floyd — 愿你在此"
+          }
+        }
+      }
+    },
+    "ui.workspace_abstract_blocks": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Blocks" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "积木" } }
+      }
+    },
+    "ui.workspace_abstract_bloom": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Bloom" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "绽放" } }
+      }
+    },
+    "ui.workspace_abstract_crossing": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Crossing" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交汇" } }
+      }
+    },
+    "ui.workspace_abstract_grid": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Grid" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网格" } }
+      }
+    },
+    "ui.workspace_abstract_mosaic": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mosaic" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "马赛克" } }
+      }
+    },
+    "ui.workspace_abstract_orbit": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Orbit" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "轨道" } }
+      }
+    },
+    "ui.workspace_abstract_prism": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Prism" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "棱镜" } }
+      }
+    },
+    "ui.workspace_abstract_rings": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "环形" } }
+      }
+    },
+    "ui.workspace_abstract_spiral": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Spiral" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旋涡" } }
+      }
+    },
+    "ui.workspace_abstract_waves": {
+      "comment": "Original icon in the Abstract Geometry workspace style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waves" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "波纹" } }
+      }
+    },
+    "ui.workspace_icon_style_abstract_geometry": {
+      "comment": "Workspace icon style made from original geometric artwork.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Geometry" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "几何" } }
+      }
+    },
+    "ui.workspace_icon_style_classic_characters": {
+      "comment": "Workspace icon style containing Dragon Ball characters; the key remains stable for persisted preferences.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dragon Ball" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "七龙珠" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_classic_characters": {
+      "comment": "Compact label for the Dragon Ball workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dragon Ball" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "七龙珠" } }
+      }
+    },
+    "ui.workspace_character_classic_goku": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Goku" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "孙悟空" } }
+      }
+    },
+    "ui.workspace_character_classic_vegeta": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vegeta" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "贝吉塔" } }
+      }
+    },
+    "ui.workspace_character_classic_piccolo": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Piccolo" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "比克" } }
+      }
+    },
+    "ui.workspace_character_classic_master_roshi": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Master Roshi" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "龟仙人" } }
+      }
+    },
+    "ui.workspace_character_classic_krillin": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Krillin" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "克林" } }
+      }
+    },
+    "ui.workspace_character_classic_frieza": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Frieza" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "弗利萨" } }
+      }
+    },
+    "ui.workspace_character_classic_majin_buu": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Majin Buu" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "魔人布欧" } }
+      }
+    },
+    "ui.workspace_character_classic_future_trunks": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Future Trunks" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未来特兰克斯" } }
+      }
+    },
+    "ui.workspace_character_classic_android_18": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android 18" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "人造人18号" } }
+      }
+    },
+    "ui.workspace_character_classic_perfect_cell": {
+      "comment": "Dragon Ball character workspace avatar.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Perfect Cell" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完全体沙鲁" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_abstract_geometry": {
+      "comment": "Compact label for Abstract Geometry in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Geometry" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "几何" } }
+      }
+    },
+    "ui.workspace_icon_style_solar_system": {
+      "comment": "Workspace icon style containing the Sun and eight planets.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Planets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "星球" } }
+      }
+    },
+    "ui.workspace_icon_style_compact_solar_system": {
+      "comment": "Compact label for the Solar System workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Planets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "星球" } }
+      }
+    },
+    "ui.workspace_solar_earth": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Earth" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "地球" } }
+      }
+    },
+    "ui.workspace_solar_jupiter": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Jupiter" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "木星" } }
+      }
+    },
+    "ui.workspace_solar_mars": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mars" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "火星" } }
+      }
+    },
+    "ui.workspace_solar_mercury": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mercury" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "水星" } }
+      }
+    },
+    "ui.workspace_solar_neptune": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Neptune" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "海王星" } }
+      }
+    },
+    "ui.workspace_solar_saturn": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Saturn" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "土星" } }
+      }
+    },
+    "ui.workspace_solar_sun": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sun" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "太阳" } }
+      }
+    },
+    "ui.workspace_solar_uranus": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Uranus" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "天王星" } }
+      }
+    },
+    "ui.workspace_solar_venus": {
+      "comment": "Original Solar System workspace icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Venus" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "金星" } }
+      }
+    },
+    "ui.workspace_art_death_of_socrates": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jacques Louis David — The Death of Socrates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雅克-路易·大卫 —《苏格拉底之死》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_degas_dancing_class": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edgar Degas — The Dancing Class"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃德加·德加 —《舞蹈课》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_great_wave": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Katsushika Hokusai — The Great Wave"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "葛饰北斋 —《神奈川冲浪里》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_madame_x": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "John Singer Sargent — Madame X"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约翰·辛格·萨金特 —《X夫人》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_manet_boating": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edouard Manet — Boating"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爱德华·马奈 —《泛舟》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_springtime": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pierre-Auguste Cot — Springtime"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "皮埃尔-奥古斯特·科特 —《春日》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_van_gogh_self_portrait": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vincent van Gogh — Self-Portrait with a Straw Hat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文森特·梵高 —《戴草帽的自画像》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_vermeer_water_pitcher": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Johannes Vermeer — Young Woman with a Water Pitcher"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约翰内斯·维米尔 —《持水壶的年轻女子》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_view_of_toledo": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El Greco — View of Toledo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃尔·格列柯 —《托莱多风景》"
+          }
+        }
+      }
+    },
+    "ui.workspace_art_washington_crossing_delaware": {
+      "comment": "Public-domain artwork used by the World Art workspace icon style.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Emanuel Leutze — Washington Crossing the Delaware"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "埃马纽埃尔·洛伊茨 —《华盛顿横渡特拉华河》"
+          }
+        }
+      }
+    },
     "ui.workspace_character_alice_alice": {
       "comment": "Built-in Alice in Wonderland workspace character.",
       "extractionState": "manual",
@@ -36657,6 +37452,24 @@
         }
       }
     },
+    "ui.workspace_icon_style_classic_albums": {
+      "comment": "Workspace icon style based on classic albums and original music imagery.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Classic Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经典专辑"
+          }
+        }
+      }
+    },
     "ui.workspace_icon_style_compact_alice_wonderland": {
       "comment": "Full source label for Alice in Wonderland in the workspace icon style grid.",
       "extractionState": "manual",
@@ -36671,6 +37484,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "爱丽丝梦游仙境"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon_style_compact_classic_albums": {
+      "comment": "Compact source label for Classic Albums in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Classic Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经典专辑"
           }
         }
       }
@@ -36855,6 +37686,24 @@
         }
       }
     },
+    "ui.workspace_icon_style_compact_world_art": {
+      "comment": "Compact source label for World Art in the workspace icon style grid.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Artworks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "画作"
+          }
+        }
+      }
+    },
     "ui.workspace_icon_style_digimon": {
       "comment": "Workspace icon style based on Digimon.",
       "extractionState": "manual",
@@ -36995,6 +37844,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "水浒传"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon_style_world_art": {
+      "comment": "Workspace icon style based on public-domain masterpieces.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Artworks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "画作"
           }
         }
       }
@@ -38106,6 +38973,154 @@
           "stringUnit": {
             "state": "translated",
             "value": "可能已过期"
+          }
+        }
+      }
+    },
+    "ui.experimental_features": {
+      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental Features"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实验功能"
+          }
+        }
+      }
+    },
+    "ui.current_turn_permission_value": {
+      "comment": "Shows the permission setting that the App Server reports for the current turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Current turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本回合：%@" } }
+      }
+    },
+    "ui.follow_the_current_thread_permissions": {
+      "comment": "Indicates that an existing thread keeps its current App Server permission settings.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use current thread permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "沿用当前会话权限" } }
+      }
+    },
+    "ui.additional_permissions": {
+      "comment": "Heading for extra permissions attached to a command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Additional permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "附加权限" } }
+      }
+    },
+    "ui.agent_requests_network_access": {
+      "comment": "Title for a managed-network command approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Agent requests network access" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Agent 请求网络访问" } }
+      }
+    },
+    "ui.file_system": {
+      "comment": "Heading for requested file-system permissions.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File system" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "文件系统" } }
+      }
+    },
+    "ui.host": {
+      "comment": "Label for a network host.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Host" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主机" } }
+      }
+    },
+    "ui.network_access_requested": {
+      "comment": "States that a permission request includes network access.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network access requested" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求网络访问" } }
+      }
+    },
+    "ui.network_request": {
+      "comment": "Heading for managed-network approval context.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network request" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络请求" } }
+      }
+    },
+    "ui.permission_profile_cannot_be_combined_with_legacy_sandbox": {
+      "comment": "Validation error when a named permission profile is sent with legacy sandbox fields.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A permission profile cannot be combined with legacy sandbox settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案不能与旧沙盒设置同时使用。" } }
+      }
+    },
+    "ui.permission_profile_id_is_invalid": {
+      "comment": "Validation error for an invalid named permission profile identifier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The permission profile ID is invalid." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "权限档案 ID 无效。" } }
+      }
+    },
+    "ui.permission_profile_wire_value": {
+      "comment": "Technical summary of the permission profile sent to the App Server.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "permissions · %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "permissions · %@" } }
+      }
+    },
+    "ui.advanced_permission_profiles": {
+      "comment": "Section heading for named App Server permission profiles.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Advanced permission profiles" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高级权限档案" } }
+      }
+    },
+    "ui.protocol": {
+      "comment": "Label for a network protocol.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Protocol" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "协议" } }
+      }
+    },
+    "ui.requested_permissions": {
+      "comment": "Heading for the permissions in a runtime approval request.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested permissions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求的权限" } }
+      }
+    },
+    "ui.next_turn_permission_value": {
+      "comment": "Shows the local permission selection that will be sent with the next turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Next turn: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "下回合：%@" } }
+      }
+    },
+    "ui.use_named_permission_profile": {
+      "comment": "Accessibility hint for selecting a named permission profile.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use this named permission profile" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用此命名权限档案" } }
+      }
+    },
+    "ui.step_value_value": {
+      "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step %1$@: %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %1$@ 步：%2$@"
           }
         }
       }

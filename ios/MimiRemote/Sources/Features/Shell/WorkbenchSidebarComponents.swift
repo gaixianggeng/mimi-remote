@@ -348,10 +348,9 @@ struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
     }
 }
 
-/// 全局配置放左侧，主创建动作放右侧；两端布局在侧栏高度变化时保持稳定。
+/// 全局配置固定在左侧；只有主内容没有独立 FAB 的布局才在右侧补充创建入口。
 struct WorkbenchSidebarFooter: View {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let tokens: ThemeTokens
     let usesFloatingSurface: Bool
@@ -384,27 +383,19 @@ struct WorkbenchSidebarFooter: View {
         // 同时仍把完整触控区域留在安全区之上。
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
-        Group {
-            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
-                // 两个按钮由系统统一合成，但间距足够大，不会在静止状态下粘连成一整块玻璃。
-                GlassEffectContainer(spacing: 16) {
-                    footerButtonRow
+        // Footer 按钮各自绘制自己的表面，不再交给 GlassEffectContainer 合成：
+        // 合成只对 Liquid Glass 有意义，而这一行现在和其它 chrome 一样是扁平磨砂。
+        footerButtonRow
+            .offset(y: safeAreaVisualOffset)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .overlay(alignment: .top) {
+                if !usesFloatingSurface {
+                    Rectangle()
+                        .fill(tokens.border.opacity(0.55))
+                        .frame(height: 1)
                 }
-            } else {
-                // iOS 18–25 直接使用同一行普通按钮，不额外模拟玻璃合成。
-                footerButtonRow
             }
-        }
-        .offset(y: safeAreaVisualOffset)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .overlay(alignment: .top) {
-            if !usesFloatingSurface {
-                Rectangle()
-                    .fill(tokens.border.opacity(0.55))
-                    .frame(height: 1)
-            }
-        }
     }
 
     private var footerButtonRow: some View {
@@ -413,43 +404,44 @@ struct WorkbenchSidebarFooter: View {
 
             Spacer(minLength: 0)
 
-            newSessionButton
+            if Self.showsNewSessionButton(usesFloatingSurface: usesFloatingSurface) {
+                newSessionButton
+            }
         }
     }
 
-    @ViewBuilder
+    /// 宽 iPad 浮动侧栏与主内容同时可见，主内容右下角已经提供创建入口。
+    /// 侧栏只保留“我的”，避免同一屏出现两个同级的新建会话按钮。
+    static func showsNewSessionButton(usesFloatingSurface: Bool) -> Bool {
+        !usesFloatingSurface
+    }
+
     private var meButton: some View {
-        Group {
-            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
-                Button(action: onOpenSettings) {
-                    compactMeButtonLabel
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-                .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-                // 视觉胶囊使用系统紧凑尺寸，外层仍保留 44pt 触控高度。
-                .frame(minHeight: 44)
-                .contentShape(Capsule())
+        Button(action: onOpenSettings) {
+            meButtonLabel
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
+        .background {
+            if usesFloatingSurface {
+                // 浮层侧栏与顶栏按钮、工作区胶囊共用同一档磨砂；选中态复用
+                // WorkbenchChromeMaterial 的中性提亮，不再额外描边或换一种材质。
+                WorkbenchChromeMaterial(
+                    shape: Capsule(),
+                    tokens: tokens,
+                    tintLevel: isMeSelected ? 1 : 0
+                )
             } else {
-                Button(action: onOpenSettings) {
-                    meButtonLabel
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-                .background {
-                    if usesFloatingSurface, !reduceTransparency {
-                        // 旧系统的浮动侧栏使用普通材质，保留层级但不仿制 Liquid Glass。
-                        Capsule().fill(.regularMaterial)
-                    } else {
-                        Capsule().fill(
-                            isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
-                        )
-                    }
-                }
-                .overlay {
-                    Capsule()
-                        .stroke(tokens.border.opacity(0.6), lineWidth: 1)
-                }
+                // 贴边侧栏本身就是实色板，磨砂在实色上只会发灰；这里继续用实色填充表达选中。
+                Capsule().fill(
+                    isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
+                )
+            }
+        }
+        .overlay {
+            if !usesFloatingSurface {
+                Capsule()
+                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
             }
         }
         .accessibilityLabel(L10n.text("ui.me"))
@@ -494,43 +486,37 @@ struct WorkbenchSidebarFooter: View {
         }
     }
 
-    @ViewBuilder
     private var newSessionButtonContent: some View {
-        Group {
-            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
-                Button(action: onNewSession) {
-                    WorkbenchChromeIcon(systemName: "plus")
+        // 主操作是这一屏唯一不走磨砂的 chrome：它靠实心主题色说明“下一步在这里”，
+        // 全系统一致。之前 iOS 26 走 glassProminent，同一枚加号在新旧系统上分别是
+        // 玻璃和实色，还会和旁边的磨砂「我的」凑成两种材质。
+        Button(action: onNewSession) {
+            newSessionIcon
+                .frame(width: 36, height: 36)
+                .background(tokens.primaryAction, in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(tokens.primaryAction.opacity(0.72), lineWidth: 1)
                 }
-                // 只让系统 ButtonStyle 绘制一层主题色玻璃，不再在 label 内叠材质和白色描边。
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                // 视觉尺寸交给系统控件，44pt 仅作为可点击区域，避免玻璃圆面被二次放大。
-                .frame(
-                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
-                )
                 .contentShape(Circle())
-                .tint(tokens.primaryAction)
-                .foregroundStyle(tokens.primaryActionForeground)
-            } else {
-                // iOS 18–25 与 Reduce Transparency 共用清晰的实色主操作按钮。
-                Button(action: onNewSession) {
-                    WorkbenchChromeIcon(systemName: "plus")
-                        .frame(width: 36, height: 36)
-                        .background(tokens.primaryAction, in: Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(tokens.primaryAction.opacity(0.72), lineWidth: 1)
-                        }
-                        .contentShape(Circle())
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.primaryActionForeground)
-            }
+                .frame(
+                    width: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    height: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.primaryActionForeground)
         .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         .accessibilityIdentifier("sidebar.newSession")
+    }
+
+    private var newSessionIcon: some View {
+        // 加号在通用 15pt 规格下实际墨迹偏小且略向下；主创建动作单独做光学校正，避免误伤其他图标。
+        Image(systemName: "plus")
+            .font(.system(size: 17, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .frame(width: 20, height: 20)
+            .offset(y: -0.5)
     }
 }
 
@@ -545,6 +531,8 @@ struct SessionSidebarMonitorRow: View {
     let kind: SessionSidebarSectionKind
     let isSelected: Bool
     let isRecentlyCompleted: Bool
+    let completionObservedAt: Date?
+    var showsStateMarker: Bool = true
     let projectIcon: WorkspaceProjectIconContent?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
 
@@ -552,15 +540,30 @@ struct SessionSidebarMonitorRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(spacing: 6) {
-            if kind == .needYou || kind == .running {
-                // 等待与运行是需要立即扫到的进行态，继续占据 leading 状态槽。
-                stateMarker(tokens: tokens)
-                    .frame(width: 12, height: 12)
+            // 所有状态共用固定 leading 槽；同项目后续行只隐藏视觉菊花，
+            // 仍保留“进行中”无障碍语义，同时避免标题横向跳动。
+            Group {
+                if showsStateMarker {
+                    stateMarker(tokens: tokens)
+                } else if kind == .running {
+                    Color.clear
+                        .accessibilityLabel(L10n.text("ui.in_progress"))
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
             }
+                .frame(width: 12, height: 12)
 
-            if let projectIcon {
-                WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+            Group {
+                if let projectIcon {
+                    WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
             }
+            .frame(width: 18, height: 18)
 
             Text(SessionListPresentation.titleDisplayText(for: session))
                 .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
@@ -571,13 +574,6 @@ struct SessionSidebarMonitorRow: View {
 
             Spacer(minLength: 4)
             detail(tokens: tokens)
-
-            if kind == .justCompleted {
-                // 完成未读属于“待查看结果”，跟随相对时间放在整行 trailing，
-                // 不再与需要处理 / 正在运行的 leading 状态混在一起。
-                SessionUnreadIndicator()
-                    .frame(width: 12, height: 12)
-            }
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -640,7 +636,13 @@ struct SessionSidebarMonitorRow: View {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     Text(runningDuration(at: context.date))
                 }
-            case .justCompleted, .pinned, .recent:
+            case .justCompleted:
+                if let date = completionObservedAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(compactRelativeDuration(from: date, to: context.date))
+                    }
+                }
+            case .pinned, .recent:
                 if let date = session.recencyAt ?? session.updatedAt ?? session.createdAt {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(compactRelativeDuration(from: date, to: context.date))

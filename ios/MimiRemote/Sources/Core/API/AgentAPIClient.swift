@@ -340,15 +340,6 @@ struct AgentAPIClient {
         )
     }
 
-    func externalActivities(timeout: TimeInterval = 10) async throws -> ExternalActivityResponse {
-        try await request(
-            path: "/api/app-server/external-activity",
-            method: "GET",
-            body: Optional<Data>.none,
-            timeout: timeout
-        )
-    }
-
     func relayDiagnostics() async throws -> RelayDiagnosticsResponse {
         try await request(path: "/api/diagnostics/relay", method: "GET", body: Optional<Data>.none)
     }

@@ -79,6 +79,10 @@ pub struct ClaudeSpawnConfig {
     /// Optional model override (`--model <s>`). Accepts full model ids and the
     /// established `opus` / `sonnet` / `haiku` aliases claude understands directly.
     pub model: Option<String>,
+    /// Optional `--effort <level>` applied before the first user envelope.
+    pub effort_level: Option<String>,
+    /// Optional `--permission-mode <mode>` applied before the first user envelope.
+    pub permission_mode: Option<String>,
     /// Optional `--append-system-prompt <s>`.
     pub append_system_prompt: Option<String>,
     /// True for `thread/resume`: spawn with `--resume <thread_id>` so claude
@@ -131,6 +135,42 @@ pub enum ClaudeProcessError {
     Io(#[from] std::io::Error),
 }
 
+impl ClaudeProcessError {
+    /// Transport failures leave the child lifecycle or runtime state
+    /// uncertain. A turn that has not sent its user envelope yet may safely
+    /// replace the process and retry these failures once.
+    pub(crate) fn is_process_transport_failure(&self) -> bool {
+        match self {
+            Self::WriterClosed(_)
+            | Self::ControlTimeout { .. }
+            | Self::ControlCancelled { .. }
+            | Self::Io(_) => true,
+            Self::RuntimeOverride { source, .. } => source.is_process_transport_failure(),
+            Self::InitTimeout | Self::ControlError { .. } | Self::Json(_) => false,
+        }
+    }
+
+    pub(crate) fn failure_kind(&self) -> &'static str {
+        match self {
+            Self::InitTimeout => "init_timeout",
+            Self::WriterClosed(_) => "writer_closed",
+            Self::ControlTimeout { .. } => "control_timeout",
+            Self::ControlCancelled { .. } => "control_cancelled",
+            Self::ControlError { .. } => "control_error",
+            Self::RuntimeOverride { source, .. } => source.failure_kind(),
+            Self::Json(_) => "json",
+            Self::Io(_) => "io",
+        }
+    }
+
+    pub(crate) fn runtime_field(&self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeOverride { field, .. } => Some(*field),
+            _ => None,
+        }
+    }
+}
+
 // Claude Code versions have used both `subtype:"error"` and a nominally
 // successful control response carrying `{accepted:false}` for rejected
 // setters. Normalize the latter so callers never treat a refused model as
@@ -161,6 +201,9 @@ pub struct ClaudeProcessHandle {
     cwd: PathBuf,
     claude_bin: PathBuf,
     thread_id: String,
+    /// Stable identity for this process instance. A thread can own several
+    /// generations over its lifetime after crash recovery.
+    generation: String,
     pid: Option<u32>,
     /// Sender end of the writer mpsc — closing this is the signal to the
     /// writer task to drop claude's stdin (which makes claude exit cleanly).
@@ -184,6 +227,10 @@ pub struct ClaudeProcessHandle {
     /// can diff and skip no-op writes (avoids burning a request RTT per turn
     /// when nothing changes).
     runtime_state: Arc<Mutex<RuntimeState>>,
+    /// Serializes the read → control request → cache write transaction for
+    /// per-turn runtime overrides. The active-turn guard is registered later,
+    /// so concurrent turn/start calls can otherwise race in this window.
+    runtime_override_gate: Arc<Mutex<()>>,
     /// Background tasks. Held so they keep running for the handle's lifetime
     /// and abort cleanly on drop.
     _tasks: Arc<TaskSet>,
@@ -209,6 +256,7 @@ struct InitSlot {
 struct RuntimeState {
     model: Option<String>,
     effort_level: Option<String>,
+    effort_level_unsupported: bool,
     permission_mode: Option<String>,
 }
 
@@ -270,6 +318,8 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin,
             model,
+            effort_level,
+            permission_mode,
             append_system_prompt,
             resume,
             bypass_permissions,
@@ -283,21 +333,7 @@ impl ClaudeProcessHandle {
         args.push("stream-json".into());
         args.push("--include-partial-messages".into());
         args.push("--verbose".into());
-        // 通过临时 JSON 覆盖启用 Claude 官方 Bash 沙箱；不改写项目或用户 settings。
-        // 沙箱不可用时直接失败，绝不回退到未隔离命令。
-        args.push("--settings".into());
-        args.push(
-            serde_json::json!({
-                "sandbox": {
-                    "enabled": true,
-                    "failIfUnavailable": true,
-                    "allowUnsandboxedCommands": false,
-                    "autoAllowBashIfSandboxed": false
-                }
-            })
-            .to_string()
-            .into(),
-        );
+        apply_platform_security_args(&mut args);
         if bypass_permissions {
             args.push("--dangerously-skip-permissions".into());
         } else {
@@ -306,6 +342,10 @@ impl ClaudeProcessHandle {
             // outbound control_response{...{behavior:"allow"|"deny"}}.
             args.push("--permission-prompt-tool".into());
             args.push("stdio".into());
+            if let Some(mode) = permission_mode.as_deref() {
+                args.push("--permission-mode".into());
+                args.push(mode.into());
+            }
         }
         args.push("--add-dir".into());
         args.push(cwd.clone().into_os_string());
@@ -325,6 +365,10 @@ impl ClaudeProcessHandle {
         if let Some(m) = model.as_deref() {
             args.push("--model".into());
             args.push(m.into());
+        }
+        if let Some(level) = effort_level.as_deref() {
+            args.push("--effort".into());
+            args.push(level.into());
         }
         if let Some(prompt) = append_system_prompt.as_deref() {
             args.push("--append-system-prompt".into());
@@ -363,23 +407,35 @@ impl ClaudeProcessHandle {
             .take_stderr()
             .ok_or_else(|| anyhow!("claude child has no stderr pipe"))?;
 
+        let generation = Uuid::now_v7().to_string();
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
         let (events_tx, _events_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (exit_tx, _exit_rx) = watch::channel(false);
         let init_slot: Arc<InitSlot> = Arc::new(InitSlot::default());
         let pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        // Seed runtime_state with whatever was passed at spawn — claude reads
-        // `--model <m>` directly so we know that value is live without ever
-        // sending set_model. Effort / permission mode stay None until
-        // the first apply_runtime_overrides call sets them.
+        // Spawn-time flags are already live. Cache them so cold recovery does
+        // not repeat the same runtime control that retired the prior process.
         let runtime_state = Arc::new(Mutex::new(RuntimeState {
             model: model.clone(),
-            effort_level: None,
-            permission_mode: None,
+            effort_level: effort_level.clone(),
+            effort_level_unsupported: false,
+            permission_mode: if bypass_permissions {
+                None
+            } else {
+                permission_mode.clone()
+            },
         }));
 
-        let writer = tokio::spawn(writer_task(stdin, writer_rx));
+        let writer = tokio::spawn(writer_task(
+            stdin,
+            writer_rx,
+            pending_controls.clone(),
+            exit_tx.clone(),
+            thread_id.clone(),
+            generation.clone(),
+            pid,
+        ));
         let reader = tokio::spawn(reader_task(
             stdout,
             init_slot.clone(),
@@ -400,6 +456,7 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin,
             thread_id,
+            generation,
             pid,
             writer_tx,
             events_tx,
@@ -407,6 +464,7 @@ impl ClaudeProcessHandle {
             init_slot,
             pending_controls,
             runtime_state,
+            runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: tasks,
         })
     }
@@ -424,6 +482,11 @@ impl ClaudeProcessHandle {
     /// Codex thread id == claude session id this handle was spawned for.
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    /// Stable identity for this child-process generation.
+    pub fn generation(&self) -> &str {
+        &self.generation
     }
 
     /// OS process id (when the spawn surfaced one).
@@ -445,7 +508,7 @@ impl ClaudeProcessHandle {
         self.exit_tx.subscribe()
     }
 
-    /// Whether stdout has closed and the child can no longer serve requests.
+    /// Whether this child generation can no longer serve requests.
     ///
     /// `watch` keeps the terminal value, so callers can reject a dead pooled
     /// handle even when the event driver has not finished its cleanup yet.
@@ -492,6 +555,11 @@ impl ClaudeProcessHandle {
     /// by `turn::handle_turn_start` / `turn/steer` to push a user envelope.
     /// Lines do not include the trailing newline — the writer task adds it.
     pub fn send_line(&self, line: String) -> Result<(), ClaudeProcessError> {
+        if self.has_exited() {
+            return Err(ClaudeProcessError::WriterClosed(
+                "claude process generation is terminal".to_string(),
+            ));
+        }
         self.writer_tx
             .send(line)
             .map_err(|e| ClaudeProcessError::WriterClosed(e.to_string()))
@@ -531,6 +599,14 @@ impl ClaudeProcessHandle {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending_controls.lock().await;
+            // Serialize registration with terminal cleanup. Otherwise a
+            // waiter can be inserted just after cleanup and hang until its
+            // full deadline on a generation that is already dead.
+            if *self.exit_tx.borrow() {
+                return Err(ClaudeProcessError::WriterClosed(
+                    "claude process generation is terminal".to_string(),
+                ));
+            }
             pending.insert(request_id.clone(), tx);
         }
         let envelope = ClaudeInbound::ControlRequest(ControlRequestEnvelope {
@@ -541,6 +617,8 @@ impl ClaudeProcessHandle {
             // Pull the slot back so we don't leak a sender.
             let mut pending = self.pending_controls.lock().await;
             pending.remove(&request_id);
+            drop(pending);
+            mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
             return Err(err);
         }
         match timeout(deadline, rx).await {
@@ -559,11 +637,15 @@ impl ClaudeProcessHandle {
                     message: error,
                 }),
             },
-            Ok(Err(_)) => Err(ClaudeProcessError::ControlCancelled { request_id }),
+            Ok(Err(_)) => {
+                mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
+                Err(ClaudeProcessError::ControlCancelled { request_id })
+            }
             Err(_) => {
-                // Reclaim the slot so a late response doesn't sit in the map.
-                let mut pending = self.pending_controls.lock().await;
-                pending.remove(&request_id);
+                // A timed-out setter leaves both the child lifecycle and its
+                // runtime state uncertain. Retire the whole generation so a
+                // late response cannot make later turns reuse poisoned state.
+                mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
                 Err(ClaudeProcessError::ControlTimeout {
                     request_id,
                     elapsed: deadline,
@@ -579,9 +661,10 @@ impl ClaudeProcessHandle {
     /// `Some(_)` means "ensure claude is running with this value" (dispatch
     /// only if it differs from the cached state).
     ///
-    /// On any setter failure the runtime cache is NOT updated, so a retry
-    /// will re-attempt rather than silently ignore the override. Errors are
-    /// returned as-is from `request_control`.
+    /// On setter failure the runtime cache is not updated. Explicit effort
+    /// rejection degrades only that turn; only a method-level unsupported
+    /// response disables future effort requests for this process. Transport,
+    /// timeout, and process-exit failures remain fatal.
     pub async fn apply_runtime_overrides(
         &self,
         model: Option<&str>,
@@ -589,6 +672,7 @@ impl ClaudeProcessHandle {
         permission_mode: Option<&str>,
         deadline: Duration,
     ) -> Result<(), ClaudeProcessError> {
+        let _runtime_override_guard = self.runtime_override_gate.lock().await;
         if let Some(want) = model {
             let need_dispatch = {
                 let guard = self.runtime_state.lock().await;
@@ -614,23 +698,43 @@ impl ClaudeProcessHandle {
         if let Some(want) = effort_level {
             let need_dispatch = {
                 let guard = self.runtime_state.lock().await;
-                guard.effort_level.as_deref() != Some(want)
+                !guard.effort_level_unsupported && guard.effort_level.as_deref() != Some(want)
             };
             if need_dispatch {
-                self.request_control(
-                    ControlRequestBody::ApplyFlagSettings {
-                        settings: serde_json::json!({"effortLevel": want}),
-                    },
-                    deadline,
-                )
-                .await
-                .map_err(|source| ClaudeProcessError::RuntimeOverride {
-                    field: "effortLevel",
-                    value: want.to_string(),
-                    source: Box::new(source),
-                })?;
-                let mut guard = self.runtime_state.lock().await;
-                guard.effort_level = Some(want.to_string());
+                let result = self
+                    .request_control(
+                        ControlRequestBody::ApplyFlagSettings {
+                            settings: serde_json::json!({"effortLevel": want}),
+                        },
+                        deadline,
+                    )
+                    .await;
+                match result {
+                    Ok(_) => {
+                        let mut guard = self.runtime_state.lock().await;
+                        guard.effort_level = Some(want.to_string());
+                    }
+                    Err(source @ ClaudeProcessError::ControlError { .. }) => {
+                        let globally_unsupported = effort_control_is_globally_unsupported(&source);
+                        tracing::warn!(
+                            error = %source,
+                            effort_level = want,
+                            globally_unsupported,
+                            "claude runtime rejected effortLevel; continuing with its default"
+                        );
+                        if globally_unsupported {
+                            let mut guard = self.runtime_state.lock().await;
+                            guard.effort_level_unsupported = true;
+                        }
+                    }
+                    Err(source) => {
+                        return Err(ClaudeProcessError::RuntimeOverride {
+                            field: "effortLevel",
+                            value: want.to_string(),
+                            source: Box::new(source),
+                        });
+                    }
+                }
             }
         }
         if let Some(want) = permission_mode {
@@ -672,9 +776,13 @@ impl ClaudeProcessHandle {
     /// Close stdin to signal a clean shutdown, then wait for claude to exit
     /// and reap the child. Idempotent.
     pub async fn shutdown(&self) {
+        // A generation already marked terminal reached shutdown through a
+        // failure path. Keep its eventual exit status visible at the default
+        // production log level; routine eviction remains debug-only.
+        let was_terminal = self.has_exited();
         // 先通知 driver，保证显式 interrupt/release 即使随后 abort reader，
         // 也会把当前 turn 收敛为 Failed，而不是永久停在 InProgress。
-        let _ = self.exit_tx.send(true);
+        mark_process_terminal(&self.pending_controls, &self.exit_tx).await;
         // Aborting the writer task drops its `ChildStdin`, which closes
         // claude's stdin pipe and causes a clean exit.
         if let Some(handle) = self._tasks.writer.lock().await.take() {
@@ -686,13 +794,123 @@ impl ClaudeProcessHandle {
         if let Some(mut child) = self._tasks.child.lock().await.take() {
             // kill is a no-op if the child has already exited via stdin EOF.
             // We still call it as a safety net for stuck children.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            let kill_error = child.kill().await.err();
+            match child.wait().await {
+                Ok(status) if was_terminal => tracing::warn!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    exit_code = ?status.code(),
+                    exit_status = %status,
+                    ?kill_error,
+                    "reaped terminal claude process generation"
+                ),
+                Ok(status) => tracing::debug!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    exit_code = ?status.code(),
+                    exit_status = %status,
+                    ?kill_error,
+                    "reaped claude process generation"
+                ),
+                Err(wait_error) => tracing::warn!(
+                    thread_id = %self.thread_id,
+                    generation = %self.generation,
+                    pid = ?self.pid,
+                    ?kill_error,
+                    ?wait_error,
+                    "failed to reap claude process generation"
+                ),
+            }
         }
         if let Some(handle) = self._tasks.reader.lock().await.take() {
             handle.abort();
         }
     }
+}
+
+fn apply_platform_security_args(args: &mut Vec<OsString>) {
+    if cfg!(windows) {
+        // Claude Code does not support its Bash sandbox on native Windows.
+        // Do not silently run a shell outside the sandbox: disable the shell
+        // tool while retaining stdio permission prompts for built-in tools.
+        args.push("--disallowedTools".into());
+        args.push("Bash".into());
+        args.push("PowerShell".into());
+        return;
+    }
+    // Use a temporary override so the bridge never edits project or user
+    // settings. If the platform sandbox is unavailable, fail closed.
+    args.push("--settings".into());
+    args.push(
+        serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": false,
+                "autoAllowBashIfSandboxed": false
+            }
+        })
+        .to_string()
+        .into(),
+    );
+}
+
+fn effort_control_is_globally_unsupported(error: &ClaudeProcessError) -> bool {
+    let ClaudeProcessError::ControlError { message, .. } = error else {
+        return false;
+    };
+    let normalized = message.to_ascii_lowercase();
+    let names_method =
+        normalized.contains("apply_flag_settings") || normalized.contains("apply flag settings");
+    names_method
+        && [
+            "unknown control request",
+            "unsupported control request",
+            "method not found",
+            "not implemented",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn redact_url_userinfo(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut copied_through = 0;
+    let mut search_from = 0;
+    while let Some(relative_scheme_end) = value[search_from..].find("://") {
+        let scheme_end = search_from + relative_scheme_end;
+        let scheme_start = value[..scheme_end]
+            .rfind(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '+' | '-' | '.')
+            })
+            .map_or(0, |index| index + 1);
+        let scheme = &value[scheme_start..scheme_end];
+        let authority_start = scheme_end + 3;
+        if scheme.is_empty() || !scheme.as_bytes()[0].is_ascii_alphabetic() {
+            search_from = authority_start;
+            continue;
+        }
+        if authority_start >= value.len() {
+            break;
+        }
+        let authority_end = value[authority_start..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '?' | '#')
+            })
+            .map_or(value.len(), |offset| authority_start + offset);
+        let authority = &value[authority_start..authority_end];
+        if let Some(userinfo_end) = authority.rfind('@') {
+            result.push_str(&value[copied_through..authority_start]);
+            result.push_str("<redacted>@");
+            result.push_str(&authority[userinfo_end + 1..]);
+            copied_through = authority_end;
+        }
+        search_from = authority_end.max(authority_start + 1).min(value.len());
+    }
+    result.push_str(&value[copied_through..]);
+    result
 }
 
 impl alleycat_bridge_core::pool::PoolMember for ClaudeProcessHandle {
@@ -701,18 +919,64 @@ impl alleycat_bridge_core::pool::PoolMember for ClaudeProcessHandle {
     }
 }
 
-async fn writer_task(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
+async fn mark_process_terminal(
+    pending_controls: &Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
+    exit_tx: &watch::Sender<bool>,
+) -> usize {
+    // Keep the terminal transition and waiter cleanup in one critical
+    // section. request_control checks the watch value while holding this same
+    // lock, so it cannot insert a waiter after cleanup.
+    let mut pending = pending_controls.lock().await;
+    exit_tx.send_replace(true);
+    let cancelled = pending.len();
+    pending.clear();
+    cancelled
+}
+
+async fn writer_task(
+    mut stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
+    exit_tx: watch::Sender<bool>,
+    thread_id: String,
+    generation: String,
+    pid: Option<u32>,
+) {
+    let mut terminal_reason = "writer_channel_closed";
     while let Some(mut line) = rx.recv().await {
         line.push('\n');
         if let Err(err) = stdin.write_all(line.as_bytes()).await {
-            tracing::warn!(?err, "claude writer task: stdin write failed; exiting");
+            terminal_reason = "stdin_write_failed";
+            tracing::warn!(
+                %thread_id,
+                %generation,
+                ?pid,
+                ?err,
+                "claude writer task: stdin write failed; retiring generation"
+            );
             break;
         }
         if let Err(err) = stdin.flush().await {
-            tracing::warn!(?err, "claude writer task: stdin flush failed; exiting");
+            terminal_reason = "stdin_flush_failed";
+            tracing::warn!(
+                %thread_id,
+                %generation,
+                ?pid,
+                ?err,
+                "claude writer task: stdin flush failed; retiring generation"
+            );
             break;
         }
     }
+    let cancelled_controls = mark_process_terminal(&pending_controls, &exit_tx).await;
+    tracing::debug!(
+        %thread_id,
+        %generation,
+        ?pid,
+        terminal_reason,
+        cancelled_controls,
+        "claude writer task entered terminal state"
+    );
     // Dropping `stdin` here closes claude's input pipe, prompting it to exit.
 }
 
@@ -780,16 +1044,14 @@ async fn reader_task(
                 let _ = events_tx.send(event);
             }
             Err(err) => {
-                tracing::warn!(?err, line = %trimmed, "claude reader task: failed to parse line");
+                let line = redact_url_userinfo(trimmed);
+                tracing::warn!(?err, line = %line, "claude reader task: failed to parse line");
             }
         }
     }
     // Process exit drains every waiter so they error with ControlCancelled
     // instead of hanging on the deadline.
-    let mut pending = pending_controls.lock().await;
-    pending.clear();
-    drop(pending);
-    let _ = exit_tx.send(true);
+    mark_process_terminal(&pending_controls, &exit_tx).await;
 }
 
 async fn stderr_task(stderr: ChildStderr, pid: Option<u32>) {
@@ -799,6 +1061,7 @@ async fn stderr_task(stderr: ChildStderr, pid: Option<u32>) {
         // Claude prints diagnostic chatter to stderr; surface it through
         // tracing so debug builds get it without polluting the codex
         // JSON-RPC channel.
+        let line = redact_url_userinfo(&line);
         tracing::debug!(?pid, "claude stderr: {line}");
     }
 }
@@ -819,6 +1082,7 @@ impl ClaudeProcessHandle {
             cwd,
             claude_bin: PathBuf::from("/dev/null"),
             thread_id: "test-thread".into(),
+            generation: "test-generation".into(),
             pid: None,
             writer_tx,
             events_tx,
@@ -826,6 +1090,7 @@ impl ClaudeProcessHandle {
             init_slot: Arc::new(InitSlot::default()),
             pending_controls: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(RuntimeState::default())),
+            runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: Arc::new(TaskSet {
                 writer: Mutex::new(None),
                 reader: Mutex::new(None),
@@ -849,6 +1114,39 @@ impl ClaudeProcessHandle {
 mod tests {
     use super::*;
     use crate::pool::claude_protocol::SystemInit;
+
+    #[test]
+    fn platform_security_never_runs_an_unsandboxed_windows_shell() {
+        let mut args = Vec::new();
+        apply_platform_security_args(&mut args);
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        if cfg!(windows) {
+            assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
+        } else {
+            assert_eq!(args.first().map(String::as_str), Some("--settings"));
+            assert!(
+                args.get(1)
+                    .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
+            );
+        }
+    }
+
+    #[test]
+    fn child_diagnostics_redact_url_userinfo() {
+        let diagnostic = redact_url_userinfo(
+            "connect http://alice:hunter%402@proxy.example:8080 via socks5://bob:secret@proxy:1080",
+        );
+        assert_eq!(
+            diagnostic,
+            "connect http://<redacted>@proxy.example:8080 via socks5://<redacted>@proxy:1080"
+        );
+        for secret in ["alice", "hunter%402", "bob", "secret"] {
+            assert!(!diagnostic.contains(secret));
+        }
+    }
 
     #[tokio::test]
     async fn wait_for_init_returns_immediately_when_already_set() {
@@ -889,6 +1187,9 @@ mod tests {
         let handle =
             ClaudeProcessHandle::__test_dangling(writer_tx, events_tx, PathBuf::from("/tmp"));
         let mut exit_rx = handle.subscribe_exit();
+        let pending = handle.pending_controls_handle();
+        let (waiter_tx, waiter_rx) = oneshot::channel();
+        pending.lock().await.insert("pending".into(), waiter_tx);
 
         handle.shutdown().await;
         exit_rx
@@ -896,6 +1197,42 @@ mod tests {
             .await
             .expect("exit signal sender remains live");
         assert!(*exit_rx.borrow());
+        assert!(pending.lock().await.is_empty());
+        assert!(waiter_rx.await.is_err(), "shutdown must cancel waiters");
+    }
+
+    #[tokio::test]
+    async fn writer_pipe_failure_marks_generation_terminal_and_cancels_waiters() {
+        let (stdin, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (waiter_tx, waiter_rx) = oneshot::channel();
+        pending.lock().await.insert("pending".into(), waiter_tx);
+        let (exit_tx, mut exit_rx) = watch::channel(false);
+
+        let writer = tokio::spawn(writer_task(
+            Box::new(stdin),
+            writer_rx,
+            pending.clone(),
+            exit_tx,
+            "thread-broken-pipe".into(),
+            "generation-1".into(),
+            Some(42),
+        ));
+        writer_tx.send("queued-control".into()).unwrap();
+
+        timeout(Duration::from_secs(1), exit_rx.changed())
+            .await
+            .expect("writer must signal terminal without waiting for control deadline")
+            .expect("exit sender remains live");
+        assert!(*exit_rx.borrow());
+        assert!(pending.lock().await.is_empty());
+        assert!(
+            waiter_rx.await.is_err(),
+            "writer failure must cancel waiters"
+        );
+        writer.await.expect("writer task");
     }
 
     #[tokio::test]
@@ -1052,9 +1389,15 @@ mod tests {
         let _ = writer_rx.recv().await.unwrap();
         let err = task.await.expect("join").expect_err("timeout expected");
         assert!(matches!(err, ClaudeProcessError::ControlTimeout { .. }));
-        // Slot must be reclaimed so a stray late response doesn't sit in the
-        // map.
+        // A timed-out generation must not accept another control request.
+        assert!(handle.has_exited());
         assert!(pending.lock().await.is_empty());
+        let retry = handle
+            .request_control(ControlRequestBody::Interrupt, Duration::from_secs(1))
+            .await
+            .expect_err("terminal generation must reject a new request");
+        assert!(matches!(retry, ClaudeProcessError::WriterClosed(_)));
+        assert!(writer_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1109,6 +1452,182 @@ mod tests {
             .await
             .expect("duplicate is a no-op");
         assert!(writer_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unsupported_effort_falls_back_and_other_overrides_continue() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+        let h2 = Arc::clone(&handle);
+        let task = tokio::spawn(async move {
+            h2.apply_runtime_overrides(
+                None,
+                Some("medium"),
+                Some("default"),
+                Duration::from_secs(2),
+            )
+            .await
+        });
+
+        let effort_line = writer_rx.recv().await.expect("effort writer line");
+        let effort: serde_json::Value = serde_json::from_str(&effort_line).expect("json");
+        let request_id = effort["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&request_id)
+            .unwrap()
+            .send(ControlResponseBody::Error {
+                error: "unknown control request apply_flag_settings".into(),
+            })
+            .unwrap();
+
+        let permission_line = writer_rx.recv().await.expect("permission writer line");
+        let permission: serde_json::Value = serde_json::from_str(&permission_line).expect("json");
+        assert_eq!(permission["request"]["subtype"], "set_permission_mode");
+        let request_id = permission["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&request_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+
+        task.await.expect("join").expect("fallback succeeds");
+        assert_eq!(
+            handle.runtime_snapshot().await,
+            (None, None, Some("default".into()))
+        );
+        handle
+            .apply_runtime_overrides(None, Some("xhigh"), None, Duration::from_millis(50))
+            .await
+            .expect("unsupported effort remains a no-op");
+        assert!(writer_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn value_specific_effort_rejection_does_not_disable_future_effort() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+
+        let first_handle = Arc::clone(&handle);
+        let first = tokio::spawn(async move {
+            first_handle
+                .apply_runtime_overrides(None, Some("max"), None, Duration::from_secs(2))
+                .await
+        });
+        let first_line = writer_rx.recv().await.expect("first effort line");
+        let first_request: serde_json::Value = serde_json::from_str(&first_line).expect("json");
+        let first_id = first_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&first_id)
+            .unwrap()
+            .send(ControlResponseBody::Error {
+                error: "effort max is not available for the current model".into(),
+            })
+            .unwrap();
+        first
+            .await
+            .expect("join")
+            .expect("value rejection falls back");
+
+        let second_handle = Arc::clone(&handle);
+        let second = tokio::spawn(async move {
+            second_handle
+                .apply_runtime_overrides(None, Some("medium"), None, Duration::from_secs(2))
+                .await
+        });
+        let second_line = writer_rx.recv().await.expect("second effort line");
+        let second_request: serde_json::Value = serde_json::from_str(&second_line).expect("json");
+        assert_eq!(
+            second_request["request"]["settings"]["effortLevel"],
+            "medium"
+        );
+        let second_id = second_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&second_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        second
+            .await
+            .expect("join")
+            .expect("supported effort retries");
+        assert_eq!(handle.runtime_snapshot().await.1.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_runtime_overrides_are_serialized() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+
+        let first_handle = Arc::clone(&handle);
+        let first = tokio::spawn(async move {
+            first_handle
+                .apply_runtime_overrides(None, Some("medium"), None, Duration::from_secs(2))
+                .await
+        });
+        let first_line = writer_rx.recv().await.expect("first effort line");
+        let first_request: serde_json::Value = serde_json::from_str(&first_line).expect("json");
+
+        let second_handle = Arc::clone(&handle);
+        let second = tokio::spawn(async move {
+            second_handle
+                .apply_runtime_overrides(None, Some("high"), None, Duration::from_secs(2))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            writer_rx.try_recv().is_err(),
+            "second override must wait until the first cache transaction completes"
+        );
+
+        let first_id = first_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&first_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        first.await.expect("first join").expect("first override");
+
+        let second_line = writer_rx.recv().await.expect("second effort line");
+        let second_request: serde_json::Value = serde_json::from_str(&second_line).expect("json");
+        assert_eq!(second_request["request"]["settings"]["effortLevel"], "high");
+        let second_id = second_request["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&second_id)
+            .unwrap()
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        second.await.expect("second join").expect("second override");
+        assert_eq!(handle.runtime_snapshot().await.1.as_deref(), Some("high"));
     }
 
     #[tokio::test]

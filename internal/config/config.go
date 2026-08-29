@@ -14,7 +14,12 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
-const AppName = "mimi-remote"
+const (
+	AppName                           = "mimi-remote"
+	DefaultClaudeMaxConcurrentBridges = 3
+)
+
+var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")
 
 type Config struct {
 	Listen        string           `json:"listen"`
@@ -82,10 +87,10 @@ type RuntimeConfig struct {
 }
 
 type AppServerConfig struct {
-	Transport   string `json:"transport"`
-	Managed     bool   `json:"managed"`
-	Listen      string `json:"listen,omitempty"`
-	WSTokenFile string `json:"ws_token_file,omitempty"`
+	Transport string `json:"transport"`
+	// SSHTarget 是 OpenSSH 的目标参数。它只作为 exec 参数传递，不能包含
+	// 空白或以连字符开头，避免把配置误当成 shell/ssh option。
+	SSHTarget string `json:"ssh_target,omitempty"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
 }
@@ -136,6 +141,26 @@ func PlatformDefaultPath() string {
 	return filepath.Join(dir, "config.json")
 }
 
+// ConfigPathIdentity 返回用于跨进程配置锁的稳定路径身份。它按所在卷的
+// 大小写语义规范化路径；同一配置文件的 `/Config.json` 与 `/config.json`
+// 在普通 APFS 上必须取得同一把锁，而 case-sensitive APFS 上仍保持独立。
+func ConfigPathIdentity(path string) (string, error) {
+	absolute, err := absoluteExpandedPath(path)
+	if err != nil {
+		return "", err
+	}
+	// 配置文件本身可能尚未创建；目录存在时仍解析目录 symlink，避免同一个
+	// 配置文件经不同路径写法仍必须取得同一把提交锁。
+	if canonicalDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absolute)); evalErr == nil {
+		absolute = filepath.Join(canonicalDir, filepath.Base(absolute))
+	}
+	caseSensitive, err := configPathCaseSensitive(filepath.Dir(absolute))
+	if err == nil && !caseSensitive {
+		absolute = strings.ToLower(absolute)
+	}
+	return filepath.Clean(absolute), nil
+}
+
 func UserConfigDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -155,29 +180,29 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadSnapshot 从调用方已经原子读取的一份配置快照解析完整 Config。共享
+// 配置事务必须让 typed cfg、未知 JSON 字段与 CAS baseline 全部来自
+// 同一组 bytes；不能先 Load(path) 后再 ReadFile(path)，否则并发写入会把两代
+// 配置拼成一个事务。它保留普通 Load 的默认值、环境覆盖、项目发现和校验语义。
+func LoadSnapshot(raw []byte) (Config, error) {
+	cfg, err := loadSnapshot(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func LoadForDoctor(path string) (Config, error) {
 	return load(path)
 }
 
 func load(path string) (Config, error) {
-	cfg := defaults()
-	path = expandPath(path)
-	if path != "" {
-		if b, err := os.ReadFile(path); err == nil {
-			if err := json.Unmarshal(b, &cfg); err != nil {
-				return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return Config{}, fmt.Errorf("读取配置文件失败：%w", err)
-		}
-	}
-
-	applyEnv(&cfg)
-	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
-	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
-	if strings.EqualFold(cfg.AppServer.Transport, "ws") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
-		// 旧配置迁移到 ws 后可能没有 listen；补一个默认 loopback upstream，避免 Validate 直接失败。
-		cfg.AppServer.Listen = defaultAppServerListen
+	cfg, err := loadWithoutProjectDiscovery(path)
+	if err != nil {
+		return Config{}, err
 	}
 	scanned, err := discoverProjects(cfg.ScanRoots)
 	if err != nil {
@@ -185,6 +210,98 @@ func load(path string) (Config, error) {
 	}
 	cfg.Projects = mergeProjects(cfg.Projects, scanned)
 	return cfg, nil
+}
+
+func loadSnapshot(raw []byte) (Config, error) {
+	cfg, err := loadRawWithoutProjectDiscovery(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	scanned, err := discoverProjects(cfg.ScanRoots)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Projects = mergeProjects(cfg.Projects, scanned)
+	return cfg, nil
+}
+
+// loadWithoutProjectDiscovery 只解析配置文件、默认值与进程级覆盖，不访问
+// scan_roots，避免无关网络盘或受保护目录影响基础配置读取。
+func loadWithoutProjectDiscovery(path string) (Config, error) {
+	path = expandPath(path)
+	var raw []byte
+	if path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			raw = b
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Config{}, fmt.Errorf("读取配置文件失败：%w", err)
+		}
+	}
+	return loadRawWithoutProjectDiscovery(raw)
+}
+
+func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
+	cfg := defaults()
+	if raw != nil {
+		if err := RejectLegacyAppServerConfiguration(raw); err != nil {
+			return Config{}, err
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
+		}
+	}
+	if cfg.Claude.MaxConcurrentBridges == 0 {
+		// Older setup versions serialized the disabled Claude section from a
+		// zero-value Config, then the tray could enable Claude while preserving
+		// that zero. Treat exactly zero as the legacy default so an upgrade can
+		// still start; negative values remain invalid, and an explicit env
+		// override is applied below and continues to fail validation.
+		cfg.Claude.MaxConcurrentBridges = DefaultClaudeMaxConcurrentBridges
+	}
+
+	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
+	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
+	applyEnv(&cfg)
+	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
+	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
+		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
+	}
+	return cfg, nil
+}
+
+// RejectLegacyAppServerConfiguration 在任何自动修复发生前识别已移除的共享配置。
+// 调用方必须原样保留文件，让用户先通过旧实验版本完成退场。
+func RejectLegacyAppServerConfiguration(raw []byte) error {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return fmt.Errorf("解析配置文件失败：%w", err)
+	}
+	rawAppServer, ok := document["app_server"]
+	if !ok || string(rawAppServer) == "null" {
+		return nil
+	}
+	var appServer map[string]json.RawMessage
+	if err := json.Unmarshal(rawAppServer, &appServer); err != nil {
+		return fmt.Errorf("解析 app_server 配置失败：%w", err)
+	}
+	if _, exists := appServer["shared_fallback"]; exists {
+		return fmt.Errorf("%w：检测到已移除的 app_server.shared_fallback；请先用旧实验版本关闭 Codex Desktop 共享", ErrLegacyAppServerConfiguration)
+	}
+	for _, key := range []string{"transport", "listen"} {
+		encoded, exists := appServer[key]
+		if !exists {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			continue
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "unix" || strings.HasPrefix(value, "unix://") {
+			return fmt.Errorf("%w：检测到已移除的 app_server Unix transport；请先用旧实验版本关闭 Codex Desktop 共享", ErrLegacyAppServerConfiguration)
+		}
+	}
+	return nil
 }
 
 func expandPath(path string) string {
@@ -199,8 +316,28 @@ func expandPath(path string) string {
 	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
 }
 
-// defaultAppServerListen 是托管 Codex app-server 的默认 loopback WebSocket upstream，仅本机可达。
-const defaultAppServerListen = "ws://127.0.0.1:4222"
+const (
+	defaultAppServerSSHTarget = "127.0.0.1"
+)
+
+func DefaultAppServerTransport() string {
+	return "ssh"
+}
+
+func DefaultAppServerSSHTarget() string {
+	return defaultAppServerSSHTarget
+}
+
+func DefaultClaudeConfig() ClaudeConfig {
+	return ClaudeConfig{
+		Enabled:              false,
+		BridgeBin:            "alleycat-claude-bridge",
+		MaxConcurrentBridges: DefaultClaudeMaxConcurrentBridges,
+		Env: map[string]string{
+			"TERM": "xterm-256color",
+		},
+	}
+}
 
 func defaults() Config {
 	return Config{
@@ -209,9 +346,8 @@ func defaults() Config {
 			Type: "codex_app_server",
 		},
 		AppServer: AppServerConfig{
-			Transport: "ws",
-			Managed:   true,
-			Listen:    defaultAppServerListen,
+			Transport: DefaultAppServerTransport(),
+			SSHTarget: DefaultAppServerSSHTarget(),
 			AutoTitle: true,
 		},
 		Voice: VoiceConfig{
@@ -224,14 +360,7 @@ func defaults() Config {
 				"TERM": "xterm-256color",
 			},
 		},
-		Claude: ClaudeConfig{
-			Enabled:              false,
-			BridgeBin:            "alleycat-claude-bridge",
-			MaxConcurrentBridges: 3,
-			Env: map[string]string{
-				"TERM": "xterm-256color",
-			},
-		},
+		Claude: DefaultClaudeConfig(),
 		Session: SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},
@@ -280,17 +409,8 @@ func applyEnv(cfg *Config) {
 			cfg.Claude.MaxConcurrentBridges = n
 		}
 	}
-	if v := os.Getenv("AGENTD_APP_SERVER_TRANSPORT"); v != "" {
-		cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(v))
-	}
-	if v := os.Getenv("AGENTD_APP_SERVER_LISTEN"); v != "" {
-		cfg.AppServer.Listen = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("AGENTD_APP_SERVER_WS_TOKEN_FILE"); v != "" {
-		cfg.AppServer.WSTokenFile = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
-		cfg.AppServer.Managed = truthy(v)
+	if v := os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"); v != "" {
+		cfg.AppServer.SSHTarget = v
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_AUTO_TITLE"); v != "" {
 		cfg.AppServer.AutoTitle = truthy(v)
@@ -346,9 +466,8 @@ func normalizeRuntimeType(raw string) string {
 func normalizeTransport(raw string) string {
 	value := strings.TrimSpace(strings.ToLower(raw))
 	switch value {
-	case "", "stdio", "unix", "off":
-		// 旧配置平滑迁移：直连链路只保留 ws gateway，历史 stdio/unix/off 等 transport 统一归一到 ws。
-		return "ws"
+	case "":
+		return DefaultAppServerTransport()
 	default:
 		return value
 	}
@@ -519,15 +638,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
-	case "ws":
+	case "ssh":
+		if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
+			return fmt.Errorf("app_server.ssh_target 无效：%w", err)
+		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ws")
-	}
-	if strings.EqualFold(c.AppServer.Transport, "ws") && strings.TrimSpace(c.AppServer.Listen) == "" {
-		return fmt.Errorf("app_server.listen 不能为空")
-	}
-	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
-		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")
+		return fmt.Errorf("app_server.transport 只支持 ssh")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

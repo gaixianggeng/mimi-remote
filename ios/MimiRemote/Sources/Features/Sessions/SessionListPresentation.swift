@@ -53,7 +53,7 @@ enum SessionSidebarSectionKind: String, CaseIterable, Equatable, Hashable, Ident
 struct SessionSidebarSection: Equatable, Hashable, Identifiable {
     let kind: SessionSidebarSectionKind
     let sessions: [AgentSession]
-    /// 目前只有 justCompleted 会产生溢出数量；其它组固定为 0。
+    /// 保留统一的扩展入口；当前侧边栏分组不会隐藏溢出会话。
     let overflowCount: Int
 
     init(
@@ -74,6 +74,8 @@ struct SessionSidebarSection: Equatable, Hashable, Identifiable {
 
 /// 会话列表需要的纯展示计算，避免 SwiftUI View 同时承担日期和字符串规则。
 enum SessionListPresentation {
+    static let sidebarJustCompletedWindow: TimeInterval = 2 * 60 * 60
+
     /// 按历史时间将会话放入固定日期桶；空桶不返回，桶内保持输入顺序。
     static func historyGroups(
         _ sessions: [AgentSession],
@@ -184,6 +186,210 @@ enum SessionListPresentation {
         displayTitle(preview ?? "")
     }
 
+    /// 列表行的第二行只应承载**标题之外**的信息。
+    ///
+    /// 会话标题和 preview 都由首条用户消息派生，绝大多数情况下 preview 就是把
+    /// 标题原样重念一遍再往后多带一小段。两行读起来完全一样时，列表看着"乱"
+    /// 不是因为信息多，而是因为同一句话占了两遍位置。
+    ///
+    /// 这里只返回 preview 相对标题**新增**的那一段：完全重复时返回空串，
+    /// 由调用方决定第二行还画不画。原始 `session.preview` 不被修改。
+    static func distinctPreviewDisplayText(for session: AgentSession) -> String {
+        distinctPreviewDisplayText(title: session.title, preview: session.preview)
+    }
+
+    static func distinctPreviewDisplayText(title: String, preview: String?) -> String {
+        let normalizedPreview = displayTitle(preview ?? "")
+        guard !normalizedPreview.isEmpty else { return "" }
+
+        let normalizedTitle = displayTitle(title)
+        guard !normalizedTitle.isEmpty else { return normalizedPreview }
+
+        // 完全相同不需要再经过“词法前缀”判断；短标题也应该稳定去重。
+        if normalizedPreview == normalizedTitle {
+            return ""
+        }
+
+        // 标题本身可能已经是截断摘要，末尾省略号不参与前缀比较。
+        let titleStem = strippingTrailingEllipsis(normalizedTitle)
+
+        if !titleStem.isEmpty, normalizedPreview.hasPrefix(titleStem) {
+            let rawRemainder = String(normalizedPreview.dropFirst(titleStem.count))
+            // 只有标题明确以省略号结束，或后续从空白/句读边界开始，才把标题当作
+            // preview 的重复前缀。`Swift` / `SwiftUI` 这类普通词法前缀必须保留。
+            guard rawRemainder.isEmpty
+                || hasExplicitTrailingEllipsis(normalizedTitle)
+                || startsWithSentenceBoundary(rawRemainder) else {
+                return normalizedPreview
+            }
+
+            let remainder = trimmingLeadingSentenceBoundary(rawRemainder)
+            // 只剩一两个字或纯标点时第二行没有信息量，留空比留半句更干净。
+            return remainder.count >= 2 ? remainder : ""
+        }
+
+        // 反向包含：preview 是更早的截断版本，标题反而更长，同样是重复。
+        let previewStem = strippingTrailingEllipsis(normalizedPreview)
+        if !previewStem.isEmpty, titleStem.hasPrefix(previewStem) {
+            let rawRemainder = String(titleStem.dropFirst(previewStem.count))
+            // 反向也必须检查边界：`修复` 不是 `修复输入区布局` 的独立前缀。
+            if hasExplicitTrailingEllipsis(normalizedPreview) || startsWithSentenceBoundary(rawRemainder) {
+                return ""
+            }
+        }
+
+        return normalizedPreview
+    }
+
+    /// 句读边界。截掉标题前缀后残留的这些字符属于上一句，不该成为第二行的开头。
+    private static let sentenceBoundaryCharacters: Set<Character> = [
+        " ", "\u{00A0}", "。", "．", ".", "\u{FF0C}", ",", "、", "\u{FF1B}", ";", "：", ":", "!", "！", "?", "？", "—", "-",
+    ]
+
+    private static func strippingTrailingEllipsis(_ value: String) -> String {
+        var result = Substring(value)
+        while let last = result.last, last == "\u{2026}" || last == "." || last == "。" || last == " " {
+            result = result.dropLast()
+        }
+        return String(result)
+    }
+
+    private static func trimmingLeadingSentenceBoundary(_ value: String) -> String {
+        var result = Substring(value)
+        while let first = result.first, sentenceBoundaryCharacters.contains(first) {
+            result = result.dropFirst()
+        }
+        return String(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func startsWithSentenceBoundary(_ value: String) -> Bool {
+        guard let first = value.first else { return false }
+        return sentenceBoundaryCharacters.contains(first)
+    }
+
+    private static func hasExplicitTrailingEllipsis(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasSuffix("\u{2026}")
+            || trimmed.hasSuffix("...")
+            || trimmed.hasSuffix("\u{3002}\u{3002}\u{3002}")
+    }
+
+    /// 工作区只有在存在多个有效分支时才需要逐行重复展示分支身份。
+    static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
+        let displayBranch = normalizedBranch(branch)
+        let validBranches = Set(branches.compactMap { normalizedBranch($0) })
+        guard validBranches.count > 1 else { return nil }
+        return displayBranch
+    }
+
+    static func normalizedBranch(_ branch: String?) -> String? {
+        guard let branch else { return nil }
+        let normalized = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// 会话行时间使用调用方注入的当前时刻，工作区快照和生产列表共享同一规则。
+    static func timestampText(
+        for date: Date?,
+        now: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent,
+        timeZone: TimeZone? = nil
+    ) -> String {
+        guard let date else { return "" }
+
+        let resolvedTimeZone = timeZone ?? calendar.timeZone
+        var resolvedCalendar = calendar
+        resolvedCalendar.timeZone = resolvedTimeZone
+
+        switch dateBucket(for: date, now: now, calendar: resolvedCalendar) {
+        case .today:
+            return formattedDate(
+                date,
+                calendar: resolvedCalendar,
+                locale: locale,
+                timeZone: resolvedTimeZone,
+                template: "Hm"
+            )
+        case .yesterday:
+            return L10n.text("ui.yesterday")
+        case .thisWeek, .thisMonth, .earlier:
+            return formattedDate(
+                date,
+                calendar: resolvedCalendar,
+                locale: locale,
+                timeZone: resolvedTimeZone,
+                template: "Md"
+            )
+        }
+    }
+
+    private static func formattedDate(
+        _ date: Date,
+        calendar: Calendar,
+        locale: Locale,
+        timeZone: TimeZone,
+        template: String
+    ) -> String {
+        let key = TimestampFormatterKey(
+            calendarIdentifier: String(describing: calendar.identifier),
+            calendarLocaleIdentifier: calendar.locale?.identifier ?? "",
+            localeIdentifier: locale.identifier,
+            timeZoneIdentifier: timeZone.identifier,
+            timeZoneSecondsFromGMT: timeZone.secondsFromGMT(),
+            template: template
+        )
+        return timestampFormatterCache.string(
+            from: date,
+            key: key,
+            calendar: calendar,
+            locale: locale,
+            timeZone: timeZone
+        )
+    }
+
+    private struct TimestampFormatterKey: Hashable {
+        let calendarIdentifier: String
+        let calendarLocaleIdentifier: String
+        let localeIdentifier: String
+        let timeZoneIdentifier: String
+        let timeZoneSecondsFromGMT: Int
+        let template: String
+    }
+
+    /// DateFormatter 是可变引用类型；缓存和实际格式化共用同一把锁，避免并发读取同一实例。
+    private static let timestampFormatterCache = TimestampFormatterCache()
+
+    private final class TimestampFormatterCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var formatters: [TimestampFormatterKey: DateFormatter] = [:]
+
+        func string(
+            from date: Date,
+            key: TimestampFormatterKey,
+            calendar: Calendar,
+            locale: Locale,
+            timeZone: TimeZone
+        ) -> String {
+            lock.lock()
+            defer { lock.unlock() }
+
+            let formatter: DateFormatter
+            if let cached = formatters[key] {
+                formatter = cached
+            } else {
+                let configured = DateFormatter()
+                configured.calendar = calendar
+                configured.locale = locale
+                configured.timeZone = timeZone
+                configured.setLocalizedDateFormatFromTemplate(key.template)
+                formatters[key] = configured
+                formatter = configured
+            }
+            return formatter.string(from: date)
+        }
+    }
+
     /// 优先展示 dir 的末段；dir 为空时回退 project。路径无法拆出末段时返回原选择值。
     static func directoryTail(for session: AgentSession) -> String {
         let normalizedDir = session.dir.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -212,12 +418,34 @@ enum SessionListPresentation {
         directoryTail(for: session)
     }
 
+    /// 仅在运行中和刚完成分区将相邻的同项目视为一组；返回 true 代表当前行是组头。
+    /// 缺少项目 ID 时不合并，避免把不同的未知项目误当成一组。
+    static func startsSidebarProjectGroup(
+        for session: AgentSession,
+        previousSession: AgentSession?,
+        in kind: SessionSidebarSectionKind
+    ) -> Bool {
+        guard kind == .running || kind == .justCompleted,
+              let previousSession,
+              !session.projectID.isEmpty else {
+            return true
+        }
+
+        return session.projectID != previousSession.projectID
+    }
+
     /// 按“需要你 → 运行中 → 刚完成 → 置顶 → 最近”建立扁平侧边栏列表。
     /// 先恢复纯活动时间顺序，避免 Store 的置顶投影改变各动态分区内部顺序；重复 ID 只保留第一次出现的会话。
+    ///
+    /// “刚完成”只读取 Store 观察到终态转换的本地时间，并限制时间窗口和条数。它与
+    /// Mimi 本地未读水位无关：Codex Desktop 没有向当前协议回传已读回执，不能让
+    /// 本地未读冒充跨 App 完成状态。超过条数上限的完成会话继续参与置顶/最近，不会被静默丢弃。
     static func sidebarSections(
         _ sessions: [AgentSession],
         pinnedIDs: Set<SessionID> = [],
-        unreadIDs: Set<SessionID> = [],
+        completionObservedAtByID: [SessionID: Date] = [:],
+        now: Date = Date(),
+        justCompletedWindow: TimeInterval = SessionListPresentation.sidebarJustCompletedWindow,
         justCompletedLimit: Int = 5,
         recentLimit: Int = 8
     ) -> [SessionSidebarSection] {
@@ -246,11 +474,23 @@ enum SessionListPresentation {
         }
         // 本地草稿代表尚未发送首条消息的新会话，也应固定留在“进行中”，不能被 recent 上限截掉。
         let running = consume { $0.isRunning || $0.isLocalDraft }
-        let unread = consume { session in
-            !session.isLocalDraft && unreadIDs.contains(session.id)
+        let completionCandidates = unclaimed.enumerated().compactMap { index, session -> (AgentSession, Date, Int)? in
+            guard let completionDate = completionObservedAtByID[session.id] else { return nil }
+            let age = now.timeIntervalSince(completionDate)
+            guard age >= 0 && age <= max(0, justCompletedWindow) else { return nil }
+            return (session, completionDate, index)
         }
-        let visibleJustCompleted = Array(unread.prefix(max(0, justCompletedLimit)))
-        let justCompletedOverflow = max(0, unread.count - visibleJustCompleted.count)
+        .sorted { lhs, rhs in
+            if lhs.1 == rhs.1 {
+                return lhs.2 < rhs.2
+            }
+            return lhs.1 > rhs.1
+        }
+        let justCompleted = completionCandidates
+            .prefix(max(0, justCompletedLimit))
+            .map { $0.0 }
+        let justCompletedIDs = Set(justCompleted.map(\.id))
+        unclaimed.removeAll { justCompletedIDs.contains($0.id) }
         let pinned = consume { pinnedIDs.contains($0.id) }
         let recent = Array(unclaimed.prefix(max(0, recentLimit)))
 
@@ -258,12 +498,7 @@ enum SessionListPresentation {
         sections.reserveCapacity(SessionSidebarSectionKind.displayOrder.count)
         appendSection(.needYou, sessions: needYou, to: &sections)
         appendSection(.running, sessions: running, to: &sections)
-        appendSection(
-            .justCompleted,
-            sessions: visibleJustCompleted,
-            overflowCount: justCompletedOverflow,
-            to: &sections
-        )
+        appendSection(.justCompleted, sessions: justCompleted, to: &sections)
         appendSection(.pinned, sessions: pinned, to: &sections)
 
         // recent 不依赖其它分组存在；因此前组全空时仍会展示第一批最近会话。
@@ -275,36 +510,20 @@ enum SessionListPresentation {
     static func sidebarSections(
         sessions: [AgentSession],
         pinnedIDs: Set<SessionID> = [],
-        unreadIDs: Set<SessionID> = [],
+        completionObservedAtByID: [SessionID: Date] = [:],
+        now: Date = Date(),
+        justCompletedWindow: TimeInterval = SessionListPresentation.sidebarJustCompletedWindow,
         justCompletedLimit: Int = 5,
         recentLimit: Int = 8
     ) -> [SessionSidebarSection] {
         sidebarSections(
             sessions,
             pinnedIDs: pinnedIDs,
-            unreadIDs: unreadIDs,
+            completionObservedAtByID: completionObservedAtByID,
+            now: now,
+            justCompletedWindow: justCompletedWindow,
             justCompletedLimit: justCompletedLimit,
             recentLimit: recentLimit
-        )
-    }
-
-    /// 多项目侧栏只给每个项目的第一条可见会话一个身份锚点。
-    ///
-    /// 必须跨 section 去重：点击“刚完成”会立即把会话迁入“最近”，如果每个
-    /// section 独立判断首行，同一项目就会在点击前后反复出现或消失头像。
-    static func sidebarProjectAnchorSessionIDs(
-        in sections: [SessionSidebarSection]
-    ) -> Set<SessionID> {
-        let visibleSessions = stableUniqueSessions(sections.flatMap(\.sessions))
-        guard Set(visibleSessions.map(\.projectID)).count > 1 else {
-            return []
-        }
-
-        var seenProjectIDs: Set<String> = []
-        return Set(
-            visibleSessions.compactMap { session in
-                seenProjectIDs.insert(session.projectID).inserted ? session.id : nil
-            }
         )
     }
 

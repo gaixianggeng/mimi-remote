@@ -3,11 +3,13 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
@@ -205,6 +207,82 @@ func TestParseClaudeActivationPreferenceRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+func TestParseClaudeAuthStatusRequiresExplicitLoggedInField(t *testing.T) {
+	loggedIn, ok := parseClaudeAuthStatus([]byte(`{"loggedIn":true,"authMethod":"claude.ai"}`))
+	if !ok || !loggedIn {
+		t.Fatal("有效 Claude auth status 应解析为已登录")
+	}
+	if _, ok := parseClaudeAuthStatus([]byte(`{"authMethod":"claude.ai"}`)); ok {
+		t.Fatal("缺少 loggedIn 时不得猜测登录状态")
+	}
+	if _, ok := parseClaudeAuthStatus([]byte(`not-json`)); ok {
+		t.Fatal("无效输出不得误报为已登出")
+	}
+}
+
+func TestProbeClaudeAuthStatusDoesNotTurnTimeoutIntoSignedOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	claude := filepath.Join(t.TempDir(), "claude")
+	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":false}'; exec sleep 10; fi\n")
+
+	loggedIn, err := probeClaudeAuthStatus(
+		context.Background(),
+		claude,
+		claudeCommandEnvironment(nil),
+		50*time.Millisecond,
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("输出 false 后超时必须保留 timeout 分类，got=%v", err)
+	}
+	if loggedIn == nil || *loggedIn {
+		t.Fatalf("诊断仍应保留进程输出的 loggedIn=false，got=%v", loggedIn)
+	}
+}
+
+func TestProbeClaudeAuthStatusRejectsUnexpectedExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	claude := filepath.Join(t.TempDir(), "claude")
+	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":false}'; exit 2; fi\n")
+
+	loggedIn, err := probeClaudeAuthStatus(
+		context.Background(),
+		claude,
+		claudeCommandEnvironment(nil),
+		time.Second,
+	)
+	if err == nil {
+		t.Fatal("非约定退出码不得被误报为正常未登录")
+	}
+	if loggedIn == nil || *loggedIn {
+		t.Fatalf("诊断仍应保留进程输出的 loggedIn=false，got=%v", loggedIn)
+	}
+}
+
+func TestProbeClaudeAuthStatusDoesNotTurnSignalExitIntoSignedOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix signal 模拟 Claude CLI 异常退出")
+	}
+	claude := filepath.Join(t.TempDir(), "claude")
+	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":false}'; kill -TERM $$; fi\n")
+
+	loggedIn, err := probeClaudeAuthStatus(
+		context.Background(),
+		claude,
+		claudeCommandEnvironment(nil),
+		time.Second,
+	)
+	if err == nil {
+		t.Fatal("signal 终止不得被误报为正常未登录")
+	}
+	if loggedIn == nil || *loggedIn {
+		t.Fatalf("诊断仍应保留进程输出的 loggedIn=false，got=%v", loggedIn)
+	}
+}
+
 func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) string {
 	t.Helper()
 	root := t.TempDir()
@@ -212,7 +290,11 @@ func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) s
 	claude := filepath.Join(root, "claude")
 	// 测试夹具跟随 agentd 的最低兼容版本，避免能力门禁升级后测试仍伪装成旧 bridge。
 	writeExecutableFixture(t, bridge, "printf 'alleycat-claude-bridge "+claudebridge.MinimumVersion+"\\n'\n")
-	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
+	loggedIn := "true"
+	if authExit != 0 {
+		loggedIn = "false"
+	}
+	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":"+loggedIn+"}'; exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
 	configPath := filepath.Join(root, "config.json")
 	document := map[string]any{
 		"auth": map[string]any{"token": "0123456789abcdef0123456789abcdef"},

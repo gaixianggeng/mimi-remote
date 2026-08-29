@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
+
+const claudeRuntimeMutationTimeout = 45 * time.Second
 
 func runRuntime(args []string) error {
 	return runRuntimeWithWriters(args, os.Stdout, os.Stderr)
@@ -25,8 +28,9 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*claudePreference) == "" {
-		return fmt.Errorf("必须显式传入 --claude=auto、--claude=enabled 或 --claude=disabled")
+	hasClaude := strings.TrimSpace(*claudePreference) != ""
+	if !hasClaude {
+		return fmt.Errorf("必须传入 --claude")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
@@ -42,8 +46,10 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 			restored = &value
 		}
 	})
+	configureCtx, cancel := context.WithTimeout(context.Background(), claudeRuntimeMutationTimeout)
+	defer cancel()
 	result, err := agentsetup.ConfigureClaude(
-		context.Background(),
+		configureCtx,
 		*configPath,
 		preference,
 		restored,

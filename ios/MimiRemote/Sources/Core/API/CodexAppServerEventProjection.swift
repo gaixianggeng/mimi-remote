@@ -1,41 +1,23 @@
 import Foundation
 
+/// app-server 的内部用户记录不能进入用户气泡或历史标题。中断标记只按完整文本
+/// 过滤，普通用户讨论该字符串时仍可正常展示；既有协议标签继续沿用前缀规则。
+func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
+        return false
+    }
+    let hiddenPrefixes = [
+        "<subagent_notification>",
+        "<turn_aborted>",
+        "<environment_context>",
+        "<codex_internal_context>"
+    ]
+    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+}
+
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
-    func releaseStaleApprovalRequest(_ request: CodexAppServerServerRequest) {
-        removePendingApprovalRequest(request)
-        guard let connection else {
-            return
-        }
-        let sessionID = approvalSessionID(for: request)
-        let params = request.params?.objectValue ?? [:]
-        let result = approvalResponse(
-            method: request.method,
-            params: params,
-            decision: staleReleaseDecision(from: params)
-        )
-        Task { [connection, sessionID] in
-            // 释放失败（连接已断或 app-server 已自行清理）无所谓：下次 resume 仍会重新走这套判断。
-            do {
-                try await connection.respond(to: request, result: result)
-                if let sessionID {
-                    self.emitApprovalResolved(sessionID: sessionID)
-                }
-            } catch {}
-        }
-    }
-
-    // 释放旧审批要用 app-server 真正支持的“放弃”决策才能把请求 terminal 化，否则它会一直挂在挂起表里、
-    // 每次 resume 又被重放。命令/文件审批的 availableDecisions 通常是 ["accept", "cancel"]，没有 decline，
-    // 所以优先选 cancel/reject；只有在请求没带 availableDecisions 时（如旧 mock）才退回 decline。
-    func staleReleaseDecision(from params: [String: CodexAppServerJSONValue]) -> String {
-        let available = (params["availableDecisions"]?.arrayValue ?? []).compactMap { $0.stringValue?.lowercased() }
-        for candidate in ["cancel", "reject", "deny", "decline"] where available.contains(candidate) {
-            return candidate
-        }
-        return "decline"
-    }
-
     // 只有仍在活动的通知才算实时信号；表示回合/线程结束或权威状态变化的通知不能算，
     // 否则会把合法的 history 降级也挡掉。
     func recordLiveSignal(from notification: CodexAppServerNotification) {
@@ -112,6 +94,7 @@ extension CodexAppServerSessionRuntime {
             return row.id
         case .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
+             .permissionProfileUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
@@ -152,6 +135,18 @@ extension CodexAppServerSessionRuntime {
             }
             contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: session.dir, activeTurnID: session.activeTurnID)
             emit(.session(session))
+        case "thread/settings/updated":
+            guard let threadID = params["threadId"]?.stringValue else {
+                return
+            }
+            let settings = params["threadSettings"]?.objectValue ?? [:]
+            guard settings.keys.contains("activePermissionProfile") else {
+                return
+            }
+            emit(.permissionProfileUpdated(
+                CodexAppServerActivePermissionProfile(value: settings["activePermissionProfile"]),
+                metadata(threadID: threadID, turnID: nil)
+            ))
         case "thread/status/changed":
             guard let threadID = params["threadId"]?.stringValue,
                   let statusValue = params["status"] else {
@@ -517,9 +512,10 @@ extension CodexAppServerSessionRuntime {
         let projectName = project?.name ?? fallbackProject?.name ?? cwd
         let status = sessionStatus(from: thread["status"], forceRunning: forceRunning)
         let preview = thread["preview"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = thread["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? preview?.split(separator: "\n").first.map(String.init)
-            ?? "Thread \(id.prefix(8))"
+        let name = thread["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previewTitle = preview?.split(separator: "\n").first.map(String.init)
+        // id 是协议字段，缺 name/preview 时只给稳定占位标题，不能把 id 伪装成会话名。
+        let title = [name, previewTitle].compactMap { $0 }.first(where: { !$0.isEmpty }) ?? ""
         let cached = contextsBySessionID[id]?.session
         // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
         // turns，就以服务端 turns 为准。即使 turns 里没有 inProgress，也要清掉旧缓存，避免引导发到旧 turn。
@@ -1556,353 +1552,6 @@ extension CodexAppServerSessionRuntime {
             return nil
         }
         return CodexAppServerImageDetail(rawValue: raw)
-    }
-
-    func approvalID(for request: CodexAppServerServerRequest) -> String? {
-        let params = request.params?.objectValue ?? [:]
-        return params["approvalId"]?.stringValue
-            ?? params["itemId"]?.stringValue
-            ?? params["item_id"]?.stringValue
-            ?? params["callId"]?.stringValue
-            ?? request.id.description
-    }
-
-    func userInputRequestID(for request: CodexAppServerServerRequest) -> String? {
-        let params = request.params?.objectValue ?? [:]
-        return params["itemId"]?.stringValue
-            ?? params["item_id"]?.stringValue
-            ?? params["requestId"]?.stringValue
-            ?? params["request_id"]?.stringValue
-            ?? request.id.description
-    }
-
-    func rememberPendingApprovalRequest(_ request: CodexAppServerServerRequest) {
-        guard isApprovalLikeServerRequest(request) else {
-            return
-        }
-        for key in pendingApprovalStorageKeys(for: request) {
-            pendingApprovalRequestsByID[key] = request
-        }
-    }
-
-    func removePendingApprovalRequest(_ request: CodexAppServerServerRequest) {
-        for key in pendingApprovalStorageKeys(for: request) {
-            pendingApprovalRequestsByID.removeValue(forKey: key)
-        }
-    }
-
-    func rememberPendingUserInputRequest(_ request: CodexAppServerServerRequest) {
-        guard isUserInputServerRequest(request) else {
-            return
-        }
-        for key in pendingUserInputStorageKeys(for: request) {
-            pendingUserInputRequestsByID[key] = request
-        }
-    }
-
-    func removePendingUserInputRequest(_ request: CodexAppServerServerRequest) {
-        for key in pendingUserInputStorageKeys(for: request) {
-            pendingUserInputRequestsByID.removeValue(forKey: key)
-        }
-    }
-
-    func clearResolvedServerRequest(from notification: CodexAppServerNotification) -> CodexAppServerResolvedServerRequests {
-        guard notification.method == "serverRequest/resolved" else {
-            return CodexAppServerResolvedServerRequests()
-        }
-        let params = notification.params?.objectValue ?? [:]
-        let sessionID = approvalSessionID(from: params)
-        let ids = uniqueStrings([
-            params["requestId"]?.stringValue,
-            params["request_id"]?.stringValue,
-            params["id"]?.stringValue,
-            params["approvalId"]?.stringValue,
-            params["itemId"]?.stringValue,
-            params["item_id"]?.stringValue
-        ].compactMap { $0 })
-        let tombstoneTime = Date()
-        for id in ids {
-            resolvedServerRequestTombstonesByKey[
-                resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)
-            ] = tombstoneTime
-        }
-        pruneInteractionTombstones()
-
-        var resolved = CodexAppServerResolvedServerRequests()
-        for id in ids {
-            for key in pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id) {
-                if let request = pendingApprovalRequestsByID.removeValue(forKey: key) {
-                    if let affected = approvalSessionID(for: request), !resolved.approvalSessionIDs.contains(affected) {
-                        resolved.approvalSessionIDs.append(affected)
-                    }
-                    removePendingApprovalRequest(request)
-                }
-            }
-            for key in pendingUserInputLookupKeys(sessionID: sessionID, requestID: id) {
-                if let request = pendingUserInputRequestsByID.removeValue(forKey: key) {
-                    if let affected = approvalSessionID(for: request), !resolved.userInputSessionIDs.contains(affected) {
-                        resolved.userInputSessionIDs.append(affected)
-                    }
-                    removePendingUserInputRequest(request)
-                }
-            }
-        }
-        if let sessionID,
-           !resolved.approvalSessionIDs.contains(sessionID),
-           !resolved.userInputSessionIDs.contains(sessionID),
-           terminalSessionBarriers[sessionID] == nil {
-            resolved.approvalSessionIDs.append(sessionID)
-        }
-        discardBufferedResolvedInteractionRequests(sessionID: sessionID, requestIDs: Set(ids))
-        return resolved
-    }
-
-    func clearAllPendingServerRequests() -> CodexAppServerResolvedServerRequests {
-        let approvalSessionIDs = uniqueStrings(pendingApprovalRequestsByID.values.compactMap { request in
-            approvalSessionID(for: request)
-        })
-        let userInputSessionIDs = uniqueStrings(pendingUserInputRequestsByID.values.compactMap { request in
-            approvalSessionID(for: request)
-        })
-        pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
-        pendingUserInputRequestsByID.removeAll(keepingCapacity: false)
-        return CodexAppServerResolvedServerRequests(approvalSessionIDs: approvalSessionIDs, userInputSessionIDs: userInputSessionIDs)
-    }
-
-    func emitApprovalResolved(sessionID: SessionID) {
-        emit(.approvalResolved(AgentEventMetadata(
-            seq: nil,
-            sessionID: sessionID,
-            turnID: nil,
-            itemID: nil,
-            messageID: nil,
-            clientMessageID: nil,
-            revision: nil,
-            createdAt: Date()
-        )))
-    }
-
-    func emitUserInputResolved(sessionID: SessionID, skipped: Bool) {
-        emit(.userInputResolved(AgentEventMetadata(
-            seq: nil,
-            sessionID: sessionID,
-            turnID: nil,
-            itemID: nil,
-            messageID: nil,
-            clientMessageID: nil,
-            revision: nil,
-            createdAt: Date()
-        ), skipped: skipped))
-    }
-
-    func pendingApprovalStorageKeys(for request: CodexAppServerServerRequest) -> [String] {
-        let sessionID = approvalSessionID(for: request)
-        let ids = uniqueStrings([approvalID(for: request), request.id.description].compactMap { $0 })
-        return ids.flatMap { id in
-            pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id)
-        }
-    }
-
-    func pendingApprovalLookupKeys(sessionID: SessionID?, approvalID: String) -> [String] {
-        uniqueStrings([
-            pendingApprovalScopedKey(sessionID: sessionID, approvalID: approvalID),
-            approvalID
-        ].compactMap { $0 })
-    }
-
-    func pendingApprovalScopedKey(sessionID: SessionID?, approvalID: String) -> String? {
-        guard let sessionID, !sessionID.isEmpty else {
-            return nil
-        }
-        return "\(sessionID)#\(approvalID)"
-    }
-
-    func pendingUserInputStorageKeys(for request: CodexAppServerServerRequest) -> [String] {
-        let sessionID = approvalSessionID(for: request)
-        let ids = uniqueStrings([userInputRequestID(for: request), request.id.description].compactMap { $0 })
-        return ids.flatMap { id in
-            pendingUserInputLookupKeys(sessionID: sessionID, requestID: id)
-        }
-    }
-
-    func pendingUserInputLookupKeys(sessionID: SessionID?, requestID: String) -> [String] {
-        uniqueStrings([
-            pendingUserInputScopedKey(sessionID: sessionID, requestID: requestID),
-            requestID
-        ].compactMap { $0 })
-    }
-
-    func pendingUserInputScopedKey(sessionID: SessionID?, requestID: String) -> String? {
-        guard let sessionID, !sessionID.isEmpty else {
-            return nil
-        }
-        return "\(sessionID)#\(requestID)"
-    }
-
-    func approvalSessionID(for request: CodexAppServerServerRequest) -> SessionID? {
-        approvalSessionID(from: request.params?.objectValue ?? [:])
-    }
-
-    func approvalTurnID(for request: CodexAppServerServerRequest) -> TurnID? {
-        let params = request.params?.objectValue ?? [:]
-        return params["turnId"]?.stringValue
-            ?? params["turnID"]?.stringValue
-            ?? params["turn_id"]?.stringValue
-    }
-
-    func approvalSessionID(from params: [String: CodexAppServerJSONValue]) -> SessionID? {
-        params["threadId"]?.stringValue
-            ?? params["conversationId"]?.stringValue
-            ?? params["sessionId"]?.stringValue
-            ?? params["session_id"]?.stringValue
-    }
-
-    func uniqueStrings(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        return values.filter { seen.insert($0).inserted }
-    }
-
-    func approvalResponse(
-        method: String,
-        params: [String: CodexAppServerJSONValue],
-        decision: String
-    ) -> CodexAppServerJSONValue {
-        if method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" {
-            return .object(["decision": .string(decision)])
-        }
-        if method == "item/permissions/requestApproval" {
-            return .object([
-                // iPad 端只确认继续/拒绝当前请求，不授予 app-server 额外 permission 范围。
-                "permissions": .object([:]),
-                "scope": .string("turn"),
-                "strictAutoReview": .bool(true)
-            ])
-        }
-        if method == "mcpServer/elicitation/request" {
-            if CodexMCPToolApprovalProtocol.isToolCall(params) {
-                return mcpToolApprovalResponse(params: params, decision: decision)
-            }
-            return .object([
-                "action": .string(decision == "accept" ? "accept" : decision == "cancel" ? "cancel" : "decline"),
-                "content": .null,
-                "_meta": .null
-            ])
-        }
-        return .object(["decision": .string(decision)])
-    }
-
-    func mcpToolApprovalResponse(
-        params: [String: CodexAppServerJSONValue],
-        decision: String
-    ) -> CodexAppServerJSONValue {
-        let persistenceModes = CodexMCPToolApprovalProtocol.persistenceModes(params)
-        let normalized = normalizeApprovalDecision(decision)
-        let persist: String?
-        switch normalized {
-        case "accept":
-            persist = nil
-        case "acceptForSession" where persistenceModes.contains("session"):
-            persist = "session"
-        case "acceptAlways" where persistenceModes.contains("always"):
-            persist = "always"
-        case "cancel":
-            return .object(["action": .string("cancel"), "content": .null, "_meta": .null])
-        default:
-            // 客户端不能扩大上游声明的权限范围；未知或未提供的持久化选项一律拒绝。
-            return .object(["action": .string("decline"), "content": .null, "_meta": .null])
-        }
-        return .object([
-            "action": .string("accept"),
-            "content": .null,
-            "_meta": persist.map { .object(["persist": .string($0)]) } ?? .null
-        ])
-    }
-
-    func userInputResponse(
-        for request: CodexAppServerServerRequest,
-        answers: [String: [String]]
-    ) -> CodexAppServerJSONValue {
-        if request.method == "mcpServer/elicitation/request" {
-            return mcpElicitationResponse(request: request, answers: answers)
-        }
-        return .object([
-            "answers": .object(answers.mapValues { values in
-                .object([
-                    "answers": .array(values.map { .string($0) })
-                ])
-            })
-        ])
-    }
-
-    func mcpElicitationResponse(
-        request: CodexAppServerServerRequest,
-        answers: [String: [String]]
-    ) -> CodexAppServerJSONValue {
-        guard !answers.isEmpty else {
-            // 没有可验证的内容时 fail closed，避免对未知/unsupported schema 误回 accept。
-            return .object([
-                "action": .string("decline"),
-                "content": .null,
-                "_meta": .null
-            ])
-        }
-
-        let schemaProperties = request.params?.objectValue?["requestedSchema"]?
-            .objectValue?["properties"]?.objectValue ?? [:]
-        let content = answers.reduce(into: [String: CodexAppServerJSONValue]()) { result, entry in
-            guard !entry.value.isEmpty else {
-                return
-            }
-            let propertySchema = schemaProperties[entry.key]?.objectValue ?? [:]
-            result[entry.key] = mcpElicitationValue(from: entry.value, schema: propertySchema)
-        }
-        guard !content.isEmpty else {
-            return .object(["action": .string("decline"), "content": .null, "_meta": .null])
-        }
-        return .object([
-            "action": .string("accept"),
-            "content": .object(content),
-            "_meta": .null
-        ])
-    }
-
-    func mcpElicitationValue(
-        from answers: [String],
-        schema: [String: CodexAppServerJSONValue]
-    ) -> CodexAppServerJSONValue {
-        let first = answers[0]
-        switch schema["type"]?.stringValue {
-        case "array":
-            return .array(answers.map { .string($0) })
-        case "boolean":
-            let normalized = first.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            // Upstream payload values are protocol data, not UI copy. Keep both known
-            // Chinese spellings accepted regardless of the device display language.
-            return .bool(["true", "1", "yes", "是", "允许"].contains(normalized))
-        case "integer":
-            return Int64(first).map(CodexAppServerJSONValue.int) ?? .string(first)
-        case "number":
-            return Double(first).map(CodexAppServerJSONValue.double) ?? .string(first)
-        default:
-            return .string(first)
-        }
-    }
-
-    func normalizeApprovalDecision(_ decision: String) -> String {
-        switch decision.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "accept", "approve", "approved", "yes":
-            return "accept"
-        case "acceptforsession", "accept_for_session":
-            return "acceptForSession"
-        case "acceptalways", "accept_always", "acceptandremember", "accept_and_remember":
-            return "acceptAlways"
-        case "acceptwithpermissionupdate", "accept_with_permission_update":
-            return "acceptWithPermissionUpdate"
-        case "cancel":
-            return "cancel"
-        default:
-            return "decline"
-        }
     }
 
     func metadata(threadID: String, turnID: String?) -> AgentEventMetadata {

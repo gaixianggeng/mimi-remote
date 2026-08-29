@@ -1,21 +1,5 @@
 import Foundation
 
-/// app-server 的内部用户记录不能进入用户气泡或历史标题。中断标记只按完整文本
-/// 过滤，普通用户讨论该字符串时仍可正常展示；既有协议标签继续沿用前缀规则。
-func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
-        return false
-    }
-    let hiddenPrefixes = [
-        "<subagent_notification>",
-        "<turn_aborted>",
-        "<environment_context>",
-        "<codex_internal_context>"
-    ]
-    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
-}
-
 // Codex 0.146+ 会把 MCP 工具审批编码成一个空 schema 的 form elicitation。
 // 必须依赖私有元数据精确识别，不能把所有空表单都当成审批，否则第三方 MCP 的普通表单会被误授权。
 enum CodexMCPToolApprovalProtocol {
@@ -49,11 +33,34 @@ enum CodexMCPToolApprovalProtocol {
     }
 }
 
+/// app-server 的新旧协议曾使用过多组会话字段名。事件投影和交互状态必须共享同一份
+/// alias 列表，否则请求虽然能通过 gateway，iPad 端却可能因为找不到会话而丢失审批卡片。
+enum CodexAppServerRequestScope {
+    static let sessionIDKeys = [
+        "threadId",
+        "thread_id",
+        "sessionId",
+        "session_id",
+        "conversationId",
+        "conversation_id"
+    ]
+
+    static func sessionID(in params: [String: CodexAppServerJSONValue]) -> SessionID? {
+        for key in sessionIDKeys {
+            if let sessionID = params[key]?.stringValue, !sessionID.isEmpty {
+                return sessionID
+            }
+        }
+        return nil
+    }
+}
+
 enum AgentEvent {
     case session(AgentSession)
     case sessionRow(DataFlowSessionRow, AgentEventMetadata)
     case sessionStatus(String?, AgentEventMetadata)
     case sessionContext(SessionContextSnapshot, AgentEventMetadata)
+    case permissionProfileUpdated(CodexAppServerActivePermissionProfile?, AgentEventMetadata)
     case goalUpdated(ThreadGoal, AgentEventMetadata)
     case goalCleared(AgentEventMetadata)
     case turnStarted(AgentEventMetadata)
@@ -84,6 +91,8 @@ extension AgentEvent {
             return .sessionStatus(status, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .sessionContext(let context, let metadata):
             return .sessionContext(context, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
+        case .permissionProfileUpdated(let profile, let metadata):
+            return .permissionProfileUpdated(profile, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .goalUpdated(let goal, let metadata):
             return .goalUpdated(goal, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .goalCleared(let metadata):
@@ -787,7 +796,10 @@ struct CodexAppServerEventProjector {
             )
         case "item/started":
             rememberAgentMessageKind(from: params, metadata: metadata)
-            return startedProcessItemEvent(params: params, metadata: metadata)
+            // Codex 0.149.1 在 userMessage item/started 的 item.clientId 回传客户端 ID。
+            // shared queue 只用这个精确字段确认 receipt，不根据 turn/started 猜 FIFO。
+            return completedUserMessageEvent(params: params, metadata: metadata)
+                ?? startedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             let event = completedUserMessageEvent(params: params, metadata: metadata)
@@ -896,12 +908,15 @@ struct CodexAppServerEventProjector {
     }
 
     private mutating func makeMetadata(from params: [String: CodexAppServerJSONValue]) -> AgentEventMetadata {
-        let sessionID = firstString(in: params, keys: ["threadId", "conversationId", "sessionId", "session_id"])
+        let sessionID = CodexAppServerRequestScope.sessionID(in: params)
             ?? nestedString(in: params, key: "thread", nestedKey: "id")
         let turnID = firstString(in: params, keys: ["turnId", "turn_id"]) ?? nestedString(in: params, key: "turn", nestedKey: "id")
         let item = params["item"]?.objectValue
         let itemID = firstString(in: params, keys: ["itemId", "item_id", "requestId", "request_id", "callId", "approvalId"]) ?? item?["id"]?.stringValue
         let messageID = firstString(in: params, keys: ["messageId", "message_id"]) ?? appServerMessageID(turnID: turnID, itemID: itemID)
+        let turnClientMessageID = params["turn"]?.objectValue?["items"]?.arrayValue?
+            .compactMap(\.objectValue)
+            .first(where: { $0["type"]?.stringValue == "userMessage" })?["clientId"]?.stringValue
         let seq = nextSeq(for: sessionID)
         return AgentEventMetadata(
             seq: seq,
@@ -910,7 +925,8 @@ struct CodexAppServerEventProjector {
             itemID: itemID,
             messageID: messageID,
             clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"])
-                ?? item?["clientId"]?.stringValue,
+                ?? item?["clientId"]?.stringValue
+                ?? turnClientMessageID,
             revision: Int(seq),
             createdAt: nil
         )
@@ -1794,6 +1810,9 @@ struct CodexAppServerEventProjector {
             let server = firstString(in: params, keys: ["serverName"]) ?? L10n.text("ui.mcp_service")
             return L10n.format("ui.value_requests_user_confirmation", server)
         default:
+            if params["networkApprovalContext"]?.objectValue != nil {
+                return L10n.text("ui.agent_requests_network_access")
+            }
             if let command = commandSummary(params: params) {
                 return L10n.format("ui.agent_requests_execution_command_value", command)
             }
@@ -1810,7 +1829,15 @@ struct CodexAppServerEventProjector {
             let toolName = firstString(in: params, keys: ["toolName", "tool_name"])
             let inputSummary = firstString(in: params, keys: ["inputSummary", "input_summary"])
             let reason = firstString(in: params, keys: ["reason", "message"])
-            return [command, toolName, inputSummary, reason].compactMap { $0 }.joined(separator: "\n\n").nilIfEmpty
+            let networkContext = networkApprovalSummary(params["networkApprovalContext"])
+            let additionalPermissions = permissionProfileSummary(
+                params["additionalPermissions"],
+                heading: L10n.text("ui.additional_permissions")
+            )
+            return [command, toolName, inputSummary, reason, networkContext, additionalPermissions]
+                .compactMap { $0 }
+                .joined(separator: "\n\n")
+                .nilIfEmpty
         }
         if kind == "mcp_elicitation" || kind == CodexMCPToolApprovalProtocol.kind {
             return [
@@ -1818,11 +1845,92 @@ struct CodexAppServerEventProjector {
                 firstString(in: params, keys: ["url"])
             ].compactMap { $0 }.joined(separator: "\n\n")
         }
+        if kind == "permission" {
+            return permissionProfileSummary(
+                params["permissions"],
+                heading: L10n.text("ui.requested_permissions")
+            )
+        }
         let path = firstString(in: params, keys: ["path", "filePath", "file_path", "grantRoot", "grant_root"])
         let diff = firstString(in: params, keys: ["diff", "patch"])
         let inputSummary = firstString(in: params, keys: ["inputSummary", "input_summary", "prompt"])
         let reason = firstString(in: params, keys: ["reason", "message"])
         return [path, diff, inputSummary, reason].compactMap { $0 }.joined(separator: "\n\n").nilIfEmpty
+    }
+
+    private func networkApprovalSummary(_ value: CodexAppServerJSONValue?) -> String? {
+        guard let object = value?.objectValue,
+              let host = firstString(in: object, keys: ["host"]),
+              let transport = firstString(in: object, keys: ["protocol"])
+        else {
+            return nil
+        }
+        return [
+            L10n.text("ui.network_request"),
+            L10n.format("ui.labeled_value", L10n.text("ui.host"), host),
+            L10n.format("ui.labeled_value", L10n.text("ui.protocol"), transport)
+        ].joined(separator: "\n")
+    }
+
+    private func permissionProfileSummary(
+        _ value: CodexAppServerJSONValue?,
+        heading: String
+    ) -> String? {
+        guard let profile = value?.objectValue else {
+            return nil
+        }
+        var sections: [String] = []
+        if let fileSystem = profile["fileSystem"]?.objectValue {
+            var lines: [String] = []
+            for entry in fileSystem["entries"]?.arrayValue ?? [] {
+                guard let object = entry.objectValue,
+                      let access = object["access"]?.stringValue,
+                      let path = permissionPathSummary(object["path"])
+                else {
+                    continue
+                }
+                lines.append("\(access.uppercased())  \(path)")
+            }
+            for key in ["read", "write"] {
+                for path in fileSystem[key]?.arrayValue?.compactMap(\.stringValue) ?? [] {
+                    lines.append("\(key.uppercased())  \(path)")
+                }
+            }
+            if !lines.isEmpty {
+                sections.append(([L10n.text("ui.file_system")] + lines).joined(separator: "\n"))
+            }
+        }
+        if profile["network"]?.objectValue?["enabled"]?.boolValue == true {
+            sections.append(L10n.text("ui.network_access_requested"))
+        }
+        guard !sections.isEmpty else {
+            return nil
+        }
+        return ([heading] + sections).joined(separator: "\n")
+    }
+
+    private func permissionPathSummary(_ value: CodexAppServerJSONValue?) -> String? {
+        guard let path = value?.objectValue,
+              let type = path["type"]?.stringValue
+        else {
+            return nil
+        }
+        switch type {
+        case "path":
+            return path["path"]?.stringValue
+        case "glob_pattern":
+            return path["pattern"]?.stringValue.map { "glob: \($0)" }
+        case "special":
+            guard let special = path["value"]?.objectValue,
+                  let kind = special["kind"]?.stringValue
+            else {
+                return nil
+            }
+            let suffix = special["subpath"]?.stringValue ?? special["path"]?.stringValue
+            return suffix.map { "\(kind): \($0)" } ?? kind
+        default:
+            return nil
+        }
     }
 
     private func eligiblePersistentPermissionRules(

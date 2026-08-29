@@ -35,6 +35,27 @@ grep -Fq './internal/httpapi \' "$runner" \
   || fail "Go 集成层缺少 internal/httpapi。"
 grep -Fq '  -count=1' "$runner" \
   || fail "Go 回归必须禁用测试缓存。"
+grep -Fq -- '-only-testing:MimiRemoteTests/LocalizationTests' "$runner" \
+  || fail "日常核心回归未合并双语资源测试。"
+grep -Fq 'if [[ "$ios_only" == false ]]' "$runner" \
+  || fail "关键链路 runner 没有保留默认 Go+iOS 行为。"
+grep -Fq 'test-conversation-regressions.sh --ios-only' .github/workflows/ios-ci.yml \
+  || fail "iOS CI 没有显式使用 --ios-only。"
+grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh \
+  || fail "本地 full iOS 验证没有显式使用 --ios-only。"
+if grep -Fq 'actions/setup-go@' .github/workflows/ios-ci.yml; then
+  fail "iOS CI 仍在重复初始化 Go 工具链。"
+fi
+if grep -Fq 'bash ./scripts/check-mimi-protocol-contract.sh' .github/workflows/ios-ci.yml; then
+  fail "iOS CI 仍在重复执行 Go 协议门禁。"
+fi
+grep -Fq 'run: bash ./scripts/check-mimi-protocol-contract.sh' .github/workflows/go-ci.yml \
+  || fail "独立 Go CI 没有继续负责共享协议门禁。"
+if invalid_option_output="$(bash "$runner" --unsupported-option 2>&1)"; then
+  fail "关键链路 runner 必须拒绝未知参数。"
+fi
+grep -Fq '不支持的参数：--unsupported-option' <<<"$invalid_option_output" \
+  || fail "关键链路 runner 未知参数缺少明确错误。"
 grep -Fq 'func TestCriticalJourneyFixtureMatchesAgentDGateway(' \
   internal/httpapi/protocol_contract_test.go \
   || fail "Go 缺少共享关键链路 fixture 回归。"
@@ -52,6 +73,8 @@ grep -Fq -- '-only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests'
   || fail "iOS runner 未选择会话生命周期连续性回归。"
 grep -Fq 'SessionListLifecycleCoordinatorTests' "$map_doc" \
   || fail "${map_doc} 未记录会话生命周期连续性回归。"
+grep -Fq -- '-only-testing:MimiRemoteTests/SessionListPresentationTests' "$runner" \
+  || fail "iOS runner 未选择会话列表展示回归。"
 grep -Fq 'func TestFileUploadCapabilityRolloutMatrix(' \
   internal/httpapi/capability_rollout_test.go \
   || fail "Go 缺少 capability enabled/disabled/dependency 矩阵。"
@@ -79,7 +102,7 @@ critical_swift_tests=(
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeTests.swift|testCodexAppServerFakeSmokeCoversThreadTurnAndApproval"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure"
-  "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread"
+  "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationDirectRuntimeHistoryTests.swift|testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn"
   "ios/MimiRemote/Tests/MimiRemoteTests/ConversationRuntimeFlowTests.swift|testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes"

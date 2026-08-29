@@ -263,6 +263,31 @@ struct InitialConnectionSettingsSections: View {
                             .font(themeStore.uiFont(size: 13))
                     }
 
+                    if appStore.isConfigured {
+                        Button {
+                            Task {
+                                await appStore.testConnection(
+                                    endpoint: appStore.endpoint,
+                                    token: appStore.token
+                                )
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if isConnectionTesting {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "bolt.horizontal.circle")
+                                }
+                                Text(isConnectionTesting ? L10n.text("ui.under_test") : L10n.text("ui.test_connection"))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isConnectionTesting)
+                        .accessibilityIdentifier("settings.connection.test")
+                    }
+
                     if connectionTestDurationText != nil || appStore.lastConnectionTestReport != nil {
                         DisclosureGroup(L10n.text("ui.connection_diagnostics")) {
                             if let connectionTestDurationText {
@@ -294,6 +319,8 @@ struct InitialConnectionSettingsSections: View {
                                 }
                             }
                         }
+                        // Form 可能向展开内容提案整屏高度；诊断行只应占实际内容高度，避免路径与慢速环节之间出现大片留白。
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
                     Text(L10n.text("ui.status"))

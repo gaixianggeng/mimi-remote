@@ -256,6 +256,130 @@ extension ThemeTokens {
         }
     }
 
+    /// 长文会话使用接近纸白的中性画布，避免暖色页面透过顶栏和 Composer 材质后
+    /// 被重复染黄。范围只限阅读会话，侧栏与工作区仍保留 Codex 的暖白识别度。
+    var conversationCanvasBackground: Color {
+        guard preset == .codex, resolvedScheme == .light else {
+            return background
+        }
+        return Color(
+            red: 250.0 / 255.0,
+            green: 250.0 / 255.0,
+            blue: 248.0 / 255.0
+        )
+    }
+
+    /// 宽屏工作台的基底。侧栏浮层外围的 gutter、会话/工作区主列表与会话画布在同一屏上
+    /// 彼此相邻，必须共用同一张底色：暖白 background(250,247,241) 与纸白
+    /// conversationCanvasBackground(250,250,248) 亮度相同、只差色温，没有明度台阶的
+    /// 同亮度色差不会被读成层级，只会被读成"颜色没对上"。层级改由 255 白的浮层卡片表达。
+    /// 设置页、各类 sheet 等不与阅读层相邻的界面继续用 background，保留 Codex 暖白识别度。
+    /// 深色与非 codex 主题下本就等于 background，因此这条只作用在浅色 codex。
+    var workbenchCanvasBackground: Color {
+        conversationCanvasBackground
+    }
+
+    /// 长文阅读层使用中性黑而不是全局暖棕文字；同一张 iPhone 截图中可与
+    /// Claude 的 #181818 正文对齐，同时不改变侧栏和工作台的主题识别度。
+    var conversationPrimaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return primaryText }
+        // SwiftUI 文本栅格化会与纸白背景做少量边缘混合；源色取 #101010 后，
+        // 实体 iPhone 截图中的完整字干落在参考图的 #181818。
+        return Color(
+            red: 16.0 / 255.0,
+            green: 16.0 / 255.0,
+            blue: 16.0 / 255.0
+        )
+    }
+
+    var conversationSecondaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return secondaryText }
+        return Color(
+            red: 112.0 / 255.0,
+            green: 112.0 / 255.0,
+            blue: 110.0 / 255.0
+        )
+    }
+
+    var conversationTertiaryText: Color {
+        guard preset == .codex, resolvedScheme == .light else { return tertiaryText }
+        return Color(
+            red: 142.0 / 255.0,
+            green: 142.0 / 255.0,
+            blue: 139.0 / 255.0
+        )
+    }
+
+    /// Composer 内部的低频控件使用独立的中性表面色。它比页面底色更冷、比输入卡更实，
+    /// 因此在半透明材质上仍能形成清楚分组，又不会叠第二层 Material 造成浑浊。
+    var composerControlSurface: Color {
+        guard preset == .codex else {
+            return surface
+        }
+        switch resolvedScheme {
+        case .light:
+            return Color(
+                red: 242.0 / 255.0,
+                green: 241.0 / 255.0,
+                blue: 238.0 / 255.0
+            )
+        case .dark:
+            return Color(red: 0.176, green: 0.165, blue: 0.176)
+        }
+    }
+
+    /// 禁用发送仍保留主行动的位置和轮廓，但用低对比中性面明确表达“尚不可发送”。
+    /// 这比把按钮清空成普通工具键更稳定，也避免底栏出现六个同权重入口。
+    ///
+    /// 曾经用的是低饱和暖粉。工具键还带着键帽底色时它只是“另一块浅色”；
+    /// 键帽全部去掉之后，输入卡里唯一的色块就是它，一枚和页面上任何东西都不同族的
+    /// 杏粉圆——空草稿又恰恰是进入会话的默认状态。这里改回中性灰阶：
+    /// 它比输入卡白面暗一档因而形状清楚，又不引入第二个色相。
+    var composerInactiveActionSurface: Color {
+        guard preset == .codex else {
+            return accent.opacity(0.20)
+        }
+        switch resolvedScheme {
+        case .light:
+            return Color(
+                red: 237.0 / 255.0,
+                green: 235.0 / 255.0,
+                blue: 231.0 / 255.0
+            )
+        case .dark:
+            return Color(
+                red: 55.0 / 255.0,
+                green: 52.0 / 255.0,
+                blue: 56.0 / 255.0
+            )
+        }
+    }
+
+    /// 禁用发送时的图标墨色。浅色下不能继续沿用启用态的白字：白色压在
+    /// composerInactiveActionSurface 上只有约 1.3:1，箭头会整个消失在色块里，
+    /// 而空草稿正是进入会话的默认状态。这里改用同族的低饱和梅紫墨，
+    /// 既保持 4.5:1 以上的可辨识度，又明显弱于启用态的实心紫。
+    var composerInactiveActionForeground: Color {
+        guard preset == .codex else {
+            // 其它主题的禁用底是 20% 强调色，前景交给该外观自己的高对比墨色，
+            // 避免逐个主题重新校准一套近似紫。Gruvbox 这类高明度暖底会把墨色
+            // 迅速冲淡，所以留到 0.8 才降级，而不是常见的半透明。
+            return primaryText.opacity(0.80)
+        }
+        switch resolvedScheme {
+        case .light:
+            // 与中性禁用底同族的深灰，压在 237/235/231 上约 5:1，
+            // 明显可读又远弱于启用态的白压深紫（约 14:1）。
+            return Color(
+                red: 99.0 / 255.0,
+                green: 98.0 / 255.0,
+                blue: 95.0 / 255.0
+            )
+        case .dark:
+            return Color.white.opacity(0.62)
+        }
+    }
+
     var planCardBackground: Color {
         guard preset == .codex else {
             return elevatedSurface
@@ -368,7 +492,7 @@ extension ThemeTokens {
     }
 
     var userBubbleForeground: Color {
-        primaryText
+        conversationPrimaryText
     }
 
     func tint(for tone: AgentSessionStatusTone) -> Color {

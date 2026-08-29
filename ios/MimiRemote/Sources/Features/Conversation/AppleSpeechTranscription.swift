@@ -122,6 +122,7 @@ enum AppleSpeechTranscriptionError: LocalizedError {
     case noTranscriptionResult
     case audioSessionInterrupted
     case mediaServicesReset
+    case startupTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -133,7 +134,7 @@ enum AppleSpeechTranscriptionError: LocalizedError {
             return L10n.text("ui.apple_voice_input_audio_conversion_failed")
         case .recordingFailed:
             return L10n.text("ui.apple_voice_input_could_not_start_recording")
-        case .resultStreamEnded, .noTranscriptionResult, .mediaServicesReset:
+        case .resultStreamEnded, .noTranscriptionResult, .mediaServicesReset, .startupTimedOut:
             return L10n.text("ui.apple_voice_input_stopped_please_try_again")
         case .audioSessionInterrupted:
             return L10n.text("ui.apple_voice_input_was_interrupted_please_try_again")
@@ -158,6 +159,8 @@ enum AppleSpeechTranscriptionError: LocalizedError {
             return "audio_session_interrupted"
         case .mediaServicesReset:
             return "media_services_reset"
+        case .startupTimedOut:
+            return "startup_timeout"
         }
     }
 }
@@ -172,11 +175,12 @@ final class AppleSpeechTranscriptionSession {
         category: "AppleSpeech"
     )
 
-    private let sessionID = UUID()
+    private let sessionID: UUID
     private var analyzer: SpeechAnalyzer?
     private var audioEngine: AVAudioEngine?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
     private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionRecoveryGate = VoiceAudioCaptureRecoveryGate()
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var audioSessionObserverTokens: [NSObjectProtocol] = []
@@ -188,12 +192,35 @@ final class AppleSpeechTranscriptionSession {
     private var acceptsTranscriptionResults = false
     private var isFinishing = false
 
-    init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
+    init(
+        sessionID: UUID = UUID(),
+        audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared
+    ) {
+        self.sessionID = sessionID
         self.audioSessionCoordinator = audioSessionCoordinator
+    }
+
+    func logStartRequested(locale: Locale) {
+        Self.logger.info(
+            "start_requested id=\(self.sessionID.uuidString, privacy: .public) locale=\(locale.identifier, privacy: .public)"
+        )
+    }
+
+    func logPermissionDone(granted: Bool) {
+        Self.logger.info(
+            "permission_done id=\(self.sessionID.uuidString, privacy: .public) granted=\(granted, privacy: .public)"
+        )
+    }
+
+    func logStartupTimeout() {
+        Self.logger.error(
+            "startup_timeout id=\(self.sessionID.uuidString, privacy: .public)"
+        )
     }
 
     func start(
         locale: Locale,
+        onStartupMonitoringReady: @escaping @MainActor () -> Void,
         onTranscript: @escaping @MainActor (String) -> Void,
         onLevel: @escaping @MainActor (CGFloat) -> Void,
         onFailure: @escaping @MainActor (Error) -> Void
@@ -206,6 +233,7 @@ final class AppleSpeechTranscriptionSession {
         didReceiveFirstAudioBuffer = false
         didReceiveFirstResult = false
         acceptsTranscriptionResults = true
+        audioSessionRecoveryGate.reset()
         healthMonitor.reset()
         Self.logger.info(
             "session_start id=\(self.sessionID.uuidString, privacy: .public) locale=\(locale.identifier, privacy: .public)"
@@ -223,6 +251,7 @@ final class AppleSpeechTranscriptionSession {
             try await installationRequest.downloadAndInstall()
         }
         try Task.checkCancellation()
+        onStartupMonitoringReady()
 
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
             throw AppleSpeechTranscriptionError.audioFormatUnavailable
@@ -334,10 +363,19 @@ final class AppleSpeechTranscriptionSession {
         onLevel: @escaping @MainActor (CGFloat) -> Void,
         onFailure: @escaping @MainActor (Error) -> Void
     ) async throws {
-        let activation = try await audioSessionCoordinator.activate()
+        try Task.checkCancellation()
+        let activation = try await audioSessionCoordinator.activate(onRecovery: { [weak self] succeeded in
+            self?.recoverAudioCapture(succeeded: succeeded, onFailure: onFailure)
+        })
+        Self.logger.info(
+            "audio_session_activated id=\(self.sessionID.uuidString, privacy: .public)"
+        )
         do {
             // start() 等待系统会话期间可能已被取消；先检查，再触碰 MainActor 上的 engine。
             try Task.checkCancellation()
+            if audioSessionRecoveryGate.consumePendingResult() == false {
+                throw AppleSpeechTranscriptionError.recordingFailed
+            }
 
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
@@ -379,6 +417,9 @@ final class AppleSpeechTranscriptionSession {
                 inputNode.removeTap(onBus: 0)
                 throw AppleSpeechTranscriptionError.recordingFailed
             }
+            Self.logger.info(
+                "audio_engine_started id=\(self.sessionID.uuidString, privacy: .public)"
+            )
             audioEngine = engine
             audioSessionActivation = activation
             Self.logger.info(
@@ -387,6 +428,46 @@ final class AppleSpeechTranscriptionSession {
         } catch {
             await audioSessionCoordinator.deactivate(activation)
             throw error
+        }
+    }
+
+    private func recoverAudioCapture(
+        succeeded: Bool,
+        onFailure: @escaping @MainActor (Error) -> Void
+    ) {
+        guard !isFinishing else {
+            return
+        }
+        guard let recoveryResult = audioSessionRecoveryGate.receive(
+            succeeded,
+            isCaptureReady: audioSessionActivation != nil && audioEngine != nil
+        ) else {
+            return
+        }
+        guard let audioEngine else { return }
+        guard recoveryResult else {
+            reportFailure(
+                AppleSpeechTranscriptionError.recordingFailed,
+                stage: "audio_session_recovery",
+                onFailure: onFailure
+            )
+            return
+        }
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            Self.logger.info(
+                "audio_capture_recovered id=\(self.sessionID.uuidString, privacy: .public)"
+            )
+        } catch {
+            reportFailure(
+                AppleSpeechTranscriptionError.recordingFailed,
+                stage: "audio_session_recovery",
+                onFailure: onFailure
+            )
         }
     }
 
@@ -550,6 +631,7 @@ final class AppleSpeechTranscriptionSession {
         healthWatchdogTask = nil
         stopObservingAudioSession()
         healthMonitor.reset()
+        audioSessionRecoveryGate.reset()
         acceptsTranscriptionResults = false
         analyzer = nil
     }

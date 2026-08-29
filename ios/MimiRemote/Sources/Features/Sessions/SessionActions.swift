@@ -20,10 +20,6 @@ private struct SessionRowActionController {
         sessionStore.isHistorySessionUnread(session)
     }
 
-    var isCarStatusSession: Bool {
-        sessionStore.isCarStatusSession(session)
-    }
-
     var canChangePinState: Bool {
         !isArchived && !sessionStore.isSessionArchiveMutationPending(session.id)
     }
@@ -33,8 +29,7 @@ private struct SessionRowActionController {
     }
 
     var canChangeArchiveState: Bool {
-        !sessionStore.isExternalReadOnlySession(session)
-            && !sessionStore.isProtocolReadOnlySession(session)
+        !sessionStore.isProtocolReadOnlySession(session)
             && !sessionStore.isSessionArchiveMutationPending(session.id)
     }
 
@@ -60,16 +55,6 @@ private struct SessionRowActionController {
 
     var archiveSystemImage: String {
         isArchived ? "archivebox.fill" : "archivebox"
-    }
-
-    var carStatusTitle: String {
-        isCarStatusSession
-            ? L10n.text("ui.clear_car_status_session")
-            : L10n.text("ui.set_car_status_session")
-    }
-
-    var carStatusSystemImage: String {
-        isCarStatusSession ? "car.side.fill" : "car.side"
     }
 
     func togglePinned() {
@@ -98,15 +83,6 @@ private struct SessionRowActionController {
         Task {
             await sessionStore.setSessionArchivedRemote(session, archived: archived)
         }
-    }
-
-    func toggleCarStatusSession() {
-        if isCarStatusSession {
-            sessionStore.clearCarStatusSession()
-        } else {
-            sessionStore.selectCarStatusSession(session)
-        }
-        MimiHaptics.fire(.commit)
     }
 }
 
@@ -144,15 +120,14 @@ struct SessionActionMenuContent: View {
                 Button {
                     UIPasteboard.general.string = fullDirectoryPath
                 } label: {
-                    Label(fullDirectoryPath, systemImage: "folder")
+                    Label(L10n.text("ui.copy_path"), systemImage: "folder")
                 }
-                .accessibilityLabel("\(fullDirectoryPath) · \(L10n.text("ui.copy"))")
+                .accessibilityValue(fullDirectoryPath)
 
                 Divider()
             }
 
-            if sessionStore.isSessionObserving(session),
-               !sessionStore.isExternalReadOnlySession(session) {
+            if sessionStore.isSessionObserving(session) {
                 Button {
                     sessionStore.takeOverSession(session)
                 } label: {
@@ -256,15 +231,6 @@ struct SessionActionMenuContent: View {
                 )
             }
 
-
-#if os(iOS) && !targetEnvironment(macCatalyst)
-            Button {
-                actions.toggleCarStatusSession()
-            } label: {
-                Label(actions.carStatusTitle, systemImage: actions.carStatusSystemImage)
-            }
-#endif
-
             Button(role: actions.isArchived ? nil : .destructive) {
                 actions.toggleArchived()
             } label: {
@@ -318,13 +284,6 @@ private struct SessionActionsContextMenuModifier: ViewModifier {
                         actions.toggleReadState()
                     }
                 }
-
-
-#if os(iOS) && !targetEnvironment(macCatalyst)
-                Button(actions.carStatusTitle) {
-                    actions.toggleCarStatusSession()
-                }
-#endif
 
                 Button(actions.archiveTitle) {
                     actions.toggleArchived()

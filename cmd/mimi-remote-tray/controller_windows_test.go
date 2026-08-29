@@ -2,28 +2,13 @@
 
 package main
 
-import "testing"
-
-func TestPairingTerminalReservationIsSingleInstance(t *testing.T) {
-	controller := &agentController{}
-	if !controller.reservePairingTerminal() {
-		t.Fatal("first pairing terminal reservation should succeed")
-	}
-	if controller.reservePairingTerminal() {
-		t.Fatal("second pairing terminal reservation should be rejected")
-	}
-	if !controller.pairingTerminalIsOpen() {
-		t.Fatal("pairing terminal should be marked open")
-	}
-
-	controller.releasePairingTerminal()
-	if controller.pairingTerminalIsOpen() {
-		t.Fatal("pairing terminal should be marked closed after release")
-	}
-	if !controller.reservePairingTerminal() {
-		t.Fatal("pairing terminal should be reservable after release")
-	}
-}
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestMenuPairCommandIDIsStable(t *testing.T) {
 	if menuStatus != 100 {
@@ -38,6 +23,9 @@ func TestMenuPairCommandIDIsStable(t *testing.T) {
 	if menuDoctorFix != 109 {
 		t.Fatalf("menu doctor-fix command ID = %d, want 109", menuDoctorFix)
 	}
+	if menuControlPanel != 110 {
+		t.Fatalf("menu control-panel command ID = %d, want 110", menuControlPanel)
+	}
 }
 
 func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
@@ -48,5 +36,121 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 	fix := doctorArguments(true)
 	if len(fix) != 2 || fix[0] != "doctor" || fix[1] != "--fix" {
 		t.Fatalf("doctor fix arguments = %#v", fix)
+	}
+}
+
+func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
+	for _, action := range []string{"start", "restart"} {
+		arguments := actionArguments(action)
+		want := []string{action, "--wait", "20s", "--no-pair"}
+		if len(arguments) != len(want) {
+			t.Fatalf("%s arguments = %#v", action, arguments)
+		}
+		for index := range want {
+			if arguments[index] != want[index] {
+				t.Fatalf("%s arguments = %#v, want %#v", action, arguments, want)
+			}
+		}
+	}
+	stop := actionArguments("stop")
+	if len(stop) != 1 || stop[0] != "stop" {
+		t.Fatalf("stop arguments = %#v", stop)
+	}
+}
+
+func TestStatusArgumentsOnlyForceRuntimeForManualRefresh(t *testing.T) {
+	background := statusArguments(false, false)
+	if strings.Contains(strings.Join(background, " "), "--runtime-refresh") {
+		t.Fatalf("background status arguments = %#v", background)
+	}
+	manual := statusArguments(true, true)
+	joined := strings.Join(manual, " ")
+	for _, expected := range []string{"--runtime", "--runtime-refresh", "--network-policy"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("manual status arguments missing %s: %#v", expected, manual)
+		}
+	}
+}
+
+func TestManualStatusGetsFullExecutionBudgetAfterQueueWait(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondBudget := make(chan time.Duration, 1)
+	controller := &agentController{statusGate: make(chan struct{}, 1)}
+	call := 0
+	controller.statusRunner = func(ctx context.Context, _ ...string) ([]byte, error) {
+		call++
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		} else if deadline, ok := ctx.Deadline(); ok {
+			secondBudget <- time.Until(deadline)
+		}
+		return []byte(`{"version":"1.2.3"}`), nil
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := controller.status(context.Background(), false)
+		firstDone <- err
+	}()
+	<-firstStarted
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := controller.status(context.Background(), true)
+		secondDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if budget := <-secondBudget; budget < manualStatusCommandTimeout-time.Second {
+		t.Fatalf("manual execution budget was consumed while queued: %s", budget)
+	}
+}
+
+func TestStatusRefreshKeepsLastGoodValueAndRejectsLateOlderResult(t *testing.T) {
+	app := &trayApplication{status: agentStatus{Version: "1.0.0", ProcessOK: true}}
+	older := app.beginStatusRequest()
+	newer := app.beginStatusRequest()
+	app.completeStatusRequest(newer, agentStatus{Version: "2.0.0", ProcessOK: true}, nil)
+	app.completeStatusRequest(older, agentStatus{Version: "0.9.0"}, nil)
+	app.completeStatusRequest(app.beginStatusRequest(), agentStatus{}, errors.New("timed out"))
+	if app.status.Version != "2.0.0" || !app.status.ProcessOK {
+		t.Fatalf("last good status was overwritten: %+v", app.status)
+	}
+	if app.statusErr == nil {
+		t.Fatal("refresh error should remain visible without clearing status")
+	}
+}
+
+func TestPairingArgumentsRequestSafeJSONWithoutTerminalOutput(t *testing.T) {
+	arguments := pairingArguments()
+	want := []string{"pair", "--qr-only", "--json"}
+	if len(arguments) != len(want) {
+		t.Fatalf("pairing arguments = %#v", arguments)
+	}
+	for index := range want {
+		if arguments[index] != want[index] {
+			t.Fatalf("pairing arguments = %#v, want %#v", arguments, want)
+		}
+	}
+}
+
+func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
+	payload := []byte(`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2026-08-09T18:00:00+08:00"}`)
+	result, err := parsePairingInfo(payload)
+	if err != nil {
+		t.Fatalf("parse pairing info: %v", err)
+	}
+	if result.Endpoint != "http://127.0.0.1:8787" || !strings.Contains(result.PairURL, "pair_sig=short") {
+		t.Fatalf("pairing info = %#v", result)
+	}
+	if _, err := parsePairingInfo([]byte(`{"endpoint":"http://127.0.0.1:8787"}`)); err == nil {
+		t.Fatal("missing short-lived pair URL should fail closed")
 	}
 }

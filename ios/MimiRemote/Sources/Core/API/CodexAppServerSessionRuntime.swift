@@ -10,6 +10,10 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case activeTurnConflict(session: AgentSession, activeTurnID: TurnID)
     case approvalNotFound(String)
     case userInputRequestNotFound(String)
+    case serverQueueUnavailable(String)
+    case serverQueueOutputSchemaUnsupported
+    case serverQueueSubmissionInFlight(SessionID)
+    case paginatedHistoryUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +37,22 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.format("ui.approval_request_has_expired_value", approvalID)
         case .userInputRequestNotFound(let requestID):
             return L10n.format("ui.the_request_for_additional_information_has_expired_value", requestID)
+        case .serverQueueUnavailable(let method):
+            return String(
+                format: String(localized: "ui.current_ssh_app_server_does_not_support_experimental_api"),
+                method
+            )
+        case .serverQueueOutputSchemaUnsupported:
+            return String(localized: "ui.shared_ssh_queue_does_not_support_output_schema")
+        case .serverQueueSubmissionInFlight:
+            return String(
+                localized: "ui.this_session_already_has_a_mimi_message_waiting_for_app_server"
+            )
+        case .paginatedHistoryUnavailable(let method):
+            return String(
+                format: String(localized: "ui.current_app_server_does_not_support_paginated_history_api"),
+                method
+            )
         }
     }
 }
@@ -93,6 +113,11 @@ enum CodexAppServerTurnStartOutcome: Equatable {
         }
         return turnID
     }
+}
+
+enum CodexAppServerTurnSubmissionOutcome: Equatable {
+    case direct(CodexAppServerTurnStartOutcome)
+    case serverQueued(submissionID: String, startedTurnID: TurnID?)
 }
 
 struct CodexAppServerPendingTurnStartObservation {
@@ -158,17 +183,14 @@ actor CodexAppServerSessionRuntime {
     // turn 的审批才是当前用户真正在等待的，其余（Desktop 发起、或历史里没 terminal 化的旧审批）需要按
     // 过期处理。即使本端的审批挂了很久也不能误杀，所以单列出来优先放行。
     var turnsStartedByThisRuntime: Set<TurnID> = []
-    // thread/read 没有分页参数，一次会返回整段 thread。把上次整段读取缓存下来，翻看更早历史时直接
-    // 从缓存切窗口，避免每次翻页都在 Tailscale 这类慢链路上重新拉一遍大会话（会很慢甚至超时）。
-    var threadHistoryCacheBySessionID: [SessionID: [CodexHistoryMessage]] = [:]
-    var threadAuthoritativeCompletedTurnItemsBySessionID: [SessionID: [TurnID: Set<AgentItemID>]] = [:]
-    var threadTurnsListUnavailable = false
+    // 历史只读取 thread 元数据，并通过 turns/items 游标分页；这里不保留整段 thread 历史缓存。
     var stateDBOnlyListUnavailable = false
     var stateDBOnlyScanRequiredCWDs: Set<String> = []
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
     ] = [:]
+    var serverQueueSubmissionSessionIDs: Set<SessionID> = []
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
@@ -227,20 +249,6 @@ actor CodexAppServerSessionRuntime {
         try await ensureConfig().projects
     }
 
-    func externalActivities() async throws -> ExternalActivityResponse? {
-        let config = try await ensureConfig()
-        let channel = config.channels.first { channel in
-            let channelRuntime = (channel.runtimeID ?? channel.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            return channelRuntime == "codex"
-        }
-        guard channel?.capabilities?["external_activity"] == true else {
-            return nil
-        }
-        return try await AgentAPIClient(endpoint: endpoint, token: token).externalActivities()
-    }
-
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         let result = try await sendRecoveringFromStaleInitialization(
             CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).modelList()
@@ -248,6 +256,14 @@ actor CodexAppServerSessionRuntime {
         return CodexAppServerModelOption.parseListResult(result).map {
             $0.withRuntimeProvider($0.runtimeProvider ?? runtimeProvider)
         }
+    }
+
+    func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+                .permissionProfileList(cwd: cwd)
+        )
+        return CodexAppServerPermissionProfileSummary.parseListResult(result)
     }
 
     func capabilities(path: String?, forceReload: Bool = false) async throws -> CapabilityListResponse {
@@ -688,22 +704,32 @@ actor CodexAppServerSessionRuntime {
             projects = baseProjects
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
         var threadOptions = payload.turnOptions
         // 线程级请求只负责创建/恢复会话；模型由随后的 turn/start 携带。
         // 部分 app-server 版本会拒绝 thread/start/resume 上的 model/modelProvider，
         // 所以这里必须保持主线兼容行为，不能让纯 Codex 用户回归。
-        threadOptions.model = nil
-        threadOptions.modelProvider = nil
+        if !usesSharedServerQueue {
+            threadOptions.model = nil
+            threadOptions.modelProvider = nil
+        }
         threadOptions = runtimeScopedThreadOptions(threadOptions)
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            spec = projectPath?.isEmpty == false
-                ? try builder.threadStart(cwd: project.path, options: threadOptions)
-                : try builder.threadStart(projectID: payload.projectID, options: threadOptions)
+            spec = usesSharedServerQueue
+                ? try builder.threadStartForSharedQueue(cwd: project.path, options: threadOptions)
+                : (projectPath?.isEmpty == false
+                    ? try builder.threadStart(cwd: project.path, options: threadOptions)
+                    : try builder.threadStart(projectID: payload.projectID, options: threadOptions))
         } else {
-            spec = projectPath?.isEmpty == false
-                ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: threadOptions)
-                : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: threadOptions)
+            spec = usesSharedServerQueue
+                ? try builder.threadResumePreservingSharedState(
+                    threadID: payload.resumeID,
+                    cwd: project.path
+                )
+                : (projectPath?.isEmpty == false
+                    ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: threadOptions)
+                    : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: threadOptions))
         }
 
         let result: CodexAppServerJSONValue?
@@ -714,20 +740,27 @@ actor CodexAppServerSessionRuntime {
                   shouldFallbackFromInitialTurnsPage(error) else {
                 throw error
             }
-            // idle 历史会话的发送会通过 createSession(resume:) 进入这里；它和事件订阅一样
-            // 必须允许 initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
-            let fallback = try builder.threadResume(
-                threadID: payload.resumeID,
-                cwd: project.path,
-                options: threadOptions,
-                includeInitialTurnsPage: false
-            )
+            // idle 历史会话的发送会通过 createSession(resume:) 进入这里；发送链路必须允许
+            // initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
+            let fallback = usesSharedServerQueue
+                ? try builder.threadResumePreservingSharedState(
+                    threadID: payload.resumeID,
+                    cwd: project.path,
+                    includeInitialTurnsPage: false
+                )
+                : try builder.threadResume(
+                    threadID: payload.resumeID,
+                    cwd: project.path,
+                    options: threadOptions,
+                    includeInitialTurnsPage: false
+                )
             result = try await sendRecoveringFromStaleInitialization(fallback, timeout: longRunningRequestTimeout)
         }
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
         var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
+        emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
         let turnPayload = CodexAppServerTurnPayload(input: payload.input, options: payload.turnOptions)
@@ -737,7 +770,9 @@ actor CodexAppServerSessionRuntime {
             threadsResumedOnConnection.insert(session.id)
         }
 
-        if !turnPayload.isEmpty, let activeTurnID = session.activeTurnID {
+        if !usesSharedServerQueue,
+           !turnPayload.isEmpty,
+           let activeTurnID = session.activeTurnID {
             // resume 已经证明旧 turn 仍活跃，此时绝不能再发第二个 turn/start。
             throw CodexAppServerSessionRuntimeError.activeTurnConflict(
                 session: session,
@@ -755,8 +790,8 @@ actor CodexAppServerSessionRuntime {
             }
         }
 
-        if !turnPayload.isEmpty {
-            _ = try await startTurnOutcome(
+        if !turnPayload.isEmpty, !usesSharedServerQueue {
+            _ = try await submitTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
                 clientMessageID: payload.clientMessageID
@@ -768,7 +803,8 @@ actor CodexAppServerSessionRuntime {
 
         return CreateSessionResponse(
             session: session,
-            wsURL: try Self.gatewayURL(endpoint: endpoint, sessionID: session.id, runtimeProvider: runtimeProvider).absoluteString
+            wsURL: try Self.gatewayURL(endpoint: endpoint, sessionID: session.id, runtimeProvider: runtimeProvider).absoluteString,
+            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty
         )
     }
 
@@ -797,8 +833,6 @@ actor CodexAppServerSessionRuntime {
             contextsBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
             threadSubscriptionLeaseBySessionID.removeValue(forKey: id)
-            threadHistoryCacheBySessionID.removeValue(forKey: id)
-            threadAuthoritativeCompletedTurnItemsBySessionID.removeValue(forKey: id)
         }
     }
 
@@ -818,11 +852,18 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func unsubscribeThread(threadID: SessionID) async throws -> CodexAppServerThreadUnsubscribeStatus? {
+        let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
+            || threadResumeTasksBySessionID[threadID] != nil
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         cancelThreadResumeTask(sessionID: threadID)
         // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
         // 发送 thread/resume，而不能被旧的“已 resume”缓存短路。
         threadsResumedOnConnection.remove(threadID)
+        guard hadResumeBinding else {
+            // 独立模式查看空闲历史时从未订阅上游。不要发送多余 unsubscribe，
+            // 也不要让一次纯文件读取触发额外的写入路径。
+            return .notSubscribed
+        }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         guard threadSubscriptionLeaseBySessionID[threadID] == lease else {
             return nil
@@ -902,6 +943,7 @@ actor CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         let session = try agentSession(from: thread, projects: projects, fallbackProject: project)
+        emitActivePermissionProfile(from: result, threadID: session.id)
         contextsBySessionID[session.id] = CodexAppServerSessionContext(
             session: session,
             cwd: session.dir,
@@ -922,92 +964,38 @@ actor CodexAppServerSessionRuntime {
         recoveringInterruptedTurnID: TurnID? = nil
     ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
-        if shouldUseThreadTurnsList(config: config) {
-            do {
-                return try await messagesPageFromTurnPages(
-                    sessionID: sessionID,
-                    before: before,
-                    limit: limit,
-                    loadMode: loadMode,
-                    projects: config.projects,
-                    recoveringInterruptedTurnID: recoveringInterruptedTurnID
-                )
-            } catch {
-                if shouldFallbackFromThreadTurnsList(error) {
-                    threadTurnsListUnavailable = true
-                } else {
-                    throw error
-                }
-            }
+        let hasTurnsList = config.policy.allowedMethods.contains("thread/turns/list")
+        let hasRequiredItemsList = loadMode == .economy
+            || config.policy.allowedMethods.contains("thread/items/list")
+        guard hasTurnsList, hasRequiredItemsList else {
+            let method = hasTurnsList ? "thread/items/list" : "thread/turns/list"
+            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable(method)
         }
-        return try await messagesPageFromFullThreadRead(
+        return try await messagesPageFromTurnPages(
             sessionID: sessionID,
             before: before,
             limit: limit,
+            loadMode: loadMode,
             projects: config.projects,
             recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
 
-    func messagesPageFromFullThreadRead(
-        sessionID: SessionID,
-        before: String?,
-        limit: Int?,
-        projects: [AgentProject],
-        recoveringInterruptedTurnID: TurnID?
-    ) async throws -> HistoryMessagesPage {
-        // 翻看更早历史：老 turn 不会变，直接用上次整段读取的缓存切窗口，不再重复拉整段 thread。
-        if before != nil, let cached = threadHistoryCacheBySessionID[sessionID] {
-            return Self.paginateHistory(
-                cached,
-                before: before,
-                limit: limit,
-                context: contextsBySessionID[sessionID]?.session.context,
-                authoritativeCompletedTurnItems: threadAuthoritativeCompletedTurnItemsBySessionID[sessionID] ?? [:]
-            )
+    /// 外部活动轮询只需要对账正在写入的最新 turn。这里明确禁止回退 thread/read：
+    /// legacy 路径的 limit 是 message 数，不具备“完整一个 turn”的增量合并语义。
+    func latestTurnHistoryPage(sessionID: SessionID) async throws -> HistoryMessagesPage? {
+        let config = try await ensureConfig()
+        guard config.policy.allowedMethods.contains("thread/turns/list"),
+              config.policy.allowedMethods.contains("thread/items/list") else {
+            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
-        let result = try await sendRecoveringFromStaleInitialization(
-            CodexAppServerRequestBuilder(allowlistedProjects: projects).threadRead(threadID: sessionID, includeTurns: true),
-            timeout: longRunningRequestTimeout
-        )
-        guard let thread = threadObject(from: result) else {
-            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
-        }
-        let turns = childOwnedHistoryTurns(
-            in: thread,
-            turns: thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        )
-        var historyThread = thread
-        historyThread["turns"] = .array(turns.map { .object($0) })
-        let messages = historyMessages(from: historyThread, sessionID: sessionID, snapshotReadAt: Date())
-        let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
-        var context: SessionContextSnapshot?
-        if let session = try? agentSession(from: historyThread, projects: projects, fallbackProject: nil) {
-            let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(
-                session,
-                thread: historyThread,
-                recoveringInterruptedTurnID: recoveringInterruptedTurnID
-            )
-            context = session.context
-            if let recoveredTerminalTurn {
-                emit(.turnCompleted(
-                    metadata(threadID: session.id, turnID: recoveredTerminalTurn.turnID)
-                        .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
-                ))
-                finishTurnInterruptRecoveryIfMatching(
-                    sessionID: session.id,
-                    turnID: recoveredTerminalTurn.turnID
-                )
-            }
-        }
-        threadHistoryCacheBySessionID[sessionID] = messages
-        threadAuthoritativeCompletedTurnItemsBySessionID[sessionID] = authoritativeCompletedTurnItems
-        return Self.paginateHistory(
-            messages,
-            before: before,
-            limit: limit,
-            context: context,
-            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+        return try await messagesPageFromTurnPages(
+            sessionID: sessionID,
+            before: nil,
+            limit: 1,
+            loadMode: .full,
+            projects: config.projects,
+            recoveringInterruptedTurnID: nil
         )
     }
 
@@ -1034,13 +1022,21 @@ actor CodexAppServerSessionRuntime {
                 cursor: cursor,
                 limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
                 sortDirection: "desc",
-                itemsView: Self.threadTurnItemsView(loadMode: loadMode)
+                itemsView: loadMode == .economy ? "summary" : "notLoaded"
             ),
             timeout: longRunningRequestTimeout
         )
         let object = result?.objectValue ?? [:]
         let rawTurns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        let rawChronologicalTurns = Array(rawTurns.reversed())
+        let reversedTurns = Array(rawTurns.reversed())
+        // summary 已包含时间线需要的精简 item；再次按 turn 拉完整 items 会抵消省流模式。
+        let rawChronologicalTurns = loadMode == .economy
+            ? reversedTurns
+            : try await hydrateHistoryTurnItems(
+                sessionID: sessionID,
+                turns: reversedTurns,
+                builder: builder
+            )
         let chronologicalTurns = childOwnedHistoryTurns(
             in: thread,
             turns: rawChronologicalTurns
@@ -1090,6 +1086,52 @@ actor CodexAppServerSessionRuntime {
             notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
             authoritativeCompletedTurnItems: Self.authoritativeCompletedTurnItems(fromTurns: chronologicalTurns)
         )
+    }
+
+    func hydrateHistoryTurnItems(
+        sessionID: SessionID,
+        turns: [[String: CodexAppServerJSONValue]],
+        builder: CodexAppServerRequestBuilder
+    ) async throws -> [[String: CodexAppServerJSONValue]] {
+        var hydrated: [[String: CodexAppServerJSONValue]] = []
+        hydrated.reserveCapacity(turns.count)
+        for var turn in turns {
+            guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty else {
+                hydrated.append(turn)
+                continue
+            }
+            var items: [CodexAppServerJSONValue] = []
+            var cursor: String?
+            repeat {
+                let result = try await sendRecoveringFromStaleInitialization(
+                    builder.threadItemsList(
+                        threadID: sessionID,
+                        turnID: turnID,
+                        cursor: cursor,
+                        limit: 250,
+                        sortDirection: "asc"
+                    ),
+                    timeout: longRunningRequestTimeout
+                )
+                let page = result?.objectValue ?? [:]
+                for entry in page["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+                where entry["turnId"]?.stringValue == nil || entry["turnId"]?.stringValue == turnID {
+                    if let item = entry["item"] {
+                        items.append(item)
+                    }
+                }
+                let next = firstString(in: page, keys: ["nextCursor", "next_cursor"])
+                if next == cursor {
+                    cursor = nil
+                } else {
+                    cursor = next
+                }
+            } while cursor != nil
+            turn["items"] = .array(items)
+            turn["itemsView"] = .string("full")
+            hydrated.append(turn)
+        }
+        return hydrated
     }
 
     func recoverCompletedActiveTurnFromLatestTurnsPage(
@@ -1240,14 +1282,12 @@ actor CodexAppServerSessionRuntime {
             "id": .string(sessionID),
             "sessionId": .string(sessionID),
             "cwd": cwd,
-            "name": .string("Thread \(sessionID.prefix(8))"),
+            // 这层壳只是拿不到 thread 元数据时的占位；名字留空由投影统一填占位标题，
+            // 不要把 thread id 当成会话名写进去。
+            "name": .null,
             "status": .object(["type": .string("notLoaded")]),
             "modelProvider": .string("openai")
         ]
-    }
-
-    func shouldUseThreadTurnsList(config: CodexAppServerConfigResponse) -> Bool {
-        !threadTurnsListUnavailable && config.policy.allowedMethods.contains("thread/turns/list")
     }
 
     func threadListPageWithIndexedFallback(
@@ -1443,15 +1483,6 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    static func threadTurnItemsView(loadMode: HistoryMessagesPage.LoadMode) -> String {
-        switch loadMode {
-        case .economy:
-            return "summary"
-        case .full:
-            return "full"
-        }
-    }
-
     static func authoritativeCompletedTurnItems(
         fromTurns turns: [[String: CodexAppServerJSONValue]]
     ) -> [TurnID: Set<AgentItemID>] {
@@ -1509,49 +1540,6 @@ actor CodexAppServerSessionRuntime {
             return nil
         }
         return String(data: data, encoding: .utf8)
-    }
-
-    // thread/read 一次性返回整段 thread 历史；分页只能在客户端做。按消息稳定 id 切窗口，并回填
-    // previousCursor / hasMoreBefore，否则长会话只会拿到最近一窗，最早的消息既被 suffix 截掉、又因为
-    // 没有 cursor 而永远翻不回去（直连取代旧 REST 兼容链路后这条路是唯一来源）。
-    static func paginateHistory(
-        _ messages: [CodexHistoryMessage],
-        before: String?,
-        limit: Int?,
-        context: SessionContextSnapshot? = nil,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
-    ) -> HistoryMessagesPage {
-        let upperBound: Int
-        if let before {
-            guard let index = messages.firstIndex(where: { $0.id == before }) else {
-                // 游标对应的消息已不在历史里（极少见），关闭分页，避免反复请求同一页。
-                return HistoryMessagesPage(
-                    messages: [],
-                    previousCursor: nil,
-                    hasMoreBefore: false,
-                    context: context,
-                    authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
-                )
-            }
-            upperBound = index
-        } else {
-            upperBound = messages.count
-        }
-        let window = messages[..<upperBound]
-        let bounded: [CodexHistoryMessage]
-        if let limit, limit > 0, window.count > limit {
-            bounded = Array(window.suffix(limit))
-        } else {
-            bounded = Array(window)
-        }
-        let hasMoreBefore = bounded.count < window.count
-        return HistoryMessagesPage(
-            messages: bounded,
-            previousCursor: hasMoreBefore ? bounded.first?.id : nil,
-            hasMoreBefore: hasMoreBefore,
-            context: context,
-            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
-        )
     }
 
     func attachEvents(
@@ -1614,6 +1602,7 @@ actor CodexAppServerSessionRuntime {
              .sessionRow,
              .sessionStatus,
              .sessionContext,
+             .permissionProfileUpdated,
              .goalUpdated,
              .goalCleared,
              .turnStarted,
@@ -1689,6 +1678,12 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
         }
+        let config = try await ensureConfig()
+        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout。SSH 共享模式会在这里
+            // resume，以服务端真实结果决定当前入口是否拥有 writer。
+            return
+        }
         let projects = try await projects()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
@@ -1706,9 +1701,7 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             return
         }
-        // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
-        // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
-        // 可能不会回流到 iPad。
+        // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
@@ -1730,6 +1723,19 @@ actor CodexAppServerSessionRuntime {
         default:
             return false
         }
+    }
+
+    func shouldResumeThreadForEventSubscription(
+        _ session: AgentSession,
+        config: CodexAppServerConfigResponse
+    ) -> Bool {
+        guard runtimeProvider == "codex" else {
+            return true
+        }
+        // 共享 SSH 的多个入口必须在打开时就得到同一份 writer 结论。普通 WS 仍保持
+        // 空闲历史只读，避免仅浏览历史就提前取得 writer。
+        let transport = config.runtime.transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return transport == "ssh" || session.isRunning
     }
 
     func replaceThreadSubscriptionLease(
@@ -1754,6 +1760,12 @@ actor CodexAppServerSessionRuntime {
               desiredLease.wantsEvents,
               let context = contextsBySessionID[sessionID]
         else {
+            return
+        }
+        let config = try await ensureConfig()
+        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 普通 WS 的空闲历史没有服务端订阅需要恢复。旧 unsubscribe 的迟到 ACK
+            // 不能把一次纯读取重新升级成 thread/resume；SSH 共享模式不走这里。
             return
         }
         let connection = try await ensureConnection()
@@ -1853,10 +1865,17 @@ actor CodexAppServerSessionRuntime {
         var responseObservation: CodexAppServerPendingTurnStartObservation?
         var didRetryAfterStaleInitialization = false
         while true {
+            try Task.checkCancellation()
             let connection = try await ensureConnection()
             var activeAttemptID: UUID?
             do {
-                try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+                try await ensureThreadResumedOnConnection(
+                    sessionID: sessionID,
+                    cwd: context.cwd,
+                    builder: builder,
+                    connection: connection
+                )
+                try Task.checkCancellation()
                 if let activeTurnID = contextsBySessionID[sessionID]?.activeTurnID {
                     let session = contextsBySessionID[sessionID]?.session ?? context.session
                     throw CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -1866,12 +1885,14 @@ actor CodexAppServerSessionRuntime {
                 }
                 let attemptID = beginPendingTurnStartObservation(sessionID: sessionID)
                 activeAttemptID = attemptID
+                // turn/start 不能在同一个 helper 里裸重发：旧 frame 可能已经与 executing
+                // handoff 重叠，下一次必须先重新 thread/resume，再创建新的 turn/start observation。
                 result = try await connection.send(try builder.turnStart(
-                    threadID: sessionID,
-                    cwd: context.cwd,
-                    payload: payload,
-                    clientMessageID: clientMessageID
-                ), timeout: longRunningRequestTimeout)
+                        threadID: sessionID,
+                        cwd: context.cwd,
+                        payload: payload,
+                        clientMessageID: clientMessageID
+                    ), timeout: longRunningRequestTimeout)
                 responseObservation = takePendingTurnStartObservation(
                     sessionID: sessionID,
                     attemptID: attemptID
@@ -2108,24 +2129,40 @@ actor CodexAppServerSessionRuntime {
         builder: CodexAppServerRequestBuilder,
         connection: CodexAppServerConnection
     ) async throws {
+        let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
+        var passiveResumeOptions = CodexAppServerTurnOptions.default
+        // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
+        // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
+        passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
+        let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
         let result: CodexAppServerJSONValue?
         do {
-            result = try await connection.send(
-                try builder.threadResume(
+            let request = usesSharedServerQueue
+                ? try builder.threadResumePreservingSharedState(
+                    threadID: sessionID,
+                    cwd: cwd
+                )
+                : try builder.threadResume(
                     threadID: sessionID,
                     cwd: cwd,
-                    options: runtimeScopedThreadOptions(.default)
-                ),
-                timeout: longRunningRequestTimeout
-            )
+                    options: scopedPassiveResumeOptions
+                )
+            result = try await connection.send(request, timeout: longRunningRequestTimeout)
         } catch {
             if shouldFallbackFromInitialTurnsPage(error) {
-                result = try await connection.send(try builder.threadResume(
-                    threadID: sessionID,
-                    cwd: cwd,
-                    options: runtimeScopedThreadOptions(.default),
-                    includeInitialTurnsPage: false
-                ), timeout: longRunningRequestTimeout)
+                let request = usesSharedServerQueue
+                    ? try builder.threadResumePreservingSharedState(
+                        threadID: sessionID,
+                        cwd: cwd,
+                        includeInitialTurnsPage: false
+                    )
+                    : try builder.threadResume(
+                        threadID: sessionID,
+                        cwd: cwd,
+                        options: scopedPassiveResumeOptions,
+                        includeInitialTurnsPage: false
+                    )
+                result = try await connection.send(request, timeout: longRunningRequestTimeout)
             } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
                 // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
@@ -2144,6 +2181,7 @@ actor CodexAppServerSessionRuntime {
             projects: (try? projectsFromCache()) ?? [],
             fallbackProject: nil
            ) {
+            emitActivePermissionProfile(from: result, threadID: session.id)
             let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             emit(.session(session))
             if let recoveredTerminalTurn {
@@ -2158,6 +2196,25 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    func emitActivePermissionProfile(from result: CodexAppServerJSONValue?, threadID: SessionID) {
+        guard let object = result?.objectValue else {
+            return
+        }
+        let source: [String: CodexAppServerJSONValue]
+        if object.keys.contains("activePermissionProfile") {
+            source = object
+        } else if let thread = object["thread"]?.objectValue,
+                  thread.keys.contains("activePermissionProfile") {
+            source = thread
+        } else {
+            return
+        }
+        emit(.permissionProfileUpdated(
+            CodexAppServerActivePermissionProfile(value: source["activePermissionProfile"]),
+            metadata(threadID: threadID, turnID: nil)
+        ))
     }
 
     func clearThreadResumeTask(
@@ -2869,7 +2926,32 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前
+    /// 连接的 resume binding，让下一次发送重新建立监听；不修改会话历史或所有权。
+    func invalidateThreadResumeBinding(from notification: CodexAppServerNotification) {
+        guard notification.method == "thread/closed"
+                || notification.method == "thread/status/changed" else {
+            return
+        }
+        let params = notification.params?.objectValue ?? [:]
+        guard let threadID = firstString(in: params, keys: ["threadId", "threadID", "thread_id"]) else {
+            return
+        }
+        if notification.method == "thread/status/changed" {
+            let statusType = params["status"]?.objectValue?["type"]?.stringValue
+                ?? params["status"]?.stringValue
+            guard statusType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "notloaded" else {
+                return
+            }
+        }
+        threadsResumedOnConnection.remove(threadID)
+    }
+
     func handle(_ notification: CodexAppServerNotification) {
+        if notification.method == "_mimi/serverRequestResponse/rejected" {
+            // 另一入口已抢先响应或拒绝时，不复活本地卡片；等待 resolved/terminal 收敛即可。
+            return
+        }
         if notification.method == "_mimi/claudeReplayCursor/reset",
            runtimeProvider == "claude",
            let rawSequence = notification.params?.objectValue?["sequence"]?.intValue,
@@ -2888,6 +2970,7 @@ actor CodexAppServerSessionRuntime {
         updateTerminalInteractionBarrier(from: notification)
         recordLiveSignal(from: notification)
         recordPendingTurnStartBoundary(from: notification)
+        invalidateThreadResumeBinding(from: notification)
         if runtimeProvider == "claude",
            notification.method == "turn/completed" {
             let params = notification.params?.objectValue ?? [:]
@@ -3013,54 +3096,29 @@ actor CodexAppServerSessionRuntime {
         pruneInteractionTombstones()
     }
 
-    func declineServerRequestWithoutProjection(_ request: CodexAppServerServerRequest) {
-        removePendingApprovalRequest(request)
-        removePendingUserInputRequest(request)
-        guard let connection else {
-            return
-        }
-        let result = isUserInputServerRequest(request)
-            ? userInputResponse(for: request, answers: [:])
-            : approvalResponse(
-                method: request.method,
-                params: request.params?.objectValue ?? [:],
-                decision: "decline"
-            )
-        Task { [connection] in
-            // 终态之后的迟到请求或未知 MCP mode 不得进入 UI，也不能被批准。
-            // 回一个 fail-closed 结果只负责释放上游，不再投影 resolved 去覆盖 terminal 状态。
-            try? await connection.respond(to: request, result: result)
-        }
-    }
-
     func handle(_ request: CodexAppServerServerRequest) {
         if isResolvedServerRequestTombstoned(request) {
             return
         }
         if isUnsupportedMCPElicitation(request) {
-            declineServerRequestWithoutProjection(request)
             return
         }
         if isTerminallyStaleServerRequest(request) {
-            declineServerRequestWithoutProjection(request)
             return
         }
         if isUserInputServerRequest(request) {
-            handleUserInputRequest(request)
+            guard let event = projector.project(request) else { return }
+            rememberPendingUserInputRequest(request)
+            emit(event)
             return
         }
         if isStaleReplayedApproval(request) {
-            // app-server 在 resume 时会把"仍未应答"的 server request 重新投递给新连接。如果这个审批属于
-            // 一个本地权威状态已经空闲、且没有活跃 turn 的 thread，它必然是某个被放弃的旧 turn 残留下来的
-            // 僵尸请求（原 turn 早已结束，永远不会再有 serverRequest/resolved）。直接回 decline 把它从
-            // app-server 的挂起表里释放，避免每次重连又被重放，也就不会再在输入框上方堆出过期审批卡。
-            releaseStaleApprovalRequest(request)
             return
         }
-        rememberPendingApprovalRequest(request)
         guard let event = projector.project(request) else {
             return
         }
+        rememberPendingApprovalRequest(request)
         emit(event)
     }
 
@@ -3090,17 +3148,21 @@ actor CodexAppServerSessionRuntime {
                 continue
             }
             if isUnsupportedMCPElicitation(request) || isTerminallyStaleServerRequest(request) {
-                declineServerRequestWithoutProjection(request)
                 continue
             }
             if isUserInputServerRequest(request) {
-                handleUserInputRequest(request)
+                guard let event = projector.project(request) else { continue }
+                rememberPendingUserInputRequest(request)
+                emit(event)
                 continue
             }
-            rememberPendingApprovalRequest(request)
+            if isStaleReplayedApproval(request) {
+                continue
+            }
             guard let event = projector.project(request) else {
                 continue
             }
+            rememberPendingApprovalRequest(request)
             emit(event)
         }
     }

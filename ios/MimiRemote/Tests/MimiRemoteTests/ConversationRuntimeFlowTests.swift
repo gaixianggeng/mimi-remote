@@ -1256,7 +1256,7 @@ extension ConversationDataFlowTests {
         var options = CodexAppServerTurnOptions.default
         options.model = "gpt-5-codex"
         options.serviceTier = "priority"
-        options.approvalPolicy = .onFailure
+        options.approvalPolicy = .onRequest
         let payload = CodexAppServerTurnPayload(input: [
             .text("分析截图"),
             .image(url: "data:image/png;base64,AA==", detail: .high),
@@ -1273,7 +1273,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sent.input, payload.input)
         XCTAssertEqual(sent.turnOptions.model, "gpt-5-codex")
         XCTAssertEqual(sent.turnOptions.serviceTier, "priority")
-        XCTAssertEqual(sent.turnOptions.approvalPolicy, .onFailure)
+        XCTAssertEqual(sent.turnOptions.approvalPolicy, .onRequest)
 
         client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
         let accepted = await sendTask.value
@@ -1725,6 +1725,44 @@ extension ConversationDataFlowTests {
         await claudeRefresh.value
         XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "claude"))
         XCTAssertEqual(store.accountRateLimitsByRuntime["claude"]?.primaryUsedPercent, 30)
+    }
+
+    func testSettingsAccountOverviewDoesNotWaitForSlowClaudeUsageBeforeTokenActivity() async {
+        let gate = UsageRefreshGate()
+        let tokenActivityStarted = expectation(description: "Token activity request started")
+        let buckets = [AccountTokenUsageDailyBucket(startDate: "2026-08-18", tokens: 42)]
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["claude": true],
+            rateLimitHandler: { provider in
+                await gate.response(for: provider)
+            },
+            accountTokenUsageHandler: {
+                tokenActivityStarted.fulfill()
+                return AccountTokenUsageSnapshot(
+                    summary: AccountTokenUsageSummary(lifetimeTokens: 42),
+                    dailyUsageBuckets: buckets
+                )
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let refresh = Task { await store.refreshSettingsAccountOverview() }
+        await gate.waitForRequest(provider: "claude")
+        await fulfillment(of: [tokenActivityStarted], timeout: 1)
+
+        XCTAssertTrue(store.isRefreshingUsage(runtimeProvider: "claude"))
+        XCTAssertEqual(store.accountTokenActivity.displayBuckets, buckets)
+
+        await gate.finishClaude()
+        await refresh.value
+        XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "claude"))
     }
 
     func testClaudeAuthenticationWarmupFailureStaysSilent() async {

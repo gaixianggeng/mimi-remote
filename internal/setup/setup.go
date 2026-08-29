@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
@@ -23,12 +25,12 @@ const defaultAgentDPort = "8787"
 const defaultPairingURLTTL = 10 * time.Minute
 
 type Options struct {
-	ConfigPath      string
-	ScanRoot        string
-	BrowseRoot      string
-	Listen          string
-	AppServerListen string
-	Force           bool
+	ConfigPath         string
+	ScanRoot           string
+	BrowseRoot         string
+	Listen             string
+	AppServerSSHTarget string
+	Force              bool
 }
 
 type Result struct {
@@ -45,8 +47,7 @@ type Result struct {
 	PairExpiresAt       string         `json:"pair_expires_at"`
 	ScanRoot            string         `json:"scan_root"`
 	BrowseRoot          string         `json:"browse_root"`
-	AppServerListen     string         `json:"app_server_listen"`
-	AppServerTokenFile  string         `json:"app_server_token_file"`
+	AppServerSSHTarget  string         `json:"app_server_ssh_target"`
 	Warnings            []string       `json:"warnings"`
 }
 
@@ -65,12 +66,37 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	}
 	if configExisted && !options.Force {
 		// 已有配置时默认只读取配对信息，避免误覆盖用户已经绑定到 iPad 的 token。
+		// 旧版 managed WS 配置必须先完成 SSH 预检和原子迁移，不能让 Pair
+		// 继续把失效 transport 当成当前配置。
+		if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
+			return Result{}, err
+		}
 		result, err := Pair(ctx, cfgPath)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Created = false
 		return result, nil
+	}
+	var originalConfig []byte
+	if configExisted {
+		originalConfig, err = os.ReadFile(cfgPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
+		}
+	}
+	appServerSSHTarget, err := normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
+	if err != nil {
+		return Result{}, err
+	}
+	sshTransport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: appServerSSHTarget})
+	if err != nil {
+		return Result{}, fmt.Errorf("准备 SSH App Server 失败：%w", err)
+	}
+	// 首次安装和 --force 都先验证真实 SSH + initialize，再写配置。失败时既不
+	// 生成半套配置，也不会让后台服务进入反复重启但永远不可用的状态。
+	if err := sshPreflight(ctx, sshTransport); err != nil {
+		return Result{}, fmt.Errorf("SSH 预检失败，配置未修改：%w", err)
 	}
 
 	cfgDir := filepath.Dir(cfgPath)
@@ -97,13 +123,6 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	if err != nil {
 		return Result{}, err
 	}
-	// 外侧 token 给 iPad 访问 agentd 使用；upstream token 只留在 Mac 本机，避免客户端拿到 app-server 直连凭证。
-	appServerToken, err := randomHex(32)
-	if err != nil {
-		return Result{}, err
-	}
-	tokenFile := filepath.Join(cfgDir, "app-server-ws-token")
-
 	scanRoot, err := defaultScanRoot(options.ScanRoot)
 	if err != nil {
 		return Result{}, err
@@ -127,11 +146,6 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		allowLAN = ip != nil && (ip.IsUnspecified() || isPrivateLANIPv4(ip))
 	}
-	appServerListen := strings.TrimSpace(options.AppServerListen)
-	if appServerListen == "" {
-		appServerListen = "ws://127.0.0.1:4222"
-	}
-
 	cfg := config.Config{
 		Listen:  listen,
 		Network: config.NetworkConfig{AllowLAN: allowLAN},
@@ -142,10 +156,9 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Type: "codex_app_server",
 		},
 		AppServer: config.AppServerConfig{
-			Transport:   "ws",
-			Managed:     true,
-			Listen:      appServerListen,
-			WSTokenFile: tokenFile,
+			Transport: config.DefaultAppServerTransport(),
+			SSHTarget: appServerSSHTarget,
+			AutoTitle: true,
 		},
 		Codex: config.CodexConfig{
 			Bin:         defaultCodexBin(),
@@ -154,6 +167,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				"TERM": "xterm-256color",
 			},
 		},
+		Claude: config.DefaultClaudeConfig(),
 		Session: config.SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},
@@ -164,13 +178,24 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	if err != nil {
 		return Result{}, fmt.Errorf("编码配置失败：%w", err)
 	}
-	if err := writeSetupFilesAtomically(
-		cfgPath,
-		tokenFile,
-		append(raw, '\n'),
-		[]byte(appServerToken+"\n"),
-		fileOps,
-	); err != nil {
+	validateOriginal := func() error {
+		return validateSetupConfigSnapshot(cfgPath, configExisted, originalConfig)
+	}
+	commitFiles := func() error {
+		// 配置备份、rename 与目录同步都在配置提交锁内完成。Claude、network
+		// 和 setup --force 因而不会在各自 CAS 与 rename 之间互相覆盖。
+		return withConfigCommitLock(ctx, cfgPath, func() error {
+			if err := validateOriginal(); err != nil {
+				return err
+			}
+			return writeConfigAtomically(
+				cfgPath,
+				append(raw, '\n'),
+				fileOps,
+			)
+		})
+	}
+	if err := commitFiles(); err != nil {
 		return Result{}, fmt.Errorf("原子写入 setup 配置失败：%w", err)
 	}
 	filesCommitted = true
@@ -182,9 +207,43 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	result.Created = true
 	result.ScanRoot = scanRoot
 	result.BrowseRoot = browseRoot
-	result.AppServerListen = appServerListen
-	result.AppServerTokenFile = tokenFile
+	result.AppServerSSHTarget = appServerSSHTarget
 	return result, nil
+}
+
+func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
+	value := raw
+	if strings.TrimSpace(value) == "" {
+		value = os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")
+	}
+	if strings.TrimSpace(value) == "" {
+		value = config.DefaultAppServerSSHTarget()
+	}
+	if err := appserver.ValidateSSHTarget(value); err != nil {
+		return "", fmt.Errorf("app_server.ssh_target 无效：%w", err)
+	}
+	return value, nil
+}
+
+func validateSetupConfigSnapshot(path string, expectedExists bool, expected []byte) error {
+	exists, err := regularFileOrMissing(path, "配置文件")
+	if err != nil {
+		return err
+	}
+	if exists != expectedExists {
+		return fmt.Errorf("配置已被其他进程修改，请重新执行")
+	}
+	if !exists {
+		return nil
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("重新读取配置失败：%w", err)
+	}
+	if !bytes.Equal(current, expected) {
+		return fmt.Errorf("配置已被其他进程修改，请重新执行")
+	}
+	return nil
 }
 
 func Pair(ctx context.Context, configPath string) (Result, error) {
@@ -259,8 +318,7 @@ func resultFromConfigForNetwork(
 		PairExpiresAt:       expiresAt.Format(time.RFC3339),
 		ScanRoot:            scanRoot,
 		BrowseRoot:          browseRoot,
-		AppServerListen:     cfg.AppServer.Listen,
-		AppServerTokenFile:  cfg.AppServer.WSTokenFile,
+		AppServerSSHTarget:  cfg.AppServer.SSHTarget,
 		Warnings:            warnings,
 	}, nil
 }

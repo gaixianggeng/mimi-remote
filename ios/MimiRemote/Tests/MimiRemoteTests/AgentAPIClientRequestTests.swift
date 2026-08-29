@@ -60,14 +60,6 @@ final class AgentAPIClientRequestTests: XCTestCase {
             .init("app-server config", path: "/api/app-server/config", method: "GET") { client in
                 _ = try await client.appServerConfig()
             },
-            .init(
-                "external activity",
-                path: "/api/app-server/external-activity",
-                method: "GET",
-                timeout: 10
-            ) { client in
-                _ = try await client.externalActivities()
-            },
             .init("relay diagnostics", path: "/api/diagnostics/relay", method: "GET") { client in
                 _ = try await client.relayDiagnostics()
             },

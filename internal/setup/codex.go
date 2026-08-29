@@ -1,12 +1,17 @@
 package setup
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type codexBinResolver func(configured string) (string, error)
@@ -33,7 +38,10 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 		seen[candidate] = struct{}{}
 
 		resolved, err := lookPath(candidate)
-		if err != nil || strings.TrimSpace(resolved) == "" {
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(resolved) == "" {
 			continue
 		}
 		absolute, err := filepath.Abs(resolved)
@@ -81,7 +89,7 @@ func platformCodexCandidates() []string {
 // RepairCodexBin 只更新 codex.bin，并保留 auth、projects 及未来新增字段。
 // 写入复用私有文件的原子替换逻辑，避免修复中断后留下半份配置或放宽权限。
 func RepairCodexBin(configPath string) (string, bool, error) {
-	return repairCodexBin(configPath, ResolveCodexBin, writePrivateFileAtomically)
+	return repairCodexBin(configPath, ResolveCodexBin, nil)
 }
 
 func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig configWriter) (string, bool, error) {
@@ -100,6 +108,9 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 	original, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
+		return "", false, err
 	}
 	document := map[string]json.RawMessage{}
 	if err := json.Unmarshal(original, &document); err != nil {
@@ -152,8 +163,32 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 		return "", false, fmt.Errorf("编码配置文件失败：%w", err)
 	}
 	updated = append(updated, '\n')
-	if err := writeConfig(cfgPath, updated); err != nil {
-		return "", false, fmt.Errorf("原子更新配置文件失败：%w", err)
+	var writeErr error
+	if writeConfig == nil {
+		validateOriginal := func() error {
+			current, readErr := os.ReadFile(cfgPath)
+			if readErr != nil {
+				return fmt.Errorf("重新读取配置失败：%w", readErr)
+			}
+			if !bytes.Equal(current, original) {
+				return fmt.Errorf("配置已被其他进程修改，请重新执行")
+			}
+			return nil
+		}
+		commitCtx, cancelCommit := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancelCommit()
+		writeErr = withConfigCommitLock(commitCtx, cfgPath, func() error {
+			if err := validateOriginal(); err != nil {
+				return err
+			}
+			// 已在统一配置锁内完成原始字节复核，不能再调用会重复获取同一把锁的 CAS 写入。
+			return writePrivateFileAtomically(cfgPath, updated)
+		})
+	} else {
+		writeErr = writeConfig(cfgPath, updated)
+	}
+	if writeErr != nil {
+		return "", false, fmt.Errorf("原子更新配置文件失败：%w", writeErr)
 	}
 	return resolved, true, nil
 }
