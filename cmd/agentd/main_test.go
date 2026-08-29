@@ -1794,6 +1794,28 @@ func TestRunUpRejectsLegacyResidueBeforeSetupWrites(t *testing.T) {
 	}
 }
 
+func TestRunSetupForceRejectsLegacyResidueBeforeMigrationOrPreflight(t *testing.T) {
+	fixture := prepareMainLegacyConfigFixture(t)
+	sshCalled := filepath.Join(t.TempDir(), "ssh-called")
+	t.Setenv("MIMI_AGENTD_SSH_CALLED_MARKER", sshCalled)
+	previous := inspectLegacyCodexExperimentResidue
+	inspectLegacyCodexExperimentResidue = func() (string, error) {
+		return "旧 LaunchAgent 配置仍存在", nil
+	}
+	t.Cleanup(func() { inspectLegacyCodexExperimentResidue = previous })
+
+	err := runSetupWithWriters([]string{"setup", "--force"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "两套 owner 混跑") {
+		t.Fatalf("setup --force must reject legacy residue: %v", err)
+	}
+	stored, readErr := os.ReadFile(fixture.source)
+	if readErr != nil || !bytes.Equal(stored, fixture.raw) {
+		t.Fatalf("residue rejection must not modify legacy config: read=%v raw=%s", readErr, stored)
+	}
+	assertPathDoesNotExist(t, fixture.destination, "residue rejection must run before default config migration")
+	assertPathDoesNotExist(t, sshCalled, "residue rejection must run before setup SSH preflight")
+}
+
 func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	dir := t.TempDir()
@@ -1883,6 +1905,11 @@ const mainTestSSHHelperEnv = "MIMI_AGENTD_SSH_HELPER"
 func TestMainSSHHelperProcess(t *testing.T) {
 	if os.Getenv(mainTestSSHHelperEnv) != "1" {
 		return
+	}
+	if marker := os.Getenv("MIMI_AGENTD_SSH_CALLED_MARKER"); marker != "" {
+		if err := os.WriteFile(marker, []byte("called\n"), 0o600); err != nil {
+			os.Exit(89)
+		}
 	}
 	separator := -1
 	for index, arg := range os.Args {

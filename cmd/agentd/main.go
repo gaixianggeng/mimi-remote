@@ -111,6 +111,9 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
+		return err
+	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
