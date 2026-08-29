@@ -28,15 +28,18 @@ final class WorkbenchTopScrollEdgeTests: XCTestCase {
         )
     }
 
-    func testCoordinatorOnlyClearsTheCurrentProducer() {
+    func testCoordinatorRejectsStaleProducerUpdatesAndOnlyClearsTheCurrentProducer() {
         let coordinator = WorkbenchTopScrollEdgeCoordinator()
         let previousProducer = UUID()
         let currentProducer = UUID()
         let previousSample = WorkbenchTopScrollEdgeSample(intensity: 1, topInset: 96)
         let currentSample = WorkbenchTopScrollEdgeSample(intensity: 0.5, topInset: 88)
+        let staleSample = WorkbenchTopScrollEdgeSample(intensity: 0.25, topInset: 72)
 
-        coordinator.publish(previousSample, from: previousProducer)
-        coordinator.publish(currentSample, from: currentProducer)
+        coordinator.activateProducer(previousProducer, sample: previousSample)
+        coordinator.activateProducer(currentProducer, sample: currentSample)
+        // 新会话出现后，旧会话可能先收到几何回调再消失；两步都不能覆盖新会话。
+        coordinator.publish(staleSample, from: previousProducer)
         coordinator.removeProducer(previousProducer)
         XCTAssertEqual(coordinator.sample, currentSample)
 

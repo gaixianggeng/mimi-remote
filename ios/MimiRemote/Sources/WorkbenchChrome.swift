@@ -1917,6 +1917,9 @@ private struct WorkbenchTopScrollEdgeBoostModifier: ViewModifier {
                     topInset: sample.topInset
                 )
             }
+            .onAppear {
+                coordinator?.activateProducer(producerID, sample: sample)
+            }
             .onDisappear {
                 // 转场时旧、新会话可能短暂共存；只允许当前生产者清掉共享状态。
                 coordinator?.removeProducer(producerID)

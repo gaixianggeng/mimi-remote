@@ -21,8 +21,14 @@ final class WorkbenchTopScrollEdgeCoordinator {
     private(set) var sample = WorkbenchTopScrollEdgeSample()
     private var producerID: UUID?
 
-    func publish(_ sample: WorkbenchTopScrollEdgeSample, from producerID: UUID) {
+    func activateProducer(_ producerID: UUID, sample: WorkbenchTopScrollEdgeSample) {
         self.producerID = producerID
+        self.sample = sample
+    }
+
+    func publish(_ sample: WorkbenchTopScrollEdgeSample, from producerID: UUID) {
+        // 转场中的旧会话仍可能收到最后一次几何回调，但不能重新夺回新会话的所有权。
+        guard self.producerID == producerID else { return }
         self.sample = sample
     }
 
