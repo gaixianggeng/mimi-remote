@@ -1582,6 +1582,9 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
     private var requestedMessageLoadModesStorage: [HistoryMessagesPage.LoadMode] = []
     private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Error>?] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var requestedItemContinuationsStorage: [HistoryTurnItemsContinuation] = []
+    private var itemPageContinuations: [CheckedContinuation<HistoryTurnItemsPage, Error>?] = []
+    private var itemRequestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     init(
         projects: [AgentProject],
@@ -1615,6 +1618,12 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             lock.unlock()
         }
         return requestedMessageLoadModesStorage
+    }
+
+    var requestedItemContinuations: [HistoryTurnItemsContinuation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestedItemContinuationsStorage
     }
 
     func projects() async throws -> [AgentProject] {
@@ -1669,11 +1678,38 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
         return try await messagesPage(sessionID: sessionID, before: nil, limit: 1, loadMode: .full)
     }
 
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        try await withCheckedThrowingContinuation { pageContinuation in
+            lock.lock()
+            itemPageContinuations.append(pageContinuation)
+            requestedItemContinuationsStorage.append(continuation)
+            let waiters = takeReadyItemRequestCountWaitersLocked()
+            lock.unlock()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
     func waitForHistoryRequestCount(_ count: Int) async {
         await withCheckedContinuation { continuation in
             let shouldResumeNow = appendRequestCountWaiter(count: count, continuation: continuation)
             if shouldResumeNow {
                 continuation.resume()
+            }
+        }
+    }
+
+    func waitForHistoryItemRequestCount(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if itemPageContinuations.count >= count {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                itemRequestCountWaiters.append((count, continuation))
+                lock.unlock()
             }
         }
     }
@@ -1702,6 +1738,27 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             return
         }
         continuation.resume(throwing: error)
+    }
+
+    func resolveHistoryItemRequest(
+        at index: Int,
+        with page: HistoryTurnItemsPage,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        lock.lock()
+        let continuation = itemPageContinuations.indices.contains(index)
+            ? itemPageContinuations[index]
+            : nil
+        if itemPageContinuations.indices.contains(index) {
+            itemPageContinuations[index] = nil
+        }
+        lock.unlock()
+        guard let continuation else {
+            XCTFail("No pending history Item request at index \(index)", file: file, line: line)
+            return
+        }
+        continuation.resume(returning: page)
     }
 
     private func appendHistoryRequest(
@@ -1760,6 +1817,20 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             }
         }
         requestCountWaiters = pending
+        return ready
+    }
+
+    private func takeReadyItemRequestCountWaitersLocked() -> [CheckedContinuation<Void, Never>] {
+        var ready: [CheckedContinuation<Void, Never>] = []
+        var pending: [(Int, CheckedContinuation<Void, Never>)] = []
+        for waiter in itemRequestCountWaiters {
+            if itemPageContinuations.count >= waiter.0 {
+                ready.append(waiter.1)
+            } else {
+                pending.append(waiter)
+            }
+        }
+        itemRequestCountWaiters = pending
         return ready
     }
 }

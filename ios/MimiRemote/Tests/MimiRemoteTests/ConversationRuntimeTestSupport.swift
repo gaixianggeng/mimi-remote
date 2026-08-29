@@ -251,6 +251,10 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
         historyItemsStore.register(turnID: turnID, items: items)
     }
 
+    func clearHistoryItems(turnID: TurnID) {
+        historyItemsStore.remove(turnID: turnID)
+    }
+
     private func registerEmbeddedHistoryItems(in result: CodexAppServerJSONValue) {
         let resultObject = result.objectValue
         let thread = resultObject?["thread"]?.objectValue
@@ -284,6 +288,12 @@ private final class FakeCodexHistoryItemsStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return itemsByTurnID[turnID]
+    }
+
+    func remove(turnID: TurnID) {
+        lock.lock()
+        itemsByTurnID.removeValue(forKey: turnID)
+        lock.unlock()
     }
 
     func register(threadID: SessionID, turns: [CodexAppServerJSONValue]) {

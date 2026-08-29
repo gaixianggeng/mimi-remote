@@ -631,8 +631,8 @@ extension SessionStore {
         else {
             return false
         }
-        // 缩略历史只能满足 summary 视图；当调用方明确需要 full 时必须重新拉完整历史。
-        return loadMode == .economy || loadedQuality == .full
+        // 正在逐页补齐的首屏已经启动同一份 full 请求，不能因尚未完成而重复拉取 Turn 页。
+        return loadMode == .economy || loadedQuality != .summary
     }
 
     func hasLoadedFullHistorySnapshot(sessionID: SessionID) -> Bool {
@@ -702,7 +702,13 @@ extension SessionStore {
         }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
-        historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
+        if job.loadMode == .economy {
+            historyLoadedQualityBySessionID[sessionID] = .summary
+        } else if result.page.itemContinuations.isEmpty {
+            historyLoadedQualityBySessionID[sessionID] = .full
+        } else {
+            historyLoadedQualityBySessionID[sessionID] = .enriching
+        }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -1226,6 +1232,7 @@ extension SessionStore {
             sessionID: sessionID,
             historyMessages: page.messages
         )
+        replaceHistoryItemEnrichment(page: page, sessionID: sessionID)
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }
 
@@ -3362,6 +3369,10 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
+        let staleItemEnrichmentIDs = historyItemEnrichmentBySessionID.keys.filter { !validSessionIDs.contains($0) }
+        for sessionID in staleItemEnrichmentIDs {
+            cancelHistoryItemEnrichment(sessionID: sessionID, markIncomplete: false)
+        }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {

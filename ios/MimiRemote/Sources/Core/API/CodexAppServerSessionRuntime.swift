@@ -955,6 +955,7 @@ actor CodexAppServerSessionRuntime {
 
     static let threadTurnsCursorPrefix = "turns:"
     static let economyHistoryNotice = L10n.text("ui.this_session_contains_large_images_or_tool_output")
+    static let historyItemPageLimit = 50
 
     func messagesPage(
         sessionID: SessionID,
@@ -1022,21 +1023,15 @@ actor CodexAppServerSessionRuntime {
                 cursor: cursor,
                 limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
                 sortDirection: "desc",
-                itemsView: loadMode == .economy ? "summary" : "notLoaded"
+                itemsView: "summary"
             ),
             timeout: longRunningRequestTimeout
         )
         let object = result?.objectValue ?? [:]
         let rawTurns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        let reversedTurns = Array(rawTurns.reversed())
-        // summary 已包含时间线需要的精简 item；再次按 turn 拉完整 items 会抵消省流模式。
-        let rawChronologicalTurns = loadMode == .economy
-            ? reversedTurns
-            : try await hydrateHistoryTurnItems(
-                sessionID: sessionID,
-                turns: reversedTurns,
-                builder: builder
-            )
+        // summary 先把用户和 Agent 文案交给 UI。full 模式的完整 Item 在首屏返回后逐页补齐；
+        // 不能在这里同步排空所有 Item cursor，否则一个超大 Turn 会重新变成全量加载。
+        let rawChronologicalTurns = Array(rawTurns.reversed())
         let chronologicalTurns = childOwnedHistoryTurns(
             in: thread,
             turns: rawChronologicalTurns
@@ -1077,6 +1072,26 @@ actor CodexAppServerSessionRuntime {
         }
         let upstreamNextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
         let nextCursor = reachedInheritedBoundary ? nil : upstreamNextCursor
+        let itemContinuations = loadMode == .full
+            ? chronologicalTurns.enumerated().compactMap { turnIndex, turn -> HistoryTurnItemsContinuation? in
+                guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty else {
+                    return nil
+                }
+                var turnShell = turn
+                turnShell.removeValue(forKey: "items")
+                return HistoryTurnItemsContinuation(
+                    turnID: turnID,
+                    turn: turnShell,
+                    turnIndex: turnIndex,
+                    itemOffset: 0,
+                    cursor: nil,
+                    pageLimit: Self.historyItemPageLimit,
+                    threadIsActive: isActiveHistoryThread(thread),
+                    isLatestTurn: cursor == nil && turnIndex == chronologicalTurns.index(before: chronologicalTurns.endIndex),
+                    hasVisibleUserMessageBefore: false
+                )
+            }
+            : []
         return HistoryMessagesPage(
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
@@ -1084,54 +1099,67 @@ actor CodexAppServerSessionRuntime {
             context: context,
             loadMode: loadMode,
             notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
-            authoritativeCompletedTurnItems: Self.authoritativeCompletedTurnItems(fromTurns: chronologicalTurns)
+            authoritativeCompletedTurnItems: [:],
+            itemContinuations: itemContinuations
         )
     }
 
-    func hydrateHistoryTurnItems(
+    func historyTurnItemsPage(
         sessionID: SessionID,
-        turns: [[String: CodexAppServerJSONValue]],
-        builder: CodexAppServerRequestBuilder
-    ) async throws -> [[String: CodexAppServerJSONValue]] {
-        var hydrated: [[String: CodexAppServerJSONValue]] = []
-        hydrated.reserveCapacity(turns.count)
-        for var turn in turns {
-            guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty else {
-                hydrated.append(turn)
-                continue
-            }
-            var items: [CodexAppServerJSONValue] = []
-            var cursor: String?
-            repeat {
-                let result = try await sendRecoveringFromStaleInitialization(
-                    builder.threadItemsList(
-                        threadID: sessionID,
-                        turnID: turnID,
-                        cursor: cursor,
-                        limit: 250,
-                        sortDirection: "asc"
-                    ),
-                    timeout: longRunningRequestTimeout
-                )
-                let page = result?.objectValue ?? [:]
-                for entry in page["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
-                where entry["turnId"]?.stringValue == nil || entry["turnId"]?.stringValue == turnID {
-                    if let item = entry["item"] {
-                        items.append(item)
-                    }
-                }
-                let next = firstString(in: page, keys: ["nextCursor", "next_cursor"])
-                if next == cursor {
-                    cursor = nil
-                } else {
-                    cursor = next
-                }
-            } while cursor != nil
-            turn["items"] = .array(items)
-            turn["itemsView"] = .string("full")
-            hydrated.append(turn)
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        let config = try await ensureConfig()
+        guard config.policy.allowedMethods.contains("thread/items/list") else {
+            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/items/list")
         }
-        return hydrated
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
+        let result = try await sendRecoveringFromStaleInitialization(
+            builder.threadItemsList(
+                threadID: sessionID,
+                turnID: continuation.turnID,
+                cursor: continuation.cursor,
+                limit: max(1, min(250, continuation.pageLimit)),
+                sortDirection: "asc"
+            ),
+            timeout: longRunningRequestTimeout
+        )
+        let page = result?.objectValue ?? [:]
+        let items = page["data"]?.arrayValue?
+            .compactMap(\.objectValue)
+            .filter { entry in
+                entry["turnId"]?.stringValue == nil || entry["turnId"]?.stringValue == continuation.turnID
+            }
+            .compactMap { $0["item"]?.objectValue } ?? []
+        let messages = historyMessages(
+            fromItems: items,
+            continuation: continuation,
+            sessionID: sessionID,
+            snapshotReadAt: Date()
+        )
+        let itemIDs = Set(items.compactMap { item -> AgentItemID? in
+            guard let itemID = item["id"]?.stringValue, !itemID.isEmpty else {
+                return nil
+            }
+            return itemID
+        })
+        let upstreamNextCursor = firstString(in: page, keys: ["nextCursor", "next_cursor"])
+        if let upstreamNextCursor, upstreamNextCursor == continuation.cursor {
+            // 重复 cursor 不是分页完成。若把它当成 nil，Store 会把不完整 Item 集合
+            // 误标成权威快照，并删除仍未拉到的消息。
+            throw AgentAPIError.invalidResponse
+        }
+        return HistoryTurnItemsPage(
+            messages: messages,
+            itemIDs: itemIDs,
+            continuation: upstreamNextCursor.map {
+                continuation.continuing(
+                    cursor: $0,
+                    loadedItemCount: items.count,
+                    hasVisibleUserMessage: continuation.hasVisibleUserMessageBefore
+                        || messages.contains { $0.role == "user" }
+                )
+            }
+        )
     }
 
     func recoverCompletedActiveTurnFromLatestTurnsPage(

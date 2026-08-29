@@ -1926,6 +1926,11 @@ func TestAppServerGatewayCapsOversizedHistoryResponses(t *testing.T) {
 			request: `{"id":710,"method":"thread/turns/list","params":{"threadId":"thread-history","limit":20,"itemsView":"full"}}`,
 		},
 		{
+			name:    "items list",
+			method:  "thread/items/list",
+			request: `{"id":712,"method":"thread/items/list","params":{"threadId":"thread-history","turnId":"turn-1","limit":50,"sortDirection":"asc"}}`,
+		},
+		{
 			name:    "thread read include turns",
 			method:  "thread/read",
 			request: `{"id":711,"method":"thread/read","params":{"threadId":"thread-history","includeTurns":true}}`,

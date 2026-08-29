@@ -371,6 +371,7 @@ extension SessionStore {
             )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
+            appendHistoryItemEnrichment(page: page, sessionID: session.id)
             setErrorMessage(nil)
         } catch {
             setErrorMessage(error.localizedDescription)
@@ -568,6 +569,9 @@ extension SessionStore {
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
         markHistorySessionRead(session.id)
+        if let previousSession, previousSession.id != session.id {
+            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+        }
         if wasNoOpSelection {
             return true
         }

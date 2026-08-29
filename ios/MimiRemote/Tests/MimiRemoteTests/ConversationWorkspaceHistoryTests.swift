@@ -7,6 +7,139 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testHistoryItemEnrichmentShowsTextBeforeLoadingMediaPages() async throws {
+        let project = makeProject(id: "proj_history_item_enrichment")
+        let session = makeSession(
+            id: "history_item_enrichment",
+            projectID: project.id,
+            title: "分页补齐",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let oldTurn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn-old"),
+            "status": .string("completed")
+        ]
+        let newTurn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn-new"),
+            "status": .string("completed")
+        ]
+        let oldContinuation = HistoryTurnItemsContinuation(
+            turnID: "turn-old",
+            turn: oldTurn,
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: false,
+            hasVisibleUserMessageBefore: false
+        )
+        let newContinuation = HistoryTurnItemsContinuation(
+            turnID: "turn-new",
+            turn: newTurn,
+            turnIndex: 1,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+        let summaryMessages = [
+            CodexHistoryMessage(
+                id: "history:old-text",
+                role: "assistant",
+                content: "较早文案",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnID: "turn-old",
+                itemID: "old-text"
+            ),
+            CodexHistoryMessage(
+                id: "history:new-text",
+                role: "assistant",
+                content: "最新文案",
+                createdAt: Date(timeIntervalSince1970: 2),
+                turnID: "turn-new",
+                itemID: "new-text"
+            )
+        ]
+        store.historyLoadedQualityBySessionID[session.id] = .enriching
+        store.applyHistoryFirstPage(
+            HistoryMessagesPage(
+                messages: summaryMessages,
+                itemContinuations: [oldContinuation, newContinuation]
+            ),
+            sessionID: session.id
+        )
+
+        await client.waitForHistoryItemRequestCount(1)
+        XCTAssertEqual(conversationStore.messages(for: session.id).map(\.content), ["较早文案", "最新文案"])
+        XCTAssertEqual(client.requestedItemContinuations.first?.turnID, "turn-new")
+
+        let nextNewContinuation = newContinuation.continuing(
+            cursor: "new-page-2",
+            loadedItemCount: 2,
+            hasVisibleUserMessage: false
+        )
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [
+                    CodexHistoryMessage(
+                        id: "history:new-image",
+                        role: "assistant",
+                        content: "![image](agentd-history-media://media-new)",
+                        createdAt: Date(timeIntervalSince1970: 3),
+                        turnID: "turn-new",
+                        itemID: "new-image"
+                    )
+                ],
+                itemIDs: ["new-text", "new-image"],
+                continuation: nextNewContinuation
+            )
+        )
+
+        await client.waitForHistoryItemRequestCount(2)
+        XCTAssertEqual(client.requestedItemContinuations.map(\.turnID), ["turn-new", "turn-old"])
+        XCTAssertTrue(
+            conversationStore.messages(for: session.id)
+                .contains { $0.content.contains("agentd-history-media://media-new") }
+        )
+        client.resolveHistoryItemRequest(
+            at: 1,
+            with: HistoryTurnItemsPage(messages: [], itemIDs: ["old-text"], continuation: nil)
+        )
+
+        await client.waitForHistoryItemRequestCount(3)
+        XCTAssertEqual(client.requestedItemContinuations.last?.cursor, "new-page-2")
+        client.resolveHistoryItemRequest(
+            at: 2,
+            with: HistoryTurnItemsPage(messages: [], itemIDs: [], continuation: nil)
+        )
+        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[session.id] != nil {
+            await Task.yield()
+        }
+
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id])
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .full)
+        XCTAssertEqual(
+            Set(conversationStore.messages(for: session.id).map(\.itemID).compactMap { $0 }),
+            ["old-text", "new-text", "new-image"]
+        )
+    }
+
     func testWorkspaceSessionAgeBoundaryStartsAtFirstSessionOlderThanTwelveHours() {
         let project = makeProject(id: "proj_workspace_age_boundary")
         let now = Date(timeIntervalSince1970: 200_000)

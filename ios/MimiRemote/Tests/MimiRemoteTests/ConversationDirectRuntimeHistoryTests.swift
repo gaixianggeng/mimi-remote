@@ -107,7 +107,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.sessions.map(\.id), ["legacy-thread"])
     }
 
-    func testDirectRuntimeFullHistoryPagesTurnsAndAllItemsInLargeTurn() async throws {
+    func testDirectRuntimeFullHistoryReturnsSummaryBeforePagingLargeTurnItems() async throws {
         let project = AgentProject(id: "proj_turn_pages", name: "Turn Pages", path: "/tmp/turn-pages")
         let transport = FakeCodexAppServerTransport()
         let allowedMethods = [
@@ -117,6 +117,7 @@ extension ConversationDataFlowTests {
             "thread/start",
             "thread/read",
             "thread/turns/list",
+            "thread/items/list",
             "turn/start",
             "turn/interrupt"
         ]
@@ -142,29 +143,64 @@ extension ConversationDataFlowTests {
         let firstTurnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 50)
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
-        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_large","started_at":1780490300,"completed_at":1780490301}],"nextCursor":"older-cursor"}}"#)
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_large","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"summary_1","content":[{"type":"text","text":"summary question"}]},{"type":"agentMessage","id":"summary_2","text":"summary answer","phase":"final_answer"}]}],"nextCursor":"older-cursor"}}"#)
 
+        let firstPage = try await firstPageTask.value
+        XCTAssertEqual(firstPage.messages.map(\.content), ["summary question", "summary answer"])
+        XCTAssertTrue(firstPage.hasMoreBefore)
+        XCTAssertEqual(firstPage.itemContinuations.map(\.turnID), ["turn_large"])
+        var requests = await transport.sentMessages()
+            .compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requests.contains { $0.method == "thread/items/list" })
+        // Fake transport 会把 turns 响应里的 summary Item 注册成自动响应。
+        // 此处清除它，后续才能精确模拟真实 App Server 的多页 Item cursor。
+        transport.clearHistoryItems(turnID: "turn_large")
+
+        let firstItemsTask = Task {
+            try await client.historyTurnItemsPage(
+                sessionID: "thr_turn_pages",
+                continuation: try XCTUnwrap(firstPage.itemContinuations.first)
+            )
+        }
         let firstItemsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/items/list")
         XCTAssertNil(firstItemsRequest.params?.objectValue?["cursor"])
+        XCTAssertEqual(firstItemsRequest.params?.objectValue?["limit"]?.intValue, 50)
         let sentBeforeSecondItems = await transport.sentMessages().count
         transport.enqueue(#"{"id":\#(try jsonFragment(for: firstItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}}],"nextCursor":"items-2"}}"#)
+
+        let firstItemsPage = try await firstItemsTask.value
+        XCTAssertEqual(firstItemsPage.messages.map(\.content), ["m1", "m2"])
+        let secondContinuation = try XCTUnwrap(firstItemsPage.continuation)
+        XCTAssertEqual(secondContinuation.cursor, "items-2")
+
+        let secondItemsTask = Task {
+            try await client.historyTurnItemsPage(
+                sessionID: "thr_turn_pages",
+                continuation: secondContinuation
+            )
+        }
         let secondItemsRequest = try await waitForFakeAppServerRequest(
             transport,
             method: "thread/items/list",
             after: sentBeforeSecondItems
         )
         XCTAssertEqual(secondItemsRequest.params?.objectValue?["cursor"]?.stringValue, "items-2")
+        XCTAssertEqual(secondItemsRequest.params?.objectValue?["limit"]?.intValue, 50)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: secondItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}}],"nextCursor":null}}"#)
 
-        let firstPage = try await firstPageTask.value
-        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2", "m3", "m4"])
-        XCTAssertEqual(try XCTUnwrap(firstPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
-        XCTAssertTrue(try XCTUnwrap(firstPage.messages.first { $0.content == "m1" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m2" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m3" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m4" }).isTimestampFallback)
-        XCTAssertTrue(firstPage.hasMoreBefore)
+        let secondItemsPage = try await secondItemsTask.value
+        XCTAssertEqual(secondItemsPage.messages.map(\.content), ["m3", "m4"])
+        XCTAssertNil(secondItemsPage.continuation)
+        XCTAssertEqual(
+            (firstItemsPage.messages + secondItemsPage.messages).map(\.content),
+            ["m1", "m2", "m3", "m4"]
+        )
+        XCTAssertEqual(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
+        XCTAssertTrue(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m1" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m2" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m3" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }).isTimestampFallback)
         let cursor = try XCTUnwrap(firstPage.previousCursor)
 
         let sentBeforeEarlierPage = await transport.sentMessages().count
@@ -177,22 +213,18 @@ extension ConversationDataFlowTests {
             after: sentBeforeEarlierPage
         )
         XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["cursor"]?.stringValue, "older-cursor")
-        let sentBeforeEarlierItems = await transport.sentMessages().count
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200}],"nextCursor":null}}"#)
-        let earlierItemsRequest = try await waitForFakeAppServerRequest(
-            transport,
-            method: "thread/items/list",
-            after: sentBeforeEarlierItems
-        )
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierItemsRequest.id)),"result":{"data":[{"turnId":"turn_earliest","item":{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]}}],"nextCursor":null}}"#)
+        XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200,"items":[{"type":"userMessage","id":"summary_0","content":[{"type":"text","text":"m0"}]}]}],"nextCursor":null}}"#)
 
         let earlierPage = try await earlierPageTask.value
         XCTAssertEqual(earlierPage.messages.map(\.content), ["m0"])
         XCTAssertFalse(earlierPage.hasMoreBefore)
+        XCTAssertEqual(earlierPage.itemContinuations.map(\.turnID), ["turn_earliest"])
 
         let sent = await transport.sentMessages()
-        let requests = sent.compactMap { try? decodeAppServerRequest($0) }
+        requests = sent.compactMap { try? decodeAppServerRequest($0) }
         XCTAssertEqual(requests.filter { $0.method == "thread/turns/list" }.count, 2)
+        XCTAssertEqual(requests.filter { $0.method == "thread/items/list" }.count, 2)
         XCTAssertFalse(requests.contains { request in
             request.method == "thread/read" && request.params?.objectValue?["includeTurns"]?.boolValue == true
         })
@@ -1218,6 +1250,7 @@ extension ConversationDataFlowTests {
         try await Task.sleep(nanoseconds: 80_000_000)
         XCTAssertNil(recoveredMetadata)
 
+        let sentBeforeCompletedHistory = await transport.sentMessages().count
         let completedHistoryTask = Task {
             try await client.messagesPage(
                 sessionID: "thr_snapshot_completion",
@@ -1226,7 +1259,11 @@ extension ConversationDataFlowTests {
                 loadMode: .full
             )
         }
-        let completedReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: 5)
+        let completedReadRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: sentBeforeCompletedHistory
+        )
         transportResponse(
             transport,
             id: completedReadRequest.id,

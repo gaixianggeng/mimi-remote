@@ -216,6 +216,56 @@ struct MessagesResponse: Codable {
     }
 }
 
+struct HistoryTurnItemsContinuation: Equatable {
+    let turnID: TurnID
+    let turn: [String: CodexAppServerJSONValue]
+    let turnIndex: Int
+    let itemOffset: Int
+    let cursor: String?
+    let pageLimit: Int
+    let threadIsActive: Bool
+    let isLatestTurn: Bool
+    let hasVisibleUserMessageBefore: Bool
+
+    func continuing(
+        cursor: String,
+        loadedItemCount: Int,
+        hasVisibleUserMessage: Bool
+    ) -> HistoryTurnItemsContinuation {
+        HistoryTurnItemsContinuation(
+            turnID: turnID,
+            turn: turn,
+            turnIndex: turnIndex,
+            itemOffset: itemOffset + loadedItemCount,
+            cursor: cursor,
+            pageLimit: pageLimit,
+            threadIsActive: threadIsActive,
+            isLatestTurn: isLatestTurn,
+            hasVisibleUserMessageBefore: hasVisibleUserMessage
+        )
+    }
+
+    func withPageLimit(_ pageLimit: Int) -> HistoryTurnItemsContinuation {
+        HistoryTurnItemsContinuation(
+            turnID: turnID,
+            turn: turn,
+            turnIndex: turnIndex,
+            itemOffset: itemOffset,
+            cursor: cursor,
+            pageLimit: pageLimit,
+            threadIsActive: threadIsActive,
+            isLatestTurn: isLatestTurn,
+            hasVisibleUserMessageBefore: hasVisibleUserMessageBefore
+        )
+    }
+}
+
+struct HistoryTurnItemsPage: Equatable {
+    let messages: [CodexHistoryMessage]
+    let itemIDs: Set<AgentItemID>
+    let continuation: HistoryTurnItemsContinuation?
+}
+
 struct HistoryMessagesPage: Equatable {
     enum LoadMode: String, Equatable, Hashable {
         case full
@@ -230,6 +280,7 @@ struct HistoryMessagesPage: Equatable {
     let loadMode: LoadMode
     let notice: String?
     let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
+    let itemContinuations: [HistoryTurnItemsContinuation]
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -240,6 +291,7 @@ struct HistoryMessagesPage: Equatable {
         self.loadMode = .full
         self.notice = nil
         self.authoritativeCompletedTurnItems = [:]
+        self.itemContinuations = []
     }
 
     init(
@@ -250,7 +302,8 @@ struct HistoryMessagesPage: Equatable {
         snapshotSeq: EventSequence? = nil,
         loadMode: LoadMode = .full,
         notice: String? = nil,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        itemContinuations: [HistoryTurnItemsContinuation] = []
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
@@ -260,6 +313,7 @@ struct HistoryMessagesPage: Equatable {
         self.loadMode = loadMode
         self.notice = notice
         self.authoritativeCompletedTurnItems = authoritativeCompletedTurnItems
+        self.itemContinuations = itemContinuations
     }
 }
 
