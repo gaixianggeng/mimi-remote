@@ -152,6 +152,7 @@ extension SessionStore {
                 clientMessageID: clientMessageID
             ))
             let responseSession = self.session(response.session, in: workspace)
+            let queuesInitialInput = response.requiresQueuedInitialInput == true
             if let clientMessageID {
                 migratePendingPermissionTurnBoundary(
                     clientMessageID: clientMessageID,
@@ -187,6 +188,30 @@ extension SessionStore {
             upsert(responseSession)
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
+
+            if queuesInitialInput, let clientMessageID {
+                let intent: QueuedTurnIntent = payload.options.collaborationMode == .plan
+                    ? .plan
+                    : .standard
+                let item = QueuedTurnEntry(
+                    sessionID: responseSession.id,
+                    projectID: responseSession.projectID,
+                    payload: payload,
+                    clientMessageID: clientMessageID,
+                    intent: intent,
+                    expectedTurnID: responseSession.activeTurnID,
+                    requiresFreshTurn: permissionSelection?.requiresNewTurn == true ? true : nil
+                )
+                guard mutateAndPersistQueuedTurns({
+                    if queuedRunningTurnsBySessionID[responseSession.id]?.contains(where: {
+                        $0.clientMessageID == clientMessageID
+                    }) != true {
+                        queuedRunningTurnsBySessionID[responseSession.id, default: []].append(item)
+                    }
+                }) else {
+                    throw AgentAPIError.invalidResponse
+                }
+            }
 
             let responseSelectionLease: SessionSelectionLease?
             if let optimisticSessionID, let optimisticSelectionLease {
@@ -233,7 +258,7 @@ extension SessionStore {
                 // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
                 didLoadInitialHistory = false
             }
-            if !prompt.isEmpty {
+            if !prompt.isEmpty, !queuesInitialInput {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -247,7 +272,7 @@ extension SessionStore {
                     )
                 }
                 setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
-            } else {
+            } else if prompt.isEmpty {
                 conversationStore.appendSystem(L10n.text("ui.an_interactive_session_has_been_started"), sessionID: responseSession.id)
             }
             if let firstMessage = response.firstMessage {
@@ -266,6 +291,12 @@ extension SessionStore {
                 // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
                 setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
                 setErrorMessage(nil)
+            }
+            if queuesInitialInput {
+                // thread/start 等待期间即使用户切换了会话，首条输入也已持久化，
+                // 必须用独立会话监听继续 queue/add，不能依赖当前 selection。
+                ensureQueuedSessionMonitoring(sessionID: responseSession.id)
+                dispatchNextQueuedRunningTurnIfIdle(sessionID: responseSession.id)
             }
             registeredPermissionBoundaryClientMessageID = nil
             return true
@@ -325,11 +356,9 @@ extension SessionStore {
             }
             if let optimisticSelectionLease,
                isSelectionLeaseCurrent(optimisticSelectionLease) {
-                if Self.isCodexActiveWriterConflict(error.localizedDescription) {
-                    setErrorMessage(L10n.text("ui.codex_active_writer_conflict"))
-                } else {
-                    setErrorMessage(error.localizedDescription)
-                }
+                // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
+                // Composer 仍会错误地保持可发送状态。
+                setErrorMessage(error.localizedDescription)
             }
             return false
         }

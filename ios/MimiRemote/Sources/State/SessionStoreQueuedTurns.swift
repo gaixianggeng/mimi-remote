@@ -1,6 +1,7 @@
 import Foundation
 
 enum QueuedTurnAcceptedDisposition {
+    case serverQueued(submissionID: String)
     case awaitingStart(turnID: TurnID?)
     case guidance
     case terminal(turnID: TurnID?)
@@ -13,12 +14,11 @@ extension SessionStore {
     func dispatchNextQueuedRunningTurnIfIdle(sessionID: SessionID) {
         guard let session = sessionsByID[sessionID],
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
-              session.activeTurnID == nil,
+              queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil,
               let queue = queuedRunningTurnsBySessionID[sessionID],
               let next = queue.first,
               next.dispatchState == .waiting,
-              next.waitsForAcceptedTurnStart != true,
-              next.expectedTurnID == nil
+              next.waitsForAcceptedTurnStart != true
         else {
             return
         }
@@ -29,12 +29,18 @@ extension SessionStore {
             // 仍等待精确 started 的 orphan boundary 才能阻止后续消息越过。
             return
         }
-        guard canControlSession(session) else {
-            setStatusMessage(L10n.text("ui.message_to_be_sent_is_waiting_please_take"))
-            return
-        }
         guard let socket = socketForQueuedDispatch(sessionID: sessionID) else {
             ensureQueuedSessionMonitoring(sessionID: sessionID)
+            return
+        }
+        let usesServerQueue = socket.turnDeliveryMode == .sharedServerQueue
+            && next.intent.canGuideCurrentTurn
+            && !queuedGuidanceDispatchClientMessageIDs.contains(next.clientMessageID)
+        // shared queue 由 App Server 绑定当前 turn；expectedTurnID 只是直连 steer 的本地旧约束。
+        guard usesServerQueue || next.expectedTurnID == nil else { return }
+        guard usesServerQueue || session.activeTurnID == nil else { return }
+        guard usesServerQueue || canControlSession(session) else {
+            setStatusMessage(L10n.text("ui.message_to_be_sent_is_waiting_please_take"))
             return
         }
 
@@ -79,7 +85,13 @@ extension SessionStore {
         setForegroundActivity(.waitingForAssistant, sessionID: session.id)
 
         queuedTurnAwaitingStartSessionIDs.insert(session.id)
+        if socket.turnDeliveryMode == .sharedServerQueue {
+            queuedServerSubmissionAwaitingOutcomeBySessionID[session.id] = item.clientMessageID
+        }
         guard socket.sendTurn(item.payload, clientMessageID: item.clientMessageID) else {
+            if queuedServerSubmissionAwaitingOutcomeBySessionID[session.id] == item.clientMessageID {
+                queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: session.id)
+            }
             queuedTurnAwaitingStartSessionIDs.remove(session.id)
             markQueuedTurnWaitingAfterDefiniteFailure(
                 clientMessageID: item.clientMessageID,
@@ -133,6 +145,11 @@ extension SessionStore {
     func cancelQueuedRunningTurns(sessionID: SessionID, markMessagesFailed: Bool) {
         let queued = queuedRunningTurnsBySessionID[sessionID] ?? []
         queuedGuidanceDispatchClientMessageIDs.subtract(queued.map(\.clientMessageID))
+        if let clientMessageID = queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(
+            forKey: sessionID
+        ) {
+            queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs.remove(clientMessageID)
+        }
         _ = mutateAndPersistQueuedTurns {
             setQueuedTurns([], sessionID: sessionID)
             let waitingIDs = Set(queued.lazy.filter { $0.dispatchState == .waiting }.map(\.clientMessageID))
@@ -180,7 +197,8 @@ extension SessionStore {
 
     func ensureQueuedSessionMonitoring(sessionID: SessionID) {
         guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false
-                || queuedTurnAwaitingStartSessionIDs.contains(sessionID),
+                || queuedTurnAwaitingStartSessionIDs.contains(sessionID)
+                || queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] != nil,
               connectionTermination == nil,
               !appStore.requiresRePairing,
               appStore.isConfigured,
@@ -301,6 +319,7 @@ extension SessionStore {
     func ensureAllQueuedSessionMonitoring() {
         let sessionIDs = Set(queuedRunningTurnsBySessionID.keys)
             .union(queuedTurnAwaitingStartSessionIDs)
+            .union(queuedServerSubmissionAwaitingOutcomeBySessionID.keys)
         for sessionID in sessionIDs {
             ensureQueuedSessionMonitoring(sessionID: sessionID)
         }
@@ -313,7 +332,8 @@ extension SessionStore {
 
     func stopQueuedSessionMonitoringIfIdle(sessionID: SessionID) {
         guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false,
-              !queuedTurnAwaitingStartSessionIDs.contains(sessionID) else { return }
+              !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
+              queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil else { return }
         guard queuedSessionSockets[sessionID] != nil || queuedSessionReconnectTasks[sessionID] != nil else {
             return
         }
@@ -371,7 +391,7 @@ extension SessionStore {
         message: String
     ) {
         guard queuedRunningTurnsBySessionID[sessionID]?.contains(where: {
-            $0.dispatchState == .dispatching
+            $0.dispatchState == .dispatching && $0.serverSubmissionID == nil
         }) == true else {
             return
         }
@@ -381,7 +401,9 @@ extension SessionStore {
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         _ = mutateAndPersistQueuedTurns {
             guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
-            for index in queue.indices where queue[index].dispatchState == .dispatching {
+            for index in queue.indices
+            where queue[index].dispatchState == .dispatching
+                && queue[index].serverSubmissionID == nil {
                 queue[index].dispatchState = .needsConfirmation
                 queue[index].lastError = message
             }
@@ -407,6 +429,8 @@ extension SessionStore {
         }
 
         switch disposition {
+        case .serverQueued:
+            return disposition
         case .awaitingStart(let turnID):
             if let turnID, isTerminal(turnID) {
                 return .terminal(turnID: turnID)
@@ -460,6 +484,9 @@ extension SessionStore {
         else {
             return false
         }
+        if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
+        }
         let wasGuidance = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
         let ignoredStaleActiveTurnID: TurnID?
         if wasGuidance,
@@ -482,6 +509,8 @@ extension SessionStore {
                   queue.indices.contains(location.index) else { return }
             queue.remove(at: location.index)
             switch disposition {
+            case .serverQueued:
+                break
             case .awaitingStart(let turnID):
                 let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
                 for index in queue.indices where queue[index].dispatchState == .waiting {
@@ -517,6 +546,8 @@ extension SessionStore {
             return true
         }
         switch disposition {
+        case .serverQueued:
+            break
         case .awaitingStart(let turnID):
             if wasGuidance, let turnID {
                 // stale guidance 在 RPC 前确认 active turn 缺失后会降级为新的 turn/start。
@@ -586,6 +617,147 @@ extension SessionStore {
     }
 
     @discardableResult
+    func handleServerQueueReceiptAccepted(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        submissionID: String,
+        startedTurnID: TurnID? = nil
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
+              item.dispatchState == .dispatching || item.dispatchState == .needsConfirmation else {
+            return false
+        }
+        if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
+        }
+        let alreadyStartedTurnID = item.serverStartedTurnID ?? startedTurnID
+        if alreadyStartedTurnID != nil {
+            // queue/items reconciliation 返回的精确 started 证据强于 queue/add ACK。
+            // 直接用一次持久化事务完成该项，避免先标记 sent、后续移除失败。
+            return finishServerQueuedTurnStart(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                turnID: alreadyStartedTurnID
+            )
+        }
+        guard mutateAndPersistQueuedTurns({
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index),
+                  queue[location.index].clientMessageID == clientMessageID else { return }
+            queue[location.index].dispatchState = .dispatching
+            queue[location.index].serverSubmissionID = submissionID
+            queue[location.index].serverStartedTurnID = alreadyStartedTurnID
+            queue[location.index].lastError = nil
+            queuedRunningTurnsBySessionID[sessionID] = queue
+        }) else {
+            return false
+        }
+        conversationStore.updateSendStatus(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID,
+            status: .sent
+        )
+        conversationStore.compactTurnPayloadAfterSendAccepted(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID
+        )
+        return true
+    }
+
+    @discardableResult
+    func handleServerQueueTurnStarted(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        turnID: TurnID?
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
+              item.dispatchState == .dispatching || item.dispatchState == .needsConfirmation else {
+            return false
+        }
+        // 调用方只在 userMessage 携带精确 client ID 时进入这里。该证据足以确认
+        // App Server 已接收并启动，不依赖可能已经丢失的 queue/add ACK。
+        return finishServerQueuedTurnStart(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID,
+            turnID: turnID
+        )
+    }
+
+    @discardableResult
+    func finishServerQueuedTurnStart(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        turnID: TurnID?
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID else { return false }
+        let awaitsSubmissionOutcome = queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID]
+            == clientMessageID
+        guard mutateAndPersistQueuedTurns({
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index),
+                  queue[location.index].clientMessageID == clientMessageID else { return }
+            queue.remove(at: location.index)
+            setQueuedTurns(queue, sessionID: sessionID)
+        }) else {
+            return false
+        }
+        let markedSent = conversationStore.updateSendStatus(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID,
+            status: .sent
+        )
+        if !markedSent {
+            // 结果不确定时 UI 会先标记 failed。精确 started 已证明服务端接收，
+            // 先进入允许重试的 sending，再收敛到 sent；confirmed 仍保持终态不回退。
+            if conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .sending
+            ) {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .sent
+                )
+            }
+        }
+        conversationStore.compactTurnPayloadAfterSendAccepted(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID
+        )
+        if let turnID {
+            conversationStore.bindTurnID(
+                turnID,
+                clientMessageID: clientMessageID,
+                sessionID: sessionID
+            )
+        }
+        if awaitsSubmissionOutcome {
+            // started 是已接收的强证据，但 queue/add Task 仍可能持有 Runtime 单提交保护。
+            // 保留 session 门闩，等同一 client ID 的 outcome 回调后再推进 FIFO。
+            queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs.insert(clientMessageID)
+            return true
+        }
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+        dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
+        return true
+    }
+
+    func serverQueueDeliveryActive(sessionID: SessionID) -> Bool {
+        if connectedSessionID == sessionID {
+            return webSocket?.turnDeliveryMode == .sharedServerQueue
+        }
+        return queuedSessionSockets[sessionID]?.turnDeliveryMode == .sharedServerQueue
+    }
+
+    @discardableResult
     func handleQueuedSendFailure(
         clientMessageID: ClientMessageID,
         sessionID: SessionID,
@@ -596,6 +768,9 @@ extension SessionStore {
               queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching
         else {
             return false
+        }
+        if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
         }
         queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
         _ = mutateAndPersistQueuedTurns {
@@ -628,6 +803,9 @@ extension SessionStore {
               let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
               item.dispatchState == .dispatching else {
             return false
+        }
+        if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
         }
         // guidance fallback 已发现权威的新 active turn；清掉旧 steer 标记，
         // 后续等待项再派发时必须完全按普通 turn/start 处理。
@@ -666,6 +844,9 @@ extension SessionStore {
               location.sessionID == sessionID,
               queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching else {
             return false
+        }
+        if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
         }
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
@@ -735,27 +916,56 @@ extension SessionStore {
                     .filter { $0.dispatchState == .needsConfirmation }
                     .map(\.clientMessageID)
             )
+            let confirmedServerQueueIDs = Set(
+                currentQueue
+                    .filter { $0.dispatchState == .dispatching && $0.serverSubmissionID != nil }
+                    .map(\.clientMessageID)
+            )
+            let reconcilableIDs = ambiguousIDs.union(confirmedServerQueueIDs)
             let hasPersistedAcceptedStartBarrier = currentQueue.contains {
                 $0.dispatchState == .waiting && $0.waitsForAcceptedTurnStart == true
             }
             let hasOrphanPermissionBoundary = pendingPermissionTurnBoundariesBySessionID[sessionID]?
                 .contains(where: { !queuedClientMessageIDs.contains($0.clientMessageID) }) == true
-            if (!ambiguousIDs.isEmpty
-                    || hasOrphanPermissionBoundary
-                    || hasPersistedAcceptedStartBarrier),
-               let page = try? await client.messagesPage(
-                    sessionID: sessionID,
-                    before: nil,
-                    limit: 60,
-                    loadMode: .full
-               ) {
-                let deliveredIDs = Set(page.messages.compactMap(\.clientMessageID)).intersection(ambiguousIDs)
-                let startedTurnIDs = Set(page.messages.compactMap { message -> TurnID? in
-                    guard let turnID = message.turnID?
-                        .trimmingCharacters(in: .whitespacesAndNewlines),
-                          !turnID.isEmpty else { return nil }
-                    return turnID
-                })
+            if !reconcilableIDs.isEmpty
+                || hasOrphanPermissionBoundary
+                || hasPersistedAcceptedStartBarrier {
+                var deliveredIDs = Set<ClientMessageID>()
+                var startedTurnIDs = Set<TurnID>()
+                var before: String?
+                var seenCursors = Set<String>()
+                while true {
+                    guard let page = try? await client.messagesPage(
+                        sessionID: sessionID,
+                        before: before,
+                        limit: 60,
+                        loadMode: .full
+                    ) else { break }
+                    deliveredIDs.formUnion(
+                        Set(page.messages.compactMap(\.clientMessageID)).intersection(reconcilableIDs)
+                    )
+                    startedTurnIDs.formUnion(page.messages.compactMap { message -> TurnID? in
+                        guard let turnID = message.turnID?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                              !turnID.isEmpty else { return nil }
+                        return turnID
+                    })
+                    reconcilePendingPermissionTurnBoundaries(
+                        sessionID: sessionID,
+                        historyMessages: page.messages
+                    )
+
+                    // Durable receipt 可能早于最近一页。必须找到全部目标或读到 EOF，
+                    // 但仍只读不重发 queue/add。重复 cursor 直接停止，避免协议异常死循环。
+                    guard !reconcilableIDs.isEmpty,
+                          !reconcilableIDs.isSubset(of: deliveredIDs),
+                          page.hasMoreBefore,
+                          let cursor = page.previousCursor?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                          !cursor.isEmpty,
+                          seenCursors.insert(cursor).inserted else { break }
+                    before = cursor
+                }
                 if !deliveredIDs.isEmpty || !startedTurnIDs.isEmpty {
                     _ = mutateAndPersistQueuedTurns {
                         guard var queue = queuedRunningTurnsBySessionID[sessionID] else { return }
@@ -770,10 +980,6 @@ extension SessionStore {
                         setQueuedTurns(queue, sessionID: sessionID)
                     }
                 }
-                reconcilePendingPermissionTurnBoundaries(
-                    sessionID: sessionID,
-                    historyMessages: page.messages
-                )
             }
 
             guard let authoritativeSession,
@@ -807,6 +1013,34 @@ extension SessionStore {
         sessionID: SessionID,
         outcome: TurnSendOutcome
     ) {
+        let resolvedServerSubmissionClientMessageID: ClientMessageID?
+        if let clientMessageID,
+           queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
+            queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
+            resolvedServerSubmissionClientMessageID = clientMessageID
+        } else {
+            resolvedServerSubmissionClientMessageID = nil
+        }
+        if let resolvedServerSubmissionClientMessageID,
+           queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs.remove(
+               resolvedServerSubmissionClientMessageID
+           ) != nil {
+            // 精确 started 已确认服务端接收。迟到 outcome 只释放 RPC 门闩，
+            // 即使它报告 uncertain/rejected，也不能把更强的 started 证据降级为失败。
+            if case .serverQueued(_, let startedTurnID) = outcome,
+               let startedTurnID {
+                conversationStore.bindTurnID(
+                    startedTurnID,
+                    clientMessageID: resolvedServerSubmissionClientMessageID,
+                    sessionID: sessionID
+                )
+            }
+            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+            stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
+            return
+        }
         let acceptedTurnID: TurnID?
         switch outcome {
         case .accepted(let turnID),
@@ -815,7 +1049,8 @@ extension SessionStore {
             acceptedTurnID = turnID
         case .acceptedSuperseded(let turnID, _):
             acceptedTurnID = turnID
-        case .guidanceAccepted,
+        case .serverQueued,
+             .guidanceAccepted,
              .activeTurnConflict,
              .rejected,
              .uncertain:
@@ -883,12 +1118,21 @@ extension SessionStore {
                     session.status = "closed"
                     session.activeTurnID = nil
                 }
-            case .awaitingStart, .guidance:
+            case .awaitingStart, .guidance, .serverQueued:
                 break
             }
         }
 
         switch outcome {
+        case .serverQueued(let submissionID, let startedTurnID):
+            _ = handleServerQueueReceiptAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                submissionID: submissionID,
+                startedTurnID: startedTurnID
+            )
+            // queue/add ACK 只有在 receipt 持久化成功后才能推进发送状态。
+            // 持久化失败时保留 sending，不能用内存态冒充可恢复确认。
         case .accepted(let turnID):
             finishAccepted(.awaitingStart(turnID: turnID))
         case .acceptedTerminal(let turnID):

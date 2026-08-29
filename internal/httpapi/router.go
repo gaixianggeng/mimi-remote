@@ -85,6 +85,7 @@ type Router struct {
 	gatewayThreads                map[string]appServerGatewayAllowedThread
 	codexGatewayMu                sync.Mutex
 	activeCodexGateway            int
+	appServerSSH                  appServerSSHTransport
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
 	claudeMu                      sync.Mutex
@@ -107,7 +108,13 @@ type Router struct {
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
-	ConfigPath string
+	ConfigPath   string
+	AppServerSSH appServerSSHTransport
+}
+
+type appServerSSHTransport interface {
+	EnsureReady(context.Context) error
+	WebSocketDialer(time.Duration) (websocket.Dialer, error)
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -185,6 +192,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
+		appServerSSH:                options.AppServerSSH,
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)

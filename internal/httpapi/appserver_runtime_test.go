@@ -321,26 +321,29 @@ func TestCodexAppServerRuntimeMessagesPaginatesThreadReadTurns(t *testing.T) {
 	startedAt := int64(1_780_300_000)
 	completedAt := int64(1_780_300_002)
 	fake.handler = func(method string, params map[string]any, result any) error {
-		if method != "thread/read" || params["threadId"] != "thread-msg" || params["includeTurns"] != true {
-			t.Fatalf("messages 必须通过 thread/read(includeTurns=true) 读取：method=%s params=%v", method, params)
-		}
-		*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
-			ID:        "thread-msg",
-			CWD:       project.RealPath,
-			CreatedAt: startedAt,
-			UpdatedAt: completedAt,
-			Status:    appServerThreadStatus{Type: "idle"},
-			Turns: []appServerTurn{{
+		switch method {
+		case "thread/read":
+			if params["threadId"] != "thread-msg" || params["includeTurns"] != false {
+				t.Fatalf("thread/read 必须禁用 full-history：%v", params)
+			}
+			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+				ID: "thread-msg", CWD: project.RealPath, CreatedAt: startedAt, UpdatedAt: completedAt, Status: appServerThreadStatus{Type: "idle"},
+			}}
+		case "thread/turns/list":
+			*(result.(*appServerTurnListPage)) = appServerTurnListPage{Data: []appServerTurn{{
 				ID:          "turn-msg",
 				Status:      "completed",
 				StartedAt:   &startedAt,
 				CompletedAt: &completedAt,
-				Items: []appServerThreadItem{
-					{Type: "userMessage", ID: "user-1", ClientID: "client-1", Content: []appServerUserInput{{Type: "text", Text: "hi"}}},
-					{Type: "agentMessage", ID: "assistant-1", Text: "hello"},
-				},
-			}},
-		}}
+			}}}
+		case "thread/items/list":
+			*(result.(*appServerItemListPage)) = appServerItemListPage{Data: []appServerThreadItemEntry{
+				{TurnID: "turn-msg", Item: appServerThreadItem{Type: "userMessage", ID: "user-1", ClientID: "client-1", Content: []appServerUserInput{{Type: "text", Text: "hi"}}}},
+				{TurnID: "turn-msg", Item: appServerThreadItem{Type: "agentMessage", ID: "assistant-1", Text: "hello"}},
+			}}
+		default:
+			t.Fatalf("不期望调用 method=%s params=%v", method, params)
+		}
 		return nil
 	}
 
@@ -397,6 +400,10 @@ func TestCodexAppServerRuntimeTokenUsageNotificationUpdatesSessionRow(t *testing
 				UpdatedAt: 1_780_300_010,
 				Status:    appServerThreadStatus{Type: "active"},
 			}}
+		case "thread/turns/list":
+			*(result.(*appServerTurnListPage)) = appServerTurnListPage{Data: []appServerTurn{{ID: "turn-usage", Status: "inProgress"}}}
+		case "thread/items/list":
+			*(result.(*appServerItemListPage)) = appServerItemListPage{}
 		default:
 			t.Fatalf("不期望调用 method=%s params=%v", method, params)
 		}

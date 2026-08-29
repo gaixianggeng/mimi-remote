@@ -178,8 +178,9 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
 		}
-	case "thread/read", "thread/turns/list", "thread/name/set", "thread/compact/start", "thread/unsubscribe",
-		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start":
+	case "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/settings/update",
+		"thread/name/set", "thread/compact/start", "thread/unsubscribe", "thread/goal/get", "thread/goal/set",
+		"thread/goal/clear", "review/start":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
@@ -206,6 +207,31 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				method: method, threadID: threadID,
 			}); err != nil {
 				return err
+			}
+		}
+		if method == "thread/items/list" || method == "thread/queue/list" {
+			if err := validateGatewaySimplePageParams(method, params, 250); err != nil {
+				return err
+			}
+		}
+		if method == "thread/items/list" {
+			if turnID, exists := params["turnId"]; exists && turnID != nil {
+				if text, ok := turnID.(string); !ok || strings.TrimSpace(text) == "" {
+					return fmt.Errorf("thread/items/list.turnId 必须是非空字符串或 null")
+				}
+			}
+			if direction, exists := params["sortDirection"]; exists && direction != nil {
+				if text, ok := direction.(string); !ok || (text != "asc" && text != "desc") {
+					return fmt.Errorf("thread/items/list.sortDirection 只支持 asc/desc")
+				}
+			}
+		}
+		if method == "thread/settings/update" {
+			if gatewayThreadRejectsWrites(thread) {
+				return fmt.Errorf("%s.threadId 是只读子会话，不能修改设置", method)
+			}
+			if validated.hasCWD && (!scopeOK || scope.id != thread.scopeID) {
+				return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 			}
 		}
 		if method == "thread/goal/set" {
@@ -252,6 +278,24 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 		}
+	case "thread/queue/add":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能接受输入", method)
+		}
+		if _, ok := gatewayStringParam(params, "clientUserMessageId"); !ok {
+			return fmt.Errorf("%s.clientUserMessageId 不能为空", method)
+		}
+		if err := p.validateThreadInputPaths(method, params, thread); err != nil {
+			return err
+		}
 	case "turn/steer":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
@@ -292,11 +336,26 @@ func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
 
 func gatewayMethodMutatesThread(method string) bool {
 	switch method {
-	case "thread/name/set", "thread/compact/start", "thread/goal/set", "thread/goal/clear", "review/start":
+	case "thread/name/set", "thread/compact/start", "thread/goal/set", "thread/goal/clear", "thread/settings/update", "review/start":
 		return true
 	default:
 		return false
 	}
+}
+
+func validateGatewaySimplePageParams(method string, params map[string]any, maxLimit int64) error {
+	if value, ok := params["limit"]; ok && value != nil {
+		limit, valid := gatewayJSONNumberInt64(value)
+		if !valid || limit <= 0 || limit > maxLimit {
+			return fmt.Errorf("%s.limit 必须是 1 到 %d 的整数", method, maxLimit)
+		}
+	}
+	if value, ok := params["cursor"]; ok && value != nil {
+		if text, valid := value.(string); !valid || strings.TrimSpace(text) == "" || len(text) > 2048 {
+			return fmt.Errorf("%s.cursor 必须是有效游标", method)
+		}
+	}
+	return nil
 }
 
 func (p *appServerGatewayPolicy) validateThreadInputPaths(method string, params map[string]any, thread appServerGatewayAllowedThread) error {
@@ -633,9 +692,17 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "thread/search":
 		sanitized = sanitizedGatewayThreadSearchParams(params)
 	case "thread/read":
-		sanitized = copyGatewayParams(params, "threadId", "includeTurns")
+		sanitized = map[string]any{"threadId": params["threadId"], "includeTurns": false}
 	case "thread/turns/list":
 		sanitized = sanitizedGatewayThreadTurnsListParams(params)
+	case "thread/items/list":
+		sanitized = copyGatewayParams(params, "threadId", "turnId", "cursor", "limit", "sortDirection")
+	case "thread/queue/list":
+		sanitized = copyGatewayParams(params, "threadId", "cursor", "limit")
+	case "thread/queue/add":
+		sanitized = copyGatewayParams(params, "threadId", "input", "clientUserMessageId")
+	case "thread/settings/update":
+		sanitized = sanitizedGatewayThreadSettingsParams(runtimeID, params, validated.cwd)
 	case "thread/goal/get", "thread/goal/clear":
 		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/goal/set":
@@ -1193,24 +1260,26 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	}
 	workspaceWrite := false
 	fullAccess := false
-	if method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params) {
-		// 只沿用已有 Thread 的文件系统 sandbox / permission profile。远端审批策略仍必须
-		// 由可信 gateway 显式覆盖，不能继承本地创建 Thread 时可能使用的 never。
-	} else if runtimeID == "codex" {
-		if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
-			safe["permissions"] = profileID
-			fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
+	preserveSettings := method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params)
+	// 被动恢复只建立订阅，不能改写共享 Thread 的权限或审批设置。
+	// 用户明确修改设置时应单独调用 thread/settings/update。
+	if !preserveSettings {
+		if runtimeID == "codex" {
+			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+				safe["permissions"] = profileID
+				fullAccess = strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
+			} else {
+				safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
+				workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+				requestedSandbox, requestedSandboxOK := gatewayStringParam(params, "sandbox")
+				fullAccess = requestedSandboxOK && normalizePolicyValue(requestedSandbox) == "dangerfullaccess"
+			}
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
-			requestedSandbox, requestedSandboxOK := gatewayStringParam(params, "sandbox")
-			fullAccess = requestedSandboxOK && normalizePolicyValue(requestedSandbox) == "dangerfullaccess"
 		}
-	} else {
-		safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
-		workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	return safe
 }
 
@@ -1259,7 +1328,8 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 	}
 	workspaceWrite := false
 	fullAccess := false
-	if !gatewayPreservesThreadPermissionSettings(params) {
+	preserveSettings := gatewayPreservesThreadPermissionSettings(params)
+	if !preserveSettings {
 		if runtimeID == "codex" {
 			if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
 				safe["permissions"] = profileID
@@ -1277,8 +1347,8 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
 		}
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
-	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
 	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
 		safe["effort"] = defaultCodexReasoningEffort
@@ -1293,6 +1363,28 @@ func gatewayPreservesThreadPermissionSettings(params map[string]any) bool {
 
 func sanitizedGatewayTurnSteerParams(params map[string]any) map[string]any {
 	return copyGatewayParams(params, "threadId", "input", "clientUserMessageId", "expectedTurnId")
+}
+
+func sanitizedGatewayThreadSettingsParams(runtimeID string, params map[string]any, cwd string) map[string]any {
+	safe := copyGatewayParams(params, "threadId", "cwd", "model", "serviceTier", "effort", "summary", "personality")
+	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
+		safe["collaborationMode"] = collaborationMode
+	}
+	workspaceWrite := false
+	fullAccess := false
+	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+		safe["permissions"] = profileID
+		fullAccess = strings.EqualFold(profileID, ":danger-full-access")
+	} else if value, exists := params["sandboxPolicy"]; exists && value != nil {
+		safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, value, cwd)
+		policy := safe["sandboxPolicy"].(map[string]any)
+		workspaceWrite = normalizePolicyValue(policy["type"].(string)) == "workspacewrite"
+		fullAccess = normalizePolicyValue(policy["type"].(string)) == "dangerfullaccess"
+	}
+	if _, exists := params["approvalPolicy"]; exists {
+		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
+	}
+	return safe
 }
 
 func logGatewayForwardedClientTurnSummary(method string, payload []byte) {

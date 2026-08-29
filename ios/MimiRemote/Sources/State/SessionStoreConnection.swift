@@ -387,6 +387,7 @@ extension SessionStore {
             }
             cancelWebSocketReconnect(resetAttempts: false)
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+            setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
@@ -398,6 +399,9 @@ extension SessionStore {
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+            if activeWriterConflict {
+                setActiveWriterConflict(true, sessionID: sessionID)
+            }
             // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
             // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动。
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
@@ -428,6 +432,7 @@ extension SessionStore {
                 }
             }
         case .terminated(let reason):
+            setActiveWriterConflict(false, sessionID: sessionID)
             if reason == .credentialsInvalid,
                !appStore.isCurrentCredentialFingerprint(connectedCredentialFingerprint) {
                 // 旧 Runtime/空 Token 的迟到拒绝不是当前凭据结论；按普通断线交给现有恢复链路。
@@ -825,6 +830,15 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
+        if case .messageCompleted(let message, let metadata) = event,
+           message.role == .user,
+           let clientMessageID = metadata.clientMessageID {
+            _ = handleServerQueueTurnStarted(
+                clientMessageID: clientMessageID,
+                sessionID: metadata.sessionID ?? sessionID,
+                turnID: metadata.turnID
+            )
+        }
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
             _ = satisfyPendingPermissionTurnBoundary(
@@ -832,13 +846,20 @@ extension SessionStore {
                 clientMessageID: metadata.clientMessageID
             )
             if let turnID = metadata.turnID {
-                queuedTurnAwaitingStartSessionIDs.remove(id)
-                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                let hasPendingServerQueueReceipt = serverQueueDeliveryActive(sessionID: id)
+                    && queuedRunningTurnsBySessionID[id]?.contains(where: {
+                        $0.dispatchState == .dispatching
+                    }) == true
+                if !hasPendingServerQueueReceipt {
+                    queuedTurnAwaitingStartSessionIDs.remove(id)
+                    queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                }
                 queuedTurnStartedIDBySessionID[id] = turnID
                 // 第一条已派发时，后续队列项统一改为等待这个新 turn；不能继续绑定旧完成事件。
                 _ = mutateAndPersistQueuedTurns {
                     guard var queue = queuedRunningTurnsBySessionID[id] else { return }
-                    for index in queue.indices where queue[index].dispatchState == .waiting {
+                    for index in queue.indices
+                    where queue[index].dispatchState == .waiting {
                         queue[index].expectedTurnID = turnID
                         queue[index].waitsForAcceptedTurnStart = nil
                         queue[index].blockedCompletionID = nil
@@ -2376,8 +2397,12 @@ extension SessionStore {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
+        let activeWriterConflict = value.map(Self.isCodexActiveWriterConflict) == true
+        if activeWriterConflict, let selectedSessionID {
+            setActiveWriterConflict(true, sessionID: selectedSessionID)
+        }
         let userFacingValue: String?
-        if let value, Self.isCodexActiveWriterConflict(value) {
+        if activeWriterConflict {
             userFacingValue = L10n.text("ui.codex_active_writer_conflict")
         } else {
             userFacingValue = value

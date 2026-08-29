@@ -107,7 +107,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.sessions.map(\.id), ["legacy-thread"])
     }
 
-    func testDirectRuntimeUsesPagedThreadTurnsListWhenGatewayAllowsIt() async throws {
+    func testDirectRuntimeFullHistoryPagesTurnsAndAllItemsInLargeTurn() async throws {
         let project = AgentProject(id: "proj_turn_pages", name: "Turn Pages", path: "/tmp/turn-pages")
         let transport = FakeCodexAppServerTransport()
         let allowedMethods = [
@@ -142,8 +142,20 @@ extension ConversationDataFlowTests {
         let firstTurnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 50)
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
-        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_new","items":[{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]},{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}]},{"id":"turn_old","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor","backwardsCursor":"newer-cursor"}}"#)
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_large","started_at":1780490300,"completed_at":1780490301}],"nextCursor":"older-cursor"}}"#)
+
+        let firstItemsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/items/list")
+        XCTAssertNil(firstItemsRequest.params?.objectValue?["cursor"])
+        let sentBeforeSecondItems = await transport.sentMessages().count
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}}],"nextCursor":"items-2"}}"#)
+        let secondItemsRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/items/list",
+            after: sentBeforeSecondItems
+        )
+        XCTAssertEqual(secondItemsRequest.params?.objectValue?["cursor"]?.stringValue, "items-2")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: secondItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}}],"nextCursor":null}}"#)
 
         let firstPage = try await firstPageTask.value
         XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2", "m3", "m4"])
@@ -165,7 +177,14 @@ extension ConversationDataFlowTests {
             after: sentBeforeEarlierPage
         )
         XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["cursor"]?.stringValue, "older-cursor")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200,"items":[{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]}]}],"nextCursor":null,"backwardsCursor":"mid-cursor"}}"#)
+        let sentBeforeEarlierItems = await transport.sentMessages().count
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200}],"nextCursor":null}}"#)
+        let earlierItemsRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/items/list",
+            after: sentBeforeEarlierItems
+        )
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierItemsRequest.id)),"result":{"data":[{"turnId":"turn_earliest","item":{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]}}],"nextCursor":null}}"#)
 
         let earlierPage = try await earlierPageTask.value
         XCTAssertEqual(earlierPage.messages.map(\.content), ["m0"])
@@ -435,57 +454,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.loadMode, .economy)
         XCTAssertEqual(page.notice, L10n.text("ui.this_session_contains_large_images_or_tool_output"))
         XCTAssertTrue(page.hasMoreBefore)
-    }
-
-    func testDirectRuntimeThreadReadBackfillsHistoryContextFromTurns() async throws {
-        let project = AgentProject(id: "proj_context", name: "Context", path: "/tmp/context")
-        let transport = FakeCodexAppServerTransport()
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "outer-token",
-            transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
-        )
-        let client = CodexAppServerSessionAPIClient(runtime: runtime)
-
-        let firstPageTask = Task {
-            try await client.messagesPage(sessionID: "thr_context", before: nil, limit: 2)
-        }
-
-        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
-        let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
-
-        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
-        let read = try decodeAppServerRequest(readMessages[2])
-        XCTAssertEqual(read.method, "thread/read")
-        XCTAssertEqual(read.params?.objectValue?["includeTurns"]?.boolValue, true)
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_context","sessionId":"thr_context","preview":"context","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"idle"},"path":null,"cwd":"/tmp/context","cliVersion":"0.0.0","source":{"custom":"vscode"},"threadSource":"user","forkedFromId":"thr_parent","name":"context","turns":[{"id":"turn_context","startedAt":1780490200,"completedAt":1780490201,"status":"completed","items":[{"type":"userMessage","id":"user_context","content":[{"type":"text","text":"检查右栏 context"}]},{"type":"commandExecution","id":"cmd_context","command":"go test ./...","cwd":"/tmp/context","status":"completed","commandActions":[]},{"type":"fileChange","id":"file_context","status":"modified","changes":[{"path":"Sources/App.swift","kind":"modified"}]},{"type":"mcpToolCall","id":"mcp_context","server":"figma","tool":"get_design","pluginId":"figma","status":"completed"},{"type":"dynamicToolCall","id":"dyn_context","namespace":"tool_search","tool":"tool_search_tool","pluginId":"browser","status":"completed"},{"type":"collabAgentToolCall","id":"sub_context","tool":"Zeno","agentNickname":"Zeno","agentRole":"review","childThreadId":"thr_child","status":"completed"},{"type":"webSearch","id":"web_context","query":"SwiftUI Inspector","status":"completed"},{"type":"agentMessage","id":"assistant_context","text":"已完成 context 检查","phase":"final_answer"}]}]}}}"#)
-
-        let firstPage = try await firstPageTask.value
-        let context = try XCTUnwrap(firstPage.context)
-        XCTAssertEqual(context.sessionID, "thr_context")
-        XCTAssertEqual(context.environment?.cwd, "/tmp/context")
-        XCTAssertEqual(context.sources.map(\.id), ["session_source", "thread_source", "forked_from"])
-        XCTAssertEqual(context.sources.first?.label, "vscode")
-        XCTAssertTrue(context.tasks.contains { $0.id == "cmd_context" && $0.kind == "command" && $0.title == "go test ./..." })
-        XCTAssertTrue(context.tasks.contains { $0.id == "file_context" && $0.kind == "file_change" })
-        XCTAssertTrue(context.tasks.contains { $0.id == "mcp_context" && $0.kind == "mcp_tool" })
-        XCTAssertTrue(context.tasks.contains { $0.id == "dyn_context" && $0.kind == "dynamic_tool" })
-        XCTAssertTrue(context.tasks.contains { $0.id == "sub_context" && $0.kind == "subagent" })
-        XCTAssertTrue(context.tasks.contains { $0.id == "web_context" && $0.kind == "web_search" })
-        XCTAssertEqual(context.subagents.first?.id, "thr_child")
-        XCTAssertEqual(context.subagents.first?.parentThreadID, "thr_context")
-        XCTAssertEqual(context.subagents.first?.displayName, "Zeno")
-
-        let cursor = try XCTUnwrap(firstPage.previousCursor)
-        let earlier = try await client.messagesPage(sessionID: "thr_context", before: cursor, limit: 2)
-        XCTAssertEqual(earlier.context?.subagents.first?.id, "thr_child")
-
-        let sent = await transport.sentMessages()
-        let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
-        XCTAssertEqual(threadReadCount, 1, "翻看更早历史应复用 history/context 缓存")
+        let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requests.contains { $0.method == "thread/items/list" })
     }
 
     func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
@@ -563,7 +533,7 @@ extension ConversationDataFlowTests {
     // serverRequest/replay 把未应答的请求推回来。这条路必须绕开僵尸审批检查——
     // Claude bridge 把停在审批上的线程仍报成 idle，走那个检查会把真正在等的提示
     // 直接 decline 掉，用户看到的就是一个永远不动的任务。
-    func testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread() async throws {
+    func testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread() async throws {
         let project = AgentProject(id: "proj_replay", name: "Replay", path: "/tmp/replay")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -613,15 +583,13 @@ extension ConversationDataFlowTests {
 
         transport.enqueue(#"{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_replay","turnId":"turn_live","itemId":"cmd_live","command":"cargo install --path ."}}]}}"#)
 
-        for _ in 0..<200 where !events.contains(where: { if case .approvalRequest = $0 { return true } else { return false } }) {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertTrue(events.contains {
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(events.contains {
             if case .approvalRequest = $0 {
                 return true
             }
             return false
-        }, "重放的未应答审批应当重新弹出审批卡")
+        }, "idle thread 上无法绑定当前 turn 的 replay 属于 stale 请求，必须保持沉默")
 
         // 它是活的，不能被当成僵尸请求自动 decline 掉。
         let sent = await transport.sentMessages()
@@ -683,9 +651,12 @@ extension ConversationDataFlowTests {
         // 模拟 app-server 在 resume 时重放一个早已被放弃的审批：thread 当前权威状态是 idle、没有活跃 turn。
         transport.enqueue(#"{"id":4242,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_stale","turnId":"turn_dead","itemId":"cmd_dead","command":"xcrun devicectl list devices"}}"#)
 
-        // 运行时应当直接回 decline 把僵尸请求从 app-server 挂起表里释放，而不是把它当成有效审批弹给 UI。
-        let release = try await waitForFakeAppServerResponse(transport, id: .int(4242))
-        XCTAssertEqual(release.result?["decision"]?.stringValue, "decline")
+        // 其他入口或私有扩展产生的过期请求必须保持沉默，不能替用户自动拒绝。
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let staleResponses = await transport.sentMessages().compactMap {
+            try? AgentAPIClient.decoder.decode(CodexAppServerResponse.self, from: Data($0.utf8))
+        }
+        XCTAssertFalse(staleResponses.contains { $0.id == .int(4242) })
 
         XCTAssertFalse(events.contains {
             if case .approvalRequest = $0 {
@@ -746,23 +717,11 @@ extension ConversationDataFlowTests {
         // 真实现场：thread 当前有新的 active turn，但 app-server 还重放旧 turn 的未决审批。
         transport.enqueue(#"{"id":5151,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_stale_turn","turnId":"turn_old","itemId":"cmd_old","command":"/bin/zsh -lc 'xcrun devicectl list devices'"}}"#)
 
-        let release = try await waitForFakeAppServerResponse(transport, id: .int(5151))
-        XCTAssertEqual(release.result?["decision"]?.stringValue, "decline")
-
-        for _ in 0..<200 where !events.contains(where: {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_stale_turn"
-            }
-            return false
-        }) {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let staleResponses = await transport.sentMessages().compactMap {
+            try? AgentAPIClient.decoder.decode(CodexAppServerResponse.self, from: Data($0.utf8))
         }
-        XCTAssertTrue(events.contains {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_stale_turn"
-            }
-            return false
-        })
+        XCTAssertFalse(staleResponses.contains { $0.id == .int(5151) })
         XCTAssertFalse(events.contains {
             if case .approvalRequest = $0 {
                 return true
@@ -900,21 +859,13 @@ extension ConversationDataFlowTests {
 
         transport.enqueue(#"{"id":6161,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_stale_cached_turn","turnId":"turn_old","itemId":"cmd_old","command":"/bin/zsh -lc 'xcrun devicectl list devices'"}}"#)
 
-        let release = try await waitForFakeAppServerResponse(transport, id: .int(6161))
-        XCTAssertEqual(release.result?["decision"]?.stringValue, "decline")
-
-        for _ in 0..<200 where !events.contains(where: {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_stale_cached_turn"
-            }
-            return false
-        }) {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let responses = await transport.sentMessages().compactMap {
+            try? AgentAPIClient.decoder.decode(CodexAppServerResponse.self, from: Data($0.utf8))
         }
-        XCTAssertTrue(events.contains {
-            if case .approvalResolved(let metadata) = $0 {
-                return metadata.sessionID == "thr_stale_cached_turn"
-            }
+        XCTAssertFalse(responses.contains { $0.id == .int(6161) })
+        XCTAssertFalse(events.contains {
+            if case .approvalResolved = $0 { return true }
             return false
         })
         XCTAssertFalse(events.contains {
@@ -1204,7 +1155,7 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(ready)
     }
 
-    func testAuthoritativeThreadReadRecoversMissingTurnCompleted() async throws {
+    func testAuthoritativePagedTurnsRecoverMissingTurnCompleted() async throws {
         let project = AgentProject(id: "proj_snapshot_completion", name: "Snapshot Completion", path: "/tmp/snapshot-completion")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -1257,11 +1208,11 @@ extension ConversationDataFlowTests {
                 loadMode: .full
             )
         }
-        let activeReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 3)
+        let activeReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: 3)
         transportResponse(
             transport,
             id: activeReadRequest.id,
-            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"active"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"inProgress","items":[]}]}}"#
+            result: #"{"data":[{"id":"turn_snapshot_old","status":"inProgress","items":[]}],"nextCursor":null}"#
         )
         _ = try await activeHistoryTask.value
         try await Task.sleep(nanoseconds: 80_000_000)
@@ -1275,11 +1226,11 @@ extension ConversationDataFlowTests {
                 loadMode: .full
             )
         }
-        let completedReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 4)
+        let completedReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: 5)
         transportResponse(
             transport,
             id: completedReadRequest.id,
-            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"interrupted","completedAt":1780490202,"items":[]}]}}"#
+            result: #"{"data":[{"id":"turn_snapshot_old","status":"interrupted","completedAt":1780490202,"items":[]}],"nextCursor":null}"#
         )
         _ = try await completedHistoryTask.value
         await fulfillment(of: [recovered], timeout: 1)
@@ -1677,10 +1628,8 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(historySession.isRunning)
 
         let selectTask = Task { await store.selectSession(historySession) }
-        let historyReadMessages = try await waitForFakeAppServerMessages(transport, count: 4)
-        let historyRead = try decodeAppServerRequest(historyReadMessages[3])
-        XCTAssertEqual(historyRead.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: historyRead.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
+        let historyRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportResponse(transport, id: historyRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         await selectTask.value
         try await waitForWebSocketStatus(.connected, store: store)
 

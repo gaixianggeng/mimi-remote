@@ -262,7 +262,7 @@ main() {
     return
   fi
 
-  for command_name in cmp grep id install journalctl mkdir mktemp mv rm sleep systemctl uname; do
+  for command_name in cmp grep id install journalctl mkdir mktemp mv rm sleep ssh systemctl uname; do
     require_command "$command_name"
   done
   normalize_arch "$(uname -m)" >/dev/null \
@@ -295,6 +295,7 @@ main() {
   local was_enabled="0"
   local was_active="0"
   local created_config="0"
+  local app_server_ssh_target="${AGENTD_APP_SERVER_SSH_TARGET:-127.0.0.1}"
 
   cleanup() {
     rm -rf "$work_dir"
@@ -337,6 +338,20 @@ main() {
   trap cleanup EXIT
   trap rollback_on_error ERR
 
+  # 在替换二进制、unit 或服务状态前，用候选版本完成真实 SSH、Codex 版本和
+  # App Server initialize 预检。临时配置随 work_dir 删除，不接触现有配对信息。
+  local preflight_dir="$work_dir/ssh-preflight"
+  mkdir -p "$preflight_dir"
+  if ! "$source_binary" setup \
+    --config "$preflight_dir/config.json" \
+    --scan-root "$HOME" \
+    --browse-root "$HOME" \
+    --listen 127.0.0.1:8787 \
+    --app-server-ssh-target "$app_server_ssh_target" \
+    >/dev/null 2>&1; then
+    fail "共享 SSH App Server 预检失败；请先确认 ssh ${app_server_ssh_target} codex --version 可无交互执行。"
+  fi
+
   mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/code"
   install -m 755 "$source_binary" "$work_dir/agentd.source"
   install -m 644 "$source_service" "$work_dir/service.source"
@@ -377,9 +392,13 @@ main() {
     created_config="1"
     # setup 的普通输出包含长期 Token 和尚未就绪的二维码；首次安装先静默建配置，
     # 只有服务通过真实 readiness 且事务提交后才在终端展示配对信息。
-    "$destination_binary" setup --scan-root "$HOME/code" --browse-root "$HOME" >/dev/null
+    "$destination_binary" setup \
+      --scan-root "$HOME/code" \
+      --browse-root "$HOME" \
+      --app-server-ssh-target "$app_server_ssh_target" \
+      >/dev/null
   fi
-  "$destination_binary" doctor --fix
+  AGENTD_APP_SERVER_SSH_TARGET="$app_server_ssh_target" "$destination_binary" doctor --fix
 
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE_NAME"

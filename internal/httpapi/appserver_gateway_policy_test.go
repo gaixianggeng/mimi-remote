@@ -1481,8 +1481,8 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	}
 	threadReadParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
 	assertGatewayParamsOnly(t, threadReadParams, "threadId", "includeTurns")
-	if threadReadParams["threadId"] != "thread-sanitize" || threadReadParams["includeTurns"] != true {
-		t.Fatalf("thread/read 合法参数应保留：%v", threadReadParams)
+	if threadReadParams["threadId"] != "thread-sanitize" || threadReadParams["includeTurns"] != false {
+		t.Fatalf("thread/read 必须禁用 full-history hydration：%v", threadReadParams)
 	}
 
 	threadTurnsList := []byte(`{"id":650,"method":"thread/turns/list","params":{"threadId":"thread-sanitize","limit":40,"cursor":"older","sortDirection":"desc","itemsView":"full",` + dangerousTail + `}}`)
@@ -1829,11 +1829,8 @@ func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *test
 		id := index + 100
 		payload := []byte(fmt.Sprintf(`{"id":%d,"method":%q,"params":{}}`, id, method))
 		_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
-		if forward || policyErr == nil || !strings.Contains(policyErr.message, "尚未被移动端支持") {
-			t.Fatalf("未支持 server request 应 fail-closed method=%s forward=%v err=%+v", method, forward, policyErr)
-		}
-		if policyErr.data["reason"] != "unsupported_server_request" || policyErr.data["method"] != method {
-			t.Fatalf("未支持 server request 错误数据异常 method=%s data=%v", method, policyErr.data)
+		if forward || policyErr != nil {
+			t.Fatalf("未支持 server request 应保持沉默 method=%s forward=%v err=%+v", method, forward, policyErr)
 		}
 	}
 }
@@ -1881,24 +1878,14 @@ func TestAppServerGatewayRejectsUnsupportedServerRequestBackToUpstream(t *testin
 		t.Fatalf("initialize 应先转发给 upstream：got=%s", got)
 	}
 
-	upstreamError := readUpstreamFrame(t, received)
-	var frame struct {
-		ID    json.RawMessage `json:"id"`
-		Error struct {
-			Code    int            `json:"code"`
-			Message string         `json:"message"`
-			Data    map[string]any `json:"data"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(upstreamError, &frame); err != nil {
-		t.Fatalf("upstream error 不是合法 JSON：%v raw=%s", err, upstreamError)
-	}
-	if string(frame.ID) != `"clock-1"` || frame.Error.Code != appServerPolicyErrorCode || frame.Error.Data["reason"] != "unsupported_server_request" {
-		t.Fatalf("gateway 应向 upstream 返回同 id fail-closed error：%s", upstreamError)
+	select {
+	case upstreamReply := <-received:
+		t.Fatalf("未知私有请求必须保持沉默，不能回复 upstream：%s", upstreamReply)
+	case <-time.After(150 * time.Millisecond):
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
 	if _, payload, err := conn.ReadMessage(); err == nil {
-		t.Fatalf("未支持 server request 不应转发给移动端：%s", payload)
+		t.Fatalf("未知私有请求不能转发给移动端：%s", payload)
 	}
 }
 
@@ -2113,7 +2100,7 @@ func TestAppServerGatewayUsesNamedPermissionProfileWithoutLegacySandbox(t *testi
 	}
 }
 
-func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMarker(t *testing.T) {
+func TestAppServerGatewayPreservesExistingThreadSettingsWithoutForwardingMarker(t *testing.T) {
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-preserve")
@@ -2146,12 +2133,15 @@ func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMark
 		t.Fatal(err)
 	}
 	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
-	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "approvalPolicy", "approvalsReviewer", "effort")
+	assertGatewayParamsOnly(t, params, "threadId", "cwd", "input", "effort")
 	if params["threadId"] != "thread-preserve" || params["cwd"] != projectDir {
 		t.Fatalf("turn/start 必须保留 Thread 与授权工作区：%v", params)
 	}
-	if params["approvalPolicy"] != "on-request" || params["approvalsReviewer"] != "user" {
-		t.Fatalf("turn/start 沿用文件权限时仍必须强制远端审批：%v", params)
+	if _, exists := params["approvalPolicy"]; exists {
+		t.Fatalf("turn/start 沿用 Thread 设置时不得改写审批策略：%v", params)
+	}
+	if _, exists := params["approvalsReviewer"]; exists {
+		t.Fatalf("turn/start 沿用 Thread 设置时不得改写审批人：%v", params)
 	}
 
 	resumeParams := sanitizedGatewayThreadParams("codex", "thread/resume", map[string]any{
@@ -2160,9 +2150,14 @@ func TestAppServerGatewayPreservesExistingThreadPermissionsWithoutForwardingMark
 		"initialTurnsPage":                    map[string]any{"limit": float64(5), "itemsView": "summary"},
 		gatewayPreserveThreadPermissionsParam: true,
 	})
-	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage", "approvalPolicy", "approvalsReviewer")
-	if resumeParams["approvalPolicy"] != "on-request" || resumeParams["approvalsReviewer"] != "user" {
-		t.Fatalf("thread/resume 沿用文件权限时仍必须覆盖本地审批策略：%v", resumeParams)
+	assertGatewayParamsOnly(t, resumeParams, "threadId", "cwd", "excludeTurns", "initialTurnsPage")
+
+	settingsParams := sanitizedGatewayThreadSettingsParams("codex", map[string]any{
+		"threadId": "thread-preserve", "approvalPolicy": "on-request", "approvalsReviewer": "user",
+	}, projectDir)
+	assertGatewayParamsOnly(t, settingsParams, "threadId", "approvalPolicy", "approvalsReviewer")
+	if settingsParams["approvalPolicy"] != "on-request" || settingsParams["approvalsReviewer"] != "user" {
+		t.Fatalf("只有显式 thread/settings/update 才应改写共享审批设置：%v", settingsParams)
 	}
 }
 
@@ -2277,8 +2272,8 @@ func TestClaudeGatewayRejectsUnknownReverseRequest(t *testing.T) {
 	policy := &appServerGatewayPolicy{runtimeID: "claude"}
 	request := []byte(`{"id":"unknown-1","method":"claude/private/request","params":{}}`)
 	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
-	if forward || policyErr == nil || policyErr.data["reason"] != "unsupported_server_request" {
-		t.Fatalf("Claude 未知反向请求应 fail closed：forward=%t err=%+v", forward, policyErr)
+	if forward || policyErr != nil {
+		t.Fatalf("Claude 未知反向请求应保持沉默：forward=%t err=%+v", forward, policyErr)
 	}
 }
 

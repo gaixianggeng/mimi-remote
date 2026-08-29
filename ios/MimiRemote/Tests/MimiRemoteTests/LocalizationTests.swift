@@ -113,11 +113,19 @@ final class LocalizationTests: XCTestCase {
     func testActiveWriterConflictExplainsRecoveryAction() {
         XCTAssertEqual(
             L10n.text("ui.codex_active_writer_conflict", language: .english),
-            "This session is active in another Codex client. Finish or interrupt that turn there, then retry."
+            "Close the session in the other app before continuing here."
         )
         XCTAssertEqual(
             L10n.text("ui.codex_active_writer_conflict", language: .simplifiedChinese),
-            "此会话正在另一个 Codex 客户端中运行。请先在那里完成或中断当前回合，然后重试。"
+            "请先在那边关闭会话，才能在这里继续。"
+        )
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in another app")
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在另一个应用中打开")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
+        XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
+        XCTAssertEqual(
+            L10n.text("ui.this_session_contains_large_images_or_tool_output", language: .simplifiedChinese),
+            "已显示最近记录。较大的图片和工具输出暂未加载。"
         )
     }
 

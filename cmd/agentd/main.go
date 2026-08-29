@@ -36,10 +36,7 @@ var version = "devel"
 // 生产代码不修改它，也不根据配置或环境变量伪装操作系统。
 var managedServicePlatform = runtime.GOOS
 
-const (
-	serveHTTPDrainTimeout       = 5 * time.Second
-	serveRuntimeShutdownTimeout = 3 * time.Second
-)
+const serveHTTPDrainTimeout = 5 * time.Second
 
 func main() {
 	if err := run(os.Args); err != nil {
@@ -107,7 +104,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server 地址；默认使用独立 loopback WS")
+	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标，默认 127.0.0.1")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
@@ -118,12 +115,12 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
-		ConfigPath:      *configPath,
-		ScanRoot:        *scanRoot,
-		BrowseRoot:      *browseRoot,
-		Listen:          *listen,
-		AppServerListen: *appServerListen,
-		Force:           *force,
+		ConfigPath:         *configPath,
+		ScanRoot:           *scanRoot,
+		BrowseRoot:         *browseRoot,
+		Listen:             *listen,
+		AppServerSSHTarget: *appServerSSHTarget,
+		Force:              *force,
 	})
 	if err != nil {
 		return err
@@ -180,7 +177,7 @@ func runUp(args []string) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
+	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标，默认 127.0.0.1")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -204,11 +201,11 @@ func runUp(args []string) error {
 		fmt.Fprintln(os.Stdout, "正在准备 Mimi Remote 助手...")
 	}
 	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
-		ConfigPath:      *configPath,
-		ScanRoot:        *scanRoot,
-		BrowseRoot:      *browseRoot,
-		Listen:          *listen,
-		AppServerListen: *appServerListen,
+		ConfigPath:         *configPath,
+		ScanRoot:           *scanRoot,
+		BrowseRoot:         *browseRoot,
+		Listen:             *listen,
+		AppServerSSHTarget: *appServerSSHTarget,
 	})
 	if err != nil {
 		return err
@@ -327,6 +324,9 @@ func runStart(args []string) error {
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
 		return err
 	}
+	if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+		return err
+	}
 
 	result, err := agentsetup.Pair(context.Background(), *configPath)
 	if err != nil {
@@ -370,6 +370,9 @@ func runRestart(args []string) error {
 		return err
 	}
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
+		return err
+	}
+	if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 		return err
 	}
 
@@ -865,11 +868,11 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		}
 	}
 	if !forDoctor && fileExists(*configPath) {
+		if err := agentsetup.MigrateAppServerToSSH(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+			return config.Config{}, nil, nil, fmt.Errorf("迁移共享 SSH App Server 配置失败：%w", err)
+		}
 		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
 		if err := ensureCodexCLIAvailable(*configPath); err != nil {
-			return config.Config{}, nil, nil, err
-		}
-		if err := ensureManagedWSTokenAvailable(*configPath); err != nil {
 			return config.Config{}, nil, nil, err
 		}
 	}
@@ -949,24 +952,12 @@ func runDoctorFix(
 			fixes = append(fixes, "已将配置文件权限收紧为 0600")
 		}
 	}
-	if hasFailedCheck(current, "app-server-token-file") && !needsSetup {
-		// legacy 配置没有独立 upstream token，或原文件已丢失时，只补 token 路径，不重建整份用户配置。
-		tokenPath, repaired, repairErr := agentsetup.RepairManagedWSTokenFile(configPath)
-		if repairErr != nil {
-			return nil, false, nil, current, fmt.Errorf("修复 app-server token file 失败：%w", repairErr)
+	if hasFailedCheck(current, "app-server") && !needsSetup {
+		if err := ensureAppServerSSHMigration(ctx, configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+			return nil, false, nil, current, err
 		}
-		if repaired {
-			fixes = append(fixes, "已生成独立 app-server token file 并原子更新配置")
-			restartRequired = true
-		} else if strings.TrimSpace(tokenPath) != "" {
-			fixed, fixErr := tightenSensitiveFilePermissions(tokenPath)
-			if fixErr != nil {
-				return nil, false, nil, current, fmt.Errorf("修复 app-server token file 权限失败：%w", fixErr)
-			}
-			if fixed {
-				fixes = append(fixes, "已将 app-server token file 权限收紧为 0600")
-			}
-		}
+		fixes = append(fixes, "已在 SSH 预检通过后原子迁移旧 App Server 配置")
+		restartRequired = true
 	}
 	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
 		// 旧的绝对路径失效或 Windows CLI 缺少 single-writer 基线时只修复
@@ -1054,20 +1045,23 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
-	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ws") {
-		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ssh") {
+		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh")
 	}
-	if !cfg.AppServer.Managed {
-		return fmt.Errorf("agentd 只支持受管 App Server")
+	sshTransport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: cfg.AppServer.SSHTarget})
+	if err != nil {
+		return fmt.Errorf("初始化 SSH App Server transport 失败：%w", err)
 	}
-	if strings.TrimSpace(cfg.AppServer.Listen) == "" {
-		return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
-	}
-	appServerWSProcess, err := startManagedAppServerWebSocket(cfg)
+	sshCtx, cancelSSH := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelSSH()
+	remoteVersion, err := sshTransport.CheckRemoteCodex(sshCtx)
 	if err != nil {
 		return err
 	}
-	log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
+	if err := sshTransport.EnsureReady(sshCtx); err != nil {
+		return err
+	}
+	log.Printf("agentd shared app-server ssh target=%s codex_version=%s", sshTransport.Target(), remoteVersion)
 	manager := session.NewManager(session.Options{
 		CodexBin:     cfg.Codex.Bin,
 		DefaultArgs:  cfg.Codex.DefaultArgs,
@@ -1084,11 +1078,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		nil,
 		httpapi.RouterOptions{
-			ConfigPath: checker.ConfigPath(),
+			ConfigPath:   checker.ConfigPath(),
+			AppServerSSH: sshTransport,
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()
-	apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           apiHandler,
@@ -1103,16 +1097,14 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
-			_ = shutdownServeResources(manager, appServerWSProcess, apiRouter)
+			_ = shutdownServeResources(manager, apiRouter)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		listeners = append(listeners, listener)
 	}
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
-	// 每个 HTTP listener 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖全部来源，
-	// 确保 shutdown 同时触发多个 goroutine 退出时不会因主 goroutine 已选中另一事件而阻塞。
-	errCh := make(chan error, len(listeners)+1)
+	errCh := make(chan error, len(listeners))
 	for _, listener := range listeners {
 		listener := listener
 		go func() {
@@ -1120,19 +1112,12 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			errCh <- server.Serve(listener)
 		}()
 	}
-	if appServerWSProcess != nil {
-		go func() {
-			<-appServerWSProcess.Done()
-			errCh <- managedAppServerExitedError(appServerWSProcess)
-		}()
-	}
-
 	stopCh := make(chan os.Signal, 1)
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
-			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
+			return shutdownServeResources(manager, apiRouter)
 		})
 	})
 }
@@ -1198,12 +1183,12 @@ func shutdownServe(server *http.Server, drainTimeout time.Duration, cleanup func
 		cancel()
 		if shutdownErr != nil {
 			// Shutdown 超时后强制关闭普通 HTTP 连接；已 hijack 的 WebSocket 不归
-			// net/http 管理，会在随后关闭 managed upstream 时结束转发链路。
+			// net/http 管理，会在随后关闭 Router 时结束每条连接自己的 SSH proxy。
 			_ = server.Close()
 		}
 	}
 	// 必须在 HTTP listener 已关闭、普通请求 drain 完成（或超时强关）之后，
-	// 才停止 session/upstream，避免端口仍接受请求但核心运行时已经不可用。
+	// 才停止 agentd 自己的 session 和 proxy；共享 App Server 始终留给其他入口。
 	if cleanup != nil {
 		if cleanupErr := cleanup(); cleanupErr != nil {
 			if shutdownErr == nil {
@@ -1216,51 +1201,16 @@ func shutdownServe(server *http.Server, drainTimeout time.Duration, cleanup func
 	return shutdownErr
 }
 
-func managedAppServerExitedError(process *appserver.ManagedWebSocketProcess) error {
-	if process == nil {
-		return fmt.Errorf("托管 codex app-server WebSocket 已退出")
-	}
-	exitErr := process.ExitError()
-	message := "托管 codex app-server WebSocket 已退出"
-	if exitErr != nil {
-		message += "：" + exitErr.Error()
-	}
-	diag := process.Diagnostics()
-	if len(diag.StderrTail) > 0 {
-		message += "\n最近 stderr：\n  " + strings.Join(diag.StderrTail, "\n  ")
-	}
-	return fmt.Errorf("%s", message)
-}
-
-func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess, apiRouter *httpapi.Router) error {
-	// listener 绑定失败，或 HTTP 已完成 drain 后，都必须回收运行时资源，避免会话/托管子进程成为孤儿。
+func shutdownServeResources(manager *session.Manager, apiRouter *httpapi.Router) error {
+	// listener 绑定失败，或 HTTP 已完成 drain 后，只回收 agentd
+	// 自己的运行时资源。共享 Unix App Server 不属于 agentd，不得停止。
 	if manager != nil {
 		manager.Shutdown()
 	}
 	// 常驻 Claude bridge 独立进程组，不会随 agentd 退出而结束；它还会再拉起 Claude Code
 	// 子进程，漏掉这一步就会在每次重启后留下一整棵仍在跑的孤儿进程树。
 	apiRouter.Shutdown()
-	if appServerWSProcess != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), serveRuntimeShutdownTimeout)
-		err := appServerWSProcess.Shutdown(ctx)
-		cancel()
-		return err
-	}
 	return nil
-}
-
-func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSocketProcess, error) {
-	if strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
-		return nil, fmt.Errorf("app_server.ws_token_file 未配置；请运行 agentd setup --force 生成独立 app-server upstream token")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return appserver.StartManagedWebSocket(ctx, appserver.ManagedWebSocketOptions{
-		CodexBin:    cfg.Codex.Bin,
-		Env:         cfg.Codex.Env,
-		Listen:      cfg.AppServer.Listen,
-		WSTokenFile: cfg.AppServer.WSTokenFile,
-	})
 }
 
 func runBrewService(action string, stdout, stderr io.Writer) error {
@@ -1710,11 +1660,8 @@ func printSetupResult(w io.Writer, result agentsetup.Result) {
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码有效期至：%s\n", result.PairExpiresAt)
 	}
-	if result.AppServerListen != "" {
-		fmt.Fprintf(w, "app-server upstream：%s\n", result.AppServerListen)
-	}
-	if result.AppServerTokenFile != "" {
-		fmt.Fprintf(w, "app-server token file：%s\n", result.AppServerTokenFile)
+	if result.AppServerSSHTarget != "" {
+		fmt.Fprintf(w, "app-server SSH target：%s\n", result.AppServerSSHTarget)
 	}
 	printConnectionQRCode(w, result.PairURL)
 	printWarnings(w, result.Warnings)

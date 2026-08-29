@@ -131,14 +131,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if !appServerServerRequestAllowed(p.runtimeID, frame.Method) {
-			return payload, false, &appServerGatewayPolicyError{
-				id:      frame.ID,
-				message: "app-server server request 尚未被移动端支持：" + strings.TrimSpace(frame.Method),
-				data: map[string]any{
-					"reason": "unsupported_server_request",
-					"method": strings.TrimSpace(frame.Method),
-				},
-			}
+			// 共享 App Server 可能产生 Desktop 私有反向请求。Mimi 不是该
+			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
+			return payload, false, nil
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}

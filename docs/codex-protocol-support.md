@@ -4,11 +4,11 @@
 
 `agentd` 不是 Codex app-server 的无条件透传代理。它只开放移动端当前需要、且能在项目 allowlist 内安全约束的协议能力；Codex 新增方法时默认不自动获得远程权限。
 
-当前协议基线固定为 Codex CLI `0.144.2`：
+当前协议基线固定为 Codex CLI `0.149.1`：
 
-- Client Request：122 个
+- Client Request：150 个
 - Server Request：11 个
-- Server Notification：68 个
+- Server Notification：75 个
 
 方法快照位于 `internal/httpapi/testdata/codex-protocol/`，CI 会在 Codex 版本或方法集合漂移时失败。
 
@@ -18,19 +18,25 @@ WebSocket 的修订窗口、共享 fixtures 和更新命令见
 
 ## 当前开放能力
 
-Go Gateway 当前开放 26 个 client frame method，其中 `initialized` 是 notification，其余是 request：
+Go Gateway 当前开放 31 个 client frame method，其中 `initialized` 是 notification，其余是 request：
 
 | 能力 | 方法 |
 | --- | --- |
 | 初始化 | `initialize`、`initialized` |
-| 会话列表、搜索与生命周期 | `thread/list`、`thread/search`、`thread/start`、`thread/resume`、`thread/fork`、`thread/read`、`thread/turns/list`、`thread/archive`、`thread/unarchive` |
-| 会话管理 | `thread/name/set`、`thread/compact/start`、`thread/unsubscribe` |
+| 会话列表、搜索与生命周期 | `thread/list`、`thread/search`、`thread/start`、`thread/resume`、`thread/fork`、`thread/archive`、`thread/unarchive` |
+| 分页历史 | `thread/read`、`thread/turns/list`、`thread/items/list` |
+| 官方队列 | `thread/queue/add`、`thread/queue/list` |
+| 会话管理 | `thread/name/set`、`thread/compact/start`、`thread/unsubscribe`、`thread/settings/update` |
 | 目标任务 | `thread/goal/get`、`thread/goal/set`、`thread/goal/clear` |
 | Review | `review/start` |
 | Turn | `turn/start`、`turn/steer`、`turn/interrupt` |
-| 只读发现能力 | `model/list`、`skills/list`、`plugin/installed`、`account/rateLimits/read`、`account/usage/read` |
+| 只读发现能力 | `model/list`、`permissionProfile/list`、`skills/list`、`plugin/installed`、`account/rateLimits/read`、`account/usage/read` |
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
+
+共享 SSH 模式的普通用户消息只使用 `thread/queue/add`。客户端初始化时必须声明 `experimentalApi: true`。发送结果不确定时，客户端用同一个 `clientUserMessageId` 依次查询 `thread/queue/list` 和 `thread/items/list`，不能盲目重发。`turn/start` 只保留给非共享旧链路和内部标题任务。
+
+历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。线程模型、工作目录和权限是共享状态；普通消息不能隐式修改它们，只有用户明确操作时才调用 `thread/settings/update`。
 
 Claude 实验通道使用更小的独立 allowlist，当前要求 `alleycat-claude-bridge >= 0.2.7`。`0.2.1` 首次开放 `account/rateLimits/read`，请求参数固定改写为 `{}`；`0.2.3` 起补齐事件百分比映射。`0.2.5` 起优先复用 Claude Code 已登录凭据主动读取 OAuth usage：macOS 从登录 Keychain 的 `Claude Code-credentials` 获取短期 access token，其他平台可使用权限收紧的 `~/.claude/.credentials.json`，随后请求固定的 Anthropic OAuth usage beta endpoint，将 5h/7d 窗口映射为现有协议。`0.2.6` 起，macOS token 过期或接口返回 401 时通过系统 PTY 执行 Claude CLI `/status` 认证路径，等待 Keychain 更新后只重试一次；`0.2.7` 起支持受控的运行期 `thread/list.refreshHistory`。bridge 不直接读取、消费或覆盖 refresh token。access token 只通过子进程 stdin 传给禁用 `.curlrc` 的系统 `curl`，不进入命令参数、日志或磁盘缓存；成功快照缓存 60 秒，Keychain、scope、续期、网络、HTTP 或解析失败均不影响会话链路。
 
@@ -40,7 +46,7 @@ Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；�
 
 `thread/search` 是跨工作区全文搜索，额外执行以下边界：
 
-- 请求只重建 Codex `0.144.2` 声明的搜索、分页、排序和来源字段，未知字段不透传；
+- 请求只重建 Codex `0.149.1` 声明的搜索、分页、排序和来源字段，未知字段不透传；
 - 响应中的每条 thread 必须携带绝对 cwd，并命中 project、`browse_roots` 或 managed Worktree；
 - cwd 缺失、畸形、目录不存在或越权时，整条 thread 和 snippet 一并删除；
 - 只有实际下发的 thread 才进入 Gateway 授权缓存，供后续 `thread/read` / `thread/resume` 使用；
@@ -66,17 +72,20 @@ Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；�
 
 ## 反向 Server Request
 
-反向 RPC 采用 fail-closed。当前允许移动端处理：
+反向 RPC 使用显式 allowlist。当前允许移动端按标准 app-server 请求/响应流程处理：
 
 - `applyPatchApproval`
 - `execCommandApproval`
 - `item/commandExecution/requestApproval`
 - `item/fileChange/requestApproval`
+- `item/fileRead/requestApproval`
 - `item/permissions/requestApproval`
 - `item/tool/requestUserInput`
 - `mcpServer/elicitation/request`
 
-以下当前 Codex 方法不会下发到移动端，Gateway 会立即向 app-server 返回明确错误，避免请求永久悬挂：
+已知请求会登记请求 ID 并下发到移动端。任一共享入口先响应后，`serverRequest/resolved` 会关闭其他入口上的同一请求卡片。
+
+以下请求和未来新增但尚未评估的 Desktop 私有请求不会下发到移动端。Gateway 保持沉默，让其他共享入口处理，不会由 Mimi 代替用户拒绝：
 
 - `account/chatgptAuthTokens/refresh`
 - `attestation/generate`
@@ -91,13 +100,14 @@ Gateway 保持 Notification 透明转发，移动客户端第一批明确消费�
 - 计划：`item/plan/delta`、`turn/plan/updated`；
 - 推理摘要：`item/reasoning/summaryPartAdded`、`item/reasoning/summaryTextDelta`；
 - 用量与上下文：`thread/tokenUsage/updated`、`thread/compacted`；
-- 会话元数据：`thread/name/updated`；
+- 会话元数据：`thread/name/updated`、`thread/settings/updated`；
+- 官方队列：`thread/queue/changed`；
 - MCP：`item/mcpToolCall/progress`、`mcpServer/startupStatus/updated`；
 - 协议提醒：`deprecationNotice`。
 
 未知 Notification 不会造成连接失败，但在移动客户端明确适配前不会被当作已支持的产品能力。
 
-新建 Codex 会话的自动标题使用一条独立的本机 loopback app-server 连接，不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个 `turn/start`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
+新建 Codex 会话的自动标题使用一条独立的本机 SSH proxy 连接，不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个成功转发的普通 `thread/queue/add`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
 
 ## 明确不开放
 
@@ -108,6 +118,7 @@ Gateway 保持 Notification 透明转发，移动客户端第一批明确消费�
 - 账号登录、退出和 token 刷新；
 - Skill 配置写入、Plugin 安装和 Marketplace；
 - realtime voice、remote control；
+- `thread/queue/delete`、`thread/queue/reorder`、`thread/queue/start`、`thread/queue/update`；
 - 已废弃的 `thread/rollback`。
 
 这些能力不是“漏做”，而是当前远程安全边界的一部分。需要新增时，必须同时补 Go 参数清洗、thread/cwd 授权、客户端类型化处理和协议测试。
