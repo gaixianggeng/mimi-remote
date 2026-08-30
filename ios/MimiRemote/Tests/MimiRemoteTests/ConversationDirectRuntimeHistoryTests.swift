@@ -107,7 +107,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.sessions.map(\.id), ["legacy-thread"])
     }
 
-    func testDirectRuntimeFullHistoryPagesTurnsAndAllItemsInLargeTurn() async throws {
+    func testDirectRuntimeFullHistoryReturnsSummaryBeforePagingLargeTurnItems() async throws {
         let project = AgentProject(id: "proj_turn_pages", name: "Turn Pages", path: "/tmp/turn-pages")
         let transport = FakeCodexAppServerTransport()
         let allowedMethods = [
@@ -117,6 +117,7 @@ extension ConversationDataFlowTests {
             "thread/start",
             "thread/read",
             "thread/turns/list",
+            "thread/items/list",
             "turn/start",
             "turn/interrupt"
         ]
@@ -142,29 +143,85 @@ extension ConversationDataFlowTests {
         let firstTurnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 50)
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
-        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_large","started_at":1780490300,"completed_at":1780490301}],"nextCursor":"older-cursor"}}"#)
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_large","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"summary_1","content":[{"type":"text","text":"summary question"}]},{"type":"agentMessage","id":"summary_2","text":"summary answer","phase":"final_answer"}]}],"nextCursor":"older-cursor"}}"#)
 
+        let firstPage = try await firstPageTask.value
+        XCTAssertEqual(firstPage.messages.map(\.content), ["summary question", "summary answer"])
+        XCTAssertTrue(firstPage.hasMoreBefore)
+        XCTAssertEqual(firstPage.itemContinuations.map(\.turnID), ["turn_large"])
+        var requests = await transport.sentMessages()
+            .compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(requests.contains { $0.method == "thread/items/list" })
+        // Fake transport 会把 turns 响应里的 summary Item 注册成自动响应。
+        // 此处清除它，后续才能精确模拟真实 App Server 的多页 Item cursor。
+        transport.clearHistoryItems(turnID: "turn_large")
+
+        let firstItemsTask = Task {
+            try await client.historyTurnItemsPage(
+                sessionID: "thr_turn_pages",
+                continuation: try XCTUnwrap(firstPage.itemContinuations.first)
+            )
+        }
         let firstItemsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/items/list")
         XCTAssertNil(firstItemsRequest.params?.objectValue?["cursor"])
+        XCTAssertEqual(firstItemsRequest.params?.objectValue?["limit"]?.intValue, 50)
         let sentBeforeSecondItems = await transport.sentMessages().count
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}}],"nextCursor":"items-2"}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}}],"next_cursor":"items-2"}}"#)
+
+        let firstItemsPage = try await firstItemsTask.value
+        XCTAssertEqual(firstItemsPage.messages.map(\.content), ["m1", "m2"])
+        let secondContinuation = try XCTUnwrap(firstItemsPage.continuation)
+        XCTAssertEqual(secondContinuation.cursor, "items-2")
+
+        let secondItemsTask = Task {
+            try await client.historyTurnItemsPage(
+                sessionID: "thr_turn_pages",
+                continuation: secondContinuation
+            )
+        }
         let secondItemsRequest = try await waitForFakeAppServerRequest(
             transport,
             method: "thread/items/list",
             after: sentBeforeSecondItems
         )
         XCTAssertEqual(secondItemsRequest.params?.objectValue?["cursor"]?.stringValue, "items-2")
+        XCTAssertEqual(secondItemsRequest.params?.objectValue?["limit"]?.intValue, 50)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: secondItemsRequest.id)),"result":{"data":[{"turnId":"turn_large","item":{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]}},{"turnId":"turn_large","item":{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}}],"nextCursor":null}}"#)
 
-        let firstPage = try await firstPageTask.value
-        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2", "m3", "m4"])
-        XCTAssertEqual(try XCTUnwrap(firstPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
-        XCTAssertTrue(try XCTUnwrap(firstPage.messages.first { $0.content == "m1" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m2" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m3" }).isTimestampFallback)
-        XCTAssertFalse(try XCTUnwrap(firstPage.messages.first { $0.content == "m4" }).isTimestampFallback)
-        XCTAssertTrue(firstPage.hasMoreBefore)
+        let secondItemsPage = try await secondItemsTask.value
+        XCTAssertEqual(secondItemsPage.messages.map(\.content), ["m3", "m4"])
+        XCTAssertNil(secondItemsPage.continuation)
+        XCTAssertEqual(
+            (firstItemsPage.messages + secondItemsPage.messages).map(\.content),
+            ["m1", "m2", "m3", "m4"]
+        )
+        XCTAssertEqual(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
+        XCTAssertTrue(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m1" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m2" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m3" }).isTimestampFallback)
+        XCTAssertFalse(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }).isTimestampFallback)
+
+        let sentBeforeRepeatedCursor = await transport.sentMessages().count
+        let repeatedCursorTask = Task {
+            try await client.historyTurnItemsPage(
+                sessionID: "thr_turn_pages",
+                continuation: secondContinuation
+            )
+        }
+        let repeatedCursorRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/items/list",
+            after: sentBeforeRepeatedCursor
+        )
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: repeatedCursorRequest.id)),"result":{"data":[],"nextCursor":"items-2"}}"#)
+        do {
+            _ = try await repeatedCursorTask.value
+            XCTFail("重复 cursor 必须作为无效分页响应失败")
+        } catch AgentAPIError.invalidResponse {
+            // 不能把重复 cursor 当作分页完成，否则 Store 会权威删除尚未加载的 Item。
+        }
+
         let cursor = try XCTUnwrap(firstPage.previousCursor)
 
         let sentBeforeEarlierPage = await transport.sentMessages().count
@@ -177,22 +234,36 @@ extension ConversationDataFlowTests {
             after: sentBeforeEarlierPage
         )
         XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["cursor"]?.stringValue, "older-cursor")
-        let sentBeforeEarlierItems = await transport.sentMessages().count
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200}],"nextCursor":null}}"#)
-        let earlierItemsRequest = try await waitForFakeAppServerRequest(
-            transport,
-            method: "thread/items/list",
-            after: sentBeforeEarlierItems
-        )
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierItemsRequest.id)),"result":{"data":[{"turnId":"turn_earliest","item":{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]}}],"nextCursor":null}}"#)
+        XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200,"items":[{"type":"userMessage","id":"summary_0","content":[{"type":"text","text":"m0"}]}]}],"nextCursor":null}}"#)
 
         let earlierPage = try await earlierPageTask.value
         XCTAssertEqual(earlierPage.messages.map(\.content), ["m0"])
         XCTAssertFalse(earlierPage.hasMoreBefore)
+        XCTAssertEqual(earlierPage.itemContinuations.map(\.turnID), ["turn_earliest"])
+
+        let sentBeforeRepeatedTurnCursor = await transport.sentMessages().count
+        let repeatedTurnCursorTask = Task {
+            try await client.messagesPage(sessionID: "thr_turn_pages", before: cursor, limit: 120)
+        }
+        let repeatedTurnCursorRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: sentBeforeRepeatedTurnCursor
+        )
+        XCTAssertEqual(repeatedTurnCursorRequest.params?.objectValue?["cursor"]?.stringValue, "older-cursor")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: repeatedTurnCursorRequest.id)),"result":{"data":[],"nextCursor":"older-cursor"}}"#)
+        do {
+            _ = try await repeatedTurnCursorTask.value
+            XCTFail("重复 Turn cursor 必须作为无效分页响应失败")
+        } catch AgentAPIError.invalidResponse {
+            // Store 会据此关闭当前分页链，避免持续请求同一页。
+        }
 
         let sent = await transport.sentMessages()
-        let requests = sent.compactMap { try? decodeAppServerRequest($0) }
-        XCTAssertEqual(requests.filter { $0.method == "thread/turns/list" }.count, 2)
+        requests = sent.compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(requests.filter { $0.method == "thread/turns/list" }.count, 3)
+        XCTAssertEqual(requests.filter { $0.method == "thread/items/list" }.count, 3)
         XCTAssertFalse(requests.contains { request in
             request.method == "thread/read" && request.params?.objectValue?["includeTurns"]?.boolValue == true
         })
@@ -456,77 +527,6 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(page.hasMoreBefore)
         let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
         XCTAssertFalse(requests.contains { $0.method == "thread/items/list" })
-    }
-
-    func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
-        let project = AgentProject(id: "proj_processed_history", name: "Processed", path: "/tmp/processed")
-        let transport = FakeCodexAppServerTransport()
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "outer-token",
-            transportFactory: { transport },
-            configProvider: { makeDirectAppServerConfig(project: project) }
-        )
-        let client = CodexAppServerSessionAPIClient(runtime: runtime)
-
-        let pageTask = Task {
-            try await client.messagesPage(sessionID: "thr_processed", before: nil, limit: nil)
-        }
-
-        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
-        let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
-
-        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
-        let read = try decodeAppServerRequest(readMessages[2])
-        XCTAssertEqual(read.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_processed","sessionId":"thr_processed","preview":"调用子 agent 讲个笑话","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490134,"status":{"type":"idle"},"path":null,"cwd":"/tmp/processed","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"processed","turns":[{"id":"turn_processed","startedAt":1780490100,"completedAt":1780490134,"itemsView":"full","status":"completed","error":null,"items":[{"type":"userMessage","id":"user_processed","clientId":"client_processed","content":[{"type":"text","text":"调用子 agent 讲个笑话"}]},{"type":"agentMessage","id":"commentary_processed","text":"我先调用一个子 agent。","phase":"commentary","memoryCitation":null},{"type":"plan","id":"plan_processed","text":"让子 agent 生成一个短笑话。"},{"type":"reasoning","id":"reasoning_processed","summary":["确认请求要讲笑话","准备生成最终笑话"],"content":[]},{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000},{"type":"agentMessage","id":"assistant_processed","text":"程序员相亲，对方问：你会浪漫吗？","phase":"final_answer","memoryCitation":null}]}]}}}"#)
-
-        let page = try await pageTask.value
-        XCTAssertEqual(page.messages.map(\.role), ["user", "assistant", "system", "system", "system", "assistant"])
-        XCTAssertEqual(page.messages.map(\.kind), [.message, .commentary, .plan, .reasoningSummary, .commandSummary, .message])
-        XCTAssertEqual(page.messages.last?.createdAt, Date(timeIntervalSince1970: 1780490134))
-        XCTAssertEqual(page.messages.first { $0.itemID == "reasoning_processed" }?.activityPayload?.subtitle, "准备生成最终笑话")
-        let historyCommand = try XCTUnwrap(page.messages.first { $0.itemID == "cmd_processed" })
-        XCTAssertEqual(historyCommand.activityPayload?.category, .runCommand)
-        XCTAssertEqual(historyCommand.activityPayload?.displayTitle, "运行 echo joke")
-
-        var projector = CodexAppServerEventProjector()
-        let liveCommand = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_processed","turnId":"turn_processed","item":{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000}}}"#)
-        if case .processItemCompleted(let liveMessage, _, _) = try XCTUnwrap(projector.project(liveCommand)) {
-            XCTAssertEqual(liveMessage.content, historyCommand.content)
-            XCTAssertEqual(liveMessage.activityPayload, historyCommand.activityPayload)
-        } else {
-            XCTFail("Expected live command process item")
-        }
-
-        let conversationStore = ConversationStore()
-        conversationStore.setHistory(page.messages, sessionID: "thr_processed")
-        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
-
-        XCTAssertEqual(items.count, 5)
-        guard case .message(let commentary) = items[1] else {
-            return XCTFail("commentary 应保持完整正文")
-        }
-        XCTAssertEqual(commentary.itemID, "commentary_processed")
-        XCTAssertEqual(commentary.kind, .commentary)
-        guard case .message(let plan) = items[2] else {
-            return XCTFail("plan 应保留在服务端 source order 中")
-        }
-        XCTAssertEqual(plan.kind, .plan)
-        XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .workGroup(let workGroup) = items[3],
-              case .processGroup(let processGroup) = workGroup.entries.first else {
-            return XCTFail("真实 reasoning 与后续命令应合并为可折叠阶段")
-        }
-        XCTAssertEqual(processGroup.header.itemID, "reasoning_processed")
-        XCTAssertEqual(processGroup.activities.map(\.itemID), ["cmd_processed"])
-        guard case .message(let final) = items[4] else {
-            return XCTFail("最终 assistant 应保持独立展开")
-        }
-        XCTAssertEqual(final.role, .assistant)
-        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
 
     // 关掉 App 一小时后回来：bridge 的会话还活着、turn 还停在审批上，attach 时用
@@ -1218,6 +1218,7 @@ extension ConversationDataFlowTests {
         try await Task.sleep(nanoseconds: 80_000_000)
         XCTAssertNil(recoveredMetadata)
 
+        let sentBeforeCompletedHistory = await transport.sentMessages().count
         let completedHistoryTask = Task {
             try await client.messagesPage(
                 sessionID: "thr_snapshot_completion",
@@ -1226,7 +1227,11 @@ extension ConversationDataFlowTests {
                 loadMode: .full
             )
         }
-        let completedReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: 5)
+        let completedReadRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: sentBeforeCompletedHistory
+        )
         transportResponse(
             transport,
             id: completedReadRequest.id,

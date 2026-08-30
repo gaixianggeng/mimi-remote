@@ -1,78 +1,13 @@
 package httpapi
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
-
-func messagesFromAppServerThread(thread appServerThread) []codexhistory.Message {
-	messages := make([]codexhistory.Message, 0, len(thread.Turns)*2)
-	for _, turn := range thread.Turns {
-		for _, item := range turn.Items {
-			switch item.Type {
-			case "userMessage":
-				content := textFromUserInputs(item.Content)
-				if strings.TrimSpace(content) == "" {
-					continue
-				}
-				messages = append(messages, codexhistory.Message{
-					ID:              appServerMessageID(turn.ID, item.ID),
-					Role:            "user",
-					Content:         content,
-					CreatedAt:       turnTime(turn, false),
-					ClientMessageID: strings.TrimSpace(item.ClientID),
-					Revision:        len(messages) + 1,
-				})
-			case "agentMessage":
-				content := strings.TrimSpace(item.Text)
-				if content == "" {
-					continue
-				}
-				messages = append(messages, codexhistory.Message{
-					ID:        appServerMessageID(turn.ID, item.ID),
-					Role:      "assistant",
-					Content:   content,
-					CreatedAt: turnTime(turn, true),
-					Revision:  len(messages) + 1,
-				})
-			}
-		}
-	}
-	return messages
-}
-
-func textFromUserInputs(inputs []appServerUserInput) string {
-	parts := make([]string, 0, len(inputs))
-	for _, input := range inputs {
-		if input.Type == "text" && strings.TrimSpace(input.Text) != "" {
-			parts = append(parts, input.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func turnTime(turn appServerTurn, preferCompleted bool) time.Time {
-	if preferCompleted && turn.CompletedAt != nil && *turn.CompletedAt > 0 {
-		return unixTime(*turn.CompletedAt)
-	}
-	if turn.StartedAt != nil && *turn.StartedAt > 0 {
-		return unixTime(*turn.StartedAt)
-	}
-	if turn.CompletedAt != nil && *turn.CompletedAt > 0 {
-		return unixTime(*turn.CompletedAt)
-	}
-	return time.Time{}
-}
-
-func appServerMessageID(turnID string, itemID string) string {
-	return "appserver:" + strings.TrimSpace(turnID) + ":" + strings.TrimSpace(itemID)
-}
 
 func runtimeMessageID(turnID string, itemID string) string {
 	turnID = strings.TrimSpace(turnID)
@@ -80,58 +15,7 @@ func runtimeMessageID(turnID string, itemID string) string {
 	if turnID == "" || itemID == "" {
 		return itemID
 	}
-	return appServerMessageID(turnID, itemID)
-}
-
-type appServerMessageCursor struct {
-	Index int `json:"index"`
-}
-
-func paginateAppServerMessages(messages []codexhistory.Message, before string, limit int) codexhistory.MessagePage {
-	if limit <= 0 {
-		limit = defaultRuntimeMessagePage
-	}
-	end := decodeAppServerMessageCursor(before, len(messages))
-	if end < 0 || end > len(messages) {
-		end = len(messages)
-	}
-	start := end - limit
-	if start < 0 {
-		start = 0
-	}
-	page := append([]codexhistory.Message(nil), messages[start:end]...)
-	previousCursor := ""
-	hasMore := start > 0
-	if hasMore {
-		previousCursor = encodeAppServerMessageCursor(start)
-	}
-	if page == nil {
-		page = []codexhistory.Message{}
-	}
-	return codexhistory.MessagePage{Messages: page, PreviousCursor: previousCursor, HasMoreBefore: hasMore}
-}
-
-func decodeAppServerMessageCursor(raw string, fallback int) int {
-	if strings.TrimSpace(raw) == "" {
-		return fallback
-	}
-	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return fallback
-	}
-	var cursor appServerMessageCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
-		return fallback
-	}
-	return cursor.Index
-}
-
-func encodeAppServerMessageCursor(index int) string {
-	data, err := json.Marshal(appServerMessageCursor{Index: index})
-	if err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(data)
+	return "appserver:" + turnID + ":" + itemID
 }
 
 func diffSummaryFromParams(params map[string]any) map[string]any {

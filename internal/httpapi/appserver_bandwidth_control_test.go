@@ -220,6 +220,76 @@ func TestAppServerGatewayAllowsConcurrentItemPagesForDifferentTurns(t *testing.T
 	}
 }
 
+func TestAppServerGatewayProtectsThreadItemsListPayloads(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 2500
+	t.Cleanup(func() { appServerGatewayHistoryResponseCapBytes = oldCap })
+
+	newPolicy := func() *appServerGatewayPolicy {
+		return &appServerGatewayPolicy{
+			router: &Router{
+				monitor:       newRelayMonitor(),
+				historyMedia:  newAppServerHistoryMediaStore(),
+				historyOutput: newAppServerHistoryOutputStore(),
+			},
+			runtimeID:      "codex",
+			pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+			historyBudgets: map[string]appServerGatewayHistoryBudget{},
+		}
+	}
+	reserveItemsPage := func(t *testing.T, policy *appServerGatewayPolicy, id *json.RawMessage) {
+		t.Helper()
+		params := map[string]any{
+			"threadId": "thread-items", "turnId": "turn-1", "limit": json.Number("50"), "sortDirection": "asc",
+		}
+		if err := policy.reserveHistoryRequest(id, "thread/items/list", params, 128); err != nil {
+			t.Fatalf("thread/items/list 应进入历史响应保护：%+v", err)
+		}
+	}
+
+	t.Run("externalizes inline image", func(t *testing.T) {
+		policy := newPolicy()
+		id := json.RawMessage(`401`)
+		reserveItemsPage(t, policy, &id)
+		imagePayload := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("large-history-image", 120)))
+		response := []byte(`{"id":401,"result":{"data":[{"turnId":"turn-1","item":{"type":"userMessage","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"data:image/png;base64,` + imagePayload + `"}]}}]}}`)
+
+		rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, response)
+		if policyErr != nil || !forward {
+			t.Fatalf("thread/items/list 图片应外置后转发：forward=%v err=%+v", forward, policyErr)
+		}
+		if bytes.Contains(rewritten, []byte(imagePayload)) || bytes.Contains(rewritten, []byte("data:image/png;base64")) {
+			t.Fatalf("thread/items/list 不应内联图片：%s", rewritten)
+		}
+		if !bytes.Contains(rewritten, []byte(appServerHistoryMediaURLPrefix)) {
+			t.Fatalf("thread/items/list 图片应替换为按需读取引用：%s", rewritten)
+		}
+	})
+
+	t.Run("dehydrates oversized output", func(t *testing.T) {
+		policy := newPolicy()
+		id := json.RawMessage(`402`)
+		reserveItemsPage(t, policy, &id)
+		fullOutput := strings.Repeat("single-turn-output-", 500)
+		quotedOutput, err := json.Marshal(fullOutput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := []byte(`{"id":402,"result":{"data":[{"turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-output","aggregatedOutput":` + string(quotedOutput) + `}}]}}`)
+
+		rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, response)
+		if policyErr != nil || !forward {
+			t.Fatalf("thread/items/list 大输出应脱水后转发：forward=%v err=%+v", forward, policyErr)
+		}
+		if len(rewritten) >= appServerGatewayHistoryResponseCapBytes || bytes.Contains(rewritten, []byte(fullOutput)) {
+			t.Fatalf("thread/items/list 脱水后应小于 cap 且不保留完整输出：bytes=%d", len(rewritten))
+		}
+		if !bytes.Contains(rewritten, []byte(appServerHistoryOutputURLPrefix)) || !bytes.Contains(rewritten, []byte(`"historyOutputRedacted":true`)) {
+			t.Fatalf("thread/items/list 大输出应保留按需读取引用：%s", rewritten)
+		}
+	})
+}
+
 func TestAppServerGatewayCountsThreadListResponseAgainstBudgets(t *testing.T) {
 	oldCap := appServerGatewayHistoryResponseCapBytes
 	oldLocalBudget := appServerGatewayHistoryBudgetMaxResponseBytes

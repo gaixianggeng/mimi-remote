@@ -1,5 +1,26 @@
 import Foundation
 
+enum ConversationHistoryTimelineMutationKind: Equatable {
+    case prepend
+    case enrichment
+}
+
+struct ConversationHistoryTimelineMutation: Equatable {
+    let generation: UInt64
+    let kind: ConversationHistoryTimelineMutationKind
+    let includesLiveChange: Bool
+
+    init(
+        generation: UInt64,
+        kind: ConversationHistoryTimelineMutationKind,
+        includesLiveChange: Bool = false
+    ) {
+        self.generation = generation
+        self.kind = kind
+        self.includesLiveChange = includesLiveChange
+    }
+}
+
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private var activeProfileID = ""
@@ -16,6 +37,8 @@ final class ConversationStore: ObservableObject {
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
     private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
+    private var historyTimelineMutationBySessionID: [ScopedSessionID: ConversationHistoryTimelineMutation] = [:]
+    private var historyTimelineMutationGeneration: UInt64 = 0
     private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
     private var retainedByteCountBySessionID: [ScopedSessionID: Int] = [:]
     private var totalRetainedByteCount = 0
@@ -169,6 +192,13 @@ final class ConversationStore: ObservableObject {
         loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
     }
 
+    func historyTimelineMutation(for sessionID: String?) -> ConversationHistoryTimelineMutation? {
+        guard let sessionID else {
+            return nil
+        }
+        return historyTimelineMutationBySessionID[scopedSessionID(for: sessionID)]
+    }
+
     func hasLocallyUnreconciledUserDelivery(sessionID: String) -> Bool {
         // 与时间线“等待回复”判定保持同一边界：只检查最后一个普通 assistant 气泡之后的
         // 用户发送态。切换目录丢掉 completion 时，这能触发一次权威历史对账；已完整展示
@@ -238,18 +268,18 @@ final class ConversationStore: ObservableObject {
     func setHistory(
         _ history: [CodexHistoryMessage],
         sessionID: String,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        timelineMutationKind: ConversationHistoryTimelineMutationKind? = nil
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
-        flushPendingAssistantDelta(sessionID: sessionID)
+        let includesLiveChange = flushPendingAssistantDelta(sessionID: sessionID)
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
-        recordTurnLifecycles(from: converted, sessionID: sessionID)
         for message in converted {
             if let stableID = message.stableID {
                 let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
                 messageUUIDByStableMessageID[key] = message.id
                 if let revision = message.revision {
-                    revisionByStableMessageID[key] = revision
+                    revisionByStableMessageID[key] = max(revisionByStableMessageID[key] ?? revision, revision)
                 }
             }
         }
@@ -260,15 +290,30 @@ final class ConversationStore: ObservableObject {
             touchConversationSession(scopedSessionID)
             return
         }
-        setMessages(
-            mergeHistory(
-                converted,
-                with: messagesByScopedSessionID[scopedSessionID] ?? [],
-                sessionID: sessionID,
-                authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
-            ),
-            sessionID: sessionID
+        let merged = mergeHistory(
+            converted,
+            with: messagesByScopedSessionID[scopedSessionID] ?? [],
+            sessionID: sessionID,
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
+            snapshotOrdering: timelineMutationKind == .enrichment ? .incrementalFragments : .authoritative
         )
+        recordTurnLifecycles(from: merged, sessionID: sessionID)
+        if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, merged) {
+            loadedHistorySessionIDs.insert(scopedSessionID)
+            touchConversationSession(scopedSessionID)
+            return
+        }
+        // 历史分页的来源必须在 @Published 消息写回前记录。时间线在同一轮渲染中
+        // 才能识别这是历史补齐，而不是实时新消息，并阻止错误的尾部跟随。
+        if let timelineMutationKind {
+            historyTimelineMutationGeneration &+= 1
+            historyTimelineMutationBySessionID[scopedSessionID] = ConversationHistoryTimelineMutation(
+                generation: historyTimelineMutationGeneration,
+                kind: timelineMutationKind,
+                includesLiveChange: includesLiveChange
+            )
+        }
+        setMessages(merged, sessionID: sessionID)
         loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
@@ -278,16 +323,15 @@ final class ConversationStore: ObservableObject {
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
-        flushPendingAssistantDelta(sessionID: sessionID)
+        _ = flushPendingAssistantDelta(sessionID: sessionID)
         let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[scopedSessionID]?.messages.map(\.id) ?? [])
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
-        recordTurnLifecycles(from: converted, sessionID: sessionID)
         for message in converted {
             if let stableID = message.stableID {
                 let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
                 messageUUIDByStableMessageID[key] = message.id
                 if let revision = message.revision {
-                    revisionByStableMessageID[key] = revision
+                    revisionByStableMessageID[key] = max(revisionByStableMessageID[key] ?? revision, revision)
                 }
             }
         }
@@ -307,6 +351,7 @@ final class ConversationStore: ObservableObject {
             replacingHistoryProjectionIDs: previousHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
+        recordTurnLifecycles(from: snapshot, sessionID: sessionID)
         if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, snapshot) {
             loadedHistorySessionIDs.insert(scopedSessionID)
             touchConversationSession(scopedSessionID)
@@ -1088,20 +1133,22 @@ final class ConversationStore: ObservableObject {
                 return
             }
             await MainActor.run { [weak self] in
-                self?.flushPendingAssistantDelta(scopedSessionID: scopedSessionID)
+                _ = self?.flushPendingAssistantDelta(scopedSessionID: scopedSessionID)
             }
         }
     }
 
-    private func flushPendingAssistantDelta(sessionID: String) {
+    @discardableResult
+    private func flushPendingAssistantDelta(sessionID: String) -> Bool {
         flushPendingAssistantDelta(scopedSessionID: scopedSessionID(for: sessionID))
     }
 
-    private func flushPendingAssistantDelta(scopedSessionID: ScopedSessionID) {
+    @discardableResult
+    private func flushPendingAssistantDelta(scopedSessionID: ScopedSessionID) -> Bool {
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
         assistantDeltaFlushTasks[scopedSessionID] = nil
         guard let pending = pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID) else {
-            return
+            return false
         }
 
         var list = messagesByScopedSessionID[scopedSessionID] ?? []
@@ -1122,7 +1169,7 @@ final class ConversationStore: ObservableObject {
                 rebuildIndexes: false,
                 retainedByteDelta: retainedByteDelta
             )
-            return
+            return true
         }
 
         let message = ConversationMessage(
@@ -1142,6 +1189,7 @@ final class ConversationStore: ObservableObject {
         )
         list.append(message)
         appendMessageWithIndex(message, list: list, scopedSessionID: scopedSessionID)
+        return true
     }
 
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
@@ -1357,6 +1405,7 @@ final class ConversationStore: ObservableObject {
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
         messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
         historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
+        historyTimelineMutationBySessionID.removeValue(forKey: scopedSessionID)
         pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
         assistantDeltaFlushTasks.removeValue(forKey: scopedSessionID)
@@ -1418,6 +1467,10 @@ final class ConversationStore: ObservableObject {
         let scopedSessionID = scopedSessionID(for: sessionID)
         for message in messages {
             guard let turnID = message.turnID, let lifecycle = message.turnLifecycle else {
+                continue
+            }
+            let existing = turnLifecycleBySessionID[scopedSessionID]?[turnID]
+            if existing?.isTerminal == true {
                 continue
             }
             turnLifecycleBySessionID[scopedSessionID, default: [:]][turnID] = lifecycle
@@ -1516,7 +1569,8 @@ final class ConversationStore: ObservableObject {
         with local: [ConversationMessage],
         sessionID: String,
         replacingHistoryProjectionIDs: Set<UUID>? = nil,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        snapshotOrdering: ConversationTimelineReducer.SnapshotOrdering = .authoritative
     ) -> [ConversationMessage] {
 #if DEBUG
         historyMergeInvocationCountForTesting += 1
@@ -1525,7 +1579,8 @@ final class ConversationStore: ObservableObject {
             snapshot: history,
             current: local,
             replacingHistoryProjectionIDs: replacingHistoryProjectionIDs,
-            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
+            snapshotOrdering: snapshotOrdering
         )
         for (stableID, uuid) in result.stableIDAliases {
             messageUUIDByStableMessageID[stableCacheKey(stableID: stableID, sessionID: sessionID)] = uuid

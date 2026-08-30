@@ -5,6 +5,11 @@ import Foundation
 /// 核心约束是“首次出现决定槽位，后续事件原位更新”。时间只在两个完全没有顺序关系的
 /// 独立片段之间充当插入提示，绝不能重新排列已经建立的 Turn/Item 顺序。
 struct ConversationTimelineReducer {
+    enum SnapshotOrdering {
+        case authoritative
+        case incrementalFragments
+    }
+
     struct RebaseResult {
         let messages: [ConversationMessage]
         let stableIDAliases: [MessageID: UUID]
@@ -22,7 +27,8 @@ struct ConversationTimelineReducer {
         snapshot rawSnapshot: [ConversationMessage],
         current: [ConversationMessage],
         replacingHistoryProjectionIDs: Set<UUID>? = nil,
-        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        snapshotOrdering: SnapshotOrdering = .authoritative
     ) -> RebaseResult {
         let snapshot = deduplicatedSnapshot(rawSnapshot)
         var matchedCurrentBySnapshotIndex: [Int: Int] = [:]
@@ -176,14 +182,23 @@ struct ConversationTimelineReducer {
         }
         let snapshotNodeIndices = snapshot.indices.compactMap { nodeIndexBySnapshotIndex[$0] }
         for pair in zip(snapshotNodeIndices, snapshotNodeIndices.dropFirst()) {
-            addEdge(pair.0, pair.1)
+            if snapshotOrdering == .authoritative
+                || nodes[pair.0].message.turnID == nodes[pair.1].message.turnID {
+                addEdge(pair.0, pair.1)
+            }
         }
 
         var ready = nodes.indices.filter { indegree[$0] == 0 }
         var orderedNodeIndices: [Int] = []
         orderedNodeIndices.reserveCapacity(nodes.count)
         while !ready.isEmpty {
-            ready.sort { isNode(nodes[$0], orderedBefore: nodes[$1]) }
+            ready.sort {
+                isNode(
+                    nodes[$0],
+                    orderedBefore: nodes[$1],
+                    snapshotOrdering: snapshotOrdering
+                )
+            }
             let nodeIndex = ready.removeFirst()
             orderedNodeIndices.append(nodeIndex)
             for next in outgoing[nodeIndex] {
@@ -241,26 +256,94 @@ struct ConversationTimelineReducer {
 
     private func mergedMessage(snapshot: ConversationMessage, existing: ConversationMessage) -> ConversationMessage {
         let shouldUseExistingTime = snapshot.isTimestampFallback && !existing.isTimestampFallback
+        let snapshotIsOlder = isSnapshotOlder(snapshot, than: existing)
         return ConversationMessage(
             id: existing.id,
             stableID: snapshot.stableID ?? existing.stableID,
             clientMessageID: snapshot.clientMessageID ?? existing.clientMessageID,
             turnID: snapshot.turnID ?? existing.turnID,
             itemID: snapshot.itemID ?? existing.itemID,
-            role: snapshot.role,
-            kind: snapshot.kind,
-            content: snapshot.content,
-            createdAt: shouldUseExistingTime ? existing.createdAt : snapshot.createdAt,
+            role: snapshotIsOlder ? existing.role : snapshot.role,
+            kind: snapshotIsOlder ? existing.kind : snapshot.kind,
+            content: snapshotIsOlder ? existing.content : snapshot.content,
+            createdAt: (snapshotIsOlder || shouldUseExistingTime) ? existing.createdAt : snapshot.createdAt,
             updatedAt: latest(snapshot.updatedAt, existing.updatedAt),
-            sendStatus: snapshot.sendStatus,
+            sendStatus: snapshotIsOlder
+                ? existing.sendStatus
+                : mostAdvancedSendStatus(snapshot.sendStatus, existing.sendStatus),
             revision: latestRevision(snapshot.revision, existing.revision),
-            turnPayload: snapshot.turnPayload ?? existing.turnPayload,
-            activityPayload: snapshot.activityPayload ?? existing.activityPayload,
-            timelineOrdinal: snapshot.timelineOrdinal ?? existing.timelineOrdinal,
-            turnLifecycle: snapshot.turnLifecycle ?? existing.turnLifecycle,
-            userDelivery: snapshot.userDelivery ?? existing.userDelivery,
+            turnPayload: snapshotIsOlder ? (existing.turnPayload ?? snapshot.turnPayload) : (snapshot.turnPayload ?? existing.turnPayload),
+            activityPayload: snapshotIsOlder ? (existing.activityPayload ?? snapshot.activityPayload) : (snapshot.activityPayload ?? existing.activityPayload),
+            timelineOrdinal: snapshotIsOlder ? (existing.timelineOrdinal ?? snapshot.timelineOrdinal) : (snapshot.timelineOrdinal ?? existing.timelineOrdinal),
+            turnLifecycle: mostAdvancedLifecycle(snapshot.turnLifecycle, existing.turnLifecycle),
+            userDelivery: snapshotIsOlder ? (existing.userDelivery ?? snapshot.userDelivery) : (snapshot.userDelivery ?? existing.userDelivery),
             isTimestampFallback: shouldUseExistingTime ? false : snapshot.isTimestampFallback
         )
+    }
+
+    private func isSnapshotOlder(_ snapshot: ConversationMessage, than existing: ConversationMessage) -> Bool {
+        // 同一个 Item 一旦由实时事件进入终态，历史读取不能用较晚的 snapshotReadAt
+        // 把它重新写回 running。部分 activity 没有 turnLifecycle，因此同时检查 payload 状态。
+        let existingIsTerminal = existing.turnLifecycle?.isTerminal == true
+            || isTerminalActivity(existing.activityPayload)
+        let snapshotIsTerminal = snapshot.turnLifecycle?.isTerminal == true
+            || isTerminalActivity(snapshot.activityPayload)
+        if existingIsTerminal, !snapshotIsTerminal {
+            return true
+        }
+        if existing.revision != nil, snapshot.revision == nil {
+            return true
+        }
+        if let snapshotRevision = snapshot.revision, let existingRevision = existing.revision {
+            return snapshotRevision < existingRevision
+        }
+        if existing.sendStatus == .confirmed, snapshot.sendStatus != .confirmed {
+            return true
+        }
+        if let snapshotUpdatedAt = snapshot.updatedAt, let existingUpdatedAt = existing.updatedAt {
+            return snapshotUpdatedAt < existingUpdatedAt
+        }
+        return false
+    }
+
+    private func isTerminalActivity(_ payload: ConversationActivityPayload?) -> Bool {
+        guard let payload else { return false }
+        if payload.isFailure || payload.isInterrupted {
+            return true
+        }
+        switch payload.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "completed", "complete", "succeeded", "success":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func mostAdvancedSendStatus(
+        _ snapshot: MessageSendStatus,
+        _ existing: MessageSendStatus
+    ) -> MessageSendStatus {
+        func rank(_ status: MessageSendStatus) -> Int {
+            switch status {
+            case .local: return 0
+            case .sending: return 1
+            case .failed: return 2
+            case .sent: return 3
+            case .confirmed: return 4
+            }
+        }
+        return rank(snapshot) >= rank(existing) ? snapshot : existing
+    }
+
+    private func mostAdvancedLifecycle(
+        _ snapshot: ConversationTurnLifecycle?,
+        _ existing: ConversationTurnLifecycle?
+    ) -> ConversationTurnLifecycle? {
+        // 终态的具体原因属于实时事件事实。历史 enrichment 的冻结 Turn shell
+        // 不能把 failed/interrupted 改写成 completed，也不能重新打开 Turn。
+        if existing?.isTerminal == true { return existing }
+        if snapshot?.isTerminal == true { return snapshot }
+        return snapshot ?? existing
     }
 
     private func latest(_ lhs: Date?, _ rhs: Date?) -> Date? {
@@ -332,9 +415,22 @@ struct ConversationTimelineReducer {
         return message.kind == .commandSummary || message.kind == .fileChangeSummary
     }
 
-    private func isNode(_ lhs: Node, orderedBefore rhs: Node) -> Bool {
+    private func isNode(
+        _ lhs: Node,
+        orderedBefore rhs: Node,
+        snapshotOrdering: SnapshotOrdering
+    ) -> Bool {
         if lhs.message.createdAt != rhs.message.createdAt {
             return lhs.message.createdAt < rhs.message.createdAt
+        }
+        if let leftOrdinal = lhs.message.timelineOrdinal,
+           let rightOrdinal = rhs.message.timelineOrdinal,
+           leftOrdinal != rightOrdinal,
+           snapshotOrdering == .incrementalFragments
+            || lhs.message.turnID == rhs.message.turnID {
+            // enrichment 的不同批次可能共用 Turn 时间；协议序号可在不建立
+            // 跨 Turn snapshot adjacency 的前提下提供稳定插入位置。
+            return leftOrdinal < rightOrdinal
         }
         switch (lhs.snapshotIndex, rhs.snapshotIndex) {
         case (.some(let left), .some(let right)) where left != right:

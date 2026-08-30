@@ -367,12 +367,24 @@ extension SessionStore {
             conversationStore.setHistory(
                 page.messages,
                 sessionID: session.id,
-                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems,
+                timelineMutationKind: .prepend
             )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
-            updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
+            updateHistoryPageState(
+                sessionID: session.id,
+                page: page,
+                requestedCursor: cursor,
+                preserveExistingCursorOnEmptyPage: false
+            )
+            appendHistoryItemEnrichment(page: page, sessionID: session.id)
             setErrorMessage(nil)
         } catch {
+            if case AgentAPIError.invalidResponse = error {
+                // 无效分页响应无法安全重试。保留已加载内容，但关闭入口，避免同一 cursor
+                // 被用户或自动流程反复请求。
+                closeHistoryPagination(sessionID: session.id)
+            }
             setErrorMessage(error.localizedDescription)
         }
     }
@@ -393,6 +405,9 @@ extension SessionStore {
             sessionID: nil,
             reason: .invalidation
         )
+        if let previousSession {
+            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+        }
         if let previousSession, previousSession.isLocalDraft {
             discardLocalDraft(previousSession)
         }
@@ -568,6 +583,9 @@ extension SessionStore {
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
         markHistorySessionRead(session.id)
+        if let previousSession, previousSession.id != session.id {
+            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+        }
         if wasNoOpSelection {
             return true
         }

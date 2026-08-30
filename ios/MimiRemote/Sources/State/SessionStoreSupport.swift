@@ -267,6 +267,7 @@ enum HistoryLoadReason: Equatable {
 
 enum HistoryLoadQuality: Equatable {
     case full
+    case enriching
     case summary
 }
 

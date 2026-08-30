@@ -260,6 +260,13 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: loadMode)
     }
 
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        try await runtime.historyTurnItemsPage(sessionID: sessionID, continuation: continuation)
+    }
+
     func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
         try await runtime.latestTurnHistoryPage(sessionID: sessionID)
     }
@@ -640,6 +647,16 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             before: before,
             limit: limit,
             loadMode: loadMode
+        )
+    }
+
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        try await bundle.runtime(forSessionID: sessionID).historyTurnItemsPage(
+            sessionID: sessionID,
+            continuation: continuation
         )
     }
 

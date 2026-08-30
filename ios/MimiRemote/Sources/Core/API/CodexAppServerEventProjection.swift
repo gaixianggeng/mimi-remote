@@ -1400,6 +1400,69 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
+    /// Item 分页补齐只投影当前页，不能把此前页面重新积存在 JSON 数组里。
+    /// itemOffset 让缺时间戳的后续页仍获得稳定且递增的时间线序号。
+    func historyMessages(
+        fromItems items: [[String: CodexAppServerJSONValue]],
+        continuation: HistoryTurnItemsContinuation,
+        sessionID: SessionID,
+        snapshotReadAt: Date
+    ) -> [CodexHistoryMessage] {
+        let turn = continuation.turn
+        let startedAt = firstDate(in: turn, keys: ["startedAt", "started_at", "createdAt", "created_at", "timestamp"])
+        let completedAt = firstDate(in: turn, keys: ["completedAt", "completed_at", "updatedAt", "updated_at", "finishedAt", "finished_at"])
+        let turnIsInProgress = isInProgressHistoryTurn(
+            turn,
+            isLastTurn: continuation.isLatestTurn,
+            threadIsActive: continuation.threadIsActive,
+            completedAt: completedAt
+        )
+        let turnLifecycle = historyTurnLifecycle(
+            turn,
+            isInProgress: turnIsInProgress,
+            completedAt: completedAt
+        )
+        var hasVisibleUserMessage = continuation.hasVisibleUserMessageBefore
+        var messages: [CodexHistoryMessage] = []
+        messages.reserveCapacity(items.count)
+        for (pageIndex, item) in items.enumerated() {
+            let absoluteItemIndex = continuation.itemOffset + pageIndex
+            let estimatedAt = startedAt.map {
+                $0.addingTimeInterval(Double(absoluteItemIndex) * 0.001)
+            } ?? completedAt
+            guard var message = historyMessage(
+                from: item,
+                sessionID: sessionID,
+                turnID: continuation.turnID,
+                timelineOrdinal: historyTimelineOrdinal(
+                    turnIndex: continuation.turnIndex,
+                    itemIndex: absoluteItemIndex
+                ),
+                isInjectedUserMessage: hasVisibleUserMessage,
+                startedAt: startedAt,
+                completedAt: completedAt,
+                estimatedAt: estimatedAt,
+                turnIsInProgress: turnIsInProgress,
+                snapshotReadAt: snapshotReadAt
+            ) else {
+                continue
+            }
+            message = message.withTurnLifecycle(turnLifecycle)
+            if message.createdAt == nil {
+                // Item 异步分页时不再持有完整 Thread。显式沿用首屏读取到的 Thread 时间，
+                // 避免无 item/turn 时间戳的消息退化成 nil 或每次加载都变化的当前时间。
+                let fallback = continuation.timestampFallback
+                    ?? Self.stableHistoryFallbackDate(index: absoluteItemIndex)
+                message = message.withTimestampFallback(createdAt: fallback)
+            }
+            if message.role == "user" {
+                hasVisibleUserMessage = true
+            }
+            messages.append(message)
+        }
+        return messages
+    }
+
     func historyTimelineOrdinal(turnIndex: Int, itemIndex: Int) -> Int64 {
         Int64(turnIndex) * 1_000_000 + Int64(itemIndex)
     }

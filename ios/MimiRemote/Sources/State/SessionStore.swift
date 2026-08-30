@@ -448,6 +448,7 @@ final class SessionStore: ObservableObject {
     var remoteSessionSearchSnippetByID: [SessionID: String] = [:]
     var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
+    var historySeenPreviousCursorsBySessionID: [SessionID: Set<String>] = [:]
     var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]
@@ -455,6 +456,7 @@ final class SessionStore: ObservableObject {
     var historyLoadJobTokenBySessionID: [SessionID: Int] = [:]
     var historyLoadedSignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var historyLoadedQualityBySessionID: [SessionID: HistoryLoadQuality] = [:]
+    var historyItemEnrichmentBySessionID: [SessionID: HistoryItemEnrichmentState] = [:]
     /// 运行中的 full 历史可能暂时携带大量过程输出。命中网关单包上限后先显示 summary，
     /// 等对应 Turn 完成再补拉 canonical full，避免把临时膨胀误判成永久大历史。
     var deferredFullHistorySessionIDs: Set<SessionID> = []

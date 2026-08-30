@@ -25,6 +25,24 @@ enum ConversationTimelineItem: Identifiable, Equatable {
     static func activityID(for message: ConversationMessage) -> String {
         "activity:\(message.id.uuidString)"
     }
+
+    /// 视口锚点使用原始消息 ID，不依赖会随分组重建而变化的派生行 ID。
+    var anchorMessageIDs: [UUID] {
+        switch self {
+        case .message(let message), .activity(let message):
+            return [message.id]
+        case .activityBatch(let group):
+            return group.messages.map(\.id)
+        case .processGroup(let group):
+            return [group.header.id] + group.activities.map(\.id)
+        case .workGroup(let group):
+            return group.entries.flatMap(\.anchorMessageIDs)
+        }
+    }
+
+    var stableAnchorMessageID: UUID? {
+        anchorMessageIDs.first
+    }
 }
 
 /// 外层工作流只保存第一遍时间线投影的结果，不重新解释 provider 协议。
@@ -70,6 +88,17 @@ enum ConversationWorkGroupEntry: Identifiable, Equatable {
         }
     }
 
+    var anchorMessageIDs: [UUID] {
+        switch self {
+        case .commentary(let message), .activity(let message):
+            return [message.id]
+        case .activityBatch(let group):
+            return group.messages.map(\.id)
+        case .processGroup(let group):
+            return [group.header.id] + group.activities.map(\.id)
+        }
+    }
+
     var messagesForTiming: [ConversationMessage] {
         switch self {
         case .commentary(let message), .activity(let message):
@@ -105,6 +134,10 @@ struct ConversationWorkGroup: Identifiable, Equatable {
 
     var activityCount: Int {
         entries.reduce(0) { $0 + $1.activityCount }
+    }
+
+    var stableAnchorMessageID: UUID? {
+        entries.first?.stableAnchorMessageID
     }
 
     var defaultIsExpanded: Bool {

@@ -216,6 +216,83 @@ struct MessagesResponse: Codable {
     }
 }
 
+struct HistoryTurnItemsContinuation: Equatable {
+    let turnID: TurnID
+    let turn: [String: CodexAppServerJSONValue]
+    let turnIndex: Int
+    let itemOffset: Int
+    let cursor: String?
+    let pageLimit: Int
+    let threadIsActive: Bool
+    let isLatestTurn: Bool
+    let hasVisibleUserMessageBefore: Bool
+    let timestampFallback: Date?
+
+    init(
+        turnID: TurnID,
+        turn: [String: CodexAppServerJSONValue],
+        turnIndex: Int,
+        itemOffset: Int,
+        cursor: String?,
+        pageLimit: Int,
+        threadIsActive: Bool,
+        isLatestTurn: Bool,
+        hasVisibleUserMessageBefore: Bool,
+        timestampFallback: Date? = nil
+    ) {
+        self.turnID = turnID
+        self.turn = turn
+        self.turnIndex = turnIndex
+        self.itemOffset = itemOffset
+        self.cursor = cursor
+        self.pageLimit = pageLimit
+        self.threadIsActive = threadIsActive
+        self.isLatestTurn = isLatestTurn
+        self.hasVisibleUserMessageBefore = hasVisibleUserMessageBefore
+        self.timestampFallback = timestampFallback
+    }
+
+    func continuing(
+        cursor: String,
+        loadedItemCount: Int,
+        hasVisibleUserMessage: Bool
+    ) -> HistoryTurnItemsContinuation {
+        HistoryTurnItemsContinuation(
+            turnID: turnID,
+            turn: turn,
+            turnIndex: turnIndex,
+            itemOffset: itemOffset + loadedItemCount,
+            cursor: cursor,
+            pageLimit: pageLimit,
+            threadIsActive: threadIsActive,
+            isLatestTurn: isLatestTurn,
+            hasVisibleUserMessageBefore: hasVisibleUserMessage,
+            timestampFallback: timestampFallback
+        )
+    }
+
+    func withPageLimit(_ pageLimit: Int) -> HistoryTurnItemsContinuation {
+        HistoryTurnItemsContinuation(
+            turnID: turnID,
+            turn: turn,
+            turnIndex: turnIndex,
+            itemOffset: itemOffset,
+            cursor: cursor,
+            pageLimit: pageLimit,
+            threadIsActive: threadIsActive,
+            isLatestTurn: isLatestTurn,
+            hasVisibleUserMessageBefore: hasVisibleUserMessageBefore,
+            timestampFallback: timestampFallback
+        )
+    }
+}
+
+struct HistoryTurnItemsPage: Equatable {
+    let messages: [CodexHistoryMessage]
+    let itemIDs: Set<AgentItemID>
+    let continuation: HistoryTurnItemsContinuation?
+}
+
 struct HistoryMessagesPage: Equatable {
     enum LoadMode: String, Equatable, Hashable {
         case full
@@ -230,6 +307,7 @@ struct HistoryMessagesPage: Equatable {
     let loadMode: LoadMode
     let notice: String?
     let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
+    let itemContinuations: [HistoryTurnItemsContinuation]
     let latestForkableTurnID: TurnID?
 
     init(response: MessagesResponse) {
@@ -241,6 +319,7 @@ struct HistoryMessagesPage: Equatable {
         self.loadMode = .full
         self.notice = nil
         self.authoritativeCompletedTurnItems = [:]
+        self.itemContinuations = []
         self.latestForkableTurnID = nil
     }
 
@@ -253,6 +332,7 @@ struct HistoryMessagesPage: Equatable {
         loadMode: LoadMode = .full,
         notice: String? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
+        itemContinuations: [HistoryTurnItemsContinuation] = [],
         latestForkableTurnID: TurnID? = nil
     ) {
         self.messages = messages
@@ -263,6 +343,7 @@ struct HistoryMessagesPage: Equatable {
         self.loadMode = loadMode
         self.notice = notice
         self.authoritativeCompletedTurnItems = authoritativeCompletedTurnItems
+        self.itemContinuations = itemContinuations
         self.latestForkableTurnID = latestForkableTurnID
     }
 }

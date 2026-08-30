@@ -27,6 +27,44 @@ extension XCTestCase {
             tokenStore: TokenStore(keychain: TestKeychainOperations())
         )
     }
+
+    /// 完整拉取首屏 Turn 的 Item 分页，供仍需验证完整历史投影的测试使用。
+    func fullyLoadedHistoryMessages(
+        from page: HistoryMessagesPage,
+        sessionID: SessionID,
+        client: CodexAppServerSessionAPIClient
+    ) async throws -> [CodexHistoryMessage] {
+        var messages = page.messages
+        var indexByID = Dictionary(uniqueKeysWithValues: messages.enumerated().map { ($1.id, $0) })
+
+        for initialContinuation in page.itemContinuations {
+            var continuation: HistoryTurnItemsContinuation? = initialContinuation
+            while let current = continuation {
+                let itemPage = try await client.historyTurnItemsPage(
+                    sessionID: sessionID,
+                    continuation: current
+                )
+                for message in itemPage.messages {
+                    if let index = indexByID[message.id] {
+                        messages[index] = message
+                    } else {
+                        indexByID[message.id] = messages.count
+                        messages.append(message)
+                    }
+                }
+                continuation = itemPage.continuation
+            }
+        }
+
+        return messages.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.timelineOrdinal, rhs.element.timelineOrdinal) {
+            case let (left?, right?) where left != right:
+                return left < right
+            default:
+                return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
 }
 
 // 直连 app-server、连接档案与通用 fixture 支持。
@@ -251,6 +289,10 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
         historyItemsStore.register(turnID: turnID, items: items)
     }
 
+    func clearHistoryItems(turnID: TurnID) {
+        historyItemsStore.remove(turnID: turnID)
+    }
+
     private func registerEmbeddedHistoryItems(in result: CodexAppServerJSONValue) {
         let resultObject = result.objectValue
         let thread = resultObject?["thread"]?.objectValue
@@ -284,6 +326,12 @@ private final class FakeCodexHistoryItemsStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return itemsByTurnID[turnID]
+    }
+
+    func remove(turnID: TurnID) {
+        lock.lock()
+        itemsByTurnID.removeValue(forKey: turnID)
+        lock.unlock()
     }
 
     func register(threadID: SessionID, turns: [CodexAppServerJSONValue]) {
