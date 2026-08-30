@@ -296,9 +296,7 @@ struct InitialConnectionSettingsSections: View {
                             }
                             if let report = appStore.lastConnectionTestReport {
                                 if let networkPath = report.tailscaleNetworkPath {
-                                    LabeledContent(L10n.text("ui.tailscale_network_path")) {
-                                        Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
-                                    }
+                                    ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
                                 }
                                 if let failedStage = report.failedStage {
                                     connectionStageSummaryRow(title: L10n.text("ui.failure_link"), stage: failedStage, color: .red)
@@ -319,8 +317,6 @@ struct InitialConnectionSettingsSections: View {
                                 }
                             }
                         }
-                        // Form 可能向展开内容提案整屏高度；诊断行只应占实际内容高度，避免路径与慢速环节之间出现大片留白。
-                        .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
                     Text(L10n.text("ui.status"))
@@ -1345,6 +1341,37 @@ struct InitialConnectionSettingsSections: View {
             localError = nil
         } catch {
             localError = error.localizedDescription
+        }
+    }
+}
+
+struct ConnectionDiagnosticsNetworkPathRow: View {
+    let networkPath: TailscaleNetworkPathResponse
+
+    var body: some View {
+        // iOS 26/27 的 Form 会把带自定义内容的 LabeledContent 拉伸到剩余整屏高度。
+        // 改用固有高度布局，让网络路径与后续诊断行始终连续排列。
+        HStack(alignment: .center, spacing: 12) {
+            Text(L10n.text("ui.tailscale_network_path"))
+
+            Spacer(minLength: 12)
+
+            networkPathLabel
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.connection.diagnostics.networkPath")
+    }
+
+    private var networkPathLabel: some View {
+        HStack(spacing: 6) {
+            Image(systemName: networkPath.kind.settingsSystemImage)
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
+            Text(networkPath.localizedSummary)
         }
     }
 }
