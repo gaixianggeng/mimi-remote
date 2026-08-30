@@ -46,8 +46,8 @@ func TestAppServerGatewayForkSupportsLastTurnAndPreservedPermissions(t *testing.
 		},
 	})
 	params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
-	assertGatewayParamsOnly(t, params, "threadId", "cwd", "lastTurnId")
-	if params["threadId"] != "thread-fork" || params["cwd"] != projectDir || params["lastTurnId"] != "turn-completed" {
+	assertGatewayParamsOnly(t, params, "threadId", "cwd", "lastTurnId", "excludeTurns")
+	if params["threadId"] != "thread-fork" || params["cwd"] != projectDir || params["lastTurnId"] != "turn-completed" || params["excludeTurns"] != true {
 		t.Fatalf("thread/fork 应保留授权 Thread、工作区和结束轮次：%v", params)
 	}
 	for _, key := range []string{"approvalPolicy", "approvalsReviewer", "permissions", "sandbox", "sandboxPolicy", gatewayPreserveThreadPermissionsParam} {

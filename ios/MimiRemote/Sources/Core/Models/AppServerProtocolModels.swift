@@ -613,6 +613,7 @@ struct CodexAppServerRequestBuilder {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
         params["threadId"] = .string(threadID)
+        params["excludeTurns"] = .bool(true)
         params["lastTurnId"] = lastTurnID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .appServerNilIfEmpty

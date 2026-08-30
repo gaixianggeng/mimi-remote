@@ -262,6 +262,8 @@ private struct RuntimeActivityPanelView: View {
             return L10n.text("ui.supplementary_information")
         case .error:
             return L10n.text("ui.abnormal_operation")
+        case .warning:
+            return L10n.text("ui.run_warning")
         case .message:
             return L10n.text("ui.news")
         }
@@ -284,6 +286,8 @@ private struct RuntimeActivityPanelView: View {
         case .userInput:
             return "questionmark.bubble"
         case .error:
+            return "exclamationmark.triangle"
+        case .warning:
             return "exclamationmark.triangle"
         case .message:
             return "info.circle"

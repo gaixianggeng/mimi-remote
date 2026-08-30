@@ -1466,9 +1466,10 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	threadForkParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
-	assertGatewayParamsOnly(t, threadForkParams, "cwd", "threadId", "approvalPolicy", "approvalsReviewer", "sandbox")
+	assertGatewayParamsOnly(t, threadForkParams, "cwd", "threadId", "excludeTurns", "approvalPolicy", "approvalsReviewer", "sandbox")
 	if threadForkParams["threadId"] != "thread-sanitize" ||
 		threadForkParams["cwd"] != projectDir ||
+		threadForkParams["excludeTurns"] != true ||
 		threadForkParams["approvalPolicy"] != "on-request" ||
 		threadForkParams["approvalsReviewer"] != "user" ||
 		threadForkParams["sandbox"] != "danger-full-access" {

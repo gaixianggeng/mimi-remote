@@ -3133,19 +3133,7 @@ actor CodexAppServerSessionRuntime {
         }
         if notification.method == "deprecationNotice",
            approvalSessionID(from: notification.params?.objectValue ?? [:]) == nil {
-            // deprecationNotice 是连接级通知，官方协议不带 threadId。直接 emit 会被路由层丢弃，
-            // 因此将它投递给当前连接已知会话，让用户真正看到升级提示。
-            let params = notification.params?.objectValue ?? [:]
-            let summary = params["summary"]?.stringValue ?? L10n.text("ui.app_server_protocol_capability_is_obsolete")
-            let details = params["details"]?.stringValue
-            let payload = AgentErrorPayload(
-                message: [summary, details].compactMap { $0 }.joined(separator: "\n"),
-                code: "deprecationNotice",
-                retryable: false
-            )
-            for sessionID in contextsBySessionID.keys {
-                emit(.warning(payload, metadata(threadID: sessionID, turnID: nil)))
-            }
+            // 官方弃用通知没有 threadId，不能伪造归属并复制进所有会话正文。
             return
         }
         guard var event = projector.project(notification) else {
