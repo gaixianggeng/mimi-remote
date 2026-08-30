@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestConfigureGatewayCommandProcessGroupWindows(t *testing.T) {
@@ -18,16 +20,23 @@ func TestConfigureGatewayCommandProcessGroupWindows(t *testing.T) {
 	if cmd.SysProcAttr.CreationFlags&syscall.CREATE_NEW_PROCESS_GROUP == 0 {
 		t.Fatalf("CreationFlags = %#x, missing CREATE_NEW_PROCESS_GROUP", cmd.SysProcAttr.CreationFlags)
 	}
+	if cmd.SysProcAttr.CreationFlags&windows.CREATE_SUSPENDED == 0 {
+		t.Fatalf("CreationFlags = %#x, missing CREATE_SUSPENDED", cmd.SysProcAttr.CreationFlags)
+	}
 }
 
 func TestTerminateGatewayProcessGroupWindows(t *testing.T) {
 	cmd := exec.Command("cmd.exe", "/c", "ping.exe", "-t", "127.0.0.1")
 	configureGatewayCommandProcessGroup(cmd)
-	if err := cmd.Start(); err != nil {
+	if err := startGatewayCommand(cmd); err != nil {
 		t.Fatalf("start process: %v", err)
 	}
 	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		releaseGatewayProcessGroup(cmd)
+		wait <- err
+	}()
 	t.Cleanup(func() {
 		terminateGatewayProcessGroup(cmd, true)
 		select {
