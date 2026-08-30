@@ -4,6 +4,31 @@ import SwiftUI
 // 模型目录过滤、默认值选择和会话 runtime 锁定集中在这里，避免 ComposerView
 // 同时承担视图布局与模型策略。成员保持 module-internal，供 ComposerView 跨文件扩展协作。
 extension ComposerView {
+    var sharedThreadModelControl: some View {
+        Menu {
+            Section {
+                Button(action: {}) {
+                    Label(L10n.text("ui.model"), systemImage: "cpu")
+                }
+                .disabled(true)
+
+                Text(ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice)
+            }
+        } label: {
+            composerToolbarControlLabel(
+                title: nil,
+                systemImage: "cpu",
+                trailingSystemImage: "lock.fill",
+                accessibilityLabel: L10n.text("ui.model")
+            )
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.model"))
+        .accessibilityValue(ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice)
+        .accessibilityIdentifier("composer.model.sharedThreadManaged")
+        .help(ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice)
+    }
+
     @ViewBuilder
     var modelPickerControl: some View {
         modelPickerControl(showsTitle: true, usesCompactTitle: false)

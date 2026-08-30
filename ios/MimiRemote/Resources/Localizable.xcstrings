@@ -32568,18 +32568,18 @@
       }
     },
     "ui.use_shared_thread_settings_change_them_on_desktop": {
-      "comment": "Composer notice explaining that shared thread settings are managed by Desktop.",
+      "comment": "Composer notice explaining that model and Plan mode are managed by Desktop for a shared thread.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use shared thread settings; change them on Desktop"
+            "value": "Model and Plan mode use shared thread settings; change them on Desktop"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "沿用共享线程设置；请在 Desktop 修改"
+            "value": "模型和计划模式沿用共享线程设置；请在 Desktop 修改"
           }
         }
       }

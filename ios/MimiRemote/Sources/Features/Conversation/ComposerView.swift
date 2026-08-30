@@ -1346,7 +1346,7 @@ struct ComposerView: View {
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
         guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
-            return AnyView(EmptyView())
+            return AnyView(sharedThreadModelControl)
         }
         return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
@@ -1387,6 +1387,11 @@ struct ComposerView: View {
         Menu {
             if composerTurnSettingsPolicy == .sharedThreadManaged {
                 Section {
+                    Button(action: {}) {
+                        Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                    }
+                    .disabled(true)
+
                     Text(ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice)
                 }
             }
