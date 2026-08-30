@@ -211,7 +211,10 @@ struct ConversationTimelineView: View {
                     if let correction = historyScrollCoordinator.update(metrics: metrics) {
                         queueHistoryPrependCorrection(correction)
                     }
-                    if oldMetrics.contentHeight != metrics.contentHeight,
+                    // 仅内容增高、视口本身未移动时继续贴尾。这样 Markdown/媒体异步展开
+                    // 可以跟随，但用户正在上翻时不会被同一帧的布局变化抢回底部。
+                    if abs(oldMetrics.contentHeight - metrics.contentHeight) >= 0.5,
+                       abs(oldMetrics.contentOffsetY - metrics.contentOffsetY) < 0.5,
                        shouldFollowMessageTail,
                        !isUserScrollingTimeline,
                        !isPreservingHistoryScroll {

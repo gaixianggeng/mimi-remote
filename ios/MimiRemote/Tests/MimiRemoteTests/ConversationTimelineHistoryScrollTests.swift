@@ -73,7 +73,13 @@ extension ConversationDataFlowTests {
             scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
         )
         let historicalOffsetY = minimumOffsetY + (maximumOffsetY - minimumOffsetY) * 0.45
+        // 生产路径由拖动手势解除尾部跟随锁。测试直接操作 UIScrollView 时也要发送
+        // 对应 delegate 生命周期，否则 SwiftUI 会把这次位移当成仍需贴尾的布局变化。
+        scrollView.delegate?.scrollViewWillBeginDragging?(scrollView)
+        await Task.yield()
         scrollView.setContentOffset(CGPoint(x: 0, y: historicalOffsetY), animated: false)
+        scrollView.delegate?.scrollViewDidScroll?(scrollView)
+        scrollView.delegate?.scrollViewDidEndDragging?(scrollView, willDecelerate: false)
         for _ in 0..<12 {
             host.view.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 16_000_000)
