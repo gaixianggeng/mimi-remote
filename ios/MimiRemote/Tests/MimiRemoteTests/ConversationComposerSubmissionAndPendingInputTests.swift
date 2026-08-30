@@ -17,7 +17,7 @@ extension ConversationDataFlowTests {
         )
         XCTAssertFalse(ComposerTurnSettingsPolicy.sharedThreadManaged.allowsTurnSettingsEditing)
         XCTAssertEqual(
-            ComposerTurnSettingsPolicy.sharedThreadNotice,
+            ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice,
             "沿用共享线程设置；请在 Desktop 修改"
         )
 

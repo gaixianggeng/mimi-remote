@@ -43,7 +43,7 @@ enum ComposerTurnSettingsPolicy: Equatable {
     case editable
     case sharedThreadManaged
 
-    static let sharedThreadNotice = String(
+    static let sharedThreadSettingsMenuNotice = String(
         localized: "ui.use_shared_thread_settings_change_them_on_desktop"
     )
 
