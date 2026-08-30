@@ -506,7 +506,7 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
-    func testSidebarUsesOneGroupHeaderForAdjacentProjectsInRunningAndJustCompleted() {
+    func testSidebarUsesOneProjectAvatarForAdjacentSessions() {
         let first = makeSession(id: "project-a-first", projectID: "project-a")
         let adjacentSameProject = makeSession(id: "project-a-second", projectID: "project-a")
         let differentProject = makeSession(id: "project-b", projectID: "project-b")
@@ -516,60 +516,33 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertTrue(
             SessionListPresentation.startsSidebarProjectGroup(
                 for: first,
-                previousSession: nil,
-                in: .running
+                previousSession: nil
             )
         )
         XCTAssertFalse(
             SessionListPresentation.startsSidebarProjectGroup(
                 for: adjacentSameProject,
-                previousSession: first,
-                in: .running
+                previousSession: first
             ),
-            "运行中的相邻同项目只在第一行展示菊花和头像"
-        )
-        XCTAssertFalse(
-            SessionListPresentation.startsSidebarProjectGroup(
-                for: adjacentSameProject,
-                previousSession: first,
-                in: .justCompleted
-            ),
-            "刚完成的相邻同项目也应合并头像"
+            "各分区的相邻同项目会话都只在第一行展示头像"
         )
         XCTAssertTrue(
             SessionListPresentation.startsSidebarProjectGroup(
                 for: differentProject,
-                previousSession: adjacentSameProject,
-                in: .running
+                previousSession: adjacentSameProject
             )
         )
         XCTAssertTrue(
             SessionListPresentation.startsSidebarProjectGroup(
                 for: separatedSameProject,
-                previousSession: differentProject,
-                in: .running
+                previousSession: differentProject
             ),
             "同项目被其他项目隔开后要重新展示头像"
         )
-        for kind in [
-            SessionSidebarSectionKind.needYou,
-            .pinned,
-            .recent,
-        ] {
-            XCTAssertTrue(
-                SessionListPresentation.startsSidebarProjectGroup(
-                    for: adjacentSameProject,
-                    previousSession: first,
-                    in: kind
-                ),
-                "\(kind.rawValue) 不在本次合并范围，仍应逐行展示项目身份"
-            )
-        }
         XCTAssertTrue(
             SessionListPresentation.startsSidebarProjectGroup(
                 for: missingProject,
-                previousSession: missingProject,
-                in: .running
+                previousSession: missingProject
             ),
             "缺少项目 ID 时不能把未知会话误合并"
         )

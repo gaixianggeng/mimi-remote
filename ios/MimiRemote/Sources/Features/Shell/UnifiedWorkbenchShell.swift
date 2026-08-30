@@ -858,8 +858,7 @@ struct UnifiedWorkbenchShell: View {
                             kind: section.kind,
                             startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
                                 for: session,
-                                previousSession: index > 0 ? section.sessions[index - 1] : nil,
-                                in: section.kind
+                                previousSession: index > 0 ? section.sessions[index - 1] : nil
                             ),
                             layout: layout
                         )
@@ -986,7 +985,7 @@ struct UnifiedWorkbenchShell: View {
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
             completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
-            // 运行组头承担状态和项目身份；后续同项目行隐藏标记，Row 固定占位保持标题对齐。
+            // 各分区只在组头显示项目头像；运行分区同时隐藏后续同项目的重复状态菊花。
             showsStateMarker: kind != .running || startsProjectGroup,
             projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]

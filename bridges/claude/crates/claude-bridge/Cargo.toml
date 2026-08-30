@@ -1,6 +1,6 @@
 [package]
 name = "alleycat-claude-bridge"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 license = "GPL-3.0-only"
 authors.workspace = true

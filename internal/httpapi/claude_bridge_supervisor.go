@@ -173,7 +173,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	if err != nil {
 		return fmt.Errorf("创建 Claude bridge stderr 失败：%w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := startGatewayCommand(cmd); err != nil {
 		return fmt.Errorf("启动 Claude bridge 失败：%w", err)
 	}
 	s.startedAt = time.Now().UTC()
@@ -206,6 +206,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 // new state.
 func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	releaseGatewayProcessGroup(cmd)
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.exited = true

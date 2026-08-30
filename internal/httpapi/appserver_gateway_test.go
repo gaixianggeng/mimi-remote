@@ -168,7 +168,7 @@ func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testin
 }
 
 func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
-	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.6")
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.7")
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
@@ -180,10 +180,10 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	claude := body["channels"].([]any)[1].(map[string]any)
 	bridge := claude["bridge"].(map[string]any)
 	capabilities := claude["capabilities"].(map[string]any)
-	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.2.6" {
+	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.2.7" {
 		t.Fatalf("旧 Claude bridge 必须 fail closed：%v", claude)
 	}
-	if bridge["minimum_version"] != "0.2.7" || !strings.Contains(bridge["fix"].(string), "cargo install") {
+	if bridge["minimum_version"] != "0.2.8" || !strings.Contains(bridge["fix"].(string), "cargo install") {
 		t.Fatalf("旧 bridge 应返回最低版本和可执行修复提示：%v", bridge)
 	}
 	if capabilities["rate_limits"] != false {
@@ -202,8 +202,8 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	defer conn.Close()
 	raw := readGatewayRaw(t, conn)
 	if !bytes.Contains(raw, []byte(`"code":"CLAUDE_BRIDGE_VERSION_UNSUPPORTED"`)) ||
-		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.2.6"`)) ||
-		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.7"`)) ||
+		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.2.7"`)) ||
+		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.8"`)) ||
 		!bytes.Contains(raw, []byte(`"fix":"cargo install`)) {
 		t.Fatalf("旧 bridge WS 错误应包含结构化版本诊断：%s", raw)
 	}
@@ -213,7 +213,7 @@ func TestClaudeBridgeProbeRejectsMissingStandardVersion(t *testing.T) {
 	bridgePath := writeTestBridgeWithVersion(t, "")
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
 	probe := router.refreshClaudeBridgeProbe(true)
-	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.7") {
+	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.8") {
 		t.Fatalf("无标准 --version 的 bridge 必须 fail closed：%+v", probe)
 	}
 }
@@ -559,9 +559,14 @@ func TestClaudeBridgeShutdownTerminatesProcessGroup(t *testing.T) {
 	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 sleep 30 &
-echo $! > %q
+child_pid=$!
+if [ -r "/proc/$child_pid/winpid" ]; then
+  cat "/proc/$child_pid/winpid" > %q
+else
+  echo "$child_pid" > %q
+fi
 while IFS= read -r line; do sleep 30; done
-`, childPIDPath))
+`, childPIDPath, childPIDPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
