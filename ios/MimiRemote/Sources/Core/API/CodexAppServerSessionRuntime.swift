@@ -1030,8 +1030,17 @@ actor CodexAppServerSessionRuntime {
             ),
             timeout: longRunningRequestTimeout
         )
-        let object = result?.objectValue ?? [:]
-        let rawTurns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        guard let object = result?.objectValue else {
+            throw AgentAPIError.invalidResponse
+        }
+        let validatedPage = try Self.validatedHistoryTurnsPage(object)
+        let rawTurns = validatedPage.turns
+        let upstreamNextCursor = validatedPage.nextCursor
+        if let upstreamNextCursor, upstreamNextCursor == cursor {
+            // 相同 cursor 会让“加载更早”永远请求同一页。这里直接拒绝，交给 Store
+            // 关闭当前分页链，避免用户反复触发无效请求。
+            throw AgentAPIError.invalidResponse
+        }
         // summary 先把用户和 Agent 文案交给 UI。full 模式的完整 Item 在首屏返回后逐页补齐；
         // 不能在这里同步排空所有 Item cursor，否则一个超大 Turn 会重新变成全量加载。
         let rawChronologicalTurns = Array(rawTurns.reversed())
@@ -1039,6 +1048,8 @@ actor CodexAppServerSessionRuntime {
             in: thread,
             turns: rawChronologicalTurns
         )
+        let threadTimestampFallback = firstDate(in: thread, keys: ["updatedAt", "updated_at"])
+            ?? firstDate(in: thread, keys: ["createdAt", "created_at"])
         // desc 分页一旦碰到 child 创建前的父 Turn（或无时间戳的继承 rollout），
         // 后续 cursor 只会继续向更早的父前缀移动。此时必须本地关闭分页，不能把过滤后的
         // 空页配上上游 nextCursor 再交给 UI。
@@ -1073,7 +1084,6 @@ actor CodexAppServerSessionRuntime {
                 turnID: recoveredTerminalTurn.turnID
             )
         }
-        let upstreamNextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
         let nextCursor = reachedInheritedBoundary ? nil : upstreamNextCursor
         let itemContinuations = loadMode == .full
             ? chronologicalTurns.enumerated().compactMap { turnIndex, turn -> HistoryTurnItemsContinuation? in
@@ -1091,7 +1101,8 @@ actor CodexAppServerSessionRuntime {
                     pageLimit: Self.historyItemPageLimit,
                     threadIsActive: isActiveHistoryThread(thread),
                     isLatestTurn: cursor == nil && turnIndex == chronologicalTurns.index(before: chronologicalTurns.endIndex),
-                    hasVisibleUserMessageBefore: false
+                    hasVisibleUserMessageBefore: false,
+                    timestampFallback: threadTimestampFallback
                 )
             }
             : []
@@ -1127,13 +1138,12 @@ actor CodexAppServerSessionRuntime {
             ),
             timeout: longRunningRequestTimeout
         )
-        let page = result?.objectValue ?? [:]
-        let items = page["data"]?.arrayValue?
-            .compactMap(\.objectValue)
-            .filter { entry in
-                entry["turnId"]?.stringValue == nil || entry["turnId"]?.stringValue == continuation.turnID
-            }
-            .compactMap { $0["item"]?.objectValue } ?? []
+        guard let page = result?.objectValue else {
+            throw AgentAPIError.invalidResponse
+        }
+        let validatedPage = try Self.validatedHistoryItemPage(page, turnID: continuation.turnID)
+        let items = validatedPage.items
+        let upstreamNextCursor = validatedPage.nextCursor
         let messages = historyMessages(
             fromItems: items,
             continuation: continuation,
@@ -1146,7 +1156,6 @@ actor CodexAppServerSessionRuntime {
             }
             return itemID
         })
-        let upstreamNextCursor = firstString(in: page, keys: ["nextCursor", "next_cursor"])
         if let upstreamNextCursor, upstreamNextCursor == continuation.cursor {
             // 重复 cursor 不是分页完成。若把它当成 nil，Store 会把不完整 Item 集合
             // 误标成权威快照，并删除仍未拉到的消息。
@@ -1164,6 +1173,63 @@ actor CodexAppServerSessionRuntime {
                 )
             }
         )
+    }
+
+    private static func strictPageCursor(
+        in object: [String: CodexAppServerJSONValue]
+    ) -> String?? {
+        let value = object["nextCursor"] ?? object["next_cursor"]
+        guard let value else { return nil }
+        switch value {
+        case .null:
+            return .some(nil)
+        case .string(let raw):
+            let cursor = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cursor.isEmpty ? nil : .some(cursor)
+        default:
+            return nil
+        }
+    }
+
+    static func validatedHistoryItemPage(
+        _ page: [String: CodexAppServerJSONValue],
+        turnID: TurnID
+    ) throws -> (items: [[String: CodexAppServerJSONValue]], nextCursor: String?) {
+        guard let rawEntries = page["data"]?.arrayValue,
+              let nextCursor = strictPageCursor(in: page),
+              rawEntries.allSatisfy({ $0.objectValue != nil }) else {
+            throw AgentAPIError.invalidResponse
+        }
+        let entries = rawEntries.compactMap(\.objectValue)
+        guard entries.allSatisfy({ entry in
+            guard entry["turnId"]?.stringValue == turnID,
+                  let item = entry["item"]?.objectValue,
+                  let itemID = item["id"]?.stringValue else {
+                return false
+            }
+            return !itemID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            throw AgentAPIError.invalidResponse
+        }
+        return (entries.compactMap { $0["item"]?.objectValue }, nextCursor)
+    }
+
+    static func validatedHistoryTurnsPage(
+        _ page: [String: CodexAppServerJSONValue]
+    ) throws -> (turns: [[String: CodexAppServerJSONValue]], nextCursor: String?) {
+        guard let rawTurns = page["data"]?.arrayValue,
+              let nextCursor = strictPageCursor(in: page),
+              rawTurns.allSatisfy({ $0.objectValue != nil }) else {
+            throw AgentAPIError.invalidResponse
+        }
+        let turns = rawTurns.compactMap(\.objectValue)
+        guard turns.allSatisfy({ turn in
+            guard let turnID = turn["id"]?.stringValue else { return false }
+            return !turnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            throw AgentAPIError.invalidResponse
+        }
+        return (turns, nextCursor)
     }
 
     func recoverCompletedActiveTurnFromLatestTurnsPage(

@@ -2553,6 +2553,7 @@ extension SessionStore {
         missingRunningSessionStateByID = [:]
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
+        historySeenPreviousCursorsBySessionID = [:]
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }

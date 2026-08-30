@@ -448,6 +448,7 @@ final class SessionStore: ObservableObject {
     var remoteSessionSearchSnippetByID: [SessionID: String] = [:]
     var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
+    var historySeenPreviousCursorsBySessionID: [SessionID: Set<String>] = [:]
     var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]

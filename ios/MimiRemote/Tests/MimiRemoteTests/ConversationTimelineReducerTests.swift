@@ -513,6 +513,141 @@ extension ConversationDataFlowTests {
         XCTAssertGreaterThan(secondMutation.generation, firstMutation.generation)
     }
 
+    func testHistoryMergeDoesNotOverwriteNewerLiveContentOrTerminalState() throws {
+        let turnID = "turn-live-wins"
+        let existing = ConversationMessage(
+            stableID: "assistant-live-wins",
+            turnID: turnID,
+            itemID: "assistant-live-wins",
+            role: .assistant,
+            content: "实时最终内容",
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 30),
+            sendStatus: .failed,
+            revision: 3,
+            turnLifecycle: .interrupted
+        )
+        let staleHistory = ConversationMessage(
+            stableID: "assistant-live-wins",
+            turnID: turnID,
+            itemID: "assistant-live-wins",
+            role: .assistant,
+            content: "旧的历史内容",
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 40),
+            sendStatus: .sent,
+            revision: nil,
+            turnLifecycle: .completed
+        )
+
+        let merged = try XCTUnwrap(ConversationTimelineReducer().rebase(
+            snapshot: [staleHistory],
+            current: [existing]
+        ).messages.first)
+
+        XCTAssertEqual(merged.content, "实时最终内容")
+        XCTAssertEqual(merged.revision, 3)
+        XCTAssertEqual(merged.sendStatus, .failed)
+        XCTAssertEqual(merged.turnLifecycle, .interrupted)
+    }
+
+    func testHistoryMergePreservesTerminalActivityWithoutRevisionAgainstNewerRunningSnapshot() throws {
+        for revision in [nil, 7] as [ModelRevision?] {
+            let existingPayload = ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行完成",
+                status: "failed",
+                outputPreview: "实时终态输出"
+            )
+            let runningPayload = ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行中",
+                status: "running"
+            )
+            let existing = ConversationMessage(
+                stableID: "terminal-activity",
+                turnID: "turn-terminal-activity",
+                itemID: "terminal-activity",
+                role: .system,
+                kind: .commandSummary,
+                content: "实时终态输出",
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 20),
+                revision: revision,
+                activityPayload: existingPayload
+            )
+            let staleRunningSnapshot = ConversationMessage(
+                stableID: "terminal-activity",
+                turnID: "turn-terminal-activity",
+                itemID: "terminal-activity",
+                role: .system,
+                kind: .commandSummary,
+                content: "历史运行中输出",
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 30),
+                revision: revision,
+                activityPayload: runningPayload,
+                turnLifecycle: .inProgress
+            )
+
+            let merged = try XCTUnwrap(ConversationTimelineReducer().rebase(
+                snapshot: [staleRunningSnapshot],
+                current: [existing]
+            ).messages.first)
+
+            XCTAssertEqual(merged.content, "实时终态输出")
+            XCTAssertEqual(merged.activityPayload, existingPayload)
+        }
+    }
+
+    func testSetHistoryMarksMutationMixedWhenItFlushesPendingLiveDelta() throws {
+        let store = ConversationStore()
+        let sessionID = "history-and-pending-live"
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: sessionID,
+            turnID: "turn-live",
+            itemID: "item-live",
+            messageID: "assistant-live",
+            clientMessageID: nil,
+            revision: 2,
+            createdAt: Date(timeIntervalSince1970: 20)
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: "实时增量", role: .assistant, kind: .message),
+            metadata: metadata,
+            fallbackSessionID: sessionID
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: "继续输出", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 2,
+                sessionID: sessionID,
+                turnID: "turn-live",
+                itemID: "item-live",
+                messageID: "assistant-live",
+                clientMessageID: nil,
+                revision: 3,
+                createdAt: Date(timeIntervalSince1970: 21)
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "history-old",
+                role: "user",
+                content: "更早内容",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: "turn-old",
+                itemID: "item-old"
+            )
+        ], sessionID: sessionID, timelineMutationKind: .prepend)
+
+        XCTAssertTrue(try XCTUnwrap(store.historyTimelineMutation(for: sessionID)).includesLiveChange)
+        XCTAssertTrue(store.messages(for: sessionID).contains { $0.content == "实时增量继续输出" })
+    }
+
     func testHistoricalTimelineGenerationSeparatesHistoryFromLiveUpdates() {
         XCTAssertTrue(
             ConversationTimelineView.isHistoricalTimelineChange(
@@ -565,28 +700,13 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testHistoryPrependPreservedOffsetTracksInsertedContentHeight() {
-        XCTAssertEqual(
-            ConversationTimelineView.historyPrependPreservedOffset(
-                baselineOffsetY: 400,
-                baselineContentHeight: 1_800,
-                currentContentHeight: 2_400,
-                minimumOffsetY: -20,
-                maximumOffsetY: 1_800
-            ),
-            1_000,
-            accuracy: 0.001
-        )
-    }
-
     func testHistoryScrollCoordinatorCoalescesAndCancelsCorrections() async throws {
         let coordinator = ConversationHistoryScrollCoordinator()
-        coordinator.updateAnchorMinY("anchor", 90)
-        let generation = try XCTUnwrap(coordinator.beginPreserving(
-            sessionID: "session",
-            itemID: "anchor",
-            baselineMinY: 90
-        ))
+        let anchorID = UUID()
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        coordinator.bind(scrollView: scrollView)
+        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 90, width: 300, height: 40))
+        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
         coordinator.update(metrics: ConversationTimelineScrollMetrics(
             isNearBottom: false,
             contentOffsetY: 400,
@@ -594,7 +714,7 @@ extension ConversationDataFlowTests {
             minimumOffsetY: -20,
             maximumOffsetY: 1_200
         ))
-        coordinator.updateAnchorMinY("anchor", 150)
+        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 150, width: 300, height: 40))
 
         var corrections: [ConversationHistoryAnchorCorrection] = []
         for _ in 0..<3 {
@@ -613,7 +733,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(corrections.first?.baselineAnchorMinY, 90)
         XCTAssertEqual(corrections.first?.currentAnchorMinY, 150)
 
-        coordinator.updateAnchorMinY("anchor", 180)
+        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 180, width: 300, height: 40))
         coordinator.scheduleCorrection(
             expectedGeneration: generation,
             displayedSessionID: "session"
@@ -626,5 +746,107 @@ extension ConversationDataFlowTests {
         }
 
         XCTAssertEqual(corrections.count, 1, "取消阅读锚点后，迟到布局不得再次写入 offset")
+    }
+
+    func testHistoryScrollCoordinatorUsesVisibleRawMessageAndIgnoresUnrelatedHeightGrowth() throws {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        coordinator.bind(scrollView: scrollView)
+        let staleID = UUID()
+        let visibleID = UUID()
+        coordinator.updateAnchorFrame([staleID], CGRect(x: 0, y: -900, width: 300, height: 40))
+        coordinator.updateAnchorFrame([visibleID], CGRect(x: 0, y: 80, width: 300, height: 40))
+        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
+        XCTAssertEqual(coordinator.activeAnchorMessageID, visibleID)
+
+        coordinator.update(metrics: ConversationTimelineScrollMetrics(
+            isNearBottom: false,
+            contentOffsetY: 400,
+            contentHeight: 3_000,
+            minimumOffsetY: -20,
+            maximumOffsetY: 2_200
+        ))
+        let correction = try XCTUnwrap(coordinator.correction(
+            expectedGeneration: generation,
+            displayedSessionID: "session"
+        ))
+        XCTAssertEqual(correction.baselineAnchorMinY, 80)
+        XCTAssertEqual(correction.currentAnchorMinY, 80)
+    }
+
+    func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
+        let project = AgentProject(id: "proj_processed_history", name: "Processed", path: "/tmp/processed")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_processed", before: nil, limit: nil)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_processed","sessionId":"thr_processed","preview":"调用子 agent 讲个笑话","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490134,"status":{"type":"idle"},"path":null,"cwd":"/tmp/processed","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"processed","turns":[{"id":"turn_processed","startedAt":1780490100,"completedAt":1780490134,"itemsView":"full","status":"completed","error":null,"items":[{"type":"userMessage","id":"user_processed","clientId":"client_processed","content":[{"type":"text","text":"调用子 agent 讲个笑话"}]},{"type":"agentMessage","id":"commentary_processed","text":"我先调用一个子 agent。","phase":"commentary","memoryCitation":null},{"type":"plan","id":"plan_processed","text":"让子 agent 生成一个短笑话。"},{"type":"reasoning","id":"reasoning_processed","summary":["确认请求要讲笑话","准备生成最终笑话"],"content":[]},{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000},{"type":"agentMessage","id":"assistant_processed","text":"程序员相亲，对方问：你会浪漫吗？","phase":"final_answer","memoryCitation":null}]}]}}}"#)
+
+        let page = try await pageTask.value
+        let messages = try await fullyLoadedHistoryMessages(
+            from: page,
+            sessionID: "thr_processed",
+            client: client
+        )
+        XCTAssertEqual(messages.map(\.role), ["user", "assistant", "system", "system", "system", "assistant"])
+        XCTAssertEqual(messages.map(\.kind), [.message, .commentary, .plan, .reasoningSummary, .commandSummary, .message])
+        XCTAssertEqual(messages.last?.createdAt, Date(timeIntervalSince1970: 1780490134))
+        XCTAssertEqual(messages.first { $0.itemID == "reasoning_processed" }?.activityPayload?.subtitle, "准备生成最终笑话")
+        let historyCommand = try XCTUnwrap(messages.first { $0.itemID == "cmd_processed" })
+        XCTAssertEqual(historyCommand.activityPayload?.category, .runCommand)
+        XCTAssertEqual(historyCommand.activityPayload?.displayTitle, "运行 echo joke")
+
+        var projector = CodexAppServerEventProjector()
+        let liveCommand = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_processed","turnId":"turn_processed","item":{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000}}}"#)
+        if case .processItemCompleted(let liveMessage, _, _) = try XCTUnwrap(projector.project(liveCommand)) {
+            XCTAssertEqual(liveMessage.content, historyCommand.content)
+            XCTAssertEqual(liveMessage.activityPayload, historyCommand.activityPayload)
+        } else {
+            XCTFail("Expected live command process item")
+        }
+
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory(messages, sessionID: "thr_processed")
+        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
+
+        XCTAssertEqual(items.count, 5)
+        guard case .message(let commentary) = items[1] else {
+            return XCTFail("commentary 应保持完整正文")
+        }
+        XCTAssertEqual(commentary.itemID, "commentary_processed")
+        XCTAssertEqual(commentary.kind, .commentary)
+        guard case .message(let plan) = items[2] else {
+            return XCTFail("plan 应保留在服务端 source order 中")
+        }
+        XCTAssertEqual(plan.kind, .plan)
+        XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
+        guard case .workGroup(let workGroup) = items[3],
+              case .processGroup(let processGroup) = workGroup.entries.first else {
+            return XCTFail("真实 reasoning 与后续命令应合并为可折叠阶段")
+        }
+        XCTAssertEqual(processGroup.header.itemID, "reasoning_processed")
+        XCTAssertEqual(processGroup.activities.map(\.itemID), ["cmd_processed"])
+        guard case .message(let final) = items[4] else {
+            return XCTFail("最终 assistant 应保持独立展开")
+        }
+        XCTAssertEqual(final.role, .assistant)
+        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
 }

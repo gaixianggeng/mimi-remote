@@ -226,6 +226,31 @@ struct HistoryTurnItemsContinuation: Equatable {
     let threadIsActive: Bool
     let isLatestTurn: Bool
     let hasVisibleUserMessageBefore: Bool
+    let timestampFallback: Date?
+
+    init(
+        turnID: TurnID,
+        turn: [String: CodexAppServerJSONValue],
+        turnIndex: Int,
+        itemOffset: Int,
+        cursor: String?,
+        pageLimit: Int,
+        threadIsActive: Bool,
+        isLatestTurn: Bool,
+        hasVisibleUserMessageBefore: Bool,
+        timestampFallback: Date? = nil
+    ) {
+        self.turnID = turnID
+        self.turn = turn
+        self.turnIndex = turnIndex
+        self.itemOffset = itemOffset
+        self.cursor = cursor
+        self.pageLimit = pageLimit
+        self.threadIsActive = threadIsActive
+        self.isLatestTurn = isLatestTurn
+        self.hasVisibleUserMessageBefore = hasVisibleUserMessageBefore
+        self.timestampFallback = timestampFallback
+    }
 
     func continuing(
         cursor: String,
@@ -241,7 +266,8 @@ struct HistoryTurnItemsContinuation: Equatable {
             pageLimit: pageLimit,
             threadIsActive: threadIsActive,
             isLatestTurn: isLatestTurn,
-            hasVisibleUserMessageBefore: hasVisibleUserMessage
+            hasVisibleUserMessageBefore: hasVisibleUserMessage,
+            timestampFallback: timestampFallback
         )
     }
 
@@ -255,7 +281,8 @@ struct HistoryTurnItemsContinuation: Equatable {
             pageLimit: pageLimit,
             threadIsActive: threadIsActive,
             isLatestTurn: isLatestTurn,
-            hasVisibleUserMessageBefore: hasVisibleUserMessageBefore
+            hasVisibleUserMessageBefore: hasVisibleUserMessageBefore,
+            timestampFallback: timestampFallback
         )
     }
 }

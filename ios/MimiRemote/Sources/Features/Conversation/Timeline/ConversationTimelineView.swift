@@ -11,6 +11,7 @@ struct ConversationTimelineView: View {
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
     @State private var shouldFollowMessageTail = true
+    @State private var hasUserDetachedFromTail = false
     @State private var forceNextMessageTailScroll = true
     // 在会话切换、本地提交或用户主动“回到底部”后，旧 List 的滚动几何可能还会
     // 回报上一个会话的 offset。锁住跟随直到用户明确上翻，避免这份过期几何把
@@ -29,6 +30,8 @@ struct ConversationTimelineView: View {
     @State private var historyScrollCoordinator = ConversationHistoryScrollCoordinator()
     @State private var timelineScrollPosition = ScrollPosition(idType: String.self)
     @State private var isUserScrollingTimeline = false
+    @State private var latestTimelineMetrics: ConversationTimelineScrollMetrics?
+    @State private var userScrollStartOffsetY: CGFloat?
     @State private var timelinePresentationGeneration = 0
     @State private var initialTailScrollAttemptedIdentity: ConversationTimelineListIdentity?
     @State private var visibleTailSentinelIdentity: ConversationTimelineListIdentity?
@@ -66,17 +69,19 @@ struct ConversationTimelineView: View {
         let historyMutationGeneration = historyTimelineMutation?.generation
         let observedTailMessageID = ConversationTimelineObservedChange(
             value: messages.last?.id,
-            historyMutationGeneration: historyMutationGeneration
+            historyMutationGeneration: historyMutationGeneration,
+            historyMutationIncludesLiveChange: historyTimelineMutation?.includesLiveChange ?? false
         )
         let observedTailRenderFingerprint = ConversationTimelineObservedChange(
             value: messages.last?.renderFingerprint,
-            historyMutationGeneration: historyMutationGeneration
+            historyMutationGeneration: historyMutationGeneration,
+            historyMutationIncludesLiveChange: historyTimelineMutation?.includesLiveChange ?? false
         )
         let observedTimelineItemIDs = ConversationTimelineObservedChange(
             value: timelineItemIDs,
-            historyMutationGeneration: historyMutationGeneration
+            historyMutationGeneration: historyMutationGeneration,
+            historyMutationIncludesLiveChange: historyTimelineMutation?.includesLiveChange ?? false
         )
-        let visibleTimelineItemID = timelineScrollPosition.viewID(type: String.self)
         let timelineListIdentity = ConversationTimelineListIdentity(
             scope: ScopedSessionID(
                 profileID: hostProfileID,
@@ -122,27 +127,12 @@ struct ConversationTimelineView: View {
                                     .listRowBackground(Color.clear)
                             }
                             ForEach(timelineItems) { item in
-                                // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
-                                // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                                timelineRow(
+                                timelineListRow(
                                     item,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
                                     crossSessionOriginMessageID: crossSessionOriginMessageID,
                                     proxy: proxy
                                 )
-                                    .simultaneousGesture(TapGesture().onEnded {
-                                        KeyboardDismissal.dismiss()
-                                    })
-                                    .id(item.id)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(layout.messageRowInsets)
-                                    .listRowBackground(Color.clear)
-                                    .modifier(ConversationHistoryAnchorGeometryModifier(
-                                        isEnabled: item.id == historyScrollCoordinator.activeAnchorItemID
-                                            || item.id == visibleTimelineItemID,
-                                        itemID: item.id,
-                                        action: recordHistoryAnchorGeometry
-                                    ))
                             }
                             if shouldShowInlineHistoryLoading {
                                 historyLoadingRow
@@ -167,6 +157,9 @@ struct ConversationTimelineView: View {
                             .onScrollVisibilityChange(threshold: 0.5) { isVisible in
                                 if isVisible {
                                     visibleTailSentinelIdentity = timelineListIdentity
+                                    if !isPreservingHistoryScroll {
+                                        hasUserDetachedFromTail = false
+                                    }
                                     confirmTimelinePresentationIfReady(
                                         timelineListIdentity,
                                         hasTimelineContent: !timelineItems.isEmpty
@@ -208,14 +201,25 @@ struct ConversationTimelineView: View {
                 .onScrollGeometryChange(for: ConversationTimelineScrollMetrics.self) { geometry in
                     scrollMetrics(for: geometry)
                 } action: { oldMetrics, metrics in
-                    if let correction = historyScrollCoordinator.update(metrics: metrics) {
-                        queueHistoryPrependCorrection(correction)
+                    historyScrollCoordinator.update(metrics: metrics)
+                    if Self.shouldDetachFromTailForUserScroll(
+                        interactionStartOffsetY: userScrollStartOffsetY,
+                        newMetrics: metrics,
+                        isUserScrolling: isUserScrollingTimeline
+                    ) {
+                        isTailFollowLocked = false
+                        shouldFollowMessageTail = false
+                        hasUserDetachedFromTail = true
+                        tailScrollCoordinator.userScrollAwayGeneration += 1
+                        cancelPendingTailScrollAttempts()
                     }
+                    latestTimelineMetrics = metrics
                     // 仅内容增高、视口本身未移动时继续贴尾。这样 Markdown/媒体异步展开
                     // 可以跟随，但用户正在上翻时不会被同一帧的布局变化抢回底部。
                     if abs(oldMetrics.contentHeight - metrics.contentHeight) >= 0.5,
                        abs(oldMetrics.contentOffsetY - metrics.contentOffsetY) < 0.5,
                        shouldFollowMessageTail,
+                       !hasUserDetachedFromTail,
                        !isUserScrollingTimeline,
                        !isPreservingHistoryScroll {
                         queueTailScrollAttempts(
@@ -228,7 +232,7 @@ struct ConversationTimelineView: View {
                         )
                     }
                     isTimelineNearBottom = metrics.isNearBottom
-                    if metrics.isNearBottom {
+                    if metrics.isNearBottom, !hasUserDetachedFromTail {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
                         historyScrollCoordinator.cancelPreservation()
@@ -243,14 +247,15 @@ struct ConversationTimelineView: View {
                     }
                     isUserScrollingTimeline = shouldSuspend
                     guard shouldSuspend else {
+                        userScrollStartOffsetY = nil
                         beginVisibleHistoryAnchorPreservation()
                         return
                     }
+                    userScrollStartOffsetY = latestTimelineMetrics?.contentOffsetY
                     // 手指驱动滚动时优先保证交互帧率：停止旧的尾部重锚任务，
                     // 流式消息在 Store 中继续累计，滚动结束后再一次性刷新 List。
                     isTailFollowLocked = false
                     shouldFollowMessageTail = false
-                    tailScrollCoordinator.userScrollAwayGeneration += 1
                     cancelPendingTailScrollAttempts()
                     cancelHistoryAnchorPreservation()
                 }
@@ -280,6 +285,7 @@ struct ConversationTimelineView: View {
                     && Self.isOptimisticSessionID(oldID)
                     && newID != nil
                 shouldFollowMessageTail = true
+                hasUserDetachedFromTail = false
                 forceNextMessageTailScroll = true
                 // 会话切换本来就要进入最新上下文。首帧 List 尚未替换前，旧会话的
                 // geometry 可能先报“未贴底”；把锁延续到用户主动上翻，后续流式消息
@@ -289,6 +295,8 @@ struct ConversationTimelineView: View {
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
                 isUserScrollingTimeline = false
+                latestTimelineMetrics = nil
+                userScrollStartOffsetY = nil
                 // 每次进入会话都生成新的 List/展示身份。不能只清空 Optional 状态，
                 // 否则 onChange 与新 task 的执行顺序可能再次取消正确的首屏定位。
                 timelinePresentationGeneration += 1
@@ -306,6 +314,9 @@ struct ConversationTimelineView: View {
                 historyScrollCoordinator.reset()
                 timelineScrollPosition = ScrollPosition(idType: String.self)
                 shouldFollowMessageTail = true
+                hasUserDetachedFromTail = false
+                latestTimelineMetrics = nil
+                userScrollStartOffsetY = nil
                 forceNextMessageTailScroll = true
                 isTailFollowLocked = displayedSessionID != nil
                 timelinePresentationGeneration += 1
@@ -322,10 +333,10 @@ struct ConversationTimelineView: View {
                 guard isLoading,
                       shouldShowInlineHistoryLoading,
                       !isUserScrollingTimeline,
-                      (isTimelineNearBottom
+                      (!hasUserDetachedFromTail && (isTimelineNearBottom
                           || isTailFollowLocked
                           || shouldFollowMessageTail
-                          || forceNextMessageTailScroll),
+                          || forceNextMessageTailScroll)),
                       !isPreservingHistoryScroll
                 else {
                     return
@@ -342,10 +353,9 @@ struct ConversationTimelineView: View {
                 )
             }
             .onChange(of: isLoadingEarlierHistory) { _, isLoading in
-                guard isLoading else {
-                    return
+                if isLoading {
+                    beginVisibleHistoryAnchorPreservation()
                 }
-                historyScrollCoordinator.preparePrependPreservation(sessionID: displayedSessionID)
             }
             .onChange(of: historyTimelineMutation) { oldMutation, newMutation in
                 guard oldMutation != newMutation, newMutation != nil else {
@@ -354,7 +364,7 @@ struct ConversationTimelineView: View {
                 // 历史变化不代表用户进入最新上下文。位于尾部时继续贴尾；
                 // 阅读历史时，前插页按内容高度差保持视口，Item 补齐按可见行保持视口。
                 cancelPendingTailScrollAttempts()
-                if isTimelineNearBottom, !isUserScrollingTimeline {
+                if isTimelineNearBottom, !hasUserDetachedFromTail, !isUserScrollingTimeline {
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
                         proxy: proxy,
@@ -367,15 +377,9 @@ struct ConversationTimelineView: View {
                 }
                 switch newMutation?.kind {
                 case .prepend:
-                    if let newMutation,
-                       let correction = historyScrollCoordinator.armPrependPreservation(
-                        mutation: newMutation,
-                        sessionID: displayedSessionID
-                       ) {
-                        queueHistoryPrependCorrection(correction)
-                    }
+                    beginVisibleHistoryAnchorPreservation()
+                    queueHistoryAnchorCorrection()
                 case .enrichment:
-                    historyScrollCoordinator.cancelPrependPreservation()
                     beginVisibleHistoryAnchorPreservation()
                     queueHistoryAnchorCorrection()
                 case nil:
@@ -388,7 +392,8 @@ struct ConversationTimelineView: View {
                 }
                 guard !Self.isHistoricalTimelineChange(
                     previousGeneration: oldValue.historyMutationGeneration,
-                    currentGeneration: newValue.historyMutationGeneration
+                    currentGeneration: newValue.historyMutationGeneration,
+                    currentIncludesLiveChange: newValue.historyMutationIncludesLiveChange
                 ) else {
                     return
                 }
@@ -405,6 +410,7 @@ struct ConversationTimelineView: View {
                     // 本地发送代表用户明确进入最新上下文；即使滚动几何刚好误判为“不在底部”，
                     // 也要立即贴到尾部，避免发完消息后还停在历史位置。
                     cancelHistoryAnchorPreservation()
+                    hasUserDetachedFromTail = false
                     isTailFollowLocked = true
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
@@ -441,7 +447,8 @@ struct ConversationTimelineView: View {
             .onChange(of: observedTailRenderFingerprint) { oldValue, newValue in
                 guard !Self.isHistoricalTimelineChange(
                     previousGeneration: oldValue.historyMutationGeneration,
-                    currentGeneration: newValue.historyMutationGeneration
+                    currentGeneration: newValue.historyMutationGeneration,
+                    currentIncludesLiveChange: newValue.historyMutationIncludesLiveChange
                 ) else {
                     return
                 }
@@ -466,7 +473,8 @@ struct ConversationTimelineView: View {
             .onChange(of: observedTimelineItemIDs) { oldValue, newValue in
                 guard !Self.isHistoricalTimelineChange(
                     previousGeneration: oldValue.historyMutationGeneration,
-                    currentGeneration: newValue.historyMutationGeneration
+                    currentGeneration: newValue.historyMutationGeneration,
+                    currentIncludesLiveChange: newValue.historyMutationIncludesLiveChange
                 ) else {
                     return
                 }
@@ -536,6 +544,47 @@ struct ConversationTimelineView: View {
     }
 
     @ViewBuilder
+    private func timelineListRow(
+        _ item: ConversationTimelineItem,
+        activeUserDeliveryMessageID: UUID?,
+        crossSessionOriginMessageID: UUID?,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        timelineRow(
+            item,
+            activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+            crossSessionOriginMessageID: crossSessionOriginMessageID,
+            proxy: proxy
+        )
+        .simultaneousGesture(TapGesture().onEnded { KeyboardDismissal.dismiss() })
+        .id(item.id)
+        .listRowSeparator(.hidden)
+        .listRowInsets(layout.messageRowInsets)
+        .listRowBackground(Color.clear)
+        .modifier(ConversationHistoryAnchorGeometryModifier(
+            // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
+            // 重建或 ScrollPosition 尚未更新时仍按 raw message UUID 选中锚点。
+            isEnabled: !outerAnchorMessageIDs(for: item).isEmpty,
+            messageIDs: outerAnchorMessageIDs(for: item),
+            action: recordHistoryAnchorGeometry
+        ))
+    }
+
+    private func outerAnchorMessageIDs(for item: ConversationTimelineItem) -> [UUID] {
+        switch item {
+        case .message(let message), .activity(let message):
+            return [message.id]
+        case .activityBatch(let group):
+            return expandedActivityGroupIDs.contains(group.id) ? [] : group.messages.map(\.id)
+        case .processGroup(let group):
+            return expandedActivityGroupIDs.contains(group.id) ? [] : [group.header.id] + group.activities.map(\.id)
+        case .workGroup(let group):
+            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
+            return isExpanded ? [] : group.entries.flatMap(\.anchorMessageIDs)
+        }
+    }
+
+    @ViewBuilder
     private func timelineRow(
         _ item: ConversationTimelineItem,
         activeUserDeliveryMessageID: UUID?,
@@ -587,7 +636,8 @@ struct ConversationTimelineView: View {
                         scrollAnchorID: group.id,
                         proxy: proxy
                     )
-                }
+                },
+                recordAnchorGeometry: recordHistoryAnchorGeometry
             )
                 .equatable()
         case .processGroup(let group):
@@ -605,7 +655,8 @@ struct ConversationTimelineView: View {
                         scrollAnchorID: group.id,
                         proxy: proxy
                     )
-                }
+                },
+                recordAnchorGeometry: recordHistoryAnchorGeometry
             )
             .equatable()
         case .workGroup(let group):
@@ -661,6 +712,11 @@ struct ConversationTimelineView: View {
                 }
             )
             .equatable()
+            .modifier(ConversationHistoryAnchorGeometryModifier(
+                isEnabled: true,
+                messageIDs: [message.id],
+                action: recordHistoryAnchorGeometry
+            ))
         case .activity(let message):
             ConversationActivityRow(
                 message: message,
@@ -675,6 +731,11 @@ struct ConversationTimelineView: View {
                 }
             )
             .equatable()
+            .modifier(ConversationHistoryAnchorGeometryModifier(
+                isEnabled: true,
+                messageIDs: [message.id],
+                action: recordHistoryAnchorGeometry
+            ))
         case .activityBatch(let group):
             ConversationActivityBatchRow(
                 group: group,
@@ -694,7 +755,8 @@ struct ConversationTimelineView: View {
                         scrollAnchorID: outerGroupID,
                         proxy: proxy
                     )
-                }
+                },
+                recordAnchorGeometry: recordHistoryAnchorGeometry
             )
             .equatable()
         case .processGroup(let group):
@@ -716,7 +778,8 @@ struct ConversationTimelineView: View {
                         scrollAnchorID: outerGroupID,
                         proxy: proxy
                     )
-                }
+                },
+                recordAnchorGeometry: recordHistoryAnchorGeometry
             )
             .equatable()
         }
@@ -861,12 +924,13 @@ struct ConversationTimelineView: View {
                 guard value.translation.height > 12 else {
                     return
                 }
-                guard isTailFollowLocked || shouldFollowMessageTail || tailScrollCoordinator.pendingTask != nil else {
+                guard !hasUserDetachedFromTail else {
                     return
                 }
                 // 用户向下拖动列表是在主动回看更早内容；解除本轮发送后的尾部跟随锁。
                 isTailFollowLocked = false
                 shouldFollowMessageTail = false
+                hasUserDetachedFromTail = true
                 tailScrollCoordinator.userScrollAwayGeneration += 1
                 cancelPendingTailScrollAttempts()
             }
@@ -887,9 +951,12 @@ struct ConversationTimelineView: View {
 
     static func isHistoricalTimelineChange(
         previousGeneration: UInt64?,
-        currentGeneration: UInt64?
+        currentGeneration: UInt64?,
+        currentIncludesLiveChange: Bool = false
     ) -> Bool {
-        currentGeneration != nil && previousGeneration != currentGeneration
+        currentGeneration != nil
+            && previousGeneration != currentGeneration
+            && !currentIncludesLiveChange
     }
 
     static func historyPreservedOffset(
@@ -904,18 +971,6 @@ struct ConversationTimelineView: View {
         return min(upperBound, max(minimumOffsetY, corrected))
     }
 
-    static func historyPrependPreservedOffset(
-        baselineOffsetY: CGFloat,
-        baselineContentHeight: CGFloat,
-        currentContentHeight: CGFloat,
-        minimumOffsetY: CGFloat,
-        maximumOffsetY: CGFloat
-    ) -> CGFloat {
-        let upperBound = max(minimumOffsetY, maximumOffsetY)
-        let corrected = baselineOffsetY + currentContentHeight - baselineContentHeight
-        return min(upperBound, max(minimumOffsetY, corrected))
-    }
-
     static func shouldSuspendTimelineUpdates(for phase: ScrollPhase) -> Bool {
         switch phase {
         case .tracking, .interacting, .decelerating:
@@ -925,18 +980,30 @@ struct ConversationTimelineView: View {
         }
     }
 
+    static func shouldDetachFromTailForUserScroll(
+        interactionStartOffsetY: CGFloat?,
+        newMetrics: ConversationTimelineScrollMetrics,
+        isUserScrolling: Bool
+    ) -> Bool {
+        guard isUserScrolling, let interactionStartOffsetY else {
+            return false
+        }
+        return newMetrics.contentOffsetY < interactionStartOffsetY - 12
+    }
+
     static func shouldAttemptTailScroll(
         force: Bool,
         shouldFollowMessageTail: Bool,
         forceNextMessageTailScroll: Bool,
         isTailFollowLocked: Bool,
-        isTimelineNearBottom: Bool
+        isTimelineNearBottom: Bool,
+        hasUserDetachedFromTail: Bool = false
     ) -> Bool {
-        force ||
+        !hasUserDetachedFromTail && (force ||
             shouldFollowMessageTail ||
             forceNextMessageTailScroll ||
             isTailFollowLocked ||
-            isTimelineNearBottom
+            isTimelineNearBottom)
     }
 
     static func shouldShowInlineHistoryLoading(
@@ -1032,7 +1099,9 @@ struct ConversationTimelineView: View {
     }
 
     private func shouldShowReturnToTailButton(timelineItems: [ConversationTimelineItem]) -> Bool {
-        !timelineItems.isEmpty && !isPreservingHistoryScroll && (hasUnseenTailMessage || !isTimelineNearBottom)
+        !timelineItems.isEmpty
+            && !isPreservingHistoryScroll
+            && (hasUserDetachedFromTail || hasUnseenTailMessage || !isTimelineNearBottom)
     }
 
     private var returnToTailAccessibilityLabel: String {
@@ -1180,7 +1249,8 @@ struct ConversationTimelineView: View {
             shouldFollowMessageTail: shouldFollowMessageTail,
             forceNextMessageTailScroll: forceNextMessageTailScroll,
             isTailFollowLocked: isTailFollowLocked,
-            isTimelineNearBottom: isTimelineNearBottom
+            isTimelineNearBottom: isTimelineNearBottom,
+            hasUserDetachedFromTail: hasUserDetachedFromTail
         ) else {
             hasUnseenTailMessage = true
             return
@@ -1223,6 +1293,7 @@ struct ConversationTimelineView: View {
         proxy: ScrollViewProxy
     ) {
         cancelHistoryAnchorPreservation()
+        hasUserDetachedFromTail = false
         hasUnseenTailMessage = false
         shouldFollowMessageTail = true
         isTailFollowLocked = true
@@ -1258,6 +1329,7 @@ struct ConversationTimelineView: View {
         }
         // 加载更早是向上 prepend，期间屏蔽尾部跟随，避免阅读位置被打断。
         cancelPendingTailScrollAttempts()
+        beginVisibleHistoryAnchorPreservation()
         isPreservingHistoryScroll = true
         shouldFollowMessageTail = false
         forceNextMessageTailScroll = false
@@ -1269,25 +1341,20 @@ struct ConversationTimelineView: View {
         }
     }
 
-    private func recordHistoryAnchorGeometry(itemID: String, minY: CGFloat) {
-        historyScrollCoordinator.updateAnchorMinY(itemID, minY)
+    private func recordHistoryAnchorGeometry(messageIDs: [UUID], frame: CGRect) {
+        historyScrollCoordinator.updateAnchorFrame(messageIDs, frame)
         queueHistoryAnchorCorrection()
     }
 
     private func beginVisibleHistoryAnchorPreservation() {
         guard !isUserScrollingTimeline,
-              !isTimelineNearBottom,
-              historyScrollCoordinator.activeGeneration == nil,
-              let itemID = timelineScrollPosition.viewID(type: String.self),
-              itemID != Self.timelineTailSentinelID,
-              let baselineMinY = historyScrollCoordinator.anchorMinY(itemID)
+              historyScrollCoordinator.activeGeneration == nil
         else {
             return
         }
-        _ = historyScrollCoordinator.beginPreserving(
+        _ = historyScrollCoordinator.beginPreservingVisible(
             sessionID: displayedSessionID,
-            itemID: itemID,
-            baselineMinY: baselineMinY
+            allowsNearBottom: hasUserDetachedFromTail
         )
     }
 
@@ -1305,26 +1372,6 @@ struct ConversationTimelineView: View {
             currentOffsetY: correction.metrics.contentOffsetY,
             currentAnchorMinY: correction.currentAnchorMinY,
             baselineAnchorMinY: correction.baselineAnchorMinY,
-            minimumOffsetY: correction.metrics.minimumOffsetY,
-            maximumOffsetY: correction.metrics.maximumOffsetY
-        )
-        guard abs(targetOffsetY - correction.metrics.contentOffsetY) >= 0.5 else {
-            return
-        }
-        historyScrollCoordinator.setContentOffsetY(targetOffsetY)
-    }
-
-    private func queueHistoryPrependCorrection(_ correction: ConversationHistoryPrependCorrection) {
-        historyScrollCoordinator.schedulePrependCorrection(correction) { correction in
-            applyHistoryPrependCorrection(correction)
-        }
-    }
-
-    private func applyHistoryPrependCorrection(_ correction: ConversationHistoryPrependCorrection) {
-        let targetOffsetY = Self.historyPrependPreservedOffset(
-            baselineOffsetY: correction.baselineOffsetY,
-            baselineContentHeight: correction.baselineContentHeight,
-            currentContentHeight: correction.metrics.contentHeight,
             minimumOffsetY: correction.metrics.minimumOffsetY,
             maximumOffsetY: correction.metrics.maximumOffsetY
         )
@@ -1367,6 +1414,7 @@ private struct ConversationTimelineListIdentity: Hashable {
 private struct ConversationTimelineObservedChange<Value: Equatable>: Equatable {
     let value: Value
     let historyMutationGeneration: UInt64?
+    let historyMutationIncludesLiveChange: Bool
 }
 
 struct ConversationTimelineScrollMetrics: Equatable {
@@ -1383,24 +1431,34 @@ struct ConversationHistoryAnchorCorrection {
     let metrics: ConversationTimelineScrollMetrics
 }
 
-struct ConversationHistoryPrependCorrection {
-    let baselineOffsetY: CGFloat
-    let baselineContentHeight: CGFloat
-    let metrics: ConversationTimelineScrollMetrics
-}
-
-private struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
+struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
     let isEnabled: Bool
-    let itemID: String
-    let action: (String, CGFloat) -> Void
+    let messageIDs: [UUID]
+    let action: ([UUID], CGRect) -> Void
+    @State private var latestFrame = CGRect.null
+    @State private var isVisible = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isEnabled {
-            content.onGeometryChange(for: CGFloat.self) { geometry in
-                geometry.frame(in: .global).minY
-            } action: { minY in
-                action(itemID, minY)
+            content.onGeometryChange(for: CGRect.self) { geometry in
+                geometry.frame(in: .global)
+            } action: { frame in
+                latestFrame = frame
+                if isVisible {
+                    action(messageIDs, frame)
+                }
+            }
+            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                isVisible = visible
+                if visible, !latestFrame.isNull {
+                    action(messageIDs, latestFrame)
+                } else if !visible {
+                    action(messageIDs, .null)
+                }
+            }
+            .onDisappear {
+                action(messageIDs, .null)
             }
         } else {
             content
@@ -1527,66 +1585,52 @@ private final class ConversationTailScrollCoordinator {
 
 @MainActor
 final class ConversationHistoryScrollCoordinator {
+#if DEBUG
+    static var testingFrameObserver: ((UUID, CGRect) -> Void)?
+    static var testingSelectionObserver: ((UUID, CGRect) -> Void)?
+#endif
     private struct ActiveAnchor {
         let generation: Int
         let sessionID: SessionID?
-        let itemID: String
+        let messageID: UUID
         let baselineMinY: CGFloat
     }
 
-    private struct ActivePrepend {
-        let generation: Int
-        let sessionID: SessionID?
-        let baselineOffsetY: CGFloat
-        let baselineContentHeight: CGFloat
-        let mutationGeneration: UInt64?
-    }
-
-    private enum ActivePreservation {
-        case anchor(ActiveAnchor)
-        case prepend(ActivePrepend)
-
-        var generation: Int {
-            switch self {
-            case .anchor(let anchor):
-                anchor.generation
-            case .prepend(let prepend):
-                prepend.generation
-            }
-        }
-    }
-
-    private var activePreservation: ActivePreservation?
-    private var anchorMinYByItemID: [String: CGFloat] = [:]
+    private var activeAnchor: ActiveAnchor?
+    private var anchorFrameByMessageID: [UUID: CGRect] = [:]
+    private var visibleAnchorMessageIDs: Set<UUID> = []
     private var metrics: ConversationTimelineScrollMetrics?
     private weak var scrollView: UIScrollView?
     private var generation = 0
     private var correctionTask: Task<Void, Never>?
 
     var activeGeneration: Int? {
-        activePreservation?.generation
+        activeAnchor?.generation
     }
 
-    var activeAnchorItemID: String? {
-        activeAnchor?.itemID
+    var activeAnchorMessageID: UUID? {
+        activeAnchor?.messageID
     }
 
-    private var activeAnchor: ActiveAnchor? {
-        guard case .anchor(let anchor) = activePreservation else {
-            return nil
+    func updateAnchorFrame(_ messageIDs: [UUID], _ frame: CGRect) {
+        if frame.isNull {
+            removeAnchorFrames(messageIDs)
+            return
         }
-        return anchor
-    }
-
-    private var activePrepend: ActivePrepend? {
-        guard case .prepend(let prepend) = activePreservation else {
-            return nil
+        for messageID in messageIDs {
+            anchorFrameByMessageID[messageID] = frame
+            visibleAnchorMessageIDs.insert(messageID)
+#if DEBUG
+            Self.testingFrameObserver?(messageID, frame)
+#endif
         }
-        return prepend
     }
 
-    func updateAnchorMinY(_ itemID: String, _ minY: CGFloat) {
-        anchorMinYByItemID[itemID] = minY
+    func removeAnchorFrames(_ messageIDs: [UUID]) {
+        for messageID in messageIDs {
+            visibleAnchorMessageIDs.remove(messageID)
+            anchorFrameByMessageID.removeValue(forKey: messageID)
+        }
     }
 
     func bind(scrollView: UIScrollView) {
@@ -1604,95 +1648,45 @@ final class ConversationHistoryScrollCoordinator {
         scrollView.setContentOffset(target, animated: false)
     }
 
-    func anchorMinY(_ itemID: String) -> CGFloat? {
-        anchorMinYByItemID[itemID]
-    }
-
-    @discardableResult
-    func update(metrics newMetrics: ConversationTimelineScrollMetrics) -> ConversationHistoryPrependCorrection? {
+    func update(metrics newMetrics: ConversationTimelineScrollMetrics) {
         metrics = newMetrics
-        return takePrependCorrection(currentMetrics: newMetrics)
     }
 
-    func preparePrependPreservation(sessionID: SessionID?) {
+    func beginPreservingVisible(sessionID: SessionID?, allowsNearBottom: Bool = false) -> Int? {
         cancelPreservation()
-        guard let metrics else {
-            return
+        guard let scrollView else {
+            return nil
+        }
+        // 首次 geometry 回调前也可根据真实可见行建锚；一旦已有 metrics，则默认不在
+        // 尾部建锚，避免正常的尾部内容增长误触发历史位置修正。
+        if let metrics, metrics.isNearBottom, !allowsNearBottom {
+            return nil
+        }
+        let visibleFrame = scrollView.convert(scrollView.bounds, to: nil)
+        // 只从当前真实可见的消息中选择顶部锚点，不能复用 List 已回收行留下的旧 frame。
+        guard let (messageID, frame) = anchorFrameByMessageID
+            .filter({ visibleAnchorMessageIDs.contains($0.key) && $0.value.intersects(visibleFrame) })
+            .min(by: { lhs, rhs in
+                if lhs.value.minY != rhs.value.minY {
+                    return lhs.value.minY < rhs.value.minY
+                }
+                if lhs.value.minX != rhs.value.minX {
+                    return lhs.value.minX < rhs.value.minX
+                }
+                return lhs.key.uuidString < rhs.key.uuidString
+            }) else {
+            return nil
         }
         generation += 1
-        activePreservation = .prepend(ActivePrepend(
+        activeAnchor = ActiveAnchor(
             generation: generation,
             sessionID: sessionID,
-            baselineOffsetY: metrics.contentOffsetY,
-            baselineContentHeight: metrics.contentHeight,
-            mutationGeneration: nil
-        ))
-    }
-
-    func armPrependPreservation(
-        mutation: ConversationHistoryTimelineMutation,
-        sessionID: SessionID?
-    ) -> ConversationHistoryPrependCorrection? {
-        guard mutation.kind == .prepend,
-              let activePrepend,
-              activePrepend.sessionID == sessionID,
-              activePrepend.mutationGeneration == nil else {
-            return nil
-        }
-        activePreservation = .prepend(ActivePrepend(
-            generation: activePrepend.generation,
-            sessionID: activePrepend.sessionID,
-            baselineOffsetY: activePrepend.baselineOffsetY,
-            baselineContentHeight: activePrepend.baselineContentHeight,
-            mutationGeneration: mutation.generation
-        ))
-        guard let metrics else {
-            return nil
-        }
-        return takePrependCorrection(currentMetrics: metrics)
-    }
-
-    private func takePrependCorrection(
-        currentMetrics: ConversationTimelineScrollMetrics
-    ) -> ConversationHistoryPrependCorrection? {
-        guard let activePrepend,
-              activePrepend.mutationGeneration != nil,
-              abs(currentMetrics.contentHeight - activePrepend.baselineContentHeight) >= 0.5 else {
-            return nil
-        }
-        activePreservation = nil
-        correctionTask?.cancel()
-        correctionTask = nil
-        return ConversationHistoryPrependCorrection(
-            baselineOffsetY: activePrepend.baselineOffsetY,
-            baselineContentHeight: activePrepend.baselineContentHeight,
-            metrics: currentMetrics
+            messageID: messageID,
+            baselineMinY: frame.minY
         )
-    }
-
-    func cancelPrependPreservation() {
-        guard activePrepend != nil else {
-            return
-        }
-        cancelPreservation()
-    }
-
-    func beginPreserving(
-        sessionID: SessionID?,
-        itemID: String?,
-        baselineMinY: CGFloat?
-    ) -> Int? {
-        cancelPreservation()
-        guard let itemID, let baselineMinY else {
-            return nil
-        }
-        generation += 1
-        activePreservation = .anchor(ActiveAnchor(
-            generation: generation,
-            sessionID: sessionID,
-            itemID: itemID,
-            baselineMinY: baselineMinY
-        ))
+#if DEBUG
+        Self.testingSelectionObserver?(messageID, frame)
+#endif
         return generation
     }
 
@@ -1703,7 +1697,7 @@ final class ConversationHistoryScrollCoordinator {
         guard let activeAnchor,
               activeAnchor.generation == expectedGeneration,
               activeAnchor.sessionID == displayedSessionID,
-              let currentAnchorMinY = anchorMinYByItemID[activeAnchor.itemID],
+              let currentAnchorMinY = anchorFrameByMessageID[activeAnchor.messageID]?.minY,
               let metrics else {
             return nil
         }
@@ -1738,32 +1732,19 @@ final class ConversationHistoryScrollCoordinator {
         }
     }
 
-    func schedulePrependCorrection(
-        _ correction: ConversationHistoryPrependCorrection,
-        apply: @escaping @MainActor (ConversationHistoryPrependCorrection) -> Void
-    ) {
-        correctionTask?.cancel()
-        correctionTask = Task { @MainActor in
-            await Task.yield()
-            guard !Task.isCancelled else {
-                return
-            }
-            apply(correction)
-        }
-    }
-
     func cancelPreservation(expectedGeneration: Int? = nil) {
-        if let expectedGeneration, activePreservation?.generation != expectedGeneration {
+        if let expectedGeneration, activeAnchor?.generation != expectedGeneration {
             return
         }
-        activePreservation = nil
+        activeAnchor = nil
         correctionTask?.cancel()
         correctionTask = nil
     }
 
     func reset() {
         cancelPreservation()
-        anchorMinYByItemID.removeAll()
+        anchorFrameByMessageID.removeAll()
+        visibleAnchorMessageIDs.removeAll()
         metrics = nil
     }
 }

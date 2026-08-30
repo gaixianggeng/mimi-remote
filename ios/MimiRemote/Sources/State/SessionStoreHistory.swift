@@ -2645,22 +2645,52 @@ extension SessionStore {
     func updateHistoryPageState(
         sessionID: SessionID,
         page: HistoryMessagesPage,
+        requestedCursor: String? = nil,
         preserveExistingCursorOnEmptyPage: Bool
     ) {
         recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
-        if let cursor = page.previousCursor, page.hasMoreBefore {
-            historyPreviousCursorBySessionID[sessionID] = cursor
-            historyHasMoreBeforeBySessionID[sessionID] = true
-        } else if preserveExistingCursorOnEmptyPage,
-                  page.messages.isEmpty,
-                  historyPreviousCursorBySessionID[sessionID] != nil {
-            // resume/刷新首屏偶发空页时不要丢掉已有 older cursor。用户主动点“加载更早”
-            // 的请求仍会传 false，让后端空页可以明确关闭分页入口。
-            historyHasMoreBeforeBySessionID[sessionID] = true
-        } else {
+        if requestedCursor == nil {
+            if let cursor = page.previousCursor, page.hasMoreBefore {
+                historyPreviousCursorBySessionID[sessionID] = cursor
+                historyHasMoreBeforeBySessionID[sessionID] = true
+                historySeenPreviousCursorsBySessionID[sessionID] = [cursor]
+            } else if preserveExistingCursorOnEmptyPage,
+                      page.messages.isEmpty,
+                      historyPreviousCursorBySessionID[sessionID] != nil {
+                // resume/刷新首屏偶发空页时不要丢掉已有 older cursor。用户主动点“加载更早”
+                // 的请求仍会传 false，让后端空页可以明确关闭分页入口。
+                historyHasMoreBeforeBySessionID[sessionID] = true
+            } else {
+                closeHistoryPagination(sessionID: sessionID)
+            }
+            return
+        }
+
+        guard let cursor = page.previousCursor, page.hasMoreBefore else {
+            closeHistoryPagination(sessionID: sessionID)
+            return
+        }
+        var seenCursors = historySeenPreviousCursorsBySessionID[sessionID] ?? []
+        if let requestedCursor {
+            seenCursors.insert(requestedCursor)
+        }
+        guard seenCursors.insert(cursor).inserted else {
+            // App Server 偶发返回 A → B → A 时，当前页内容仍可保留，但后续已不再
+            // 可靠。关闭入口，避免回到旧页形成无限循环。
+            historySeenPreviousCursorsBySessionID[sessionID] = seenCursors
             historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
             historyHasMoreBeforeBySessionID[sessionID] = false
+            return
         }
+        historySeenPreviousCursorsBySessionID[sessionID] = seenCursors
+        historyPreviousCursorBySessionID[sessionID] = cursor
+        historyHasMoreBeforeBySessionID[sessionID] = true
+    }
+
+    func closeHistoryPagination(sessionID: SessionID) {
+        historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
+        historyHasMoreBeforeBySessionID[sessionID] = false
+        historySeenPreviousCursorsBySessionID.removeValue(forKey: sessionID)
     }
 
     func setSessionListProjection(
@@ -3364,6 +3394,7 @@ extension SessionStore {
         // 继续留在字典里没有业务价值，长时间浏览大量历史时还会慢慢堆内存。
         historyPreviousCursorBySessionID = historyPreviousCursorBySessionID.filter { validSessionIDs.contains($0.key) }
         historyHasMoreBeforeBySessionID = historyHasMoreBeforeBySessionID.filter { validSessionIDs.contains($0.key) }
+        historySeenPreviousCursorsBySessionID = historySeenPreviousCursorsBySessionID.filter { validSessionIDs.contains($0.key) }
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }

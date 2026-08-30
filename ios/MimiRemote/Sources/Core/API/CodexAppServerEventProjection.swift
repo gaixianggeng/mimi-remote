@@ -1448,6 +1448,13 @@ extension CodexAppServerSessionRuntime {
                 continue
             }
             message = message.withTurnLifecycle(turnLifecycle)
+            if message.createdAt == nil {
+                // Item 异步分页时不再持有完整 Thread。显式沿用首屏读取到的 Thread 时间，
+                // 避免无 item/turn 时间戳的消息退化成 nil 或每次加载都变化的当前时间。
+                let fallback = continuation.timestampFallback
+                    ?? Self.stableHistoryFallbackDate(index: absoluteItemIndex)
+                message = message.withTimestampFallback(createdAt: fallback)
+            }
             if message.role == "user" {
                 hasVisibleUserMessage = true
             }

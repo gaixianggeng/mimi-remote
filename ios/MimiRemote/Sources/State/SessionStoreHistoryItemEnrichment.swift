@@ -30,12 +30,12 @@ struct HistoryItemEnrichmentState {
     let hostScope: HostScope
     var pending: [HistoryItemEnrichmentWork]
     var queuedPageKeys: Set<HistoryItemEnrichmentPageKey>
+    var seenPageKeys: Set<HistoryItemEnrichmentPageKey> = []
     var oldestHistoryPageOrdinal: Int
     var loadedItemIDsByTurnID: [TurnID: Set<AgentItemID>] = [:]
     var bufferedPages: [HistoryItemEnrichmentBufferedPage] = []
-    var publishedPages: [HistoryItemEnrichmentBufferedPage] = []
     var bufferedAuthoritativeItems: [TurnID: Set<AgentItemID>] = [:]
-    var publishedAuthoritativeItems: [TurnID: Set<AgentItemID>] = [:]
+    var didPublish = false
     var didFail = false
     var task: Task<Void, Never>?
 }
@@ -58,7 +58,10 @@ extension SessionStore {
                 page: page,
                 historyPageOrdinal: historyPageOrdinal
             )
-            let uniqueWork = work.filter { state.queuedPageKeys.insert($0.pageKey).inserted }
+            let uniqueWork = work.filter {
+                !state.seenPageKeys.contains($0.pageKey)
+                    && state.queuedPageKeys.insert($0.pageKey).inserted
+            }
             guard !uniqueWork.isEmpty else {
                 return
             }
@@ -169,6 +172,11 @@ extension SessionStore {
             return
         }
         state.queuedPageKeys.remove(work.pageKey)
+        guard state.seenPageKeys.insert(work.pageKey).inserted else {
+            state.didFail = true
+            historyItemEnrichmentBySessionID[sessionID] = state
+            return
+        }
         let turnID = work.continuation.turnID
         state.loadedItemIDsByTurnID[turnID, default: []].formUnion(page.itemIDs)
         if let continuation = page.continuation {
@@ -179,7 +187,12 @@ extension SessionStore {
                 historyPageOrdinal: work.historyPageOrdinal,
                 retryCount: 0
             )
-            if state.queuedPageKeys.insert(nextWork.pageKey).inserted {
+            if state.seenPageKeys.contains(nextWork.pageKey) {
+                // A→B→A 等 cursor 环路不是分页完成。保留已经加载的内容，但不能把
+                // 不完整 Item 集合当作权威快照去删除当前时间线中的消息。
+                state.didFail = true
+                state.loadedItemIDsByTurnID.removeValue(forKey: turnID)
+            } else if state.queuedPageKeys.insert(nextWork.pageKey).inserted {
                 state.pending.append(nextWork)
             }
         } else if Self.isCompletedHistoryTurn(work.continuation.turn) {
@@ -193,7 +206,7 @@ extension SessionStore {
             itemOffset: work.continuation.itemOffset,
             messages: page.messages
         ))
-        let shouldPublish = state.publishedPages.isEmpty
+        let shouldPublish = !state.didPublish
             || state.bufferedPages.count >= Self.historyItemPagesPerPublish
             || state.pending.isEmpty
         let publication = shouldPublish ? takeHistoryItemPublication(from: &state) : nil
@@ -289,12 +302,14 @@ extension SessionStore {
         page: HistoryMessagesPage,
         historyPageOrdinal: Int
     ) -> [HistoryItemEnrichmentWork] {
-        page.itemContinuations.sorted { $0.turnIndex > $1.turnIndex }.map {
-            HistoryItemEnrichmentWork(
+        var seenPageKeys = Set<HistoryItemEnrichmentPageKey>()
+        return page.itemContinuations.sorted { $0.turnIndex > $1.turnIndex }.compactMap {
+            let work = HistoryItemEnrichmentWork(
                 continuation: $0,
                 historyPageOrdinal: historyPageOrdinal,
                 retryCount: 0
             )
+            return seenPageKeys.insert(work.pageKey).inserted ? work : nil
         }
     }
 
@@ -309,11 +324,9 @@ extension SessionStore {
         guard !state.bufferedPages.isEmpty || !state.bufferedAuthoritativeItems.isEmpty else {
             return nil
         }
-        // Reducer 会把一次 snapshot 内的相邻消息视为权威顺序。每次都带上此前已发布页，
-        // 避免“最旧 Turn + 最新 Turn 续页”同批出现时跨过中间 Turn 建立错误相邻关系。
-        state.publishedPages.append(contentsOf: state.bufferedPages)
-        state.publishedAuthoritativeItems.merge(state.bufferedAuthoritativeItems) { _, latest in latest }
-        let orderedPages = state.publishedPages.sorted { lhs, rhs in
+        // 只发布本批新增页。重放旧页会用冻结的历史快照覆盖已经到达的实时内容，
+        // 同时让累计工作量退化为 O(P²)。Reducer 的增量模式只在同一 Turn 内建立顺序。
+        let orderedPages = state.bufferedPages.sorted { lhs, rhs in
             if lhs.historyPageOrdinal != rhs.historyPageOrdinal {
                 return lhs.historyPageOrdinal < rhs.historyPageOrdinal
             }
@@ -324,10 +337,11 @@ extension SessionStore {
         }
         let publication = (
             messages: orderedPages.flatMap(\.messages),
-            authoritativeItems: state.publishedAuthoritativeItems
+            authoritativeItems: state.bufferedAuthoritativeItems
         )
         state.bufferedPages = []
         state.bufferedAuthoritativeItems = [:]
+        state.didPublish = true
         return publication
     }
 

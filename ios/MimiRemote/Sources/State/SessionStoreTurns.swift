@@ -371,10 +371,20 @@ extension SessionStore {
                 timelineMutationKind: .prepend
             )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
-            updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
+            updateHistoryPageState(
+                sessionID: session.id,
+                page: page,
+                requestedCursor: cursor,
+                preserveExistingCursorOnEmptyPage: false
+            )
             appendHistoryItemEnrichment(page: page, sessionID: session.id)
             setErrorMessage(nil)
         } catch {
+            if case AgentAPIError.invalidResponse = error {
+                // 无效分页响应无法安全重试。保留已加载内容，但关闭入口，避免同一 cursor
+                // 被用户或自动流程反复请求。
+                closeHistoryPagination(sessionID: session.id)
+            }
             setErrorMessage(error.localizedDescription)
         }
     }
