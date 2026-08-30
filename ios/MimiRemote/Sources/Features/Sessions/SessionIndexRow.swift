@@ -218,11 +218,14 @@ enum SessionIndexRowIdentityFallback: Equatable {
 
 /// 前导状态字形。
 ///
-/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 空心环 / 实心点。
+/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 缺口环 / 完整环。
 /// 色觉障碍下这一列仍然可读，这是把状态收进单一色点的方案做不到的。
 struct SessionRowStateGlyph: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var runningRotation: Double = 0
 
     let state: SessionRowState?
     let size: CGFloat
@@ -248,15 +251,20 @@ struct SessionRowStateGlyph: View {
                     .foregroundStyle(tokens.warning)
             case .running:
                 Circle()
-                    .strokeBorder(tokens.success, lineWidth: 2)
+                    .trim(from: 0.08, to: 0.86)
+                    .stroke(
+                        tokens.primaryAction,
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(runningRotation))
                     .frame(width: size, height: size)
             case .unread:
                 Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: size - 2, height: size - 2)
+                    .strokeBorder(tokens.success, lineWidth: 2)
+                    .frame(width: size, height: size)
             case nil:
                 if drawsIdlePlaceholder {
-                    // 虚线环。和"运行中"那枚实心绿环的区别落在**形状**上，而不是靠颜色深浅——
+                    // 虚线环。和"运行中"那枚紫色缺口环的区别落在**形状**上，而不是靠颜色深浅——
                     // 虚实之分即使在色觉障碍或纯灰度下也读得出来，这是细一档描边做不到的。
                     //
                     // 描边不能再细了：1.25pt 配 border 色在实机上糊成一团灰雾，读不出是个环。
@@ -275,6 +283,36 @@ struct SessionRowStateGlyph: View {
         // 宽度恒定：普通行也占同样的槽位，标题才不会因为有没有状态而左右跳。
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+        .onAppear {
+            updateRunningAnimation()
+        }
+        .onChange(of: reduceMotion) { _, _ in
+            updateRunningAnimation()
+        }
+        .onChange(of: state) { _, _ in
+            updateRunningAnimation()
+        }
+    }
+
+    private func updateRunningAnimation() {
+        guard Self.shouldAnimate(state: state, reduceMotion: reduceMotion) else {
+            withAnimation(.none) {
+                runningRotation = 0
+            }
+            return
+        }
+
+        runningRotation = 0
+        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+            runningRotation = 360
+        }
+    }
+
+    static func shouldAnimate(
+        state: SessionRowState?,
+        reduceMotion: Bool
+    ) -> Bool {
+        state == .running && !reduceMotion
     }
 }
 
@@ -562,10 +600,8 @@ struct SessionIndexRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: density.stateGutterSpacing) {
+        HStack(alignment: .center, spacing: density.stateGutterSpacing) {
             leadingGutter(tokens: tokens)
-                // 与标题首行基线对齐；字形是几何居中的，需要往下压一点点。
-                .padding(.top, dynamicTypeSize.isAccessibilitySize ? 3 : 2)
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
@@ -722,11 +758,9 @@ struct SessionIndexRow: View {
                     tokens: tokens
                 )
             } else if isUnread {
-                // 段中行没有图标可挂角标，未读退回槽位居中的独立圆点。
+                // 段中行没有图标可挂角标，未读退回槽位居中的完整圆环。
                 // 位置仍然在同一条竖线上，扫读时和角标读成同一列。
-                Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: 7, height: 7)
+                unreadProjectIndicator(tokens: tokens, isolatesFromIcon: false)
             } else {
                 Color.clear
             }
@@ -736,17 +770,30 @@ struct SessionIndexRow: View {
         // 叠在角上既保住信号，又不让它重新变成一个跟着时间漂移的独立元素。
         .overlay(alignment: .topTrailing) {
             if drawsIcon, isUnread {
-                Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: 7, height: 7)
-                    .overlay {
-                        Circle()
-                            .stroke(tokens.background, lineWidth: 1.5)
-                    }
-                    .offset(x: 3, y: -3)
+                unreadProjectIndicator(tokens: tokens, isolatesFromIcon: true)
+                    .offset(x: 3.5, y: -3.5)
             }
         }
         .accessibilityHidden(true)
+    }
+
+    private func unreadProjectIndicator(
+        tokens: ThemeTokens,
+        isolatesFromIcon: Bool
+    ) -> some View {
+        ZStack {
+            if isolatesFromIcon {
+                // 背景盘只在图标角标中出现，避免项目图标的颜色和细节穿进未读环。
+                Circle()
+                    .fill(tokens.background)
+                    .frame(width: 12, height: 12)
+            }
+
+            Circle()
+                .strokeBorder(tokens.success, lineWidth: 1.75)
+                .frame(width: 9, height: 9)
+        }
+        .frame(width: 12, height: 12)
     }
 
     @ViewBuilder

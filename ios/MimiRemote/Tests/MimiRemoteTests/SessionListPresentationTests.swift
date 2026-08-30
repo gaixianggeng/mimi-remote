@@ -1,4 +1,5 @@
 import Foundation
+import SnapshotTesting
 import SwiftUI
 import XCTest
 @testable import MimiRemote
@@ -668,6 +669,46 @@ final class SessionListPresentationTests: XCTestCase {
         )
     }
 
+    func testSessionRowStateResolutionUsesStatusPriorityBeforeUnread() {
+        let cases: [(
+            name: String,
+            tone: AgentSessionStatusTone,
+            isUnread: Bool,
+            expected: SessionRowState?
+        )] = [
+            ("danger", .danger, true, .failed),
+            ("warning", .warning, true, .waiting),
+            ("active", .active, false, .running),
+            ("complete-unread", .complete, true, .unread),
+            ("complete-read", .complete, false, nil),
+            ("neutral-unread", .neutral, true, .unread),
+            ("neutral-read", .neutral, false, nil),
+            // 运行中与未读同时存在时，前导槽必须保留运行中状态。
+            ("active-unread", .active, true, .running),
+        ]
+
+        for testCase in cases {
+            let status = AgentSessionDisplayStatus(
+                title: testCase.name,
+                systemImage: "circle",
+                tone: testCase.tone,
+                showsSpinner: false
+            )
+
+            XCTAssertEqual(
+                SessionRowState.resolve(status: status, isUnread: testCase.isUnread),
+                testCase.expected,
+                testCase.name
+            )
+        }
+    }
+
+    func testRunningStateAnimationHonorsReduceMotion() {
+        XCTAssertTrue(SessionRowStateGlyph.shouldAnimate(state: .running, reduceMotion: false))
+        XCTAssertFalse(SessionRowStateGlyph.shouldAnimate(state: .running, reduceMotion: true))
+        XCTAssertFalse(SessionRowStateGlyph.shouldAnimate(state: .unread, reduceMotion: false))
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",
@@ -716,5 +757,198 @@ final class SessionListPresentationTests: XCTestCase {
         minute: Int = 0
     ) -> Date {
         calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
+    }
+}
+
+@MainActor
+final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    func testSessionProjectIconAndUnreadIndicatorCombinations() {
+        let project = AgentProject(
+            id: "indicator-combinations",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let themeStore = makeThemeStore()
+        let fixedNow = Date(timeIntervalSince1970: 1_782_879_660)
+        let scenarios: [(hasIcon: Bool, isUnread: Bool)] = [
+            (true, true),
+            (true, false),
+            (false, true),
+            (false, false),
+        ]
+        let appearances: [(name: String, colorScheme: ColorScheme)] = [
+            ("light", .light),
+            ("dark", .dark),
+        ]
+
+        for appearance in appearances {
+            let view = VStack(spacing: 4) {
+                ForEach(Array(scenarios.enumerated()), id: \.offset) { index, scenario in
+                    self.makeRow(
+                        session: self.makeSession(
+                            id: "indicator-\(index)",
+                            project: project,
+                            title: "项目图标与未读状态组合 \(index + 1)",
+                            status: SessionStatus.completed.rawValue,
+                            preview: "验证项目图标与未读状态共用前导槽",
+                            recencyAt: fixedNow.addingTimeInterval(TimeInterval(-index * 60))
+                        ),
+                        isUnread: scenario.isUnread,
+                        projectIcon: scenario.hasIcon ? .emoji("🐱") : nil,
+                        leadingSlot: .projectIcon,
+                        showsProjectAnchor: scenario.hasIcon,
+                        currentDate: fixedNow
+                    )
+                }
+            }
+            .padding(16)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, appearance.colorScheme)
+            .background(themeStore.tokens(for: appearance.colorScheme).background)
+            .frame(width: 460, height: 330)
+
+            assertSnapshot(
+                of: view,
+                as: .image(precision: 0.98, layout: .fixed(width: 460, height: 330)),
+                named: appearance.name
+            )
+        }
+    }
+
+    func testSessionStateRingSemanticsAndAlignment() {
+        let project = AgentProject(
+            id: "state-ring-semantics",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let themeStore = makeThemeStore()
+        let fixedNow = Date(timeIntervalSince1970: 1_782_879_660)
+        let running = makeSession(
+            id: "state-ring-running",
+            project: project,
+            title: "运行中的会话",
+            status: SessionStatus.running.rawValue,
+            preview: "紫色缺口环表示任务正在运行",
+            activeTurnID: "turn-state-ring",
+            recencyAt: fixedNow
+        )
+        let completedUnread = makeSession(
+            id: "state-ring-unread",
+            project: project,
+            title: "已完成但尚未阅读",
+            status: SessionStatus.completed.rawValue,
+            preview: "绿色完整环只表示完成结果未读",
+            recencyAt: fixedNow.addingTimeInterval(-60)
+        )
+        let readHistory = makeSession(
+            id: "state-ring-history",
+            project: project,
+            title: "已经阅读的历史会话",
+            status: SessionStatus.history.rawValue,
+            preview: "灰色虚线环表示普通历史记录",
+            recencyAt: fixedNow.addingTimeInterval(-120)
+        )
+
+        let appearances: [(name: String, colorScheme: ColorScheme)] = [
+            ("light", .light),
+            ("dark", .dark),
+        ]
+
+        for appearance in appearances {
+            let view = VStack(spacing: 4) {
+                makeRow(
+                    session: running,
+                    leadingSlot: .state,
+                    showsIdleStateGlyph: true,
+                    currentDate: fixedNow
+                )
+                makeRow(
+                    session: completedUnread,
+                    isUnread: true,
+                    leadingSlot: .state,
+                    showsIdleStateGlyph: true,
+                    currentDate: fixedNow
+                )
+                makeRow(
+                    session: readHistory,
+                    leadingSlot: .state,
+                    showsIdleStateGlyph: true,
+                    currentDate: fixedNow
+                )
+            }
+            .padding(16)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, appearance.colorScheme)
+            // 快照只验证缺口环的静态形状和位置，关闭事务动画以固定环的起点。
+            .transaction { $0.disablesAnimations = true }
+            .background(themeStore.tokens(for: appearance.colorScheme).background)
+            .frame(width: 460, height: 260)
+
+            assertSnapshot(
+                of: view,
+                as: .image(precision: 0.98, layout: .fixed(width: 460, height: 260)),
+                named: appearance.name
+            )
+        }
+    }
+
+    private func makeRow(
+        session: AgentSession,
+        isUnread: Bool = false,
+        projectIcon: WorkspaceProjectIconContent? = nil,
+        leadingSlot: SessionIndexRowLeadingSlot,
+        showsProjectAnchor: Bool = false,
+        showsIdleStateGlyph: Bool = false,
+        currentDate: Date
+    ) -> SessionIndexRow {
+        SessionIndexRow(
+            session: session,
+            foregroundActivity: nil,
+            isSelected: false,
+            isPinned: false,
+            isArchived: false,
+            reminder: nil,
+            isObserving: false,
+            isUnread: isUnread,
+            density: .compact,
+            projectIcon: projectIcon,
+            leadingSlot: leadingSlot,
+            showsIdleStateGlyph: showsIdleStateGlyph,
+            showsProjectAnchor: showsProjectAnchor,
+            currentDate: { currentDate }
+        )
+    }
+
+    private func makeSession(
+        id: SessionID,
+        project: AgentProject,
+        title: String,
+        status: String,
+        preview: String,
+        activeTurnID: TurnID? = nil,
+        recencyAt: Date
+    ) -> AgentSession {
+        AgentSession(
+            id: id,
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: title,
+            status: status,
+            source: "codex",
+            resumeID: "thread-\(id)",
+            createdAt: nil,
+            updatedAt: nil,
+            recencyAt: recencyAt,
+            preview: preview,
+            activeTurnID: activeTurnID
+        )
+    }
+
+    private func makeThemeStore() -> ThemeStore {
+        let suiteName = "SessionStatusIndicatorSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return ThemeStore(defaults: defaults)
     }
 }
