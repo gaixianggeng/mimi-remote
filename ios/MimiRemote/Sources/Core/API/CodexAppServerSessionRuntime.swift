@@ -833,6 +833,9 @@ actor CodexAppServerSessionRuntime {
             contextsBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
             threadSubscriptionLeaseBySessionID.removeValue(forKey: id)
+            cancelThreadResumeTask(sessionID: id)
+            threadsResumedOnConnection.remove(id)
+            finishAttachedEventStreams(sessionID: id)
         }
     }
 
@@ -851,9 +854,13 @@ actor CodexAppServerSessionRuntime {
     }
 
     @discardableResult
-    func unsubscribeThread(threadID: SessionID) async throws -> CodexAppServerThreadUnsubscribeStatus? {
+    func unsubscribeThread(
+        threadID: SessionID,
+        usingExistingConnectionOnly: Bool = false
+    ) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
             || threadResumeTasksBySessionID[threadID] != nil
+        let existingConnection = connection
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         cancelThreadResumeTask(sessionID: threadID)
         // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
@@ -870,9 +877,21 @@ actor CodexAppServerSessionRuntime {
         }
         let result: CodexAppServerJSONValue?
         do {
-            result = try await sendRecoveringFromStaleInitialization(
-                builder.threadUnsubscribe(threadID: threadID)
-            )
+            let request = builder.threadUnsubscribe(threadID: threadID)
+            if usingExistingConnectionOnly {
+                // 页面离开时的自动退订不能为了清理 listener 复活已经断开的物理连接。
+                // notification pump 可能尚未来得及执行 producer finish，因此这里同时核对
+                // 连接代次与 readiness；失败就保留本地 false lease，等待正常业务连接恢复。
+                guard let existingConnection,
+                      connection === existingConnection,
+                      await existingConnection.isReadyForRequests()
+                else {
+                    return nil
+                }
+                result = try await existingConnection.send(request)
+            } else {
+                result = try await sendRecoveringFromStaleInitialization(request)
+            }
         } catch {
             // timeout 可能表示服务端已经执行退订、只是 ACK 丢失；若这时已经有更新一代
             // 订阅，仍需 best-effort 恢复，不能把不确定结果留成静默断流。
@@ -2714,11 +2733,27 @@ actor CodexAppServerSessionRuntime {
         defaults.set(String(sequence), forKey: key)
     }
 
-    func detachEvents(sessionID: SessionID, token: UUID) {
-        eventMailboxesBySessionID[sessionID]?.removeValue(forKey: token)
-        if eventMailboxesBySessionID[sessionID]?.isEmpty == true {
-            eventMailboxesBySessionID.removeValue(forKey: sessionID)
+    func detachEvents(sessionID: SessionID, token: UUID) async {
+        guard eventMailboxesBySessionID[sessionID]?.removeValue(forKey: token) != nil else {
+            // producer 结束会先整体移除邮箱。随后消费者 defer 中的 cancel 不能再发起 RPC，
+            // 否则一次物理断线会被误判成用户离开，并在重连窗口创建新连接只为退订。
+            return
         }
+        guard eventMailboxesBySessionID[sessionID]?.isEmpty == true else {
+            return
+        }
+        eventMailboxesBySessionID.removeValue(forKey: sessionID)
+        // Claude bridge 没有 thread/unsubscribe 协议。保持它原有的连接生命周期，
+        // 避免页面离开时向 gateway 发送必然被策略拒绝的 Codex 专用请求。
+        guard runtimeProvider == "codex" else {
+            return
+        }
+        // 页面和后台队列可能同时观察同一 thread。只有最后一个主动观察者离开时才释放
+        // app-server listener；RPC 失败不影响本地 stream 收尾，连接恢复后仍以新 lease 为准。
+        _ = try? await unsubscribeThread(
+            threadID: sessionID,
+            usingExistingConnectionOnly: true
+        )
     }
 
     func ensureConfig(forceRefresh: Bool = false) async throws -> CodexAppServerConfigResponse {
@@ -2882,6 +2917,13 @@ actor CodexAppServerSessionRuntime {
     func finishAttachedEventStreams() {
         let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
         eventMailboxesBySessionID.removeAll(keepingCapacity: true)
+        for mailbox in mailboxes {
+            mailbox.finishFromProducer()
+        }
+    }
+
+    func finishAttachedEventStreams(sessionID: SessionID) {
+        let mailboxes = eventMailboxesBySessionID.removeValue(forKey: sessionID)?.values ?? [:].values
         for mailbox in mailboxes {
             mailbox.finishFromProducer()
         }

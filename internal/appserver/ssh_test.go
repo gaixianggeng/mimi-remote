@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -92,6 +94,77 @@ func TestSSHBootstrapAloneDisablesPersistedRemoteControl(t *testing.T) {
 	}
 	if strings.Contains(sshProxyRemoteCommand, remoteControlEnv) {
 		t.Fatalf("SSH proxy 不应覆盖官方 environment identity：%s", sshProxyRemoteCommand)
+	}
+}
+
+func TestSSHBootstrapGuaranteesOpenFileCapacityBeforeStartingResident(t *testing.T) {
+	limitCheck := "ulimit -Sn"
+	limitRaise := fmt.Sprintf("ulimit -Sn %d", sshAppServerOpenFileSoftLimit)
+	residentStart := "nohup env"
+	for _, required := range []string{limitCheck, limitRaise, residentStart} {
+		if !strings.Contains(sshBootstrapRemoteCommand, required) {
+			t.Fatalf("bootstrap 缺少 %q：%s", required, sshBootstrapRemoteCommand)
+		}
+	}
+	if strings.Index(sshBootstrapRemoteCommand, limitCheck) > strings.Index(sshBootstrapRemoteCommand, residentStart) ||
+		strings.Index(sshBootstrapRemoteCommand, limitRaise) > strings.Index(sshBootstrapRemoteCommand, residentStart) {
+		t.Fatalf("必须在启动 resident 前确认 open-file soft limit：%s", sshBootstrapRemoteCommand)
+	}
+	if strings.Contains(sshBootstrapRemoteCommand, limitRaise+" || true") {
+		t.Fatalf("无法提高 open-file soft limit 时必须阻止低上限 resident 启动：%s", sshBootstrapRemoteCommand)
+	}
+}
+
+func TestSSHBootstrapResidentInheritsRaisedOpenFileLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SSH Unix resident 只在 Unix 主机启动")
+	}
+	hardOutput, err := exec.Command("/bin/sh", "-c", "ulimit -Hn").Output()
+	if err != nil {
+		t.Fatalf("读取测试 shell hard limit：%v", err)
+	}
+	hardLimit := strings.TrimSpace(string(hardOutput))
+	if hardLimit != "unlimited" {
+		value, parseErr := strconv.Atoi(hardLimit)
+		if parseErr != nil {
+			t.Fatalf("解析测试 shell hard limit %q：%v", hardLimit, parseErr)
+		}
+		if value < sshAppServerOpenFileSoftLimit {
+			t.Skipf("测试环境 hard limit %d 低于 resident 要求 %d", value, sshAppServerOpenFileSoftLimit)
+		}
+	}
+
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "resident-limit")
+	fakeCodex := filepath.Join(directory, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nulimit -Sn > \"$MIMI_BOOTSTRAP_LIMIT_MARKER\"\n"), 0o755); err != nil {
+		t.Fatalf("创建 fake codex：%v", err)
+	}
+	t.Setenv("MIMI_BOOTSTRAP_LIMIT_MARKER", marker)
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command := exec.Command("/bin/sh", "-c", "ulimit -Sn 256; "+sshBootstrapRemoteCommand)
+	command.Env = os.Environ()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("执行 bootstrap shell：%v，output=%s", err, strings.TrimSpace(string(output)))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		output, readErr := os.ReadFile(marker)
+		if readErr == nil {
+			limit, parseErr := strconv.Atoi(strings.TrimSpace(string(output)))
+			if parseErr != nil || limit < sshAppServerOpenFileSoftLimit {
+				t.Fatalf("resident 继承的 open-file soft limit=%q，至少应为 %d", strings.TrimSpace(string(output)), sshAppServerOpenFileSoftLimit)
+			}
+			break
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("读取 resident limit marker：%v", readErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake resident 未写入 open-file soft limit")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
