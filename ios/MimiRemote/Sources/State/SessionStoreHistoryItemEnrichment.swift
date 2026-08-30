@@ -2,14 +2,40 @@ import Foundation
 
 struct HistoryItemEnrichmentWork {
     let continuation: HistoryTurnItemsContinuation
+    let historyPageOrdinal: Int
     let retryCount: Int
+
+    var pageKey: HistoryItemEnrichmentPageKey {
+        HistoryItemEnrichmentPageKey(
+            turnID: continuation.turnID,
+            cursor: continuation.cursor
+        )
+    }
+}
+
+struct HistoryItemEnrichmentBufferedPage {
+    let historyPageOrdinal: Int
+    let turnIndex: Int
+    let itemOffset: Int
+    let messages: [CodexHistoryMessage]
+}
+
+struct HistoryItemEnrichmentPageKey: Hashable {
+    let turnID: TurnID
+    let cursor: String?
 }
 
 struct HistoryItemEnrichmentState {
     let token: UUID
     let hostScope: HostScope
     var pending: [HistoryItemEnrichmentWork]
+    var queuedPageKeys: Set<HistoryItemEnrichmentPageKey>
+    var oldestHistoryPageOrdinal: Int
     var loadedItemIDsByTurnID: [TurnID: Set<AgentItemID>] = [:]
+    var bufferedPages: [HistoryItemEnrichmentBufferedPage] = []
+    var publishedPages: [HistoryItemEnrichmentBufferedPage] = []
+    var bufferedAuthoritativeItems: [TurnID: Set<AgentItemID>] = [:]
+    var publishedAuthoritativeItems: [TurnID: Set<AgentItemID>] = [:]
     var didFail = false
     var task: Task<Void, Never>?
 }
@@ -25,21 +51,31 @@ extension SessionStore {
         guard page.loadMode == .full, !page.itemContinuations.isEmpty else {
             return
         }
-        let work = page.itemContinuations.sorted { $0.turnIndex > $1.turnIndex }.map {
-            HistoryItemEnrichmentWork(continuation: $0, retryCount: 0)
-        }
         if var state = historyItemEnrichmentBySessionID[sessionID],
            state.hostScope == appStore.activeHostScope {
-            state.pending.append(contentsOf: work)
+            let historyPageOrdinal = state.oldestHistoryPageOrdinal - 1
+            let work = Self.historyItemEnrichmentWork(
+                page: page,
+                historyPageOrdinal: historyPageOrdinal
+            )
+            let uniqueWork = work.filter { state.queuedPageKeys.insert($0.pageKey).inserted }
+            guard !uniqueWork.isEmpty else {
+                return
+            }
+            state.oldestHistoryPageOrdinal = historyPageOrdinal
+            state.pending.append(contentsOf: uniqueWork)
             historyItemEnrichmentBySessionID[sessionID] = state
             return
         }
 
         let token = UUID()
+        let work = Self.historyItemEnrichmentWork(page: page, historyPageOrdinal: 0)
         historyItemEnrichmentBySessionID[sessionID] = HistoryItemEnrichmentState(
             token: token,
             hostScope: appStore.activeHostScope,
             pending: work,
+            queuedPageKeys: Set(work.map(\.pageKey)),
+            oldestHistoryPageOrdinal: 0,
             task: nil
         )
         let task = Task { @MainActor [weak self] in
@@ -62,13 +98,6 @@ extension SessionStore {
     func cancelAllHistoryItemEnrichment() {
         historyItemEnrichmentBySessionID.values.forEach { $0.task?.cancel() }
         historyItemEnrichmentBySessionID = [:]
-    }
-
-    func waitForHistoryItemEnrichment(sessionID: SessionID) async {
-        guard let task = historyItemEnrichmentBySessionID[sessionID]?.task else {
-            return
-        }
-        await task.value
     }
 
     private func runHistoryItemEnrichment(sessionID: SessionID, token: UUID) async {
@@ -108,7 +137,7 @@ extension SessionStore {
                     sessionID: sessionID,
                     token: token
                 ) else {
-                    markHistoryItemEnrichmentFailed(sessionID: sessionID, token: token)
+                    markHistoryItemEnrichmentFailed(work: work, sessionID: sessionID, token: token)
                     continue
                 }
             }
@@ -139,25 +168,37 @@ extension SessionStore {
         guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return
         }
+        state.queuedPageKeys.remove(work.pageKey)
         let turnID = work.continuation.turnID
         state.loadedItemIDsByTurnID[turnID, default: []].formUnion(page.itemIDs)
-        var authoritativeItems: [TurnID: Set<AgentItemID>] = [:]
         if let continuation = page.continuation {
             // 每个 Turn 先补一页，再轮转到下一个 Turn。这样最新页面中的媒体引用会尽快出现，
             // 同时不会让一个极端大 Turn 独占整条 SSH 链路。
-            state.pending.append(HistoryItemEnrichmentWork(continuation: continuation, retryCount: 0))
+            let nextWork = HistoryItemEnrichmentWork(
+                continuation: continuation,
+                historyPageOrdinal: work.historyPageOrdinal,
+                retryCount: 0
+            )
+            if state.queuedPageKeys.insert(nextWork.pageKey).inserted {
+                state.pending.append(nextWork)
+            }
         } else if Self.isCompletedHistoryTurn(work.continuation.turn) {
-            authoritativeItems[turnID] = state.loadedItemIDsByTurnID.removeValue(forKey: turnID) ?? []
+            state.bufferedAuthoritativeItems[turnID] = state.loadedItemIDsByTurnID.removeValue(forKey: turnID) ?? []
         } else {
             state.loadedItemIDsByTurnID.removeValue(forKey: turnID)
         }
+        state.bufferedPages.append(HistoryItemEnrichmentBufferedPage(
+            historyPageOrdinal: work.historyPageOrdinal,
+            turnIndex: work.continuation.turnIndex,
+            itemOffset: work.continuation.itemOffset,
+            messages: page.messages
+        ))
+        let shouldPublish = state.publishedPages.isEmpty
+            || state.bufferedPages.count >= Self.historyItemPagesPerPublish
+            || state.pending.isEmpty
+        let publication = shouldPublish ? takeHistoryItemPublication(from: &state) : nil
         historyItemEnrichmentBySessionID[sessionID] = state
-        conversationStore.setHistory(
-            page.messages,
-            sessionID: sessionID,
-            authoritativeCompletedTurnItems: authoritativeItems,
-            timelineMutationKind: .enrichment
-        )
+        publishHistoryItemPublication(publication, sessionID: sessionID)
     }
 
     private func retryHistoryItemEnrichmentIfPossible(
@@ -186,26 +227,37 @@ extension SessionStore {
             return false
         }
         state.pending.insert(
-            HistoryItemEnrichmentWork(continuation: continuation, retryCount: work.retryCount + 1),
+            HistoryItemEnrichmentWork(
+                continuation: continuation,
+                historyPageOrdinal: work.historyPageOrdinal,
+                retryCount: work.retryCount + 1
+            ),
             at: 0
         )
         historyItemEnrichmentBySessionID[sessionID] = state
         return true
     }
 
-    private func markHistoryItemEnrichmentFailed(sessionID: SessionID, token: UUID) {
+    private func markHistoryItemEnrichmentFailed(
+        work: HistoryItemEnrichmentWork,
+        sessionID: SessionID,
+        token: UUID
+    ) {
         guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return
         }
+        state.queuedPageKeys.remove(work.pageKey)
         state.didFail = true
         historyItemEnrichmentBySessionID[sessionID] = state
     }
 
     private func finishHistoryItemEnrichment(sessionID: SessionID, token: UUID, failed: Bool) {
-        guard let state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
+        guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return
         }
+        let publication = takeHistoryItemPublication(from: &state)
         historyItemEnrichmentBySessionID.removeValue(forKey: sessionID)
+        publishHistoryItemPublication(publication, sessionID: sessionID)
         guard failed || state.didFail else {
             historyLoadedQualityBySessionID[sessionID] = .full
             return
@@ -229,6 +281,71 @@ extension SessionStore {
         if current > 20 { return 20 }
         if current > 10 { return 10 }
         return 1
+    }
+
+    private static let historyItemPagesPerPublish = 4
+
+    private static func historyItemEnrichmentWork(
+        page: HistoryMessagesPage,
+        historyPageOrdinal: Int
+    ) -> [HistoryItemEnrichmentWork] {
+        page.itemContinuations.sorted { $0.turnIndex > $1.turnIndex }.map {
+            HistoryItemEnrichmentWork(
+                continuation: $0,
+                historyPageOrdinal: historyPageOrdinal,
+                retryCount: 0
+            )
+        }
+    }
+
+    private typealias HistoryItemPublication = (
+        messages: [CodexHistoryMessage],
+        authoritativeItems: [TurnID: Set<AgentItemID>]
+    )
+
+    private func takeHistoryItemPublication(
+        from state: inout HistoryItemEnrichmentState
+    ) -> HistoryItemPublication? {
+        guard !state.bufferedPages.isEmpty || !state.bufferedAuthoritativeItems.isEmpty else {
+            return nil
+        }
+        // Reducer 会把一次 snapshot 内的相邻消息视为权威顺序。每次都带上此前已发布页，
+        // 避免“最旧 Turn + 最新 Turn 续页”同批出现时跨过中间 Turn 建立错误相邻关系。
+        state.publishedPages.append(contentsOf: state.bufferedPages)
+        state.publishedAuthoritativeItems.merge(state.bufferedAuthoritativeItems) { _, latest in latest }
+        let orderedPages = state.publishedPages.sorted { lhs, rhs in
+            if lhs.historyPageOrdinal != rhs.historyPageOrdinal {
+                return lhs.historyPageOrdinal < rhs.historyPageOrdinal
+            }
+            if lhs.turnIndex != rhs.turnIndex {
+                return lhs.turnIndex < rhs.turnIndex
+            }
+            return lhs.itemOffset < rhs.itemOffset
+        }
+        let publication = (
+            messages: orderedPages.flatMap(\.messages),
+            authoritativeItems: state.publishedAuthoritativeItems
+        )
+        state.bufferedPages = []
+        state.bufferedAuthoritativeItems = [:]
+        return publication
+    }
+
+    private func publishHistoryItemPublication(
+        _ publication: HistoryItemPublication?,
+        sessionID: SessionID
+    ) {
+        guard let publication else {
+            return
+        }
+        // summary 文案已经首屏显示。Item 页只把首个媒体批次立即交给 UI，后续每四页
+        // 合并一次，避免每个 SSH 响应都触发整条时间线重投影和 List diff。
+        conversationStore.setHistory(
+            publication.messages,
+            sessionID: sessionID,
+            authoritativeCompletedTurnItems: publication.authoritativeItems,
+            timelineMutationKind: .enrichment
+        )
     }
 
     private static func isCompletedHistoryTurn(_ turn: [String: CodexAppServerJSONValue]) -> Bool {

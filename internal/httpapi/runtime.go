@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 
-	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
@@ -14,7 +13,6 @@ type SessionRuntime interface {
 	CreateSession(ctx context.Context, req RuntimeCreateRequest) (RuntimeCreateResult, error)
 	SessionDetail(ctx context.Context, id string, afterSeq int64) (SessionDetail, error)
 	StopSession(ctx context.Context, id string) error
-	SessionMessages(ctx context.Context, id string, before string, limit int) (codexhistory.MessagePage, error)
 	SessionTrace(ctx context.Context, id string) ([]session.TraceEvent, error)
 }
 
@@ -43,8 +41,4 @@ type SessionDetail struct {
 	Snapshot     session.SessionSnapshot
 	RecentOutput string
 	LastSeq      int64
-}
-
-func emptyMessagePage() codexhistory.MessagePage {
-	return codexhistory.MessagePage{Messages: []codexhistory.Message{}}
 }

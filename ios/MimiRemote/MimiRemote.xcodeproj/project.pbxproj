@@ -117,6 +117,8 @@
 		5CD51AE13B5D23F8FBE444C5 /* SessionStoreSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */; };
 		5FD1DBDBCD89B51F6B22D679 /* ConversationSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7C7C0DF7B33C596EBE5FC7 /* ConversationSnapshotTests.swift */; platformFilters = (ios, ); };
 		613A97BCD065B780C6162C8E /* ConversationTimelineReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F938DA83B5613E99E202281D /* ConversationTimelineReducerTests.swift */; };
+		205A205A205A205A205A205A /* ConversationHistoryItemEnrichmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205B205B205B205B205B205B /* ConversationHistoryItemEnrichmentTests.swift */; };
+		205C205C205C205C205C205C /* ConversationTimelineHistoryScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205D205D205D205D205D205D /* ConversationTimelineHistoryScrollTests.swift */; };
 		626E053AFAE30F345EEFC01D /* WorkspaceVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327AF69020E348B4AE9F7BBE /* WorkspaceVisualSnapshotTests.swift */; platformFilters = (ios, ); };
 		6329757B930F1A8506FACF90 /* SessionAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C046A065EC50889673C918 /* SessionAPIModels.swift */; };
 		648665FD8A9D6AC67326D404 /* testEmptyConversationState.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 38004512B302AB5F8AD23644 /* testEmptyConversationState.1.png */; };
@@ -373,6 +375,8 @@
 		1F4C7F055E8F17853BC7CB04 /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png"; sourceTree = "<group>"; };
 		1F63FE197E70AD192F429877 /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
 		1F803BE24EB9F6963792C11C /* ConversationWorkspaceHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceHistoryTests.swift; sourceTree = "<group>"; };
+		205B205B205B205B205B205B /* ConversationHistoryItemEnrichmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryItemEnrichmentTests.swift; sourceTree = "<group>"; };
+		205D205D205D205D205D205D /* ConversationTimelineHistoryScrollTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineHistoryScrollTests.swift; sourceTree = "<group>"; };
 		1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClientRequestTests.swift; sourceTree = "<group>"; };
 		1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputPreferences.swift; sourceTree = "<group>"; };
 		207244025842AC17EBFA9009 /* ComposerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerState.swift; sourceTree = "<group>"; };
@@ -783,6 +787,8 @@
 				C0FE3675988DBD54585B3A79 /* ConversationDirectRuntimeSubscriptionTests.swift */,
 				025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */,
 				3987365BB15E85F513EB187D /* ConversationGuidanceFallbackTests.swift */,
+				205B205B205B205B205B205B /* ConversationHistoryItemEnrichmentTests.swift */,
+				205D205D205D205D205D205D /* ConversationTimelineHistoryScrollTests.swift */,
 				FBF29C4EA9F4D0ECC4709B97 /* ConversationProcessGrouperTests.swift */,
 				033E0CF93AA4A06CC89D7AD1 /* ConversationRuntimeFlowTests.swift */,
 				D9A1F29F52DC5CC790708ACC /* ConversationRuntimeTestSupport.swift */,
@@ -1541,6 +1547,8 @@
 				BA0F184AA3E72EE6A5A291B5 /* ConversationDirectRuntimeSubscriptionTests.swift in Sources */,
 				E790247242197F065BB1F1DE /* ConversationDirectRuntimeTests.swift in Sources */,
 				699762120516E7B19DB681E9 /* ConversationGuidanceFallbackTests.swift in Sources */,
+				205A205A205A205A205A205A /* ConversationHistoryItemEnrichmentTests.swift in Sources */,
+				205C205C205C205C205C205C /* ConversationTimelineHistoryScrollTests.swift in Sources */,
 				388033847B02B31529D2BFCA /* ConversationProcessGrouperTests.swift in Sources */,
 				7813EDBB1DC23A88A94CAF56 /* ConversationRuntimeFlowTests.swift in Sources */,
 				2B372F78E1EC09D8E4B7210F /* ConversationRuntimeTestSupport.swift in Sources */,

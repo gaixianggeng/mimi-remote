@@ -564,4 +564,67 @@ extension ConversationDataFlowTests {
             accuracy: 0.001
         )
     }
+
+    func testHistoryPrependPreservedOffsetTracksInsertedContentHeight() {
+        XCTAssertEqual(
+            ConversationTimelineView.historyPrependPreservedOffset(
+                baselineOffsetY: 400,
+                baselineContentHeight: 1_800,
+                currentContentHeight: 2_400,
+                minimumOffsetY: -20,
+                maximumOffsetY: 1_800
+            ),
+            1_000,
+            accuracy: 0.001
+        )
+    }
+
+    func testHistoryScrollCoordinatorCoalescesAndCancelsCorrections() async throws {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        coordinator.updateAnchorMinY("anchor", 90)
+        let generation = try XCTUnwrap(coordinator.beginPreserving(
+            sessionID: "session",
+            itemID: "anchor",
+            baselineMinY: 90
+        ))
+        coordinator.update(metrics: ConversationTimelineScrollMetrics(
+            isNearBottom: false,
+            contentOffsetY: 400,
+            contentHeight: 1_800,
+            minimumOffsetY: -20,
+            maximumOffsetY: 1_200
+        ))
+        coordinator.updateAnchorMinY("anchor", 150)
+
+        var corrections: [ConversationHistoryAnchorCorrection] = []
+        for _ in 0..<3 {
+            coordinator.scheduleCorrection(
+                expectedGeneration: generation,
+                displayedSessionID: "session"
+            ) { correction in
+                corrections.append(correction)
+            }
+        }
+        for _ in 0..<4 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(corrections.count, 1)
+        XCTAssertEqual(corrections.first?.baselineAnchorMinY, 90)
+        XCTAssertEqual(corrections.first?.currentAnchorMinY, 150)
+
+        coordinator.updateAnchorMinY("anchor", 180)
+        coordinator.scheduleCorrection(
+            expectedGeneration: generation,
+            displayedSessionID: "session"
+        ) { correction in
+            corrections.append(correction)
+        }
+        coordinator.cancelPreservation()
+        for _ in 0..<4 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(corrections.count, 1, "取消阅读锚点后，迟到布局不得再次写入 offset")
+    }
 }

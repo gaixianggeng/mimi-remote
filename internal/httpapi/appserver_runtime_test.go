@@ -315,59 +315,6 @@ func TestCodexAppServerRuntimeResumeSessionUsesThreadResumeThenTurnStart(t *test
 	}
 }
 
-func TestCodexAppServerRuntimeMessagesPaginatesThreadReadTurns(t *testing.T) {
-	registry, project := appServerRuntimeFixture(t)
-	fake := &fakeAppServerRPC{}
-	startedAt := int64(1_780_300_000)
-	completedAt := int64(1_780_300_002)
-	fake.handler = func(method string, params map[string]any, result any) error {
-		switch method {
-		case "thread/read":
-			if params["threadId"] != "thread-msg" || params["includeTurns"] != false {
-				t.Fatalf("thread/read 必须禁用 full-history：%v", params)
-			}
-			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
-				ID: "thread-msg", CWD: project.RealPath, CreatedAt: startedAt, UpdatedAt: completedAt, Status: appServerThreadStatus{Type: "idle"},
-			}}
-		case "thread/turns/list":
-			*(result.(*appServerTurnListPage)) = appServerTurnListPage{Data: []appServerTurn{{
-				ID:          "turn-msg",
-				Status:      "completed",
-				StartedAt:   &startedAt,
-				CompletedAt: &completedAt,
-			}}}
-		case "thread/items/list":
-			*(result.(*appServerItemListPage)) = appServerItemListPage{Data: []appServerThreadItemEntry{
-				{TurnID: "turn-msg", Item: appServerThreadItem{Type: "userMessage", ID: "user-1", ClientID: "client-1", Content: []appServerUserInput{{Type: "text", Text: "hi"}}}},
-				{TurnID: "turn-msg", Item: appServerThreadItem{Type: "agentMessage", ID: "assistant-1", Text: "hello"}},
-			}}
-		default:
-			t.Fatalf("不期望调用 method=%s params=%v", method, params)
-		}
-		return nil
-	}
-
-	runtime := NewCodexAppServerRuntime(registry, fake)
-	first, err := runtime.SessionMessages(context.Background(), "codex_thread-msg", "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first.Messages) != 1 || first.Messages[0].Role != "assistant" || first.Messages[0].Content != "hello" {
-		t.Fatalf("第一页应返回最近 assistant 消息：%+v", first)
-	}
-	if !first.HasMoreBefore || first.PreviousCursor == "" {
-		t.Fatalf("第一页应给出 previous cursor：%+v", first)
-	}
-
-	second, err := runtime.SessionMessages(context.Background(), "codex_thread-msg", first.PreviousCursor, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(second.Messages) != 1 || second.Messages[0].Role != "user" || second.Messages[0].ClientMessageID != "client-1" {
-		t.Fatalf("第二页应返回更早 user 消息并保留 client id：%+v", second)
-	}
-}
-
 func TestCodexAppServerRuntimeTokenUsageNotificationUpdatesSessionRow(t *testing.T) {
 	registry, project := appServerRuntimeFixture(t)
 	fake := &fakeAppServerRPC{notifications: make(chan appserver.Notification, 4)}
@@ -400,10 +347,6 @@ func TestCodexAppServerRuntimeTokenUsageNotificationUpdatesSessionRow(t *testing
 				UpdatedAt: 1_780_300_010,
 				Status:    appServerThreadStatus{Type: "active"},
 			}}
-		case "thread/turns/list":
-			*(result.(*appServerTurnListPage)) = appServerTurnListPage{Data: []appServerTurn{{ID: "turn-usage", Status: "inProgress"}}}
-		case "thread/items/list":
-			*(result.(*appServerItemListPage)) = appServerItemListPage{}
 		default:
 			t.Fatalf("不期望调用 method=%s params=%v", method, params)
 		}
@@ -443,6 +386,72 @@ func TestCodexAppServerRuntimeTokenUsageNotificationUpdatesSessionRow(t *testing
 	}
 	if detail.Snapshot.Usage == nil || detail.Snapshot.Usage.OutputTokens != 78 || detail.Snapshot.RateLimit == nil {
 		t.Fatalf("detail snapshot 应保留 usage/rate-limit：%+v", detail.Snapshot)
+	}
+}
+
+func TestCodexAppServerRuntimeSessionDetailReadsMetadataOnly(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "account/rateLimits/read":
+			*(result.(*map[string]any)) = map[string]any{}
+		case "thread/read":
+			if params["threadId"] != "thread-detail" || params["includeTurns"] != false {
+				t.Fatalf("detail 必须只读取 thread metadata：%v", params)
+			}
+			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+				ID: "thread-detail", CWD: project.RealPath, Status: appServerThreadStatus{Type: "idle"},
+			}}
+		default:
+			t.Fatalf("detail 不应读取历史 method=%s params=%v", method, params)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	detail, err := runtime.SessionDetail(context.Background(), "codex_thread-detail", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Snapshot.ID != "codex_thread-detail" {
+		t.Fatalf("detail snapshot 异常：%+v", detail.Snapshot)
+	}
+}
+
+func TestCodexAppServerRuntimeStopFallbackReadsOneBoundedTurnPage(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "thread/turns/list":
+			if params["threadId"] != "thread-stop" || params["limit"] != float64(appServerRuntimeActiveTurnLimit) ||
+				params["sortDirection"] != "desc" || params["itemsView"] != "notLoaded" {
+				t.Fatalf("stop fallback 必须读取最新有界 turn 页且不带 items：%v", params)
+			}
+			if _, ok := params["cursor"]; ok {
+				t.Fatalf("stop fallback 不应继续翻页：%v", params)
+			}
+			*(result.(*appServerTurnListPage)) = appServerTurnListPage{Data: []appServerTurn{
+				{ID: "turn-complete", Status: "completed"},
+				{ID: "turn-active", Status: "inProgress"},
+			}}
+		case "turn/interrupt":
+			if params["threadId"] != "thread-stop" || params["turnId"] != "turn-active" {
+				t.Fatalf("interrupt 参数异常：%v", params)
+			}
+		default:
+			t.Fatalf("stop fallback 不应读取 thread/items method=%s params=%v", method, params)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	if err := runtime.StopSession(context.Background(), "codex_thread-stop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.methods(); len(got) != 2 || got[0] != "thread/turns/list" || got[1] != "turn/interrupt" {
+		t.Fatalf("stop fallback 调用顺序异常：%v", got)
 	}
 }
 
