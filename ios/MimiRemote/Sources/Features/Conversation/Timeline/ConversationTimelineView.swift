@@ -556,11 +556,6 @@ struct ConversationTimelineView: View {
             crossSessionOriginMessageID: crossSessionOriginMessageID,
             proxy: proxy
         )
-        .simultaneousGesture(TapGesture().onEnded { KeyboardDismissal.dismiss() })
-        .id(item.id)
-        .listRowSeparator(.hidden)
-        .listRowInsets(layout.messageRowInsets)
-        .listRowBackground(Color.clear)
         .modifier(ConversationHistoryAnchorGeometryModifier(
             // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
             // 重建或 ScrollPosition 尚未更新时仍按 raw message UUID 选中锚点。
@@ -568,6 +563,12 @@ struct ConversationTimelineView: View {
             messageIDs: outerAnchorMessageIDs(for: item),
             action: recordHistoryAnchorGeometry
         ))
+        .simultaneousGesture(TapGesture().onEnded { KeyboardDismissal.dismiss() })
+        .id(item.id)
+        // List 行属性必须位于自定义 modifier 外层，否则 SwiftUI 会恢复默认分隔线和 inset。
+        .listRowSeparator(.hidden)
+        .listRowInsets(layout.messageRowInsets)
+        .listRowBackground(Color.clear)
     }
 
     private func outerAnchorMessageIDs(for item: ConversationTimelineItem) -> [UUID] {
