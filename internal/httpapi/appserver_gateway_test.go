@@ -559,9 +559,14 @@ func TestClaudeBridgeShutdownTerminatesProcessGroup(t *testing.T) {
 	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 sleep 30 &
-echo $! > %q
+child_pid=$!
+if [ -r "/proc/$child_pid/winpid" ]; then
+  cat "/proc/$child_pid/winpid" > %q
+else
+  echo "$child_pid" > %q
+fi
 while IFS= read -r line; do sleep 30; done
-`, childPIDPath))
+`, childPIDPath, childPIDPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
