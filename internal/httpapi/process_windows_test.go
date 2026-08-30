@@ -36,10 +36,12 @@ func TestTerminateGatewayProcessGroupWindows(t *testing.T) {
 		}
 	})
 
-	terminateGatewayProcessGroup(cmd, true)
+	// shutdown 首次传入 force=false；Windows 仍必须一次性结束整棵进程树，
+	// 不能只等根进程退出后再尝试强制清理。
+	terminateGatewayProcessGroup(cmd, false)
 	select {
 	case <-wait:
 	case <-time.After(10 * time.Second):
-		t.Fatal("process did not exit after forced tree termination")
+		t.Fatal("process did not exit after tree termination")
 	}
 }
