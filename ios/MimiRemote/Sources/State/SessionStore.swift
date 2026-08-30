@@ -1052,6 +1052,19 @@ final class SessionStore: ObservableObject {
         return queuedRunningTurnsBySessionID[selectedSessionID] ?? []
     }
 
+    var selectedComposerTrayQueuedTurns: [QueuedTurnEntry] {
+        guard let selectedSessionID else {
+            return []
+        }
+        let timelineClientMessageIDs = Set(
+            conversationStore.messages(for: selectedSessionID).compactMap(\.clientMessageID)
+        )
+        // 已进入对话气泡的 dispatching 消息不再重复占用托盘；尚无气泡的派发项仍保持可见。
+        return selectedQueuedTurns.filter {
+            $0.dispatchState != .dispatching || !timelineClientMessageIDs.contains($0.clientMessageID)
+        }
+    }
+
     func queuedTurns(sessionID: SessionID) -> [QueuedTurnEntry] {
         queuedRunningTurnsBySessionID[sessionID] ?? []
     }
