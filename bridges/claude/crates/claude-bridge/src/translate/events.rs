@@ -1946,10 +1946,13 @@ pub(crate) fn is_user_interrupted_result(
     result: &ResultEnvelope,
     interrupt_requested: bool,
 ) -> bool {
-    result
+    let has_interrupt_sentinel = result
         .result
         .as_deref()
-        .is_some_and(|message| message.trim() == "[Request interrupted by user]")
+        .is_some_and(|message| message.trim() == "[Request interrupted by user]");
+    let is_non_success = result.is_error || result.subtype != "success";
+
+    (has_interrupt_sentinel && (is_non_success || interrupt_requested))
         || (interrupt_requested && result.terminal_reason.as_deref() == Some("aborted_streaming"))
 }
 
@@ -2536,6 +2539,27 @@ mod tests {
 
         assert!(is_user_interrupted_result(&result, false));
         assert!(s.translate(ClaudeOutbound::Result(result)).is_empty());
+
+        let successful_sentinel = ResultEnvelope {
+            subtype: "success".into(),
+            is_error: false,
+            duration_ms: None,
+            duration_api_ms: None,
+            num_turns: None,
+            result: Some("[Request interrupted by user]".into()),
+            stop_reason: None,
+            session_id: "s1".into(),
+            uuid: "u-success".into(),
+            total_cost_usd: None,
+            usage: None,
+            model_usage: None,
+            permission_denials: vec![],
+            terminal_reason: None,
+            api_error_status: None,
+            extra: Default::default(),
+        };
+        assert!(!is_user_interrupted_result(&successful_sentinel, false));
+        assert!(is_user_interrupted_result(&successful_sentinel, true));
 
         let aborted_without_marker = ResultEnvelope {
             subtype: "error_during_execution".into(),

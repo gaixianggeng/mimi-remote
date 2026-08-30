@@ -2438,6 +2438,10 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(CodexQuotaNotice.isRateLimitError("HTTP 429: rate limit exceeded"))
         XCTAssertFalse(CodexQuotaNotice.isQuotaError("Skill descriptions were shortened to fit the 2% skills context budget."))
         XCTAssertFalse(CodexQuotaNotice.isRateLimitError("Skill descriptions were shortened to fit the 2% skills context budget."))
+        XCTAssertEqual(
+            CodexQuotaNotice.make(rateLimit: nil, errorMessage: "You've hit your usage limit.")?.title,
+            L10n.text("ui.quota_has_been_exhausted")
+        )
     }
 
     func testQuotaNoticeIgnoresExhaustedSnapshotAfterResetTime() {

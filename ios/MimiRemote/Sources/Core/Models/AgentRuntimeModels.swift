@@ -660,7 +660,9 @@ struct CodexQuotaNotice: Equatable {
             return nil
         }
         return CodexQuotaNotice(
-            title: L10n.text("ui.codex_message_quota_has_been_exhausted"),
+            // error-only fallback 没有可靠的 runtime 元数据，使用中性标题，
+            // 避免 Claude 会话错误显示成 Codex 额度耗尽。
+            title: L10n.text("ui.quota_has_been_exhausted"),
             message: L10n.text("ui.this_sending_was_blocked_by_codex_quota_limit"),
             resetDate: nil,
             blocksSending: true,
