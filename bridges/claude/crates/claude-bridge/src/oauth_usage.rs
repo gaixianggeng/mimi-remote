@@ -16,8 +16,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-#[cfg(target_os = "macos")]
-use tokio::time::Instant;
 use tokio::time::timeout;
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -25,14 +23,6 @@ const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
-#[cfg(target_os = "macos")]
-const DELEGATED_REFRESH_TIMEOUT: Duration = Duration::from_secs(8);
-#[cfg(target_os = "macos")]
-const DELEGATED_REFRESH_START_DELAY: Duration = Duration::from_millis(800);
-#[cfg(target_os = "macos")]
-const DELEGATED_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(200);
-#[cfg(target_os = "macos")]
-static DELEGATED_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OAuthUsageError {
@@ -44,14 +34,6 @@ pub(crate) enum OAuthUsageError {
     CredentialsExpired,
     #[error("读取 Claude OAuth 凭据失败")]
     CredentialReadFailed,
-    #[error("Claude CLI 凭据刷新不可用")]
-    CredentialRefreshUnavailable,
-    #[cfg(target_os = "macos")]
-    #[error("Claude CLI 凭据刷新超时")]
-    CredentialRefreshTimedOut,
-    #[cfg(target_os = "macos")]
-    #[error("Claude CLI 凭据刷新失败")]
-    CredentialRefreshFailed,
     #[error("Claude OAuth usage 查询工具不可用")]
     QueryToolUnavailable,
     #[error("Claude OAuth usage 查询超时")]
@@ -111,28 +93,20 @@ struct OAuthUsageWindow {
 }
 
 pub(crate) async fn fetch_rate_limit_snapshot(
-    claude_bin: &Path,
+    _claude_bin: &Path,
 ) -> Result<p::RateLimitSnapshot, OAuthUsageError> {
     let mut credentials = load_credentials().await?;
-    let mut did_refresh = false;
-    if matches!(
-        validate_credentials(&credentials),
-        Err(OAuthUsageError::CredentialsExpired)
-    ) {
-        // Claude Code 自己拥有这组 OAuth 凭据。过期时通过 CLI 的 `/status`
-        // 认证路径委托刷新，再重新读取 Keychain；bridge 不直接消费 refresh token，
-        // 避免 token 轮换后破坏 Claude CLI 的登录状态。
-        credentials = refresh_credentials_via_claude_cli(claude_bin, &credentials).await?;
-        did_refresh = true;
-    }
     validate_credentials(&credentials)?;
 
     let response = match query_usage(&credentials.access_token).await {
-        Err(OAuthUsageError::HTTPStatus(401)) if !did_refresh => {
-            // 服务端可能在本地 expiresAt 之前撤销 access token；同样只委托刷新一次，
-            // 防止认证异常时循环启动 Claude CLI。
-            credentials = refresh_credentials_via_claude_cli(claude_bin, &credentials).await?;
-            validate_credentials(&credentials)?;
+        Err(OAuthUsageError::HTTPStatus(401)) => {
+            // macOS 上 Keychain 才是 Claude Code 的凭据事实来源。401 后先检查
+            // Keychain，避免旧凭据文件遮住其他 Claude 进程刚完成的轮换；其他
+            // 平台或 Keychain 未变化时再检查文件。整个过程只读且只执行一轮。
+            let Some(latest) = reload_credentials_after_unauthorized(&credentials).await? else {
+                return Err(OAuthUsageError::HTTPStatus(401));
+            };
+            credentials = latest;
             query_usage(&credentials.access_token).await?
         }
         result => result?,
@@ -140,164 +114,38 @@ pub(crate) async fn fetch_rate_limit_snapshot(
     snapshot_from_response(response, credentials.subscription_type)
 }
 
-#[cfg(target_os = "macos")]
-async fn refresh_credentials_via_claude_cli(
-    claude_bin: &Path,
-    previous: &OAuthCredentials,
-) -> Result<OAuthCredentials, OAuthUsageError> {
-    let _refresh_guard = DELEGATED_REFRESH_LOCK.lock().await;
-
-    // 其他 gateway 连接可能刚完成刷新；锁内先复查，避免重复启动 CLI。
-    if let Some(latest) = read_keychain_credentials().await?
-        && credentials_changed(previous, &latest)
-        && validate_credentials(&latest).is_ok()
-    {
-        return Ok(latest);
-    }
-
-    let script_bin = Path::new("/usr/bin/script");
-    if !script_bin.is_file() {
-        return Err(OAuthUsageError::CredentialRefreshUnavailable);
-    }
-    let probe_cwd = prepare_claude_probe_cwd().await?;
-
-    tracing::info!("Claude OAuth credential expired; delegating refresh to Claude CLI");
-    let mut command = Command::new(script_bin);
-    command
-        // macOS `script` 为 Claude 提供真实 PTY，slash command 才会走和
-        // CodexBar 相同的交互式认证路径。输出全部丢弃，避免账号信息进入日志。
-        .args(["-q", "/dev/null"])
-        .arg(claude_bin)
-        // launchd 服务的 cwd 通常是 `/`，直接继承会触发 Claude workspace trust。
-        // 固定使用无业务文件的专用缓存目录，首次只确认这个空目录，不扩大项目权限。
-        .current_dir(&probe_cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|_| OAuthUsageError::CredentialRefreshUnavailable)?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or(OAuthUsageError::CredentialRefreshFailed)?;
-
-    tokio::time::sleep(DELEGATED_REFRESH_START_DELAY).await;
-    // 首次进入专用目录时 Claude 会显示 workspace trust；空 Enter 接受默认项。
-    // 已信任时这只是 TUI 的空输入，不会发起模型请求。
-    stdin
-        .write_all(b"\r")
-        .await
-        .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-    stdin
-        .flush()
-        .await
-        .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-    tokio::time::sleep(DELEGATED_REFRESH_START_DELAY).await;
-    stdin
-        .write_all(b"/status\r")
-        .await
-        .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-    stdin
-        .flush()
-        .await
-        .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-
-    let started_at = Instant::now();
-    let mut repeated_command = false;
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?
-        {
-            tracing::debug!(
-                ?status,
-                "Claude CLI exited before OAuth credential refresh completed"
-            );
-            return Err(OAuthUsageError::CredentialRefreshFailed);
-        }
-
-        if let Some(latest) = read_keychain_credentials().await?
-            && credentials_changed(previous, &latest)
-            && validate_credentials(&latest).is_ok()
-        {
-            stop_delegated_refresh_process(&mut child, &mut stdin).await;
-            tracing::info!(
-                elapsed_ms = started_at.elapsed().as_millis(),
-                "Claude CLI delegated OAuth refresh completed"
-            );
-            return Ok(latest);
-        }
-
-        if !repeated_command && started_at.elapsed() >= Duration::from_secs(2) {
-            // 冷启动时首个输入可能早于 TUI 就绪；清空当前行后仅重发一次。
-            stdin
-                .write_all(b"\x15/status\r")
-                .await
-                .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-            stdin
-                .flush()
-                .await
-                .map_err(|_| OAuthUsageError::CredentialRefreshFailed)?;
-            repeated_command = true;
-        }
-
-        if started_at.elapsed() >= DELEGATED_REFRESH_TIMEOUT {
-            stop_delegated_refresh_process(&mut child, &mut stdin).await;
-            return Err(OAuthUsageError::CredentialRefreshTimedOut);
-        }
-        tokio::time::sleep(DELEGATED_REFRESH_POLL_INTERVAL).await;
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn prepare_claude_probe_cwd() -> Result<PathBuf, OAuthUsageError> {
-    let home = std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .ok_or(OAuthUsageError::CredentialRefreshUnavailable)?;
-    let path =
-        PathBuf::from(home).join("Library/Caches/com.gaixianggeng.mimi/ClaudeCredentialProbe");
-    tokio::fs::create_dir_all(&path)
-        .await
-        .map_err(|_| OAuthUsageError::CredentialRefreshUnavailable)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-            .await
-            .map_err(|_| OAuthUsageError::CredentialRefreshUnavailable)?;
-    }
-    Ok(path)
-}
-
-#[cfg(target_os = "macos")]
-async fn stop_delegated_refresh_process(
-    child: &mut tokio::process::Child,
-    stdin: &mut tokio::process::ChildStdin,
-) {
-    // 先让 PTY 把 Ctrl-C 交给 Claude，给它一个正常收尾窗口；若 CLI 卡住，
-    // 再由 kill_on_drop/kill 兜底，不能把隐藏的 Claude 进程留在后台。
-    let _ = stdin.write_all(b"\x03").await;
-    let _ = stdin.flush().await;
-    if timeout(Duration::from_secs(1), child.wait()).await.is_err() {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn refresh_credentials_via_claude_cli(
-    _claude_bin: &Path,
-    _previous: &OAuthCredentials,
-) -> Result<OAuthCredentials, OAuthUsageError> {
-    Err(OAuthUsageError::CredentialRefreshUnavailable)
-}
-
-#[cfg(any(target_os = "macos", test))]
 fn credentials_changed(previous: &OAuthCredentials, latest: &OAuthCredentials) -> bool {
     previous.access_token != latest.access_token
         || latest.expires_at_ms.unwrap_or_default() > previous.expires_at_ms.unwrap_or_default()
+}
+
+fn can_retry_with_reloaded_credentials(
+    previous: &OAuthCredentials,
+    latest: &OAuthCredentials,
+) -> bool {
+    credentials_changed(previous, latest) && validate_credentials(latest).is_ok()
+}
+
+async fn reload_credentials_after_unauthorized(
+    previous: &OAuthCredentials,
+) -> Result<Option<OAuthCredentials>, OAuthUsageError> {
+    let keychain = read_keychain_credentials().await?;
+    if let Some(latest) = select_reloaded_credentials(previous, keychain, None) {
+        return Ok(Some(latest));
+    }
+    let file = read_credentials_file().await?;
+    Ok(select_reloaded_credentials(previous, None, file))
+}
+
+fn select_reloaded_credentials(
+    previous: &OAuthCredentials,
+    keychain: Option<OAuthCredentials>,
+    file: Option<OAuthCredentials>,
+) -> Option<OAuthCredentials> {
+    keychain
+        .into_iter()
+        .chain(file)
+        .find(|latest| can_retry_with_reloaded_credentials(previous, latest))
 }
 
 async fn load_credentials() -> Result<OAuthCredentials, OAuthUsageError> {
@@ -603,7 +451,7 @@ mod tests {
         let previous = OAuthCredentials {
             access_token: "old-token".into(),
             scopes: vec!["user:profile".into()],
-            expires_at_ms: Some(1_000.0),
+            expires_at_ms: Some(4_102_444_800_000.0),
             subscription_type: Some("pro".into()),
         };
         let rotated = OAuthCredentials {
@@ -611,12 +459,30 @@ mod tests {
             ..previous.clone()
         };
         let extended = OAuthCredentials {
-            expires_at_ms: Some(2_000.0),
+            expires_at_ms: Some(4_102_448_400_000.0),
+            ..previous.clone()
+        };
+        let expired = OAuthCredentials {
+            access_token: "expired-token".into(),
+            expires_at_ms: Some(1.0),
             ..previous.clone()
         };
 
         assert!(credentials_changed(&previous, &rotated));
         assert!(credentials_changed(&previous, &extended));
         assert!(!credentials_changed(&previous, &previous));
+        assert!(can_retry_with_reloaded_credentials(&previous, &rotated));
+        assert!(can_retry_with_reloaded_credentials(&previous, &extended));
+        assert!(!can_retry_with_reloaded_credentials(&previous, &previous));
+        assert!(!can_retry_with_reloaded_credentials(&previous, &expired));
+        assert!(matches!(
+            validate_credentials(&expired),
+            Err(OAuthUsageError::CredentialsExpired)
+        ));
+
+        let reloaded =
+            select_reloaded_credentials(&previous, Some(rotated), Some(previous.clone()))
+                .expect("已轮换的 Keychain 凭据应优先于未变化的凭据文件");
+        assert_eq!(reloaded.access_token, "new-token");
     }
 }

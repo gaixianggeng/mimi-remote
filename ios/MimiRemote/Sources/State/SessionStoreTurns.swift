@@ -1296,9 +1296,8 @@ extension SessionStore {
             return false
         }
 
-        // 用户明确点击后才重发。先复用 bridge 的凭据续期检查，再沿普通 sendTurn
-        // 恢复 thread；认证失败进程已由 bridge 淘汰，因此新进程会读取最新登录状态。
-        await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
+        // 用户明确点击后才重发。认证失败进程已由 bridge 淘汰；沿普通 sendTurn
+        // 恢复 thread 后，新 Claude 进程会自行读取并刷新最新登录状态。
         setErrorMessage(nil)
         let payload = original.turnPayload ?? CodexAppServerTurnPayload(prompt: original.content)
         let sent = await sendTurn(payload)

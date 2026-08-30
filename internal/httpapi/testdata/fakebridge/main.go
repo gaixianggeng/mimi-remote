@@ -26,7 +26,7 @@ func main() {
 		log.Fatalf("fakebridge: executable: %v", err)
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		version := "alleycat-claude-bridge 0.2.7"
+		version := "alleycat-claude-bridge 0.2.8"
 		if configured, readErr := os.ReadFile(executable + ".version"); readErr == nil {
 			version = strings.TrimSpace(string(configured))
 		}
