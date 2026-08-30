@@ -3424,6 +3424,12 @@ extension SessionStore {
         missingRunningSessionStateByID = missingRunningSessionStateByID.filter { sessionID, _ in
             validSessionIDs.contains(sessionID) || missingRunningSessionReconciliationTasksByID[sessionID] != nil
         }
+        let staleTurnCompletionReconciliationIDs = turnCompletionReconciliationJobsBySessionID.keys.filter {
+            !validSessionIDs.contains($0)
+        }
+        for sessionID in staleTurnCompletionReconciliationIDs {
+            cancelTurnCompletionReconciliation(sessionID: sessionID)
+        }
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)
         if loadingEarlierSessionIDs != loadingEarlierHistorySessionIDs {

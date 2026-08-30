@@ -813,6 +813,21 @@ extension SessionStore {
             // 也不能清掉或放行绑定到另一 turn 的本地队列。
             return
         }
+        if case .turnCompleted(let metadata) = event {
+            cancelTurnCompletionReconciliation(
+                sessionID: metadata.sessionID ?? sessionID
+            )
+        } else if case .turnStarted(let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let job = turnCompletionReconciliationJobsBySessionID[id],
+               job.expectedTurnID != metadata.turnID {
+                cancelTurnCompletionReconciliation(sessionID: id)
+            }
+        } else if case .error(_, let metadata) = event {
+            cancelTurnCompletionReconciliation(
+                sessionID: metadata.sessionID ?? sessionID
+            )
+        }
         recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
         if case .permissionProfileUpdated(let profile, let metadata) = event {
             let id = metadata.sessionID ?? sessionID
@@ -830,14 +845,20 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
-        if case .messageCompleted(let message, let metadata) = event,
-           message.role == .user,
-           let clientMessageID = metadata.clientMessageID {
-            _ = handleServerQueueTurnStarted(
-                clientMessageID: clientMessageID,
-                sessionID: metadata.sessionID ?? sessionID,
-                turnID: metadata.turnID
+        if case .messageCompleted(let message, let metadata) = event {
+            scheduleTurnCompletionReconciliationIfNeeded(
+                message: message,
+                metadata: metadata,
+                hostScope: lease.hostScope
             )
+            if message.role == .user,
+               let clientMessageID = metadata.clientMessageID {
+                _ = handleServerQueueTurnStarted(
+                    clientMessageID: clientMessageID,
+                    sessionID: metadata.sessionID ?? sessionID,
+                    turnID: metadata.turnID
+                )
+            }
         }
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
@@ -2458,6 +2479,7 @@ extension SessionStore {
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
+        cancelAllTurnCompletionReconciliations()
         queuedRunningTurnsBySessionID.removeAll()
         pendingPermissionTurnBoundariesBySessionID.removeAll()
         permissionTurnRetryRequirementsByClientMessageID.removeAll()
