@@ -1,5 +1,21 @@
 import Foundation
 
+/// app-server 的内部用户记录不能进入用户气泡或历史标题。中断标记只按完整文本
+/// 过滤，普通用户讨论该字符串时仍可正常展示；既有协议标签继续沿用前缀规则。
+func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
+        return false
+    }
+    let hiddenPrefixes = [
+        "<subagent_notification>",
+        "<turn_aborted>",
+        "<environment_context>",
+        "<codex_internal_context>"
+    ]
+    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+}
+
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
     // 只有仍在活动的通知才算实时信号；表示回合/线程结束或权威状态变化的通知不能算，
@@ -1512,17 +1528,7 @@ extension CodexAppServerSessionRuntime {
     }
 
     func isVisibleUserHistoryMessage(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return false
-        }
-        let hiddenPrefixes = [
-            "<subagent_notification>",
-            "<turn_aborted>",
-            "<environment_context>",
-            "<codex_internal_context>"
-        ]
-        return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+        isVisibleAppServerUserMessageText(text)
     }
 
     func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {

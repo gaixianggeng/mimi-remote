@@ -443,7 +443,11 @@ extension SessionStore {
                 // job 也不能让新代 full 恢复直接返回成功。
                 cancelHistoryLoadJob(existing, sessionID: session.id)
             } else if existing.loadMode == loadMode {
-                if force,
+                if reason == .writerRetry {
+                    // writer 重试必须读取点击时刻之后的权威历史。即使已有任务也不能加入，
+                    // 否则 Desktop 刚产生的消息可能不在旧请求的快照里。
+                    cancelHistoryLoadJob(existing, sessionID: session.id)
+                } else if force,
                    existing.cachePolicy != .bypass,
                    recoveryGeneration != nil || reason == .authoritativeReopen {
                     // 只有回前台/网络恢复需要读取“此刻”的权威历史：加入一个更早启动的
@@ -510,7 +514,7 @@ extension SessionStore {
                 }
             } else {
                 switch reason {
-                case .authoritativeReopen, .summaryChoice, .manualFull:
+                case .authoritativeReopen, .summaryChoice, .manualFull, .writerRetry:
                     cancelHistoryLoadJob(existing, sessionID: session.id)
                 case .automatic:
                     return true
@@ -1141,11 +1145,12 @@ extension SessionStore {
         }
     }
 
+    @discardableResult
     func refreshSelectedSessionContent(
         _ session: AgentSession,
-        successStatusMessage: String = L10n.text("ui.the_current_session_has_been_refreshed"),
+        successStatusMessage: String? = L10n.text("ui.the_current_session_has_been_refreshed"),
         reason: HistoryLoadReason = .manualFull
-    ) async {
+    ) async -> Bool {
         isRefreshingSelectedSession = true
         defer { isRefreshingSelectedSession = false }
 
@@ -1167,6 +1172,7 @@ extension SessionStore {
             scheduleSessionStateReconciliationAfterHistoryRefresh(session)
             setErrorMessage(nil)
         }
+        return didLoad
     }
 
     func historyFirstPage(

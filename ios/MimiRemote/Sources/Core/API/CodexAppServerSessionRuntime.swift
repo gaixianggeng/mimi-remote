@@ -924,17 +924,20 @@ actor CodexAppServerSessionRuntime {
     func forkSession(
         threadID: SessionID,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID? = nil
     ) async throws -> AgentSession {
         let baseProjects = try await projects()
         let project = AgentProject(id: workspace.id, name: workspace.name, path: workspace.path)
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         var options = CodexAppServerTurnOptions.default
         options.threadSource = reason.rawValue
+        options.preservesThreadPermissionSettings = true
         let result = try await sendRecoveringFromStaleInitialization(
             try CodexAppServerRequestBuilder(allowlistedProjects: projects).threadFork(
                 threadID: threadID,
                 cwd: workspace.path,
+                lastTurnID: lastTurnID,
                 options: options
             ),
             timeout: longRunningRequestTimeout
@@ -1100,7 +1103,8 @@ actor CodexAppServerSessionRuntime {
             loadMode: loadMode,
             notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
             authoritativeCompletedTurnItems: [:],
-            itemContinuations: itemContinuations
+            itemContinuations: itemContinuations,
+            latestForkableTurnID: Self.latestForkableTurnID(fromTurns: chronologicalTurns)
         )
     }
 
@@ -1530,6 +1534,24 @@ actor CodexAppServerSessionRuntime {
             result[turnID] = itemIDs
         }
         return result
+    }
+
+    static func latestForkableTurnID(
+        fromTurns turns: [[String: CodexAppServerJSONValue]]
+    ) -> TurnID? {
+        let terminalStatuses: Set<String> = ["completed", "interrupted", "failed"]
+        return turns.reversed().lazy.compactMap { turn -> TurnID? in
+            let rawStatus = turn["status"]?.stringValue
+                ?? turn["status"]?.objectValue?["type"]?.stringValue
+                ?? turn["status"]?.objectValue?["status"]?.stringValue
+            guard let status = rawStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  terminalStatuses.contains(status),
+                  let turnID = turn["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !turnID.isEmpty else {
+                return nil
+            }
+            return turnID
+        }.first
     }
 
     static func historyNotice(

@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E20800000000000000000001 /* WriterConflictCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20800000000000000000001 /* WriterConflictCard.swift */; };
+		E20800000000000000000002 /* SessionStoreWriterConflictFork.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20800000000000000000002 /* SessionStoreWriterConflictFork.swift */; };
+		E20800000000000000000003 /* ForkOnWriterConflictProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20800000000000000000003 /* ForkOnWriterConflictProtocolTests.swift */; };
+		E20800000000000000000004 /* WriterConflictForkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20800000000000000000004 /* WriterConflictForkStoreTests.swift */; };
+		E20800000000000000000005 /* WriterConflictCardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20800000000000000000005 /* WriterConflictCardSnapshotTests.swift */; platformFilters = (ios, ); };
 		0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */; };
 		037B9C95E0087324B0B93B82 /* CodexAppServerApprovalProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D536A7DD9FA51261421A61A /* CodexAppServerApprovalProjection.swift */; };
 		038DE2248E14CF16EC1AAB30 /* SessionContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E033E7A8267D3C3494835305 /* SessionContextModels.swift */; };
@@ -345,6 +350,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F20800000000000000000001 /* WriterConflictCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriterConflictCard.swift; sourceTree = "<group>"; };
+		F20800000000000000000002 /* SessionStoreWriterConflictFork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreWriterConflictFork.swift; sourceTree = "<group>"; };
+		F20800000000000000000003 /* ForkOnWriterConflictProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkOnWriterConflictProtocolTests.swift; sourceTree = "<group>"; };
+		F20800000000000000000004 /* WriterConflictForkStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriterConflictForkStoreTests.swift; sourceTree = "<group>"; };
+		F20800000000000000000005 /* WriterConflictCardSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriterConflictCardSnapshotTests.swift; sourceTree = "<group>"; };
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		023D47371A66B1C8E92BB3D4 /* testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png"; sourceTree = "<group>"; };
 		025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectRuntimeTests.swift; sourceTree = "<group>"; };
@@ -802,6 +812,7 @@
 				ECFE36A2B8257E443C9824FD /* DataURLImageDecoderTests.swift */,
 				F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */,
 				E61B1FCD1B28FACE28547C86 /* FileUploadStoreTests.swift */,
+				F20800000000000000000003 /* ForkOnWriterConflictProtocolTests.swift */,
 				37D188E86B957818696CFF00 /* FloatingSidebarPresentationTests.swift */,
 				2C2FCF65A5A23A9D87948F4F /* GitQuickPublishTests.swift */,
 				7738DFB157CF0073926DF5BF /* HostStatusStoreTests.swift */,
@@ -825,6 +836,8 @@
 				5F0B86402960D3109AD10CE7 /* TailscaleStableHostnameTests.swift */,
 				7348A6FCD28C7489CC7097AD /* ThemeStoreTests.swift */,
 				620EE3CCFD6A92164C8F272F /* TokenUsageCardSnapshotTests.swift */,
+				F20800000000000000000005 /* WriterConflictCardSnapshotTests.swift */,
+				F20800000000000000000004 /* WriterConflictForkStoreTests.swift */,
 				AB4A66767462028B863816B7 /* WorkspaceAppearanceStoreTests.swift */,
 				85879EDF3D64609C3C6BA873 /* WorkspaceGitSummaryTests.swift */,
 				B75153DC244B9C9543B87E2E /* WorkspaceSessionAuthoritativeContinuationTests.swift */,
@@ -988,6 +1001,7 @@
 				C2E9BE6E1D3AD3BE0B2C111B /* ConversationLayout.swift */,
 				297F593E0DFBA5B4BD82B502 /* ConversationScreenModel.swift */,
 				CA2BF4F63781123B8E297F7E /* ConversationView.swift */,
+				F20800000000000000000001 /* WriterConflictCard.swift */,
 				5C87937DA9D34D00853E635B /* DataURLImageDecoder.swift */,
 				3474AF2F3AA856519A20B642 /* FileAttachmentPreparer.swift */,
 				80D89DB26E0A1CA68C63E07D /* FileUploadStore.swift */,
@@ -1241,6 +1255,7 @@
 				3369A709F1AC9D2CF790753C /* SessionStoreHostSwitching.swift */,
 				D78D8C49C36228C60EF5D096 /* SessionStoreLifecycleWorkspaces.swift */,
 				DC7DA3118F7DF5B276A9BE1D /* SessionStoreNetworking.swift */,
+				F20800000000000000000002 /* SessionStoreWriterConflictFork.swift */,
 				C5A44E24BB7F5E7F9FD31191 /* SessionStoreProjectsGit.swift */,
 				55BE8A2883C5B158FC8D84FF /* SessionStoreQueuedTurns.swift */,
 				3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */,
@@ -1562,6 +1577,7 @@
 				23AA3B5B65DB2FF5D2EFFD87 /* DataURLImageDecoderTests.swift in Sources */,
 				0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */,
 				229B4470F93272B55380AF28 /* FileUploadStoreTests.swift in Sources */,
+				E20800000000000000000003 /* ForkOnWriterConflictProtocolTests.swift in Sources */,
 				B4CD07EFC7FE0F2B6CF0F401 /* FloatingSidebarPresentationTests.swift in Sources */,
 				4B4DDB0179C0326DBC0BBA00 /* GitQuickPublishTests.swift in Sources */,
 				35F3BC829540D91C8D44EE03 /* HostStatusStoreTests.swift in Sources */,
@@ -1585,6 +1601,8 @@
 				8F03A9837B537D6CBA7D532A /* TailscaleStableHostnameTests.swift in Sources */,
 				420F5F2A694B0E491DBD45B0 /* ThemeStoreTests.swift in Sources */,
 				9B897FC15CC75C70A0DC5444 /* TokenUsageCardSnapshotTests.swift in Sources */,
+				E20800000000000000000005 /* WriterConflictCardSnapshotTests.swift in Sources */,
+				E20800000000000000000004 /* WriterConflictForkStoreTests.swift in Sources */,
 				A3621619C40A5F0CFB0C4F10 /* WorkspaceAppearanceStoreTests.swift in Sources */,
 				951475AE3120CB42A905E3B3 /* WorkspaceGitSummaryTests.swift in Sources */,
 				B7D06C05B900E3DC9336891D /* WorkspaceSessionAuthoritativeContinuationTests.swift in Sources */,
@@ -1661,6 +1679,7 @@
 				18A1FB819B355E6CF6D81361 /* ConversationTimelineReducer.swift in Sources */,
 				F430ECB13EE142C8AB67D5DF /* ConversationTimelineView.swift in Sources */,
 				C210A34CBF8FA1E9E901C5E1 /* ConversationView.swift in Sources */,
+				E20800000000000000000001 /* WriterConflictCard.swift in Sources */,
 				879CC5740352620BC5E9CA37 /* DataURLImageDecoder.swift in Sources */,
 				D277DCC60CB55D50D1C0731A /* DebugLaunchConfiguration.swift in Sources */,
 				14B0D33C7157E674AA188280 /* DiffPanelView.swift in Sources */,
@@ -1718,6 +1737,7 @@
 				31B351EE974251896BA43252 /* SessionStoreHostSwitching.swift in Sources */,
 				5B092289C5F40E2A9B3622B9 /* SessionStoreLifecycleWorkspaces.swift in Sources */,
 				509445C02B3E5D545DB2808B /* SessionStoreNetworking.swift in Sources */,
+				E20800000000000000000002 /* SessionStoreWriterConflictFork.swift in Sources */,
 				A71327B3931B9947D3A58A5E /* SessionStoreProjectsGit.swift in Sources */,
 				C6334EA467BF9CD90C6661E0 /* SessionStoreQueuedTurns.swift in Sources */,
 				5CD51AE13B5D23F8FBE444C5 /* SessionStoreSupport.swift in Sources */,

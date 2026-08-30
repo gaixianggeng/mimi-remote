@@ -37,13 +37,18 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	}()
 	if value, exists := params[gatewayPreserveThreadPermissionsParam]; exists {
 		preserve, ok := value.(bool)
-		if !ok || !preserve || runtimeID != "codex" || (method != "thread/resume" && method != "turn/start") {
-			return validated, fmt.Errorf("%s 只允许 Codex thread/resume 或 turn/start 使用 true", gatewayPreserveThreadPermissionsParam)
+		if !ok || !preserve || runtimeID != "codex" || (method != "thread/resume" && method != "thread/fork" && method != "turn/start") {
+			return validated, fmt.Errorf("%s 只允许 Codex thread/resume、thread/fork 或 turn/start 使用 true", gatewayPreserveThreadPermissionsParam)
 		}
 		for _, key := range []string{"approvalPolicy", "approvalsReviewer", "permissions", "sandbox", "sandboxPolicy"} {
 			if override, present := params[key]; present && override != nil {
 				return validated, fmt.Errorf("%s 不能与 %s 同时发送", gatewayPreserveThreadPermissionsParam, key)
 			}
+		}
+	}
+	if value, exists := params["lastTurnId"]; method == "thread/fork" && exists {
+		if text, ok := value.(string); !ok || strings.TrimSpace(text) == "" {
+			return validated, fmt.Errorf("thread/fork.lastTurnId 必须是非空字符串")
 		}
 	}
 	if hasApprovalPolicyNever(params["config"]) {

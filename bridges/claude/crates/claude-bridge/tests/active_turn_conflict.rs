@@ -29,13 +29,15 @@ async fn active_thread_is_projected_and_second_turn_is_rejected_before_acceptanc
     let script = write_script(
         fixture.path(),
         &[
-            json!({"type":"sleep","ms":1500}),
+            // 后续会连续验证 read/list/resume 三个状态表面。给慢速 CI 足够窗口，
+            // 避免 fake turn 在最后一个断言前自然完成而把 active 误报成 idle。
+            json!({"type":"sleep","ms":5000}),
             json!({
                 "type":"result",
                 "subtype":"success",
                 "is_error":false,
-                "duration_ms":1500,
-                "duration_api_ms":1490,
+                "duration_ms":5000,
+                "duration_api_ms":4990,
                 "num_turns":1,
                 "result":"done",
                 "session_id":"__SESSION__",

@@ -323,6 +323,11 @@ struct CodexUsageDisplaySummary: Equatable {
     let isNearLimit: Bool
     let isExhausted: Bool
 
+    /// 只在 Composer 的非阻断状态条中使用，明确告诉用户这是接近阈值而非失败。
+    var nearLimitTitle: String {
+        L10n.format("ui.value_usage_near_limit", title, primaryText)
+    }
+
     static func make(rateLimit: RateLimitSummary?, now: Date = Date()) -> CodexUsageDisplaySummary? {
         guard let rateLimit else {
             return nil
@@ -341,7 +346,7 @@ struct CodexUsageDisplaySummary: Equatable {
         }
 
         return CodexUsageDisplaySummary(
-            title: L10n.text("ui.codex_usage"),
+            title: L10n.format("ui.value_dosage", rateLimit.displayName),
             primaryText: primaryText,
             secondaryText: secondaryText,
             progress: progress,
@@ -641,7 +646,7 @@ struct CodexQuotaNotice: Equatable {
             let suffix = resetText.map { L10n.format("ui.expected_value_recovery_you_can_also_click_increase", $0) }
                 ?? L10n.text("ui.you_can_click_increase_quota_or_reset_usage")
             return CodexQuotaNotice(
-                title: L10n.text("ui.codex_message_quota_has_been_exhausted"),
+                title: L10n.format("ui.value_message_quota_has_been_exhausted", rateLimit.displayName),
                 message: L10n.format("ui.value_the_current_quota_is_not_available_value", rateLimit.displayName, suffix),
                 resetDate: resetDate,
                 blocksSending: true,
@@ -655,7 +660,9 @@ struct CodexQuotaNotice: Equatable {
             return nil
         }
         return CodexQuotaNotice(
-            title: L10n.text("ui.codex_message_quota_has_been_exhausted"),
+            // error-only fallback 没有可靠的 runtime 元数据，使用中性标题，
+            // 避免 Claude 会话错误显示成 Codex 额度耗尽。
+            title: L10n.text("ui.quota_has_been_exhausted"),
             message: L10n.text("ui.this_sending_was_blocked_by_codex_quota_limit"),
             resetDate: nil,
             blocksSending: true,

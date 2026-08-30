@@ -281,6 +281,7 @@ struct HistoryMessagesPage: Equatable {
     let notice: String?
     let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
     let itemContinuations: [HistoryTurnItemsContinuation]
+    let latestForkableTurnID: TurnID?
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -292,6 +293,7 @@ struct HistoryMessagesPage: Equatable {
         self.notice = nil
         self.authoritativeCompletedTurnItems = [:]
         self.itemContinuations = []
+        self.latestForkableTurnID = nil
     }
 
     init(
@@ -303,7 +305,8 @@ struct HistoryMessagesPage: Equatable {
         loadMode: LoadMode = .full,
         notice: String? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
-        itemContinuations: [HistoryTurnItemsContinuation] = []
+        itemContinuations: [HistoryTurnItemsContinuation] = [],
+        latestForkableTurnID: TurnID? = nil
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
@@ -314,6 +317,7 @@ struct HistoryMessagesPage: Equatable {
         self.notice = notice
         self.authoritativeCompletedTurnItems = authoritativeCompletedTurnItems
         self.itemContinuations = itemContinuations
+        self.latestForkableTurnID = latestForkableTurnID
     }
 }
 

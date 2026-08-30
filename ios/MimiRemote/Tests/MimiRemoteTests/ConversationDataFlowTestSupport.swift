@@ -292,6 +292,19 @@ struct RequestedSessionFork: Equatable {
     let threadID: String
     let workspaceID: String
     let reason: AgentSessionForkReason
+    let lastTurnID: TurnID?
+
+    init(
+        threadID: String,
+        workspaceID: String,
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID? = nil
+    ) {
+        self.threadID = threadID
+        self.workspaceID = workspaceID
+        self.reason = reason
+        self.lastTurnID = lastTurnID
+    }
 }
 
 struct RequestedThreadName: Equatable {
@@ -1154,10 +1167,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func forkSession(
         threadID: String,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID? = nil
     ) async throws -> AgentSession {
         requestedSessionForks.append(
-            RequestedSessionFork(threadID: threadID, workspaceID: workspace.id, reason: reason)
+            RequestedSessionFork(
+                threadID: threadID,
+                workspaceID: workspace.id,
+                reason: reason,
+                lastTurnID: lastTurnID
+            )
         )
         switch sessionForkResults[threadID] {
         case .success(let session):
