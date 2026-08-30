@@ -188,6 +188,31 @@ struct ConversationTimelineReducer {
             }
         }
 
+        if snapshotOrdering == .incrementalFragments {
+            var canonicalNodeIndicesByTurn: [TurnID: [Int]] = [:]
+            for nodeIndex in nodes.indices {
+                guard let turnID = nodes[nodeIndex].message.turnID,
+                      nodes[nodeIndex].message.timelineOrdinal != nil else {
+                    continue
+                }
+                canonicalNodeIndicesByTurn[turnID, default: []].append(nodeIndex)
+            }
+            for nodeIndices in canonicalNodeIndicesByTurn.values {
+                let ordered = nodeIndices.sorted { leftIndex, rightIndex in
+                    let leftOrdinal = nodes[leftIndex].message.timelineOrdinal ?? .max
+                    let rightOrdinal = nodes[rightIndex].message.timelineOrdinal ?? .max
+                    return leftOrdinal == rightOrdinal
+                        ? leftIndex < rightIndex
+                        : leftOrdinal < rightOrdinal
+                }
+                for pair in zip(ordered, ordered.dropFirst()) {
+                    // 同一 Turn 的完整 Item 序号是权威顺序。用图约束表达，避免把同 Turn
+                    // 序号与跨 Turn 时间混进一个非传递的 sort 比较器。
+                    addEdge(pair.0, pair.1)
+                }
+            }
+        }
+
         var ready = nodes.indices.filter { indegree[$0] == 0 }
         var orderedNodeIndices: [Int] = []
         orderedNodeIndices.reserveCapacity(nodes.count)

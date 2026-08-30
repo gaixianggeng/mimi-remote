@@ -1071,6 +1071,7 @@ actor CodexAppServerSessionRuntime {
             threadCreatedAt: firstDate(in: thread, keys: ["createdAt", "created_at"]),
             threadUpdatedAt: firstDate(in: thread, keys: ["updatedAt", "updated_at"]),
             threadIsActive: isActiveHistoryThread(thread),
+            timelineOrdinalsAreCanonical: false,
             snapshotReadAt: Date()
         )
         let context = contextForHistoryThread(thread, sessionID: sessionID, projects: projects)
