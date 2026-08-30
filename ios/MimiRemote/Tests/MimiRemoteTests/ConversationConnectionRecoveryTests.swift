@@ -322,7 +322,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
         XCTAssertFalse(store.canSendInSelectedSession)
 
-        store.retrySelectedSessionWriterAccess()
+        await store.retrySelectedSessionWriterAccess()
         XCTAssertEqual(sockets.count, 2, "用户显式重试时必须建立新连接，不能复用冲突 socket")
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict, "重试完成前必须继续锁定 Composer")
 

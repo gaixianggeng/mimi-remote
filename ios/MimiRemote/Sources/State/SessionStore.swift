@@ -164,6 +164,9 @@ final class SessionStore: ObservableObject {
     @Published var capabilityErrorMessage: String?
     @Published var isCreatingWorktree = false
     @Published var duplicatingSessionIDs: Set<SessionID> = []
+    @Published var writerConflictForkAvailabilityByLease: [HostSessionLease: WriterConflictForkAvailability] = [:]
+    @Published var writerConflictForkErrorByLease: [HostSessionLease: String] = [:]
+    @Published var writerConflictForkPreparationRevision: UInt64 = 0
     @Published var worktreeBranchesByPath: [String: WorktreeBranchListResponse] = [:]
     @Published var worktreeBranchErrorByPath: [String: String] = [:]
     @Published var isRefreshingWorktreeBranches = false
@@ -1818,20 +1821,17 @@ final class SessionStore: ObservableObject {
         let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
         if hasConflict {
             activeWriterConflictLeases.insert(lease)
+            // 每次明确的 writer 拒绝都代表远端状态可能已经变化。清掉旧边界，
+            // 让冲突卡重新读取最近的精简 Turn 摘要，不能复用上一次重试前的结果。
+            writerConflictForkAvailabilityByLease.removeValue(forKey: lease)
+            writerConflictForkErrorByLease.removeValue(forKey: lease)
+            writerConflictForkPreparationRevision &+= 1
         } else {
             activeWriterConflictLeases.remove(lease)
+            writerConflictForkAvailabilityByLease.removeValue(forKey: lease)
+            writerConflictForkErrorByLease.removeValue(forKey: lease)
+            writerConflictForkPreparationRevision &+= 1
         }
-    }
-
-    func retrySelectedSessionWriterAccess() {
-        guard let session = selectedSession else {
-            return
-        }
-        // thread/resume 是公开协议中唯一可信的 writer 检查。重试必须由用户触发，
-        // 且强制建立新连接，不能复用曾在发送阶段返回冲突的 connected socket。
-        setErrorMessage(nil)
-        disconnectWebSocket()
-        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
     }
 
     var selectedSessionAllowsTakeOver: Bool {

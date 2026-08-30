@@ -148,7 +148,8 @@ protocol SessionStoreAPIClient {
     func forkSession(
         threadID: String,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID?
     ) async throws -> AgentSession
     func stopSession(id: String) async throws
     func setSessionArchived(id: String, archived: Bool) async throws
@@ -286,9 +287,23 @@ extension SessionStoreAPIClient {
     func forkSession(
         threadID: String,
         workspace: AgentWorkspace,
-        reason: AgentSessionForkReason
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID?
     ) async throws -> AgentSession {
         throw AgentAPIError.invalidResponse
+    }
+
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
+        try await forkSession(
+            threadID: threadID,
+            workspace: workspace,
+            reason: reason,
+            lastTurnID: nil
+        )
     }
 
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
