@@ -122,8 +122,19 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
             }
         }
         .frame(width: 393, height: 852)
+        .environment(\.dynamicTypeSize, .large)
 
         assertFixed(view, named: "diagnostics-network-path-intrinsic-height", width: 393, height: 852)
+
+        let compactView = Form {
+            Section {
+                ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
+            }
+        }
+        .frame(width: 393, height: 180)
+        .environment(\.dynamicTypeSize, .large)
+
+        assertFixed(compactView, named: "diagnostics-network-path-single-line", width: 393, height: 180)
     }
 
     private func makeThemeStore() -> ThemeStore {
@@ -173,7 +184,7 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
             of: view,
             as: .image(
                 drawHierarchyInKeyWindow: true,
-                precision: 0.98,
+                precision: 0.99,
                 layout: .fixed(width: width, height: height)
             ),
             named: name,

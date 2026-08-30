@@ -1346,6 +1346,8 @@ struct InitialConnectionSettingsSections: View {
 }
 
 struct ConnectionDiagnosticsNetworkPathRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let networkPath: TailscaleNetworkPathResponse
 
     var body: some View {
@@ -1353,12 +1355,16 @@ struct ConnectionDiagnosticsNetworkPathRow: View {
         // 改用固有高度布局，让网络路径与后续诊断行始终连续排列。
         HStack(alignment: .center, spacing: 12) {
             Text(L10n.text("ui.tailscale_network_path"))
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .layoutPriority(1)
 
             Spacer(minLength: 12)
 
             networkPathLabel
+                .font(.subheadline)
                 .multilineTextAlignment(.trailing)
-                .lineLimit(2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.82)
         }
         .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
