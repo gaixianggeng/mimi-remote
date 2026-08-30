@@ -250,7 +250,11 @@ pub async fn handle_turn_start(
     let envelope = translate_user_input(&params.input)
         .map_err(|e| TurnError::InputTranslation(e.to_string()))?;
 
-    let mut handle = acquire_turn_process(state, &params, TurnProcessAcquire::Normal).await?;
+    // 准入 guard 必须活过 mark_active。在此之前进程池里这条记录仍是
+    // active=false，并发的容量淘汰或空闲回收会把正在应用 runtime override
+    // 的进程当成 idle 关掉。所有提前返回都会在 Drop 里自动释放 reservation。
+    let (mut handle, mut admission) =
+        acquire_turn_process(state, &params, TurnProcessAcquire::Normal).await?;
 
     // 必须在 runtime overrides 之前拒绝重复 turn/start。否则一次陈旧的客户端
     // 发送会先改掉正在执行轮次的模型/权限，再以内部错误退出。
@@ -319,7 +323,7 @@ pub async fn handle_turn_start(
 
             if will_retry {
                 recovery_attempted = true;
-                handle = acquire_turn_process(
+                (handle, admission) = acquire_turn_process(
                     state,
                     &params,
                     TurnProcessAcquire::Recovery {
@@ -350,6 +354,8 @@ pub async fn handle_turn_start(
 
     let turn_id = Uuid::now_v7().to_string();
     state.claude_pool().mark_active(&params.thread_id).await;
+    // active=true 之后回收资格已由 active 标记接管，准入窗口到此结束。
+    drop(admission);
 
     let started_at = now_unix_secs();
     let turn_guard = state.session().begin_turn();
@@ -452,9 +458,13 @@ async fn acquire_turn_process(
     state: &Arc<ConnectionState>,
     params: &p::TurnStartParams,
     acquire_mode: TurnProcessAcquire,
-) -> Result<Arc<ClaudeProcessHandle>, TurnError> {
-    if let Some(handle) = state.claude_pool().get(&params.thread_id).await {
-        return Ok(handle);
+) -> Result<(Arc<ClaudeProcessHandle>, crate::pool::ProcessAdmission), TurnError> {
+    if let Some(reserved) = state
+        .claude_pool()
+        .get_with_admission(&params.thread_id)
+        .await
+    {
+        return Ok(reserved);
     }
 
     let entry = state
@@ -484,7 +494,7 @@ async fn acquire_turn_process(
     };
     state
         .claude_pool()
-        .acquire_for_thread(
+        .acquire_for_thread_with_admission(
             params.thread_id.clone(),
             &cwd,
             resume,
@@ -620,9 +630,11 @@ pub async fn handle_turn_interrupt(
     state: &Arc<ConnectionState>,
     params: p::TurnInterruptParams,
 ) -> Result<p::TurnInterruptResponse, TurnError> {
-    let handle = state
+    // 有活跃轮次时 active=true 已经挡住回收；但 interrupt 也允许在没有活跃
+    // 轮次时调用，那种情况下 interrupt_handle 的 await 落在无保护窗口里。
+    let (handle, admission) = state
         .claude_pool()
-        .get(&params.thread_id)
+        .get_with_admission(&params.thread_id)
         .await
         .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
     if let Some(active) = active_turn(&params.thread_id) {
@@ -635,6 +647,7 @@ pub async fn handle_turn_interrupt(
         mark_active_turn_interrupt_requested(&params.thread_id, &params.turn_id);
     }
     interrupt_handle(&handle).await;
+    drop(admission);
     Ok(p::TurnInterruptResponse::default())
 }
 
