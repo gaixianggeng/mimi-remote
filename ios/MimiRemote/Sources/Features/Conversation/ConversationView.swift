@@ -81,7 +81,7 @@ struct ConversationView: View {
                                 availability: sessionStore.selectedWriterConflictForkAvailability,
                                 errorMessage: sessionStore.selectedWriterConflictForkErrorMessage,
                                 isDuplicating: sessionStore.isDuplicatingSelectedWriterConflictSession,
-                                isRetrying: sessionStore.webSocketStatus == .connecting,
+                                isRetrying: sessionStore.isRetryingSelectedWriterConflict,
                                 onFork: {
                                     Task { await sessionStore.duplicateSelectedWriterConflictSession() }
                                 },
@@ -92,7 +92,9 @@ struct ConversationView: View {
                                         )
                                     }
                                 },
-                                onRetry: sessionStore.retrySelectedSessionWriterAccess
+                                onRetry: {
+                                    Task { await sessionStore.retrySelectedSessionWriterAccess() }
+                                }
                             )
                             .task(id: sessionStore.selectedWriterConflictForkPreparationID) {
                                 await sessionStore.prepareSelectedWriterConflictForkAvailability()

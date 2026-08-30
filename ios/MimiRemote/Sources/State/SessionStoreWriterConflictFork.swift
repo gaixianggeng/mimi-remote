@@ -52,6 +52,52 @@ extension SessionStore {
         return duplicatingSessionIDs.contains(selectedSessionID)
     }
 
+    var isRetryingSelectedWriterConflict: Bool {
+        selectedSessionHasActiveWriterConflict
+            && (isRefreshingSelectedSession || webSocketStatus == .connecting)
+    }
+
+    func retrySelectedSessionWriterAccess() async {
+        guard let session = selectedSession,
+              hasActiveWriterConflict(sessionID: session.id),
+              !isRefreshingSelectedSession,
+              webSocketStatus != .connecting
+        else { return }
+
+        let selectionLease = currentSelectionLease()
+        setErrorMessage(nil)
+        clearSelectedWriterConflictForkError()
+        disconnectWebSocket()
+
+        // 用户点“重试”也表示要看 Desktop 侧刚产生的最新消息。先强制刷新历史，
+        // 再用 thread/resume 重判 writer，避免连接先恢复后仍展示旧快照。
+        let didRefresh = await refreshSelectedSessionContent(
+            session,
+            successStatusMessage: nil,
+            reason: .writerRetry
+        )
+
+        guard !Task.isCancelled,
+              isSelectionLeaseCurrent(selectionLease),
+              hasActiveWriterConflict(sessionID: session.id)
+        else { return }
+        guard didRefresh else {
+            writerConflictForkErrorByLease[writerConflictForkLease(for: session.id)] = L10n.text(
+                "ui.writer_conflict_retry_refresh_failed"
+            )
+            return
+        }
+
+        // thread/resume 是公开协议中唯一可信的 writer 检查。必须强制建立新连接，
+        // 不能复用曾在发送阶段返回冲突的 connected socket。
+        let refreshedSession = sessionsByID[session.id] ?? session
+        connectWebSocket(
+            refreshedSession,
+            replayBufferedEvents: false,
+            allowNonRunning: true
+        )
+    }
+
     func prepareSelectedWriterConflictForkAvailability(force: Bool = false) async {
         guard let session = selectedSession,
               hasActiveWriterConflict(sessionID: session.id),

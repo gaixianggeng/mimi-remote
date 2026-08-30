@@ -1834,18 +1834,6 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func retrySelectedSessionWriterAccess() {
-        guard let session = selectedSession else {
-            return
-        }
-        // thread/resume 是公开协议中唯一可信的 writer 检查。重试必须由用户触发，
-        // 且强制建立新连接，不能复用曾在发送阶段返回冲突的 connected socket。
-        setErrorMessage(nil)
-        clearSelectedWriterConflictForkError()
-        disconnectWebSocket()
-        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
-    }
-
     var selectedSessionAllowsTakeOver: Bool {
         guard let session = selectedSession else {
             return false

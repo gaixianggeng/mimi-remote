@@ -60,6 +60,142 @@ final class WriterConflictForkStoreTests: XCTestCase {
         XCTAssertTrue(fixture.store.hasActiveWriterConflict(sessionID: fixture.source.id))
     }
 
+    func testRetryReloadsLatestMessagesBeforeRecheckingWriterAccess() async throws {
+        let project = makeProject(id: "proj-writer-retry-refresh")
+        let source = makeSession(
+            id: "source-writer-retry-refresh",
+            projectID: project.id,
+            title: "Desktop source",
+            status: "running",
+            source: "codex",
+            resumeID: "source-writer-retry-refresh"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [source])
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-retry-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        select(source: source, project: project, in: store)
+
+        let staleHistoryTask = Task {
+            await store.loadHistory(
+                for: source,
+                quiet: true,
+                loadMode: .full,
+                reason: .automatic
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+
+        let retryTask = Task { await store.retrySelectedSessionWriterAccess() }
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertTrue(store.isRetryingSelectedWriterConflict)
+        XCTAssertTrue(sockets.isEmpty, "最新历史返回前不能提前重判 writer。")
+        XCTAssertTrue(store.hasActiveWriterConflict(sessionID: source.id))
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:writer-retry-stale",
+                    role: "assistant",
+                    content: "后台旧快照",
+                    createdAt: Date(timeIntervalSince1970: 207)
+                )
+            ])
+        )
+        _ = await staleHistoryTask.value
+        XCTAssertTrue(sockets.isEmpty, "被替换的旧历史请求完成后不能开始 writer 重判。")
+        XCTAssertTrue(conversationStore.messages(for: source.id).isEmpty)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:writer-retry-latest",
+                    role: "assistant",
+                    content: "Desktop 最新回复",
+                    createdAt: Date(timeIntervalSince1970: 208)
+                )
+            ])
+        )
+        await retryTask.value
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertEqual(
+            conversationStore.messages(for: source.id).map(\.content),
+            ["Desktop 最新回复"]
+        )
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertTrue(store.hasActiveWriterConflict(sessionID: source.id))
+
+        let retrySocket = try XCTUnwrap(sockets.first)
+        retrySocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        XCTAssertFalse(store.hasActiveWriterConflict(sessionID: source.id))
+        XCTAssertFalse(store.isRetryingSelectedWriterConflict)
+    }
+
+    func testRetryKeepsWriterConflictWhenLatestMessagesFailToLoad() async {
+        let project = makeProject(id: "proj-writer-retry-failure")
+        let source = makeSession(
+            id: "source-writer-retry-failure",
+            projectID: project.id,
+            title: "Desktop source",
+            status: "running",
+            source: "codex",
+            resumeID: "source-writer-retry-failure"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [source])
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-retry-failure-token"
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        select(source: source, project: project, in: store)
+
+        let retryTask = Task { await store.retrySelectedSessionWriterAccess() }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(at: 0, with: MockError.timeout)
+        await retryTask.value
+
+        XCTAssertTrue(sockets.isEmpty, "历史刷新失败时不能用旧快照继续重判 writer。")
+        XCTAssertTrue(store.hasActiveWriterConflict(sessionID: source.id))
+        XCTAssertFalse(store.isRetryingSelectedWriterConflict)
+        XCTAssertEqual(
+            store.selectedWriterConflictForkErrorMessage,
+            L10n.text("ui.writer_conflict_retry_refresh_failed")
+        )
+    }
+
     func testWriterConflictChangingFromIdleToRunningRefreshesForkBoundary() async {
         let fixture = makeFixture(
             sourceStatus: "history",

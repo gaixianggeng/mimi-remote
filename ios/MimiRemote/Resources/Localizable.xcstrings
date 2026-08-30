@@ -4979,18 +4979,18 @@
       }
     },
     "ui.retry_writer_access": {
-      "comment": "Accessibility label for retrying writer access from the active-writer conflict card.",
+      "comment": "Accessibility label for reloading the latest messages and retrying writer access from the active-writer conflict card.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retry writer access"
+            "value": "Reload messages and retry writer access"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重试写入权限"
+            "value": "重新加载消息并重试写入权限"
           }
         }
       }
@@ -5030,35 +5030,35 @@
       }
     },
     "ui.writer_conflict_fork_continue": {
-      "comment": "Primary action that copies a writer-conflicted Thread and opens the new Thread.",
+      "comment": "Primary action that branches a writer-conflicted Thread and opens it as a new chat.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copy and continue"
+            "value": "Branch to new chat"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "复制并继续"
+            "value": "分支到新聊天"
           }
         }
       }
     },
     "ui.writer_conflict_fork_copying": {
-      "comment": "Primary action title while the writer-conflicted Thread is being copied.",
+      "comment": "Primary action title while the writer-conflicted Thread is being branched.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copying…"
+            "value": "Branching…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在复制…"
+            "value": "正在创建分支…"
           }
         }
       }
@@ -5093,6 +5093,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前还没有可复制的完整回合。请等待 Desktop 当前回复完成。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_retry_refresh_failed": {
+      "comment": "Inline error shown when retrying writer access cannot first reload the latest messages.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t load the latest messages. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能加载最新消息，请重试。"
           }
         }
       }

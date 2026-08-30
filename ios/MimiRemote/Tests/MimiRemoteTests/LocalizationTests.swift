@@ -137,11 +137,20 @@ final class LocalizationTests: XCTestCase {
                 "There isn’t a finished turn to copy yet. Wait for the current Desktop response to finish.",
                 "当前还没有可复制的完整回合。请等待 Desktop 当前回复完成。"
             ),
-            ("ui.writer_conflict_fork_continue", "Copy and continue", "复制并继续"),
+            ("ui.writer_conflict_fork_continue", "Branch to new chat", "分支到新聊天"),
             ("ui.writer_conflict_fork_checking", "Checking…", "正在检查…"),
-            ("ui.writer_conflict_fork_copying", "Copying…", "正在复制…"),
+            ("ui.writer_conflict_fork_copying", "Branching…", "正在创建分支…"),
+            (
+                "ui.writer_conflict_retry_refresh_failed",
+                "Couldn’t load the latest messages. Try again.",
+                "未能加载最新消息，请重试。"
+            ),
             ("ui.writer_conflict_fork_recheck", "Check again", "重新检查"),
-            ("ui.retry_writer_access", "Retry writer access", "重试写入权限")
+            (
+                "ui.retry_writer_access",
+                "Reload messages and retry writer access",
+                "重新加载消息并重试写入权限"
+            )
         ]
         for (key, english, simplifiedChinese) in writerConflictForkValues {
             XCTAssertEqual(L10n.text(key, language: .english), english)
