@@ -279,6 +279,7 @@ extension AppStore {
 enum ActiveConnectionRoute: Equatable {
     case configured
     case local
+    case tailcat
 
     var statusTitle: String {
         switch self {
@@ -286,6 +287,8 @@ enum ActiveConnectionRoute: Equatable {
             return "Tailscale"
         case .local:
             return L10n.text("ui.direct_connection_to_this_machine")
+        case .tailcat:
+            return L10n.text("ui.tailcat_experiment")
         }
     }
 }

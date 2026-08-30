@@ -54,6 +54,7 @@ struct TokenStore {
     private let service = "com.gaixianggeng.mimiremote"
     private let legacyAccount = "agentd-token"
     private let profileAccountPrefix = "agentd-profile."
+    private let tailcatExperimentAccount = "tailcat-experiment-client-key.v1"
     private let keychain: any KeychainOperating
 
     init(keychain: any KeychainOperating = SystemKeychainOperations()) {
@@ -66,6 +67,10 @@ struct TokenStore {
 
     func load(profileID: String) throws -> String {
         try load(account: profileAccount(for: profileID))
+    }
+
+    func loadTailcatExperimentPrivateKey() throws -> String {
+        try load(account: tailcatExperimentAccount)
     }
 
     private func load(account: String) throws -> String {
@@ -93,6 +98,10 @@ struct TokenStore {
 
     func save(_ token: String, profileID: String) throws {
         try save(token, account: profileAccount(for: profileID))
+    }
+
+    func saveTailcatExperimentPrivateKey(_ privateKey: String) throws {
+        try save(privateKey, account: tailcatExperimentAccount)
     }
 
     private func save(_ token: String, account: String) throws {

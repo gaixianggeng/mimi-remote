@@ -1,0 +1,73 @@
+import CryptoKit
+import Foundation
+
+extension AppStore {
+    var activeConnectionProfile: ConnectionProfile? {
+        guard let activeConnectionProfileID else { return nil }
+        return connectionProfiles.first { $0.id == activeConnectionProfileID }
+    }
+
+    /// `endpoint` 始终保留档案里的规范地址；真实请求可临时改走同机或 Tailcat 路由。
+    var connectionEndpoint: String {
+        if isTailcatExperimentModeEnabled {
+            // 代理未就绪时锁到不可用的 loopback，任何调用都只能本机失败，不能泄漏到 Tailscale。
+            return tailcatExperimentEndpoint ?? "http://127.0.0.1:1"
+        }
+        return activeRouteEndpoint ?? activeConnectionProfile?.preferredEndpoint ?? endpoint
+    }
+
+    var isUsingLocalConnection: Bool {
+        activeConnectionRoute == .local
+    }
+
+    /// 通知路由优先使用持久化 profile ID；legacy/debug 单连接才退回规范 endpoint 的 SHA-256。
+    var notificationRoutingProfileID: String {
+        if let activeConnectionProfileID,
+           !activeConnectionProfileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return activeConnectionProfileID
+        }
+        let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
+        let digest = SHA256.hash(data: Data(normalizedEndpoint.utf8))
+        return "endpoint-sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    var connectionProfileSettingsModel: ConnectionProfileSettingsModel {
+        ConnectionProfileSettingsModel(
+            profiles: connectionProfiles,
+            activeProfileID: activeConnectionProfileID
+        )
+    }
+
+    var activeHostScope: HostScope {
+        activeHostState.scope
+    }
+
+    /// 认证请求只能在前台凭据完整恢复后创建。后台缩略图虽然仍保留工作台，
+    /// 但不能让任何旧任务拿空 Token 创建 REST 或 WebSocket Runtime。
+    var authenticatedCredentialFingerprint: String? {
+        guard !isCredentialMemorySuspended, isConfigured else {
+            return nil
+        }
+        return connectionCredentialFingerprint(token)
+    }
+
+    func acceptsCredentialInvalidation(_ error: Error) -> Bool {
+        guard isCredentialInvalidatingError(error),
+              let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        guard let rejectedFingerprint = credentialFingerprintRejectedByError(error) else {
+            // 兼容测试替身和旧的进程内错误；生产 REST/WS 传输都会携带指纹。
+            return true
+        }
+        return rejectedFingerprint == currentFingerprint
+    }
+
+    func isCurrentCredentialFingerprint(_ fingerprint: String?) -> Bool {
+        guard let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        // nil 仅兼容不携带传输上下文的测试 WebSocket。
+        return fingerprint == nil || fingerprint == currentFingerprint
+    }
+}

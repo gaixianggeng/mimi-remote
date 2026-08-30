@@ -1421,6 +1421,165 @@ private extension DefaultModelRuntime {
         }
     }
 }
+
+struct TailcatExperimentSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var controller: TailcatExperimentController
+    @State private var addressDraft = ""
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                Toggle(isOn: enabledBinding) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.enable_tailcat_experiment"),
+                        systemImage: "flask"
+                    )
+                }
+                // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户关闭该偏好。
+                .disabled(!controller.isAvailable && !controller.isEnabled)
+                .accessibilityIdentifier("settings.experimentalFeatures.tailcatToggle")
+
+                Label(statusText, systemImage: statusSystemImage)
+                    .foregroundStyle(statusColor)
+                    .accessibilityIdentifier("settings.experimentalFeatures.status")
+            } footer: {
+                Text(L10n.text("ui.tailcat_experiment_summary"))
+            }
+
+            Section {
+                TextField(
+                    L10n.text("ui.tailcat_address_placeholder"),
+                    text: $addressDraft,
+                    axis: .vertical
+                )
+                .lineLimit(2...5)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.system(.footnote, design: .monospaced))
+                .disabled(!controller.isEnabled || !controller.isAvailable)
+                .accessibilityIdentifier("settings.experimentalFeatures.address")
+
+                Button {
+                    controller.setAddress(addressDraft)
+                    Task { await reconnect() }
+                } label: {
+                    Label(L10n.text("ui.tailcat_save_and_connect"), systemImage: "network")
+                }
+                .disabled(
+                    !controller.isEnabled ||
+                    !controller.isAvailable ||
+                    addressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .accessibilityIdentifier("settings.experimentalFeatures.connect")
+            } header: {
+                Text(L10n.text("ui.connection_address"))
+            } footer: {
+                Text(L10n.text("ui.tailcat_address_help"))
+            }
+
+            Section {
+                Text(controller.publicKey.isEmpty ? "—" : controller.publicKey)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+
+                Button {
+                    UIPasteboard.general.string = controller.publicKey
+                } label: {
+                    Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
+                }
+                .disabled(controller.publicKey.isEmpty)
+                .accessibilityIdentifier("settings.experimentalFeatures.copyPublicKey")
+            } header: {
+                Text(L10n.text("ui.tailcat_client_public_key"))
+            } footer: {
+                Text(L10n.text("ui.tailcat_public_key_help"))
+            }
+
+            Section {
+                Label(L10n.text("ui.tailcat_safety_note"), systemImage: "exclamationmark.shield")
+                    .foregroundStyle(tokens.secondaryText)
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .navigationTitle(L10n.text("ui.experimental_features"))
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("settings.experimentalFeatures.detail")
+        .task {
+            addressDraft = controller.address
+            controller.loadPublicKey()
+        }
+    }
+
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { controller.isEnabled },
+            set: { nextValue in
+                Task {
+                    let routeReady = await controller.setEnabled(nextValue, appStore: appStore)
+                    guard routeReady else { return }
+                    _ = await appStore.preflightConnection(force: true)
+                    _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+                }
+            }
+        )
+    }
+
+    private func reconnect() async {
+        if controller.isEnabled {
+            guard await controller.prepareRoute(appStore: appStore) else { return }
+        }
+        _ = await appStore.preflightConnection(force: true)
+        _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+    }
+
+    private var statusText: String {
+        switch controller.state {
+        case .disabled:
+            return L10n.text("ui.tailcat_experiment_disabled")
+        case .needsAddress:
+            return L10n.text("ui.tailcat_needs_address")
+        case .starting:
+            return L10n.text("ui.connecting")
+        case .connected(let endpoint):
+            return L10n.format("ui.tailcat_connected_local_endpoint_value", endpoint)
+        case .failed(let message):
+            return L10n.format("ui.tailcat_connection_failed_value", message)
+        case .unavailable:
+            return L10n.text("ui.tailcat_framework_unavailable")
+        }
+    }
+
+    private var statusSystemImage: String {
+        switch controller.state {
+        case .connected:
+            return "checkmark.circle.fill"
+        case .failed, .unavailable:
+            return "exclamationmark.triangle.fill"
+        case .starting:
+            return "arrow.trianglehead.2.clockwise.rotate.90"
+        case .disabled, .needsAddress:
+            return "circle.dashed"
+        }
+    }
+
+    private var statusColor: Color {
+        switch controller.state {
+        case .connected:
+            return .green
+        case .failed, .unavailable:
+            return .orange
+        case .disabled, .needsAddress, .starting:
+            return .secondary
+        }
+    }
+}
+
 extension View {
     func settingsCanvasBackground(tokens: ThemeTokens) -> some View {
         modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
