@@ -81,7 +81,7 @@ pub fn list_user_message_ids_from_text(text: &str) -> Vec<String> {
             continue;
         };
         let content = message.get("content").unwrap_or(&Value::Null);
-        if is_internal_local_command_content(content) {
+        if is_internal_user_content(content) {
             continue;
         }
         // Skip tool-result-only user records (these are claude's tool loop
@@ -376,18 +376,19 @@ fn image_source_to_data_url(source: &Value) -> Option<String> {
 /// Claude Code 把 `/model` 等本地命令以顶层 `user` 记录写入 transcript，
 /// 但这些记录只服务 CLI 自身，不能在移动端伪装成用户发送的对话消息。
 /// 这里只识别完整的保留标签包装，避免误删普通文本中对标签的讨论。
-fn is_internal_local_command_content(content: &Value) -> bool {
+fn is_internal_user_content(content: &Value) -> bool {
     let Some(text) = content.as_str() else {
         return false;
     };
-    is_internal_local_command_text(text)
+    is_internal_user_text(text)
 }
 
-/// Claude CLI 内部命令会伪装成 user 文本；索引扫描和历史翻译必须复用同一判定，
-/// 否则列表标题会展示 `<local-command-*>`，打开后又因为历史层过滤而看起来像空会话。
-pub(crate) fn is_internal_local_command_text(text: &str) -> bool {
+/// Claude CLI 内部命令和中断标记会伪装成 user 文本；索引扫描和历史翻译必须
+/// 复用同一判定，避免污染会话标题、用户气泡和 turn 锚点。
+pub(crate) fn is_internal_user_text(text: &str) -> bool {
     let text = text.trim();
-    is_complete_reserved_tag(text, "local-command-caveat")
+    text == "[Request interrupted by user]"
+        || is_complete_reserved_tag(text, "local-command-caveat")
         || is_complete_reserved_tag(text, "local-command-stdout")
         || is_complete_reserved_tag(text, "local-command-stderr")
         || (text.starts_with("<command-name>")
@@ -1025,7 +1026,7 @@ impl OnDiskRecord {
                     return ClassifiedRecord::Skip;
                 };
                 let content = message.get("content").cloned().unwrap_or(Value::Null);
-                if is_internal_local_command_content(&content) {
+                if is_internal_user_content(&content) {
                     return ClassifiedRecord::Skip;
                 }
                 if self.is_meta {
@@ -1189,6 +1190,50 @@ mod tests {
             },
             other => panic!("expected UserMessage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn user_interrupt_marker_is_not_a_user_turn() {
+        let records = vec![
+            record(json!({
+                "type": "user",
+                "message": {"role": "user", "content": "[Request interrupted by user]"},
+                "timestamp": "2026-07-17T05:11:52.109Z",
+                "uuid": "interrupt"
+            })),
+            record(json!({
+                "type": "user",
+                "message": {"role": "user", "content": "继续"},
+                "timestamp": "2026-07-17T05:11:53.109Z",
+                "uuid": "real"
+            })),
+        ];
+
+        let turns = records_to_turns(&records);
+        assert_eq!(turns.len(), 1);
+        assert!(matches!(
+            &turns[0].items[0],
+            ThreadItem::UserMessage { content, .. }
+                if matches!(&content[0], UserInput::Text { text, .. } if text == "继续")
+        ));
+
+        let text = [
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "[Request interrupted by user]"},
+                "uuid": "interrupt"
+            }),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "继续"},
+                "uuid": "real"
+            }),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert_eq!(list_user_message_ids_from_text(&text), vec!["real"]);
     }
 
     #[test]

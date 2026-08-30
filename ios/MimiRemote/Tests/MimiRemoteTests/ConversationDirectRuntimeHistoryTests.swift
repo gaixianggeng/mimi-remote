@@ -2133,7 +2133,7 @@ extension ConversationDataFlowTests {
             secondaryWindowDurationMins: 10_080
         )
         let display = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: summary, now: now))
-        XCTAssertEqual(display.title, L10n.text("ui.codex_usage"))
+        XCTAssertEqual(display.title, L10n.format("ui.value_dosage", "Codex"))
         XCTAssertEqual(display.primaryText, L10n.format("ui.used_value", "60%"))
         XCTAssertFalse(display.secondaryText.isEmpty)
         XCTAssertEqual(display.progress ?? -1, 0.6, accuracy: 0.0001)
@@ -2250,13 +2250,17 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(almostNearLimit.isNearLimit)
         let nearLimit = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(primaryUsedPercent: 85), now: now))
         XCTAssertTrue(nearLimit.isNearLimit)
+        XCTAssertEqual(
+            nearLimit.nearLimitTitle,
+            L10n.format("ui.value_usage_near_limit", L10n.format("ui.value_dosage", "Codex"), nearLimit.primaryText)
+        )
 
         let exhaustedLimit = RateLimitSummary(limitName: "Codex", primaryUsedPercent: 100, primaryResetsAt: resetEpoch)
         let exhaustedDisplay = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: exhaustedLimit, now: now))
         XCTAssertTrue(exhaustedDisplay.isExhausted)
         let exhaustedNotice = try XCTUnwrap(CodexQuotaNotice.make(rateLimit: exhaustedLimit, errorMessage: nil, now: now))
         XCTAssertTrue(exhaustedNotice.blocksSending)
-        XCTAssertEqual(exhaustedNotice.title, L10n.text("ui.codex_message_quota_has_been_exhausted"))
+        XCTAssertEqual(exhaustedNotice.title, L10n.format("ui.value_message_quota_has_been_exhausted", "Codex"))
 
         let secondaryResetEpoch: Int64 = 1_780_497_900
         let secondaryDriven = try XCTUnwrap(CodexUsageDisplaySummary.make(
@@ -2434,6 +2438,10 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(CodexQuotaNotice.isRateLimitError("HTTP 429: rate limit exceeded"))
         XCTAssertFalse(CodexQuotaNotice.isQuotaError("Skill descriptions were shortened to fit the 2% skills context budget."))
         XCTAssertFalse(CodexQuotaNotice.isRateLimitError("Skill descriptions were shortened to fit the 2% skills context budget."))
+        XCTAssertEqual(
+            CodexQuotaNotice.make(rateLimit: nil, errorMessage: "You've hit your usage limit.")?.title,
+            L10n.text("ui.quota_has_been_exhausted")
+        )
     }
 
     func testQuotaNoticeIgnoresExhaustedSnapshotAfterResetTime() {

@@ -623,7 +623,7 @@ struct ComposerStatusTray: View {
         traySegment(tokens: tokens, minWidth: 230, layoutPriority: 1) {
             HStack(spacing: 8) {
                 segmentIcon("speedometer", tint: tokens.warning)
-                Text(notice.blocksSending ? L10n.text("ui.quota_has_been_exhausted") : notice.title)
+                Text(notice.title)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.warning)
                     .lineLimit(1)
@@ -643,10 +643,11 @@ struct ComposerStatusTray: View {
         traySegment(tokens: tokens, minWidth: 250, layoutPriority: 1) {
             HStack(spacing: 8) {
                 segmentIcon("speedometer", tint: tokens.warning)
-                Text(L10n.format("ui.quota_value", usage.primaryText))
+                Text(usage.nearLimitTitle)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.warning)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.78)
                 Text(usage.secondaryText)
                     .font(themeStore.uiFont(.caption2, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
