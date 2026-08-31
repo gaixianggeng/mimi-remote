@@ -862,27 +862,32 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.visualHeight, 44)
     }
 
-    /// disclosure 的命中框必须和渲染出来的一致：它是托盘上的一层 overlay，
-    /// 越出托盘的部分会被下方紧邻的输入卡盖住，所以高度只能取托盘首行的视觉高度。
-    /// 独立托盘拿到完整 44×44，内嵌状态条拿到 44×36。
-    func testStatusTrayDisclosureHitTargetMatchesRenderedTrayHeight() {
-        XCTAssertEqual(
-            ComposerStatusTrayPlacement.standalone.disclosureHitSize,
-            CGSize(width: 44, height: 44)
-        )
-        XCTAssertEqual(
-            ComposerStatusTrayPlacement.embedded.disclosureHitSize,
-            CGSize(width: 44, height: 36),
-            "内嵌状态条只有 36pt 高，命中框不能声称一个渲染上并不成立的 44"
-        )
-
+    /// disclosure 两种放置都必须给满 44×44，并且命中框中心要压在首行视觉高度的中点上。
+    /// 内嵌状态条只有 36pt 高，命中框靠 -4pt 偏移上下各溢出 4pt；overlay 不参与布局，
+    /// 溢出落在输入卡的 8pt 内距和 VStack 的 4pt spacing 里，不会撑高状态条。
+    func testStatusTrayDisclosureKeepsFullTouchTargetInBothPlacements() {
         for placement in [ComposerStatusTrayPlacement.standalone, .embedded] {
-            XCTAssertGreaterThanOrEqual(
-                placement.disclosureHitSize.width,
-                44,
-                "disclosure 的宽度必须始终满足 44pt 触控目标"
+            XCTAssertEqual(
+                placement.disclosureHitSize,
+                CGSize(width: 44, height: 44),
+                "disclosure 必须始终满足 44×44 触控目标，不能为了迁就状态条高度缩水"
+            )
+
+            // 命中框中心 = 偏移 + 半个命中框，必须落在首行视觉高度的中点。
+            let hitCenter = placement.disclosureVerticalOffset + placement.disclosureHitSize.height / 2
+            XCTAssertEqual(
+                hitCenter,
+                placement.visualHeight / 2,
+                "箭头中心必须压在首行中点，否则收起态和展开态会错位"
             )
         }
+
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.disclosureVerticalOffset, 0)
+        XCTAssertEqual(
+            ComposerStatusTrayPlacement.embedded.disclosureVerticalOffset,
+            -4,
+            "36pt 状态条上 44pt 命中框要上下各溢出 4pt"
+        )
     }
 
     /// disclosure 现在锚在托盘右上角，收起态和展开态共用同一个内距，箭头不再平移。

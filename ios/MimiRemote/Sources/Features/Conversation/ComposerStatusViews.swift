@@ -281,13 +281,21 @@ enum ComposerStatusTrayPlacement: Equatable {
         self == .embedded ? 36 : 44
     }
 
-    /// disclosure 的真实命中框。高度取托盘首行的视觉高度而不是恒定 44：
-    /// 它是托盘上的一层 overlay，越出托盘的部分会被下方紧邻的输入卡盖住，
-    /// 声称 44 只会让测试断言一个渲染上并不成立的数字。
-    /// 独立托盘因此拿到完整的 44×44；内嵌状态条给到 44×36，是这条 36pt 状态注解
-    /// 在不撑高输入卡的前提下能给出的最大值。
+    /// disclosure 的命中框恒为 44×44。它是托盘上的一层 overlay，不参与父布局，
+    /// 所以在 36pt 的内嵌状态条上也不会把输入卡撑高。
     var disclosureHitSize: CGSize {
-        CGSize(width: 44, height: visualHeight)
+        CGSize(width: 44, height: 44)
+    }
+
+    /// 命中框相对托盘顶部的纵向偏移：按钮中心必须落在首行视觉高度的中点，
+    /// 收起态和展开态才会是同一个位置。
+    ///
+    /// 内嵌时 44pt 的命中框比 36pt 的状态条高，上下各溢出 4pt——这 4pt 是真的能点中的：
+    /// `ComposerView.phoneComposerCard` 里状态条上方是输入卡自己的 8pt 内距，
+    /// 下方是 VStack 的 4pt spacing，溢出落在空白里，没有兄弟视图会先接走点击。
+    /// 曾经这里把命中框缩到 36pt 去迁就"渲染事实"，等于白白丢掉这 8pt。
+    var disclosureVerticalOffset: CGFloat {
+        (visualHeight - disclosureHitSize.height) / 2
     }
 
     /// disclosure 恒定锚在托盘右上角，收起态和展开态共用同一个内距。
@@ -421,6 +429,9 @@ struct ComposerStatusTray: View {
             if hasExpandableDetail {
                 disclosureButton(isExpanded: showsExpandedLayout, tint: tokens.secondaryText)
                     .padding(.trailing, placement.disclosureTrailingInset)
+                    // offset 只挪渲染和命中，不参与布局：44pt 命中框仍然居中压在首行上，
+                    // 状态条的视觉高度不受影响。
+                    .offset(y: placement.disclosureVerticalOffset)
             }
         }
         .accessibilityElement(children: .contain)
