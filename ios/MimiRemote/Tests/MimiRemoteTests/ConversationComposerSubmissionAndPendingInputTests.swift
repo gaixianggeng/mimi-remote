@@ -854,14 +854,77 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.visualHeight, 36)
-        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.disclosureHitSize, CGSize(width: 44, height: 44))
 
         XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
         XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.visualHeight, 44)
-        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.disclosureHitSize, CGSize(width: 44, height: 44))
+    }
+
+    /// disclosure 的命中框必须和渲染出来的一致：它是托盘上的一层 overlay，
+    /// 越出托盘的部分会被下方紧邻的输入卡盖住，所以高度只能取托盘首行的视觉高度。
+    /// 独立托盘拿到完整 44×44，内嵌状态条拿到 44×36。
+    func testStatusTrayDisclosureHitTargetMatchesRenderedTrayHeight() {
+        XCTAssertEqual(
+            ComposerStatusTrayPlacement.standalone.disclosureHitSize,
+            CGSize(width: 44, height: 44)
+        )
+        XCTAssertEqual(
+            ComposerStatusTrayPlacement.embedded.disclosureHitSize,
+            CGSize(width: 44, height: 36),
+            "内嵌状态条只有 36pt 高，命中框不能声称一个渲染上并不成立的 44"
+        )
+
+        for placement in [ComposerStatusTrayPlacement.standalone, .embedded] {
+            XCTAssertGreaterThanOrEqual(
+                placement.disclosureHitSize.width,
+                44,
+                "disclosure 的宽度必须始终满足 44pt 触控目标"
+            )
+        }
+    }
+
+    /// disclosure 现在锚在托盘右上角，收起态和展开态共用同一个内距，箭头不再平移。
+    /// 让位宽度必须真的能容下命中框：收起态内容从托盘边缘算起，展开态内容已经被
+    /// `expandedContentPadding` 内缩过一次，两边算完都不能压到按钮下面。
+    func testStatusTrayDisclosureReservesEnoughRoomInBothStates() {
+        let trayWidth: CGFloat = 400
+
+        for placement in [ComposerStatusTrayPlacement.standalone, .embedded] {
+            XCTAssertEqual(
+                placement.disclosureTrailingInset,
+                placement.expandedContentPadding,
+                "disclosure 内距必须与展开态内容内距同源，否则两态之间箭头会横向平移"
+            )
+
+            let buttonLeadingEdge = trayWidth
+                - placement.disclosureTrailingInset
+                - placement.disclosureHitSize.width
+
+            let collapsedContentTrailingEdge = trayWidth
+                - placement.disclosureTrailingInset
+                - placement.disclosureClearance
+            let expandedContentTrailingEdge = trayWidth
+                - placement.expandedContentPadding
+                - placement.disclosureClearance
+
+            XCTAssertLessThanOrEqual(
+                collapsedContentTrailingEdge,
+                buttonLeadingEdge,
+                "收起态的 chip 不能压到 disclosure 命中框下面"
+            )
+            XCTAssertLessThanOrEqual(
+                expandedContentTrailingEdge,
+                buttonLeadingEdge,
+                "展开态的状态模块不能压到 disclosure 命中框下面"
+            )
+            XCTAssertEqual(
+                collapsedContentTrailingEdge,
+                expandedContentTrailingEdge,
+                "两态的内容右边界必须落在同一处，否则展开时状态模块会横向跳一下"
+            )
+        }
     }
 
     func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {

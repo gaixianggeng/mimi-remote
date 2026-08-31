@@ -281,9 +281,24 @@ enum ComposerStatusTrayPlacement: Equatable {
         self == .embedded ? 36 : 44
     }
 
-    /// disclosure 的真实命中框始终满足 44pt 触控目标；它可通过 overlay 越出视觉槽位。
+    /// disclosure 的真实命中框。高度取托盘首行的视觉高度而不是恒定 44：
+    /// 它是托盘上的一层 overlay，越出托盘的部分会被下方紧邻的输入卡盖住，
+    /// 声称 44 只会让测试断言一个渲染上并不成立的数字。
+    /// 独立托盘因此拿到完整的 44×44；内嵌状态条给到 44×36，是这条 36pt 状态注解
+    /// 在不撑高输入卡的前提下能给出的最大值。
     var disclosureHitSize: CGSize {
-        CGSize(width: 44, height: 44)
+        CGSize(width: 44, height: visualHeight)
+    }
+
+    /// disclosure 恒定锚在托盘右上角，收起态和展开态共用同一个内距。
+    /// 两态之间箭头不再平移，连点两下就不会第二下落空。
+    var disclosureTrailingInset: CGFloat {
+        expandedContentPadding
+    }
+
+    /// 内容需要为 disclosure 让开的宽度，从内容自身的右边缘算起：命中框 + 一个 8pt 间距。
+    var disclosureClearance: CGFloat {
+        disclosureHitSize.width + 8
     }
 }
 
@@ -399,10 +414,22 @@ struct ComposerStatusTray: View {
                 )
             }
         }
+        // disclosure 挂在托盘上而不是挂在两套内容里：内容内距在收起/展开之间怎么变，
+        // 箭头都停在同一个点。必须排在描边 overlay 之后，否则卡片边缘那圈 stroke
+        // 会先于按钮接住靠边的点击。
+        .overlay(alignment: .topTrailing) {
+            if hasExpandableDetail {
+                disclosureButton(isExpanded: showsExpandedLayout, tint: tokens.secondaryText)
+                    .padding(.trailing, placement.disclosureTrailingInset)
+            }
+        }
         .accessibilityElement(children: .contain)
     }
 
     private func collapsedHeader(tokens: ThemeTokens) -> some View {
+        // 只剩一个子视图，但这层 HStack 仍然要留着：它负责把 chip 行在
+        // `visualHeight` 的行高里居中；直接给 ScrollView 加 minHeight 会让它自己撑满，
+        // 内容随之顶到行首。
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -420,32 +447,18 @@ struct ComposerStatusTray: View {
                 }
             }
             .layoutPriority(1)
-
-            if hasExpandableDetail {
-                collapsedDisclosureSlot(tint: tokens.secondaryText)
-            }
         }
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
-        .padding(.trailing, 2)
+        // 右侧只让位，不再自己摆按钮：disclosure 由托盘级 overlay 统一定位，
+        // 这里从托盘边缘算起留出「内距 + 命中框 + 间距」。
+        .padding(.trailing, hasExpandableDetail
+            ? placement.disclosureTrailingInset + placement.disclosureClearance
+            : 2)
         // 内嵌托盘是输入卡顶部的一条状态注解，不是一条独立列表行：视觉高度 36pt
         // 会让一枚 28pt 的 chip 顶着一整行空白，读成"这里少了点什么"。
-        // 命中区由 overlay 中独立的 44×44 Button 保证，不参与这条视觉栏的高度。
+        // 命中区由托盘级 overlay 的 Button 保证，不参与这条视觉栏的高度。
         .frame(minHeight: placement.visualHeight)
-    }
-
-    private func collapsedDisclosureSlot(tint: Color) -> some View {
-        Color.clear
-            .frame(width: placement.disclosureHitSize.width, height: placement.visualHeight)
-            // overlay 不参与父布局，按钮可以真实保持 44×44，同时视觉栏继续只有 36pt。
-            .overlay {
-                collapsedDisclosureButton(
-                    title: L10n.text("ui.expanded_state"),
-                    systemImage: "chevron.down",
-                    tint: tint,
-                    action: onToggleGoalExpanded
-                )
-            }
     }
 
     @ViewBuilder
@@ -459,19 +472,10 @@ struct ComposerStatusTray: View {
     }
 
     private func expandedHeaderRow(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            expandedHeaderSummary(tokens: tokens)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-
-            iconButton(
-                title: L10n.text("ui.collapse_state"),
-                systemImage: "chevron.up",
-                tint: tokens.secondaryText,
-                isDisabled: false,
-                action: onToggleGoalExpanded
-            )
-        }
+        expandedHeaderSummary(tokens: tokens)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // 展开内容已经被托盘的 expandedContentPadding 内缩过，这里只需要再让开命中框本身。
+            .padding(.trailing, hasExpandableDetail ? placement.disclosureClearance : 0)
     }
 
     @ViewBuilder
@@ -547,24 +551,28 @@ struct ComposerStatusTray: View {
         return base.opacity(tokens.resolvedScheme == .light ? 0.07 : 0.12)
     }
 
-    /// 收起态只保留一个 44pt 命中区，视觉上不再叠一层独立方形按钮。
-    /// 这样状态 rail 保持紧凑，同时仍满足触控和 VoiceOver 的可达性。
-    private func collapsedDisclosureButton(
-        title: String,
-        systemImage: String,
-        tint: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+    /// 展开和收起共用同一枚按钮：同一个字号、同一个命中框、同一个锚点，方向只靠旋转表达。
+    ///
+    /// 这里曾经是两个各写各的函数——收起态 12pt 图标、没有 contentShape，展开态 16pt 图标、
+    /// 有 contentShape——于是箭头在两态之间平移，而且收起态实际只有图标字形那么大能点中：
+    /// `.frame` 只负责布局，Button 的命中区取自 label 真正绘制的内容，
+    /// `MimiPressButtonStyle` 又只做缩放和透明度、不画背景，补不上这块面积。
+    private func disclosureButton(isExpanded: Bool, tint: Color) -> some View {
+        let title = isExpanded ? L10n.text("ui.collapse_state") : L10n.text("ui.expanded_state")
+        let motion = MimiMotion.stateTransition.resolve(reduceMotion: reduceMotion)
+
+        return Button(action: onToggleGoalExpanded) {
+            Image(systemName: "chevron.down")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
                 .foregroundStyle(tint)
+                .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                .animation(motion.animation, value: isExpanded)
                 .frame(
                     width: placement.disclosureHitSize.width,
                     height: placement.disclosureHitSize.height
                 )
+                .contentShape(Rectangle())
         }
-        .frame(width: placement.disclosureHitSize.width, height: placement.disclosureHitSize.height)
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .help(title)
         .accessibilityLabel(title)
@@ -756,6 +764,9 @@ struct ComposerStatusTray: View {
             Image(systemName: "arrow.clockwise")
                 .font(themeStore.uiFont(size: 13, weight: .semibold))
                 .frame(width: 44, height: 44)
+                // 和 disclosure 同一个坑：没有 contentShape 时这 44×44 只是布局框，
+                // 真正能点中的只有那枚 13pt 图标。
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .foregroundStyle(isRefreshDisabled ? themeStore.tokens(for: colorScheme).tertiaryText : tint)
