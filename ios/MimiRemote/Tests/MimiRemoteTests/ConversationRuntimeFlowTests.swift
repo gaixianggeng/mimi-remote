@@ -786,6 +786,59 @@ extension ConversationDataFlowTests {
         try await waitForWebSocketStatus(.connected, store: store)
     }
 
+    func testClaudeReconnectRefreshesThreadListAuthorizationBeforeResuming() async throws {
+        let project = makeProject(id: "proj_claude_restart_reconnect")
+        let running = makeSession(
+            id: "sess_claude_restart_reconnect",
+            projectID: project.id,
+            title: "Claude 运行中",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            workspaceSessions: [project.id: [running]],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: running, recentOutput: nil, lastSeq: nil)
+            ],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let workspaceRequestCountBeforeReconnect = client.requestedWorkspaceIDs.count
+
+        sockets[0].emitStatus(.failed("agentd restarted"))
+        for _ in 0..<80 where sockets.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertGreaterThan(client.requestedWorkspaceIDs.count, workspaceRequestCountBeforeReconnect)
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertEqual(sockets[1].connectedSessionIDs, [running.id])
+    }
+
     func testWebSocketAutoReconnectDoesNotGiveUpWhileSessionStaysRunning() async throws {
         let project = makeProject(id: "proj_ws_persistent_reconnect")
         let running = makeSession(id: "sess_ws_persistent_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
