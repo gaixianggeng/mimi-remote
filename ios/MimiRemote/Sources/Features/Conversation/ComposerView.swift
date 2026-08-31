@@ -496,10 +496,7 @@ struct ComposerView: View {
             return .editable
         }
         return ComposerTurnSettingsPolicy.resolve(
-            scope: scope,
-            sessionRuntimeProvider: normalizedRuntimeProvider(session.runtimeProvider ?? session.source),
-            isLocalSession: session.source == "local",
-            isArchivedSession: sessionStore.isSessionArchived(sessionID)
+            canControlSession: sessionStore.canControlSession(session)
         )
     }
 
@@ -510,9 +507,6 @@ struct ComposerView: View {
         showsModelGridPicker = false
         showsAdvancedOptionsSheet = false
         showsAddContentPanel = false
-        if composerState.isPlanModeSelected {
-            setSendMode(.standard)
-        }
     }
 
     func switchComposerDraftScope(to nextScope: ComposerDraftScopeKey) {
@@ -1346,7 +1340,7 @@ struct ComposerView: View {
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
         guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
-            return AnyView(sharedThreadModelControl)
+            return AnyView(unavailableModelControl)
         }
         return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
@@ -1385,14 +1379,14 @@ struct ComposerView: View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
-            if composerTurnSettingsPolicy == .sharedThreadManaged {
+            if composerTurnSettingsPolicy == .unavailable {
                 Section {
                     Button(action: {}) {
                         Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
                     }
                     .disabled(true)
 
-                    Text(ComposerTurnSettingsPolicy.sharedThreadSettingsMenuNotice)
+                    Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
                 }
             }
 
