@@ -14,7 +14,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
@@ -377,9 +376,9 @@ func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
 	meta := appServerRuntimeMetadata{
 		Type:               firstNonEmpty(r.cfg.Runtime.Type, "codex_app_server"),
 		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ssh"),
-		Managed:            false,
+		Managed:            r.cfg.AppServer.Managed,
 		GatewayAvailable:   upstream != "",
-		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.SSHTarget) != "",
+		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.SSHTarget) != "" || strings.TrimSpace(r.cfg.AppServer.Listen) != "",
 	}
 	return meta
 }
@@ -657,18 +656,21 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
 	if r.appServerSSH == nil {
-		return "", fmt.Errorf("app_server SSH transport 未配置")
+		return "", fmt.Errorf("app_server transport 未配置")
 	}
-	return appserver.CodexAppServerWebSocketURL, nil
+	return r.appServerSSH.WebSocketURL()
 }
 
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
-	return nil, nil
+	if r.appServerSSH == nil {
+		return nil, fmt.Errorf("app_server transport 未配置")
+	}
+	return r.appServerSSH.WebSocketHeaders()
 }
 
 func (r *Router) appServerUpstreamDialer(timeout time.Duration) (websocket.Dialer, error) {
 	if r.appServerSSH == nil {
-		return websocket.Dialer{}, fmt.Errorf("app_server SSH transport 未配置")
+		return websocket.Dialer{}, fmt.Errorf("app_server transport 未配置")
 	}
 	return r.appServerSSH.WebSocketDialer(timeout)
 }

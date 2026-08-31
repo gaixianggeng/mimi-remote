@@ -94,7 +94,7 @@ func (p *appServerReadinessProbe) Check(ctx context.Context) error {
 
 func (r *Router) probeAppServerUpstream(ctx context.Context) error {
 	if r.appServerSSH == nil {
-		return errors.New("app-server SSH transport 未配置")
+		return errors.New("app-server transport 未配置")
 	}
 	// EnsureReady 使用真实 proxy WebSocket 完成 initialize，不把单纯 TCP/WS
 	// 握手误判为 App Server 可承接请求。
@@ -116,15 +116,15 @@ func appServerReadinessCheckFromError(err error) doctor.Check {
 			Name:    "app-server-upstream",
 			OK:      false,
 			Level:   "error",
-			Message: "Codex app-server SSH upstream 暂不可用",
-			Fix:     "检查 agentd logs，并运行 ssh 127.0.0.1 codex --version",
+			Message: "Codex app-server upstream 暂不可用",
+			Fix:     "检查 agentd logs；SSH 模式再运行 ssh 127.0.0.1 codex --version",
 		}
 	}
 	return doctor.Check{
 		Name:    "app-server-upstream",
 		OK:      true,
 		Level:   "ok",
-		Message: "Codex app-server SSH proxy initialize 可用",
+		Message: "Codex app-server upstream initialize 可用",
 	}
 }
 

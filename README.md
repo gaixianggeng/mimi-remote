@@ -142,8 +142,8 @@ The mobile images above are the same current assets used by the Mimi Remote webs
 ```mermaid
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
-    Gateway["Your Mac<br/>agentd secure gateway"]
-    Codex["Codex<br/>shared Unix App Server"]
+    Gateway["Your host<br/>agentd secure gateway"]
+    Codex["Codex<br/>App Server"]
     Desktop["Codex Desktop<br/>SSH hosts"]
     Claude["Claude Code<br/>experimental bridge"]
 
@@ -153,12 +153,12 @@ flowchart LR
     Gateway <--> Claude
 ```
 
-This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own Mac, so project files, session history, and runtime credentials stay on the host.
+This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Windows tray host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own host, so project files, session history, and runtime credentials stay there.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
-- **One shared Codex runtime:** `agentd`, local Desktop SSH hosts, and remote Desktop SSH hosts connect through `codex app-server proxy` to the same Unix App Server. Desktop's ordinary local mode and OpenClaw remain independent and are never controlled through private IPC.
+- **Platform-specific Codex transport:** macOS and Linux connect through SSH to a shared Unix App Server. A Windows host owns one Codex App Server on a loopback-only WebSocket. Neither path uses Desktop private IPC.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
-- **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the Mac. The Mac must remain awake and privately reachable.
+- **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the host. The host must remain awake and privately reachable.
 
 For protocol details and exact capability boundaries, see [project status](docs/project-status.md) and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
 
@@ -166,26 +166,28 @@ For protocol details and exact capability boundaries, see [project status](docs/
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a Mac that can keep the host service running, and Codex CLI installed and ready on that Mac. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
+- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a macOS or Windows computer that can keep the host service running, and Codex CLI 0.149.1 or later installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. Use [TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds, or build from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
-- **Developer-only tools:** the normal macOS host install from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) does not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
 
 ## Install and run
 
 ### First installation in four steps
 
 1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
-2. **Install and start the host:** install the macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
+2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
 3. **Install the iOS app:** download Mimi Remote from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, or join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds. Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
-### Windows Desktop client
+### Windows host
 
-MIM-207 does not support Windows as the `agentd` host. The shared runtime requires a POSIX SSH target, a Unix Socket, and the Mac workspace paths. Windows installer publishing is paused, and the retained installer source rejects setup before stopping a service or replacing files.
+Windows 10/11 x64 is supported as an `agentd` host. Install and sign in to Codex CLI 0.149.1 or later as the same Windows user, then download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest). Verify the SHA-256 before running the installer. An `unsigned-release` package is expected to report `NotSigned` and can trigger Microsoft Defender SmartScreen.
 
-Use Codex Desktop for Windows as a client instead: add the Mac as an SSH host, log in as the same macOS user that owns the shared App Server, and open the shared workspace there. Mimi Remote continues to connect to `agentd` on that Mac.
+The per-user installer registers a limited Task Scheduler task and preserves configuration under `%APPDATA%\mimi-remote` during upgrades. `agentd` owns one Codex App Server at `ws://127.0.0.1:4222`, waits for a real protocol initialization, and stops the complete child process tree with the service. This loopback transport is local to Windows and does not use Desktop private IPC.
+
+Private-LAN access is opt-in. Setup only enables it on a Private Windows network profile and limits the firewall rule to `LocalSubnet`; otherwise the host remains loopback-only unless Tailscale is available. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for verification and recovery commands.
 
 ### macOS host
 

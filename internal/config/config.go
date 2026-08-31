@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -88,6 +89,13 @@ type RuntimeConfig struct {
 
 type AppServerConfig struct {
 	Transport string `json:"transport"`
+	// Windows 仍使用本机受管 WebSocket。macOS/Linux 使用共享 SSH transport，
+	// 两种模式不能在同一配置中混用。
+	Managed bool   `json:"managed,omitempty"`
+	Listen  string `json:"listen,omitempty"`
+	// WSTokenFile 只保存本机 App Server capability token 的路径。
+	// 外侧移动端 Token 不能复用到这个上游连接。
+	WSTokenFile string `json:"ws_token_file,omitempty"`
 	// SSHTarget 是 OpenSSH 的目标参数。它只作为 exec 参数传递，不能包含
 	// 空白或以连字符开头，避免把配置误当成 shell/ssh option。
 	SSHTarget string `json:"ssh_target,omitempty"`
@@ -266,6 +274,12 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
 		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
 	}
+	if strings.EqualFold(cfg.AppServer.Transport, "ws") && cfg.AppServer.Listen == "" {
+		cfg.AppServer.Listen = DefaultWindowsAppServerListen()
+	}
+	if strings.EqualFold(cfg.AppServer.Transport, "ws") {
+		cfg.AppServer.SSHTarget = ""
+	}
 	return cfg, nil
 }
 
@@ -317,7 +331,8 @@ func expandPath(path string) string {
 }
 
 const (
-	defaultAppServerSSHTarget = "127.0.0.1"
+	defaultAppServerSSHTarget     = "127.0.0.1"
+	defaultWindowsAppServerListen = "ws://127.0.0.1:4222"
 )
 
 func DefaultAppServerTransport() string {
@@ -326,6 +341,19 @@ func DefaultAppServerTransport() string {
 
 func DefaultAppServerSSHTarget() string {
 	return defaultAppServerSSHTarget
+}
+
+func DefaultWindowsAppServerListen() string {
+	return defaultWindowsAppServerListen
+}
+
+func DefaultWindowsAppServerConfig() AppServerConfig {
+	return AppServerConfig{
+		Transport: "ws",
+		Managed:   true,
+		Listen:    DefaultWindowsAppServerListen(),
+		AutoTitle: true,
+	}
 }
 
 func DefaultClaudeConfig() ClaudeConfig {
@@ -642,8 +670,21 @@ func (c Config) Validate() error {
 		if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
 			return fmt.Errorf("app_server.ssh_target 无效：%w", err)
 		}
+	case "ws":
+		if runtime.GOOS != "windows" {
+			return fmt.Errorf("app_server.transport=ws 只支持 Windows 本机宿主")
+		}
+		if !c.AppServer.Managed {
+			return fmt.Errorf("Windows app_server.transport=ws 必须由 agentd 管理")
+		}
+		if strings.TrimSpace(c.AppServer.WSTokenFile) == "" {
+			return fmt.Errorf("Windows app_server.ws_token_file 不能为空")
+		}
+		if err := validateLoopbackWebSocketListen(c.AppServer.Listen); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh")
+		return fmt.Errorf("app_server.transport 只支持 ssh，Windows 另支持受管 ws")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
@@ -653,6 +694,23 @@ func (c Config) Validate() error {
 	}
 	if err := validateActions(c.Actions); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateLoopbackWebSocketListen(raw string) error {
+	value := strings.TrimSpace(raw)
+	if !strings.Contains(value, "://") {
+		value = "ws://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "ws") || parsed.Port() == "" {
+		return fmt.Errorf("Windows app_server.listen 必须是有效的 ws:// loopback 地址")
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("Windows app_server.listen 只能使用 loopback 地址")
 	}
 	return nil
 }

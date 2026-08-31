@@ -218,9 +218,11 @@ grep -Fq 'scripts/check-windows-installer.ps1' .github/workflows/release.yml \
 grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
   || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
 grep -Fq 'Upload verified Windows installer' .github/workflows/release.yml \
-  || fail "Release workflow 没有保留 Windows 兼容性验证 artifact。"
-! grep -Fq 'publish-windows:' .github/workflows/release.yml \
-  || fail "MIM-207 期间不得公开发布 Windows agentd 安装包。"
+  || fail "Release workflow 没有保留已验证的 Windows artifact。"
+grep -Fq 'publish-windows:' .github/workflows/release.yml \
+  || fail "Release workflow 没有公开发布 Windows 安装包。"
+grep -Fq 'gh release upload $env:RELEASE_TAG $files.FullName --clobber' .github/workflows/release.yml \
+  || fail "Windows 发布 job 没有上传已验证安装包、摘要和元数据。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

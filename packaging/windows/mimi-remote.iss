@@ -76,19 +76,6 @@ begin
   Result := '"' + Value + '"';
 end;
 
-function InitializeSetup(): Boolean;
-begin
-  // MIM-207 的共享运行时依赖 POSIX 远端命令、Unix Socket 和宿主工作区路径。
-  // 在任何停服、文件替换或计划任务修改前阻止旧 Windows host 安装路径。
-  MsgBox(
-    'This Mimi Remote version uses a shared SSH App Server and no longer supports Windows as the agentd host. ' +
-    'Run Mimi Remote Mac on the Mac that owns the shared App Server, then connect Codex Desktop for Windows to that Mac over SSH.',
-    mbError,
-    MB_OK
-  );
-  Result := False;
-end;
-
 procedure RemoveScheduledTask;
 var
   ResultCode: Integer;

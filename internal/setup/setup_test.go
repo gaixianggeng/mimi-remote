@@ -48,9 +48,7 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if len(result.Token) != 64 {
 		t.Fatalf("外侧 token 应为 32 bytes hex，got len=%d", len(result.Token))
 	}
-	if result.AppServerSSHTarget != config.DefaultAppServerSSHTarget() {
-		t.Fatalf("SSH target 异常：%s", result.AppServerSSHTarget)
-	}
+	assertDefaultSetupResultAppServer(t, result)
 	connect, err := url.Parse(result.ConnectURL)
 	if err != nil {
 		t.Fatal(err)
@@ -82,9 +80,7 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AppServer.Transport != config.DefaultAppServerTransport() || cfg.AppServer.SSHTarget != config.DefaultAppServerSSHTarget() {
-		t.Fatalf("setup 应默认启用 localhost SSH app-server：%+v", cfg.AppServer)
-	}
+	assertDefaultSetupConfigAppServer(t, cfg)
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)
 	}
@@ -105,6 +101,9 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 }
 
 func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 使用本机受管 WebSocket，不读取 SSH target")
+	}
 	clearSetupEnv(t)
 	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "mimi-host")
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
@@ -127,6 +126,36 @@ func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
 	}
 	if cfg.AppServer.SSHTarget != "mimi-host" {
 		t.Fatalf("配置应持久化环境变量中的 SSH target：%q", cfg.AppServer.SSHTarget)
+	}
+}
+
+func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if result.AppServerSSHTarget != "" {
+			t.Fatalf("Windows setup 不应持久化 SSH target：%q", result.AppServerSSHTarget)
+		}
+		return
+	}
+	if result.AppServerSSHTarget != config.DefaultAppServerSSHTarget() {
+		t.Fatalf("SSH target 异常：%s", result.AppServerSSHTarget)
+	}
+}
+
+func assertDefaultSetupConfigAppServer(t *testing.T, cfg config.Config) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if cfg.AppServer.Transport != "ws" ||
+			!cfg.AppServer.Managed ||
+			cfg.AppServer.Listen != config.DefaultWindowsAppServerListen() ||
+			strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
+			t.Fatalf("Windows setup 应启用受管 loopback WebSocket：%+v", cfg.AppServer)
+		}
+		assertPrivateRegularFile(t, cfg.AppServer.WSTokenFile)
+		return
+	}
+	if cfg.AppServer.Transport != config.DefaultAppServerTransport() || cfg.AppServer.SSHTarget != config.DefaultAppServerSSHTarget() {
+		t.Fatalf("setup 应默认启用 localhost SSH app-server：%+v", cfg.AppServer)
 	}
 }
 

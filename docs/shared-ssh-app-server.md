@@ -1,5 +1,7 @@
 # 共享 SSH App Server
 
+本文只描述 macOS/Linux 的共享 SSH transport。Windows `agentd` 宿主管理一个 loopback WebSocket App Server，不使用 Unix Socket、SSH proxy 或 Desktop 私有 IPC。
+
 ## 目标
 
 Mimi、Windows Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
