@@ -457,6 +457,82 @@ extension ConversationDataFlowTests {
         reopenedEvents.cancel()
     }
 
+    func testNewFalseLeaseReplacesOlderUnsubscribeRetry() async throws {
+        let project = AgentProject(id: "proj_replace_retry", name: "Replace Retry", path: "/tmp/replace-retry")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list", "thread/resume", "thread/unsubscribe"]
+                )
+            }
+        )
+        let threadID = "thr_replace_retry"
+        let thread = #"{"id":"thr_replace_retry","sessionId":"thr_replace_retry","preview":"替换重试","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/replace-retry","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"替换重试","turns":[]}"#
+        let pageTask = Task { try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: list.id, result: #"{"data":[\#(thread)],"nextCursor":null}"#)
+        _ = try await pageTask.value
+        let connect = Task { try await runtime.connectForEvents(sessionID: threadID) }
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        transportResponse(transport, id: resume.id, result: #"{"thread":\#(thread)}"#)
+        try await connect.value
+
+        let firstCleanup = Task {
+            try await runtime.unsubscribeThread(threadID: threadID, usingExistingConnectionOnly: true)
+        }
+        let first = try await waitForFakeAppServerRequest(transport, method: "thread/unsubscribe", after: 3)
+        let messagesAfterFirst = await transport.sentMessages().count
+        transportErrorResponse(transport, id: first.id, code: -32603, message: "first failure")
+        do {
+            _ = try await firstCleanup.value
+            XCTFail("首次退订应失败")
+        } catch {}
+        let oldRetry = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/unsubscribe",
+            after: messagesAfterFirst
+        )
+        transportErrorResponse(transport, id: oldRetry.id, code: -32603, message: "old retry failure")
+
+        let messagesBeforeNewLease = await transport.sentMessages().count
+        let secondCleanup = Task {
+            try await runtime.unsubscribeThread(threadID: threadID, usingExistingConnectionOnly: true)
+        }
+        let second = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/unsubscribe",
+            after: messagesBeforeNewLease
+        )
+        let messagesAfterSecond = await transport.sentMessages().count
+        transportErrorResponse(transport, id: second.id, code: -32603, message: "second failure")
+        do {
+            _ = try await secondCleanup.value
+            XCTFail("第二代退订应失败")
+        } catch {}
+        let newRetry = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/unsubscribe",
+            after: messagesAfterSecond
+        )
+        transportResponse(transport, id: newRetry.id, result: #"{"status":"unsubscribed"}"#)
+
+        for _ in 0..<20 {
+            if await runtime.threadUnsubscribeRetryTasksBySessionID[threadID] == nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        let retryTask = await runtime.threadUnsubscribeRetryTasksBySessionID[threadID]
+        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 4)
+        XCTAssertNil(retryTask)
+    }
+
     func testProducerFinishDoesNotCreateConnectionToUnsubscribe() async {
         let project = AgentProject(id: "proj_producer_finish", name: "Producer Finish", path: "/tmp/producer-finish")
         let transport = FakeCodexAppServerTransport()

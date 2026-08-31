@@ -870,6 +870,7 @@ actor CodexAppServerSessionRuntime {
     ) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
             || threadResumeTasksBySessionID[threadID] != nil
+            || threadUnsubscribeRetryTasksBySessionID[threadID] != nil
         let existingConnection = connection
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         cancelThreadResumeTask(sessionID: threadID)
@@ -1895,9 +1896,9 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         wantsEvents: Bool
     ) -> CodexAppServerThreadSubscriptionLease {
-        if wantsEvents {
-            cancelThreadUnsubscribeRetryTask(sessionID: sessionID)
-        }
+        // false→false 也代表更新一代清理意图。先移除旧任务占位，避免旧任务因 lease
+        // 不匹配退出后，新一代失败退订无法安装自己的重试任务。
+        cancelThreadUnsubscribeRetryTask(sessionID: sessionID)
         let generation = (threadSubscriptionLeaseBySessionID[sessionID]?.generation ?? 0) &+ 1
         let lease = CodexAppServerThreadSubscriptionLease(
             generation: generation,
