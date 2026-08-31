@@ -796,12 +796,35 @@ extension ConversationDataFlowTests {
             source: "claude",
             runtimeProvider: "claude"
         )
+        let authorizationFillers = (1...4).map { index in
+            makeSession(
+                id: "sess_claude_authorization_page_\(index)",
+                projectID: project.id,
+                title: "Claude 历史 \(index)",
+                status: "history",
+                source: "claude",
+                runtimeProvider: "claude"
+            )
+        }
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [running],
             workspaceSessions: [project.id: [running]],
+            workspacePages: [
+                project.id: SessionsPage(
+                    sessions: [authorizationFillers[0]],
+                    nextCursor: "claude_page_2",
+                    hasMore: true
+                )
+            ],
+            cursorPages: [
+                "claude_page_2": SessionsPage(sessions: [authorizationFillers[1]], nextCursor: "claude_page_3", hasMore: true),
+                "claude_page_3": SessionsPage(sessions: [authorizationFillers[2]], nextCursor: "claude_page_4", hasMore: true),
+                "claude_page_4": SessionsPage(sessions: [authorizationFillers[3]], nextCursor: "claude_page_5", hasMore: true),
+                "claude_page_5": SessionsPage(sessions: [running])
+            ],
             sessionResponses: [
                 running.id: try makeSessionResponse(session: running, recentOutput: nil, lastSeq: nil)
             ],
@@ -834,9 +857,55 @@ extension ConversationDataFlowTests {
         }
 
         XCTAssertEqual(sockets.count, 2)
-        XCTAssertGreaterThan(client.requestedWorkspaceIDs.count, workspaceRequestCountBeforeReconnect)
+        XCTAssertEqual(
+            Array(client.requestedWorkspaceCursors.dropFirst(workspaceRequestCountBeforeReconnect)),
+            [nil, "claude_page_2", "claude_page_3", "claude_page_4", "claude_page_5"]
+        )
+        XCTAssertEqual(
+            Array(client.requestedWorkspaceLimits.dropFirst(workspaceRequestCountBeforeReconnect)),
+            Array(repeating: 50, count: 5)
+        )
         XCTAssertEqual(client.requestedSessionIDs, [running.id])
         XCTAssertEqual(sockets[1].connectedSessionIDs, [running.id])
+    }
+
+    func testClaudeReconnectAuthorizationFailsWhenSelectedSessionIsNotListed() async {
+        let project = makeProject(id: "proj_claude_missing_authorization")
+        let missing = makeSession(
+            id: "sess_claude_missing_authorization",
+            projectID: project.id,
+            title: "Claude 已丢失",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspacePages: [project.id: SessionsPage(sessions: [])]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.workspacesByID[project.id] = AgentWorkspace(project: project)
+        store.selectedSessionID = missing.id
+
+        do {
+            try await store.authorizeClaudeSessionBeforeReconnect(
+                missing,
+                client: client,
+                reconnectGeneration: store.webSocketReconnectGeneration
+            )
+            XCTFail("目标会话未进入授权列表时不应静默成功")
+        } catch AgentAPIError.invalidResponse {
+            XCTAssertEqual(client.requestedWorkspaceLimits.last, 50)
+        } catch {
+            XCTFail("应返回 invalidResponse，实际为 \(error)")
+        }
     }
 
     func testWebSocketAutoReconnectDoesNotGiveUpWhileSessionStaysRunning() async throws {

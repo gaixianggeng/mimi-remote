@@ -784,12 +784,12 @@ extension SessionStore {
 
         var cursor: String?
         var visitedCursors = Set<String>()
-        for _ in 0..<4 {
+        while true {
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 runtimeProvider: "claude",
                 cursor: cursor,
-                limit: 100,
+                limit: 50,
                 consistency: cursor == nil ? .authoritative : .fastIndexed
             )
             guard !Task.isCancelled,
@@ -800,11 +800,13 @@ extension SessionStore {
             if page.sessions.contains(where: { $0.id == session.id }) {
                 return
             }
-            guard page.hasMore,
-                  let nextCursor = page.nextCursor,
+            guard page.hasMore else {
+                throw AgentAPIError.invalidResponse
+            }
+            guard let nextCursor = page.nextCursor,
                   !nextCursor.isEmpty,
                   visitedCursors.insert(nextCursor).inserted else {
-                return
+                throw AgentAPIError.invalidResponse
             }
             cursor = nextCursor
         }
