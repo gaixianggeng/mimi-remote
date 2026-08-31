@@ -2983,6 +2983,34 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
+    func testEventReducerPresentsWarningWithoutErrorSemantics() async throws {
+        let metadata = AgentEventMetadata(
+            seq: 44,
+            sessionID: "codex_thread",
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+
+        let output = await EventReducer().reduce(
+            .warning(AgentErrorPayload(message: "deprecated option", code: "warning", retryable: false), metadata),
+            fallbackSessionID: "codex_thread",
+            outputIdleClearDelay: 0
+        )
+
+        XCTAssertTrue(output.statusUpdates.isEmpty)
+        if case .system(let text, let sessionID, let kind, _) = try XCTUnwrap(output.messageMutations.first) {
+            XCTAssertEqual(sessionID, "codex_thread")
+            XCTAssertEqual(kind, .warning)
+            XCTAssertEqual(text, "deprecated option")
+        } else {
+            XCTFail("Expected runtime warning system message")
+        }
+    }
+
     func testEventReducerPresentsClaudeAuthenticationFailureAsRecoverableChineseNotice() async throws {
         let reducer = EventReducer()
         let metadata = AgentEventMetadata(

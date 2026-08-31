@@ -22741,6 +22741,23 @@
         }
       }
     },
+    "ui.run_warning": {
+      "comment": "Title for a non-fatal runtime warning shown in the conversation.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run warning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行警告"
+          }
+        }
+      }
+    },
     "ui.run_warning_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

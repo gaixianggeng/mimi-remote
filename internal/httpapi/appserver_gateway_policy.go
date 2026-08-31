@@ -1255,8 +1255,10 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	if method == "thread/fork" {
 		copyGatewayParam(safe, params, "lastTurnId")
 	}
-	if method == "thread/resume" {
+	if method == "thread/resume" || method == "thread/fork" {
 		safe["excludeTurns"] = true
+	}
+	if method == "thread/resume" {
 		if page, ok := params["initialTurnsPage"].(map[string]any); ok {
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
 		}

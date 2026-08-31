@@ -255,7 +255,7 @@ actor EventReducer {
                 sessionID: fallbackSessionID,
                 seq: nil
             ))
-            output.messageMutations.append(.system(L10n.format("ui.run_warning_value", payload.message), fallbackSessionID, .error, metadata))
+            output.messageMutations.append(.system(payload.message, fallbackSessionID, .warning, metadata))
         case .error(let payload, let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
             let isClaudeAuthenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
