@@ -164,6 +164,9 @@ final class SessionStore: ObservableObject {
     @Published var capabilityErrorMessage: String?
     @Published var isCreatingWorktree = false
     @Published var duplicatingSessionIDs: Set<SessionID> = []
+    @Published var writerConflictForkAvailabilityByLease: [HostSessionLease: WriterConflictForkAvailability] = [:]
+    @Published var writerConflictForkErrorByLease: [HostSessionLease: String] = [:]
+    @Published var writerConflictForkPreparationRevision: UInt64 = 0
     @Published var worktreeBranchesByPath: [String: WorktreeBranchListResponse] = [:]
     @Published var worktreeBranchErrorByPath: [String: String] = [:]
     @Published var isRefreshingWorktreeBranches = false
@@ -445,6 +448,7 @@ final class SessionStore: ObservableObject {
     var remoteSessionSearchSnippetByID: [SessionID: String] = [:]
     var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
+    var historySeenPreviousCursorsBySessionID: [SessionID: Set<String>] = [:]
     var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]
@@ -452,6 +456,7 @@ final class SessionStore: ObservableObject {
     var historyLoadJobTokenBySessionID: [SessionID: Int] = [:]
     var historyLoadedSignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var historyLoadedQualityBySessionID: [SessionID: HistoryLoadQuality] = [:]
+    var historyItemEnrichmentBySessionID: [SessionID: HistoryItemEnrichmentState] = [:]
     /// 运行中的 full 历史可能暂时携带大量过程输出。命中网关单包上限后先显示 summary，
     /// 等对应 Turn 完成再补拉 canonical full，避免把临时膨胀误判成永久大历史。
     var deferredFullHistorySessionIDs: Set<SessionID> = []
@@ -1818,20 +1823,17 @@ final class SessionStore: ObservableObject {
         let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
         if hasConflict {
             activeWriterConflictLeases.insert(lease)
+            // 每次明确的 writer 拒绝都代表远端状态可能已经变化。清掉旧边界，
+            // 让冲突卡重新读取最近的精简 Turn 摘要，不能复用上一次重试前的结果。
+            writerConflictForkAvailabilityByLease.removeValue(forKey: lease)
+            writerConflictForkErrorByLease.removeValue(forKey: lease)
+            writerConflictForkPreparationRevision &+= 1
         } else {
             activeWriterConflictLeases.remove(lease)
+            writerConflictForkAvailabilityByLease.removeValue(forKey: lease)
+            writerConflictForkErrorByLease.removeValue(forKey: lease)
+            writerConflictForkPreparationRevision &+= 1
         }
-    }
-
-    func retrySelectedSessionWriterAccess() {
-        guard let session = selectedSession else {
-            return
-        }
-        // thread/resume 是公开协议中唯一可信的 writer 检查。重试必须由用户触发，
-        // 且强制建立新连接，不能复用曾在发送阶段返回冲突的 connected socket。
-        setErrorMessage(nil)
-        disconnectWebSocket()
-        connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
     }
 
     var selectedSessionAllowsTakeOver: Bool {

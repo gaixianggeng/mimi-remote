@@ -2303,21 +2303,22 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_image","sessionId":"thr_hist_image","preview":"hist image","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-image","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist image","turns":[{"id":"turn_img","startedAt":1780490000,"items":[{"type":"userMessage","id":"item_img","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"agentd-history-media://media_abc","detail":"high","redacted":true,"contentType":"image/png","byteCount":2048}]},{"type":"imageGeneration","id":"exec-generated","status":"completed","result":"agentd-history-media://media_generated","resultContentType":"image/png","resultByteCount":1349508,"resultRedacted":true,"savedPath":"/Users/me/.codex/generated_images/thread/exec-generated.png"},{"type":"imageView","id":"view-simulator","path":"/tmp/simulator screen.png"}]}]}}}"#)
 
         let page = try await pageTask.value
-        let message = try XCTUnwrap(page.messages.first { $0.role == "user" })
+        let messages = try await fullyLoadedHistoryMessages(from: page, sessionID: "thr_hist_image", client: client)
+        let message = try XCTUnwrap(messages.first { $0.role == "user" })
         XCTAssertEqual(message.content, "看这张截图")
         XCTAssertEqual(message.turnPayload?.textPrompt, "看这张截图")
         XCTAssertTrue(payloadContainsImageURL(message.turnPayload, url: "agentd-history-media://media_abc"))
         XCTAssertEqual(
-            page.messages.first { $0.itemID == "exec-generated" }?.content,
+            messages.first { $0.itemID == "exec-generated" }?.content,
             "![生成的图片](agentd-history-media://media_generated)"
         )
         XCTAssertEqual(
-            page.messages.first { $0.itemID == "view-simulator" }?.content,
+            messages.first { $0.itemID == "view-simulator" }?.content,
             "![截图](file:///tmp/simulator%20screen.png)"
         )
 
         let conversationStore = ConversationStore()
-        conversationStore.replaceHistorySnapshot(page.messages, sessionID: "thr_hist_image")
+        conversationStore.replaceHistorySnapshot(messages, sessionID: "thr_hist_image")
         let projected = conversationStore.messages(for: "thr_hist_image")
         XCTAssertTrue(payloadContainsImageURL(
             projected.first { $0.role == .user }?.turnPayload,
@@ -2348,14 +2349,15 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_dates","sessionId":"thr_hist_dates","preview":"hist dates","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-dates","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist dates","turns":[{"id":"turn_iso","startedAt":"2026-07-01T18:16:00.000Z","completedAt":"2026-07-01T18:16:01.154Z","items":[{"type":"userMessage","id":"user_iso","content":[{"type":"text","text":"iso user"}]},{"type":"agentMessage","id":"assistant_iso","text":"iso assistant","phase":"final_answer"}]},{"id":"turn_ms","startedAt":1782929761154,"completedAt":"1782929762123","items":[{"type":"userMessage","id":"user_ms","content":[{"type":"text","text":"ms user"}]},{"type":"agentMessage","id":"assistant_ms","text":"ms assistant","phase":"final_answer"}]},{"id":"turn_snake","started_at":"2026-07-01T19:00:00.000Z","completed_at":"2026-07-01T19:00:02.000Z","items":[{"type":"userMessage","id":"user_snake","content":[{"type":"text","text":"snake user"}]},{"type":"agentMessage","id":"assistant_snake","text":"snake assistant","phase":"final_answer"}]},{"id":"turn_item_only","items":[{"type":"userMessage","id":"user_item","created_at":1782932403,"content":[{"type":"text","text":"item user"}]},{"type":"agentMessage","id":"assistant_item","updated_at":"2026-07-01T19:00:04.500Z","text":"item assistant","phase":"final_answer"}]}]}}}"#)
 
         let page = try await pageTask.value
-        let isoUser = try XCTUnwrap(page.messages.first { $0.content == "iso user" })
-        let isoAssistant = try XCTUnwrap(page.messages.first { $0.content == "iso assistant" })
-        let msUser = try XCTUnwrap(page.messages.first { $0.content == "ms user" })
-        let msAssistant = try XCTUnwrap(page.messages.first { $0.content == "ms assistant" })
-        let snakeUser = try XCTUnwrap(page.messages.first { $0.content == "snake user" })
-        let snakeAssistant = try XCTUnwrap(page.messages.first { $0.content == "snake assistant" })
-        let itemUser = try XCTUnwrap(page.messages.first { $0.content == "item user" })
-        let itemAssistant = try XCTUnwrap(page.messages.first { $0.content == "item assistant" })
+        let messages = try await fullyLoadedHistoryMessages(from: page, sessionID: "thr_hist_dates", client: client)
+        let isoUser = try XCTUnwrap(messages.first { $0.content == "iso user" })
+        let isoAssistant = try XCTUnwrap(messages.first { $0.content == "iso assistant" })
+        let msUser = try XCTUnwrap(messages.first { $0.content == "ms user" })
+        let msAssistant = try XCTUnwrap(messages.first { $0.content == "ms assistant" })
+        let snakeUser = try XCTUnwrap(messages.first { $0.content == "snake user" })
+        let snakeAssistant = try XCTUnwrap(messages.first { $0.content == "snake assistant" })
+        let itemUser = try XCTUnwrap(messages.first { $0.content == "item user" })
+        let itemAssistant = try XCTUnwrap(messages.first { $0.content == "item assistant" })
 
         XCTAssertEqual(try XCTUnwrap(isoUser.createdAt).timeIntervalSince1970, 1_782_929_760, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(isoAssistant.createdAt).timeIntervalSince1970, 1_782_929_761.154, accuracy: 0.001)
@@ -2400,11 +2402,16 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_active_time","sessionId":"thr_hist_active_time","preview":"active time","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active"},"path":null,"cwd":"/tmp/hist-active","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"active time","turns":[{"id":"turn_live_time","startedAt":1780490000,"status":"inProgress","items":[{"type":"userMessage","id":"user_live","content":[{"type":"text","text":"继续观察"}]},{"type":"commandExecution","id":"cmd_live","command":"go test ./...","status":"running"},{"type":"commandExecution","id":"cmd_failed","command":"xcodebuild test","status":"failed"},{"type":"agentMessage","id":"assistant_live","text":"还在输出日志","phase":"final_answer"}]}]}}}"#)
 
         let page = try await pageTask.value
+        let messages = try await fullyLoadedHistoryMessages(
+            from: page,
+            sessionID: "thr_hist_active_time",
+            client: client
+        )
         let upperBound = Date()
-        let user = try XCTUnwrap(page.messages.first { $0.content == "继续观察" })
-        let command = try XCTUnwrap(page.messages.first { $0.content.contains("go test ./...") })
-        let failedCommand = try XCTUnwrap(page.messages.first { $0.content.contains("xcodebuild test") })
-        let assistant = try XCTUnwrap(page.messages.first { $0.content == "还在输出日志" })
+        let user = try XCTUnwrap(messages.first { $0.content == "继续观察" })
+        let command = try XCTUnwrap(messages.first { $0.content.contains("go test ./...") })
+        let failedCommand = try XCTUnwrap(messages.first { $0.content.contains("xcodebuild test") })
+        let assistant = try XCTUnwrap(messages.first { $0.content == "还在输出日志" })
 
         XCTAssertNil(user.updatedAt)
         XCTAssertNil(failedCommand.updatedAt)
@@ -2438,10 +2445,11 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_fallback","sessionId":"thr_hist_fallback","preview":"hist fallback","ephemeral":false,"modelProvider":"openai","createdAt":1780490400,"updatedAt":1780490500,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist fallback","turns":[{"id":"turn_missing","items":[{"type":"userMessage","id":"user_missing","content":[{"type":"text","text":"missing user"}]},{"type":"agentMessage","id":"assistant_missing","text":"missing assistant","phase":"final_answer"}]}]}}}"#)
 
         let page = try await pageTask.value
-        XCTAssertEqual(page.messages.map(\.content), ["missing user", "missing assistant"])
-        XCTAssertTrue(page.messages.allSatisfy(\.isTimestampFallback))
-        XCTAssertEqual(try XCTUnwrap(page.messages.first?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(page.messages.last?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
+        let messages = try await fullyLoadedHistoryMessages(from: page, sessionID: "thr_hist_fallback", client: client)
+        XCTAssertEqual(messages.map(\.content), ["missing user", "missing assistant"])
+        XCTAssertTrue(messages.allSatisfy(\.isTimestampFallback))
+        XCTAssertEqual(try XCTUnwrap(messages.first?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(messages.last?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
     }
 
     func testDirectRuntimeMarksMiddleUserMessageAsInjectedServerFact() async throws {
@@ -2466,9 +2474,10 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_injected","sessionId":"thr_hist_injected","preview":"injected","ephemeral":false,"modelProvider":"openai","createdAt":1780490600,"updatedAt":1780490630,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-injected","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"injected","turns":[{"id":"turn_injected","startedAt":1780490600,"completedAt":1780490630,"items":[{"type":"userMessage","id":"user_initial","clientId":"client_initial","content":[{"type":"text","text":"先排查"}]},{"type":"agentMessage","id":"commentary_injected","text":"我先看当前状态。","phase":"commentary"},{"type":"userMessage","id":"user_mid","clientId":"client_mid","content":[{"type":"text","text":"要求后续变更"}]},{"type":"agentMessage","id":"assistant_injected","text":"已按后续要求完成。","phase":"final_answer"}]}]}}}"#)
 
         let page = try await pageTask.value
-        XCTAssertEqual(page.messages.map(\.content), ["先排查", "我先看当前状态。", "要求后续变更", "已按后续要求完成。"])
-        let firstUser = try XCTUnwrap(page.messages.first { $0.content == "先排查" })
-        let middleUser = try XCTUnwrap(page.messages.first { $0.content == "要求后续变更" })
+        let messages = try await fullyLoadedHistoryMessages(from: page, sessionID: "thr_hist_injected", client: client)
+        XCTAssertEqual(messages.map(\.content), ["先排查", "我先看当前状态。", "要求后续变更", "已按后续要求完成。"])
+        let firstUser = try XCTUnwrap(messages.first { $0.content == "先排查" })
+        let middleUser = try XCTUnwrap(messages.first { $0.content == "要求后续变更" })
 
         XCTAssertNil(firstUser.userDelivery)
         XCTAssertEqual(middleUser.userDelivery, .injected)

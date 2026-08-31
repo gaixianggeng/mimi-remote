@@ -156,6 +156,25 @@ struct ConversationProcessGroupRow: View, Equatable {
     let expandedActivityIDs: Set<String>
     let toggleGroup: () -> Void
     let toggleActivity: (ConversationMessage) -> Void
+    let recordAnchorGeometry: ([UUID], CGRect) -> Void
+
+    init(
+        group: ConversationProcessGroup,
+        layout: ConversationLayout,
+        isExpanded: Bool,
+        expandedActivityIDs: Set<String>,
+        toggleGroup: @escaping () -> Void,
+        toggleActivity: @escaping (ConversationMessage) -> Void,
+        recordAnchorGeometry: @escaping ([UUID], CGRect) -> Void = { _, _ in }
+    ) {
+        self.group = group
+        self.layout = layout
+        self.isExpanded = isExpanded
+        self.expandedActivityIDs = expandedActivityIDs
+        self.toggleGroup = toggleGroup
+        self.toggleActivity = toggleActivity
+        self.recordAnchorGeometry = recordAnchorGeometry
+    }
 
     static func == (lhs: ConversationProcessGroupRow, rhs: ConversationProcessGroupRow) -> Bool {
         guard lhs.group.id == rhs.group.id,
@@ -196,6 +215,11 @@ struct ConversationProcessGroupRow: View, Equatable {
                             )
                             .equatable()
                             .padding(.leading, 20)
+                            .modifier(ConversationHistoryAnchorGeometryModifier(
+                                isEnabled: true,
+                                messageIDs: [message.id],
+                                action: recordAnchorGeometry
+                            ))
                         }
                     }
                     .transition(activityTransition)
@@ -207,6 +231,11 @@ struct ConversationProcessGroupRow: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
+        .modifier(ConversationHistoryAnchorGeometryModifier(
+            isEnabled: !isExpanded,
+            messageIDs: [group.header.id] + group.activities.map(\.id),
+            action: recordAnchorGeometry
+        ))
     }
 
     private var header: some View {

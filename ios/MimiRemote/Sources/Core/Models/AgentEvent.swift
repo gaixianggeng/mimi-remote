@@ -837,7 +837,13 @@ struct CodexAppServerEventProjector {
         case "serverRequest/resolved":
             return .approvalResolved(metadata)
         case "warning":
-            return .warning(errorPayload(from: params, fallback: "app-server warning"), metadata)
+            let payload = errorPayload(from: params, fallback: "app-server warning")
+            // 兼容尚未升级的 Claude bridge：allowed_warning 只表示接近额度阈值，
+            // 账号快照会单独更新用量，不应再生成红色时间线故障卡。
+            guard !isNonBlockingClaudeRateLimitWarning(payload) else {
+                return nil
+            }
+            return .warning(payload, metadata)
         case "error":
             clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID)
             return .error(errorPayload(from: params, fallback: "app-server error"), metadata)
@@ -1013,7 +1019,7 @@ struct CodexAppServerEventProjector {
         }
         .joined(separator: " ")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else {
+        guard isVisibleAppServerUserMessageText(content) else {
             return nil
         }
         let itemID = metadata.itemID ?? item["id"]?.stringValue
@@ -1600,6 +1606,13 @@ struct CodexAppServerEventProjector {
                 ?? nestedString(in: params, key: "error", nestedKey: "code"),
             retryable: params["retryable"]?.boolValue ?? params["willRetry"]?.boolValue
         )
+    }
+
+    private func isNonBlockingClaudeRateLimitWarning(_ payload: AgentErrorPayload) -> Bool {
+        payload.message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("claude rate-limit status: allowed_warning")
     }
 
     private func appServerMessageID(turnID: TurnID?, itemID: AgentItemID?) -> MessageID? {

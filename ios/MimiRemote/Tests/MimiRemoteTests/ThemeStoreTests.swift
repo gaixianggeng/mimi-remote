@@ -444,6 +444,49 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.accent, tokens.workspaceCardSelectionFill), 3.0)
     }
 
+    func testWriterConflictCardStaysReadableInEveryPreset() {
+        let store = ThemeStore(defaults: defaults)
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for scheme in [ColorScheme.light, .dark] {
+                store.mode = scheme == .light ? .light : .dark
+                let tokens = store.tokens(for: scheme)
+                let context = "\(preset.rawValue) \(scheme)"
+                let surface = tokens.elevatedSurface
+
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(flatten(tokens.primaryText, over: surface), surface),
+                    4.5,
+                    "\(context) title"
+                )
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(flatten(tokens.writerConflictBodyText, over: surface), surface),
+                    4.5,
+                    "\(context) body"
+                )
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(flatten(tokens.writerConflictWarningIcon, over: surface), surface),
+                    3.0,
+                    "\(context) lock icon"
+                )
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(flatten(tokens.writerConflictErrorText, over: surface), surface),
+                    4.5,
+                    "\(context) inline error"
+                )
+                let actionFill = flatten(tokens.primaryAction, over: surface)
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(
+                        flatten(tokens.writerConflictPrimaryActionForeground, over: actionFill),
+                        actionFill
+                    ),
+                    4.5,
+                    "\(context) primary action"
+                )
+            }
+        }
+    }
+
     /// 空草稿是进入会话的默认状态，禁用态发送按钮必须仍然看得清箭头。
     /// 之前浅色下用 primaryActionForeground（纯白）压在 composerInactiveActionSurface
     /// 上只有约 1.3:1，图标会整个消失在色块里。

@@ -1252,6 +1252,9 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	if method == "thread/resume" || method == "thread/fork" {
 		copyGatewayParam(safe, params, "threadId")
 	}
+	if method == "thread/fork" {
+		copyGatewayParam(safe, params, "lastTurnId")
+	}
 	if method == "thread/resume" {
 		safe["excludeTurns"] = true
 		if page, ok := params["initialTurnsPage"].(map[string]any); ok {
@@ -1260,8 +1263,8 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	}
 	workspaceWrite := false
 	fullAccess := false
-	preserveSettings := method == "thread/resume" && gatewayPreservesThreadPermissionSettings(params)
-	// 被动恢复只建立订阅，不能改写共享 Thread 的权限或审批设置。
+	preserveSettings := (method == "thread/resume" || method == "thread/fork") && gatewayPreservesThreadPermissionSettings(params)
+	// 被动恢复只建立订阅；明确继承权限的 fork 只复制 Thread。两者都不改写权限或审批设置。
 	// 用户明确修改设置时应单独调用 thread/settings/update。
 	if !preserveSettings {
 		if runtimeID == "codex" {

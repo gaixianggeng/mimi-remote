@@ -1,5 +1,21 @@
 import Foundation
 
+/// app-server 的内部用户记录不能进入用户气泡或历史标题。中断标记只按完整文本
+/// 过滤，普通用户讨论该字符串时仍可正常展示；既有协议标签继续沿用前缀规则。
+func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
+        return false
+    }
+    let hiddenPrefixes = [
+        "<subagent_notification>",
+        "<turn_aborted>",
+        "<environment_context>",
+        "<codex_internal_context>"
+    ]
+    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+}
+
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
     // 只有仍在活动的通知才算实时信号；表示回合/线程结束或权威状态变化的通知不能算，
@@ -1384,6 +1400,69 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
+    /// Item 分页补齐只投影当前页，不能把此前页面重新积存在 JSON 数组里。
+    /// itemOffset 让缺时间戳的后续页仍获得稳定且递增的时间线序号。
+    func historyMessages(
+        fromItems items: [[String: CodexAppServerJSONValue]],
+        continuation: HistoryTurnItemsContinuation,
+        sessionID: SessionID,
+        snapshotReadAt: Date
+    ) -> [CodexHistoryMessage] {
+        let turn = continuation.turn
+        let startedAt = firstDate(in: turn, keys: ["startedAt", "started_at", "createdAt", "created_at", "timestamp"])
+        let completedAt = firstDate(in: turn, keys: ["completedAt", "completed_at", "updatedAt", "updated_at", "finishedAt", "finished_at"])
+        let turnIsInProgress = isInProgressHistoryTurn(
+            turn,
+            isLastTurn: continuation.isLatestTurn,
+            threadIsActive: continuation.threadIsActive,
+            completedAt: completedAt
+        )
+        let turnLifecycle = historyTurnLifecycle(
+            turn,
+            isInProgress: turnIsInProgress,
+            completedAt: completedAt
+        )
+        var hasVisibleUserMessage = continuation.hasVisibleUserMessageBefore
+        var messages: [CodexHistoryMessage] = []
+        messages.reserveCapacity(items.count)
+        for (pageIndex, item) in items.enumerated() {
+            let absoluteItemIndex = continuation.itemOffset + pageIndex
+            let estimatedAt = startedAt.map {
+                $0.addingTimeInterval(Double(absoluteItemIndex) * 0.001)
+            } ?? completedAt
+            guard var message = historyMessage(
+                from: item,
+                sessionID: sessionID,
+                turnID: continuation.turnID,
+                timelineOrdinal: historyTimelineOrdinal(
+                    turnIndex: continuation.turnIndex,
+                    itemIndex: absoluteItemIndex
+                ),
+                isInjectedUserMessage: hasVisibleUserMessage,
+                startedAt: startedAt,
+                completedAt: completedAt,
+                estimatedAt: estimatedAt,
+                turnIsInProgress: turnIsInProgress,
+                snapshotReadAt: snapshotReadAt
+            ) else {
+                continue
+            }
+            message = message.withTurnLifecycle(turnLifecycle)
+            if message.createdAt == nil {
+                // Item 异步分页时不再持有完整 Thread。显式沿用首屏读取到的 Thread 时间，
+                // 避免无 item/turn 时间戳的消息退化成 nil 或每次加载都变化的当前时间。
+                let fallback = continuation.timestampFallback
+                    ?? Self.stableHistoryFallbackDate(index: absoluteItemIndex)
+                message = message.withTimestampFallback(createdAt: fallback)
+            }
+            if message.role == "user" {
+                hasVisibleUserMessage = true
+            }
+            messages.append(message)
+        }
+        return messages
+    }
+
     func historyTimelineOrdinal(turnIndex: Int, itemIndex: Int) -> Int64 {
         Int64(turnIndex) * 1_000_000 + Int64(itemIndex)
     }
@@ -1456,17 +1535,7 @@ extension CodexAppServerSessionRuntime {
     }
 
     func isVisibleUserHistoryMessage(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return false
-        }
-        let hiddenPrefixes = [
-            "<subagent_notification>",
-            "<turn_aborted>",
-            "<environment_context>",
-            "<codex_internal_context>"
-        ]
-        return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+        isVisibleAppServerUserMessageText(text)
     }
 
     func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {

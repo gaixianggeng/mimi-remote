@@ -309,17 +309,19 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", nameKey: "ui.workspace_character_queen_womens_kingdom")
     ]
 
+    // 角色数组同时决定项目自动头像的固定顺序：先放主题门面与核心主角，
+    // 再综合官方人气投票、大众辨识度和叙事重要性排列其余角色。
     static let threeKingdomsCharacters = [
-        WorkspaceCharacterIcon(id: "three-liu-bei", assetName: "WorkspaceCharacterThreeLiuBei", nameKey: "ui.workspace_character_three_liu_bei"),
         WorkspaceCharacterIcon(id: "three-guan-yu", assetName: "WorkspaceCharacterThreeGuanYu", nameKey: "ui.workspace_character_three_guan_yu"),
-        WorkspaceCharacterIcon(id: "three-zhang-fei", assetName: "WorkspaceCharacterThreeZhangFei", nameKey: "ui.workspace_character_three_zhang_fei"),
         WorkspaceCharacterIcon(id: "three-zhuge-liang", assetName: "WorkspaceCharacterThreeZhugeLiang", nameKey: "ui.workspace_character_three_zhuge_liang"),
         WorkspaceCharacterIcon(id: "three-cao-cao", assetName: "WorkspaceCharacterThreeCaoCao", nameKey: "ui.workspace_character_three_cao_cao"),
-        WorkspaceCharacterIcon(id: "three-sun-quan", assetName: "WorkspaceCharacterThreeSunQuan", nameKey: "ui.workspace_character_three_sun_quan"),
+        WorkspaceCharacterIcon(id: "three-liu-bei", assetName: "WorkspaceCharacterThreeLiuBei", nameKey: "ui.workspace_character_three_liu_bei"),
         WorkspaceCharacterIcon(id: "three-zhao-yun", assetName: "WorkspaceCharacterThreeZhaoYun", nameKey: "ui.workspace_character_three_zhao_yun"),
+        WorkspaceCharacterIcon(id: "three-zhang-fei", assetName: "WorkspaceCharacterThreeZhangFei", nameKey: "ui.workspace_character_three_zhang_fei"),
         WorkspaceCharacterIcon(id: "three-lu-bu", assetName: "WorkspaceCharacterThreeLuBu", nameKey: "ui.workspace_character_three_lu_bu"),
         WorkspaceCharacterIcon(id: "three-diaochan", assetName: "WorkspaceCharacterThreeDiaochan", nameKey: "ui.workspace_character_three_diaochan"),
-        WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi")
+        WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi"),
+        WorkspaceCharacterIcon(id: "three-sun-quan", assetName: "WorkspaceCharacterThreeSunQuan", nameKey: "ui.workspace_character_three_sun_quan")
     ]
 
     /// 七龙珠人物使用统一的编辑插画语法：粗手绘线、暖灰底和胸像裁切；
@@ -329,89 +331,89 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "classic-goku", assetName: "WorkspaceCharacterClassicGoku", nameKey: "ui.workspace_character_classic_goku"),
         WorkspaceCharacterIcon(id: "classic-vegeta", assetName: "WorkspaceCharacterClassicVegeta", nameKey: "ui.workspace_character_classic_vegeta"),
         WorkspaceCharacterIcon(id: "classic-piccolo", assetName: "WorkspaceCharacterClassicPiccolo", nameKey: "ui.workspace_character_classic_piccolo"),
-        WorkspaceCharacterIcon(id: "classic-master-roshi", assetName: "WorkspaceCharacterClassicMasterRoshi", nameKey: "ui.workspace_character_classic_master_roshi"),
-        WorkspaceCharacterIcon(id: "classic-krillin", assetName: "WorkspaceCharacterClassicKrillin", nameKey: "ui.workspace_character_classic_krillin"),
-        WorkspaceCharacterIcon(id: "classic-frieza", assetName: "WorkspaceCharacterClassicFrieza", nameKey: "ui.workspace_character_classic_frieza"),
-        WorkspaceCharacterIcon(id: "classic-majin-buu", assetName: "WorkspaceCharacterClassicMajinBuu", nameKey: "ui.workspace_character_classic_majin_buu"),
         WorkspaceCharacterIcon(id: "classic-future-trunks", assetName: "WorkspaceCharacterClassicFutureTrunks", nameKey: "ui.workspace_character_classic_future_trunks"),
         WorkspaceCharacterIcon(id: "classic-android-18", assetName: "WorkspaceCharacterClassicAndroid18", nameKey: "ui.workspace_character_classic_android_18"),
-        WorkspaceCharacterIcon(id: "classic-perfect-cell", assetName: "WorkspaceCharacterClassicPerfectCell", nameKey: "ui.workspace_character_classic_perfect_cell")
+        WorkspaceCharacterIcon(id: "classic-perfect-cell", assetName: "WorkspaceCharacterClassicPerfectCell", nameKey: "ui.workspace_character_classic_perfect_cell"),
+        WorkspaceCharacterIcon(id: "classic-frieza", assetName: "WorkspaceCharacterClassicFrieza", nameKey: "ui.workspace_character_classic_frieza"),
+        WorkspaceCharacterIcon(id: "classic-krillin", assetName: "WorkspaceCharacterClassicKrillin", nameKey: "ui.workspace_character_classic_krillin"),
+        WorkspaceCharacterIcon(id: "classic-majin-buu", assetName: "WorkspaceCharacterClassicMajinBuu", nameKey: "ui.workspace_character_classic_majin_buu"),
+        WorkspaceCharacterIcon(id: "classic-master-roshi", assetName: "WorkspaceCharacterClassicMasterRoshi", nameKey: "ui.workspace_character_classic_master_roshi")
     ]
 
     static let redChamberCharacters = [
-        WorkspaceCharacterIcon(id: "red-jia-baoyu", assetName: "WorkspaceCharacterRedJiaBaoyu", nameKey: "ui.workspace_character_red_jia_baoyu"),
         WorkspaceCharacterIcon(id: "red-lin-daiyu", assetName: "WorkspaceCharacterRedLinDaiyu", nameKey: "ui.workspace_character_red_lin_daiyu"),
+        WorkspaceCharacterIcon(id: "red-jia-baoyu", assetName: "WorkspaceCharacterRedJiaBaoyu", nameKey: "ui.workspace_character_red_jia_baoyu"),
         WorkspaceCharacterIcon(id: "red-xue-baochai", assetName: "WorkspaceCharacterRedXueBaochai", nameKey: "ui.workspace_character_red_xue_baochai"),
         WorkspaceCharacterIcon(id: "red-wang-xifeng", assetName: "WorkspaceCharacterRedWangXifeng", nameKey: "ui.workspace_character_red_wang_xifeng"),
         WorkspaceCharacterIcon(id: "red-shi-xiangyun", assetName: "WorkspaceCharacterRedShiXiangyun", nameKey: "ui.workspace_character_red_shi_xiangyun"),
-        WorkspaceCharacterIcon(id: "red-miaoyu", assetName: "WorkspaceCharacterRedMiaoyu", nameKey: "ui.workspace_character_red_miaoyu"),
-        WorkspaceCharacterIcon(id: "red-jia-tanchun", assetName: "WorkspaceCharacterRedJiaTanchun", nameKey: "ui.workspace_character_red_jia_tanchun"),
+        WorkspaceCharacterIcon(id: "red-grandmother-jia", assetName: "WorkspaceCharacterRedGrandmotherJia", nameKey: "ui.workspace_character_red_grandmother_jia"),
         WorkspaceCharacterIcon(id: "red-qingwen", assetName: "WorkspaceCharacterRedQingwen", nameKey: "ui.workspace_character_red_qingwen"),
-        WorkspaceCharacterIcon(id: "red-xiangling", assetName: "WorkspaceCharacterRedXiangling", nameKey: "ui.workspace_character_red_xiangling"),
-        WorkspaceCharacterIcon(id: "red-grandmother-jia", assetName: "WorkspaceCharacterRedGrandmotherJia", nameKey: "ui.workspace_character_red_grandmother_jia")
+        WorkspaceCharacterIcon(id: "red-jia-tanchun", assetName: "WorkspaceCharacterRedJiaTanchun", nameKey: "ui.workspace_character_red_jia_tanchun"),
+        WorkspaceCharacterIcon(id: "red-miaoyu", assetName: "WorkspaceCharacterRedMiaoyu", nameKey: "ui.workspace_character_red_miaoyu"),
+        WorkspaceCharacterIcon(id: "red-xiangling", assetName: "WorkspaceCharacterRedXiangling", nameKey: "ui.workspace_character_red_xiangling")
     ]
 
     static let greekMythologyCharacters = [
         WorkspaceCharacterIcon(id: "greek-zeus", assetName: "WorkspaceCharacterGreekZeus", nameKey: "ui.workspace_character_greek_zeus"),
-        WorkspaceCharacterIcon(id: "greek-hera", assetName: "WorkspaceCharacterGreekHera", nameKey: "ui.workspace_character_greek_hera"),
-        WorkspaceCharacterIcon(id: "greek-poseidon", assetName: "WorkspaceCharacterGreekPoseidon", nameKey: "ui.workspace_character_greek_poseidon"),
         WorkspaceCharacterIcon(id: "greek-athena", assetName: "WorkspaceCharacterGreekAthena", nameKey: "ui.workspace_character_greek_athena"),
+        WorkspaceCharacterIcon(id: "greek-poseidon", assetName: "WorkspaceCharacterGreekPoseidon", nameKey: "ui.workspace_character_greek_poseidon"),
+        WorkspaceCharacterIcon(id: "greek-hades", assetName: "WorkspaceCharacterGreekHades", nameKey: "ui.workspace_character_greek_hades"),
+        WorkspaceCharacterIcon(id: "greek-aphrodite", assetName: "WorkspaceCharacterGreekAphrodite", nameKey: "ui.workspace_character_greek_aphrodite"),
         WorkspaceCharacterIcon(id: "greek-apollo", assetName: "WorkspaceCharacterGreekApollo", nameKey: "ui.workspace_character_greek_apollo"),
         WorkspaceCharacterIcon(id: "greek-artemis", assetName: "WorkspaceCharacterGreekArtemis", nameKey: "ui.workspace_character_greek_artemis"),
+        WorkspaceCharacterIcon(id: "greek-hera", assetName: "WorkspaceCharacterGreekHera", nameKey: "ui.workspace_character_greek_hera"),
         WorkspaceCharacterIcon(id: "greek-hermes", assetName: "WorkspaceCharacterGreekHermes", nameKey: "ui.workspace_character_greek_hermes"),
-        WorkspaceCharacterIcon(id: "greek-aphrodite", assetName: "WorkspaceCharacterGreekAphrodite", nameKey: "ui.workspace_character_greek_aphrodite"),
-        WorkspaceCharacterIcon(id: "greek-ares", assetName: "WorkspaceCharacterGreekAres", nameKey: "ui.workspace_character_greek_ares"),
-        WorkspaceCharacterIcon(id: "greek-hades", assetName: "WorkspaceCharacterGreekHades", nameKey: "ui.workspace_character_greek_hades")
+        WorkspaceCharacterIcon(id: "greek-ares", assetName: "WorkspaceCharacterGreekAres", nameKey: "ui.workspace_character_greek_ares")
     ]
 
     static let sherlockHolmesCharacters = [
         WorkspaceCharacterIcon(id: "sherlock-holmes", assetName: "WorkspaceCharacterSherlockHolmes", nameKey: "ui.workspace_character_sherlock_holmes"),
         WorkspaceCharacterIcon(id: "sherlock-watson", assetName: "WorkspaceCharacterSherlockWatson", nameKey: "ui.workspace_character_sherlock_watson"),
-        WorkspaceCharacterIcon(id: "sherlock-irene-adler", assetName: "WorkspaceCharacterSherlockIreneAdler", nameKey: "ui.workspace_character_sherlock_irene_adler"),
         WorkspaceCharacterIcon(id: "sherlock-moriarty", assetName: "WorkspaceCharacterSherlockMoriarty", nameKey: "ui.workspace_character_sherlock_moriarty"),
+        WorkspaceCharacterIcon(id: "sherlock-irene-adler", assetName: "WorkspaceCharacterSherlockIreneAdler", nameKey: "ui.workspace_character_sherlock_irene_adler"),
         WorkspaceCharacterIcon(id: "sherlock-mycroft", assetName: "WorkspaceCharacterSherlockMycroft", nameKey: "ui.workspace_character_sherlock_mycroft"),
         WorkspaceCharacterIcon(id: "sherlock-lestrade", assetName: "WorkspaceCharacterSherlockLestrade", nameKey: "ui.workspace_character_sherlock_lestrade"),
         WorkspaceCharacterIcon(id: "sherlock-hudson", assetName: "WorkspaceCharacterSherlockHudson", nameKey: "ui.workspace_character_sherlock_hudson"),
         WorkspaceCharacterIcon(id: "sherlock-morstan", assetName: "WorkspaceCharacterSherlockMorstan", nameKey: "ui.workspace_character_sherlock_morstan"),
-        WorkspaceCharacterIcon(id: "sherlock-gregson", assetName: "WorkspaceCharacterSherlockGregson", nameKey: "ui.workspace_character_sherlock_gregson"),
-        WorkspaceCharacterIcon(id: "sherlock-moran", assetName: "WorkspaceCharacterSherlockMoran", nameKey: "ui.workspace_character_sherlock_moran")
+        WorkspaceCharacterIcon(id: "sherlock-moran", assetName: "WorkspaceCharacterSherlockMoran", nameKey: "ui.workspace_character_sherlock_moran"),
+        WorkspaceCharacterIcon(id: "sherlock-gregson", assetName: "WorkspaceCharacterSherlockGregson", nameKey: "ui.workspace_character_sherlock_gregson")
     ]
 
     static let aliceWonderlandCharacters = [
         WorkspaceCharacterIcon(id: "alice-alice", assetName: "WorkspaceCharacterAliceAlice", nameKey: "ui.workspace_character_alice_alice"),
-        WorkspaceCharacterIcon(id: "alice-white-rabbit", assetName: "WorkspaceCharacterAliceWhiteRabbit", nameKey: "ui.workspace_character_alice_white_rabbit"),
-        WorkspaceCharacterIcon(id: "alice-mad-hatter", assetName: "WorkspaceCharacterAliceMadHatter", nameKey: "ui.workspace_character_alice_mad_hatter"),
         WorkspaceCharacterIcon(id: "alice-cheshire-cat", assetName: "WorkspaceCharacterAliceCheshireCat", nameKey: "ui.workspace_character_alice_cheshire_cat"),
+        WorkspaceCharacterIcon(id: "alice-mad-hatter", assetName: "WorkspaceCharacterAliceMadHatter", nameKey: "ui.workspace_character_alice_mad_hatter"),
+        WorkspaceCharacterIcon(id: "alice-white-rabbit", assetName: "WorkspaceCharacterAliceWhiteRabbit", nameKey: "ui.workspace_character_alice_white_rabbit"),
         WorkspaceCharacterIcon(id: "alice-queen-of-hearts", assetName: "WorkspaceCharacterAliceQueenOfHearts", nameKey: "ui.workspace_character_alice_queen_of_hearts"),
-        WorkspaceCharacterIcon(id: "alice-king-of-hearts", assetName: "WorkspaceCharacterAliceKingOfHearts", nameKey: "ui.workspace_character_alice_king_of_hearts"),
+        WorkspaceCharacterIcon(id: "alice-caterpillar", assetName: "WorkspaceCharacterAliceCaterpillar", nameKey: "ui.workspace_character_alice_caterpillar"),
         WorkspaceCharacterIcon(id: "alice-march-hare", assetName: "WorkspaceCharacterAliceMarchHare", nameKey: "ui.workspace_character_alice_march_hare"),
         WorkspaceCharacterIcon(id: "alice-dormouse", assetName: "WorkspaceCharacterAliceDormouse", nameKey: "ui.workspace_character_alice_dormouse"),
-        WorkspaceCharacterIcon(id: "alice-caterpillar", assetName: "WorkspaceCharacterAliceCaterpillar", nameKey: "ui.workspace_character_alice_caterpillar"),
+        WorkspaceCharacterIcon(id: "alice-king-of-hearts", assetName: "WorkspaceCharacterAliceKingOfHearts", nameKey: "ui.workspace_character_alice_king_of_hearts"),
         WorkspaceCharacterIcon(id: "alice-duchess", assetName: "WorkspaceCharacterAliceDuchess", nameKey: "ui.workspace_character_alice_duchess")
     ]
 
     static let onePieceCharacters = [
         WorkspaceCharacterIcon(id: "one-piece-luffy", assetName: "WorkspaceCharacterOnePieceLuffy", nameKey: "ui.workspace_character_one_piece_luffy"),
         WorkspaceCharacterIcon(id: "one-piece-zoro", assetName: "WorkspaceCharacterOnePieceZoro", nameKey: "ui.workspace_character_one_piece_zoro"),
-        WorkspaceCharacterIcon(id: "one-piece-nami", assetName: "WorkspaceCharacterOnePieceNami", nameKey: "ui.workspace_character_one_piece_nami"),
-        WorkspaceCharacterIcon(id: "one-piece-usopp", assetName: "WorkspaceCharacterOnePieceUsopp", nameKey: "ui.workspace_character_one_piece_usopp"),
         WorkspaceCharacterIcon(id: "one-piece-sanji", assetName: "WorkspaceCharacterOnePieceSanji", nameKey: "ui.workspace_character_one_piece_sanji"),
-        WorkspaceCharacterIcon(id: "one-piece-chopper", assetName: "WorkspaceCharacterOnePieceChopper", nameKey: "ui.workspace_character_one_piece_chopper"),
+        WorkspaceCharacterIcon(id: "one-piece-nami", assetName: "WorkspaceCharacterOnePieceNami", nameKey: "ui.workspace_character_one_piece_nami"),
         WorkspaceCharacterIcon(id: "one-piece-robin", assetName: "WorkspaceCharacterOnePieceRobin", nameKey: "ui.workspace_character_one_piece_robin"),
-        WorkspaceCharacterIcon(id: "one-piece-franky", assetName: "WorkspaceCharacterOnePieceFranky", nameKey: "ui.workspace_character_one_piece_franky"),
+        WorkspaceCharacterIcon(id: "one-piece-chopper", assetName: "WorkspaceCharacterOnePieceChopper", nameKey: "ui.workspace_character_one_piece_chopper"),
+        WorkspaceCharacterIcon(id: "one-piece-usopp", assetName: "WorkspaceCharacterOnePieceUsopp", nameKey: "ui.workspace_character_one_piece_usopp"),
         WorkspaceCharacterIcon(id: "one-piece-brook", assetName: "WorkspaceCharacterOnePieceBrook", nameKey: "ui.workspace_character_one_piece_brook"),
-        WorkspaceCharacterIcon(id: "one-piece-jinbe", assetName: "WorkspaceCharacterOnePieceJinbe", nameKey: "ui.workspace_character_one_piece_jinbe")
+        WorkspaceCharacterIcon(id: "one-piece-jinbe", assetName: "WorkspaceCharacterOnePieceJinbe", nameKey: "ui.workspace_character_one_piece_jinbe"),
+        WorkspaceCharacterIcon(id: "one-piece-franky", assetName: "WorkspaceCharacterOnePieceFranky", nameKey: "ui.workspace_character_one_piece_franky")
     ]
 
     static let narutoCharacters = [
         WorkspaceCharacterIcon(id: "naruto-naruto", assetName: "WorkspaceCharacterNarutoNaruto", nameKey: "ui.workspace_character_naruto_naruto"),
         WorkspaceCharacterIcon(id: "naruto-sasuke", assetName: "WorkspaceCharacterNarutoSasuke", nameKey: "ui.workspace_character_naruto_sasuke"),
-        WorkspaceCharacterIcon(id: "naruto-sakura", assetName: "WorkspaceCharacterNarutoSakura", nameKey: "ui.workspace_character_naruto_sakura"),
         WorkspaceCharacterIcon(id: "naruto-kakashi", assetName: "WorkspaceCharacterNarutoKakashi", nameKey: "ui.workspace_character_naruto_kakashi"),
-        WorkspaceCharacterIcon(id: "naruto-hinata", assetName: "WorkspaceCharacterNarutoHinata", nameKey: "ui.workspace_character_naruto_hinata"),
-        WorkspaceCharacterIcon(id: "naruto-gaara", assetName: "WorkspaceCharacterNarutoGaara", nameKey: "ui.workspace_character_naruto_gaara"),
         WorkspaceCharacterIcon(id: "naruto-itachi", assetName: "WorkspaceCharacterNarutoItachi", nameKey: "ui.workspace_character_naruto_itachi"),
+        WorkspaceCharacterIcon(id: "naruto-sakura", assetName: "WorkspaceCharacterNarutoSakura", nameKey: "ui.workspace_character_naruto_sakura"),
+        WorkspaceCharacterIcon(id: "naruto-hinata", assetName: "WorkspaceCharacterNarutoHinata", nameKey: "ui.workspace_character_naruto_hinata"),
         WorkspaceCharacterIcon(id: "naruto-jiraiya", assetName: "WorkspaceCharacterNarutoJiraiya", nameKey: "ui.workspace_character_naruto_jiraiya"),
+        WorkspaceCharacterIcon(id: "naruto-gaara", assetName: "WorkspaceCharacterNarutoGaara", nameKey: "ui.workspace_character_naruto_gaara"),
         WorkspaceCharacterIcon(id: "naruto-shikamaru", assetName: "WorkspaceCharacterNarutoShikamaru", nameKey: "ui.workspace_character_naruto_shikamaru"),
         WorkspaceCharacterIcon(id: "naruto-tsunade", assetName: "WorkspaceCharacterNarutoTsunade", nameKey: "ui.workspace_character_naruto_tsunade")
     ]
@@ -447,20 +449,10 @@ final class WorkspaceAppearanceStore: ObservableObject {
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
     private typealias LegacyStorage = ProfileScopedStorage<[String: String]>
 
-    private struct CharacterAssignmentScope: Hashable {
-        let profileID: String
-        let styleID: String
-    }
-
     @Published private var storage: Storage
 
     private let defaults: UserDefaults
     private let key: String
-    // 自动头像不能只依赖“这一次传进来的项目集合”：项目目录异步补齐时，
-    // 碰撞避让会让已经显示的角色突然换人。缓存采用增量分配，单项 fallback
-    // 与工作区批量展示共享同一结果，同时继续在角色池足够时避免重复。
-    private var automaticCharacterIDsByScope: [CharacterAssignmentScope: [String: String]] = [:]
-    private var automaticEmojiByProfile: [String: [String: String]] = [:]
 
     init(
         defaults: UserDefaults = .standard,
@@ -533,8 +525,7 @@ final class WorkspaceAppearanceStore: ObservableObject {
         return .emoji(emoji(profileID: profileID, projectID: projectID))
     }
 
-    /// 与工作区胶囊相同，整组分配后再取单个项目，确保自动头像在发生哈希碰撞时
-    /// 仍与工作区页显示一致，而不是只在当前会话列表里重新计算。
+    /// 与工作区胶囊使用同一份有序项目列表，确保各页面采用相同的固定图标顺序。
     func projectIconContents(
         profileID: String,
         projectIDs: [String]
@@ -589,11 +580,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
         )[projectID] ?? fallback
     }
 
-    /// 为同一 Profile 下的项目增量分配角色。
-    ///
-    /// 单独对哈希取模无法避免碰撞；这里先保留用户手动选择和已经展示过的自动结果，
-    /// 新项目再从稳定哈希起点向后寻找空位。这样目录异步扩张不会洗牌，角色数足够时
-    /// 仍不会重复，项目超过角色池容量后才允许复用。
+    /// 按项目目录中的展示位置分配角色。角色池本身按主题中的产品顺序排列，
+    /// 因此第一个项目始终使用第一位角色，超过角色数量后再从头循环。
     func characterAssignments(
         profileID: String,
         projectIDs: [String]
@@ -611,68 +599,27 @@ final class WorkspaceAppearanceStore: ObservableObject {
         projectIDs: [String]
     ) -> [String: WorkspaceCharacterIcon] {
         let pool = Self.characters(for: style)
-        let uniqueProjectIDs = Array(Set(projectIDs)).sorted()
-        guard !uniqueProjectIDs.isEmpty, !pool.isEmpty else {
+        let orderedProjectIDs = Self.orderedUniqueProjectIDs(projectIDs)
+        guard !orderedProjectIDs.isEmpty, !pool.isEmpty else {
             return [:]
         }
 
-        let scope = CharacterAssignmentScope(
-            profileID: assignmentProfileKey(profileID),
-            styleID: style.rawValue
-        )
-        let validCharacterIDs = Set(pool.map(\.id))
-        var cachedCharacterIDs = (automaticCharacterIDsByScope[scope] ?? [:])
-            .filter { validCharacterIDs.contains($0.value) }
         var assignments: [String: WorkspaceCharacterIcon] = [:]
-        var usedCharacterIDs = Set<String>()
-
-        // 显式选择优先。若它占用了旧自动缓存的角色，后者在下次展示时
-        // 重新寻找空位；只有用户主动改头像时才允许发生这种可解释的变化。
-        for projectID in uniqueProjectIDs {
-            guard let customID = customCharacterID(
+        assignments.reserveCapacity(orderedProjectIDs.count)
+        for (index, projectID) in orderedProjectIDs.enumerated() {
+            if let customID = customCharacterID(
                 style: style,
                 profileID: profileID,
                 projectID: projectID
             ),
-                  let character = Self.character(id: customID, style: style),
-                  !usedCharacterIDs.contains(character.id) else {
-                continue
+               let character = Self.character(id: customID, style: style) {
+                // 手动选择只覆盖当前项目，不改变其他项目按位置得到的角色。
+                assignments[projectID] = character
+            } else {
+                assignments[projectID] = pool[index % pool.count]
             }
-            assignments[projectID] = character
-            usedCharacterIDs.insert(character.id)
         }
 
-        let customProjectIDs = Set(assignments.keys)
-        cachedCharacterIDs = cachedCharacterIDs.filter { projectID, characterID in
-            !customProjectIDs.contains(projectID)
-                && !usedCharacterIDs.contains(characterID)
-        }
-        usedCharacterIDs.formUnion(cachedCharacterIDs.values)
-
-        for projectID in uniqueProjectIDs where assignments[projectID] == nil {
-            if let cachedID = cachedCharacterIDs[projectID],
-               let cachedCharacter = Self.character(id: cachedID, style: style) {
-                assignments[projectID] = cachedCharacter
-                continue
-            }
-
-            let startIndex = defaultCharacterIndex(
-                style: style,
-                profileID: profileID,
-                projectID: projectID
-            )
-            let availableCharacter = (0..<pool.count)
-                .lazy
-                .map { pool[(startIndex + $0) % pool.count] }
-                .first { !usedCharacterIDs.contains($0.id) }
-
-            let character = availableCharacter ?? pool[startIndex]
-            assignments[projectID] = character
-            cachedCharacterIDs[projectID] = character.id
-            usedCharacterIDs.insert(character.id)
-        }
-
-        automaticCharacterIDsByScope[scope] = cachedCharacterIDs
         return assignments
     }
 
@@ -717,16 +664,14 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
     func defaultCharacterID(
         style: WorkspaceIconStyle,
-        profileID: String,
-        projectID: String
+        profileID _: String,
+        projectID _: String
     ) -> String {
         let pool = Self.characters(for: style)
         guard !pool.isEmpty else {
             return Self.builtInCharacters[0].id
         }
-        return pool[
-            defaultCharacterIndex(style: style, profileID: profileID, projectID: projectID)
-        ].id
+        return pool[0].id
     }
 
     func setCustomCharacterID(_ characterID: String?, profileID: String, projectID: String) {
@@ -768,14 +713,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
                     choices.isEmpty ? nil : choices
             }
         }
-        let scope = CharacterAssignmentScope(profileID: profileKey, styleID: style.rawValue)
-        var cachedCharacterIDs = automaticCharacterIDsByScope[scope] ?? [:]
-        cachedCharacterIDs.removeValue(forKey: projectID)
-        if let characterID {
-            // 用户选择优先于自动占位；只释放发生冲突的项目，避免其它头像一起洗牌。
-            cachedCharacterIDs = cachedCharacterIDs.filter { $0.value != characterID }
-        }
-        automaticCharacterIDsByScope[scope] = cachedCharacterIDs
         save(preferences, profileKey: profileKey)
     }
 
@@ -785,52 +722,18 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     func emojiAssignments(profileID: String, projectIDs: [String]) -> [String: String] {
-        let uniqueProjectIDs = Array(Set(projectIDs)).sorted()
-        guard !uniqueProjectIDs.isEmpty, !Self.builtInEmoji.isEmpty else {
+        let orderedProjectIDs = Self.orderedUniqueProjectIDs(projectIDs)
+        guard !orderedProjectIDs.isEmpty, !Self.builtInEmoji.isEmpty else {
             return [:]
         }
 
-        let profileKey = assignmentProfileKey(profileID)
-        let validEmoji = Set(Self.builtInEmoji)
-        var cachedEmoji = (automaticEmojiByProfile[profileKey] ?? [:])
-            .filter { validEmoji.contains($0.value) }
         var assignments: [String: String] = [:]
-        var usedEmoji = Set<String>()
-
-        // 保留不冲突的历史手动选择；旧数据里已经重复的项目回到稳定自动分配。
-        for projectID in uniqueProjectIDs {
-            guard let custom = customEmoji(profileID: profileID, projectID: projectID),
-                  !usedEmoji.contains(custom) else {
-                continue
-            }
-            assignments[projectID] = custom
-            usedEmoji.insert(custom)
+        assignments.reserveCapacity(orderedProjectIDs.count)
+        for (index, projectID) in orderedProjectIDs.enumerated() {
+            assignments[projectID] = customEmoji(profileID: profileID, projectID: projectID)
+                ?? Self.builtInEmoji[index % Self.builtInEmoji.count]
         }
 
-        let customProjectIDs = Set(assignments.keys)
-        cachedEmoji = cachedEmoji.filter { projectID, emoji in
-            !customProjectIDs.contains(projectID) && !usedEmoji.contains(emoji)
-        }
-        usedEmoji.formUnion(cachedEmoji.values)
-
-        for projectID in uniqueProjectIDs where assignments[projectID] == nil {
-            if let cached = cachedEmoji[projectID] {
-                assignments[projectID] = cached
-                continue
-            }
-
-            let startIndex = defaultEmojiIndex(profileID: profileID, projectID: projectID)
-            let availableEmoji = (0..<Self.builtInEmoji.count)
-                .lazy
-                .map { Self.builtInEmoji[(startIndex + $0) % Self.builtInEmoji.count] }
-                .first { !usedEmoji.contains($0) }
-            let emoji = availableEmoji ?? Self.builtInEmoji[startIndex]
-            assignments[projectID] = emoji
-            cachedEmoji[projectID] = emoji
-            usedEmoji.insert(emoji)
-        }
-
-        automaticEmojiByProfile[profileKey] = cachedEmoji
         return assignments
     }
 
@@ -841,8 +744,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
         return Self.normalizedEmoji(storedValue)
     }
 
-    func defaultEmoji(profileID: String, projectID: String) -> String {
-        Self.builtInEmoji[defaultEmojiIndex(profileID: profileID, projectID: projectID)]
+    func defaultEmoji(profileID _: String, projectID _: String) -> String {
+        Self.builtInEmoji[0]
     }
 
     func setCustomEmoji(_ emoji: String?, profileID: String, projectID: String) {
@@ -856,19 +759,12 @@ final class WorkspaceAppearanceStore: ObservableObject {
         } else {
             preferences.emojiByProject.removeValue(forKey: projectID)
         }
-        var cachedEmoji = automaticEmojiByProfile[profileKey] ?? [:]
-        cachedEmoji.removeValue(forKey: projectID)
-        if let emoji = preferences.emojiByProject[projectID] {
-            cachedEmoji = cachedEmoji.filter { $0.value != emoji }
-        }
-        automaticEmojiByProfile[profileKey] = cachedEmoji
         save(preferences, profileKey: profileKey)
     }
 
     /// 同一路径的旧 workspace ID 被稳定 ID 替代时迁移本机自定义头像。
     ///
     /// 新 ID 上已经存在的明确选择优先；否则复制旧 ID 的选择，随后删除旧键。
-    /// 自动分配值不落盘，但进程内缓存需要跟随稳定 ID，避免同一路径换 ID 时闪变。
     func migrateProjectIdentity(
         profileID: String,
         from oldProjectID: String,
@@ -879,21 +775,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         else {
             return
         }
-
-        for scope in Array(automaticCharacterIDsByScope.keys) where scope.profileID == profileKey {
-            var assignments = automaticCharacterIDsByScope[scope] ?? [:]
-            if assignments[newProjectID] == nil {
-                assignments[newProjectID] = assignments[oldProjectID]
-            }
-            assignments.removeValue(forKey: oldProjectID)
-            automaticCharacterIDsByScope[scope] = assignments
-        }
-        var emojiAssignments = automaticEmojiByProfile[profileKey] ?? [:]
-        if emojiAssignments[newProjectID] == nil {
-            emojiAssignments[newProjectID] = emojiAssignments[oldProjectID]
-        }
-        emojiAssignments.removeValue(forKey: oldProjectID)
-        automaticEmojiByProfile[profileKey] = emojiAssignments
 
         guard var preferences = storage.byProfileID[profileKey] else {
             return
@@ -926,10 +807,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
-        automaticCharacterIDsByScope = automaticCharacterIDsByScope.filter {
-            $0.key.profileID != profileKey
-        }
-        automaticEmojiByProfile.removeValue(forKey: profileKey)
         if storage.byProfileID.removeValue(forKey: profileKey) != nil {
             persist()
         }
@@ -979,31 +856,9 @@ final class WorkspaceAppearanceStore: ObservableObject {
         return selectedStyle.usesCharacters ? selectedStyle : .journey
     }
 
-    private func defaultCharacterIndex(
-        style: WorkspaceIconStyle,
-        profileID: String,
-        projectID: String
-    ) -> Int {
-        Self.stableIndex(
-            for: stableIdentity(profileID: profileID, projectID: projectID),
-            count: Self.characters(for: style).count
-        )
-    }
-
-    private func defaultEmojiIndex(profileID: String, projectID: String) -> Int {
-        Self.stableIndex(
-            for: stableIdentity(profileID: profileID, projectID: projectID),
-            count: Self.builtInEmoji.count
-        )
-    }
-
-    private func stableIdentity(profileID: String, projectID: String) -> String {
-        let profileKey = assignmentProfileKey(profileID)
-        return "\(profileKey)\n\(projectID)"
-    }
-
-    private func assignmentProfileKey(_ profileID: String) -> String {
-        ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
+    private static func orderedUniqueProjectIDs(_ projectIDs: [String]) -> [String] {
+        var seen = Set<String>()
+        return projectIDs.filter { seen.insert($0).inserted }
     }
 
     private func save(_ preferences: WorkspaceAppearancePreferences, profileKey: String) {

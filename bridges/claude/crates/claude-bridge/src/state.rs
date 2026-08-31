@@ -120,13 +120,21 @@ pub struct CachedOAuthRateLimit {
 }
 
 impl ClaudeCaches {
-    pub fn refresh_rate_limit(&mut self, info: RateLimitInfo) -> Vec<RateLimitInfo> {
+    pub fn refresh_rate_limit(&mut self, info: RateLimitInfo) -> Option<Vec<RateLimitInfo>> {
         let key = info
             .rate_limit_type
             .clone()
             .unwrap_or_else(|| "unknown".into());
+
+        // Claude 可能在同一轮里重复发送完全相同的 allowed_warning。
+        // 快照没有变化时不再广播 account/rateLimits/updated，避免上层把
+        // 同一条“接近限额”状态反复渲染成提示。
+        if self.rate_limit_infos.get(&key) == Some(&info) {
+            return None;
+        }
+
         self.rate_limit_infos.insert(key, info);
-        self.rate_limit_infos.values().cloned().collect()
+        Some(self.rate_limit_infos.values().cloned().collect())
     }
 
     pub fn cached_oauth_rate_limit(
@@ -409,7 +417,7 @@ impl ConnectionState {
         slot.last_init = Some(init);
     }
 
-    pub fn refresh_rate_limit_cache(&self, info: RateLimitInfo) -> Vec<RateLimitInfo> {
+    pub fn refresh_rate_limit_cache(&self, info: RateLimitInfo) -> Option<Vec<RateLimitInfo>> {
         let mut slot = self.caches.lock().unwrap();
         slot.refresh_rate_limit(info)
     }

@@ -79,8 +79,7 @@ pub async fn handle_account_rate_limits_read(
 ) -> p::GetAccountRateLimitsResponse {
     const OAUTH_CACHE_SECS: i64 = 5 * 60;
     const OAUTH_RETRY_SECS: i64 = 15;
-    // 内层 Claude CLI 委托续期最多等待 8 秒；总预算必须留出冷启动和随后
-    // usage 查询的余量，否则慢机器会在续期即将完成时被外层提前取消。
+    // OAuth usage 是展示增强能力。整条只读查询必须有界，不能拖慢会话链路。
     const OAUTH_REFRESH_BUDGET: Duration = Duration::from_secs(12);
     let now = chrono::Utc::now().timestamp();
     if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
@@ -90,8 +89,8 @@ pub async fn handle_account_rate_limits_read(
         };
     }
     // 设置页和菜单栏可能同时触发刷新。包括等待 single-flight 锁在内，整条
-    // Keychain/OAuth 链路最多占用 12 秒；超时会取消隐藏的 Claude CLI/curl，
-    // 避免断开的菜单客户端在 bridge 内留下长达数十秒的工作。
+    // Keychain/OAuth 链路最多占用 12 秒；超时会取消 curl，避免断开的菜单
+    // 客户端留下长时间工作。该链路不启动 Claude，也不驱动认证刷新。
     let refresh_result = timeout(OAUTH_REFRESH_BUDGET, async {
         let _refresh_guard = state.lock_oauth_rate_limit_refresh().await;
         let now = chrono::Utc::now().timestamp();
@@ -354,8 +353,10 @@ mod tests {
     #[test]
     fn merges_five_hour_and_weekly_windows_into_read_and_updated_snapshot() {
         let mut caches = ClaudeCaches::default();
-        caches.refresh_rate_limit(rate_limit_info("five_hour", Some(0.23)));
-        let infos = caches.refresh_rate_limit(rate_limit_info("seven_day", Some(0.57)));
+        let _ = caches.refresh_rate_limit(rate_limit_info("five_hour", Some(0.23)));
+        let infos = caches
+            .refresh_rate_limit(rate_limit_info("seven_day", Some(0.57)))
+            .expect("new weekly window should refresh the snapshot");
         let response = account_rate_limits_response(&infos);
         let snapshot = response.rate_limits;
 
@@ -370,6 +371,22 @@ mod tests {
         };
         assert_eq!(update.rate_limits.primary.unwrap().used_percent, Some(23));
         assert_eq!(update.rate_limits.secondary.unwrap().used_percent, Some(57));
+    }
+
+    #[test]
+    fn skips_duplicate_rate_limit_snapshot_broadcasts() {
+        let mut caches = ClaudeCaches::default();
+        let first = rate_limit_info("five_hour", Some(0.23));
+
+        assert!(caches.refresh_rate_limit(first.clone()).is_some());
+        assert!(caches.refresh_rate_limit(first).is_none());
+
+        // 状态或用量发生变化时仍要广播，保证额度状态不会变旧。
+        assert!(
+            caches
+                .refresh_rate_limit(rate_limit_info("five_hour", Some(0.24)))
+                .is_some()
+        );
     }
 
     #[test]

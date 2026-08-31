@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::fs;
 
-use crate::translate::items::is_internal_local_command_text;
+use crate::translate::items::is_internal_user_text;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClaudeSessionInfo {
@@ -231,7 +231,7 @@ enum RealUserMessage {
 }
 
 fn real_message_preview(text: &str) -> Option<String> {
-    if is_internal_local_command_text(text) {
+    if is_internal_user_text(text) {
         return None;
     }
     text.lines()
@@ -310,6 +310,7 @@ mod tests {
             r#"{"type":"user","isMeta":true,"cwd":"/private/tmp","message":{"role":"user","content":"<local-command-caveat>internal</local-command-caveat>"},"timestamp":"2026-07-17T05:11:50Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>"},"timestamp":"2026-07-17T05:11:51Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]},"timestamp":"2026-07-17T05:11:52Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"timestamp":"2026-07-17T05:11:52.500Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"\n  真正的用户消息\n第二行"},"timestamp":"2026-07-17T05:11:53Z"}"#,
         ];
         std::fs::write(&path, records.join("\n")).unwrap();

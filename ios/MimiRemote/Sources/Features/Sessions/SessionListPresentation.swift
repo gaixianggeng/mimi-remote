@@ -418,15 +418,13 @@ enum SessionListPresentation {
         directoryTail(for: session)
     }
 
-    /// 仅在运行中和刚完成分区将相邻的同项目视为一组；返回 true 代表当前行是组头。
+    /// 侧边栏各分区都将相邻的同项目视为一组；返回 true 代表当前行是组头。
     /// 缺少项目 ID 时不合并，避免把不同的未知项目误当成一组。
     static func startsSidebarProjectGroup(
         for session: AgentSession,
-        previousSession: AgentSession?,
-        in kind: SessionSidebarSectionKind
+        previousSession: AgentSession?
     ) -> Bool {
-        guard kind == .running || kind == .justCompleted,
-              let previousSession,
+        guard let previousSession,
               !session.projectID.isEmpty else {
             return true
         }

@@ -630,6 +630,80 @@ final class ConversationDataFlowTests: XCTestCase {
             isTailFollowLocked: true,
             isTimelineNearBottom: false
         ))
+
+        for distanceFromTail in [20, 60, 119] {
+            XCTAssertFalse(
+                ConversationTimelineView.shouldAttemptTailScroll(
+                    force: true,
+                    shouldFollowMessageTail: true,
+                    forceNextMessageTailScroll: true,
+                    isTailFollowLocked: true,
+                    isTimelineNearBottom: distanceFromTail < 120,
+                    hasUserDetachedFromTail: true
+                ),
+                "用户离尾 \(distanceFromTail)pt 后，任何自动或 force 请求都不能越过 latch"
+            )
+        }
+    }
+
+    func testConversationTimelineDoesNotDetachForTailTapOrMicroDrag() {
+        let tail = ConversationTimelineScrollMetrics(
+            isNearBottom: true,
+            contentOffsetY: 1_000,
+            contentHeight: 1_800,
+            minimumOffsetY: -20,
+            maximumOffsetY: 1_000
+        )
+        let lightTouch = ConversationTimelineScrollMetrics(
+            isNearBottom: true,
+            contentOffsetY: 999.75,
+            contentHeight: 1_800,
+            minimumOffsetY: -20,
+            maximumOffsetY: 1_000
+        )
+        XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
+            interactionStartOffsetY: tail.contentOffsetY,
+            newMetrics: tail,
+            isUserScrolling: true
+        ))
+        XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
+            interactionStartOffsetY: tail.contentOffsetY,
+            newMetrics: lightTouch,
+            isUserScrolling: true
+        ))
+
+        for distanceFromTail in [20.0, 60.0, 119.0] {
+            let historicalPosition = ConversationTimelineScrollMetrics(
+                isNearBottom: distanceFromTail < 120,
+                contentOffsetY: tail.contentOffsetY - distanceFromTail,
+                contentHeight: 1_800,
+                minimumOffsetY: -20,
+                maximumOffsetY: 1_000
+            )
+            XCTAssertTrue(ConversationTimelineView.shouldDetachFromTailForUserScroll(
+                interactionStartOffsetY: tail.contentOffsetY,
+                newMetrics: historicalPosition,
+                isUserScrolling: true
+            ), "用户主动上翻 \(distanceFromTail)pt 后必须锁定阅读位置")
+            XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
+                interactionStartOffsetY: tail.contentOffsetY,
+                newMetrics: historicalPosition,
+                isUserScrolling: false
+            ))
+        }
+    }
+
+    func testMixedHistoryAndLiveMutationIsNotClassifiedAsPureHistory() {
+        XCTAssertTrue(ConversationTimelineView.isHistoricalTimelineChange(
+            previousGeneration: 10,
+            currentGeneration: 11,
+            currentIncludesLiveChange: false
+        ))
+        XCTAssertFalse(ConversationTimelineView.isHistoricalTimelineChange(
+            previousGeneration: 10,
+            currentGeneration: 11,
+            currentIncludesLiveChange: true
+        ))
     }
 
     func testConversationTimelineOnlyRevealsAfterTailSentinelIsVisible() {

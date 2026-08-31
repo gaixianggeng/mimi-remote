@@ -9,6 +9,7 @@ extension SessionStore {
         networkSuspendedSessionID = nil
         disconnectWebSocket()
         activeWriterConflictLeases.removeAll()
+        clearAllWriterConflictForkState()
         if clearData {
             if !appStore.isConfigured, let profileID = currentQueuedTurnProfileID {
                 do {

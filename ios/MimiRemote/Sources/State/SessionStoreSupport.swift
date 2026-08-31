@@ -262,10 +262,12 @@ enum HistoryLoadReason: Equatable {
     case authoritativeReopen
     case manualFull
     case summaryChoice
+    case writerRetry
 }
 
 enum HistoryLoadQuality: Equatable {
     case full
+    case enriching
     case summary
 }
 

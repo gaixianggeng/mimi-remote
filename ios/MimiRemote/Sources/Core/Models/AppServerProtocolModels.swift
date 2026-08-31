@@ -604,10 +604,19 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params))
     }
 
-    func threadFork(threadID: String, cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+    func threadFork(
+        threadID: String,
+        cwd: String,
+        lastTurnID: TurnID? = nil,
+        options: CodexAppServerTurnOptions = .default
+    ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
         params["threadId"] = .string(threadID)
+        params["lastTurnId"] = lastTurnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+            .map(CodexAppServerJSONValue.string)
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
         }

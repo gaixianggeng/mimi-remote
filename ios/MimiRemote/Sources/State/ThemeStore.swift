@@ -425,6 +425,55 @@ extension ThemeTokens {
         .white
     }
 
+    /// Writer 冲突卡必须在所有主题中保持可读。部分主题的次级文字和原始 warning
+    /// 是为大面积背景校准的，放到 elevatedSurface 上会低于文字对比度要求。
+    /// 这里提供卡片局部语义色，避免为了一个状态卡改动全局主题。
+    var writerConflictBodyText: Color {
+        switch (preset, resolvedScheme) {
+        case (.codex, .light), (.github, .dark), (.xcode, .dark):
+            return primaryText
+        default:
+            return secondaryText
+        }
+    }
+
+    var writerConflictWarningIcon: Color {
+        switch (preset, resolvedScheme) {
+        case (.xcode, .light):
+            return Color(red: 0.68, green: 0.47, blue: 0.03)
+        case (.gruvbox, .light):
+            return Color(red: 0.72, green: 0.35, blue: 0.00)
+        default:
+            return warning
+        }
+    }
+
+    var writerConflictErrorText: Color {
+        switch (preset, resolvedScheme) {
+        case (.codex, .light):
+            return Color(red: 0.62, green: 0.34, blue: 0.00)
+        case (.xcode, .light):
+            return Color(red: 0.53, green: 0.36, blue: 0.00)
+        case (.gruvbox, .light):
+            return Color(red: 0.55, green: 0.26, blue: 0.00)
+        case (.gruvbox, .dark):
+            return Color(red: 1.00, green: 0.59, blue: 0.28)
+        default:
+            return warning
+        }
+    }
+
+    /// 各主题的主色明度不同，固定白字会在亮蓝和亮橙按钮上失去可读性。
+    /// 只为本卡片选择经过校准的黑白前景，不改变其它主操作。
+    var writerConflictPrimaryActionForeground: Color {
+        switch (preset, resolvedScheme) {
+        case (.codex, _), (.github, .light), (.gruvbox, .light):
+            return .white
+        case (.github, .dark), (.xcode, _), (.gruvbox, .dark):
+            return .black
+        }
+    }
+
     var accentSoft: Color {
         guard preset == .codex else { return accent.opacity(0.12) }
         switch resolvedScheme {

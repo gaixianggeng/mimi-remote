@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
-	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
@@ -17,7 +16,6 @@ import (
 const (
 	appServerRuntimeListBatch = 80
 	appServerRuntimeScanLimit = 1000
-	defaultRuntimeMessagePage = 120
 	maxRuntimeTraceEvents     = 256
 )
 
@@ -177,7 +175,7 @@ func (r *CodexAppServerRuntime) CreateSession(ctx context.Context, req RuntimeCr
 func (r *CodexAppServerRuntime) SessionDetail(ctx context.Context, id string, afterSeq int64) (SessionDetail, error) {
 	r.refreshRateLimits(ctx)
 	threadID := threadIDFromMobileSessionID(id)
-	thread, err := r.readThreadPaginated(ctx, threadID)
+	thread, err := r.readThreadMetadata(ctx, threadID)
 	if err != nil {
 		return SessionDetail{}, err
 	}
@@ -211,15 +209,6 @@ func (r *CodexAppServerRuntime) StopSession(ctx context.Context, id string) erro
 	r.setActiveTurn(id, "")
 	r.appendTrace(id, session.TraceEvent{Type: "app_server_turn_interrupted", Reason: turnID})
 	return nil
-}
-
-func (r *CodexAppServerRuntime) SessionMessages(ctx context.Context, id string, before string, limit int) (codexhistory.MessagePage, error) {
-	thread, err := r.readThreadPaginated(ctx, threadIDFromMobileSessionID(id))
-	if err != nil {
-		return emptyMessagePage(), nil
-	}
-	messages := messagesFromAppServerThread(thread)
-	return paginateAppServerMessages(messages, before, limit), nil
 }
 
 func (r *CodexAppServerRuntime) SessionTrace(ctx context.Context, id string) ([]session.TraceEvent, error) {
@@ -1242,13 +1231,13 @@ func (r *CodexAppServerRuntime) startTurn(ctx context.Context, threadID string, 
 }
 
 func (r *CodexAppServerRuntime) findActiveTurn(ctx context.Context, id string) string {
-	thread, err := r.readThreadPaginated(ctx, threadIDFromMobileSessionID(id))
+	turns, err := r.readLatestTurns(ctx, threadIDFromMobileSessionID(id))
 	if err != nil {
 		return ""
 	}
-	for i := len(thread.Turns) - 1; i >= 0; i-- {
-		if thread.Turns[i].Status == "inProgress" {
-			return thread.Turns[i].ID
+	for _, turn := range turns {
+		if turn.Status == "inProgress" {
+			return turn.ID
 		}
 	}
 	return ""

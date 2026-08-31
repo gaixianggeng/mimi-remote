@@ -969,12 +969,25 @@ extension SessionStore {
     }
 
     @discardableResult
-    func duplicateSessionInCurrentWorkspace(_ session: AgentSession) async -> Bool {
+    func duplicateSessionInCurrentWorkspace(
+        _ session: AgentSession,
+        lastTurnID: TurnID? = nil,
+        allowActiveWriterConflict: Bool = false
+    ) async -> Bool {
         guard supportsCodexThreadManagement(session) else {
             setStatusMessage(L10n.text("ui.the_current_running_channel_does_not_support_manual"))
             return false
         }
-        guard !session.isRunning else {
+        if session.isRunning {
+            guard allowActiveWriterConflict,
+                  hasActiveWriterConflict(sessionID: session.id),
+                  lastTurnID != nil
+            else {
+                setStatusMessage(L10n.text("ui.please_wait_for_the_current_turn_to_complete"))
+                return false
+            }
+        }
+        guard !allowActiveWriterConflict || hasActiveWriterConflict(sessionID: session.id) else {
             setStatusMessage(L10n.text("ui.please_wait_for_the_current_turn_to_complete"))
             return false
         }
@@ -983,9 +996,19 @@ extension SessionStore {
         }
 
         let hostScope = appStore.activeHostScope
+        let sourceConflictLease = HostSessionLease(hostScope: hostScope, sessionID: session.id)
         let duplicateIntent = reserveSelectionIntent()
         duplicatingSessionIDs.insert(session.id)
-        defer { duplicatingSessionIDs.remove(session.id) }
+        if allowActiveWriterConflict {
+            writerConflictForkErrorByLease.removeValue(forKey: sourceConflictLease)
+        }
+        defer {
+            // 切换 Host 会清空当前页面的操作锁。旧 Host 的异步返回不能再删除
+            // 新 Host 上同名 Session 的复制锁，否则会放行重复 fork。
+            if appStore.activeHostScope == hostScope {
+                duplicatingSessionIDs.remove(session.id)
+            }
+        }
 
         do {
             let client = try clientFactory()
@@ -997,7 +1020,8 @@ extension SessionStore {
             let forked = try await client.forkSession(
                 threadID: sourceThreadID,
                 workspace: workspace,
-                reason: .duplicate
+                reason: .duplicate,
+                lastTurnID: lastTurnID
             )
             guard appStore.activeHostScope == hostScope else { return false }
 
@@ -1045,10 +1069,21 @@ extension SessionStore {
             } else {
                 setStatusMessage(L10n.format("ui.session_duplicated_as_value", duplicateTitle))
             }
+            if allowActiveWriterConflict {
+                // 新会话已经选中，但 source 的 writer lease 仍必须保留；用户返回 source 时
+                // 会重新读取安全分叉边界，而不是把复制误当成接管成功。
+                writerConflictForkAvailabilityByLease.removeValue(forKey: sourceConflictLease)
+                writerConflictForkErrorByLease.removeValue(forKey: sourceConflictLease)
+            }
             return true
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
-            setStatusMessage(L10n.format("ui.duplicate_session_failed_value", error.localizedDescription))
+            let message = L10n.format("ui.duplicate_session_failed_value", error.localizedDescription)
+            if allowActiveWriterConflict {
+                writerConflictForkErrorByLease[sourceConflictLease] = message
+            } else {
+                setStatusMessage(message)
+            }
             return false
         }
     }

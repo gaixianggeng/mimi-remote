@@ -322,7 +322,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
         XCTAssertFalse(store.canSendInSelectedSession)
 
-        store.retrySelectedSessionWriterAccess()
+        await store.retrySelectedSessionWriterAccess()
         XCTAssertEqual(sockets.count, 2, "用户显式重试时必须建立新连接，不能复用冲突 socket")
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict, "重试完成前必须继续锁定 Composer")
 
@@ -1809,7 +1809,7 @@ extension ConversationDataFlowTests {
         }
         // sentMessages[3] 仍是上一条 economy 请求；full 请求从下一个下标开始等待。
         let fullRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 4)
-        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "notLoaded")
+        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
         transportResponse(codexTransport, id: fullRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         let fullPage = try await fullTask.value
         XCTAssertEqual(fullPage.loadMode, .full)

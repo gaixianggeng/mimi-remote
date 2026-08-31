@@ -14,6 +14,12 @@ func configureGatewayCommandProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+func startGatewayCommand(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
+
+func releaseGatewayProcessGroup(_ *exec.Cmd) {}
+
 func terminateGatewayProcessGroup(cmd *exec.Cmd, force bool) {
 	pid := gatewayProcessID(cmd)
 	if pid <= 0 {

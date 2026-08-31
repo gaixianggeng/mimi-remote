@@ -2487,6 +2487,7 @@ extension SessionStore {
         worktreeErrorMessage = nil
         isCreatingWorktree = false
         duplicatingSessionIDs = []
+        clearAllWriterConflictForkState()
         isRefreshingWorktreeBranches = false
         isRefreshingWorktrees = false
         isDeletingWorktree = false
@@ -2552,6 +2553,7 @@ extension SessionStore {
         missingRunningSessionStateByID = [:]
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
+        historySeenPreviousCursorsBySessionID = [:]
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
@@ -2562,6 +2564,7 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = [:]
         historyLoadedSignatureBySessionID = [:]
         historyLoadedQualityBySessionID = [:]
+        cancelAllHistoryItemEnrichment()
         deferredFullHistorySessionIDs = []
         freshEmptyHistorySignatureBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
