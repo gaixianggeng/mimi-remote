@@ -148,6 +148,7 @@ extension ConversationDataFlowTests {
 
         let firstPage = try await firstPageTask.value
         XCTAssertEqual(firstPage.messages.map(\.content), ["summary question", "summary answer"])
+        XCTAssertTrue(firstPage.messages.allSatisfy { $0.timelineOrdinal == nil })
         XCTAssertTrue(firstPage.hasMoreBefore)
         XCTAssertEqual(firstPage.itemContinuations.map(\.turnID), ["turn_large"])
         var requests = await transport.sentMessages()
@@ -195,6 +196,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             (firstItemsPage.messages + secondItemsPage.messages).map(\.content),
             ["m1", "m2", "m3", "m4"]
+        )
+        XCTAssertEqual(
+            (firstItemsPage.messages + secondItemsPage.messages).compactMap(\.timelineOrdinal),
+            [0, 1, 2, 3]
         )
         XCTAssertEqual(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
         XCTAssertTrue(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m1" }).isTimestampFallback)

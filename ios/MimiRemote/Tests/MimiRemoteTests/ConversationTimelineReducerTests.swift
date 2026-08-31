@@ -367,6 +367,79 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(secondPage.messages.compactMap(\.timelineOrdinal), [0, 1, 2, 3])
     }
 
+    func testSummaryFinalMovesBehindLaterCanonicalEnrichmentItems() {
+        let reducer = ConversationTimelineReducer()
+        let turnID = "turn-large-enrichment"
+        let completedAt = Date(timeIntervalSince1970: 200)
+        let initial = [
+            ConversationMessage(
+                stableID: "summary-user",
+                turnID: turnID,
+                itemID: "user-0",
+                role: .user,
+                content: "请修复消息顺序",
+                createdAt: Date(timeIntervalSince1970: 100)
+            ),
+            ConversationMessage(
+                stableID: "final-236",
+                turnID: turnID,
+                itemID: "final-236",
+                role: .assistant,
+                content: "已修复并推送",
+                createdAt: completedAt
+            )
+        ]
+        let image = ConversationMessage(
+            stableID: "image-207",
+            turnID: turnID,
+            itemID: "image-207",
+            role: .assistant,
+            content: "![截图](/tmp/result.png)",
+            createdAt: completedAt,
+            timelineOrdinal: 207
+        )
+
+        let afterFirstEnrichment = reducer.rebase(
+            snapshot: [image],
+            current: initial,
+            snapshotOrdering: .incrementalFragments
+        )
+        XCTAssertEqual(afterFirstEnrichment.messages.map(\.itemID), ["user-0", "image-207", "final-236"])
+
+        let laterActivity = ConversationMessage(
+            stableID: "activity-220",
+            turnID: turnID,
+            itemID: "activity-220",
+            role: .system,
+            kind: .commandSummary,
+            content: "回归测试通过",
+            // 无 Item 时间的活动使用 startedAt + ordinal 估算，可能早于此前已显示的图片。
+            createdAt: Date(timeIntervalSince1970: 100.220),
+            timelineOrdinal: 220
+        )
+        let canonicalFinal = ConversationMessage(
+            stableID: "final-236",
+            turnID: turnID,
+            itemID: "final-236",
+            role: .assistant,
+            content: "已修复并推送",
+            createdAt: completedAt,
+            timelineOrdinal: 236
+        )
+        let afterSecondEnrichment = reducer.rebase(
+            snapshot: [laterActivity, canonicalFinal],
+            current: afterFirstEnrichment.messages,
+            snapshotOrdering: .incrementalFragments
+        )
+
+        XCTAssertFalse(afterSecondEnrichment.hadOrderingCycle)
+        XCTAssertEqual(
+            afterSecondEnrichment.messages.map(\.itemID),
+            ["user-0", "image-207", "activity-220", "final-236"]
+        )
+        XCTAssertEqual(afterSecondEnrichment.messages.last?.content, "已修复并推送")
+    }
+
     func testTimelineOrdinalDoesNotOrderItemsAcrossTurns() {
         let createdAt = Date(timeIntervalSince1970: 100)
         let current = ConversationMessage(

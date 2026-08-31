@@ -1224,6 +1224,7 @@ extension CodexAppServerSessionRuntime {
         threadCreatedAt: Date? = nil,
         threadUpdatedAt: Date? = nil,
         threadIsActive: Bool = false,
+        timelineOrdinalsAreCanonical: Bool = true,
         snapshotReadAt: Date
     ) -> [CodexHistoryMessage] {
         var messages: [CodexHistoryMessage] = []
@@ -1250,11 +1251,16 @@ extension CodexAppServerSessionRuntime {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             var hasVisibleUserMessageInTurn = false
             for (itemIndex, item) in items.enumerated() {
+                // summary 只保留展示摘要，其数组下标不是 Item 在完整 rollout 中的位置。
+                // 完整 Item 分页到达前不能用这个占位序号约束时间线。
+                let timelineOrdinal = timelineOrdinalsAreCanonical
+                    ? historyTimelineOrdinal(turnIndex: turnIndex, itemIndex: itemIndex)
+                    : nil
                 guard var message = historyMessage(
                     from: item,
                     sessionID: sessionID,
                     turnID: turnID,
-                    timelineOrdinal: historyTimelineOrdinal(turnIndex: turnIndex, itemIndex: itemIndex),
+                    timelineOrdinal: timelineOrdinal,
                     isInjectedUserMessage: hasVisibleUserMessageInTurn,
                     startedAt: startedAt,
                     completedAt: completedAt,
@@ -1287,7 +1293,7 @@ extension CodexAppServerSessionRuntime {
         from item: [String: CodexAppServerJSONValue],
         sessionID: SessionID,
         turnID: TurnID?,
-        timelineOrdinal: Int64,
+        timelineOrdinal: Int64?,
         isInjectedUserMessage: Bool,
         startedAt: Date?,
         completedAt: Date?,
