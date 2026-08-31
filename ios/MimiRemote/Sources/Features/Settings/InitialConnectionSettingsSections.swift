@@ -296,9 +296,7 @@ struct InitialConnectionSettingsSections: View {
                             }
                             if let report = appStore.lastConnectionTestReport {
                                 if let networkPath = report.tailscaleNetworkPath {
-                                    LabeledContent(L10n.text("ui.tailscale_network_path")) {
-                                        Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
-                                    }
+                                    ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
                                 }
                                 if let failedStage = report.failedStage {
                                     connectionStageSummaryRow(title: L10n.text("ui.failure_link"), stage: failedStage, color: .red)
@@ -319,8 +317,6 @@ struct InitialConnectionSettingsSections: View {
                                 }
                             }
                         }
-                        // Form 可能向展开内容提案整屏高度；诊断行只应占实际内容高度，避免路径与慢速环节之间出现大片留白。
-                        .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
                     Text(L10n.text("ui.status"))
@@ -1345,6 +1341,82 @@ struct InitialConnectionSettingsSections: View {
             localError = nil
         } catch {
             localError = error.localizedDescription
+        }
+    }
+}
+
+struct ConnectionDiagnosticsNetworkPathRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let networkPath: TailscaleNetworkPathResponse
+
+    var body: some View {
+        // iOS 26/27 的 Form 会把带自定义内容的 LabeledContent 拉伸到剩余整屏高度。
+        // 改用固有高度布局，让网络路径与后续诊断行始终连续排列。
+        Group {
+            // 常规字号下保留短 DERP 摘要的紧凑单行；其余路径必须完整测量后再决定是否换行。
+            if networkPath.kind == .derp, !dynamicTypeSize.isAccessibilitySize {
+                compactDERPContent
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    horizontalContent
+                    verticalContent
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.connection.diagnostics.networkPath")
+    }
+
+    private var compactDERPContent: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(L10n.text("ui.tailscale_network_path"))
+                .lineLimit(1)
+                .layoutPriority(1)
+
+            Spacer(minLength: 12)
+
+            networkPathLabel
+                .font(.subheadline)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+    }
+
+    private var horizontalContent: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(L10n.text("ui.tailscale_network_path"))
+                .fixedSize(horizontal: true, vertical: false)
+
+            Spacer(minLength: 12)
+
+            networkPathLabel
+                .font(.subheadline)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var verticalContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L10n.text("ui.tailscale_network_path"))
+
+            networkPathLabel
+                .font(.subheadline)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var networkPathLabel: some View {
+        HStack(spacing: 6) {
+            Image(systemName: networkPath.kind.settingsSystemImage)
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
+            Text(networkPath.localizedSummary)
         }
     }
 }
