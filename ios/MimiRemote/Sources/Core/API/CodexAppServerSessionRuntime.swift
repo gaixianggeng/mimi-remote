@@ -91,6 +91,11 @@ struct CodexAppServerThreadSubscriptionLease: Equatable {
     let wantsEvents: Bool
 }
 
+struct CodexAppServerThreadUnsubscribeRetryTask {
+    let token: UUID
+    let task: Task<Void, Never>
+}
+
 struct CodexAppServerTurnInterruptRecoveryTask {
     let turnID: TurnID
     let token: UUID
@@ -154,6 +159,9 @@ actor CodexAppServerSessionRuntime {
     // unsubscribe 是后台 best-effort RPC，响应可能晚于同一 thread 的新 connectForEvents。
     // 每次订阅意图都换代；迟到退订只能作用于自己的 lease，不能覆盖更新一代的监听。
     var threadSubscriptionLeaseBySessionID: [SessionID: CodexAppServerThreadSubscriptionLease] = [:]
+    // 最后一个观察者离开时，unsubscribe 可能超时或暂时失败。失败状态必须绑定原连接保留并重试；
+    // 新观察者、归档或连接退役会取消任务，且清理任务绝不为退订单独建立新连接。
+    var threadUnsubscribeRetryTasksBySessionID: [SessionID: CodexAppServerThreadUnsubscribeRetryTask] = [:]
     var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
@@ -242,6 +250,7 @@ actor CodexAppServerSessionRuntime {
         rateLimitRefreshTask?.cancel()
         accountTokenUsageRefreshTask?.cancel()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
+        threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
         turnInterruptRecoveryTasksBySessionID.values.forEach { $0.task.cancel() }
     }
 
@@ -833,6 +842,7 @@ actor CodexAppServerSessionRuntime {
             contextsBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
             threadSubscriptionLeaseBySessionID.removeValue(forKey: id)
+            cancelThreadUnsubscribeRetryTask(sessionID: id)
             cancelThreadResumeTask(sessionID: id)
             threadsResumedOnConnection.remove(id)
             finishAttachedEventStreams(sessionID: id)
@@ -899,6 +909,14 @@ actor CodexAppServerSessionRuntime {
                 try? await reassertThreadSubscriptionIfNeeded(
                     sessionID: threadID,
                     supersededLease: lease
+                )
+            } else if usingExistingConnectionOnly,
+                      let existingConnection,
+                      connection === existingConnection {
+                scheduleThreadUnsubscribeRetry(
+                    sessionID: threadID,
+                    lease: lease,
+                    connection: existingConnection
                 )
             }
             throw error
@@ -1877,6 +1895,9 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         wantsEvents: Bool
     ) -> CodexAppServerThreadSubscriptionLease {
+        if wantsEvents {
+            cancelThreadUnsubscribeRetryTask(sessionID: sessionID)
+        }
         let generation = (threadSubscriptionLeaseBySessionID[sessionID]?.generation ?? 0) &+ 1
         let lease = CodexAppServerThreadSubscriptionLease(
             generation: generation,
@@ -1884,6 +1905,96 @@ actor CodexAppServerSessionRuntime {
         )
         threadSubscriptionLeaseBySessionID[sessionID] = lease
         return lease
+    }
+
+    func cancelThreadUnsubscribeRetryTask(sessionID: SessionID) {
+        threadUnsubscribeRetryTasksBySessionID.removeValue(forKey: sessionID)?.task.cancel()
+    }
+
+    func scheduleThreadUnsubscribeRetry(
+        sessionID: SessionID,
+        lease: CodexAppServerThreadSubscriptionLease,
+        connection retryConnection: CodexAppServerConnection
+    ) {
+        guard threadUnsubscribeRetryTasksBySessionID[sessionID] == nil else {
+            return
+        }
+        let token = UUID()
+        let task = Task { [weak self] in
+            var delayNanoseconds: UInt64 = 250_000_000
+            while !Task.isCancelled {
+                await Task.yield()
+                let completed = await self?.retryThreadUnsubscribe(
+                    sessionID: sessionID,
+                    lease: lease,
+                    connection: retryConnection,
+                    token: token
+                ) ?? true
+                if completed {
+                    await self?.clearThreadUnsubscribeRetryTask(sessionID: sessionID, token: token)
+                    return
+                }
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch {
+                    return
+                }
+                delayNanoseconds = min(delayNanoseconds * 2, 5_000_000_000)
+            }
+        }
+        threadUnsubscribeRetryTasksBySessionID[sessionID] = .init(token: token, task: task)
+    }
+
+    // 返回 true 表示不再需要重试。false 只用于同一连接仍可用但 RPC 暂时失败的情况。
+    func retryThreadUnsubscribe(
+        sessionID: SessionID,
+        lease: CodexAppServerThreadSubscriptionLease,
+        connection retryConnection: CodexAppServerConnection,
+        token: UUID
+    ) async -> Bool {
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease,
+              eventMailboxesBySessionID[sessionID]?.isEmpty != false,
+              connection === retryConnection,
+              await retryConnection.isReadyForRequests()
+        else {
+            clearThreadUnsubscribeRetryTask(sessionID: sessionID, token: token)
+            return true
+        }
+        do {
+            let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+            guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+                return true
+            }
+            _ = try await retryConnection.send(builder.threadUnsubscribe(threadID: sessionID))
+            if threadSubscriptionLeaseBySessionID[sessionID] == lease {
+                threadsResumedOnConnection.remove(sessionID)
+            } else {
+                try await reassertThreadSubscriptionIfNeeded(
+                    sessionID: sessionID,
+                    supersededLease: lease
+                )
+            }
+            clearThreadUnsubscribeRetryTask(sessionID: sessionID, token: token)
+            return true
+        } catch {
+            guard threadSubscriptionLeaseBySessionID[sessionID] == lease,
+                  connection === retryConnection else {
+                clearThreadUnsubscribeRetryTask(sessionID: sessionID, token: token)
+                return true
+            }
+            let connectionEnded = !(await retryConnection.isReadyForRequests())
+            if connectionEnded {
+                clearThreadUnsubscribeRetryTask(sessionID: sessionID, token: token)
+            }
+            return connectionEnded
+        }
+    }
+
+    func clearThreadUnsubscribeRetryTask(sessionID: SessionID, token: UUID) {
+        guard threadUnsubscribeRetryTasksBySessionID[sessionID]?.token == token else {
+            return
+        }
+        threadUnsubscribeRetryTasksBySessionID.removeValue(forKey: sessionID)
     }
 
     func reassertThreadSubscriptionIfNeeded(
@@ -2903,6 +3014,8 @@ actor CodexAppServerSessionRuntime {
         cancelThreadResumeTasks(for: endedConnection)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
+        threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
+        threadUnsubscribeRetryTasksBySessionID.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
         for sessionID in affected.approvalSessionIDs {
             emitApprovalResolved(sessionID: sessionID)
