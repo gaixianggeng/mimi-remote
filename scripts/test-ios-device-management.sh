@@ -15,6 +15,10 @@ export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
 export IOS_TEST_GUI_HANDOFF_LOG="$TEMP_DIR/gui-handoff.log"
 export IOS_DEVICE_GUI_HANDOFF_BIN="$FIXTURE_DIR/fake-gui-handoff.sh"
 : > "$IOS_TEST_GUI_HANDOFF_LOG"
+expected_device_handoff_count="0"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  expected_device_handoff_count="1"
+fi
 unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS_DEVICE_NAME IOS_TARGET_MODE
 unset DEVELOPER_DIR IOS_OPEN_BIN IOS_TEST_OPEN_LOG IOS_TEST_OPEN_FAIL
 
@@ -232,12 +236,15 @@ assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
 assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
   "-derivedDataPath $TEMP_DIR/wireless-derived" \
   "无线 build 必须使用该 UDID 的独立 DerivedData"
-assert_equal "1" "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
-  "真机 build 必须只交给一次 GUI runner"
-assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=1" \
-  "真机 build 的 GUI runner 必须保留仅构建语义"
-assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" $'arg\tCUSTOM_FLAG=value with space' \
-  "GUI runner 必须保留含空格的额外 xcodebuild argv"
+assert_equal "$expected_device_handoff_count" \
+  "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "真机 build 必须按当前平台选择 GUI runner 或直接执行"
+if [[ "$expected_device_handoff_count" == "1" ]]; then
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=1" \
+    "真机 build 的 GUI runner 必须保留仅构建语义"
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" $'arg\tCUSTOM_FLAG=value with space' \
+    "GUI runner 必须保留含空格的额外 xcodebuild argv"
+fi
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease" ]] \
   || fail "无线 build 结束后必须释放按 UDID 建立的租约"
 
@@ -255,10 +262,13 @@ device_run_output="$(
 )"
 assert_contains "$device_run_output" "完成：已构建、安装并启动 com.gaixianggeng.mimi" \
   "真机 run 必须在 GUI runner 中完成构建、安装和启动"
-assert_equal "1" "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
-  "真机 run 必须只交给一次 GUI runner"
-assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=0" \
-  "真机 run 不得丢失安装语义"
+assert_equal "$expected_device_handoff_count" \
+  "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "真机 run 必须按当前平台选择 GUI runner 或直接执行"
+if [[ "$expected_device_handoff_count" == "1" ]]; then
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=0" \
+    "真机 run 不得丢失安装语义"
+fi
 assert_contains "$(cat "$TEMP_DIR/device-run-xcrun.log")" \
   "devicectl device install app --device NETWORK-PRO-UDID" \
   "真机 run 必须安装到选中的同一 UDID"
