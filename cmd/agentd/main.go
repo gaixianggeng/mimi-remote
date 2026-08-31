@@ -1072,14 +1072,13 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
-	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeInstallationIDAndOptions(
+	apiHandler, apiRouter := httpapi.NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
 		manager,
 		checker,
 		version,
 		installationID,
-		nil,
 		httpapi.RouterOptions{
 			ConfigPath:   checker.ConfigPath(),
 			AppServerSSH: sshTransport,

@@ -18,7 +18,6 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) {
@@ -502,35 +501,5 @@ func TestReadOnlyThreadResponseRejectsReceiverOutsideParentScope(t *testing.T) {
 	if policyErr.data["reason"] != "thread_read_scope_mismatch" ||
 		!strings.Contains(policyErr.message, "不在授权作用域") {
 		t.Fatalf("跨作用域错误必须可诊断且不泄露正文：%+v", policyErr)
-	}
-}
-
-func TestContextSubagentMergeKeepsStableIdentityAcrossStatusUpdates(t *testing.T) {
-	canAccept := false
-	merged := mergeContextSubagents(
-		[]session.ContextSubagent{{
-			ID:                   "child-a",
-			ParentThreadID:       "parent-a",
-			SessionID:            "session-a",
-			Nickname:             "Noether",
-			Role:                 "review",
-			Status:               "running",
-			CanAcceptDirectInput: &canAccept,
-		}},
-		[]session.ContextSubagent{{
-			ID:            "child-a",
-			Status:        "completed",
-			StatusMessage: "done",
-		}},
-	)
-	if len(merged) != 1 {
-		t.Fatalf("同一子 Thread 应合并为一条：%+v", merged)
-	}
-	got := merged[0]
-	if got.ParentThreadID != "parent-a" || got.SessionID != "session-a" ||
-		got.Nickname != "Noether" || got.Role != "review" ||
-		got.Status != "completed" || got.StatusMessage != "done" ||
-		got.CanAcceptDirectInput == nil || *got.CanAcceptDirectInput {
-		t.Fatalf("状态更新必须保留稳定身份与只读 capability：%+v", got)
 	}
 }

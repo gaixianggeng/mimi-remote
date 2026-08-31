@@ -2851,7 +2851,7 @@ func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize fu
 	if customize != nil {
 		customize(&cfg)
 	}
-	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(cfg, registry, manager, checker, "test", "", nil, RouterOptions{
+	handler, router := NewRouterWithInstallationIDAndOptions(cfg, registry, manager, checker, "test", "", RouterOptions{
 		AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 	})
 	// Any fixture that reaches the Claude gateway starts a resident bridge;

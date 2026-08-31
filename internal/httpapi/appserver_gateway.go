@@ -212,10 +212,6 @@ type appServerPolicyMetadata struct {
 	ProjectsSource string   `json:"projects_source"`
 }
 
-type appServerDiagnosticsProvider interface {
-	AppServerDiagnostics() appserver.Diagnostics
-}
-
 type appServerGatewayFrame struct {
 	ID     *json.RawMessage `json:"id,omitempty"`
 	Method string           `json:"method,omitempty"`
@@ -384,13 +380,6 @@ func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
 		Managed:            false,
 		GatewayAvailable:   upstream != "",
 		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.SSHTarget) != "",
-	}
-	if provider, ok := r.runtime.(appServerDiagnosticsProvider); ok {
-		// metadata 只暴露运行态计数，不返回 codex home、token 或 stderr 等敏感细节。
-		diag := provider.AppServerDiagnostics()
-		meta.Running = diag.Running
-		meta.Initialized = diag.Initialized
-		meta.PendingRequests = diag.PendingRequests
 	}
 	return meta
 }

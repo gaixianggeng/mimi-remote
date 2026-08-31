@@ -3,14 +3,12 @@ package httpapi
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +30,6 @@ type Router struct {
 	cfg            config.Config
 	projects       *projects.Registry
 	sessions       *session.Manager
-	runtime        SessionRuntime
 	doctor         *doctor.Checker
 	auth           auth.Authenticator
 	version        string
@@ -118,50 +115,42 @@ type appServerSSHTransport interface {
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	handler, _ := NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	handler, _ := NewRouterWithInstallationIDAndOptions(
+		cfg,
+		registry,
+		manager,
+		checker,
+		version,
+		"",
+		RouterOptions{},
+	)
 	return handler
 }
 
 // NewRouterWithInstallationID 为生产入口注入启动阶段已加载的稳定安装身份。
 // Router 只保留内存副本，确保高频 /api/version 探测不会读磁盘或连接 upstream。
 func NewRouterWithInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string) http.Handler {
-	handler, _ := NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
-	return handler
-}
-
-// NewRouterWithRuntime also hands back the *Router so a caller that owns the
-// process lifetime can shut down what the handler started. That matters now
-// that the Claude bridge is resident: it survives individual connections by
-// design, so nothing else would ever reap it.
-func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) (http.Handler, *Router) {
-	return NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, "", runtime)
-}
-
-// NewRouterWithRuntimeAndInstallationID 同时注入 runtime 与稳定安装身份。
-// 保留旧构造器作为兼容包装，现有测试和内部调用无需一次性迁移。
-func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string, runtime SessionRuntime) (http.Handler, *Router) {
-	return NewRouterWithRuntimeInstallationIDAndOptions(
+	handler, _ := NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
 		manager,
 		checker,
 		version,
 		installationID,
-		runtime,
 		RouterOptions{},
 	)
+	return handler
 }
 
-// NewRouterWithRuntimeInstallationIDAndOptions 由 agentd 生产入口显式注入私有状态路径。
-// 旧构造器保持纯内存默认值，避免单元测试意外读写当前用户目录。
-func NewRouterWithRuntimeInstallationIDAndOptions(
+// NewRouterWithInstallationIDAndOptions 由拥有进程生命周期的入口使用。
+// 它返回 Router，确保调用方能关闭常驻 Claude bridge 等进程级资源。
+func NewRouterWithInstallationIDAndOptions(
 	cfg config.Config,
 	registry *projects.Registry,
 	manager *session.Manager,
 	checker *doctor.Checker,
 	version string,
 	installationID string,
-	runtime SessionRuntime,
 	options RouterOptions,
 ) (http.Handler, *Router) {
 	fileUploads := newFileUploadStore(defaultFileUploadRoot())
@@ -169,7 +158,6 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		cfg:            cfg,
 		projects:       registry,
 		sessions:       manager,
-		runtime:        runtime,
 		doctor:         checker,
 		installationID: installationID,
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
@@ -456,143 +444,6 @@ func (r *Router) projectsHandler(w http.ResponseWriter, req *http.Request) {
 	projectList := r.projects.List()
 	log.Printf("projects response remote=%s host=%s projects=%d", requestRemoteHost(req), req.Host, len(projectList))
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projectList})
-}
-
-type sessionPageCursor struct {
-	ID          string `json:"id"`
-	UpdatedAtMS int64  `json:"updated_at_ms"`
-}
-
-func decodeSessionCursor(raw string) (sessionPageCursor, bool, error) {
-	if strings.TrimSpace(raw) == "" {
-		return sessionPageCursor{}, false, nil
-	}
-	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return sessionPageCursor{}, false, err
-	}
-	var cursor sessionPageCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
-		return sessionPageCursor{}, false, err
-	}
-	if cursor.ID == "" || cursor.UpdatedAtMS <= 0 {
-		return sessionPageCursor{}, false, fmt.Errorf("invalid session cursor")
-	}
-	return cursor, true, nil
-}
-
-func encodeSessionCursor(item session.SessionSnapshot) string {
-	cursor := sessionPageCursor{ID: item.ID, UpdatedAtMS: sessionUpdatedAtMS(item)}
-	if cursor.ID == "" || cursor.UpdatedAtMS <= 0 {
-		return ""
-	}
-	data, err := json.Marshal(cursor)
-	if err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(data)
-}
-
-func activeSessionSnapshots(list []*session.Session, projectID string) []session.SessionSnapshot {
-	return activeSessionSnapshotWindow(list, projectID, sessionPageCursor{}, false, 0)
-}
-
-func activeSessionSnapshotWindow(list []*session.Session, projectID string, cursor sessionPageCursor, hasCursor bool, limit int) []session.SessionSnapshot {
-	capacity := len(list)
-	if limit > 0 && limit < capacity {
-		capacity = limit
-	}
-	out := make([]session.SessionSnapshot, 0, capacity)
-	cursorID := ""
-	cursorUpdatedAtMS := int64(0)
-	if hasCursor {
-		cursorID = cursor.ID
-		cursorUpdatedAtMS = cursor.UpdatedAtMS
-	}
-	for _, item := range list {
-		// 项目会话列表是 iPad 高频轮询入口，先按项目收窄再排序/分页，避免无关运行会话
-		// 参与后续投影；全局列表仍保留所有 active session。
-		if snapshot, ok := item.SnapshotIfProjectBeforeCursor(projectID, cursorID, cursorUpdatedAtMS); ok {
-			out = appendSessionWindowCandidate(out, snapshot, limit)
-		}
-	}
-	return out
-}
-
-func paginateSessions(items []session.SessionSnapshot, cursor sessionPageCursor, hasCursor bool, limit int) ([]session.SessionSnapshot, string, bool) {
-	sortSessionsByUpdated(items)
-	if hasCursor {
-		filtered := items[:0]
-		for _, item := range items {
-			if sessionBeforeCursor(item, cursor) {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
-	}
-	if limit <= 0 || len(items) <= limit {
-		return items, "", false
-	}
-	page := append([]session.SessionSnapshot(nil), items[:limit]...)
-	return page, encodeSessionCursor(page[len(page)-1]), true
-}
-
-func sortSessionsByUpdated(items []session.SessionSnapshot) {
-	sort.SliceStable(items, func(i, j int) bool {
-		return sessionSortBefore(items[i], items[j])
-	})
-}
-
-func appendSessionWindowCandidate(items []session.SessionSnapshot, candidate session.SessionSnapshot, limit int) []session.SessionSnapshot {
-	if limit <= 0 {
-		return append(items, candidate)
-	}
-	insertAt := len(items)
-	for index, item := range items {
-		if sessionSortBefore(candidate, item) {
-			insertAt = index
-			break
-		}
-	}
-	if insertAt == len(items) && len(items) >= limit {
-		return items
-	}
-	items = append(items, candidate)
-	if insertAt < len(items)-1 {
-		copy(items[insertAt+1:], items[insertAt:len(items)-1])
-		items[insertAt] = candidate
-	}
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	return items
-}
-
-func sessionSortBefore(left, right session.SessionSnapshot) bool {
-	leftUpdatedAt := sessionUpdatedAtMS(left)
-	rightUpdatedAt := sessionUpdatedAtMS(right)
-	if leftUpdatedAt == rightUpdatedAt {
-		return left.ID > right.ID
-	}
-	return leftUpdatedAt > rightUpdatedAt
-}
-
-func sessionBeforeCursor(item session.SessionSnapshot, cursor sessionPageCursor) bool {
-	updatedAtMS := sessionUpdatedAtMS(item)
-	if updatedAtMS != cursor.UpdatedAtMS {
-		return updatedAtMS < cursor.UpdatedAtMS
-	}
-	return item.ID < cursor.ID
-}
-
-func sessionUpdatedAtMS(item session.SessionSnapshot) int64 {
-	if !item.UpdatedAt.IsZero() {
-		return item.UpdatedAt.UnixMilli()
-	}
-	if !item.CreatedAt.IsZero() {
-		return item.CreatedAt.UnixMilli()
-	}
-	return 0
 }
 
 func positiveLimit(raw string) int {

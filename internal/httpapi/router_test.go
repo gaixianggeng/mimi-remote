@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -127,14 +128,13 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	if strings.HasPrefix(cfg.AppServer.SSHTarget, "ws://") || strings.HasPrefix(cfg.AppServer.SSHTarget, "wss://") {
 		options.AppServerSSH = directWSTestTransport{upstreamURL: cfg.AppServer.SSHTarget}
 	}
-	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(
+	handler, router := NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
 		manager,
 		checker,
 		"test",
 		testInstallationID,
-		nil,
 		options,
 	)
 	return testServer{
@@ -1978,7 +1978,7 @@ func TestWorktreeCleanupDryRunAndExecuteCandidateSubset(t *testing.T) {
 		if item.Workspace.Path == fixture.worktrees[0].Path && (!item.Eligible || len(item.Blockers) != 0) {
 			t.Fatalf("最旧 clean worktree 应可清理：%+v", item)
 		}
-		if item.Workspace.Path != fixture.worktrees[0].Path && !containsString(item.Blockers, worktreeCleanupBlockerKeepLatest) {
+		if item.Workspace.Path != fixture.worktrees[0].Path && !slices.Contains(item.Blockers, worktreeCleanupBlockerKeepLatest) {
 			t.Fatalf("最近三个 worktree 应有 keep_latest blocker：%+v", item)
 		}
 	}
@@ -2439,7 +2439,7 @@ func TestPendingGatewayThreadUseBlocksDeleteUntilFailureReleasesLease(t *testing
 		t.Fatal(err)
 	}
 	item := cleanupItemForPath(t, plan.Worktrees, target.Path)
-	if item.Eligible || !containsString(item.Blockers, worktreeCleanupBlockerSessionRunning) {
+	if item.Eligible || !slices.Contains(item.Blockers, worktreeCleanupBlockerSessionRunning) {
 		t.Fatalf("pending gateway thread 必须阻止 cleanup：%+v", item)
 	}
 
@@ -2657,7 +2657,7 @@ func TestWorktreeCleanupBlocksRunningSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := cleanupItemForPath(t, plan.Worktrees, target.Path)
-	if item.Eligible || !containsString(item.Blockers, worktreeCleanupBlockerSessionRunning) {
+	if item.Eligible || !slices.Contains(item.Blockers, worktreeCleanupBlockerSessionRunning) {
 		t.Fatalf("运行中的 session 必须阻止 cleanup：%+v", item)
 	}
 }
@@ -2675,7 +2675,7 @@ func TestWorktreeCleanupBlocksRepositoryMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := cleanupItemForPath(t, plan.Worktrees, target.Path)
-	if item.Eligible || !containsString(item.Blockers, worktreeCleanupBlockerRepositoryMismatch) {
+	if item.Eligible || !slices.Contains(item.Blockers, worktreeCleanupBlockerRepositoryMismatch) {
 		t.Fatalf("repository common-dir 不一致必须阻止 cleanup：%+v", item)
 	}
 }
