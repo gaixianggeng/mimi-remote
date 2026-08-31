@@ -11,6 +11,195 @@ enum QueuedTurnAcceptedDisposition {
 
 // 排队 Turn 的调度、连接监控、发送结果归并与持久化对账集中在同一协调边界。
 extension SessionStore {
+    func scheduleTurnCompletionReconciliationIfNeeded(
+        message: AgentMessage,
+        metadata: AgentEventMetadata,
+        hostScope: HostScope
+    ) {
+        let sessionID = metadata.sessionID ?? message.sessionID
+        guard message.role == .assistant,
+              message.kind == .message,
+              let turnID = metadata.turnID ?? message.turnID
+        else {
+            return
+        }
+        startTurnCompletionReconciliation(
+            sessionID: sessionID,
+            expectedTurnID: turnID,
+            hostScope: hostScope
+        )
+    }
+
+    func resumeTurnCompletionReconciliationIfNeeded(
+        sessionID: SessionID,
+        hostScope: HostScope
+    ) {
+        guard let turnID = sessionsByID[sessionID]?.activeTurnID,
+              conversationStore.messages(for: sessionID).contains(where: {
+                  $0.role == .assistant
+                      && $0.kind == .message
+                      && $0.turnID == turnID
+                      && $0.sendStatus == .confirmed
+              })
+        else {
+            return
+        }
+        startTurnCompletionReconciliation(
+            sessionID: sessionID,
+            expectedTurnID: turnID,
+            hostScope: hostScope
+        )
+    }
+
+    private func startTurnCompletionReconciliation(
+        sessionID: SessionID,
+        expectedTurnID turnID: TurnID,
+        hostScope: HostScope
+    ) {
+        guard let session = sessionsByID[sessionID],
+              session.activeTurnID == turnID,
+              turnCompletionReconciliationJobsBySessionID[session.id] == nil,
+              !turnCompletionReconciliationDelaysNanoseconds.isEmpty
+        else {
+            return
+        }
+
+        let delays = turnCompletionReconciliationDelaysNanoseconds
+        turnCompletionReconciliationGeneration &+= 1
+        let generation = turnCompletionReconciliationGeneration
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for delay in delays {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                    try Task.checkCancellation()
+                } catch {
+                    break
+                }
+                guard self.shouldReconcileTurnCompletion(
+                    sessionID: sessionID,
+                    expectedTurnID: turnID,
+                    hostScope: hostScope
+                ) else {
+                    break
+                }
+
+                do {
+                    guard let page = try await self.clientFactory().latestTurnHistoryPage(
+                        sessionID: sessionID
+                    ) else {
+                        break
+                    }
+                    try Task.checkCancellation()
+                    guard self.shouldReconcileTurnCompletion(
+                        sessionID: sessionID,
+                        expectedTurnID: turnID,
+                        hostScope: hostScope
+                    ) else {
+                        break
+                    }
+                    guard let lifecycle = self.terminalLifecycle(
+                        in: page,
+                        matching: turnID
+                    ) else {
+                        continue
+                    }
+                    guard self.finishTurnCompletionReconciliation(
+                        sessionID: sessionID,
+                        generation: generation
+                    ) else {
+                        break
+                    }
+
+                    // item/completed 只说明一个回复 Item 已结束。只有最新完整 Turn 的权威页
+                    // 明确确认同一 activeTurnID 终态后，才复用既有 turn/completed 收敛路径。
+                    await self.applyRuntimeEvent(
+                        .turnCompleted(AgentEventMetadata(
+                            seq: page.snapshotSeq,
+                            sessionID: sessionID,
+                            turnID: turnID,
+                            itemID: nil,
+                            messageID: nil,
+                            clientMessageID: nil,
+                            revision: nil,
+                            createdAt: nil,
+                            turnLifecycle: lifecycle
+                        )),
+                        lease: HostSessionLease(hostScope: hostScope, sessionID: sessionID)
+                    )
+                    return
+                } catch is CancellationError {
+                    break
+                } catch CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable(_) {
+                    break
+                } catch {
+                    // 短暂的历史请求冲突或弱网失败不改变本地状态；有限退避后再试。
+                    continue
+                }
+            }
+            _ = self.finishTurnCompletionReconciliation(
+                sessionID: sessionID,
+                generation: generation
+            )
+        }
+        turnCompletionReconciliationJobsBySessionID[sessionID] = TurnCompletionReconciliationJob(
+            generation: generation,
+            expectedTurnID: turnID,
+            task: task
+        )
+    }
+
+    func shouldReconcileTurnCompletion(
+        sessionID: SessionID,
+        expectedTurnID: TurnID,
+        hostScope: HostScope
+    ) -> Bool {
+        guard appStore.activeHostScope == hostScope,
+              connectionTermination == nil,
+              appStore.isConfigured,
+              !isAppInBackground,
+              let session = sessionsByID[sessionID]
+        else {
+            return false
+        }
+        return session.activeTurnID == expectedTurnID
+    }
+
+    func terminalLifecycle(
+        in page: HistoryMessagesPage,
+        matching turnID: TurnID
+    ) -> ConversationTurnLifecycle? {
+        let lifecycles = page.messages.lazy
+            .filter { $0.turnID == turnID }
+            .compactMap(\.turnLifecycle)
+            .filter(\.isTerminal)
+        if lifecycles.contains(.failed) {
+            return .failed
+        }
+        if lifecycles.contains(.interrupted) {
+            return .interrupted
+        }
+        return lifecycles.contains(.completed) ? .completed : nil
+    }
+
+    func cancelTurnCompletionReconciliation(sessionID: SessionID) {
+        turnCompletionReconciliationJobsBySessionID.removeValue(forKey: sessionID)?.task.cancel()
+    }
+
+    func cancelAllTurnCompletionReconciliations() {
+        turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
+        turnCompletionReconciliationJobsBySessionID.removeAll()
+    }
+
+    @discardableResult
+    func finishTurnCompletionReconciliation(sessionID: SessionID, generation: UInt64) -> Bool {
+        guard turnCompletionReconciliationJobsBySessionID[sessionID]?.generation == generation else {
+            return false
+        }
+        turnCompletionReconciliationJobsBySessionID.removeValue(forKey: sessionID)
+        return true
+    }
+
     func dispatchNextQueuedRunningTurnIfIdle(sessionID: SessionID) {
         guard let session = sessionsByID[sessionID],
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),

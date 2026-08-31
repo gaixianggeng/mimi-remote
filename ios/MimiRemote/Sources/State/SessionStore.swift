@@ -25,6 +25,12 @@ struct SessionArchiveMutation: Equatable {
     let target: SessionArchivePreferenceState
 }
 
+struct TurnCompletionReconciliationJob {
+    let generation: UInt64
+    let expectedTurnID: TurnID
+    let task: Task<Void, Never>
+}
+
 /// `applyEventReducerOutput` 内部的会话工作副本。
 ///
 /// 一个 runtime event 可能同时更新 status、active turn、审批卡和列表预览。
@@ -398,6 +404,17 @@ final class SessionStore: ObservableObject {
     var queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs: Set<ClientMessageID> = []
     var queuedTurnBlockedCompletionIDBySessionID: [SessionID: TurnID] = [:]
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
+    var turnCompletionReconciliationGeneration: UInt64 = 0
+    var turnCompletionReconciliationJobsBySessionID: [SessionID: TurnCompletionReconciliationJob] = [:]
+    // 最终回答通常紧跟 turn/completed。仅在通知缺失时按有限退避读取最新完整 Turn，
+    // 避免健康 WebSocket 下等待 60 秒列表轮询仍无法释放本地队列。
+    var turnCompletionReconciliationDelaysNanoseconds: [UInt64] = [
+        2_000_000_000,
+        4_000_000_000,
+        8_000_000_000,
+        16_000_000_000,
+        30_000_000_000,
+    ]
     var currentQueuedTurnProfileID: String?
     var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     var projectsByID: [String: AgentProject] = [:]
@@ -713,6 +730,7 @@ final class SessionStore: ObservableObject {
         sessionSearchLoadMoreTask?.cancel()
         missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
         queuedSessionReconnectTasks.values.forEach { $0.cancel() }
+        turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
         networkPathStatusSource.stop()
     }
 

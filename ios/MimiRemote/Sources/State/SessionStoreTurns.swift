@@ -1332,6 +1332,7 @@ extension SessionStore {
         }
 #endif
         invalidatePreparedConnectionChange()
+        cancelAllTurnCompletionReconciliations()
         isAppInBackground = true
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
@@ -1402,6 +1403,14 @@ extension SessionStore {
             }
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
             return
+        }
+        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
+            // 后台挂起前收到最终回答时，turn/completed 可能落在断线窗口。先重启轻量
+            // 最新 Turn 对账，与前台刷新并行；精确终态会保护后续陈旧 running 列表。
+            resumeTurnCompletionReconciliationIfNeeded(
+                sessionID: reconnectSessionID,
+                hostScope: foregroundSelectionLease.hostScope
+            )
         }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
