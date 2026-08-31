@@ -4758,6 +4758,51 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["更早的问题", "较新的问题", "较新的回答"])
     }
 
+    /// 重连、回前台和静默对账都会强制重拉首屏。用户已经翻上来的更早分页必须留在正文里，
+    /// 否则内容会突然缩短、分页入口重新出现，界面表现为反复跳动。
+    func testForcedFirstPageReloadKeepsEarlierHistoryPage() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history_reload", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let newer = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "较新的问题", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        let older = [
+            CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            historyPages: [
+                history.id: HistoryMessagesPage(messages: newer, previousCursor: "older_cursor", hasMoreBefore: true)
+            ],
+            historyCursorPages: [
+                "older_cursor": HistoryMessagesPage(messages: older, hasMoreBefore: false)
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        await store.loadEarlierHistoryForSelectedSession()
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["更早的问题", "较新的问题", "较新的回答"])
+
+        _ = await store.loadHistory(for: history, quiet: true, force: true)
+
+        XCTAssertEqual(
+            conversationStore.messages(for: history.id).map(\.content),
+            ["更早的问题", "较新的问题", "较新的回答"],
+            "强制重拉首屏不得删除已翻页的更早历史"
+        )
+    }
+
+
     func testSessionStoreIngestsHistoryPageContextOnInitialLoadEarlierAndRefresh() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_context_history", projectID: project.id, title: "历史 context", status: "history", source: "codex", resumeID: "history")

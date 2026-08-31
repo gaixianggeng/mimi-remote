@@ -922,4 +922,63 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(final.role, .assistant)
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
+
+    /// 首屏刷新只能替换“上一轮首屏投影”。分页 prepend 与条目补齐同样会走
+    /// projectedHistoryMessages，若它们污染了首屏投影记录，重连/回前台的首屏重拉会把
+    /// 用户翻上来的更早历史整段删掉，界面表现为内容突然缩短并跳位。
+    func testFirstPageRefreshKeepsEarlierPagePrependedBySetHistory() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-pagination-projection"
+        let firstPage = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "较新的问题", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        let olderPage = [
+            CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
+        ]
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+        store.setHistory(olderPage, sessionID: sessionID, timelineMutationKind: .prepend)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["更早的问题", "较新的问题", "较新的回答"]
+        )
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["更早的问题", "较新的问题", "较新的回答"],
+            "首屏重拉不得删除已翻页的更早历史"
+        )
+    }
+
+    func testFirstPageRefreshKeepsHistoryItemsAddedByEnrichment() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-enrichment-projection"
+        let firstPage = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "看看这张图", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "已生成。", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        // Item 页补齐的条目不属于首屏投影：summary 首屏并不携带它们，
+        // 因此首屏重拉时不能把它们当成过期首屏内容清掉。
+        let enriched = [
+            CodexHistoryMessage(id: "rollout:250", role: "assistant", content: "补齐的中间条目", createdAt: Date(timeIntervalSince1970: 25))
+        ]
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+        store.setHistory(enriched, sessionID: sessionID, timelineMutationKind: .enrichment)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["看看这张图", "补齐的中间条目", "已生成。"]
+        )
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["看看这张图", "补齐的中间条目", "已生成。"],
+            "首屏重拉不得删除条目补齐写入的历史"
+        )
+    }
 }

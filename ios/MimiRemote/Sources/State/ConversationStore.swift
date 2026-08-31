@@ -34,6 +34,12 @@ final class ConversationStore: ObservableObject {
     private var messageIndexByClientMessageIDBySessionID: [ScopedSessionID: [ClientMessageID: Int]] = [:]
     private var messageIndexByUUIDBySessionID: [ScopedSessionID: [UUID: Int]] = [:]
     private var historyProjectionCacheBySessionID: [ScopedSessionID: HistoryProjectionCache] = [:]
+    // 上一轮 canonical 首屏历史投影的 UUID。replaceHistorySnapshot 用它判断“旧首屏里
+    // 这轮不再出现的消息”应当被替换掉，因此只能由首屏自己写入。
+    // 不能复用 historyProjectionCacheBySessionID：分页 prepend 与条目补齐同样走
+    // projectedHistoryMessages 并覆写那份投影复用缓存，共用会让翻上来的更早历史和已补齐的
+    // 媒体条目在下一次首屏刷新时被误判成过期首屏投影而整段删除。
+    private var historyFirstPageProjectionIDsBySessionID: [ScopedSessionID: Set<UUID>] = [:]
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
     private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
@@ -324,8 +330,9 @@ final class ConversationStore: ObservableObject {
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         _ = flushPendingAssistantDelta(sessionID: sessionID)
-        let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[scopedSessionID]?.messages.map(\.id) ?? [])
+        let previousHistoryProjectionIDs = historyFirstPageProjectionIDsBySessionID[scopedSessionID] ?? []
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
+        historyFirstPageProjectionIDsBySessionID[scopedSessionID] = Set(converted.map(\.id))
         for message in converted {
             if let stableID = message.stableID {
                 let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
@@ -1405,6 +1412,7 @@ final class ConversationStore: ObservableObject {
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
         messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
         historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
+        historyFirstPageProjectionIDsBySessionID.removeValue(forKey: scopedSessionID)
         historyTimelineMutationBySessionID.removeValue(forKey: scopedSessionID)
         pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
