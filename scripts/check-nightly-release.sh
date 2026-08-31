@@ -251,7 +251,7 @@ fail_check("Release RELEASE_TAG 必须只来自 dispatch input") unless
   release.fetch("env").keys == ["RELEASE_TAG"]
 fail_check("release.yml 不得依赖 release-validation/readiness/attestation") if release.to_s.match?(/release-validation|readiness|attestation/i)
 release_jobs = release.fetch("jobs")
-expected_release_jobs = %w[source-trust verify verify-windows release]
+expected_release_jobs = %w[source-trust verify verify-windows release publish-windows]
 fail_check("Release jobs 集合存在未受 source-trust 约束的旁路") unless
   release_jobs.keys.sort == expected_release_jobs.sort
 release_trust = release_jobs.fetch("source-trust")
@@ -281,7 +281,7 @@ fail_check("Release trust step 含 continue-on-error、if 或其他旁路字段"
 fail_check("Release source-trust 没有调用统一来源校验入口") unless
   release_trust_step["run"] == "bash ./scripts/check-release-source.sh --check"
 
-%w[verify verify-windows release].each do |job_name|
+%w[verify verify-windows release publish-windows].each do |job_name|
   job = release_jobs.fetch(job_name)
   fail_check("Release #{job_name} 仓库条件不可放宽") unless
     job["if"] == "github.repository == 'gaixianggeng/mimi-remote'"
@@ -290,7 +290,12 @@ fail_check("Release source-trust 没有调用统一来源校验入口") unless
   fail_check("Release #{job_name} 没有绑定 production-release Environment") unless
     job["environment"] == "production-release"
 end
-fail_check("MIM-207 期间不得公开发布 Windows agentd 安装包") if release_jobs.key?("publish-windows")
+windows_publish = release_jobs.fetch("publish-windows")
+fail_check("Windows 发布 job 必须依赖已验证 artifact 和已创建的正式 Release") unless
+  Array(windows_publish["needs"]).sort == %w[release source-trust verify-windows].sort
+fail_check("Windows 发布 job 必须使用 Windows runner 和最小 contents:write 权限") unless
+  windows_publish["runs-on"] == "windows-latest" &&
+  windows_publish["permissions"] == { "contents" => "write" }
 %w[verify verify-windows release].each do |job_name|
   checkout = steps(release_jobs.fetch(job_name)).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
   fail_check("Release #{job_name} 没有 checkout source-trust 验证的 immutable SHA") unless
@@ -405,6 +410,10 @@ self_test() {
   mutate_release 'repository_dispatch:' 'push:'
   mutate_release 'run: bash ./scripts/check-release-source.sh --check' 'run: echo bypassed'
   mutate_release 'needs: source-trust' 'needs: []'
+  mutate_release '      - source-trust
+      - release
+      - verify-windows' '      - release
+      - verify-windows'
   mutate_release 'environment: production-release' 'environment: bypass-release'
   mutate_release 'fetch-depth: 0' 'fetch-depth: 1'
   mutate_release 'GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}' 'GORELEASER_CURRENT_TAG: v0.0.0'
