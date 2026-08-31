@@ -709,6 +709,34 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertFalse(SessionRowStateGlyph.shouldAnimate(state: .unread, reduceMotion: false))
     }
 
+    func testRunningStateAnimationUsesOneStableTimeDerivedRotation() {
+        let quarterCycle = Date(
+            timeIntervalSinceReferenceDate: SessionRowStateGlyph.runningCycleDuration / 4
+        )
+
+        // 重复出现只会读取同一个时间角度，不会像 repeatForever 那样累计动画事务。
+        for _ in 0 ..< 20 {
+            XCTAssertEqual(
+                SessionRowStateGlyph.runningRotation(at: quarterCycle, animates: true),
+                90,
+                accuracy: 0.001
+            )
+        }
+
+        XCTAssertEqual(
+            SessionRowStateGlyph.runningRotation(
+                at: Date(timeIntervalSinceReferenceDate: SessionRowStateGlyph.runningCycleDuration),
+                animates: true
+            ),
+            0,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            SessionRowStateGlyph.runningRotation(at: quarterCycle, animates: false),
+            0
+        )
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",
@@ -879,7 +907,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             .padding(16)
             .environmentObject(themeStore)
             .environment(\.colorScheme, appearance.colorScheme)
-            // 快照只验证缺口环的静态形状和位置，关闭事务动画以固定环的起点。
+            // 快照只验证缺口环的静态形状和位置，关闭事务动画以固定渲染帧。
             .transaction { $0.disablesAnimations = true }
             .background(themeStore.tokens(for: appearance.colorScheme).background)
             .frame(width: 460, height: 260)

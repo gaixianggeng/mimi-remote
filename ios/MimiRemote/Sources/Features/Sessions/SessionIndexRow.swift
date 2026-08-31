@@ -225,8 +225,6 @@ struct SessionRowStateGlyph: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var runningRotation: Double = 0
-
     let state: SessionRowState?
     let size: CGFloat
     /// 无状态时是否画一枚灰色空心环兜底。
@@ -238,6 +236,7 @@ struct SessionRowStateGlyph: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let animatesRunningRing = Self.shouldAnimate(state: state, reduceMotion: reduceMotion)
 
         Group {
             switch state {
@@ -250,14 +249,25 @@ struct SessionRowStateGlyph: View {
                     .font(themeStore.uiFont(size: size - 1, weight: .semibold))
                     .foregroundStyle(tokens.warning)
             case .running:
-                Circle()
-                    .trim(from: 0.08, to: 0.86)
-                    .stroke(
-                        tokens.primaryAction,
-                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(runningRotation))
-                    .frame(width: size, height: size)
+                // 旋转角度只由当前时间决定，不从 onAppear 反复提交 repeatForever。
+                // 行视图即使被列表重复复用，也始终只有一个动画时间源，不会叠加加速。
+                TimelineView(.animation(paused: !animatesRunningRing)) { context in
+                    Circle()
+                        .trim(from: 0.08, to: 0.86)
+                        .stroke(
+                            tokens.primaryAction,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                        )
+                        .rotationEffect(
+                            .degrees(
+                                Self.runningRotation(
+                                    at: context.date,
+                                    animates: animatesRunningRing
+                                )
+                            )
+                        )
+                        .frame(width: size, height: size)
+                }
             case .unread:
                 Circle()
                     .strokeBorder(tokens.success, lineWidth: 2)
@@ -283,29 +293,16 @@ struct SessionRowStateGlyph: View {
         // 宽度恒定：普通行也占同样的槽位，标题才不会因为有没有状态而左右跳。
         .frame(width: size, height: size)
         .accessibilityHidden(true)
-        .onAppear {
-            updateRunningAnimation()
-        }
-        .onChange(of: reduceMotion) { _, _ in
-            updateRunningAnimation()
-        }
-        .onChange(of: state) { _, _ in
-            updateRunningAnimation()
-        }
     }
 
-    private func updateRunningAnimation() {
-        guard Self.shouldAnimate(state: state, reduceMotion: reduceMotion) else {
-            withAnimation(.none) {
-                runningRotation = 0
-            }
-            return
-        }
+    static let runningCycleDuration = 0.9
 
-        runningRotation = 0
-        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
-            runningRotation = 360
-        }
+    static func runningRotation(at date: Date, animates: Bool) -> Double {
+        guard animates else { return 0 }
+
+        let elapsedInCycle = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: runningCycleDuration)
+        return elapsedInCycle / runningCycleDuration * 360
     }
 
     static func shouldAnimate(
