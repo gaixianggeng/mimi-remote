@@ -1296,13 +1296,15 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(goal.status, .active)
     }
 
-    func testConnectionDeprecationNoticeDoesNotBroadcastIntoKnownSession() async throws {
+    func testConnectionDeprecationNoticeLogsOnceWithoutBroadcastingIntoKnownSession() async throws {
         let project = AgentProject(id: "proj_deprecation", name: "Deprecation", path: "/tmp/deprecation")
         let pool = FakeCodexAppServerTransportPool()
+        var diagnostics: [CodexAppServerDeprecationDiagnostic] = []
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { pool.make() },
+            deprecationDiagnosticSink: { diagnostics.append($0) },
             configProvider: { makeDirectAppServerConfig(project: project) }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
@@ -1335,10 +1337,16 @@ extension ConversationDataFlowTests {
         }
         defer { observer.cancel() }
 
-        await runtime.handle(try decodeAppServerNotification(
+        let notification = try decodeAppServerNotification(
             #"{"method":"deprecationNotice","params":{"summary":"deprecated","details":"use pagination"}}"#
-        ))
+        )
+        await runtime.handle(notification)
+        await runtime.handle(notification)
         await fulfillment(of: [unexpectedEvent], timeout: 0.1)
+        XCTAssertEqual(diagnostics, [CodexAppServerDeprecationDiagnostic(
+            summary: "deprecated",
+            details: "use pagination"
+        )])
     }
 
     func testDirectRuntimeFansOutEventsToMultipleSubscribersForSameThread() async throws {

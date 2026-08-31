@@ -1,4 +1,25 @@
 import Foundation
+import os
+
+struct CodexAppServerDeprecationDiagnostic: Hashable {
+    let summary: String
+    let details: String?
+}
+
+enum CodexAppServerProtocolDiagnostics {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gaixianggeng.mimi",
+        category: "AppServerProtocol"
+    )
+
+    static func recordDeprecation(_ diagnostic: CodexAppServerDeprecationDiagnostic) {
+        // 上游文案可能包含路径或内部实现信息，统一按私密内容写入系统诊断日志。
+        logger.warning(
+            "method=deprecationNotice summary=\(diagnostic.summary, privacy: .private) details=\(diagnostic.details ?? "", privacy: .private)"
+        )
+    }
+}
+
 enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
     case gatewayUnavailable
@@ -138,6 +159,7 @@ actor CodexAppServerSessionRuntime {
     let runtimeProvider: String
     let transportFactory: () -> CodexAppServerTransport
     let configProvider: () async throws -> CodexAppServerConfigResponse
+    let deprecationDiagnosticSink: (CodexAppServerDeprecationDiagnostic) -> Void
     var config: CodexAppServerConfigResponse?
     var connection: CodexAppServerConnection?
     var connectionAttempt: CodexAppServerConnectionAttempt?
@@ -209,6 +231,7 @@ actor CodexAppServerSessionRuntime {
     var lastLiveSignalAtBySessionID: [SessionID: Date] = [:]
     let historyDowngradeGraceInterval: TimeInterval = 15
     var replayCursorEpoch: UInt64 = 0
+    var recordedConnectionDeprecationDiagnostics: Set<CodexAppServerDeprecationDiagnostic> = []
 
     init(
         endpoint: String,
@@ -219,6 +242,9 @@ actor CodexAppServerSessionRuntime {
         longRunningRequestTimeout: TimeInterval = 60,
         gatewayDefaults: UserDefaults = .standard,
         turnInterruptRecoveryDelaysNanoseconds: [UInt64] = [400_000_000, 1_000_000_000, 2_000_000_000],
+        deprecationDiagnosticSink: @escaping (CodexAppServerDeprecationDiagnostic) -> Void = {
+            CodexAppServerProtocolDiagnostics.recordDeprecation($0)
+        },
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -230,6 +256,7 @@ actor CodexAppServerSessionRuntime {
         self.longRunningRequestTimeout = longRunningRequestTimeout
         self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
         self.gatewayDefaults = gatewayDefaults
+        self.deprecationDiagnosticSink = deprecationDiagnosticSink
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
         }
@@ -3133,7 +3160,17 @@ actor CodexAppServerSessionRuntime {
         }
         if notification.method == "deprecationNotice",
            approvalSessionID(from: notification.params?.objectValue ?? [:]) == nil {
-            // 官方弃用通知没有 threadId，不能伪造归属并复制进所有会话正文。
+            let params = notification.params?.objectValue ?? [:]
+            let diagnostic = CodexAppServerDeprecationDiagnostic(
+                summary: params["summary"]?.stringValue ?? "deprecationNotice",
+                details: params["details"]?.stringValue
+            )
+            // 官方弃用通知没有 threadId，不能伪造归属并复制进所有会话正文；同一连接生命周期
+            // 只写一次私密诊断日志，既保留升级证据，也避免重连或重复通知刷屏。
+            guard recordedConnectionDeprecationDiagnostics.insert(diagnostic).inserted else {
+                return
+            }
+            deprecationDiagnosticSink(diagnostic)
             return
         }
         guard var event = projector.project(notification) else {
