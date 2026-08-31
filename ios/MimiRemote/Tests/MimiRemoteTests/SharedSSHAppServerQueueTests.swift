@@ -3,6 +3,80 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testComposerQueueTrayHidesDispatchingTurnButKeepsRecoverableEntries() {
+        let sessionID = "composer-queue-tray"
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        store.selectedSessionID = sessionID
+        store.queuedRunningTurnsBySessionID[sessionID] = [
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "waiting"),
+                clientMessageID: "waiting",
+                intent: .standard
+            ),
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "dispatching"),
+                clientMessageID: "dispatching",
+                intent: .standard,
+                dispatchState: .dispatching
+            ),
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "needs confirmation"),
+                clientMessageID: "needs-confirmation",
+                intent: .standard,
+                dispatchState: .needsConfirmation
+            ),
+        ]
+
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "尚未进入对话气泡的派发项仍需保持可见"
+        )
+        conversationStore.applyAssistantDelta(
+            AgentDelta(text: "runtime replay", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "runtime-turn",
+                itemID: "runtime-item",
+                messageID: "runtime-message",
+                clientMessageID: "dispatching",
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "非用户消息即使复用 clientMessageID，也不能提前隐藏派发项"
+        )
+
+        conversationStore.appendLocalUser(
+            "dispatching",
+            sessionID: sessionID,
+            clientMessageID: "dispatching"
+        )
+
+        XCTAssertEqual(
+            store.selectedQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "完整队列必须继续保留正在派发的消息，供管理和重连对账使用"
+        )
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "needs-confirmation"]
+        )
+    }
+
     func testSharedSSHOpeningIdleThreadResumesToValidateWriter() async throws {
         let project = AgentProject(id: "shared-open", name: "Shared Open", path: "/tmp/shared-open")
         let transport = FakeCodexAppServerTransport()

@@ -736,7 +736,7 @@ struct ComposerView: View {
 
     @ViewBuilder
     var queuedTurnTray: some View {
-        let turns = sessionStore.selectedQueuedTurns
+        let turns = sessionStore.selectedComposerTrayQueuedTurns
         if !turns.isEmpty || sessionStore.queuedTurnStorageErrorMessage != nil {
             let tokens = themeStore.tokens(for: colorScheme)
             let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
