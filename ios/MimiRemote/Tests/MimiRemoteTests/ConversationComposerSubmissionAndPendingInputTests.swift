@@ -5,48 +5,68 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
-    func testSharedThreadComposerTurnSettingsPolicyOnlyLocksExistingSharedSessions() {
+    func testComposerTurnSettingsPolicyFollowsWriterControl() {
+        XCTAssertEqual(ComposerTurnSettingsPolicy.resolve(canControlSession: true), .editable)
+        XCTAssertEqual(ComposerTurnSettingsPolicy.resolve(canControlSession: false), .unavailable)
+        XCTAssertTrue(ComposerTurnSettingsPolicy.editable.allowsTurnSettingsEditing)
+        XCTAssertFalse(ComposerTurnSettingsPolicy.unavailable.allowsTurnSettingsEditing)
         XCTAssertEqual(
-            ComposerTurnSettingsPolicy.resolve(
-                scope: .session("shared-thread"),
-                sessionRuntimeProvider: "codex",
-                isLocalSession: false,
-                isArchivedSession: false
-            ),
-            .sharedThreadManaged
+            ComposerTurnSettingsPolicy.unavailableMenuNotice,
+            "当前设备拥有会话控制权时，才能修改模型或计划模式"
         )
-        XCTAssertFalse(ComposerTurnSettingsPolicy.sharedThreadManaged.allowsTurnSettingsEditing)
-        XCTAssertEqual(
-            ComposerTurnSettingsPolicy.sharedThreadNotice,
-            "沿用共享线程设置；请在 Desktop 修改"
+    }
+
+    func testComposerTurnSettingsPolicyUsesSessionControlState() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let running = makeSession(
+            id: "composer-control-running",
+            projectID: "composer-control-project",
+            title: "控制权测试",
+            status: "running",
+            source: "codex",
+            activeTurnID: "composer-control-turn"
         )
 
-        let editableCases: [(
-            scope: ComposerDraftScopeKey,
-            runtimeProvider: String?,
-            isLocal: Bool,
-            isArchived: Bool
-        )] = [
-            (.session("local:project:message"), "codex", false, false),
-            (.session("optimistic-thread"), "codex", true, false),
-            (.newSession(projectID: "project"), "codex", false, false),
-            (.none, "codex", false, false),
-            (.session("claude-thread"), "claude", false, false),
-            (.session("chatgpt-thread"), "chatgpt", false, false),
-            (.session("archived-thread"), "codex", false, true),
-        ]
-        for item in editableCases {
+        for state in [SessionControlState.ipadOwned, .takenOver] {
+            store.sessionControlStateByID[running.id] = state
             XCTAssertEqual(
-                ComposerTurnSettingsPolicy.resolve(
-                    scope: item.scope,
-                    sessionRuntimeProvider: item.runtimeProvider,
-                    isLocalSession: item.isLocal,
-                    isArchivedSession: item.isArchived
-                ),
+                ComposerTurnSettingsPolicy.resolve(canControlSession: store.canControlSession(running)),
                 .editable
             )
         }
-        XCTAssertTrue(ComposerTurnSettingsPolicy.editable.allowsTurnSettingsEditing)
+
+        store.sessionControlStateByID[running.id] = .observing
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.resolve(canControlSession: store.canControlSession(running)),
+            .unavailable
+        )
+
+        store.sessionControlStateByID[running.id] = .takenOver
+        store.setActiveWriterConflict(true, sessionID: running.id)
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.resolve(canControlSession: store.canControlSession(running)),
+            .unavailable
+        )
+
+        store.setActiveWriterConflict(false, sessionID: running.id)
+        var readOnly = running
+        readOnly.canAcceptDirectInput = false
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.resolve(canControlSession: store.canControlSession(readOnly)),
+            .unavailable
+        )
+
+        var idle = running
+        idle.status = SessionStatus.completed.rawValue
+        idle.activeTurnID = nil
+        XCTAssertEqual(
+            ComposerTurnSettingsPolicy.resolve(canControlSession: store.canControlSession(idle)),
+            .editable
+        )
     }
 
     func testCompactComposerModelTitleUsesDeterministicWidthPolicy() {

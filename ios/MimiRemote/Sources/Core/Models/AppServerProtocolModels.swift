@@ -633,6 +633,28 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
+    func threadSettingsUpdate(
+        threadID: String,
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let turnParams = options.turnParams(projectPath: path)
+        var params: [String: CodexAppServerJSONValue?] = [
+            "threadId": .string(threadID)
+        ]
+        // 共享队列不接收 turn 级设置。只把本轮明确支持的运行设置提升为 Thread 设置，
+        // 权限、输出结构和自定义指令仍走各自的受控链路，不能在普通消息里顺带改写。
+        for key in ["model", "effort", "collaborationMode"] {
+            params[key] = turnParams[key] ?? nil
+        }
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/settings/update",
+            params: .object(params.compactMapValues { $0 })
+        )
+    }
+
     func threadQueueAdd(
         threadID: String,
         cwd: String,

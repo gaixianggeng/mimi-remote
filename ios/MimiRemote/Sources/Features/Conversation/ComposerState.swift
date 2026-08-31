@@ -41,29 +41,16 @@ enum ComposerDraftScopeKey: Hashable {
 
 enum ComposerTurnSettingsPolicy: Equatable {
     case editable
-    case sharedThreadManaged
+    case unavailable
 
-    static let sharedThreadNotice = String(
-        localized: "ui.use_shared_thread_settings_change_them_on_desktop"
+    static let unavailableMenuNotice = String(
+        localized: "ui.model_and_plan_mode_require_session_control"
     )
 
-    static func resolve(
-        scope: ComposerDraftScopeKey,
-        sessionRuntimeProvider: String?,
-        isLocalSession: Bool,
-        isArchivedSession: Bool
-    ) -> ComposerTurnSettingsPolicy {
-        // MIM-207 的生产 Codex 路径固定走共享 SSH 队列；不要再用尚未连接的 socket
-        // 推断 transport，否则首帧会把本地默认值误当成共享线程当前设置。
-        guard sessionRuntimeProvider == "codex",
-              !isLocalSession,
-              !isArchivedSession,
-              case .session(let sessionID) = scope,
-              !sessionID.hasPrefix("local:")
-        else {
-            return .editable
-        }
-        return .sharedThreadManaged
+    static func resolve(canControlSession: Bool) -> ComposerTurnSettingsPolicy {
+        // 模型和计划模式都是下一回合设置，应跟随真实 Writer 控制权，而不是会话来源。
+        // 这样移动端创建或接管的共享 Thread 不会在首轮发送后被误锁。
+        canControlSession ? .editable : .unavailable
     }
 
     var allowsTurnSettingsEditing: Bool {

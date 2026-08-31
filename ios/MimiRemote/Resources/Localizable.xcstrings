@@ -15819,6 +15819,23 @@
         }
       }
     },
+    "ui.model_and_plan_mode_require_session_control": {
+      "comment": "Composer notice shown when this device cannot edit settings for the next turn.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device must control the session to change the model or Plan mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备拥有会话控制权时，才能修改模型或计划模式"
+          }
+        }
+      }
+    },
     "ui.model_list_refreshed": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -32580,23 +32597,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "改用手动连接"
-          }
-        }
-      }
-    },
-    "ui.use_shared_thread_settings_change_them_on_desktop": {
-      "comment": "Composer notice explaining that shared thread settings are managed by Desktop.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use shared thread settings; change them on Desktop"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "沿用共享线程设置；请在 Desktop 修改"
           }
         }
       }

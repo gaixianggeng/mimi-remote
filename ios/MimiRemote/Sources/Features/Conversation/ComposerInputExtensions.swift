@@ -4,17 +4,6 @@ import SwiftUI
 
 // 权限选择、能力降级和队列边界属于输入状态协作，不让 ComposerView 主体继续增长。
 extension ComposerView {
-    @ViewBuilder
-    var sharedThreadSettingsNotice: some View {
-        if composerTurnSettingsPolicy == .sharedThreadManaged {
-            Label(ComposerTurnSettingsPolicy.sharedThreadNotice, systemImage: "desktopcomputer")
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("composer.sharedThreadSettingsNotice")
-        }
-    }
-
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
         composerState.applyPermissionMode(safePermissionMode(stored))

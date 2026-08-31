@@ -107,7 +107,6 @@ struct ComposerView: View {
                 .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
-            sharedThreadSettingsNotice
             composerInputRow(tokens: tokens)
         }
         // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
@@ -497,10 +496,7 @@ struct ComposerView: View {
             return .editable
         }
         return ComposerTurnSettingsPolicy.resolve(
-            scope: scope,
-            sessionRuntimeProvider: normalizedRuntimeProvider(session.runtimeProvider ?? session.source),
-            isLocalSession: session.source == "local",
-            isArchivedSession: sessionStore.isSessionArchived(sessionID)
+            canControlSession: sessionStore.canControlSession(session)
         )
     }
 
@@ -511,9 +507,6 @@ struct ComposerView: View {
         showsModelGridPicker = false
         showsAdvancedOptionsSheet = false
         showsAddContentPanel = false
-        if composerState.isPlanModeSelected {
-            setSendMode(.standard)
-        }
     }
 
     func switchComposerDraftScope(to nextScope: ComposerDraftScopeKey) {
@@ -737,7 +730,7 @@ struct ComposerView: View {
 
     @ViewBuilder
     var queuedTurnTray: some View {
-        let turns = sessionStore.selectedQueuedTurns
+        let turns = sessionStore.selectedComposerTrayQueuedTurns
         if !turns.isEmpty || sessionStore.queuedTurnStorageErrorMessage != nil {
             let tokens = themeStore.tokens(for: colorScheme)
             let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1347,7 +1340,7 @@ struct ComposerView: View {
     @inline(never)
     func compactModelControlBox(showsTitle: Bool) -> AnyView {
         guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
-            return AnyView(EmptyView())
+            return AnyView(unavailableModelControl)
         }
         return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
     }
@@ -1386,6 +1379,17 @@ struct ComposerView: View {
         // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
         // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
+            if composerTurnSettingsPolicy == .unavailable {
+                Section {
+                    Button(action: {}) {
+                        Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                    }
+                    .disabled(true)
+
+                    Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
+                }
+            }
+
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 runSettingsMenu
 
