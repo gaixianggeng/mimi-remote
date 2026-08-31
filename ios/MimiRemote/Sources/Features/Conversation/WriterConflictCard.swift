@@ -95,16 +95,14 @@ struct WriterConflictCard: View {
     private func compactActions(tokens: ThemeTokens) -> some View {
         if availability != nil {
             ViewThatFits(in: .horizontal) {
+                // 两个操作等分整行；文案保留固有宽度，空间不足时由 ViewThatFits 改为纵向。
                 HStack(spacing: 12) {
-                    Spacer(minLength: 0)
-                    retryButton(tokens: tokens)
-                    primaryButton(tokens: tokens)
+                    retryButton(tokens: tokens, fillsAvailableWidth: true)
+                    primaryButton(tokens: tokens, fillsAvailableWidth: true)
                 }
                 VStack(spacing: 8) {
-                    primaryButton(tokens: tokens)
-                        .frame(maxWidth: .infinity)
-                    retryButton(tokens: tokens)
-                        .frame(maxWidth: .infinity)
+                    primaryButton(tokens: tokens, fillsAvailableWidth: true)
+                    retryButton(tokens: tokens, fillsAvailableWidth: true)
                 }
             }
         } else {
@@ -113,7 +111,10 @@ struct WriterConflictCard: View {
         }
     }
 
-    private func retryButton(tokens: ThemeTokens) -> some View {
+    private func retryButton(
+        tokens: ThemeTokens,
+        fillsAvailableWidth: Bool = false
+    ) -> some View {
         Button(action: onRetry) {
             Group {
                 if isRetrying {
@@ -123,7 +124,12 @@ struct WriterConflictCard: View {
                     Text(L10n.text("ui.retry"))
                 }
             }
-            .frame(minWidth: 64, minHeight: 44)
+            .fixedSize(horizontal: fillsAvailableWidth, vertical: false)
+            .frame(
+                minWidth: 64,
+                maxWidth: fillsAvailableWidth ? .infinity : nil,
+                minHeight: 44
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.bordered)
@@ -133,7 +139,10 @@ struct WriterConflictCard: View {
         .accessibilityHint(L10n.text("ui.codex_active_writer_conflict"))
     }
 
-    private func primaryButton(tokens: ThemeTokens) -> some View {
+    private func primaryButton(
+        tokens: ThemeTokens,
+        fillsAvailableWidth: Bool = false
+    ) -> some View {
         Button(action: primaryAction) {
             HStack(spacing: 7) {
                 if isDuplicating || availability == .checking {
@@ -148,7 +157,11 @@ struct WriterConflictCard: View {
             }
             .font(themeStore.uiFont(.callout, weight: .semibold))
             .foregroundStyle(tokens.writerConflictPrimaryActionForeground)
-            .frame(minHeight: 44)
+            .fixedSize(horizontal: fillsAvailableWidth, vertical: false)
+            .frame(
+                maxWidth: fillsAvailableWidth ? .infinity : nil,
+                minHeight: 44
+            )
             .padding(.horizontal, 2)
             .contentShape(Rectangle())
         }
