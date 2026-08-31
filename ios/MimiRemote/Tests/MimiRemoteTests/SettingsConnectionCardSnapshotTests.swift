@@ -137,6 +137,35 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
         assertFixed(compactView, named: "diagnostics-network-path-single-line", width: 393, height: 180)
     }
 
+    func testConnectionDiagnosticsNetworkPathWrapsLongEnglishDirectSummary() throws {
+        let previousLanguage = UserDefaults.standard.string(forKey: AppLanguage.preferenceKey)
+        UserDefaults.standard.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
+        defer {
+            if let previousLanguage {
+                UserDefaults.standard.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+
+        let networkPath = try AgentAPIClient.decoder.decode(
+            TailscaleNetworkPathResponse.self,
+            from: Data(
+                #"{"kind":"direct","observed_at":"2026-08-30T10:00:00Z","relay_region":null}"#.utf8
+            )
+        )
+
+        let view = Form {
+            Section {
+                ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
+            }
+        }
+        .frame(width: 393, height: 180)
+        .environment(\.dynamicTypeSize, .large)
+
+        assertFixed(view, named: "diagnostics-network-path-english-direct-wrap", width: 393, height: 180)
+    }
+
     private func makeThemeStore() -> ThemeStore {
         let suite = "SettingsConnectionCardSnapshotTests.Theme.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

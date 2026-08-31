@@ -1353,9 +1353,27 @@ struct ConnectionDiagnosticsNetworkPathRow: View {
     var body: some View {
         // iOS 26/27 的 Form 会把带自定义内容的 LabeledContent 拉伸到剩余整屏高度。
         // 改用固有高度布局，让网络路径与后续诊断行始终连续排列。
+        Group {
+            // 常规字号下保留短 DERP 摘要的紧凑单行；其余路径必须完整测量后再决定是否换行。
+            if networkPath.kind == .derp, !dynamicTypeSize.isAccessibilitySize {
+                compactDERPContent
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    horizontalContent
+                    verticalContent
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.connection.diagnostics.networkPath")
+    }
+
+    private var compactDERPContent: some View {
         HStack(alignment: .center, spacing: 12) {
             Text(L10n.text("ui.tailscale_network_path"))
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .lineLimit(1)
                 .layoutPriority(1)
 
             Spacer(minLength: 12)
@@ -1363,13 +1381,34 @@ struct ConnectionDiagnosticsNetworkPathRow: View {
             networkPathLabel
                 .font(.subheadline)
                 .multilineTextAlignment(.trailing)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.82)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
         }
-        .frame(maxWidth: .infinity)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("settings.connection.diagnostics.networkPath")
+    }
+
+    private var horizontalContent: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(L10n.text("ui.tailscale_network_path"))
+                .fixedSize(horizontal: true, vertical: false)
+
+            Spacer(minLength: 12)
+
+            networkPathLabel
+                .font(.subheadline)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var verticalContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L10n.text("ui.tailscale_network_path"))
+
+            networkPathLabel
+                .font(.subheadline)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var networkPathLabel: some View {
