@@ -854,14 +854,82 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.expandedContentPadding, 2)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.collapsedLeadingPadding, 0)
         XCTAssertEqual(ComposerStatusTrayPlacement.embedded.visualHeight, 36)
-        XCTAssertEqual(ComposerStatusTrayPlacement.embedded.disclosureHitSize, CGSize(width: 44, height: 44))
 
         XCTAssertTrue(ComposerStatusTrayPlacement.standalone.usesIndependentSurface)
         XCTAssertFalse(ComposerStatusTrayPlacement.standalone.usesEmbeddedStatusChip)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.expandedContentPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.collapsedLeadingPadding, 10)
         XCTAssertEqual(ComposerStatusTrayPlacement.standalone.visualHeight, 44)
-        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.disclosureHitSize, CGSize(width: 44, height: 44))
+    }
+
+    /// disclosure 两种放置都必须给满 44×44，并且命中框中心要压在首行视觉高度的中点上。
+    /// 内嵌状态条只有 36pt 高，命中框靠 -4pt 偏移上下各溢出 4pt；overlay 不参与布局，
+    /// 溢出落在输入卡的 8pt 内距和 VStack 的 4pt spacing 里，不会撑高状态条。
+    func testStatusTrayDisclosureKeepsFullTouchTargetInBothPlacements() {
+        for placement in [ComposerStatusTrayPlacement.standalone, .embedded] {
+            XCTAssertEqual(
+                placement.disclosureHitSize,
+                CGSize(width: 44, height: 44),
+                "disclosure 必须始终满足 44×44 触控目标，不能为了迁就状态条高度缩水"
+            )
+
+            // 命中框中心 = 偏移 + 半个命中框，必须落在首行视觉高度的中点。
+            let hitCenter = placement.disclosureVerticalOffset + placement.disclosureHitSize.height / 2
+            XCTAssertEqual(
+                hitCenter,
+                placement.visualHeight / 2,
+                "箭头中心必须压在首行中点，否则收起态和展开态会错位"
+            )
+        }
+
+        XCTAssertEqual(ComposerStatusTrayPlacement.standalone.disclosureVerticalOffset, 0)
+        XCTAssertEqual(
+            ComposerStatusTrayPlacement.embedded.disclosureVerticalOffset,
+            -4,
+            "36pt 状态条上 44pt 命中框要上下各溢出 4pt"
+        )
+    }
+
+    /// disclosure 现在锚在托盘右上角，收起态和展开态共用同一个内距，箭头不再平移。
+    /// 让位宽度必须真的能容下命中框：收起态内容从托盘边缘算起，展开态内容已经被
+    /// `expandedContentPadding` 内缩过一次，两边算完都不能压到按钮下面。
+    func testStatusTrayDisclosureReservesEnoughRoomInBothStates() {
+        let trayWidth: CGFloat = 400
+
+        for placement in [ComposerStatusTrayPlacement.standalone, .embedded] {
+            XCTAssertEqual(
+                placement.disclosureTrailingInset,
+                placement.expandedContentPadding,
+                "disclosure 内距必须与展开态内容内距同源，否则两态之间箭头会横向平移"
+            )
+
+            let buttonLeadingEdge = trayWidth
+                - placement.disclosureTrailingInset
+                - placement.disclosureHitSize.width
+
+            let collapsedContentTrailingEdge = trayWidth
+                - placement.disclosureTrailingInset
+                - placement.disclosureClearance
+            let expandedContentTrailingEdge = trayWidth
+                - placement.expandedContentPadding
+                - placement.disclosureClearance
+
+            XCTAssertLessThanOrEqual(
+                collapsedContentTrailingEdge,
+                buttonLeadingEdge,
+                "收起态的 chip 不能压到 disclosure 命中框下面"
+            )
+            XCTAssertLessThanOrEqual(
+                expandedContentTrailingEdge,
+                buttonLeadingEdge,
+                "展开态的状态模块不能压到 disclosure 命中框下面"
+            )
+            XCTAssertEqual(
+                collapsedContentTrailingEdge,
+                expandedContentTrailingEdge,
+                "两态的内容右边界必须落在同一处，否则展开时状态模块会横向跳一下"
+            )
+        }
     }
 
     func testGoalTrayLightSurfaceKeepsExplicitBorderForAccessibility() {
