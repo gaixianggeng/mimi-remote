@@ -466,6 +466,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private let requestLogLock = NSLock()
     private var requestedProjectIDsStorage: [String?] = []
     private var requestedWorkspaceIDsStorage: [String] = []
+    private var requestedWorkspaceCursorsStorage: [String?] = []
+    private var requestedWorkspaceLimitsStorage: [Int?] = []
 
     let projectsResult: [AgentProject]
     let projectsHandler: (() async throws -> [AgentProject])?
@@ -528,6 +530,12 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
     var requestedWorkspaceIDs: [String] {
         requestLogLock.withLock { requestedWorkspaceIDsStorage }
+    }
+    var requestedWorkspaceCursors: [String?] {
+        requestLogLock.withLock { requestedWorkspaceCursorsStorage }
+    }
+    var requestedWorkspaceLimits: [Int?] {
+        requestLogLock.withLock { requestedWorkspaceLimitsStorage }
     }
     var requestedThreadSearchQueries: [String] {
         requestLogLock.withLock { requestedThreadSearchQueriesStorage }
@@ -1014,9 +1022,14 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         // 否则并发 append 会让 Array 内存损坏并掩盖真实业务结果。
         requestLogLock.withLock {
             requestedWorkspaceIDsStorage.append(workspace.id)
+            requestedWorkspaceCursorsStorage.append(cursor)
+            requestedWorkspaceLimitsStorage.append(limit)
         }
         if let error = workspaceSessionsError[workspace.id] {
             throw error
+        }
+        if let cursor, let page = cursorPages[cursor] {
+            return page
         }
         if let page = workspacePages[workspace.id] {
             return page
