@@ -124,7 +124,7 @@ Mimi TestFlight 使用本机 `git testflight-push`：先推送并核对远端 co
 
 - Tailscale 未连接时不会回退公网；Mac 与移动设备在同一局域网时可重新生成 LAN 配对信息，否则必须恢复 Tailnet。
 - 当前 Endpoint 仍可能是 Tailscale 裸 IP 上的 HTTP；ATS 已收窄为本地网络和 `ts.net` 例外，并由应用层拒绝公网 HTTP。公开发布前继续完成真机验收并评估 MagicDNS `*.ts.net` + HTTPS。
-- 旧 REST runtime、PTY session manager 和 stdio app-server client 仍有测试/兼容代码，但不在生产主链路。删除前必须先做可达性复核和全量回归。
+- 旧 REST runtime 已删除。PTY session manager 和 stdio app-server client 仍有诊断、测试或平台消费者，但不在生产会话主链路；删除前必须分别完成可达性复核和全量回归。
 - Claude 通道依赖外部 CLI 与 bridge，鉴权和生命周期仍弱于 Codex 主通道，不能作为默认路径；agentd 对 bridge 执行 `>=0.2.7` 版本门禁、强制关闭 bypass permissions，版本不兼容时 fail closed 并给出升级命令。
 - 多 Mac 的本地单活档案已完成；Bonjour/SSH 自动发现、跨设备档案同步、Cloud thread、后台 push、IDE sync、Browser / Computer Use 后置。在真实需求明确前不增加云端控制面或复杂分布式架构。
 - 设计文档只描述目标或历史方案，不能覆盖当前代码事实。功能完成后要同步更新本文和对应专题文档，避免再次依赖会话历史判断现状。
