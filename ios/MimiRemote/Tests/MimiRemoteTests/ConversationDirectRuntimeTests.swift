@@ -1296,6 +1296,59 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(goal.status, .active)
     }
 
+    func testConnectionDeprecationNoticeLogsOnceWithoutBroadcastingIntoKnownSession() async throws {
+        let project = AgentProject(id: "proj_deprecation", name: "Deprecation", path: "/tmp/deprecation")
+        let pool = FakeCodexAppServerTransportPool()
+        var diagnostics: [CodexAppServerDeprecationDiagnostic] = []
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            deprecationDiagnosticSink: { diagnostics.append($0) },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "",
+                input: [],
+                resumeID: "",
+                clientMessageID: nil
+            ))
+        }
+        let transport = try await waitForFakeAppServerTransport(in: pool, index: 0)
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        transportResponse(transport, id: threadStart.id, result: #"{"thread":{"id":"thr_deprecation","sessionId":"thr_deprecation","preview":"","ephemeral":false,"modelProvider":"openai","createdAt":1780490820,"updatedAt":1780490821,"status":{"type":"idle"},"path":null,"cwd":"/tmp/deprecation","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"弃用提示","turns":[]}}"#)
+        _ = try await createTask.value
+
+        let stream = await runtime.attachEvents(sessionID: "thr_deprecation")
+        let unexpectedEvent = expectation(description: "connection deprecation is not broadcast")
+        unexpectedEvent.isInverted = true
+        let observer = Task {
+            for await _ in stream {
+                unexpectedEvent.fulfill()
+                return
+            }
+        }
+        defer { observer.cancel() }
+
+        let notification = try decodeAppServerNotification(
+            #"{"method":"deprecationNotice","params":{"summary":"deprecated","details":"use pagination"}}"#
+        )
+        await runtime.handle(notification)
+        await runtime.handle(notification)
+        await fulfillment(of: [unexpectedEvent], timeout: 0.1)
+        XCTAssertEqual(diagnostics, [CodexAppServerDeprecationDiagnostic(
+            summary: "deprecated",
+            details: "use pagination"
+        )])
+    }
+
     func testDirectRuntimeFansOutEventsToMultipleSubscribersForSameThread() async throws {
         let project = AgentProject(id: "proj_event_fanout", name: "Event Fanout", path: "/tmp/event-fanout")
         let pool = FakeCodexAppServerTransportPool()

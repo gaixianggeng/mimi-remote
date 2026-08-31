@@ -3,6 +3,80 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testComposerQueueTrayHidesDispatchingTurnButKeepsRecoverableEntries() {
+        let sessionID = "composer-queue-tray"
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        store.selectedSessionID = sessionID
+        store.queuedRunningTurnsBySessionID[sessionID] = [
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "waiting"),
+                clientMessageID: "waiting",
+                intent: .standard
+            ),
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "dispatching"),
+                clientMessageID: "dispatching",
+                intent: .standard,
+                dispatchState: .dispatching
+            ),
+            QueuedTurnEntry(
+                sessionID: sessionID,
+                payload: CodexAppServerTurnPayload(prompt: "needs confirmation"),
+                clientMessageID: "needs-confirmation",
+                intent: .standard,
+                dispatchState: .needsConfirmation
+            ),
+        ]
+
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "尚未进入对话气泡的派发项仍需保持可见"
+        )
+        conversationStore.applyAssistantDelta(
+            AgentDelta(text: "runtime replay", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "runtime-turn",
+                itemID: "runtime-item",
+                messageID: "runtime-message",
+                clientMessageID: "dispatching",
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "非用户消息即使复用 clientMessageID，也不能提前隐藏派发项"
+        )
+
+        conversationStore.appendLocalUser(
+            "dispatching",
+            sessionID: sessionID,
+            clientMessageID: "dispatching"
+        )
+
+        XCTAssertEqual(
+            store.selectedQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "完整队列必须继续保留正在派发的消息，供管理和重连对账使用"
+        )
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "needs-confirmation"]
+        )
+    }
+
     func testSharedSSHOpeningIdleThreadResumesToValidateWriter() async throws {
         let project = AgentProject(id: "shared-open", name: "Shared Open", path: "/tmp/shared-open")
         let transport = FakeCodexAppServerTransport()
@@ -93,13 +167,34 @@ extension ConversationDataFlowTests {
         let createRequests = await appServerRequests(transport)
         XCTAssertFalse(createRequests.contains { $0.method == "turn/start" })
 
+        var queueOptions = CodexAppServerTurnOptions.default
+        queueOptions.model = "gpt-5.6-luna"
+        queueOptions.reasoningEffort = .high
+        queueOptions.collaborationMode = .plan
         let submitTask = Task {
             try await runtime.submitTurnOutcome(
                 sessionID: "thread-active",
-                payload: CodexAppServerTurnPayload(prompt: "排进共享队列"),
+                payload: CodexAppServerTurnPayload(prompt: "排进共享队列", options: queueOptions),
                 clientMessageID: "client-first"
             )
         }
+        let settings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+        let settingsParams = try XCTUnwrap(settings.params?.objectValue)
+        XCTAssertEqual(Set(settingsParams.keys), ["threadId", "model", "effort", "collaborationMode"])
+        XCTAssertEqual(settingsParams["threadId"]?.stringValue, "thread-active")
+        XCTAssertEqual(settingsParams["model"]?.stringValue, "gpt-5.6-luna")
+        XCTAssertEqual(settingsParams["effort"]?.stringValue, "high")
+        let collaborationMode = try XCTUnwrap(settingsParams["collaborationMode"]?.objectValue)
+        XCTAssertEqual(collaborationMode["mode"]?.stringValue, "plan")
+        let collaborationSettings = try XCTUnwrap(collaborationMode["settings"]?.objectValue)
+        XCTAssertEqual(Set(collaborationSettings.keys), ["model", "reasoning_effort", "developer_instructions"])
+        XCTAssertEqual(collaborationSettings["model"]?.stringValue, "gpt-5.6-luna")
+        XCTAssertEqual(collaborationSettings["reasoning_effort"]?.stringValue, "high")
+        XCTAssertEqual(collaborationSettings["developer_instructions"], .null)
+        let requestsBeforeSettingsACK = await appServerRequests(transport)
+        XCTAssertEqual(requestsBeforeSettingsACK.last?.method, "thread/settings/update")
+        XCTAssertFalse(requestsBeforeSettingsACK.contains { $0.method == "thread/queue/add" })
+        transportResponse(transport, id: settings.id, result: #"{}"#)
         let add = try await waitForFakeAppServerRequest(transport, method: "thread/queue/add")
         let params = try XCTUnwrap(add.params?.objectValue)
         XCTAssertEqual(Set(params.keys), ["threadId", "input", "clientUserMessageId"])
@@ -112,7 +207,9 @@ extension ConversationDataFlowTests {
         let submitOutcome = try await submitTask.value
         XCTAssertEqual(submitOutcome, .serverQueued(submissionID: "submission-first", startedTurnID: nil))
         let requestsAfterSubmit = await appServerRequests(transport)
-        XCTAssertFalse(requestsAfterSubmit.contains { $0.method == "thread/settings/update" })
+        let settingsIndex = try XCTUnwrap(requestsAfterSubmit.firstIndex { $0.method == "thread/settings/update" })
+        let addIndex = try XCTUnwrap(requestsAfterSubmit.firstIndex { $0.method == "thread/queue/add" })
+        XCTAssertLessThan(settingsIndex, addIndex)
         XCTAssertFalse(requestsAfterSubmit.contains { $0.method == "turn/start" })
 
         let beforeUnsupported = await transport.sentMessages().count
@@ -123,6 +220,12 @@ extension ConversationDataFlowTests {
                 clientMessageID: "client-unsupported"
             )
         }
+        let unsupportedSettings = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/settings/update",
+            after: beforeUnsupported
+        )
+        transportResponse(transport, id: unsupportedSettings.id, result: #"{}"#)
         let unsupportedAdd = try await waitForFakeAppServerRequest(
             transport,
             method: "thread/queue/add",
@@ -140,6 +243,71 @@ extension ConversationDataFlowTests {
         let unsupportedRequests = Array((await appServerRequests(transport)).dropFirst(beforeUnsupported))
         XCTAssertFalse(unsupportedRequests.contains { $0.method == "thread/queue/list" })
         XCTAssertFalse(unsupportedRequests.contains { $0.method == "thread/items/list" })
+    }
+
+    func testSharedSSHSettingsFailureDoesNotQueueAndClearsSubmissionInFlight() async throws {
+        let project = AgentProject(id: "shared-settings-error", name: "Shared Settings Error", path: "/tmp/shared-settings-error")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            configProvider: { makeSharedSSHConfig(project: project) }
+        )
+        let first = try await prepareEmptySharedThread(
+            runtime: runtime,
+            pool: pool,
+            project: project,
+            id: "thread-settings-error"
+        )
+        let firstSubmit = Task {
+            try await runtime.submitTurnOutcome(
+                sessionID: "thread-settings-error",
+                payload: CodexAppServerTurnPayload(prompt: "first"),
+                clientMessageID: "client-settings-error"
+            )
+        }
+        let firstResume = try await waitForFakeAppServerRequest(first, method: "thread/resume")
+        transportResponse(
+            first,
+            id: firstResume.id,
+            result: sharedIdleThreadJSON(id: "thread-settings-error", cwd: project.path)
+        )
+        let failedSettings = try await waitForFakeAppServerRequest(first, method: "thread/settings/update")
+        transportErrorResponse(first, id: failedSettings.id, code: -32600, message: "settings rejected")
+        do {
+            _ = try await firstSubmit.value
+            XCTFail("settings/update 失败时必须终止提交")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("settings rejected"))
+        }
+        let failedRequests = await appServerRequests(first)
+        XCTAssertFalse(failedRequests.contains { $0.method == "thread/queue/add" })
+        let retryStartIndex = await first.sentMessages().count
+
+        let retrySubmit = Task {
+            try await runtime.submitTurnOutcome(
+                sessionID: "thread-settings-error",
+                payload: CodexAppServerTurnPayload(prompt: "retry"),
+                clientMessageID: "client-settings-retry"
+            )
+        }
+        try await respondToSharedSettingsUpdate(first, after: retryStartIndex)
+        let retryAdd = try await waitForFakeAppServerRequest(
+            first,
+            method: "thread/queue/add",
+            after: retryStartIndex
+        )
+        transportResponse(
+            first,
+            id: retryAdd.id,
+            result: #"{"queuedSubmission":{"id":"submission-retry","clientUserMessageId":"client-settings-retry"}}"#
+        )
+        let retryOutcome = try await retrySubmit.value
+        XCTAssertEqual(
+            retryOutcome,
+            .serverQueued(submissionID: "submission-retry", startedTurnID: nil)
+        )
     }
 
     func testSharedSSHQueueACKLossReconcilesQueueItemsQueueWithFullPagination() async throws {
@@ -166,7 +334,8 @@ extension ConversationDataFlowTests {
             id: initialResume.id,
             result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path)
         )
-        let add = try await waitForFakeAppServerRequest(first, method: "thread/queue/add")
+        try await respondToSharedSettingsUpdate(first)
+        _ = try await waitForFakeAppServerRequest(first, method: "thread/queue/add")
         first.failReceive()
 
         let second = try await waitForFakeAppServerTransport(in: pool, index: 1)
@@ -233,7 +402,8 @@ extension ConversationDataFlowTests {
             id: initialResume.id,
             result: sharedIdleThreadJSON(id: "thread-not-found", cwd: project.path)
         )
-        let add = try await waitForFakeAppServerRequest(first, method: "thread/queue/add")
+        try await respondToSharedSettingsUpdate(first)
+        _ = try await waitForFakeAppServerRequest(first, method: "thread/queue/add")
         first.failReceive()
 
         let second = try await waitForFakeAppServerTransport(in: pool, index: 1)
@@ -275,6 +445,7 @@ extension ConversationDataFlowTests {
         }
         let initialResume = try await waitForFakeAppServerRequest(first, method: "thread/resume")
         transportResponse(first, id: initialResume.id, result: sharedIdleThreadJSON(id: "thread-items", cwd: project.path))
+        try await respondToSharedSettingsUpdate(first)
         _ = try await waitForFakeAppServerRequest(first, method: "thread/queue/add")
         first.failReceive()
 
@@ -903,7 +1074,8 @@ private func makeSharedSSHConfig(project: AgentProject) -> CodexAppServerConfigR
         policy: CodexAppServerPolicyMetadata(
             allowedMethods: [
                 "initialize", "initialized", "thread/start", "thread/resume", "thread/read",
-                "thread/turns/list", "thread/items/list", "thread/queue/add", "thread/queue/list"
+                "thread/turns/list", "thread/items/list", "thread/settings/update",
+                "thread/queue/add", "thread/queue/list"
             ],
             projectsSource: "agentd_allowlist"
         )
@@ -912,6 +1084,22 @@ private func makeSharedSSHConfig(project: AgentProject) -> CodexAppServerConfigR
 
 private func appServerRequests(_ transport: FakeCodexAppServerTransport) async -> [CodexAppServerRequest] {
     await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+}
+
+private func respondToSharedSettingsUpdate(
+    _ transport: FakeCodexAppServerTransport,
+    after startIndex: Int = 0
+) async throws {
+    let settings = try await waitForFakeAppServerRequest(
+        transport,
+        method: "thread/settings/update",
+        after: startIndex
+    )
+    let requestsBeforeSettingsACK = await appServerRequests(transport)
+    XCTAssertFalse(requestsBeforeSettingsACK.contains { request in
+        request.method == "thread/queue/add"
+    })
+    transportResponse(transport, id: settings.id, result: #"{}"#)
 }
 
 @MainActor

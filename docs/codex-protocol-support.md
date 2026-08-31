@@ -36,7 +36,7 @@ Go Gateway 当前开放 31 个 client frame method，其中 `initialized` 是 no
 
 共享 SSH 模式的普通用户消息只使用 `thread/queue/add`。客户端初始化时必须声明 `experimentalApi: true`。发送结果不确定时，客户端用同一个 `clientUserMessageId` 依次查询 `thread/queue/list` 和 `thread/items/list`，不能盲目重发。`turn/start` 只保留给非共享旧链路和内部标题任务。
 
-历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。线程模型、工作目录和权限是共享状态；普通消息不能隐式修改它们，只有用户明确操作时才调用 `thread/settings/update`。
+历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。线程模型、工作目录和权限是共享状态；`thread/queue/add` 不隐式修改它们。移动端提交共享队列消息时，会先用独立的 `thread/settings/update` 应用 Composer 为下一回合明确选择的模型、推理强度和协作模式，确认成功后才调用 `thread/queue/add`；权限继续走独立的受控链路。
 
 Claude 实验通道使用更小的独立 allowlist，当前要求 `alleycat-claude-bridge >= 0.2.7`。`0.2.1` 首次开放 `account/rateLimits/read`，请求参数固定改写为 `{}`；`0.2.3` 起补齐事件百分比映射。`0.2.5` 起优先复用 Claude Code 已登录凭据主动读取 OAuth usage：macOS 从登录 Keychain 的 `Claude Code-credentials` 获取短期 access token，其他平台可使用权限收紧的 `~/.claude/.credentials.json`，随后请求固定的 Anthropic OAuth usage beta endpoint，将 5h/7d 窗口映射为现有协议。`0.2.6` 起，macOS token 过期或接口返回 401 时通过系统 PTY 执行 Claude CLI `/status` 认证路径，等待 Keychain 更新后只重试一次；`0.2.7` 起支持受控的运行期 `thread/list.refreshHistory`。bridge 不直接读取、消费或覆盖 refresh token。access token 只通过子进程 stdin 传给禁用 `.curlrc` 的系统 `curl`，不进入命令参数、日志或磁盘缓存；成功快照缓存 60 秒，Keychain、scope、续期、网络、HTTP 或解析失败均不影响会话链路。
 

@@ -466,6 +466,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private let requestLogLock = NSLock()
     private var requestedProjectIDsStorage: [String?] = []
     private var requestedWorkspaceIDsStorage: [String] = []
+    private var requestedWorkspaceCursorsStorage: [String?] = []
+    private var requestedWorkspaceLimitsStorage: [Int?] = []
 
     let projectsResult: [AgentProject]
     let projectsHandler: (() async throws -> [AgentProject])?
@@ -523,11 +525,18 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let supportsLatestTurnHistoryPage: Bool
+    let latestTurnHistoryHandler: ((String) async throws -> HistoryMessagesPage?)?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
     var requestedWorkspaceIDs: [String] {
         requestLogLock.withLock { requestedWorkspaceIDsStorage }
+    }
+    var requestedWorkspaceCursors: [String?] {
+        requestLogLock.withLock { requestedWorkspaceCursorsStorage }
+    }
+    var requestedWorkspaceLimits: [Int?] {
+        requestLogLock.withLock { requestedWorkspaceLimitsStorage }
     }
     var requestedThreadSearchQueries: [String] {
         requestLogLock.withLock { requestedThreadSearchQueriesStorage }
@@ -637,7 +646,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
-        supportsLatestTurnHistoryPage: Bool = true
+        supportsLatestTurnHistoryPage: Bool = true,
+        latestTurnHistoryHandler: ((String) async throws -> HistoryMessagesPage?)? = nil
     ) {
         self.projectsResult = projects
         self.projectsHandler = projectsHandler
@@ -697,6 +707,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
         self.supportsLatestTurnHistoryPage = supportsLatestTurnHistoryPage
+        self.latestTurnHistoryHandler = latestTurnHistoryHandler
     }
 
     func projects() async throws -> [AgentProject] {
@@ -1014,9 +1025,14 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         // 否则并发 append 会让 Array 内存损坏并掩盖真实业务结果。
         requestLogLock.withLock {
             requestedWorkspaceIDsStorage.append(workspace.id)
+            requestedWorkspaceCursorsStorage.append(cursor)
+            requestedWorkspaceLimitsStorage.append(limit)
         }
         if let error = workspaceSessionsError[workspace.id] {
             throw error
+        }
+        if let cursor, let page = cursorPages[cursor] {
+            return page
         }
         if let page = workspacePages[workspace.id] {
             return page
@@ -1227,6 +1243,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestedMessageSessionIDs.append(sessionID)
         requestedMessageCursors.append(nil)
         requestedMessageLimits.append(1)
+        if let latestTurnHistoryHandler {
+            return try await latestTurnHistoryHandler(sessionID)
+        }
         if let page = historyPages[sessionID] {
             return page
         }

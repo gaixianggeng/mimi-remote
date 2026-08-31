@@ -1683,6 +1683,7 @@ enum MessageKind: String, Codable, Hashable {
     case fileChangeSummary = "file_change_summary"
     case approval
     case userInput = "user_input"
+    case warning
     case error
 }
 
