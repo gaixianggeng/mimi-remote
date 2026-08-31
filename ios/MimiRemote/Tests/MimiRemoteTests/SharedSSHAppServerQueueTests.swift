@@ -40,6 +40,26 @@ extension ConversationDataFlowTests {
             ["waiting", "dispatching", "needs-confirmation"],
             "尚未进入对话气泡的派发项仍需保持可见"
         )
+        conversationStore.applyAssistantDelta(
+            AgentDelta(text: "runtime replay", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "runtime-turn",
+                itemID: "runtime-item",
+                messageID: "runtime-message",
+                clientMessageID: "dispatching",
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        XCTAssertEqual(
+            store.selectedComposerTrayQueuedTurns.map(\.clientMessageID),
+            ["waiting", "dispatching", "needs-confirmation"],
+            "非用户消息即使复用 clientMessageID，也不能提前隐藏派发项"
+        )
+
         conversationStore.appendLocalUser(
             "dispatching",
             sessionID: sessionID,

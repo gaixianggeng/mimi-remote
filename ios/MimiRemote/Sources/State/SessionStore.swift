@@ -1056,10 +1056,13 @@ final class SessionStore: ObservableObject {
         guard let selectedSessionID else {
             return []
         }
-        let timelineClientMessageIDs = Set(
-            conversationStore.messages(for: selectedSessionID).compactMap(\.clientMessageID)
+        let timelineClientMessageIDs: Set<ClientMessageID> = Set(
+            conversationStore.messages(for: selectedSessionID).compactMap { message in
+                guard message.role == .user else { return nil }
+                return message.clientMessageID
+            }
         )
-        // 已进入对话气泡的 dispatching 消息不再重复占用托盘；尚无气泡的派发项仍保持可见。
+        // 只有对应用户气泡进入时间线后才隐藏；runtime/assistant 消息可能复用 clientMessageID。
         return selectedQueuedTurns.filter {
             $0.dispatchState != .dispatching || !timelineClientMessageIDs.contains($0.clientMessageID)
         }
