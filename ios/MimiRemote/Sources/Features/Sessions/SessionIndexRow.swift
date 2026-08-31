@@ -201,7 +201,7 @@ enum SessionRowState: Equatable {
 /// 两个 tab 的区分符不同，前导槽应当承载各自那一个：
 ///
 /// - 会话 tab 是所有项目的汇集区，"这条属于哪个项目"是第一位的问题，槽里放项目图标；
-///   未读退化成图标右上角的角标，与顶部项目胶囊上的徽标同一种语言。
+///   未读属于会话状态，统一跟在标题后面，不再依附项目图标或占用正文起点。
 /// - 工作区内项目恒定，那个问题不存在，槽里放会话状态字形。
 enum SessionIndexRowLeadingSlot: Equatable {
     case state
@@ -636,6 +636,12 @@ struct SessionIndexRow: View {
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
+            if leadingSlot == .projectIcon, isUnread {
+                // 状态环紧跟可见标题；它的优先级高于标题，因此空间不足时标题先截断。
+                unreadTitleIndicator(tokens: tokens)
+                    .layoutPriority(2)
+            }
+
             // 12pt 而不是 6pt：长标题过去会一路顶到时间上，两段文字之间没有间隙。
             Spacer(minLength: 12)
 
@@ -754,43 +760,20 @@ struct SessionIndexRow: View {
                     size: density.stateGutterWidth,
                     tokens: tokens
                 )
-            } else if isUnread {
-                // 段中行没有图标可挂角标，未读退回槽位居中的完整圆环。
-                // 位置仍然在同一条竖线上，扫读时和角标读成同一列。
-                unreadProjectIndicator(tokens: tokens, isolatesFromIcon: false)
             } else {
                 Color.clear
             }
         }
         .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
-        // 段首行的未读挂在图标右上角。项目图标占住了这一列，未读不能再要一个位置；
-        // 叠在角上既保住信号，又不让它重新变成一个跟着时间漂移的独立元素。
-        .overlay(alignment: .topTrailing) {
-            if drawsIcon, isUnread {
-                unreadProjectIndicator(tokens: tokens, isolatesFromIcon: true)
-                    .offset(x: 3.5, y: -3.5)
-            }
-        }
         .accessibilityHidden(true)
     }
 
-    private func unreadProjectIndicator(
-        tokens: ThemeTokens,
-        isolatesFromIcon: Bool
-    ) -> some View {
-        ZStack {
-            if isolatesFromIcon {
-                // 背景盘只在图标角标中出现，避免项目图标的颜色和细节穿进未读环。
-                Circle()
-                    .fill(tokens.background)
-                    .frame(width: 12, height: 12)
-            }
-
-            Circle()
-                .strokeBorder(tokens.success, lineWidth: 1.75)
-                .frame(width: 9, height: 9)
-        }
-        .frame(width: 12, height: 12)
+    private func unreadTitleIndicator(tokens: ThemeTokens) -> some View {
+        Circle()
+            .strokeBorder(tokens.success, lineWidth: 1.75)
+            .frame(width: 9, height: 9)
+            .frame(width: 12, height: 12)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder

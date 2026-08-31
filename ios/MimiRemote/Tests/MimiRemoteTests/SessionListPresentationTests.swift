@@ -818,7 +818,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
                             project: project,
                             title: "项目图标与未读状态组合 \(index + 1)",
                             status: SessionStatus.completed.rawValue,
-                            preview: "验证项目图标与未读状态共用前导槽",
+                            preview: "验证项目图标与标题后未读状态分列",
                             recencyAt: fixedNow.addingTimeInterval(TimeInterval(-index * 60))
                         ),
                         isUnread: scenario.isUnread,
