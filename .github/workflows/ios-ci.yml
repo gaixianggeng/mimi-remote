@@ -27,7 +27,9 @@ on:
       - "internal/protocolcontract/**"
       - "scripts/ios-dev.sh"
       - "scripts/ios-device-lease.sh"
+      - "scripts/ios-device-gui-handoff-macos.sh"
       - "scripts/test-ios-device-management.sh"
+      - "scripts/test-ios-device-gui-handoff-macos.sh"
       - "scripts/testdata/ios-device-management/**"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-critical-regressions.sh"
@@ -126,6 +128,9 @@ jobs:
 
       - name: Check iOS device selection and leases
         run: bash ./scripts/test-ios-device-management.sh
+
+      - name: Check physical-device GUI handoff
+        run: bash ./scripts/test-ios-device-gui-handoff-macos.sh
 
       - name: Check network security policy
         run: bash ./scripts/check-ios-network-security.sh

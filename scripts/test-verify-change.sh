@@ -135,7 +135,11 @@ assert_contains "$powershell_output" "延后到 Windows CI"
 
 device_control_output="$(assert_plan device_control scripts/ios-dev.sh)"
 assert_contains "$device_control_output" "test-ios-device-management.sh"
+assert_contains "$device_control_output" "test-ios-device-gui-handoff-macos.sh"
 assert_not_contains "$device_control_output" "ios-dev.sh build-for-testing"
+
+gui_handoff_control_output="$(assert_plan gui_handoff_control scripts/ios-device-gui-handoff-macos.sh)"
+assert_contains "$gui_handoff_control_output" "test-ios-device-gui-handoff-macos.sh"
 
 asc_control_output="$(assert_plan asc_control scripts/ios_asc_cli.sh)"
 assert_contains "$asc_control_output" "test-ios-asc-cli.sh"

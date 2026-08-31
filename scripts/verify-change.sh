@@ -381,7 +381,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/test-ios-device-management.sh|scripts/testdata/ios-device-management/*)
+    scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*)
       has_ios_device_control=true
       ;;
   esac
@@ -527,7 +527,7 @@ if [[ "$has_ios_privacy_control" == true ]]; then
   add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标选择和设备租约变化使用 fake xcrun/xcodebuild 自测" "bash ./scripts/test-ios-device-management.sh"
+  add_check "iOS 目标、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
