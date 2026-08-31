@@ -18,6 +18,7 @@ BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimi}"
 XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
 XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
 OPEN_BIN="${IOS_OPEN_BIN:-open}"
+DEVICE_GUI_HANDOFF_BIN="${IOS_DEVICE_GUI_HANDOFF_BIN:-$ROOT_DIR/scripts/ios-device-gui-handoff-macos.sh}"
 
 # shellcheck source=./ios-device-lease.sh
 source "$ROOT_DIR/scripts/ios-device-lease.sh"
@@ -48,6 +49,8 @@ usage() {
 
 统一入口：
   日常编译、部署和运行只调用本脚本。deploy-ipad.sh 是内部真机执行器；
+  macOS 真机 build/run 固定交给当前登录用户的 GUI LaunchAgent，确保 codesign
+  不依赖 Codex Desktop、CLI 或 agentd 的启动会话；
   XcodeBuildMCP 的 Simulator workflow 只用于测试、快照和明确的兼容性验收。
 
 可选覆盖：
@@ -502,25 +505,49 @@ run_device_action() {
   local action="$1"
   shift
   local transport_label="USB"
+  local skip_install="0"
+  local skip_launch="0"
+  local development_team="${IOS_DEVELOPMENT_TEAM:-${DEVELOPMENT_TEAM:-}}"
+  local -a deploy_command
   [[ "$SELECTED_TRANSPORT" == "localNetwork" ]] && transport_label="本地网络"
   echo "==> 使用已租用${transport_label}真机：$SELECTED_NAME ($SELECTED_ID)"
   echo "    reason: $SELECTED_REASON"
   if [[ "$action" == "build" ]]; then
-    IOS_UNIFIED_ENTRYPOINT=1 \
-      DEVICE_ID="$SELECTED_ID" \
-      DEVICE_NAME="$SELECTED_NAME" \
-      DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
-      IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
-      SKIP_INSTALL=1 \
-      SKIP_LAUNCH=1 \
-      bash "$ROOT_DIR/scripts/deploy-ipad.sh" "$@"
+    skip_install="1"
+    skip_launch="1"
+  fi
+  deploy_command=(
+    /usr/bin/env
+    "IOS_UNIFIED_ENTRYPOINT=1"
+    "PROJECT_PATH=$PROJECT_PATH"
+    "SCHEME=$SCHEME"
+    "CONFIGURATION=$CONFIGURATION"
+    "DEVICE_ID=$SELECTED_ID"
+    "DEVICE_NAME=$SELECTED_NAME"
+    "BUNDLE_ID=$BUNDLE_ID"
+    "DERIVED_DATA_PATH=$SELECTED_DERIVED_DATA"
+    "IOS_XCODEBUILD_BIN=$XCODEBUILD_BIN"
+    "IOS_XCRUN_BIN=$XCRUN_BIN"
+    "TIMEOUT_SECONDS=${TIMEOUT_SECONDS:-120}"
+    "SKIP_INSTALL=$skip_install"
+    "SKIP_LAUNCH=$skip_launch"
+    "REFRESH_INSTALL=${REFRESH_INSTALL:-0}"
+    "ALLOW_PROVISIONING_UPDATES=${ALLOW_PROVISIONING_UPDATES:-1}"
+    "IOS_DEVELOPMENT_TEAM=$development_team"
+    "CODE_SIGN_STYLE=${CODE_SIGN_STYLE:-Automatic}"
+  )
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    deploy_command+=("DEVELOPER_DIR=$DEVELOPER_DIR")
+  fi
+  deploy_command+=(/bin/bash "$ROOT_DIR/scripts/deploy-ipad.sh")
+  if [[ $# -gt 0 ]]; then
+    deploy_command+=("$@")
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    /bin/bash "$DEVICE_GUI_HANDOFF_BIN" "${deploy_command[@]}"
   else
-    IOS_UNIFIED_ENTRYPOINT=1 \
-      DEVICE_ID="$SELECTED_ID" \
-      DEVICE_NAME="$SELECTED_NAME" \
-      DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
-      IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
-      bash "$ROOT_DIR/scripts/deploy-ipad.sh" "$@"
+    "${deploy_command[@]}"
   fi
 }
 
