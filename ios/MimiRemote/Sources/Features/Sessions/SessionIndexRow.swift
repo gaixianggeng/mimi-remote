@@ -201,7 +201,7 @@ enum SessionRowState: Equatable {
 /// 两个 tab 的区分符不同，前导槽应当承载各自那一个：
 ///
 /// - 会话 tab 是所有项目的汇集区，"这条属于哪个项目"是第一位的问题，槽里放项目图标；
-///   未读退化成图标右上角的角标，与顶部项目胶囊上的徽标同一种语言。
+///   未读属于会话状态，统一跟在标题后面，不再依附项目图标或占用正文起点。
 /// - 工作区内项目恒定，那个问题不存在，槽里放会话状态字形。
 enum SessionIndexRowLeadingSlot: Equatable {
     case state
@@ -218,11 +218,12 @@ enum SessionIndexRowIdentityFallback: Equatable {
 
 /// 前导状态字形。
 ///
-/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 空心环 / 实心点。
+/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 缺口环 / 完整环。
 /// 色觉障碍下这一列仍然可读，这是把状态收进单一色点的方案做不到的。
 struct SessionRowStateGlyph: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: SessionRowState?
     let size: CGFloat
@@ -235,6 +236,7 @@ struct SessionRowStateGlyph: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let animatesRunningRing = Self.shouldAnimate(state: state, reduceMotion: reduceMotion)
 
         Group {
             switch state {
@@ -247,16 +249,32 @@ struct SessionRowStateGlyph: View {
                     .font(themeStore.uiFont(size: size - 1, weight: .semibold))
                     .foregroundStyle(tokens.warning)
             case .running:
+                // 旋转角度只由当前时间决定，不从 onAppear 反复提交 repeatForever。
+                // 行视图即使被列表重复复用，也始终只有一个动画时间源，不会叠加加速。
+                TimelineView(.animation(paused: !animatesRunningRing)) { context in
+                    Circle()
+                        .trim(from: 0.08, to: 0.86)
+                        .stroke(
+                            tokens.primaryAction,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                        )
+                        .rotationEffect(
+                            .degrees(
+                                Self.runningRotation(
+                                    at: context.date,
+                                    animates: animatesRunningRing
+                                )
+                            )
+                        )
+                        .frame(width: size, height: size)
+                }
+            case .unread:
                 Circle()
                     .strokeBorder(tokens.success, lineWidth: 2)
                     .frame(width: size, height: size)
-            case .unread:
-                Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: size - 2, height: size - 2)
             case nil:
                 if drawsIdlePlaceholder {
-                    // 虚线环。和"运行中"那枚实心绿环的区别落在**形状**上，而不是靠颜色深浅——
+                    // 虚线环。和"运行中"那枚紫色缺口环的区别落在**形状**上，而不是靠颜色深浅——
                     // 虚实之分即使在色觉障碍或纯灰度下也读得出来，这是细一档描边做不到的。
                     //
                     // 描边不能再细了：1.25pt 配 border 色在实机上糊成一团灰雾，读不出是个环。
@@ -275,6 +293,23 @@ struct SessionRowStateGlyph: View {
         // 宽度恒定：普通行也占同样的槽位，标题才不会因为有没有状态而左右跳。
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    static let runningCycleDuration = 0.9
+
+    static func runningRotation(at date: Date, animates: Bool) -> Double {
+        guard animates else { return 0 }
+
+        let elapsedInCycle = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: runningCycleDuration)
+        return elapsedInCycle / runningCycleDuration * 360
+    }
+
+    static func shouldAnimate(
+        state: SessionRowState?,
+        reduceMotion: Bool
+    ) -> Bool {
+        state == .running && !reduceMotion
     }
 }
 
@@ -562,10 +597,8 @@ struct SessionIndexRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: density.stateGutterSpacing) {
+        HStack(alignment: .center, spacing: density.stateGutterSpacing) {
             leadingGutter(tokens: tokens)
-                // 与标题首行基线对齐；字形是几何居中的，需要往下压一点点。
-                .padding(.top, dynamicTypeSize.isAccessibilitySize ? 3 : 2)
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
@@ -602,6 +635,12 @@ struct SessionIndexRow: View {
                 .truncationMode(.tail)
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+
+            if leadingSlot == .projectIcon, isUnread {
+                // 状态环紧跟可见标题；它的优先级高于标题，因此空间不足时标题先截断。
+                unreadTitleIndicator(tokens: tokens)
+                    .layoutPriority(2)
+            }
 
             // 12pt 而不是 6pt：长标题过去会一路顶到时间上，两段文字之间没有间隙。
             Spacer(minLength: 12)
@@ -721,32 +760,20 @@ struct SessionIndexRow: View {
                     size: density.stateGutterWidth,
                     tokens: tokens
                 )
-            } else if isUnread {
-                // 段中行没有图标可挂角标，未读退回槽位居中的独立圆点。
-                // 位置仍然在同一条竖线上，扫读时和角标读成同一列。
-                Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: 7, height: 7)
             } else {
                 Color.clear
             }
         }
         .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
-        // 段首行的未读挂在图标右上角。项目图标占住了这一列，未读不能再要一个位置；
-        // 叠在角上既保住信号，又不让它重新变成一个跟着时间漂移的独立元素。
-        .overlay(alignment: .topTrailing) {
-            if drawsIcon, isUnread {
-                Circle()
-                    .fill(tokens.primaryAction)
-                    .frame(width: 7, height: 7)
-                    .overlay {
-                        Circle()
-                            .stroke(tokens.background, lineWidth: 1.5)
-                    }
-                    .offset(x: 3, y: -3)
-            }
-        }
         .accessibilityHidden(true)
+    }
+
+    private func unreadTitleIndicator(tokens: ThemeTokens) -> some View {
+        Circle()
+            .strokeBorder(tokens.success, lineWidth: 1.75)
+            .frame(width: 9, height: 9)
+            .frame(width: 12, height: 12)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder

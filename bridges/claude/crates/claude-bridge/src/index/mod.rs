@@ -11,6 +11,7 @@
 
 pub mod claude_session_scan;
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -149,7 +150,7 @@ pub enum HistoryRefreshResult {
 /// 运行期显式历史扫描器。
 ///
 /// `gate` 在扫描期间保持锁定，既让多个连接共享同一冷却窗口，也避免同时遍历
-/// `~/.claude/projects`。这里只把新 session ID 写入索引，不覆盖已有名称、归档等用户状态。
+/// `~/.claude/projects`。扫描结果会修正 Claude 移动后的 transcript 路径，同时保留名称、归档等用户状态。
 pub struct ClaudeHistoryRefresher {
     index: Arc<CoreThreadIndex<ClaudeSessionRef>>,
     hydrator: ClaudeHydrator,
@@ -184,6 +185,7 @@ impl ClaudeHistoryRefresher {
 
         let refresh_result = async {
             let scanned = self.hydrator.scan().await?;
+            let scanned = reconcile_scanned_entries(&self.index, scanned).await?;
             self.index.hydrate_entries(scanned).await
         }
         .await;
@@ -222,40 +224,103 @@ pub async fn open_index_and_hydrate(
 ) -> Result<Arc<CoreThreadIndex<ClaudeSessionRef>>> {
     let index = CoreThreadIndex::<ClaudeSessionRef>::open_at(path).await?;
     let scanned = hydrator.scan().await?;
-    let scanned_by_id: std::collections::HashMap<&str, &IndexEntry> = scanned
+    let scanned = reconcile_scanned_entries(&index, scanned).await?;
+    let scanned_ids: std::collections::HashSet<&str> = scanned
         .iter()
-        .map(|entry| (entry.thread_id.as_str(), entry))
+        .map(|entry| entry.thread_id.as_str())
         .collect();
     let mut invalid_ids = Vec::new();
-    let mut repaired_entries = Vec::new();
-    for mut entry in index.snapshot().await {
+    for entry in index.snapshot().await {
         let preview = entry.preview.trim();
-        let Some(fresh) = scanned_by_id.get(entry.thread_id.as_str()) else {
+        if !scanned_ids.contains(entry.thread_id.as_str()) {
             if preview.is_empty() || is_legacy_invalid_preview(preview) {
                 invalid_ids.push(entry.thread_id);
             }
-            continue;
-        };
-        if is_legacy_invalid_preview(preview) {
-            // 只替换扫描产生的字段，保留用户设置的名称、归档和分叉关系。
-            entry.preview.clone_from(&fresh.preview);
-            entry.cwd.clone_from(&fresh.cwd);
-            entry.updated_at = fresh.updated_at;
-            entry.metadata.clone_from(&fresh.metadata);
-            repaired_entries.push(entry);
         }
     }
     let removed = index.remove_many(&invalid_ids).await?;
-    let repaired = index.upsert_many(repaired_entries).await?;
-    if removed > 0 || repaired > 0 {
-        tracing::info!(
-            removed,
-            repaired,
-            "repaired legacy Claude thread index rows"
-        );
+    if removed > 0 {
+        tracing::info!(removed, "removed invalid legacy Claude thread index rows");
     }
     index.hydrate_entries(scanned).await?;
     Ok(index)
+}
+
+/// Claude 在 EnterWorktree 等流程中会把同一 session 的 JSONL 移到新的编码目录。
+/// 通用索引只按 session ID 补新行，因此这里用扫描结果修正路径，并保留用户维护的字段。
+async fn reconcile_scanned_entries(
+    index: &CoreThreadIndex<ClaudeSessionRef>,
+    scanned: Vec<IndexEntry>,
+) -> Result<Vec<IndexEntry>> {
+    let existing = index.snapshot().await;
+    let scanned = preferred_scanned_entries(scanned, &existing);
+    let scanned_by_id: HashMap<&str, &IndexEntry> = scanned
+        .iter()
+        .map(|entry| (entry.thread_id.as_str(), entry))
+        .collect();
+    let mut repaired_entries = Vec::new();
+
+    for entry in existing {
+        let Some(fresh) = scanned_by_id.get(entry.thread_id.as_str()) else {
+            continue;
+        };
+        let mut repaired = entry.clone();
+        repaired.cwd.clone_from(&fresh.cwd);
+        repaired.created_at = fresh.created_at;
+        repaired.updated_at = fresh.updated_at;
+        repaired.metadata.clone_from(&fresh.metadata);
+        if is_legacy_invalid_preview(entry.preview.trim()) {
+            repaired.preview.clone_from(&fresh.preview);
+        }
+        if repaired != entry {
+            repaired_entries.push(repaired);
+        }
+    }
+
+    index.upsert_many(repaired_entries).await?;
+    Ok(scanned)
+}
+
+/// 同一 session ID 偶尔会在多个 Claude project 目录短暂共存。当前索引路径仍可见时
+/// 继续使用它；否则选择更新时间最新的副本，并用路径作为稳定的并列排序键。
+fn preferred_scanned_entries(scanned: Vec<IndexEntry>, existing: &[IndexEntry]) -> Vec<IndexEntry> {
+    let existing_paths: HashMap<&str, &Path> = existing
+        .iter()
+        .map(|entry| {
+            (
+                entry.thread_id.as_str(),
+                entry.metadata.claude_session_path.as_path(),
+            )
+        })
+        .collect();
+    let mut candidates_by_id: BTreeMap<String, Vec<IndexEntry>> = BTreeMap::new();
+    for entry in scanned {
+        candidates_by_id
+            .entry(entry.thread_id.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    candidates_by_id
+        .into_iter()
+        .filter_map(|(thread_id, mut candidates)| {
+            if let Some(existing_path) = existing_paths.get(thread_id.as_str())
+                && let Some(index) = candidates.iter().position(|entry| {
+                    entry.metadata.claude_session_path.as_path() == *existing_path
+                })
+            {
+                return Some(candidates.swap_remove(index));
+            }
+            candidates.sort_by(|left, right| {
+                right.updated_at.cmp(&left.updated_at).then_with(|| {
+                    left.metadata
+                        .claude_session_path
+                        .cmp(&right.metadata.claude_session_path)
+                })
+            });
+            candidates.into_iter().next()
+        })
+        .collect()
 }
 
 fn is_legacy_invalid_preview(preview: &str) -> bool {
@@ -427,6 +492,98 @@ mod tests {
         assert!(
             repaired.lookup("remote-clean").await.is_some(),
             "扫描目录不可见的正常远端索引不能被顺带清空"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_repairs_moved_transcript_path_and_preserves_user_state() {
+        let dir = TempDir::new().unwrap();
+        let projects_dir = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        let moved_path = projects_dir.join("moved.jsonl");
+        std::fs::write(
+            &moved_path,
+            r#"{"type":"user","cwd":"/worktree","message":{"role":"user","content":"真实标题"},"timestamp":"2026-08-31T07:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let index_path = dir.path().join("threads.json");
+        let index = CoreThreadIndex::<ClaudeSessionRef>::open_at(index_path.clone())
+            .await
+            .unwrap();
+        let mut stale = entry("moved", "/old-workspace", 100, 200, true);
+        stale.preview = "用户保留的标题".into();
+        stale.name = Some("用户命名".into());
+        stale.forked_from_id = Some("parent".into());
+        stale.metadata.claude_session_path = PathBuf::from("/missing/moved.jsonl");
+        index.insert(stale).await.unwrap();
+        drop(index);
+
+        let hydrator = ClaudeHydrator::with_override_dir(projects_dir);
+        let repaired = open_index_and_hydrate(index_path, &hydrator).await.unwrap();
+        let row = repaired.lookup("moved").await.unwrap();
+
+        assert_eq!(row.metadata.claude_session_path, moved_path);
+        assert_eq!(row.cwd, "/worktree");
+        assert_eq!(row.preview, "用户保留的标题");
+        assert_eq!(row.name.as_deref(), Some("用户命名"));
+        assert_eq!(row.forked_from_id.as_deref(), Some("parent"));
+        assert!(row.archived);
+    }
+
+    #[tokio::test]
+    async fn runtime_refresh_repairs_moved_transcript_without_reinserting_session() {
+        let dir = TempDir::new().unwrap();
+        let projects_dir = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        let moved_path = projects_dir.join("moved.jsonl");
+        std::fs::write(
+            &moved_path,
+            r#"{"type":"user","cwd":"/worktree","message":{"role":"user","content":"真实标题"},"timestamp":"2026-08-31T07:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let index = CoreThreadIndex::<ClaudeSessionRef>::open_at(dir.path().join("threads.json"))
+            .await
+            .unwrap();
+        let mut stale = entry("moved", "/old-workspace", 100, 200, false);
+        stale.metadata.claude_session_path = PathBuf::from("/missing/moved.jsonl");
+        index.insert(stale).await.unwrap();
+        let refresher = ClaudeHistoryRefresher::with_interval(
+            Arc::clone(&index),
+            ClaudeHydrator::with_override_dir(projects_dir),
+            Duration::ZERO,
+        );
+
+        assert_eq!(
+            refresher.refresh_if_due().await.unwrap(),
+            HistoryRefreshResult::Refreshed { inserted: 0 }
+        );
+        assert_eq!(
+            index
+                .lookup("moved")
+                .await
+                .unwrap()
+                .metadata
+                .claude_session_path,
+            moved_path
+        );
+    }
+
+    #[test]
+    fn duplicate_scan_keeps_the_indexed_transcript_while_it_still_exists() {
+        let mut existing = entry("same", "/work", 100, 200, false);
+        existing.metadata.claude_session_path = PathBuf::from("/current/same.jsonl");
+        let current = existing.clone();
+        let mut newer_copy = entry("same", "/new-work", 100, 300, false);
+        newer_copy.metadata.claude_session_path = PathBuf::from("/newer/same.jsonl");
+
+        let selected = preferred_scanned_entries(vec![newer_copy, current], &[existing]);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].metadata.claude_session_path,
+            PathBuf::from("/current/same.jsonl")
         );
     }
 }

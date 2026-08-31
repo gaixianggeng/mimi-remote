@@ -724,6 +724,11 @@ extension SessionStore {
         }
         do {
             let client = try clientFactory()
+            try await authorizeClaudeSessionBeforeReconnect(
+                current,
+                client: client,
+                reconnectGeneration: reconnectGeneration
+            )
             // 以 preflight 开始时刻判断短缓存，不能等 thread/read 返回后再算；弱网下 read
             // 自身可能跨过 4 秒 TTL，导致明明刚加载成功的首屏仍被重复下载。
             let hadRecentAppliedFullAtPreflightStart = hasRecentFullHistoryFirstPage(sessionID: sessionID)
@@ -762,6 +767,48 @@ extension SessionStore {
             }
             setStatusMessage(L10n.format("ui.snapshot_refresh_failed_before_reconnection_value", error.localizedDescription))
             return current
+        }
+    }
+
+    /// agentd 重启后 gateway 的内存授权会清空。Claude 旧会话必须先由当前连接的
+    /// thread/list 返回，之后 thread/read 和 thread/resume 才能通过同一套能力校验。
+    func authorizeClaudeSessionBeforeReconnect(
+        _ session: AgentSession,
+        client: SessionStoreAPIClient,
+        reconnectGeneration: UInt64
+    ) async throws {
+        guard Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude",
+              let workspace = workspaceForSession(session) else {
+            return
+        }
+
+        var cursor: String?
+        var visitedCursors = Set<String>()
+        while true {
+            let page = try await client.sessionsPage(
+                workspace: workspace,
+                runtimeProvider: "claude",
+                cursor: cursor,
+                limit: 50,
+                consistency: cursor == nil ? .authoritative : .fastIndexed
+            )
+            guard !Task.isCancelled,
+                  webSocketReconnectGeneration == reconnectGeneration,
+                  selectedSessionID == session.id else {
+                throw CancellationError()
+            }
+            if page.sessions.contains(where: { $0.id == session.id }) {
+                return
+            }
+            guard page.hasMore else {
+                throw AgentAPIError.invalidResponse
+            }
+            guard let nextCursor = page.nextCursor,
+                  !nextCursor.isEmpty,
+                  visitedCursors.insert(nextCursor).inserted else {
+                throw AgentAPIError.invalidResponse
+            }
+            cursor = nextCursor
         }
     }
 

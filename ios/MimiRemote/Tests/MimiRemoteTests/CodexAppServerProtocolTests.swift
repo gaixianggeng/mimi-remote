@@ -784,6 +784,16 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(page["itemsView"]?.stringValue, "summary")
     }
 
+    func testThreadForkBuilderExcludesFullHistory() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.threadFork(threadID: "thread-1", cwd: project.path)
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(params["excludeTurns"]?.boolValue, true)
+    }
+
     func testTurnStartBuilderSendsExplicitCollaborationMode() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

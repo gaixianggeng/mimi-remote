@@ -1,7 +1,6 @@
 package appserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,9 +26,13 @@ const (
 	MinimumCodexVersion        = "0.149.1"
 
 	sshProxyRemoteCommand = "codex app-server proxy"
+	// App Server 会为仍处于加载宽限期的 Thread 保留 session 和 MCP 文件描述符。
+	// SSH 登录在 macOS 上默认只有 256，无法承载 Desktop 与 Mimi 的正常并发恢复。
+	// 这里保证新 resident 至少有 8192；客户端仍必须按生命周期取消 Thread 订阅。
+	sshAppServerOpenFileSoftLimit = 8192
 	// SSH resident 只服务 Unix proxy。禁止它继承 Desktop 保存的 Remote Control
 	// 身份，否则移动端请求可能进入第二个 App Server，并与官方进程争用 Thread writer。
-	sshBootstrapRemoteCommand = "nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &"
+	sshBootstrapRemoteCommand = `/bin/sh -c 'open_file_limit=$(ulimit -Sn); if test "$open_file_limit" != unlimited && test "$open_file_limit" -lt 8192; then ulimit -Sn 8192 || { printf "远端 open-file soft limit 无法提高到 8192\n" >&2; exit 72; }; fi; nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &'`
 	sshSocketStateCommand     = `if test -S "$HOME/.codex/app-server-control/app-server-control.sock"; then printf socket-present; else printf socket-missing; fi`
 
 	defaultSSHReadyTimeout     = 12 * time.Second
@@ -246,8 +249,8 @@ func (t *SSHTransport) bootstrap(ctx context.Context) error {
 	cmd.Env = buildManagedEnv(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if len(bytes.TrimSpace(output)) > 0 {
-			return fmt.Errorf("SSH bootstrap 失败：%w", err)
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return fmt.Errorf("SSH bootstrap 失败：%s：%w", detail, err)
 		}
 		return err
 	}
