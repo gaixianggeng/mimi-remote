@@ -1286,6 +1286,27 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(ticket.pairSignature, "abcdef")
     }
 
+    func testTailcatPairingLinkCarriesTemporaryAddressAndClientKey() throws {
+        let url = try XCTUnwrap(URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-09-01T00%3A00%3A00Z&expires_at=4102444800&pair_sig=abcdef&transport=tailcat&tailcat_pair_address=tc%3Atest-address"))
+        let link = try XCTUnwrap(TailcatPairingLink.parse(url))
+
+        XCTAssertEqual(link.ticket.endpoint, "http://127.0.0.1:8787")
+        XCTAssertEqual(link.pairAddress, "tc:test-address")
+        let request = link.ticket.claimRequest(tailcatClientKey: "nodekey:test-client")
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: String]
+        )
+        XCTAssertEqual(object["tailcat_client_key"], "nodekey:test-client")
+    }
+
+    func testTailcatPairingLinkRequiresTemporaryAddress() throws {
+        let url = try XCTUnwrap(URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-09-01T00%3A00%3A00Z&expires_at=4102444800&pair_sig=abcdef&transport=tailcat"))
+
+        XCTAssertThrowsError(try TailcatPairingLink.parse(url)) { error in
+            XCTAssertEqual(error as? PairingLinkError, .missingTailcatAddress)
+        }
+    }
+
     func testRejectsExpiredPairingURL() throws {
         let url = try XCTUnwrap(URL(string: "mimiremote://connect?endpoint=http%3A%2F%2F100.64.0.1%3A8787&token=0123456789abcdef0123456789abcdef&expires_at=1"))
 

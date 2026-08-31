@@ -2,6 +2,35 @@ import CryptoKit
 import Foundation
 
 extension AppStore {
+    /// 先通过 Tailcat 的本机代理完成完整连接验证，同时继续把 Mac 的规范地址写入档案。
+    /// 这样关闭实验开关后，现有 Tailscale 地址可以直接恢复，不会被 loopback 地址覆盖。
+    func prepareRoutedConnectionSettings(
+        endpoint: String,
+        activeEndpoint: String,
+        token: String,
+        profileTarget: PreparedConnectionProfileTarget
+    ) async throws -> PreparedConnectionSettings {
+        let canonicalEndpoint = try Self.validatedEndpoint(endpoint)
+        let routed = try await prepareConnectionSettings(
+            endpoint: activeEndpoint,
+            token: token,
+            profileTarget: profileTarget
+        )
+        return PreparedConnectionSettings(
+            endpoint: canonicalEndpoint,
+            activeEndpoint: routed.activeEndpoint,
+            token: routed.token,
+            profileTarget: routed.profileTarget,
+            validatedAt: routed.validatedAt,
+            installationID: routed.installationID,
+            tailscaleDNSName: routed.tailscaleDNSName,
+            tailscaleDeviceName: routed.tailscaleDeviceName,
+            hostPlatform: routed.hostPlatform,
+            hostContext: routed.hostContext,
+            capabilityNegotiation: routed.capabilityNegotiation
+        )
+    }
+
     var activeConnectionProfile: ConnectionProfile? {
         guard let activeConnectionProfileID else { return nil }
         return connectionProfiles.first { $0.id == activeConnectionProfileID }

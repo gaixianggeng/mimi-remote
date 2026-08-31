@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -91,6 +92,45 @@ func (f *Forwarder) Endpoint() string {
 
 func (f *Forwarder) Done() <-chan struct{} {
 	return f.done
+}
+
+type PathDiagnostic struct {
+	Path           string `json:"path"`
+	LatencyMillis  int64  `json:"latency_millis"`
+	DERPRegionCode string `json:"derp_region_code,omitempty"`
+}
+
+func (f *Forwarder) DiscoPing(ctx context.Context) (PathDiagnostic, error) {
+	if f == nil || f.client == nil {
+		return PathDiagnostic{}, errors.New("Tailcat 客户端未启动")
+	}
+	result, err := f.client.DiscoPing(ctx)
+	if err != nil {
+		return PathDiagnostic{}, err
+	}
+	path := "unknown"
+	switch {
+	case result.Endpoint != "":
+		path = "direct"
+	case result.PeerRelay != "":
+		path = "peer-relay"
+	case result.DERPRegionID != 0:
+		path = "derp"
+	}
+	return PathDiagnostic{
+		Path:           path,
+		LatencyMillis:  max(0, int64(result.LatencySeconds*1000)),
+		DERPRegionCode: result.DERPRegionCode,
+	}, nil
+}
+
+func (f *Forwarder) DiscoPingJSON(ctx context.Context) (string, error) {
+	result, err := f.DiscoPing(ctx)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(result)
+	return string(encoded), err
 }
 
 func (f *Forwarder) Close() error {

@@ -15,13 +15,15 @@ import (
 )
 
 type HostConfig struct {
-	TargetAddr       string
-	RemotePort       uint16
-	IdentityPath     string
-	AddressPath      string
-	AllowedClientKey string
-	DERPMapURL       string
-	Region           *tailcfg.DERPRegion
+	TargetAddr        string
+	RemotePort        uint16
+	IdentityPath      string
+	AddressPath       string
+	AllowedClientKey  string
+	AllowedClientKeys []string
+	AllowAllClients   bool
+	DERPMapURL        string
+	Region            *tailcfg.DERPRegion
 }
 
 type Host struct {
@@ -36,9 +38,22 @@ func StartHost(config HostConfig) (*Host, error) {
 	if err := requireLoopbackAddress(config.TargetAddr); err != nil {
 		return nil, fmt.Errorf("agentd 目标地址：%w", err)
 	}
-	allowedClient, err := ParsePublicKey(config.AllowedClientKey)
-	if err != nil {
-		return nil, err
+	allowedClients := make([]key.NodePublic, 0, len(config.AllowedClientKeys)+1)
+	clientKeys := append([]string(nil), config.AllowedClientKeys...)
+	if config.AllowedClientKey != "" {
+		clientKeys = append(clientKeys, config.AllowedClientKey)
+	}
+	for _, rawKey := range clientKeys {
+		allowedClient, err := ParsePublicKey(rawKey)
+		if err != nil {
+			return nil, err
+		}
+		allowedClients = append(allowedClients, allowedClient)
+	}
+	if !config.AllowAllClients && len(allowedClients) == 0 {
+		// Tailcat 把空白名单解释为允许所有客户端。实验服务未配对时必须显式
+		// 放入一个永远不会分发的占位键，保证稳定地址默认拒绝连接。
+		allowedClients = append(allowedClients, key.NewNode().Public())
 	}
 	privateKey, savedInfo, err := loadOrCreateHostIdentity(config.IdentityPath)
 	if err != nil {
@@ -48,7 +63,7 @@ func StartHost(config HostConfig) (*Host, error) {
 	server := &tailcat.Server{
 		Key:            privateKey,
 		Logf:           logger.Discard,
-		AllowedClients: []key.NodePublic{allowedClient},
+		AllowedClients: allowedClients,
 		ServedTCPPorts: []filter.PortRange{{First: config.RemotePort, Last: config.RemotePort}},
 	}
 	if savedInfo != nil {
@@ -87,6 +102,18 @@ func StartHost(config HostConfig) (*Host, error) {
 		return nil, fmt.Errorf("写入 Tailcat 地址：%w", err)
 	}
 	return &Host{server: server, address: address}, nil
+}
+
+func (h *Host) AddAllowedClient(rawKey string) error {
+	if h == nil || h.server == nil {
+		return errors.New("Tailcat 服务端未启动")
+	}
+	client, err := ParsePublicKey(rawKey)
+	if err != nil {
+		return err
+	}
+	h.server.AddAllowedClient(client)
+	return nil
 }
 
 func (h *Host) Address() string {

@@ -7,6 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, readonly) NSString *localEndpoint;
 
 - (BOOL)closeWithError:(NSError **)error NS_SWIFT_NAME(close());
+- (nullable NSString *)discoPingWithTimeoutSeconds:(NSInteger)timeoutSeconds
+                                              error:(NSError **)error
+    NS_SWIFT_NAME(discoPing(timeoutSeconds:));
 
 @end
 

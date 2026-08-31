@@ -6,6 +6,7 @@ enum PairingLinkError: LocalizedError, Equatable {
     case missingEndpoint
     case missingToken
     case expired
+    case missingTailcatAddress
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum PairingLinkError: LocalizedError, Equatable {
             return L10n.text("ui.the_connection_link_is_missing_the_access_code")
         case .expired:
             return L10n.text("ui.the_pairing_qr_code_has_expired")
+        case .missingTailcatAddress:
+            return L10n.text("ui.tailcat_pairing_address_missing")
         }
     }
 }
@@ -60,6 +63,39 @@ struct PairingTicket: Equatable {
             expiresAt: expiresAt,
             pairSignature: pairSignature
         )
+    }
+
+    func claimRequest(tailcatClientKey: String) -> PairingClaimRequest {
+        PairingClaimRequest(
+            endpoint: endpoint,
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            pairSignature: pairSignature,
+            tailcatClientKey: tailcatClientKey
+        )
+    }
+}
+
+struct TailcatPairingLink: Equatable {
+    let ticket: PairingTicket
+    let pairAddress: String
+
+    @MainActor
+    static func parse(_ url: URL) throws -> TailcatPairingLink? {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let transport = components?.queryItems?.first(where: { $0.name == "transport" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard transport == "tailcat" else { return nil }
+        guard let ticket = try AppStore.pairingTicket(from: url) else {
+            throw PairingLinkError.unsupportedURL
+        }
+        let pairAddress = components?.queryItems?
+            .first(where: { $0.name == "tailcat_pair_address" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !pairAddress.isEmpty else {
+            throw PairingLinkError.missingTailcatAddress
+        }
+        return TailcatPairingLink(ticket: ticket, pairAddress: pairAddress)
     }
 }
 

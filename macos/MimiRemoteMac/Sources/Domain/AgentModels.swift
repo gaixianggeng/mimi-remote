@@ -4,6 +4,7 @@ enum PairingNetwork: String, CaseIterable, Identifiable, Sendable, Codable {
     case automatic = "auto"
     case tailscale
     case localNetwork = "lan"
+    case tailcat
 
     var id: String { rawValue }
 
@@ -88,6 +89,22 @@ struct NetworkConfigurationResult: Codable, Equatable, Sendable {
         case lanEnabled = "lan_enabled"
         case changed
         case restartRequired = "restart_required"
+    }
+}
+
+struct TailcatStatus: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let running: Bool
+    let version: String?
+    let pairedDeviceCount: Int
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case running
+        case version
+        case pairedDeviceCount = "paired_device_count"
+        case error
     }
 }
 

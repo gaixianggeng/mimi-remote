@@ -5,6 +5,7 @@ package tailcatmobile
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 )
@@ -42,6 +43,18 @@ func (p *Proxy) LocalEndpoint() string {
 		return ""
 	}
 	return p.forwarder.Endpoint()
+}
+
+func (p *Proxy) DiscoPing(timeoutSeconds int) (string, error) {
+	if p == nil || p.forwarder == nil {
+		return "", fmt.Errorf("Tailcat 代理未启动")
+	}
+	if timeoutSeconds < 1 || timeoutSeconds > 30 {
+		timeoutSeconds = 10
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	return p.forwarder.DiscoPingJSON(ctx)
 }
 
 func (p *Proxy) Close() error {

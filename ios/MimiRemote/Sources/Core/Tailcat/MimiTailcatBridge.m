@@ -48,6 +48,19 @@ static NSString *const MimiTailcatErrorDomain = @"com.gaixianggeng.mimi.tailcat-
 #endif
 }
 
+- (NSString *)discoPingWithTimeoutSeconds:(NSInteger)timeoutSeconds error:(NSError **)error {
+#if MIMI_TAILCAT_AVAILABLE
+    return [self.nativeProxy discoPing:timeoutSeconds error:error];
+#else
+    if (error) {
+        *error = [NSError errorWithDomain:MimiTailcatErrorDomain
+                                     code:1
+                                 userInfo:@{NSLocalizedDescriptionKey: @"Tailcat iOS 框架未生成"}];
+    }
+    return nil;
+#endif
+}
+
 @end
 
 @implementation MimiTailcatBridge

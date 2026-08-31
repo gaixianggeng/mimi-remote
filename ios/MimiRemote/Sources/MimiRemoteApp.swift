@@ -195,7 +195,8 @@ struct MimiRemoteApp: App {
             conversationStore: conversationStore,
             logStore: logStore,
             contextStore: contextStore,
-            workspaceAppearanceStore: workspaceAppearanceStore
+            workspaceAppearanceStore: workspaceAppearanceStore,
+            tailcatExperimentController: tailcatExperimentController
         )
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)

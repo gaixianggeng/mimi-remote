@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/tailscale/tailcat v0.2.0
+	github.com/tailscale/tailcat v0.3.0
 	tailscale.com v1.101.0-pre.0.20260720143344-246c82a658b3
 )
 

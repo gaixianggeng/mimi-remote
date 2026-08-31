@@ -11,8 +11,11 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/managed"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 )
+
+var version = "devel"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -23,18 +26,50 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("需要子命令：client-key、host 或 forward")
+		return errors.New("需要子命令：client-key、host、managed-host 或 forward")
 	}
 	switch arguments[0] {
+	case "version":
+		fmt.Println(version)
+		return nil
 	case "client-key":
 		return runClientKey(arguments[1:])
 	case "host":
 		return runHost(arguments[1:])
+	case "managed-host":
+		return runManagedHost(arguments[1:])
 	case "forward":
 		return runForward(arguments[1:])
 	default:
 		return fmt.Errorf("未知子命令 %q", arguments[0])
 	}
+}
+
+func runManagedHost(arguments []string) error {
+	flags := flag.NewFlagSet("managed-host", flag.ContinueOnError)
+	target := flags.String("target", "127.0.0.1:8787", "本机 agentd 地址")
+	port := flags.Uint("port", 8787, "Tailcat 远端端口")
+	stateDir := flags.String("state-dir", "", "Tailcat 私有状态目录")
+	controlPath := flags.String("control", "", "agentd 控制 socket")
+	derpMapURL := flags.String("derpmap-url", "", "可选 DERP Map URL")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *port == 0 || *port > 65535 {
+		return fmt.Errorf("--port 超出范围：%d", *port)
+	}
+	if *stateDir == "" || *controlPath == "" {
+		return errors.New("managed-host 需要 --state-dir 和 --control")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return managed.RunUntilCanceled(ctx, managed.Config{
+		TargetAddr:  *target,
+		RemotePort:  uint16(*port),
+		StateDir:    *stateDir,
+		ControlPath: *controlPath,
+		DERPMapURL:  *derpMapURL,
+	})
 }
 
 func runClientKey(arguments []string) error {

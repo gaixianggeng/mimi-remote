@@ -1428,7 +1428,6 @@ struct TailcatExperimentSettingsView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var controller: TailcatExperimentController
-    @State private var addressDraft = ""
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -1453,52 +1452,44 @@ struct TailcatExperimentSettingsView: View {
             }
 
             Section {
-                TextField(
-                    L10n.text("ui.tailcat_address_placeholder"),
-                    text: $addressDraft,
-                    axis: .vertical
+                Label(
+                    L10n.text("ui.tailcat_pairing_help"),
+                    systemImage: "qrcode.viewfinder"
                 )
-                .lineLimit(2...5)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.system(.footnote, design: .monospaced))
-                .disabled(!controller.isEnabled || !controller.isAvailable)
-                .accessibilityIdentifier("settings.experimentalFeatures.address")
-
-                Button {
-                    controller.setAddress(addressDraft)
-                    Task { await reconnect() }
-                } label: {
-                    Label(L10n.text("ui.tailcat_save_and_connect"), systemImage: "network")
-                }
-                .disabled(
-                    !controller.isEnabled ||
-                    !controller.isAvailable ||
-                    addressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
-                .accessibilityIdentifier("settings.experimentalFeatures.connect")
+                .foregroundStyle(tokens.secondaryText)
             } header: {
-                Text(L10n.text("ui.connection_address"))
-            } footer: {
-                Text(L10n.text("ui.tailcat_address_help"))
+                Text(L10n.text("ui.scan_the_pairing_qr_code"))
             }
 
             Section {
-                Text(controller.publicKey.isEmpty ? "—" : controller.publicKey)
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
+                Label(
+                    controller.lastDiagnostic?.summary ??
+                        L10n.text("ui.diagnostics_have_not_been_run_yet"),
+                    systemImage: "point.3.connected.trianglepath.dotted"
+                )
+                if let requestSummary = controller.lastDiagnostic?.requestSummary {
+                    Label(requestSummary, systemImage: "stopwatch")
+                }
 
                 Button {
-                    UIPasteboard.general.string = controller.publicKey
+                    Task { await controller.refreshPathDiagnostic(appStore: appStore) }
+                } label: {
+                    Label(L10n.text("ui.refresh"), systemImage: "arrow.clockwise")
+                }
+                .disabled(!controller.isEnabled)
+                .accessibilityIdentifier("settings.experimentalFeatures.refreshPath")
+
+                Button {
+                    UIPasteboard.general.string = controller.redactedDiagnosticsText
                 } label: {
                     Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
                 }
-                .disabled(controller.publicKey.isEmpty)
-                .accessibilityIdentifier("settings.experimentalFeatures.copyPublicKey")
+                .disabled(controller.diagnostics.isEmpty)
+                .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
             } header: {
-                Text(L10n.text("ui.tailcat_client_public_key"))
+                Text(L10n.text("ui.connection_diagnostics"))
             } footer: {
-                Text(L10n.text("ui.tailcat_public_key_help"))
+                Text(L10n.text("ui.tailcat_diagnostics_help"))
             }
 
             Section {
@@ -1510,10 +1501,6 @@ struct TailcatExperimentSettingsView: View {
         .navigationTitle(L10n.text("ui.experimental_features"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
-        .task {
-            addressDraft = controller.address
-            controller.loadPublicKey()
-        }
     }
 
     private var enabledBinding: Binding<Bool> {
@@ -1530,14 +1517,6 @@ struct TailcatExperimentSettingsView: View {
         )
     }
 
-    private func reconnect() async {
-        if controller.isEnabled {
-            guard await controller.prepareRoute(appStore: appStore) else { return }
-        }
-        _ = await appStore.preflightConnection(force: true)
-        _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
-    }
-
     private var statusText: String {
         switch controller.state {
         case .disabled:
@@ -1546,8 +1525,8 @@ struct TailcatExperimentSettingsView: View {
             return L10n.text("ui.tailcat_needs_address")
         case .starting:
             return L10n.text("ui.connecting")
-        case .connected(let endpoint):
-            return L10n.format("ui.tailcat_connected_local_endpoint_value", endpoint)
+        case .connected:
+            return L10n.text("ui.tailcat_experiment_enabled")
         case .failed(let message):
             return L10n.format("ui.tailcat_connection_failed_value", message)
         case .unavailable:
