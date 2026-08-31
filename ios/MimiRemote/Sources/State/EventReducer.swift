@@ -255,6 +255,11 @@ actor EventReducer {
                 sessionID: fallbackSessionID,
                 seq: nil
             ))
+            // Skill 简介压缩只说明 Codex 的内部上下文降级，用户没有可执行操作。
+            // 保留日志供诊断，但不要把这类提示放进会话正文制造故障感。
+            guard !isInternalSkillContextBudgetWarning(payload.message) else {
+                break
+            }
             output.messageMutations.append(.system(payload.message, fallbackSessionID, .warning, metadata))
         case .error(let payload, let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
@@ -383,5 +388,12 @@ actor EventReducer {
         default:
             return false
         }
+    }
+
+    private func isInternalSkillContextBudgetWarning(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        // 同时匹配两个稳定片段，避免误隐藏其他包含 Skill 描述的可操作警告。
+        return normalized.contains("skill descriptions were shortened")
+            && normalized.contains("skills context budget")
     }
 }

@@ -3011,6 +3011,30 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
+    func testEventReducerKeepsInternalSkillBudgetWarningOutOfConversation() async throws {
+        let metadata = AgentEventMetadata(
+            seq: 45,
+            sessionID: "codex_thread",
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+        let warning = "Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill."
+
+        let output = await EventReducer().reduce(
+            .warning(AgentErrorPayload(message: warning, code: "warning", retryable: false), metadata),
+            fallbackSessionID: "codex_thread",
+            outputIdleClearDelay: 0
+        )
+
+        XCTAssertTrue(output.messageMutations.isEmpty)
+        XCTAssertEqual(output.logAppends.count, 1)
+        XCTAssertTrue(output.logAppends[0].text.contains(warning))
+    }
+
     func testEventReducerPresentsClaudeAuthenticationFailureAsRecoverableChineseNotice() async throws {
         let reducer = EventReducer()
         let metadata = AgentEventMetadata(
