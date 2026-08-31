@@ -37,7 +37,7 @@ struct TailcatPathDiagnostic: Codable, Equatable, Identifiable {
         guard requestSucceeded, let requestLatencyMillis else {
             return L10n.text("ui.tailcat_request_failed")
         }
-        return L10n.format("ui.tailcat_request_latency_value", requestLatencyMillis)
+        return L10n.format("ui.tailcat_request_latency_value", String(requestLatencyMillis))
     }
 }
 

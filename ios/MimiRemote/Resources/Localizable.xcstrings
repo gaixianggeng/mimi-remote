@@ -39241,8 +39241,8 @@
     "ui.tailcat_request_latency_value": {
       "comment": "Tailcat HTTP health request duration in milliseconds.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "HTTP request: %lld ms" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求：%lld ms" } }
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP request: %@ ms" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求：%@ ms" } }
       }
     },
     "ui.tailcat_request_failed": {
