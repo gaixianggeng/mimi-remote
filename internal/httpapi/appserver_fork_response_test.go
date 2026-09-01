@@ -80,17 +80,14 @@ func TestSanitizedGatewayThreadForkKeepsSourceAndForcesBoundedResponse(t *testin
 	}
 }
 
-func TestAppServerGatewayKeepsSlowForkPendingForLateReconciliation(t *testing.T) {
+func TestAppServerGatewayKeepsForkPendingUntilResponseOrClose(t *testing.T) {
 	oldThreadTTL := appServerGatewayPendingThreadTTL
-	oldForkTTL := appServerGatewayPendingForkTTL
 	appServerGatewayPendingThreadTTL = 30 * time.Second
-	appServerGatewayPendingForkTTL = 2 * time.Minute
 	t.Cleanup(func() {
 		appServerGatewayPendingThreadTTL = oldThreadTTL
-		appServerGatewayPendingForkTTL = oldForkTTL
 	})
 
-	createdAt := time.Now().Add(-75 * time.Second)
+	createdAt := time.Now().Add(-24 * time.Hour)
 	policy := &appServerGatewayPolicy{
 		pendingThreads: map[string]appServerGatewayPendingThreadRequest{
 			"fork": {method: "thread/fork", createdAt: createdAt},
@@ -104,6 +101,14 @@ func TestAppServerGatewayKeepsSlowForkPendingForLateReconciliation(t *testing.T)
 	policy.mu.Unlock()
 
 	if !keptFork || keptList {
-		t.Fatalf("75 秒 fork 应保留对账上下文，普通列表应按 30 秒清理：fork=%t list=%t", keptFork, keptList)
+		t.Fatalf("fork 应保留到响应或连接关闭，普通列表应按 30 秒清理：fork=%t list=%t", keptFork, keptList)
+	}
+
+	policy.close()
+	policy.mu.Lock()
+	remaining := len(policy.pendingThreads)
+	policy.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("连接关闭必须释放 fork 上下文，remaining=%d", remaining)
 	}
 }

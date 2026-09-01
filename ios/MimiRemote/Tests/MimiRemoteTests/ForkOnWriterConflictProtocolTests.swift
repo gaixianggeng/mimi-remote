@@ -140,6 +140,50 @@ final class ForkOnWriterConflictProtocolTests: XCTestCase {
         XCTAssertFalse(forked.isRunning)
     }
 
+    func testClaudeForkDoesNotRegisterThreadStartedReconciliation() async throws {
+        let project = AgentProject(id: "proj-claude-fork", name: "Claude Fork", path: "/tmp/claude-fork")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/fork"],
+                    channels: [makeClaudeChannelMetadata()]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let forkTask = Task {
+            try await client.forkSession(
+                threadID: "claude-source",
+                workspace: AgentWorkspace(project: project),
+                reason: .duplicate
+            )
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        let fork = try await waitForFakeAppServerRequest(transport, method: "thread/fork", after: 1)
+        let pendingReconciliations = await runtime.pendingForkReconciliationsByToken.count
+        XCTAssertEqual(pendingReconciliations, 0)
+
+        transportResponse(
+            transport,
+            id: fork.id,
+            result: #"{"thread":{"id":"claude-forked","sessionId":"claude-forked","preview":"forked","ephemeral":false,"modelProvider":"anthropic","status":{"type":"idle"},"cwd":"/tmp/claude-fork","source":"appServer","forkedFromId":"claude-source","turns":[]}}"#
+        )
+        let forked = try await forkTask.value
+        XCTAssertEqual(forked.id, "claude-forked")
+    }
+
     func testSessionStoreProtocolAndMockCarryOptionalTerminalBoundary() async throws {
         let project = AgentProject(id: "proj-mock", name: "Mock", path: "/tmp/proj-mock")
         let source = makeSession(

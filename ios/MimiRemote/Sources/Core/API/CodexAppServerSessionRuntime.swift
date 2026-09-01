@@ -1011,10 +1011,17 @@ actor CodexAppServerSessionRuntime {
         var options = CodexAppServerTurnOptions.default
         options.threadSource = reason.rawValue
         options.preservesThreadPermissionSettings = true
-        let reconciliationToken = beginForkReconciliation(
-            sourceThreadID: threadID,
-            expectedThreadSource: reason.rawValue
-        )
+        let reconciliationToken: UUID?
+        if runtimeProvider == "codex" {
+            reconciliationToken = beginForkReconciliation(
+                sourceThreadID: threadID,
+                expectedThreadSource: reason.rawValue
+            )
+        } else {
+            // Claude Bridge 的 thread/fork 不发送 thread/started，不能进入
+            // 只会增加等待时间且永远无法成功的事件对账。
+            reconciliationToken = nil
+        }
         let result: CodexAppServerJSONValue?
         do {
             result = try await sendRecoveringFromStaleInitialization(
@@ -1026,9 +1033,12 @@ actor CodexAppServerSessionRuntime {
                 ),
                 timeout: longRunningRequestTimeout
             )
-            cancelForkReconciliation(reconciliationToken)
+            if let reconciliationToken {
+                cancelForkReconciliation(reconciliationToken)
+            }
         } catch {
-            if isThreadForkTimeout(error),
+            if let reconciliationToken,
+               isThreadForkTimeout(error),
                let reconciled = await waitForForkReconciliation(
                 reconciliationToken,
                 timeout: longRunningRequestTimeout
@@ -1036,7 +1046,9 @@ actor CodexAppServerSessionRuntime {
                 rememberForkedSession(reconciled)
                 return reconciled
             }
-            cancelForkReconciliation(reconciliationToken)
+            if let reconciliationToken {
+                cancelForkReconciliation(reconciliationToken)
+            }
             throw error
         }
         guard let thread = threadObject(from: result) else {

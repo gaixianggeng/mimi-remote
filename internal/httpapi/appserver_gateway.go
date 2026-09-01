@@ -57,7 +57,6 @@ var (
 		appServerGatewayLargeFrameMaxWriteWindow + appServerGatewayWriteWindow +
 		appServerGatewayPongGrace
 	appServerGatewayPendingThreadTTL              = 30 * time.Second
-	appServerGatewayPendingForkTTL                = 3 * time.Minute
 	appServerGatewayPendingThreadMax              = 128
 	appServerGatewayPendingClientRequestTTL       = 2 * time.Minute
 	appServerGatewayPendingClientRequestMax       = 256

@@ -71,13 +71,13 @@ func (p *appServerGatewayPolicy) prunePendingThreadsLocked(now time.Time) {
 			// 才能证明该 cwd 不再处于未完成使用窗口。
 			continue
 		}
-		ttl := appServerGatewayPendingThreadTTL
 		if pending.method == "thread/fork" {
-			// fork 需要读取并复制源 rollout。大型会话可能超过普通元数据请求的
-			// 30 秒窗口；过早遗忘会让迟到成功响应绕过裁剪和新线程授权。
-			ttl = appServerGatewayPendingForkTTL
+			// fork 是非幂等写请求，且旧 App Server 可能在任意时长后返回完整历史。
+			// 固定 TTL 会让迟到响应绕过裁剪和新线程授权；只允许明确响应、失败
+			// 或连接关闭释放。pending 总量上限继续约束异常连接的内存占用。
+			continue
 		}
-		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > ttl {
+		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingThreadTTL {
 			delete(p.pendingThreads, id)
 		}
 	}
