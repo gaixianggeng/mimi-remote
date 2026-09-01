@@ -123,6 +123,17 @@ struct CodexAppServerTurnInterruptRecoveryTask {
     let task: Task<Void, Never>
 }
 
+/// fork 的 RPC 可能先在移动端超时，随后才收到 thread/started。
+/// 保留一次有界对账，避免把已经成功创建的分支误报为失败。
+struct CodexAppServerPendingForkReconciliation {
+    let sourceThreadID: SessionID
+    let expectedThreadSource: String
+    let startedAt: Date
+    var session: AgentSession?
+    var continuation: CheckedContinuation<AgentSession?, Never>?
+    var timeoutTask: Task<Void, Never>?
+}
+
 enum CodexAppServerTurnStartOutcome: Equatable {
     // RPC 已接受，且当前仍是这一轮或尚在等待 turn/started。
     case active(turnID: TurnID?)
@@ -225,6 +236,7 @@ actor CodexAppServerSessionRuntime {
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
     var turnInterruptRecoveryTasksBySessionID: [SessionID: CodexAppServerTurnInterruptRecoveryTask] = [:]
+    var pendingForkReconciliationsByToken: [UUID: CodexAppServerPendingForkReconciliation] = [:]
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
     let turnInterruptRecoveryDelaysNanoseconds: [UInt64]
@@ -279,6 +291,7 @@ actor CodexAppServerSessionRuntime {
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
         threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
         turnInterruptRecoveryTasksBySessionID.values.forEach { $0.task.cancel() }
+        pendingForkReconciliationsByToken.values.forEach { $0.timeoutTask?.cancel() }
     }
 
     func projects() async throws -> [AgentProject] {
@@ -998,26 +1011,40 @@ actor CodexAppServerSessionRuntime {
         var options = CodexAppServerTurnOptions.default
         options.threadSource = reason.rawValue
         options.preservesThreadPermissionSettings = true
-        let result = try await sendRecoveringFromStaleInitialization(
-            try CodexAppServerRequestBuilder(allowlistedProjects: projects).threadFork(
-                threadID: threadID,
-                cwd: workspace.path,
-                lastTurnID: lastTurnID,
-                options: options
-            ),
-            timeout: longRunningRequestTimeout
+        let reconciliationToken = beginForkReconciliation(
+            sourceThreadID: threadID,
+            expectedThreadSource: reason.rawValue
         )
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                try CodexAppServerRequestBuilder(allowlistedProjects: projects).threadFork(
+                    threadID: threadID,
+                    cwd: workspace.path,
+                    lastTurnID: lastTurnID,
+                    options: options
+                ),
+                timeout: longRunningRequestTimeout
+            )
+            cancelForkReconciliation(reconciliationToken)
+        } catch {
+            if isThreadForkTimeout(error),
+               let reconciled = await waitForForkReconciliation(
+                reconciliationToken,
+                timeout: longRunningRequestTimeout
+               ) {
+                rememberForkedSession(reconciled)
+                return reconciled
+            }
+            cancelForkReconciliation(reconciliationToken)
+            throw error
+        }
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
         let session = try agentSession(from: thread, projects: projects, fallbackProject: project)
         emitActivePermissionProfile(from: result, threadID: session.id)
-        contextsBySessionID[session.id] = CodexAppServerSessionContext(
-            session: session,
-            cwd: session.dir,
-            activeTurnID: session.activeTurnID
-        )
-        threadsResumedOnConnection.insert(session.id)
+        rememberForkedSession(session)
         return session
     }
 

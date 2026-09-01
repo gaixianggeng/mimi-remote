@@ -175,7 +175,10 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !scopeOK {
 			return fmt.Errorf("%s.cwd 必须来自已授权工作区", method)
 		}
-		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
+		if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
+			method: method, cwd: cwd, scopeID: scope.id, threadID: threadID,
+			managedWorktreePath: validated.pendingManagedWorktreePath,
+		}); err != nil {
 			return err
 		}
 	case "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/settings/update",
@@ -1254,6 +1257,11 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	}
 	if method == "thread/fork" {
 		copyGatewayParam(safe, params, "lastTurnId")
+		if threadSource, ok := gatewayStringParam(params, "threadSource"); ok && len(threadSource) <= 64 {
+			// fork 没有新用户消息，必须保留调用方声明的来源。否则超时后
+			// 留下的持久化线程会退化成无来源空会话，刷新列表也无法识别。
+			safe["threadSource"] = threadSource
+		}
 	}
 	if method == "thread/resume" || method == "thread/fork" {
 		safe["excludeTurns"] = true

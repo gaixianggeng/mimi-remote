@@ -68,6 +68,110 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
+    func beginForkReconciliation(
+        sourceThreadID: SessionID,
+        expectedThreadSource: String
+    ) -> UUID {
+        let token = UUID()
+        pendingForkReconciliationsByToken[token] = CodexAppServerPendingForkReconciliation(
+            sourceThreadID: sourceThreadID,
+            expectedThreadSource: expectedThreadSource,
+            startedAt: Date()
+        )
+        return token
+    }
+
+    func waitForForkReconciliation(
+        _ token: UUID,
+        timeout: TimeInterval
+    ) async -> AgentSession? {
+        guard let pending = pendingForkReconciliationsByToken[token] else {
+            return nil
+        }
+        if let session = pending.session {
+            pendingForkReconciliationsByToken.removeValue(forKey: token)
+            return session
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard var current = pendingForkReconciliationsByToken[token] else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                current.continuation = continuation
+                let timeoutNanoseconds = UInt64(max(0.1, timeout) * 1_000_000_000)
+                current.timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await self?.cancelForkReconciliation(token)
+                }
+                pendingForkReconciliationsByToken[token] = current
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelForkReconciliation(token)
+            }
+        }
+    }
+
+    func cancelForkReconciliation(_ token: UUID) {
+        guard let pending = pendingForkReconciliationsByToken.removeValue(forKey: token) else {
+            return
+        }
+        pending.timeoutTask?.cancel()
+        pending.continuation?.resume(returning: nil)
+    }
+
+    func reconcileForkStarted(
+        thread: [String: CodexAppServerJSONValue],
+        session: AgentSession
+    ) {
+        guard let sourceThreadID = nonEmpty(
+            thread["forkedFromId"]?.stringValue,
+            thread["forked_from_id"]?.stringValue
+        ),
+        let threadSource = nonEmpty(
+            thread["threadSource"]?.stringValue,
+            thread["thread_source"]?.stringValue
+        ) else {
+            return
+        }
+        let createdAt = firstDate(in: thread, keys: ["createdAt", "created_at"])
+        guard let token = pendingForkReconciliationsByToken.first(where: { _, pending in
+            pending.sourceThreadID == sourceThreadID
+                && pending.expectedThreadSource == threadSource
+                && (createdAt.map { $0 >= pending.startedAt.addingTimeInterval(-5) } ?? true)
+        })?.key,
+        var pending = pendingForkReconciliationsByToken[token] else {
+            return
+        }
+        if let continuation = pending.continuation {
+            pendingForkReconciliationsByToken.removeValue(forKey: token)
+            pending.timeoutTask?.cancel()
+            continuation.resume(returning: session)
+        } else {
+            pending.session = session
+            pendingForkReconciliationsByToken[token] = pending
+        }
+    }
+
+    func rememberForkedSession(_ session: AgentSession) {
+        contextsBySessionID[session.id] = CodexAppServerSessionContext(
+            session: session,
+            cwd: session.dir,
+            activeTurnID: session.activeTurnID
+        )
+        threadsResumedOnConnection.insert(session.id)
+    }
+
+    func isThreadForkTimeout(_ error: Error) -> Bool {
+        guard let connectionError = error as? CodexAppServerConnectionError,
+              case .timeout(let method, _) = connectionError else {
+            return false
+        }
+        return method == "thread/fork"
+    }
+
     private func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
         while events.count >= 2 {
             let previousIndex = events.index(events.endIndex, offsetBy: -2)
@@ -130,10 +234,19 @@ extension CodexAppServerSessionRuntime {
             applyAccountRateLimit(summary)
         case "thread/started":
             guard let thread = params["thread"]?.objectValue,
-                  let session = try? agentSession(from: thread, projects: (try? projectsFromCache()) ?? [], fallbackProject: nil, forceRunning: true) else {
+                  let session = try? agentSession(
+                    from: thread,
+                    projects: (try? projectsFromCache()) ?? [],
+                    fallbackProject: nil,
+                    forceRunning: nonEmpty(
+                        thread["forkedFromId"]?.stringValue,
+                        thread["forked_from_id"]?.stringValue
+                    ) == nil
+                  ) else {
                 return
             }
             contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: session.dir, activeTurnID: session.activeTurnID)
+            reconcileForkStarted(thread: thread, session: session)
             emit(.session(session))
         case "thread/settings/updated":
             guard let threadID = params["threadId"]?.stringValue else {
