@@ -2,12 +2,12 @@
 
 ## 目标
 
-让个人开发者在 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
+让个人开发者在 macOS、Windows 或 Linux 电脑上启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
 
 ## 方案
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
-- Windows 只作为 Codex Desktop SSH 客户端使用。MIM-207 暂停 Windows agentd 安装包发布。
+- Windows 支持运行 `agentd`，后台服务使用当前用户的计划任务。MIM-207 只暂停 Windows 公开安装包发布。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和移动端配对 Token 都留在系统用户配置目录，升级二进制不会删除它们。
@@ -15,11 +15,13 @@
 
 ## 实现
 
-### Windows Desktop 接入
+### Windows 宿主
 
-MIM-207 的共享运行时依赖 POSIX 远端命令、Unix Socket 和 Mac 工作区路径，因此 Windows 不能作为 `agentd` 宿主。正式 Release 暂停发布 Windows 安装包；仓库中保留的安装器源码会在停服、替换文件或修改计划任务前明确拒绝安装。
+Windows 可以运行 `agentd`。后台服务由当前用户的 Task Scheduler 计划任务管理；配置和运行状态保存在当前用户目录，不要求管理员身份。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。
 
-Windows 只运行 Codex Desktop。把共享 App Server 所在的 Mac 添加为 SSH 主机，以同一个 macOS 用户登录并打开共享工作区。移动端继续连接 Mac 上的 `agentd`。Windows agentd 若要恢复，需要单独设计兼容的共享 transport，不能回退到实验 WebSocket 或 Desktop 私有 IPC。
+局域网访问必须由用户显式开启。防火墙规则只允许 Private 网络和 `LocalSubnet`，不应把 `agentd` 的明文 HTTP 端口暴露到公网。跨网络访问优先使用 Tailscale。
+
+MIM-207 暂停的是 Windows 公开安装包发布，不是 Windows Runtime 支持。安装包是否可用以当前 [GitHub Release](https://github.com/gaixianggeng/mimi-remote/releases/latest) 为准。仓库中的 Windows 构建、计划任务、托盘和防火墙实现仍用于 Windows 兼容性验证；普通用户应使用带 Windows 安装包的正式 Release，不要把 CI 生成的未签名产物当作正式安装包。
 
 ### macOS 首次安装（推荐）
 
@@ -344,7 +346,7 @@ Windows 安装器可选配置以下 Authenticode Secrets：
 | `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
 | `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
 
-Windows verify job 只构建并检查带兼容性 gate 的安装器，确保它在任何停服或文件修改前拒绝安装。该 artifact 只保留在 Actions，不上传 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时仍验证 Authenticode；两个都缺失时构建内部 `unsigned-release` 验证件。恢复 Windows host 发布前，必须先设计兼容共享 transport，并恢复独立发布 job。
+Windows verify job 会构建并检查内部安装器，其中仍保留 MIM-207 的临时发布 gate，并在任何停服或文件修改前拒绝最终用户安装。这个 gate 控制公开分发，不代表 Windows Runtime 不受支持。该 artifact 只保留在 Actions，不上传 GitHub Release；PFX 临时文件不会进入 artifact。两个 Secret 都存在时仍验证 Authenticode；两个都缺失时构建内部 `unsigned-release` 验证件。恢复 Windows 公开安装包时，需要移除临时 gate、通过现有计划任务、托盘与防火墙验收，并恢复独立发布 job。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 
