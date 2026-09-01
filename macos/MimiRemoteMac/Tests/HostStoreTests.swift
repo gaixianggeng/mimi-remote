@@ -679,6 +679,55 @@ final class HostStoreTests: XCTestCase {
         ])
     }
 
+    func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing() async {
+        let events = EventRecorder()
+        let defaultStatus = TailcatStatus(
+            enabled: true,
+            running: true,
+            version: "v0.3.0",
+            derpMapURL: nil,
+            pairedDeviceCount: 1,
+            error: nil
+        )
+        let customStatus = TailcatStatus(
+            enabled: true,
+            running: true,
+            version: "v0.3.0",
+            derpMapURL: "https://relay.example/derpmap/default",
+            pairedDeviceCount: 0,
+            error: nil
+        )
+        let tailcatPairing = PairingInfo(
+            endpoint: "http://127.0.0.1:8787",
+            network: .tailcat,
+            pairURL: "mimiremote://pair?transport=tailcat",
+            expiresAt: "2026-09-02T02:00:00Z",
+            warnings: []
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            pair: { _ in tailcatPairing },
+            tailcatStatus: { defaultStatus },
+            configureTailcatDERPMap: { url in
+                events.append(url)
+                return customStatus
+            }
+        )
+
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+        await store.refreshPairing(network: .tailcat)
+        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
+
+        XCTAssertEqual(events.values, ["https://relay.example/derpmap/default"])
+        XCTAssertEqual(store.tailcatDERPMapURL, "https://relay.example/derpmap/default")
+        XCTAssertEqual(store.tailcatStatus?.pairedDeviceCount, 0)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(store.pairingNetwork, .tailscale)
+        XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
+    }
+
     func testDoctorKeepsHomebrewMigrationState() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
         await store.bootstrap()
@@ -1049,6 +1098,26 @@ final class HostStoreTests: XCTestCase {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
         pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil,
+        tailcatStatus: @escaping @Sendable () async throws -> TailcatStatus = {
+            TailcatStatus(
+                enabled: false,
+                running: false,
+                version: nil,
+                derpMapURL: nil,
+                pairedDeviceCount: 0,
+                error: nil
+            )
+        },
+        configureTailcatDERPMap: @escaping @Sendable (String) async throws -> TailcatStatus = { _ in
+            TailcatStatus(
+                enabled: false,
+                running: false,
+                version: nil,
+                derpMapURL: nil,
+                pairedDeviceCount: 0,
+                error: nil
+            )
+        },
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
@@ -1062,6 +1131,8 @@ final class HostStoreTests: XCTestCase {
             configureClaude: configureClaude,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
+            tailcatStatus: tailcatStatus,
+            configureTailcatDERPMap: configureTailcatDERPMap,
             version: { readyStatus.version }
         )
         let services = ServiceManagementClient(

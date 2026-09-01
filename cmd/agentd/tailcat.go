@@ -22,6 +22,7 @@ type tailcatCommandStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
+	DERPMapURL        string `json:"derp_map_url,omitempty"`
 	Address           string `json:"address,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
@@ -35,11 +36,11 @@ func runTailcat(args []string) error {
 
 func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) < 2 {
-		return errors.New("tailcat 需要子命令：status、enable、disable、pair 或 reset")
+		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset 或 configure")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	switch action {
-	case "status", "enable", "disable", "pair", "reset":
+	case "status", "enable", "disable", "pair", "reset", "configure":
 	default:
 		return fmt.Errorf("未知 Tailcat 子命令 %q", action)
 	}
@@ -49,11 +50,24 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "配对时只输出短期配对信息")
+	derpMapURL := fs.String("derp-map-url", "", "自定义 DERP Map HTTPS URL；空值恢复 Tailcat 默认中继")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
+	derpMapURLSet := false
+	fs.Visit(func(current *flag.Flag) {
+		if current.Name == "derp-map-url" {
+			derpMapURLSet = true
+		}
+	})
 	if *qrOnly && action != "pair" {
 		return errors.New("--qr-only 只适用于 tailcat pair")
+	}
+	if action == "configure" && !derpMapURLSet {
+		return errors.New("tailcat configure 必须显式提供 --derp-map-url；使用 --derp-map-url= 恢复默认中继")
+	}
+	if action != "configure" && derpMapURLSet {
+		return errors.New("--derp-map-url 只适用于 tailcat configure")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
@@ -62,7 +76,7 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action)
+	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action, *derpMapURL)
 	if err != nil {
 		return err
 	}
@@ -84,7 +98,13 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	return nil
 }
 
-func requestTailcatControl(ctx context.Context, configPath string, cfg config.Config, action string) (tailcatCommandStatus, error) {
+func requestTailcatControl(
+	ctx context.Context,
+	configPath string,
+	cfg config.Config,
+	action string,
+	derpMapURL string,
+) (tailcatCommandStatus, error) {
 	localToken, err := httpapi.ReadTailcatLocalControlToken(configPath)
 	if err != nil {
 		return tailcatCommandStatus{}, fmt.Errorf("Tailcat 本机控制尚未就绪，请先启动 agentd：%w", err)
@@ -99,13 +119,22 @@ func requestTailcatControl(ctx context.Context, configPath string, cfg config.Co
 	if action == "status" {
 		method = http.MethodGet
 	} else {
-		encoded, encodeErr := json.Marshal(map[string]string{"action": action})
+		payload := map[string]string{"action": action}
+		if action == "configure" {
+			payload["derp_map_url"] = derpMapURL
+		}
+		encoded, encodeErr := json.Marshal(payload)
 		if encodeErr != nil {
 			return tailcatCommandStatus{}, encodeErr
 		}
 		body = bytes.NewReader(encoded)
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	timeout := 25 * time.Second
+	if action == "configure" {
+		// 切换中继会验证新 sidecar，并在失败时恢复旧 sidecar。
+		timeout = 50 * time.Second
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, method, controlURL, body)
 	if err != nil {
@@ -116,7 +145,7 @@ func requestTailcatControl(ctx context.Context, configPath string, cfg config.Co
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.Auth.Token))
 	req.Header.Set(httpapi.TailcatLocalControlHeader, localToken)
-	response, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
+	response, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return tailcatCommandStatus{}, fmt.Errorf("连接本机 agentd 失败：%w", err)
 	}
@@ -148,6 +177,11 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 	fmt.Fprintf(w, "Tailcat 实验：%s\n", state)
 	if status.Version != "" {
 		fmt.Fprintf(w, "版本：%s\n", status.Version)
+	}
+	if status.DERPMapURL == "" {
+		fmt.Fprintln(w, "中继：Tailcat 默认")
+	} else {
+		fmt.Fprintf(w, "中继：%s\n", status.DERPMapURL)
 	}
 	fmt.Fprintf(w, "已配对设备：%d\n", status.PairedDeviceCount)
 	if status.Error != "" {

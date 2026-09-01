@@ -91,6 +91,32 @@ type TailcatConfig struct {
 	DERPMapURL string `json:"derp_map_url,omitempty"`
 }
 
+// NormalizeTailcatDERPMapURL 校验用户配置的 DERP Map 地址。空值表示恢复
+// Tailcat 默认中继；自定义地址只允许 HTTPS，避免把连接元数据发往明文端点。
+func NormalizeTailcatDERPMapURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 2048 {
+		return "", fmt.Errorf("tailcat.derp_map_url 最多 2048 个字符")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("tailcat.derp_map_url 必须是完整的 HTTPS URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("tailcat.derp_map_url 只允许 HTTPS")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("tailcat.derp_map_url 不能包含用户名或密码")
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("tailcat.derp_map_url 不能包含片段")
+	}
+	return parsed.String(), nil
+}
+
 type RuntimeConfig struct {
 	Type string `json:"type"`
 }
@@ -640,6 +666,9 @@ func (c Config) Validate() error {
 	}
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
+	}
+	if _, err := NormalizeTailcatDERPMapURL(c.Tailcat.DERPMapURL); err != nil {
+		return err
 	}
 	switch normalizeRuntimeType(c.Runtime.Type) {
 	case "codex_app_server":

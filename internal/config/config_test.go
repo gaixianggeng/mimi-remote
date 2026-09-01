@@ -36,6 +36,29 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestNormalizeTailcatDERPMapURL(t *testing.T) {
+	got, err := NormalizeTailcatDERPMapURL("  https://124.221.80.250:8443/derpmap/default  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://124.221.80.250:8443/derpmap/default" {
+		t.Fatalf("DERP Map URL 未规范化：%q", got)
+	}
+	if restored, err := NormalizeTailcatDERPMapURL("  "); err != nil || restored != "" {
+		t.Fatalf("空值应恢复默认中继：value=%q err=%v", restored, err)
+	}
+	for _, candidate := range []string{
+		"http://relay.example/map",
+		"https://user:password@relay.example/map",
+		"https://relay.example/map#fragment",
+		"relay.example/map",
+	} {
+		if _, err := NormalizeTailcatDERPMapURL(candidate); err == nil {
+			t.Fatalf("无效 DERP Map URL 必须拒绝：%q", candidate)
+		}
+	}
+}
+
 func TestLoadNormalizesLegacyZeroClaudeBridgeLimit(t *testing.T) {
 	clearAgentdEnv(t)
 	projectDir := t.TempDir()
