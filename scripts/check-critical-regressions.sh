@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in bash grep; do
+for command_name in bash grep sed; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "缺少命令 ${command_name}。"
 done
@@ -43,9 +43,15 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' .github/workflows/ios-ci.
   || fail "iOS CI 没有显式使用 --ios-only。"
 grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh \
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
-if grep -Fq 'actions/setup-go@' .github/workflows/ios-ci.yml; then
-  fail "iOS CI 仍在重复初始化 Go 工具链。"
+conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
+release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
+if grep -Fq 'actions/setup-go@' <<<"$conversation_job"; then
+  fail "iOS 回归 job 仍在重复初始化 Go 工具链。"
 fi
+[[ "$(grep -Fc 'actions/setup-go@' <<<"$release_job")" == "1" ]] \
+  || fail "iOS 发布 job 必须且只能初始化一次 Tailcat Go 工具链。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$release_job" \
+  || fail "iOS 发布 job 没有使用 Tailcat go.mod 固定 Go 版本。"
 if grep -Fq 'bash ./scripts/check-mimi-protocol-contract.sh' .github/workflows/ios-ci.yml; then
   fail "iOS CI 仍在重复执行 Go 协议门禁。"
 fi

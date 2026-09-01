@@ -194,6 +194,12 @@ jobs:
           fetch-depth: 0
           clean: true
 
+      - name: Setup Go for Tailcat
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+
       # 所有签名材料都在后续 step 才注入；这里先锁定官方仓库当前 main
       # 的同一个 immutable commit，手工从其他分支触发会 fail closed。
       - name: Trust gate before App Store signing
