@@ -8,6 +8,7 @@ struct RootView: View {
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var hostStatusStore: HostStatusStore
+    @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLogInspector = false
@@ -42,6 +43,9 @@ struct RootView: View {
         .task {
             restoreActiveHostNavigationIfNeeded()
             defer { hasCompletedInitialBootstrap = true }
+            // Tailcat 本地转发必须先于首批 REST/WebSocket client 建立；关闭实验时此调用立即返回。
+            let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
+            guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
 #if targetEnvironment(macCatalyst)
             // Catalyst 先完成本机选路，再创建首批 REST/WebSocket client；否则并行 bootstrap
             // 可能已经拿 Tailscale 地址建好 runtime，导致本次启动无法真正切到 loopback。
@@ -83,6 +87,8 @@ struct RootView: View {
             )
         }
         .task {
+            let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
+            guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
 #if targetEnvironment(macCatalyst)
             // 已在上面的有序启动任务中完成。
 #else

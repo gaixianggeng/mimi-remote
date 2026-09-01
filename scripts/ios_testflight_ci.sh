@@ -82,7 +82,7 @@ run_asc_build_number_shadow() {
   echo "ios-testflight-ci: warning: asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested; keep Ruby preflight result" >&2
 }
 
-for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
+for command in git ruby bash go xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER; do
@@ -135,6 +135,10 @@ echo "ios-testflight-ci: toolchain Xcode=$xcode_version ($xcode_build) SDK=$sdk_
 git -C "$ROOT_DIR" diff --quiet
 git -C "$ROOT_DIR" diff --cached --quiet
 bash "$ROOT_DIR/scripts/check-ios-privacy-manifest.sh"
+
+# Tailcat XCFramework 是本地生成产物，不进入 Git。发布时必须从仓库固定的
+# Tailcat 版本重新生成；否则 App 虽能安装，但实验开关会因缺少桥接库而不可用。
+GOTOOLCHAIN=auto bash "$ROOT_DIR/scripts/build-tailcat-mobile.sh"
 
 settings="$(
   xcodebuild \

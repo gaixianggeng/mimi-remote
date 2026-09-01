@@ -21,6 +21,9 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
+    private(set) var tailcatStatus: TailcatStatus?
+    private(set) var isUpdatingTailcat = false
+    private(set) var tailcatError: String?
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
@@ -35,10 +38,38 @@ final class HostStore {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
 
+    var tailcatEnabled: Bool {
+        tailcatStatus?.enabled ?? false
+    }
+
+    var canChangeTailcat: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var tailcatStatusTitle: String {
+        if isUpdatingTailcat { return "正在更新" }
+        guard let tailcatStatus else { return "尚未检查" }
+        if !tailcatStatus.enabled { return "已关闭" }
+        return tailcatStatus.running ? "运行中" : "需要处理"
+    }
+
+    var tailcatStatusDetail: String {
+        if owner == .homebrew {
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 实验。"
+        }
+        if let tailcatError { return tailcatError }
+        if let error = tailcatStatus?.error, !error.isEmpty { return error }
+        guard let tailcatStatus, tailcatStatus.enabled else {
+            return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
+        }
+        return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
+    }
+
     var experimentMenuStatusText: String? {
         guard owner == .macApp else { return "不可管理" }
-        if isUpdatingClaude { return "正在更新" }
-        return claudeEnabled ? "Claude 已启用" : nil
+        if isUpdatingClaude || isUpdatingTailcat { return "正在更新" }
+        let enabled = [claudeEnabled ? "Claude" : nil, tailcatEnabled ? "Tailcat" : nil].compactMap { $0 }
+        return enabled.isEmpty ? nil : enabled.joined(separator: "、") + " 已启用"
     }
 
     var experimentMenuAccessibilityLabel: String {
@@ -353,6 +384,8 @@ final class HostStore {
             return try await agent.pair(.tailscale)
         case .localNetwork:
             return try await localNetworkPairing()
+        case .tailcat:
+            return try await agent.pair(.tailcat)
         }
     }
 
@@ -522,6 +555,59 @@ final class HostStore {
             }
         } catch {
             claudeError = error.localizedDescription
+        }
+    }
+
+    func refreshTailcatStatus() async {
+        guard owner == .macApp else { return }
+        do {
+            tailcatStatus = try await agent.tailcatStatus()
+            tailcatError = nil
+        } catch {
+            tailcatError = error.localizedDescription
+        }
+    }
+
+    func setTailcatEnabled(_ enabled: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.setTailcatEnabled(enabled)
+            if !enabled, pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+        } catch {
+            tailcatError = error.localizedDescription
+            await refreshTailcatStatus()
+        }
+    }
+
+    func resetTailcat() async {
+        guard !isBusy, owner == .macApp, tailcatEnabled else { return }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.resetTailcat()
+            if pairingNetwork == .tailcat {
+                pairing = nil
+            }
+        } catch {
+            tailcatError = error.localizedDescription
         }
     }
 

@@ -31,6 +31,7 @@ type Config struct {
 	Voice         VoiceConfig      `json:"voice"`
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
+	Tailcat       TailcatConfig    `json:"tailcat"`
 	Session       SessionConfig    `json:"session"`
 	Debug         DebugConfig      `json:"debug"`
 	Projects      []ProjectConfig  `json:"projects"`
@@ -80,6 +81,14 @@ type ClaudeConfig struct {
 	Args                 []string          `json:"args,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	MaxConcurrentBridges int               `json:"max_concurrent_bridges"`
+}
+
+// TailcatConfig 只保存实验开关和安装期覆盖项。连接地址、节点私钥和
+// 已配对客户端都保存在独立的 0600 状态文件中，不能进入主配置或日志。
+type TailcatConfig struct {
+	Enabled    bool   `json:"enabled"`
+	SidecarBin string `json:"sidecar_bin,omitempty"`
+	DERPMapURL string `json:"derp_map_url,omitempty"`
 }
 
 type RuntimeConfig struct {

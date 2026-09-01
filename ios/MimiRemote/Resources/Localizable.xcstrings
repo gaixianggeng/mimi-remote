@@ -39182,6 +39182,146 @@
         }
       }
     },
+    "ui.tailcat_experiment": {
+      "comment": "Name of the opt-in Tailcat transport experiment.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat experiment" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 实验" } }
+      }
+    },
+    "ui.tailcat_experiment_enabled": {
+      "comment": "Settings summary when the Tailcat experiment is enabled.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat mode on" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 模式已开启" } }
+      }
+    },
+    "ui.tailcat_experiment_disabled": {
+      "comment": "Settings summary when the Tailcat experiment is disabled.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat mode off" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 模式已关闭" } }
+      }
+    },
+    "ui.enable_tailcat_experiment": {
+      "comment": "Toggle label for the Tailcat transport experiment.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Tailcat experimental mode" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 Tailcat 实验模式" } }
+      }
+    },
+    "ui.tailcat_experiment_summary": {
+      "comment": "Explains what the Tailcat experiment changes.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "When on, all requests use Tailcat only. Your saved Tailscale connection remains unchanged and resumes when this switch is off." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开启后，所有请求只走 Tailcat。已保存的 Tailscale 连接不会被修改；关闭开关后恢复使用。" } }
+      }
+    },
+    "ui.tailcat_pairing_help": {
+      "comment": "Explains the Tailcat QR pairing flow.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from the normal add or repair computer entry. A successful scan enables this experiment automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 的实验功能中生成 Tailcat 二维码，再从常规的添加或修复电脑入口扫码。配对成功后会自动开启本实验。" } }
+      }
+    },
+    "ui.tailcat_pairing_address_missing": {
+      "comment": "Tailcat QR validation error when its temporary service address is absent.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The Tailcat pairing link is missing its temporary connection address." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 配对链接缺少临时连接地址。" } }
+      }
+    },
+    "ui.tailcat_diagnostics_help": {
+      "comment": "Explains privacy and retention for Tailcat path diagnostics.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Shows direct, Peer Relay, or relay path latency plus one real HTTP health request. Only the latest 10 redacted results are kept on this device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "显示直连、Peer Relay 或中转路径及延迟，并执行一次真实 HTTP 健康请求。本设备只保留最近 10 条脱敏结果。" } }
+      }
+    },
+    "ui.tailcat_request_latency_value": {
+      "comment": "Tailcat HTTP health request duration in milliseconds.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP request: %@ ms" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求：%@ ms" } }
+      }
+    },
+    "ui.tailcat_request_failed": {
+      "comment": "Tailcat HTTP health request failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP request failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求失败" } }
+      }
+    },
+    "ui.tailcat_address_placeholder": {
+      "comment": "Placeholder for a Tailcat connection address.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Paste the tc… address from your Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "粘贴 Mac 生成的 tc… 地址" } }
+      }
+    },
+    "ui.tailcat_save_and_connect": {
+      "comment": "Button that saves a Tailcat address and starts the experiment.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Save and connect" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保存并连接" } }
+      }
+    },
+    "ui.tailcat_address_help": {
+      "comment": "Help text for the Tailcat connection address.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start the Mac-side host with the client public key below, then paste its address here." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先用下方客户端公钥启动 Mac 端服务，再把服务端生成的地址粘贴到这里。" } }
+      }
+    },
+    "ui.tailcat_client_public_key": {
+      "comment": "Section title for the Tailcat client public key.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Client public key" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "客户端公钥" } }
+      }
+    },
+    "ui.tailcat_public_key_help": {
+      "comment": "Explains how the Tailcat client public key is used.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Allow this key on the Mac. The matching private key stays in this device's Keychain." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mac 端只允许这个公钥连接。对应私钥只保存在本设备的 Keychain 中。" } }
+      }
+    },
+    "ui.tailcat_safety_note": {
+      "comment": "Safety warning for the experimental Tailcat transport.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Experimental transport. Keep the existing Tailscale profile until real-device HTTP, WebSocket, file transfer, reconnect, and background recovery tests pass." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这是实验传输。在真机完成 HTTP、WebSocket、文件传输、重连和后台恢复验证前，请保留现有 Tailscale 连接档案。" } }
+      }
+    },
+    "ui.tailcat_needs_address": {
+      "comment": "Tailcat experiment state when no server address is configured.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan the Tailcat QR code generated by your Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请扫描 Mac 生成的 Tailcat 配对二维码" } }
+      }
+    },
+    "ui.tailcat_connected_local_endpoint_value": {
+      "comment": "Tailcat experiment state with the loopback endpoint used by the app.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connected through %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已通过 %@ 连接" } }
+      }
+    },
+    "ui.tailcat_connection_failed_value": {
+      "comment": "Tailcat experiment failure with the concrete error.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat failed: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 连接失败：%@" } }
+      }
+    },
+    "ui.tailcat_framework_unavailable": {
+      "comment": "Tailcat experiment state when the generated iOS framework is missing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Run scripts/build-tailcat-mobile.sh, then rebuild the app" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先运行 scripts/build-tailcat-mobile.sh，再重新构建 App" } }
+      }
+    },
     "ui.current_turn_permission_value": {
       "comment": "Shows the permission setting that the App Server reports for the current turn.",
       "localizations": {

@@ -154,6 +154,7 @@ struct MimiRemoteApp: App {
     @StateObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
+    @StateObject private var tailcatExperimentController: TailcatExperimentController
 
     /// 紧凑布局的会话搜索走系统 `.searchable`，而系统在 iOS 26 上给它铺的是
     /// Liquid Glass——一屏里其它 chrome 全是扁平磨砂，只有它一块玻璃。
@@ -186,6 +187,7 @@ struct MimiRemoteApp: App {
             profiles: appStore.connectionProfiles
         )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
+        let tailcatExperimentController = TailcatExperimentController()
         // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
         // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。
         let sessionStore = SessionStore(
@@ -193,7 +195,8 @@ struct MimiRemoteApp: App {
             conversationStore: conversationStore,
             logStore: logStore,
             contextStore: contextStore,
-            workspaceAppearanceStore: workspaceAppearanceStore
+            workspaceAppearanceStore: workspaceAppearanceStore,
+            tailcatExperimentController: tailcatExperimentController
         )
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
@@ -203,6 +206,7 @@ struct MimiRemoteApp: App {
         _workspaceAppearanceStore = StateObject(wrappedValue: workspaceAppearanceStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
+        _tailcatExperimentController = StateObject(wrappedValue: tailcatExperimentController)
         _sessionStore = StateObject(wrappedValue: sessionStore)
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
@@ -222,6 +226,7 @@ struct MimiRemoteApp: App {
                 .environmentObject(workspaceAppearanceStore)
                 .environmentObject(notificationResponseAdapter)
                 .environmentObject(hostStatusStore)
+                .environmentObject(tailcatExperimentController)
                 .onOpenURL { url in
                     Task { @MainActor in
                         do {

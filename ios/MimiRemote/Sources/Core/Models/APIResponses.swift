@@ -1266,12 +1266,28 @@ struct PairingClaimRequest: Encodable, Equatable {
     let issuedAt: String
     let expiresAt: String
     let pairSignature: String
+    let tailcatClientKey: String?
+
+    init(
+        endpoint: String,
+        issuedAt: String,
+        expiresAt: String,
+        pairSignature: String,
+        tailcatClientKey: String? = nil
+    ) {
+        self.endpoint = endpoint
+        self.issuedAt = issuedAt
+        self.expiresAt = expiresAt
+        self.pairSignature = pairSignature
+        self.tailcatClientKey = tailcatClientKey
+    }
 
     enum CodingKeys: String, CodingKey {
         case endpoint
         case issuedAt = "issued_at"
         case expiresAt = "expires_at"
         case pairSignature = "pair_sig"
+        case tailcatClientKey = "tailcat_client_key"
     }
 }
 
@@ -1280,12 +1296,14 @@ struct PairingClaimResponse: Decodable, Equatable {
     let token: String
     let tailscaleDNSName: String?
     let tailscaleDeviceName: String?
+    let tailcatAddress: String?
 
     enum CodingKeys: String, CodingKey {
         case endpoint
         case token
         case tailscaleDNSName = "tailscale_dns_name"
         case tailscaleDeviceName = "tailscale_device_name"
+        case tailcatAddress = "tailcat_address"
     }
 }
 

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -51,7 +50,9 @@ final class AppStore: ObservableObject {
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
-    private var activeRouteEndpoint: String?
+    var activeRouteEndpoint: String?
+    var isTailcatExperimentModeEnabled = false
+    var tailcatExperimentEndpoint: String?
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
@@ -227,71 +228,36 @@ final class AppStore: ObservableObject {
         return connectionProfiles.isEmpty || activeConnectionProfile != nil
     }
 
-    /// 认证请求只能在前台凭据完整恢复后创建。后台缩略图虽然仍保留工作台，
-    /// 但不能让任何旧任务拿空 Token 创建 REST 或 WebSocket Runtime。
-    var authenticatedCredentialFingerprint: String? {
-        guard !isCredentialMemorySuspended, isConfigured else {
-            return nil
+    /// 模式开关与代理端点分开保存。代理启动失败时仍保持 Tailcat-only，禁止隐式回退。
+    func setTailcatExperimentModeEnabled(_ enabled: Bool) {
+        guard enabled != isTailcatExperimentModeEnabled else { return }
+        isTailcatExperimentModeEnabled = enabled
+        connectionGeneration &+= 1
+        resetDirectRuntime()
+        if enabled {
+            activeRouteEndpoint = tailcatExperimentEndpoint
+            activeConnectionRoute = .tailcat
+        } else {
+            tailcatExperimentEndpoint = nil
+            activeRouteEndpoint = nil
+            activeConnectionRoute = .configured
         }
-        return connectionCredentialFingerprint(token)
     }
 
-    func acceptsCredentialInvalidation(_ error: Error) -> Bool {
-        guard isCredentialInvalidatingError(error),
-              let currentFingerprint = authenticatedCredentialFingerprint else {
-            return false
+    /// Tailcat 只覆盖本进程的网络路由，不修改当前连接档案及其 Tailscale 地址。
+    func setTailcatExperimentEndpoint(_ nextEndpoint: String?) {
+        let normalized = nextEndpoint.map(AgentAPIClient.normalizedEndpoint)
+        guard normalized != tailcatExperimentEndpoint else { return }
+        tailcatExperimentEndpoint = normalized
+        connectionGeneration &+= 1
+        resetDirectRuntime()
+        if let normalized {
+            activeRouteEndpoint = normalized
+            activeConnectionRoute = .tailcat
+        } else {
+            activeRouteEndpoint = nil
+            activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         }
-        guard let rejectedFingerprint = credentialFingerprintRejectedByError(error) else {
-            // 兼容测试替身和旧的进程内错误；生产 REST/WS 传输都会携带指纹。
-            return true
-        }
-        return rejectedFingerprint == currentFingerprint
-    }
-
-    func isCurrentCredentialFingerprint(_ fingerprint: String?) -> Bool {
-        guard let currentFingerprint = authenticatedCredentialFingerprint else {
-            return false
-        }
-        // nil 仅兼容不携带传输上下文的测试 WebSocket。
-        return fingerprint == nil || fingerprint == currentFingerprint
-    }
-
-    var activeConnectionProfile: ConnectionProfile? {
-        guard let activeConnectionProfileID else { return nil }
-        return connectionProfiles.first { $0.id == activeConnectionProfileID }
-    }
-
-    /// `endpoint` 始终保留档案里的规范地址，用于通知、缓存和跨设备身份；真实网络请求在
-    /// Catalyst 检测到同机 agentd 后临时走 loopback，避免把同一台 Mac 拆成两套本地数据。
-    var connectionEndpoint: String {
-        activeRouteEndpoint ?? activeConnectionProfile?.preferredEndpoint ?? endpoint
-    }
-
-    var isUsingLocalConnection: Bool {
-        activeConnectionRoute == .local
-    }
-
-    /// 通知路由优先使用持久化 profile ID；legacy/debug 单连接才退回规范 endpoint 的 SHA-256。
-    /// 哈希仅用于同机比对，避免把 endpoint 明文写进系统通知数据库。
-    var notificationRoutingProfileID: String {
-        if let activeConnectionProfileID,
-           !activeConnectionProfileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return activeConnectionProfileID
-        }
-        let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
-        let digest = SHA256.hash(data: Data(normalizedEndpoint.utf8))
-        return "endpoint-sha256:" + digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    var connectionProfileSettingsModel: ConnectionProfileSettingsModel {
-        ConnectionProfileSettingsModel(
-            profiles: connectionProfiles,
-            activeProfileID: activeConnectionProfileID
-        )
-    }
-
-    var activeHostScope: HostScope {
-        activeHostState.scope
     }
 
     /// 只为主机选择器生成探活描述；Token 读取在独立 actor 中执行。
@@ -829,8 +795,13 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        activeRouteEndpoint = normalizedActiveEndpoint
-        activeConnectionRoute = .configured
+        if isTailcatExperimentModeEnabled {
+            activeRouteEndpoint = tailcatExperimentEndpoint
+            activeConnectionRoute = .tailcat
+        } else {
+            activeRouteEndpoint = normalizedActiveEndpoint
+            activeConnectionRoute = .configured
+        }
         if let candidateRuntime {
             prepared.hostContext?.markConsumed()
             activeRuntimeIdentity = runtimeIdentity(endpoint: normalizedActiveEndpoint, token: prepared.token)
@@ -1203,7 +1174,7 @@ final class AppStore: ObservableObject {
             return false
         }
 
-        await testConnection(endpoint: endpoint, token: token)
+        await testConnection(endpoint: connectionEndpoint, token: token)
         if Task.isCancelled {
             shouldRetryAfterCancellation = true
         }
@@ -1216,7 +1187,14 @@ final class AppStore: ObservableObject {
 #if DEBUG
         if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return true }
 #endif
-        let localAvailable = await detectLocalAgent(force: force)
+        let usesTailcatExperiment = isTailcatExperimentModeEnabled
+        if usesTailcatExperiment, tailcatExperimentEndpoint == nil {
+            let error = URLError(.notConnectedToInternet)
+            connectionStatus = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
+        }
+        let localAvailable = usesTailcatExperiment ? false : await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
             return true
         }
@@ -1254,7 +1232,8 @@ final class AppStore: ObservableObject {
 
         let normalizedEndpoint: String
         do {
-            normalizedEndpoint = try Self.validatedEndpoint(endpoint)
+            // 常规路由仍从档案的规范地址展开 DNS/IP 候选；只有 Tailcat 覆盖该入口。
+            normalizedEndpoint = try Self.validatedEndpoint(tailcatExperimentEndpoint ?? endpoint)
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
@@ -1262,7 +1241,7 @@ final class AppStore: ObservableObject {
         }
 
         var candidates: [(endpoint: String, route: ActiveConnectionRoute, timeout: TimeInterval)] = []
-        if localAvailable,
+        if !usesTailcatExperiment, localAvailable,
            AgentAPIClient.normalizedEndpoint(normalizedEndpoint) != AgentAPIClient.normalizedEndpoint(localAgentEndpoint) {
             candidates.append((
                 endpoint: localAgentEndpoint,
@@ -1271,7 +1250,7 @@ final class AppStore: ObservableObject {
             ))
         }
         let configuredEndpoints: [String]
-        if let profile = activeConnectionProfile,
+        if !usesTailcatExperiment, let profile = activeConnectionProfile,
            AgentAPIClient.normalizedEndpoint(profile.endpoint) ==
             AgentAPIClient.normalizedEndpoint(normalizedEndpoint) {
             configuredEndpoints = profile.connectionCandidates
@@ -1279,9 +1258,9 @@ final class AppStore: ObservableObject {
             configuredEndpoints = [normalizedEndpoint]
         }
         for configuredEndpoint in configuredEndpoints {
-            let route: ActiveConnectionRoute = HostConnectionEndpointPolicy.isLoopbackEndpoint(configuredEndpoint)
-                ? .local
-                : .configured
+            let route: ActiveConnectionRoute = usesTailcatExperiment
+                ? .tailcat
+                : (HostConnectionEndpointPolicy.isLoopbackEndpoint(configuredEndpoint) ? .local : .configured)
             candidates.append((endpoint: configuredEndpoint, route: route, timeout: routeProbeTimeout))
         }
 
@@ -1289,7 +1268,7 @@ final class AppStore: ObservableObject {
         for candidate in candidates {
             do {
                 try await routeProbe(candidate.endpoint, token, candidate.timeout)
-                if candidate.route == .configured,
+                if candidate.route == .configured || candidate.route == .tailcat,
                    let profile = activeConnectionProfile {
                     try await validateConnectionCandidateIdentityAndRefreshHostMetadata(
                         from: candidate.endpoint,
@@ -1323,7 +1302,7 @@ final class AppStore: ObservableObject {
             }
         }
 
-        if localAvailable {
+        if !usesTailcatExperiment, localAvailable {
             do {
                 try await connectToLocalAgentWithAutomaticPairing()
                 return true
@@ -1337,9 +1316,11 @@ final class AppStore: ObservableObject {
             }
         }
 
-        resetConnectionRoute()
+        if !usesTailcatExperiment {
+            resetConnectionRoute()
+        }
         let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
-        if acceptsCredentialInvalidation(finalError) {
+        if !usesTailcatExperiment, acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
         }
@@ -1967,8 +1948,8 @@ final class AppStore: ObservableObject {
     }
 
     private func resetConnectionRoute() {
-        activeRouteEndpoint = nil
-        activeConnectionRoute = .configured
+        activeRouteEndpoint = isTailcatExperimentModeEnabled ? tailcatExperimentEndpoint : nil
+        activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         resetDirectRuntime()
     }
 

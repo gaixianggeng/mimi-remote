@@ -16,10 +16,11 @@ const (
 )
 
 type pairingClaimRequest struct {
-	Endpoint  string `json:"endpoint"`
-	IssuedAt  string `json:"issued_at"`
-	ExpiresAt string `json:"expires_at"`
-	Signature string `json:"pair_sig"`
+	Endpoint         string `json:"endpoint"`
+	IssuedAt         string `json:"issued_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Signature        string `json:"pair_sig"`
+	TailcatClientKey string `json:"tailcat_client_key,omitempty"`
 }
 
 type pairingClaimResponse struct {
@@ -27,6 +28,7 @@ type pairingClaimResponse struct {
 	Token               string `json:"token"`
 	TailscaleDNSName    string `json:"tailscale_dns_name,omitempty"`
 	TailscaleDeviceName string `json:"tailscale_device_name,omitempty"`
+	TailcatAddress      string `json:"tailcat_address,omitempty"`
 }
 
 func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Request) {
@@ -104,6 +106,22 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	response := pairingClaimResponse{
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
+	}
+	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
+		if r.tailcat == nil {
+			writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
+			return
+		}
+		status, err := r.tailcat.AllowClient(req.Context(), publicKey)
+		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "Tailcat 稳定连接尚未就绪")
+			}
+			return
+		}
+		response.TailcatAddress = status.Address
 	}
 	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
 	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。

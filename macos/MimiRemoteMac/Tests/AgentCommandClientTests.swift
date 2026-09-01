@@ -40,6 +40,21 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testTailcatUsesDedicatedExperimentalCommands() {
+        XCTAssertEqual(
+            AgentCommandClient.pairArguments(network: .tailcat),
+            ["tailcat", "pair", "--json", "--qr-only"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.pairArguments(network: .tailscale),
+            ["pair", "--network", "tailscale", "--json", "--qr-only"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.tailcatArguments(action: "enable"),
+            ["tailcat", "enable", "--json"]
+        )
+    }
+
     func testProcessCancellationIsReportedAsCancellation() async {
         let executor = ProcessExecutor()
         let task = Task {

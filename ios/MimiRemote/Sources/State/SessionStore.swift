@@ -265,6 +265,7 @@ final class SessionStore: ObservableObject {
     }
 
     let appStore: AppStore
+    let tailcatExperimentController: TailcatExperimentController?
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore
@@ -553,6 +554,7 @@ final class SessionStore: ObservableObject {
         sessionReminderNow: @escaping () -> Date = Date.init,
         runtimeCompletionNotificationsEnabled: Bool = false,
         fileUploadStore: FileUploadStore? = nil,
+        tailcatExperimentController: TailcatExperimentController? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -572,6 +574,7 @@ final class SessionStore: ObservableObject {
         }
     ) {
         self.appStore = appStore
+        self.tailcatExperimentController = tailcatExperimentController
         self.conversationStore = conversationStore
         self.logStore = logStore
         self.fileUploadStore = fileUploadStore ?? FileUploadStore()

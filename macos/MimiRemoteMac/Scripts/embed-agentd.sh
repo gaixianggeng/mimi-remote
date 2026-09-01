@@ -4,6 +4,7 @@ set -euo pipefail
 project_root="$(cd "$SRCROOT/../.." && pwd)"
 bundle_root="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 agentd_output="$bundle_root/Resources/agentd"
+tailcat_output="$bundle_root/Resources/mimi-tailcat-experiment"
 # agentd looks for the Claude bridge next to itself, so a complete install
 # needs no per-machine configuration and no separate `cargo install`.
 bridge_output="$bundle_root/Resources/alleycat-claude-bridge"
@@ -33,7 +34,7 @@ case "$configuration" in
     ;;
 esac
 
-log "开始构建内嵌 agentd/Claude bridge：configuration=${configuration} rust-profile=${rust_profile}"
+log "开始构建内嵌 agentd/Tailcat/Claude bridge：configuration=${configuration} rust-profile=${rust_profile}"
 
 find_go() {
   local candidate
@@ -108,6 +109,47 @@ chmod 0755 "$agentd_output"
 cp "$launch_agent_source" "$launch_agent_output"
 /usr/bin/plutil -lint "$launch_agent_output" >/dev/null
 log "agentd 已内嵌：archs=${architectures[*]}"
+
+# --- Tailcat sidecar ---------------------------------------------------------
+# Tailcat 是独立 Go module，并明确要求更新的工具链。只对这个实验二进制
+# 开启 toolchain 自动选择，避免改变主 agentd 的 Go 1.25 构建事实。
+tailcat_module="$project_root/experiments/tailcat"
+tailcat_go_version="$(cd "$tailcat_module" && GOTOOLCHAIN=auto "$go_binary" env GOVERSION)"
+if [[ "$tailcat_go_version" != go1.26.* ]]; then
+  echo "Mimi Remote Mac 构建失败：Tailcat v0.3.0 需要 Go 1.26，实际为 ${tailcat_go_version}。" >&2
+  exit 1
+fi
+
+tailcat_outputs=()
+for architecture in "${architectures[@]}"; do
+  case "$architecture" in
+    arm64) go_arch=arm64 ;;
+    x86_64) go_arch=amd64 ;;
+  esac
+  tailcat_cache_root="$cache_root/tailcat-go/$architecture"
+  mkdir -p "$tailcat_cache_root/gocache"
+  output="$tailcat_cache_root/mimi-tailcat-experiment"
+  tailcat_started_at=$SECONDS
+  log "构建 Tailcat sidecar：arch=${architecture} goarch=${go_arch} go=${tailcat_go_version}"
+  (
+    cd "$tailcat_module"
+    CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" GOTOOLCHAIN=auto \
+      GOCACHE="$tailcat_cache_root/gocache" \
+      "$go_binary" build -trimpath \
+      -ldflags "-s -w -X main.version=${agent_version}" \
+      -o "$output" ./cmd/mimi-tailcat-experiment
+  )
+  log "Tailcat sidecar 构建完成：arch=${architecture} elapsed=$((SECONDS - tailcat_started_at))s"
+  tailcat_outputs+=("$output")
+done
+
+if [[ ${#tailcat_outputs[@]} -eq 1 ]]; then
+  cp "${tailcat_outputs[0]}" "$tailcat_output"
+else
+  /usr/bin/lipo -create "${tailcat_outputs[@]}" -output "$tailcat_output"
+fi
+chmod 0755 "$tailcat_output"
+log "Tailcat sidecar 已内嵌：archs=${architectures[*]} version=${agent_version}"
 
 # --- Claude bridge -----------------------------------------------------------
 find_cargo() {
@@ -189,9 +231,13 @@ if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTIT
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.claude-bridge \
     --options runtime --timestamp=none "$bridge_output"
+  /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+    --identifier com.gaixianggeng.mimi.mac.tailcat \
+    --options runtime --timestamp=none "$tailcat_output"
 fi
 
 "$agentd_output" version >/dev/null
+"$tailcat_output" version >/dev/null
 "$bridge_output" --version >/dev/null
 log "内嵌二进制 smoke check 通过"
 
