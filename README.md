@@ -31,19 +31,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
 </p>
 
-<table>
-  <tr>
-    <td width="33%" valign="middle" align="center">
-      <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote workspace on iPhone with projects, recent conversations, and runtime selection in a compact column" width="88%" />
-    </td>
-    <td width="67%" valign="middle" align="center">
-      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote workspace on iPad with projects, recent conversations, and runtime selection visible together" width="96%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/promo-overview-en.png" alt="Mimi Remote promotional overview showing conversations, live session progress, and control of development computers from iPhone" width="100%" />
+</p>
 
 <p align="center">
-  <sub>The current Mimi Remote workspaces on iPhone and iPad: the same capabilities, adapted layouts.</sub>
+  <sub>Continue conversations, follow live work, and control your own development computers.</sub>
 </p>
 
 Mimi Remote connects directly to your Mac through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your Mac remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.

@@ -30,19 +30,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
 </p>
 
-<table>
-  <tr>
-    <td width="33%" valign="middle" align="center">
-      <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote 在 iPhone 上以紧凑单列展示项目、最近会话与 Runtime 选择" width="88%" />
-    </td>
-    <td width="67%" valign="middle" align="center">
-      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote 在 iPad 上同时展示项目、最近会话与 Runtime 选择的工作区" width="96%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/promo-overview-zh.png" alt="Mimi Remote 推广总览：在 iPhone 上继续对话、跟进会话进度并控制自己的开发电脑" width="100%" />
+</p>
 
 <p align="center">
-  <sub>当前 Mimi Remote iPhone 与 iPad 工作区：能力一致，布局分别适配。</sub>
+  <sub>继续对话、跟进进度，并控制自己的开发电脑。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项目不运营中转服务、云账号或会话托管服务，Mac 始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
