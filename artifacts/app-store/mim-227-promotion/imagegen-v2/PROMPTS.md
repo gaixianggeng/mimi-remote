@@ -35,7 +35,7 @@ badges, watermarks, or product marks.
 | 文件 | 标识 | 主标题 | 说明 | 角度 |
 | --- | --- | --- | --- | --- |
 | `01-conversation.png` | 会话接力 | 电脑上的会话 / 接着在移动端用 | 离开电脑，也不用重新开始 | 顺时针约 1.5°，接近正面 |
-| `02-sessions.png` | 多设备控制 | 多台设备 / 移动端一处掌控 | 支持 Mac 与 Linux | 逆时针约 2.5°，略向右移 |
+| `02-sessions.png` | 多设备控制 | 多台设备 / 移动端一处掌控 | 支持 Windows、Mac 与 Linux | 逆时针约 2.5°，略向右移 |
 | `03-workspace.png` | 原生客户端会话 | Codex 与 Claude Code / 会话无缝接力 | 保留熟悉的工作方式与上下文 | 顺时针约 3°，略近景 |
 | `04-connection.png` | 优雅设计 | 复杂能力 / 也能简单好用 | 为 iPhone 与 iPad 分别打磨 | 逆时针约 1°，接近正面 |
 
