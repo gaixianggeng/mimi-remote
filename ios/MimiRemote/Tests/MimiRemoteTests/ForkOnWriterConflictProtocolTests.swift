@@ -74,6 +74,7 @@ final class ForkOnWriterConflictProtocolTests: XCTestCase {
         let fork = try await waitForFakeAppServerRequest(transport, method: "thread/fork", after: 1)
         let params = try XCTUnwrap(fork.params?.objectValue)
         XCTAssertEqual(params["lastTurnId"]?.stringValue, "turn-terminal")
+        XCTAssertEqual(params["threadSource"]?.stringValue, "duplicate")
         XCTAssertEqual(params["mimiPreserveThreadPermissions"]?.boolValue, true)
         XCTAssertNil(params["approvalPolicy"])
         XCTAssertNil(params["approvalsReviewer"])
@@ -88,6 +89,99 @@ final class ForkOnWriterConflictProtocolTests: XCTestCase {
 
         let forked = try await forkTask.value
         XCTAssertEqual(forked.id, "thread-forked")
+    }
+
+    func testForkTimeoutReconcilesLateResponseFromThreadStarted() async throws {
+        let project = AgentProject(id: "proj-late-fork", name: "Late Fork", path: "/tmp/late-fork")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            requestTimeout: 0.1,
+            longRunningRequestTimeout: 0.1,
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/fork"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let forkTask = Task {
+            try await client.forkSession(
+                threadID: "thread-source",
+                workspace: AgentWorkspace(project: project),
+                reason: .duplicate,
+                lastTurnID: "turn-terminal"
+            )
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let fork = try await waitForFakeAppServerRequest(transport, method: "thread/fork", after: 1)
+
+        try await Task.sleep(nanoseconds: 130_000_000)
+        transportResponse(
+            transport,
+            id: fork.id,
+            result: #"{"thread":{"id":"thread-late","cwd":"/tmp/late-fork","forkedFromId":"thread-source","threadSource":"duplicate","turns":[]}}"#
+        )
+        transport.enqueue(
+            #"{"method":"thread/started","params":{"thread":{"id":"thread-late","sessionId":"thread-late","preview":"","ephemeral":false,"modelProvider":"openai","status":{"type":"idle"},"cwd":"/tmp/late-fork","source":"appServer","threadSource":"duplicate","forkedFromId":"thread-source","turns":[]}}}"#
+        )
+
+        let forked = try await forkTask.value
+        XCTAssertEqual(forked.id, "thread-late")
+        XCTAssertFalse(forked.isRunning)
+    }
+
+    func testClaudeForkDoesNotRegisterThreadStartedReconciliation() async throws {
+        let project = AgentProject(id: "proj-claude-fork", name: "Claude Fork", path: "/tmp/claude-fork")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/fork"],
+                    channels: [makeClaudeChannelMetadata()]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let forkTask = Task {
+            try await client.forkSession(
+                threadID: "claude-source",
+                workspace: AgentWorkspace(project: project),
+                reason: .duplicate
+            )
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        let fork = try await waitForFakeAppServerRequest(transport, method: "thread/fork", after: 1)
+        let pendingReconciliations = await runtime.pendingForkReconciliationsByToken.count
+        XCTAssertEqual(pendingReconciliations, 0)
+
+        transportResponse(
+            transport,
+            id: fork.id,
+            result: #"{"thread":{"id":"claude-forked","sessionId":"claude-forked","preview":"forked","ephemeral":false,"modelProvider":"anthropic","status":{"type":"idle"},"cwd":"/tmp/claude-fork","source":"appServer","forkedFromId":"claude-source","turns":[]}}"#
+        )
+        let forked = try await forkTask.value
+        XCTAssertEqual(forked.id, "claude-forked")
     }
 
     func testSessionStoreProtocolAndMockCarryOptionalTerminalBoundary() async throws {
