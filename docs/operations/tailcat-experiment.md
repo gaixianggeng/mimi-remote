@@ -32,7 +32,7 @@ bash ./scripts/build-tailcat-mobile.sh
 ios/MimiRemote/Generated/TailcatMobile.xcframework
 ```
 
-该产物只用于本地实验，不提交到 Git。缺少该产物时，App 仍能正常构建，但 Tailcat 开关不可用。
+该产物不提交到 Git。本地实验需要先运行上述脚本；TestFlight 发布入口会从仓库固定的 Tailcat 版本自动重新生成。缺少该产物时，普通 Debug App 仍能构建，但 Tailcat 开关不可用。
 
 ### 2. 在 Mac 开启实验并生成二维码
 
