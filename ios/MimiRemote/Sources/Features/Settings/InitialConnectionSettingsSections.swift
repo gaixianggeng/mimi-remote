@@ -175,6 +175,13 @@ struct InitialConnectionSettingsSections: View {
                 }
             }
 
+            // 状态和线路描述的就是上面那台当前电脑，紧跟其后才符合"控件靠近它作用的对象"。
+            // 添加电脑是低频动作，让位到页尾，首屏先回答"我连着哪台机器、通不通"。
+            if appStore.isConfigured {
+                connectionStatusSection
+                connectionMethodSection
+            }
+
             if !appStore.isConfigured && !appStore.localAgentDetected {
                 HostInstallationSetupView(
                     connectionFooter: connectionSectionFooter,
@@ -247,60 +254,10 @@ struct InitialConnectionSettingsSections: View {
                 }
             }
 
-            if shouldShowConnectionStatus {
-                Section {
-                    HStack {
-                        Label(L10n.text("ui.connection_status"), systemImage: connectionStatusSystemImage)
-                        Spacer()
-                        if isConnectionTesting {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(appStore.connectionStatus.title)
-                            .foregroundStyle(statusColor)
-                    }
-                    if let message = displayErrorMessage {
-                        Text(message)
-                            .foregroundStyle(.red)
-                            .font(themeStore.uiFont(size: 13))
-                    }
-
-                    if appStore.isConfigured {
-                        NavigationLink {
-                            ConnectionSpeedTestView()
-                        } label: {
-                            SettingsValueLabel(
-                                title: L10n.text("ui.connection_speed_test"),
-                                value: tailcatController.isEnabled ? "Tailcat" : "Tailscale",
-                                systemImage: "gauge.with.dots.needle.67percent"
-                            )
-                        }
-                        .settingsStandardListRow()
-                        .accessibilityIdentifier("settings.connectionSpeedTest")
-                    }
-                } header: {
-                    Text(L10n.text("ui.status"))
-                }
-            }
-
-            if appStore.isConfigured {
-                Section {
-                    NavigationLink {
-                        TailcatExperimentSettingsView()
-                    } label: {
-                        SettingsValueLabel(
-                            title: L10n.text("ui.tailcat_experiment"),
-                            value: tailcatController.isEnabled
-                                ? L10n.text("ui.tailcat_experiment_enabled")
-                                : L10n.text("ui.tailcat_experiment_disabled"),
-                            systemImage: "point.3.connected.trianglepath.dotted"
-                        )
-                    }
-                    .settingsStandardListRow()
-                    .accessibilityIdentifier("settings.connection.tailcat")
-                } header: {
-                    Text(L10n.text("ui.connection_method"))
-                }
+            // 首次配对时状态是配对流程的结果，留在扫码入口下方；一旦配对完成，
+            // 它描述的就是页首那台当前电脑，已经上移到保存列表之后。
+            if !appStore.isConfigured {
+                connectionStatusSection
             }
 
 #if DEBUG
@@ -325,6 +282,68 @@ struct InitialConnectionSettingsSections: View {
             // 根启动任务负责自动配对和提交；这里与它复用同一个探测 Task，只更新设置页提示，
             // 避免两个连接事务争抢后导致 bootstrap 提前返回。
             _ = await appStore.detectLocalAgent()
+        }
+    }
+
+    @ViewBuilder
+    private var connectionStatusSection: some View {
+        if shouldShowConnectionStatus {
+            Section {
+                HStack {
+                    Label(L10n.text("ui.connection_status"), systemImage: connectionStatusSystemImage)
+                    Spacer()
+                    if isConnectionTesting {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(appStore.connectionStatus.title)
+                        .foregroundStyle(statusColor)
+                }
+                if let message = displayErrorMessage {
+                    Text(message)
+                        .foregroundStyle(.red)
+                        .font(themeStore.uiFont(size: 13))
+                }
+
+                if appStore.isConfigured {
+                    NavigationLink {
+                        ConnectionSpeedTestView()
+                    } label: {
+                        SettingsValueLabel(
+                            title: L10n.text("ui.connection_speed_test"),
+                            value: tailcatController.isEnabled ? "Tailcat" : "Tailscale",
+                            systemImage: "gauge.with.dots.needle.67percent"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.connectionSpeedTest")
+                }
+            } header: {
+                Text(L10n.text("ui.status"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var connectionMethodSection: some View {
+        if appStore.isConfigured {
+            Section {
+                NavigationLink {
+                    TailcatExperimentSettingsView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.tailcat_experiment"),
+                        value: tailcatController.isEnabled
+                            ? L10n.text("ui.tailcat_experiment_enabled")
+                            : L10n.text("ui.tailcat_experiment_disabled"),
+                        systemImage: "point.3.connected.trianglepath.dotted"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.connection.tailcat")
+            } header: {
+                Text(L10n.text("ui.connection_method"))
+            }
         }
     }
 
