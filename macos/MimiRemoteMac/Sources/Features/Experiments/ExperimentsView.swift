@@ -92,14 +92,21 @@ struct ExperimentsView: View {
                 .pickerStyle(.segmented)
 
                 if relayMode == .custom {
-                    TextField(
-                        "DERP Map HTTPS 地址",
-                        text: $customDERPMapURL,
-                        prompt: Text("粘贴完整的 HTTPS 地址")
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.leading)
-                    .focused($focusedInputField, equals: .derpMapURL)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("DERP Map HTTPS 地址")
+
+                        TextField(
+                            "DERP Map HTTPS 地址",
+                            text: $customDERPMapURL,
+                            prompt: Text("粘贴完整的 HTTPS 地址")
+                        )
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .environment(\.layoutDirection, .leftToRight)
+                        .focused($focusedInputField, equals: .derpMapURL)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     if let relayValidationMessage {
                         Text(relayValidationMessage)
