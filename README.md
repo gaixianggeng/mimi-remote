@@ -32,11 +32,15 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-overview-en.png" alt="Mimi Remote promotional overview showing conversations, live session progress, and control of development computers from iPhone" width="100%" />
+  <img src="web/assets/promo-iphone-current.jpg" alt="Four current Mimi Remote promotional screens on an orange iPhone: session handoff, multi-device control, Codex and Claude Code continuity, and native mobile design" width="100%" />
 </p>
 
 <p align="center">
-  <sub>Continue conversations, follow live work, and control your own development computers.</sub>
+  <img src="web/assets/promo-ipad-current.jpg" alt="Four current Mimi Remote promotional screens on a silver iPad: session handoff, multi-device control, Codex and Claude Code continuity, and native tablet design" width="100%" />
+</p>
+
+<p align="center">
+  <sub>Continue computer sessions on mobile, control multiple devices, and pick up Codex or Claude Code without starting over.</sub>
 </p>
 
 Mimi Remote connects directly to your macOS, Windows, or Linux computer through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your computer remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.

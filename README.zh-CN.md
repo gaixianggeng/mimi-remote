@@ -31,11 +31,15 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-overview-zh.png" alt="Mimi Remote 推广总览：在 iPhone 上继续对话、跟进会话进度并控制自己的开发电脑" width="100%" />
+  <img src="web/assets/promo-iphone-current.jpg" alt="Mimi Remote 当前四张橙色 iPhone 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计" width="100%" />
 </p>
 
 <p align="center">
-  <sub>继续对话、跟进进度，并控制自己的开发电脑。</sub>
+  <img src="web/assets/promo-ipad-current.jpg" alt="Mimi Remote 当前四张银色 iPad 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计" width="100%" />
+</p>
+
+<p align="center">
+  <sub>在移动端继续电脑会话、控制多台设备，并无缝接力 Codex 与 Claude Code。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 macOS、Windows 或 Linux 电脑。项目不运营中转服务、云账号或会话托管服务，电脑始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
