@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -200,7 +201,8 @@ func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		// Windows 不实现 Unix 权限位；这里只在支持该语义的平台验证私钥文件权限。
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s 权限为 %o，预期 600", name, info.Mode().Perm())
 		}
 	}
