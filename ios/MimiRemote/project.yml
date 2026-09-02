@@ -59,6 +59,17 @@ targets:
       - path: ../../THIRD_PARTY_NOTICES.md
         group: Resources
         buildPhase: resources
+    preBuildScripts:
+      - name: Build Tailcat iOS framework
+        script: |
+          case "${PLATFORM_NAME:-}" in
+            iphoneos|iphonesimulator)
+              export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/local/go/bin:$PATH"
+              export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+              bash "$SRCROOT/../../scripts/build-tailcat-mobile.sh"
+              ;;
+          esac
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: swift-markdown
         product: Markdown
@@ -77,6 +88,8 @@ targets:
         "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator"
         "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
         "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
+        # Tailcat 首次构建会写入源码树下的 Generated 与仓库级工具缓存。
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Resources/MimiRemote.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Resources/MimiRemote.entitlements
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_PROVISIONING_PROFILE_SPECIFIER)"
