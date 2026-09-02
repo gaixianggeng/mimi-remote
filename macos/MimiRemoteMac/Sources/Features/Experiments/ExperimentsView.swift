@@ -98,6 +98,7 @@ struct ExperimentsView: View {
                         prompt: Text("粘贴完整的 HTTPS 地址")
                     )
                     .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
                     .focused($focusedInputField, equals: .derpMapURL)
 
                     if let relayValidationMessage {
