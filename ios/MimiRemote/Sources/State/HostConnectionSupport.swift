@@ -154,7 +154,13 @@ struct ConnectionTestStageTiming: Identifiable, Equatable {
     }
 }
 
+enum ConnectionTestRoute: String, CaseIterable, Equatable {
+    case tailscale
+    case tailcat
+}
+
 struct ConnectionTestReport: Equatable {
+    let route: ConnectionTestRoute
     let startedAt: Date
     let totalMillis: Int
     let stages: [ConnectionTestStageTiming]
@@ -163,6 +169,7 @@ struct ConnectionTestReport: Equatable {
     let gatewayDiagnosticsError: String?
 
     init(
+        route: ConnectionTestRoute = .tailscale,
         startedAt: Date,
         totalMillis: Int,
         stages: [ConnectionTestStageTiming],
@@ -170,6 +177,7 @@ struct ConnectionTestReport: Equatable {
         gatewayDiagnostics: ConnectionTestGatewayDiagnostics? = nil,
         gatewayDiagnosticsError: String? = nil
     ) {
+        self.route = route
         self.startedAt = startedAt
         self.totalMillis = totalMillis
         self.stages = stages
