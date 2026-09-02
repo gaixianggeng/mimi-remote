@@ -178,6 +178,10 @@ grep -Fq -- '--require-team-signing' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有提供 App/agentd/bridge Team ID 一致性校验。"
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
+grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
+grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
 ! grep -Fq 'com.apple.security.personal-information.photos-library' \
   macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
   || fail "Mac App 仍声明已移除的照片图库 entitlement。"
@@ -193,6 +197,10 @@ grep -Fq 'main_executable_count' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Contents/MacOS 主可执行文件唯一性。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
+grep -Fq 'TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Tailcat。"
+grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有逐个校验 App 内 Mach-O 签名。"
 grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有读取 agentd 的 Claude bridge 最低版本。"
 grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/check-macos-installer.sh \
