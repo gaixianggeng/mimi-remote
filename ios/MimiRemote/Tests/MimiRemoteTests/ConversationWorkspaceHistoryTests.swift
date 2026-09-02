@@ -4818,6 +4818,80 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id), "已耗尽的分页入口不得被首屏 cursor 重新激活")
     }
 
+    func testReloadAfterConversationLRUEvictionRebuildsHistoryPagination() async {
+        let project = makeProject(id: "proj_lru_reload")
+        let history = makeSession(
+            id: "codex_history_lru_reload",
+            projectID: project.id,
+            title: "LRU 历史",
+            status: "history",
+            source: "codex",
+            resumeID: "history-lru"
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history]),
+            historyPages: [
+                history.id: HistoryMessagesPage(
+                    messages: [CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "旧首屏", createdAt: Date(timeIntervalSince1970: 30))],
+                    previousCursor: "old_cursor",
+                    hasMoreBefore: true
+                )
+            ],
+            historyCursorPages: [
+                "old_cursor": HistoryMessagesPage(
+                    messages: [CodexHistoryMessage(id: "rollout:200", role: "user", content: "旧分页", createdAt: Date(timeIntervalSince1970: 20))],
+                    hasMoreBefore: false
+                )
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        await store.loadEarlierHistoryForSelectedSession()
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id))
+
+        store.returnToSessionList()
+        for index in 0..<ConversationStore.retainedSessionLimit {
+            conversationStore.setHistory(
+                [CodexHistoryMessage(
+                    role: "assistant",
+                    content: "占位历史 \(index)",
+                    createdAt: Date(timeIntervalSince1970: TimeInterval(100 + index))
+                )],
+                sessionID: "lru_filler_\(index)"
+            )
+        }
+        XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: history.id))
+
+        // 模拟首屏缓存自然过期后服务端窗口和 cursor 已经更新。
+        store.historyFirstPageCacheByKey = [:]
+        client.historyPages[history.id] = HistoryMessagesPage(
+            messages: [CodexHistoryMessage(id: "rollout:500", role: "assistant", content: "新首屏", createdAt: Date(timeIntervalSince1970: 50))],
+            previousCursor: "fresh_cursor",
+            hasMoreBefore: true
+        )
+        client.historyCursorPages["fresh_cursor"] = HistoryMessagesPage(
+            messages: [CodexHistoryMessage(id: "rollout:400", role: "user", content: "新分页", createdAt: Date(timeIntervalSince1970: 40))],
+            hasMoreBefore: false
+        )
+
+        await store.selectSession(history)
+
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id), "正文被淘汰后必须接受新首屏 cursor")
+        XCTAssertEqual(store.historyPreviousCursorBySessionID[history.id], "fresh_cursor")
+        await store.loadEarlierHistoryForSelectedSession()
+        XCTAssertEqual(client.requestedMessageCursors, [nil, "old_cursor", nil, "fresh_cursor"])
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新分页", "新首屏"])
+    }
+
 
     func testSessionStoreIngestsHistoryPageContextOnInitialLoadEarlierAndRefresh() async {
         let project = makeProject(id: "proj_1")

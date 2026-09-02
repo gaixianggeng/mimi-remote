@@ -700,6 +700,14 @@ extension SessionStore {
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.parse_historical_messages"), fraction: 0.74)
         }
+        if !conversationStore.hasLoadedHistory(sessionID: sessionID) {
+            // ConversationStore 会独立按 LRU 淘汰正文。正文不存在时，SessionStore 中残留的
+            // 深层 cursor 或 exhausted 状态已经失去对应时间线，必须让新首屏重建分页基线。
+            historySessionsWithAdditionalPages.remove(sessionID)
+            historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
+            historyHasMoreBeforeBySessionID.removeValue(forKey: sessionID)
+            historySeenPreviousCursorsBySessionID.removeValue(forKey: sessionID)
+        }
         applyHistoryFirstPage(result.page, sessionID: sessionID)
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.update_interface"), fraction: 0.94)
