@@ -187,6 +187,8 @@ altool = source.index('xcrun altool --', second_shadow) or abort("missing altool
 abort("before-archive shadow ordering is wrong") unless first_shadow < archive
 abort("before-upload shadow ordering is wrong") unless archive < second_shadow && second_shadow < altool
 abort("asc unexpectedly assigns real build_number") if source.match?(/build_number=.*ASC_CLI_/)
+abort("Xcode build settings parser can still close the pipe early") if source.match?(/MARKETING_VERSION[^\n]*;\s*exit\}/) || source.match?(/CURRENT_PROJECT_VERSION[^\n]*;\s*exit\}/)
+abort("Xcode build settings parser does not consume the full pipe") unless source.include?("!found && /^[[:space:]]*MARKETING_VERSION") && source.include?("!found && /^[[:space:]]*CURRENT_PROJECT_VERSION")
 RUBY
 
 # 本地 --ref 发布必须从目标提交的隔离 worktree 校验 asc pin，不能读取当前

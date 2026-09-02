@@ -147,8 +147,10 @@ settings="$(
     -configuration Release \
     -showBuildSettings
 )"
-marketing_version="$(printf '%s\n' "$settings" | awk -F= '/^[[:space:]]*MARKETING_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-current_build="$(printf '%s\n' "$settings" | awk -F= '/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+# 不能在首个匹配后退出 awk。settings 较大且 pipefail 开启时，提前关闭管道会让
+# printf 收到 SIGPIPE，使发布在归档前误判失败。
+marketing_version="$(printf '%s\n' "$settings" | awk -F= '!found && /^[[:space:]]*MARKETING_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; found=1}')"
+current_build="$(printf '%s\n' "$settings" | awk -F= '!found && /^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; found=1}')"
 [[ -n "$marketing_version" ]] || fail "MARKETING_VERSION not found"
 [[ "$current_build" =~ ^[0-9]+$ ]] || fail "CURRENT_PROJECT_VERSION must be an integer"
 
