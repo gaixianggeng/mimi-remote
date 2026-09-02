@@ -11,6 +11,10 @@ struct PairingView: View {
     @State private var selectedNetwork: PairingNetwork = .tailscale
     @State private var suppressNextNetworkChange = false
     @State private var copyFeedbackTask: Task<Void, Never>?
+    @State private var contentOverflows = false
+
+    /// 窗口可以被拉宽，但这一页只有一件事：扫码。内容始终是一列固定宽度，不跟着窗口摊开。
+    static let columnWidth: CGFloat = 340
 
     var body: some View {
         Group {
@@ -27,8 +31,8 @@ struct PairingView: View {
                 PairingLoadingState()
             }
         }
-        .frame(minWidth: 480, minHeight: 660)
-        // macOS 27 的玻璃材质留给窗口 chrome 和操作控件，二维码内容层保持安静、稳定。
+        .frame(minWidth: 420, minHeight: 560)
+        // macOS 26 的玻璃材质留给窗口 chrome 和操作控件，二维码内容层保持安静、稳定。
         .containerBackground(for: .window) {
             PairingWindowBackdrop()
         }
@@ -58,7 +62,7 @@ struct PairingView: View {
         return ScrollView {
             VStack(spacing: 0) {
                 PairingIntroduction()
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 20)
 
                 PairingNetworkPicker(
                     selection: $selectedNetwork,
@@ -66,15 +70,8 @@ struct PairingView: View {
                 )
                 .padding(.bottom, 20)
 
-                QRCodeView(value: pairing.pairURL, size: 276)
-                    .padding(20)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(.black.opacity(0.07), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.08), radius: 20, y: 8)
-                    .padding(.bottom, 18)
+                PairingCodeCard(value: pairing.pairURL, isRefreshing: isRefreshing)
+                    .padding(.bottom, 16)
 
                 Text(pairing.endpoint)
                     .font(.system(.callout, design: .monospaced, weight: .medium))
@@ -93,12 +90,22 @@ struct PairingView: View {
                         .padding(.top, 16)
                 }
             }
+            .frame(width: Self.columnWidth)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 36)
-            .padding(.top, 28)
-            .padding(.bottom, 20)
+            .padding(.top, 26)
+            .padding(.bottom, 18)
         }
-        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            let available = geometry.containerSize.height
+                - geometry.contentInsets.top
+                - geometry.contentInsets.bottom
+            return geometry.contentSize.height > available + 1
+        } action: { _, overflows in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                contentOverflows = overflows
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PairingActionBar(
                 didCopy: didCopyPairingLink,
@@ -106,9 +113,16 @@ struct PairingView: View {
                 copy: { copyPairingLink(pairing.pairURL) },
                 refresh: { refreshPairing() }
             )
-            .padding(.horizontal, 28)
-            .padding(.top, 10)
-            .padding(.bottom, 20)
+            .frame(width: Self.columnWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
+            // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
+            .background(alignment: .top) {
+                if contentOverflows {
+                    PairingScrollEdge()
+                }
+            }
         }
     }
 
@@ -146,26 +160,28 @@ struct PairingView: View {
 
 private struct PairingIntroduction: View {
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "iphone.and.arrow.forward")
-                .font(.system(size: 25, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
-                .frame(width: 54, height: 54)
-                .background(Color.accentColor.opacity(0.12), in: Circle())
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 50, height: 50)
+                .background(Circle().fill(Color.accentColor.gradient))
+                .shadow(color: Color.accentColor.opacity(0.3), radius: 10, y: 4)
                 .accessibilityHidden(true)
 
-            VStack(spacing: 7) {
+            VStack(spacing: 6) {
                 Text("扫描二维码")
-                    .font(.system(size: 28, weight: .bold))
-                    .tracking(-0.55)
+                    .font(.system(size: 26, weight: .bold))
+                    // 大字号里字距要收紧，否则标题看起来是散的。
+                    .tracking(-0.5)
 
-                Text("在 iPhone 或 iPad 上打开 Mimi Remote，\n然后扫描下方二维码。")
+                Text("在 iPhone 或 iPad 上打开 Mimi Remote，然后扫描下方二维码。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 300)
             }
         }
         .accessibilityElement(children: .combine)
@@ -188,14 +204,16 @@ private struct PairingNetworkPicker: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 300, minHeight: 44)
-            .contentShape(Rectangle())
+            .controlSize(.large)
+            .frame(maxWidth: 320)
             .disabled(isRefreshing)
             .accessibilityHint("选择用于生成配对二维码的连接网络")
 
             Label(hint, systemImage: hintSymbol)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // 说明文案长度不一，留一行固定高度，切换网络时二维码不会上下跳。
+                .frame(minHeight: 18)
                 .contentTransition(.opacity)
                 .id(selection)
         }
@@ -222,6 +240,37 @@ private struct PairingNetworkPicker: View {
         case .localNetwork: "wifi"
         case .tailcat: "point.3.connected.trianglepath.dotted"
         }
+    }
+}
+
+private struct PairingCodeCard: View {
+    let value: String
+    let isRefreshing: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        // 二维码底板固定为白色：扫码对比度不跟随外观模式，深色模式下也要能扫。
+        QRCodeView(value: value, size: 240)
+            .padding(16)
+            .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(.black.opacity(0.06), lineWidth: 1)
+            }
+            .overlay {
+                if isRefreshing {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(.white.opacity(0.7))
+                        .overlay {
+                            ProgressView()
+                                .controlSize(.large)
+                        }
+                }
+            }
+            .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isRefreshing)
+            .accessibilityValue(isRefreshing ? "正在生成新的二维码" : "可扫描")
     }
 }
 
@@ -308,19 +357,45 @@ private struct PairingWarningList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(warnings, id: \.self) { warning in
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                Label {
+                    Text(warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .padding(12)
-        .frame(maxWidth: 356, alignment: .leading)
-        .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+                .strokeBorder(Color.orange.opacity(0.16), lineWidth: 1)
         }
+    }
+}
+
+/// 内容滚到操作栏下面时，用一层渐隐材质把文字收进 chrome，而不是压出一条硬分割线。
+private struct PairingScrollEdge: View {
+    var body: some View {
+        Rectangle()
+            .fill(.thinMaterial)
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.5), location: 0.35),
+                        .init(color: .black, location: 0.66),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .allowsHitTesting(false)
+            .transition(.opacity)
     }
 }
 
@@ -333,7 +408,7 @@ private struct PairingActionBar: View {
     var body: some View {
         Group {
             if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: 12) {
+                GlassEffectContainer(spacing: 10) {
                     actionButtons
                 }
             } else {
@@ -344,21 +419,22 @@ private struct PairingActionBar: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button(action: copy) {
                 Label(
                     didCopy ? "已复制" : "复制配对链接",
                     systemImage: didCopy ? "checkmark" : "doc.on.doc"
                 )
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 22)
                 .contentShape(Rectangle())
             }
             .modifier(PairingActionButtonStyleModifier(isProminent: false))
+            .help("复制这条十分钟有效的配对链接")
             .accessibilityLabel(didCopy ? "配对链接已复制" : "复制配对链接")
             .accessibilityHint("将当前十分钟有效的配对链接复制到剪贴板")
 
             Button(action: refresh) {
-                HStack(spacing: 7) {
+                HStack(spacing: 6) {
                     if isRefreshing {
                         ProgressView()
                             .controlSize(.small)
@@ -367,11 +443,13 @@ private struct PairingActionBar: View {
                     }
                     Text(isRefreshing ? "正在刷新" : "刷新二维码")
                 }
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 22)
                 .contentShape(Rectangle())
             }
             .modifier(PairingActionButtonStyleModifier(isProminent: true))
             .disabled(isRefreshing)
+            .keyboardShortcut("r", modifiers: .command)
+            .help("生成一张新的十分钟配对二维码（⌘R）")
             .accessibilityLabel(isRefreshing ? "正在刷新二维码" : "刷新二维码")
             .accessibilityHint("生成一张新的十分钟配对二维码")
             .accessibilityValue(isRefreshing ? "进行中" : "就绪")
@@ -381,25 +459,15 @@ private struct PairingActionBar: View {
 
 private struct PairingLoadingState: View {
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "qrcode.viewfinder")
-                .font(.system(size: 42, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
-
-            VStack(spacing: 8) {
-                Text("正在生成二维码")
-                    .font(.title2.weight(.semibold))
-                Text("配对码仅在短时间内有效。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
+        PairingPlaceholder(
+            symbol: "qrcode.viewfinder",
+            symbolColor: .accentColor,
+            title: "正在生成二维码",
+            message: "配对码仅在短时间内有效。"
+        ) {
             ProgressView()
                 .controlSize(.small)
         }
-        .padding(40)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -410,25 +478,15 @@ private struct PairingUnavailableState: View {
     let retry: () -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "qrcode")
-                .font(.system(size: 42, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: 8) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                Text(description)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: 340)
-            }
-
+        PairingPlaceholder(
+            symbol: "qrcode",
+            symbolColor: .secondary,
+            title: title,
+            message: description,
+            isMessageSelectable: true
+        ) {
             Button(action: retry) {
-                HStack(spacing: 7) {
+                HStack(spacing: 6) {
                     if isRetrying {
                         ProgressView()
                             .controlSize(.small)
@@ -437,17 +495,63 @@ private struct PairingUnavailableState: View {
                     }
                     Text(isRetrying ? "正在重新生成" : "重新生成")
                 }
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 132, minHeight: 22)
                 .contentShape(Rectangle())
             }
             .modifier(PairingActionButtonStyleModifier(isProminent: true))
             .controlSize(.large)
             .disabled(isRetrying)
+            .keyboardShortcut("r", modifiers: .command)
             .accessibilityLabel(isRetrying ? "正在重新生成二维码" : "重新生成二维码")
             .accessibilityHint("重试生成一张新的十分钟配对二维码")
             .accessibilityValue(isRetrying ? "进行中" : "可重试")
         }
-        .padding(40)
+    }
+}
+
+/// 加载态和失败态共用同一套排版，二维码没出现时页面重心也不会跳。
+private struct PairingPlaceholder<Action: View>: View {
+    let symbol: String
+    let symbolColor: Color
+    let title: String
+    let message: String
+    var isMessageSelectable = false
+    @ViewBuilder let action: () -> Action
+
+    // 失败态的报错要能被选中复制，加载态的固定文案不需要。
+    @ViewBuilder private var messageText: some View {
+        let base = Text(message)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+        if isMessageSelectable {
+            base.textSelection(.enabled)
+        } else {
+            base
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 38, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(symbolColor)
+
+            VStack(spacing: 7) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+
+                messageText
+            }
+
+            action()
+                .padding(.top, 2)
+        }
+        .frame(width: PairingView.columnWidth)
+        .padding(36)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -477,21 +581,19 @@ private struct PairingWindowBackdrop: View {
             Rectangle()
                 .fill(.ultraThinMaterial)
 
+            // 只留一处品牌光晕落在标题后面，避免多个彩色渐变互相染成脏色。
             RadialGradient(
                 colors: [Color.accentColor.opacity(0.16), .clear],
-                center: .topLeading,
+                center: UnitPoint(x: 0.5, y: 0),
                 startRadius: 0,
-                endRadius: 380
+                endRadius: 420
             )
 
-            RadialGradient(
-                colors: [Color.purple.opacity(0.10), .clear],
-                center: .bottomTrailing,
-                startRadius: 10,
-                endRadius: 360
+            LinearGradient(
+                colors: [.clear, Color.black.opacity(0.05)],
+                startPoint: .center,
+                endPoint: .bottom
             )
-
-            Color.white.opacity(0.04)
         }
     }
 }
@@ -499,6 +601,6 @@ private struct PairingWindowBackdrop: View {
 #if DEBUG
     #Preview {
         PairingView(store: .preview(.ready))
-            .frame(width: 520, height: 680)
+            .frame(width: 520, height: 720)
     }
 #endif
