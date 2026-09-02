@@ -572,6 +572,8 @@ struct InitialConnectionSettingsSections: View {
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    // 地址尾部的端口比协议头更有诊断价值，超长时从中间截断。
+                    .truncationMode(.middle)
             }
 
             Spacer(minLength: 8)
@@ -658,6 +660,9 @@ struct InitialConnectionSettingsSections: View {
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
 
+    /// 第二行只承担"这台机器实际走哪条线路"的诊断价值。当前连接与档案首选地址一致时，
+    /// 这段文字与前面的 MagicDNS/IP 完全重复，折行后还会留下一个孤立的"当前"，
+    /// 与行尾的当前徽章撞车；只有真的回退到别的地址时才值得单独列出来。
     private func connectionProfileRouteDetail(_ item: ConnectionProfileSettingsItem) -> String {
         var details: [String] = []
         if let dnsName = item.profile.tailscaleDNSName {
@@ -665,10 +670,15 @@ struct InitialConnectionSettingsSections: View {
         }
         let fallbackHost = URLComponents(string: item.profile.endpoint)?.host ?? item.profile.endpoint
         details.append("IP \(fallbackHost)")
-        if item.isCurrent {
+        if item.isCurrent, isRoutedAwayFromPreferredEndpoint(item.profile) {
             details.append("\(L10n.text("ui.current_connection")) \(appStore.connectionEndpoint)")
         }
         return details.joined(separator: " · ")
+    }
+
+    private func isRoutedAwayFromPreferredEndpoint(_ profile: ConnectionProfile) -> Bool {
+        AgentAPIClient.normalizedEndpoint(appStore.connectionEndpoint)
+            != AgentAPIClient.normalizedEndpoint(profile.preferredEndpoint)
     }
 
     private var endpointTransportAssessment: EndpointTransportAssessment {
