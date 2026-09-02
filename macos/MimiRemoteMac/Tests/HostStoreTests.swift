@@ -679,6 +679,47 @@ final class HostStoreTests: XCTestCase {
         ])
     }
 
+    func testLatestPairingRefreshWinsWhenAutomaticRequestFinishesLast() async {
+        let gate = SuspendedStatusGate()
+        let automaticCalls = CallCounter()
+        let automaticPairing = PairingInfo(
+            endpoint: "http://100.64.0.8:8787",
+            network: .tailscale,
+            pairURL: "mimiremote://pair?pair_sig=automatic",
+            expiresAt: "2026-09-03T12:00:00Z",
+            warnings: []
+        )
+        let tailcatPairing = PairingInfo(
+            endpoint: "http://127.0.0.1:8787",
+            network: .tailcat,
+            pairURL: "mimiremote://pair?transport=tailcat",
+            expiresAt: "2026-09-03T12:00:00Z",
+            warnings: []
+        )
+        let store = makeStore(
+            configExists: true,
+            pair: { network in
+                if network == .automatic {
+                    if automaticCalls.increment() == 1 {
+                        return automaticPairing
+                    }
+                    return await gate.suspendReturning(automaticPairing)
+                }
+                return tailcatPairing
+            }
+        )
+        await store.bootstrap()
+
+        let automaticRefresh = Task { await store.refreshPairing() }
+        await gate.waitUntilSuspended()
+        await store.refreshPairing(network: .tailcat)
+        gate.resume()
+        await automaticRefresh.value
+
+        XCTAssertEqual(store.pairingNetwork, .tailcat)
+        XCTAssertEqual(store.pairing, tailcatPairing)
+    }
+
     func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing() async {
         let events = EventRecorder()
         let defaultStatus = TailcatStatus(

@@ -26,6 +26,7 @@ final class HostStore {
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
     var lastError: String?
+    @ObservationIgnored private var pairingRefreshGeneration = 0
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
@@ -357,13 +358,18 @@ final class HostStore {
 
     func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        pairingRefreshGeneration &+= 1
+        let refreshGeneration = pairingRefreshGeneration
         lastError = nil
         do {
             let nextPairing = try await resolvedPairing(for: network)
+            // 较早的请求不能覆盖用户刚选择的网络和二维码。
+            guard refreshGeneration == pairingRefreshGeneration else { return }
             pairing = nextPairing
             pairingNetwork = nextPairing.network
             lastError = nil
         } catch {
+            guard refreshGeneration == pairingRefreshGeneration else { return }
             lastError = error.localizedDescription
         }
     }
