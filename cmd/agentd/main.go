@@ -873,8 +873,8 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		}
 	}
 	if !forDoctor && fileExists(*configPath) {
-		if err := agentsetup.MigrateAppServerToSSH(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
-			return config.Config{}, nil, nil, fmt.Errorf("迁移共享 SSH App Server 配置失败：%w", err)
+		if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+			return config.Config{}, nil, nil, err
 		}
 		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
 		if err := ensureCodexCLIAvailable(*configPath); err != nil {
@@ -1050,23 +1050,10 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
-	if !strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ssh") {
-		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh")
-	}
-	sshTransport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: cfg.AppServer.SSHTarget})
-	if err != nil {
-		return fmt.Errorf("初始化 SSH App Server transport 失败：%w", err)
-	}
-	sshCtx, cancelSSH := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelSSH()
-	remoteVersion, err := sshTransport.CheckRemoteCodex(sshCtx)
+	appServerRuntime, err := prepareAgentAppServerRuntime(cfg)
 	if err != nil {
 		return err
 	}
-	if err := sshTransport.EnsureReady(sshCtx); err != nil {
-		return err
-	}
-	log.Printf("agentd shared app-server ssh target=%s codex_version=%s", sshTransport.Target(), remoteVersion)
 	manager := session.NewManager(session.Options{
 		CodexBin:     cfg.Codex.Bin,
 		DefaultArgs:  cfg.Codex.DefaultArgs,
@@ -1074,6 +1061,8 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
+	routerOptions := appServerRuntime.routerOptions
+	routerOptions.ConfigPath = checker.ConfigPath()
 	apiHandler, apiRouter := httpapi.NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
@@ -1081,10 +1070,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		checker,
 		version,
 		installationID,
-		httpapi.RouterOptions{
-			ConfigPath:   checker.ConfigPath(),
-			AppServerSSH: sshTransport,
-		},
+		routerOptions,
 	)
 	apiRouter.EnableTailscaleHostMetadata()
 	server := &http.Server{
@@ -1101,14 +1087,14 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
-			_ = shutdownServeResources(manager, apiRouter)
+			_ = shutdownServeResources(manager, apiRouter, appServerRuntime)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		listeners = append(listeners, listener)
 	}
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
-	errCh := make(chan error, len(listeners))
+	errCh := make(chan error, len(listeners)+1)
 	for _, listener := range listeners {
 		listener := listener
 		go func() {
@@ -1116,12 +1102,13 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			errCh <- server.Serve(listener)
 		}()
 	}
+	appServerRuntime.watch(errCh)
 	stopCh := make(chan os.Signal, 1)
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
-			return shutdownServeResources(manager, apiRouter)
+			return shutdownServeResources(manager, apiRouter, appServerRuntime)
 		})
 	})
 }
@@ -1203,18 +1190,6 @@ func shutdownServe(server *http.Server, drainTimeout time.Duration, cleanup func
 		}
 	}
 	return shutdownErr
-}
-
-func shutdownServeResources(manager *session.Manager, apiRouter *httpapi.Router) error {
-	// listener 绑定失败，或 HTTP 已完成 drain 后，只回收 agentd
-	// 自己的运行时资源。共享 Unix App Server 不属于 agentd，不得停止。
-	if manager != nil {
-		manager.Shutdown()
-	}
-	// 常驻 Claude bridge 独立进程组，不会随 agentd 退出而结束；它还会再拉起 Claude Code
-	// 子进程，漏掉这一步就会在每次重启后留下一整棵仍在跑的孤儿进程树。
-	apiRouter.Shutdown()
-	return nil
 }
 
 func runBrewService(action string, stdout, stderr io.Writer) error {

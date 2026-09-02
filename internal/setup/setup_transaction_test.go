@@ -105,11 +105,21 @@ func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !result.Created || result.AppServerSSHTarget != config.DefaultAppServerSSHTarget() {
+			if !result.Created {
 				t.Fatalf("setup 成功结果异常：%+v", result)
 			}
+			assertDefaultSetupResultAppServer(t, result)
 			assertPrivateRegularFile(t, configPath)
-			if testCase.existing {
+			if runtime.GOOS == "windows" {
+				newToken, err := os.ReadFile(tokenPath)
+				if err != nil || len(strings.TrimSpace(string(newToken))) != 64 {
+					t.Fatalf("Windows setup 必须生成独立的 32-byte hex upstream token：err=%v raw=%q", err, newToken)
+				}
+				if testCase.existing && bytes.Equal(newToken, oldToken) {
+					t.Fatal("Windows setup --force 必须轮换 upstream token")
+				}
+				assertPrivateRegularFile(t, tokenPath)
+			} else if testCase.existing {
 				newToken, err := os.ReadFile(tokenPath)
 				if err != nil || !bytes.Equal(newToken, oldToken) {
 					t.Fatalf("SSH setup 不得修改旧 token file：err=%v raw=%q", err, newToken)
@@ -119,10 +129,11 @@ func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.AppServer.SSHTarget != config.DefaultAppServerSSHTarget() || len(cfg.Auth.Token) != 64 {
-				t.Fatalf("提交后的配置缺少 SSH target 或外侧 token：%+v", cfg)
+			assertDefaultSetupConfigAppServer(t, cfg)
+			if len(cfg.Auth.Token) != 64 {
+				t.Fatalf("提交后的配置缺少外侧 token：%+v", cfg)
 			}
-			if testCase.existing {
+			if testCase.existing || runtime.GOOS == "windows" {
 				assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
 			} else {
 				assertSetupDirectoryEntries(t, dir, "config.json")

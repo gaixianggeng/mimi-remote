@@ -1594,6 +1594,10 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	codexPath := filepath.Join(dir, "codex")
 	codexPath = writeMainTestCodex(t, codexPath)
 	const authToken = "0123456789abcdef0123456789abcdef"
+	legacyUpstreamToken := filepath.Join(dir, "legacy-upstream-token")
+	if err := os.WriteFile(legacyUpstreamToken, []byte("legacy-capability-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// 只有旧版受管 WS 配置可以无损自动迁移；stdio 等用户配置必须拒绝自动改写。
 	legacy := map[string]any{
@@ -1607,7 +1611,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 			"transport":     "ws",
 			"managed":       true,
 			"listen":        "ws://127.0.0.1:4222",
-			"ws_token_file": filepath.Join(dir, "legacy-upstream-token"),
+			"ws_token_file": legacyUpstreamToken,
 			"future_option": "keep-app-server-option",
 		},
 		"voice": map[string]any{
@@ -1658,6 +1662,16 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 		t.Fatal(err)
 	}
 	afterAppServer := after["app_server"].(map[string]any)
+	if runtime.GOOS == "windows" {
+		if !bytes.Equal(updated, append(original, '\n')) {
+			t.Fatalf("Windows 应继续使用原有受管 WS 配置：\nwant=%s\n got=%s", original, updated)
+		}
+		loaded, loadErr := config.Load(configPath)
+		if loadErr != nil || loaded.AppServer.Transport != "ws" || !loaded.AppServer.Managed {
+			t.Fatalf("Windows 受管 WS 配置必须保持可加载：cfg=%+v err=%v", loaded.AppServer, loadErr)
+		}
+		return
+	}
 	if afterAppServer["transport"] != "ssh" || afterAppServer["ssh_target"] != "127.0.0.1" {
 		t.Fatalf("doctor --fix 应迁移为默认共享 SSH 配置：%+v", afterAppServer)
 	}
@@ -1723,8 +1737,15 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.Token == "" || cfg.AppServer.SSHTarget == "" {
-		t.Fatalf("完整 setup 应生成外侧 token 与 SSH target：%+v", cfg)
+	if cfg.Auth.Token == "" {
+		t.Fatalf("完整 setup 应生成外侧 token：%+v", cfg)
+	}
+	if runtime.GOOS == "windows" {
+		if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen == "" {
+			t.Fatalf("Windows 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
+		}
+	} else if cfg.AppServer.SSHTarget == "" {
+		t.Fatalf("完整 setup 应生成 SSH target：%+v", cfg)
 	}
 }
 
@@ -2226,7 +2247,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	if destination["future_unknown_field"] == nil {
 		t.Fatalf("平台默认路径迁移必须保留未知字段：%+v", destination)
 	}
-	if migratesSSH {
+	if migratesSSH && runtime.GOOS != "windows" {
 		if appServer["transport"] != "ssh" || appServer["ssh_target"] != "127.0.0.1" {
 			t.Fatalf("新配置必须将旧 WS 迁移为共享 SSH：%+v", destination)
 		}

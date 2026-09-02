@@ -111,6 +111,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.appServerTokenFileCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if check := c.windowsLANCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -159,6 +162,9 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		c.runtimeCheck(),
 	}
 	if check := c.configFileCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
+	if check := c.appServerTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
@@ -254,6 +260,24 @@ func (c *Checker) configFileCheck() Check {
 	return sensitiveFileCheck("config-file", "配置文件", path)
 }
 
+func (c *Checker) appServerTokenFileCheck() Check {
+	if runtime.GOOS != "windows" ||
+		!strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "ws") ||
+		!c.cfg.AppServer.Managed {
+		return Check{}
+	}
+	path := strings.TrimSpace(c.cfg.AppServer.WSTokenFile)
+	if path == "" {
+		return Check{
+			Name:    "app-server-token-file",
+			OK:      false,
+			Message: "app-server token file 未配置",
+			Fix:     "运行 agentd setup --force 重新生成 Windows 本机 App Server 配置",
+		}
+	}
+	return sensitiveFileCheck("app-server-token-file", "app-server token file", path)
+}
+
 func sensitiveFileCheck(name string, label string, path string) Check {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -325,8 +349,16 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 			return Check{Name: "app-server", OK: false, Message: "app-server SSH target 无效", Fix: "将 app_server.ssh_target 设为 127.0.0.1 或可用 SSH 主机"}
 		}
 		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用共享 SSH proxy"}
+	case "ws":
+		if runtime.GOOS != "windows" || !c.cfg.AppServer.Managed {
+			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 模式无效", Fix: "Windows 必须使用受管 loopback WebSocket；其他平台使用 ssh"}
+		}
+		if !isLoopbackListen(c.cfg.AppServer.Listen) {
+			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 不在 loopback", Fix: "将 app_server.listen 设置为 ws://127.0.0.1:<port>"}
+		}
+		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用 Windows 本机受管 WebSocket"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ssh"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ssh；Windows 本机宿主可使用受管 ws"}
 	}
 }
 
@@ -335,6 +367,27 @@ func (c *Checker) needsCodexAppServerCheck() bool {
 }
 
 func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
+	if strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "ws") {
+		version, err := appserver.CheckLocalCodex(ctx, c.cfg.Codex.Bin)
+		if err != nil {
+			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 版本不兼容", Fix: err.Error()}
+		}
+		codexBin := strings.TrimSpace(c.cfg.Codex.Bin)
+		if codexBin == "" {
+			codexBin = "codex"
+		}
+		runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(runCtx, codexBin, "app-server", "--help").CombinedOutput()
+		help := string(output)
+		if err != nil ||
+			!strings.Contains(help, "--listen") ||
+			!strings.Contains(help, "--ws-auth") ||
+			!strings.Contains(help, "--ws-token-file") {
+			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 不支持 app-server WebSocket", Fix: "升级 Codex CLI 后重试"}
+		}
+		return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("本机 Codex %s 支持受管 App Server", version)}
+	}
 	transport, err := newDoctorSSHTransport(appserver.SSHTransportOptions{Target: c.cfg.AppServer.SSHTarget})
 	if err != nil {
 		return Check{Name: "codex-app-server", OK: false, Message: "SSH App Server 配置无效", Fix: "检查 app_server.ssh_target"}

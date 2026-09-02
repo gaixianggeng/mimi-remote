@@ -106,6 +106,20 @@ func (t *SSHTransport) Target() string {
 	return t.target
 }
 
+func (t *SSHTransport) WebSocketURL() (string, error) {
+	if t == nil {
+		return "", errors.New("SSH transport 未初始化")
+	}
+	return CodexAppServerWebSocketURL, nil
+}
+
+func (t *SSHTransport) WebSocketHeaders() (http.Header, error) {
+	if t == nil {
+		return nil, errors.New("SSH transport 未初始化")
+	}
+	return nil, nil
+}
+
 // SSHBinaryAvailable 检查本地 OpenSSH binary。它不建立网络连接。
 func (t *SSHTransport) SSHBinaryAvailable() error {
 	if t == nil {

@@ -273,7 +273,7 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	}
 }
 
-func TestCheckerRejectsNonSSHAppServer(t *testing.T) {
+func TestCheckerRejectsUnmanagedWindowsAppServer(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
@@ -291,27 +291,35 @@ func TestCheckerRejectsNonSSHAppServer(t *testing.T) {
 
 	results := checker.Run(context.Background(), false)
 	if results.OK {
-		t.Fatalf("non-SSH App Server must not pass doctor: %+v", results)
+		t.Fatalf("未受管的 Windows App Server 不应通过 doctor：%+v", results)
 	}
 	for _, check := range results.Checks {
-		if check.Name == "app-server" && !check.OK && strings.Contains(check.Fix, "transport") {
+		if check.Name == "app-server" && !check.OK && strings.Contains(check.Fix, "受管") {
 			return
 		}
 	}
-	t.Fatalf("doctor must explain the SSH-only boundary: %+v", results.Checks)
+	t.Fatalf("doctor 必须说明 Windows WebSocket 的受管边界：%+v", results.Checks)
 }
 
-func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
+func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
 	codexPath = writeFakeCodexWithAppServerHelp(t, codexPath)
 	t.Setenv("PATH", binDir)
 
+	appServerConfig := config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"}
+	if runtime.GOOS == "windows" {
+		appServerConfig = config.DefaultWindowsAppServerConfig()
+		appServerConfig.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
+		if err := os.WriteFile(appServerConfig.WSTokenFile, []byte("local-capability-token\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
 		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
-		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
+		AppServer: appServerConfig,
 		Codex:     config.CodexConfig{Bin: codexPath},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -322,10 +330,13 @@ func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
 
 	results := checker.Run(context.Background(), false)
 	if !results.OK {
-		t.Fatalf("setup 默认 ws gateway 应通过 doctor：%+v", results)
+		t.Fatalf("当前平台支持的 app-server gateway 应通过 doctor：%+v", results)
 	}
 	if !hasCheck(results, "app-server") {
-		t.Fatalf("启用 ws gateway 时应检查 app-server：%+v", results.Checks)
+		t.Fatalf("启用 app-server gateway 时应检查 app-server：%+v", results.Checks)
+	}
+	if runtime.GOOS == "windows" && !hasCheck(results, "app-server-token-file") {
+		t.Fatalf("Windows 受管 WebSocket 必须检查独立 token file：%+v", results.Checks)
 	}
 }
 
@@ -633,7 +644,7 @@ func writeFakeCodexWithAppServerHelp(t *testing.T, path string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		path += ".cmd"
-		body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.149.0\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
+		body := "@echo off\r\nif \"%~1\"==\"--version\" echo codex-cli 0.149.1\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}

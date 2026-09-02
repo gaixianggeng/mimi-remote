@@ -56,6 +56,14 @@ func (transport directWSTestTransport) WebSocketDialer(timeout time.Duration) (w
 	return dialer, nil
 }
 
+func (transport directWSTestTransport) WebSocketURL() (string, error) {
+	return appserver.CodexAppServerWebSocketURL, nil
+}
+
+func (directWSTestTransport) WebSocketHeaders() (http.Header, error) {
+	return nil, nil
+}
+
 func (transport directWSTestTransport) EnsureReady(ctx context.Context) error {
 	dialer, err := transport.WebSocketDialer(2 * time.Second)
 	if err != nil {

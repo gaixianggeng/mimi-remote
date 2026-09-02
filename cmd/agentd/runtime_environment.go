@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -44,6 +45,9 @@ func ensureProcessUserEnvironment() error {
 // ensureAppServerSSHMigration 在正式 Load 前原子迁移旧 managed WS 配置。
 // SSH 预检失败时原文件保持不变，避免升级留下两套都不可用的配置。
 func ensureAppServerSSHMigration(ctx context.Context, configPath string, target string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	if err := agentsetup.MigrateAppServerToSSH(ctx, configPath, target); err != nil {
 		return fmt.Errorf("迁移共享 SSH App Server 配置失败：%w", err)
 	}

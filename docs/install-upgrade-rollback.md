@@ -7,7 +7,7 @@
 ## 方案
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
-- Windows 支持运行 `agentd`，后台服务使用当前用户的计划任务。MIM-207 只暂停 Windows 公开安装包发布。
+- Windows 普通用户使用按用户 EXE 安装器；后台由当前用户计划任务托管，Codex App Server 只监听本机 loopback WebSocket。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和移动端配对 Token 都留在系统用户配置目录，升级二进制不会删除它们。
@@ -15,13 +15,36 @@
 
 ## 实现
 
-### Windows 宿主
+### Windows 首次安装、升级与回滚
 
-Windows 可以运行 `agentd`。后台服务由当前用户的 Task Scheduler 计划任务管理；配置和运行状态保存在当前用户目录，不要求管理员身份。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。
+前置条件：Windows 10/11 x64，并且当前 Windows 用户已安装、登录 Codex CLI 0.149.1 或更高版本。Windows 宿主不依赖 POSIX SSH 或 Unix Socket。`agentd` 启动并管理一个只监听 `ws://127.0.0.1:4222` 的 Codex App Server；它不连接 Codex Desktop 私有 IPC，也不向局域网暴露该端口。
 
-局域网访问必须由用户显式开启。防火墙规则只允许 Private 网络和 `LocalSubnet`，不应把 `agentd` 的明文 HTTP 端口暴露到公网。跨网络访问优先使用 Tailscale。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`。在 PowerShell 中验证摘要和签名状态：
 
-MIM-207 暂停的是 Windows 公开安装包发布，不是 Windows Runtime 支持。安装包是否可用以当前 [GitHub Release](https://github.com/gaixianggeng/mimi-remote/releases/latest) 为准。仓库中的 Windows 构建、计划任务、托盘和防火墙实现仍用于 Windows 兼容性验证；普通用户应使用带 Windows 安装包的正式 Release，不要把 CI 生成的未签名产物当作正式安装包。
+```powershell
+$setup = Get-Item .\Mimi-Remote-Setup-*.exe
+(Get-FileHash $setup -Algorithm SHA256).Hash
+(Get-AuthenticodeSignature $setup).Status
+```
+
+摘要必须与 `.sha256` 一致。元数据为 `authenticode-pfx` 时，签名状态必须为 `Valid`；元数据为 `unsigned-release` 时，状态应为 `NotSigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。
+
+安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它注册名为 `Mimi Remote agentd` 的 limited 当前用户任务，并在完成前等待 `/api/readyz` 和真实 App Server `initialize`。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。配置与配对 Token 保留在 `%APPDATA%\mimi-remote`，日志保留在 `%LOCALAPPDATA%\Mimi Remote\logs`。覆盖安装不会轮换现有 Token。
+
+Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
+
+常用命令：
+
+```powershell
+$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
+& $agentd status
+& $agentd pair --qr-only
+& $agentd doctor --fix
+& $agentd logs -n 200
+& $agentd restart --no-pair --wait 30s
+```
+
+升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件和由安装器创建的可选防火墙规则，但保留配置、Token 与日志。
 
 ### macOS 首次安装（推荐）
 
@@ -43,7 +66,7 @@ agentd up
 agentd status
 ```
 
-`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、SSH、Codex 版本和真实 App Server `initialize` 均已通过。安装与升级只能以后者为成功条件。
+`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、当前平台的 App Server transport、Codex 版本和真实 `initialize` 均已通过。安装与升级只能以后者为成功条件。
 
 `agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json`，以 `0600` 保存，并通过 localhost SSH 连接共享 Unix App Server，然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置和移动端 Token，不会停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。
 
@@ -174,7 +197,7 @@ brew services stop mimi-remote
 systemctl --user stop mimi-remote.service
 ```
 
-收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源和每条连接对应的 SSH proxy；排空超时会强制关闭连接。共享 Unix App Server 不属于 `agentd`，因此不会随 `agentd` 停止。共享 App Server 或 SSH 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
+收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS/Linux 会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server。Windows 会停止自己管理的 loopback App Server 完整子进程树。App Server 或 transport 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
 
 ### macOS Homebrew 应急回滚
 
@@ -346,7 +369,7 @@ Windows 安装器可选配置以下 Authenticode Secrets：
 | `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
 | `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
 
-Windows verify job 会构建并检查内部安装器，其中仍保留 MIM-207 的临时发布 gate，并在任何停服或文件修改前拒绝最终用户安装。这个 gate 控制公开分发，不代表 Windows Runtime 不受支持。该 artifact 只保留在 Actions，不上传 GitHub Release；PFX 临时文件不会进入 artifact。两个 Secret 都存在时仍验证 Authenticode；两个都缺失时构建内部 `unsigned-release` 验证件。恢复 Windows 公开安装包时，需要移除临时 gate、通过现有计划任务、托盘与防火墙验收，并恢复独立发布 job。
+Windows verify job 会构建 release 二进制、编译 Inno Setup，并验证 SHA-256、内嵌文件和签名模式。验证通过后，独立的 `publish-windows` job 把安装器、摘要和元数据上传到同一个 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制验证 Authenticode；两个都缺失时构建明确标记的 `unsigned-release`。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 

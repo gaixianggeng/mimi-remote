@@ -117,6 +117,8 @@ type RouterOptions struct {
 
 type appServerSSHTransport interface {
 	EnsureReady(context.Context) error
+	WebSocketURL() (string, error)
+	WebSocketHeaders() (http.Header, error)
 	WebSocketDialer(time.Duration) (websocket.Dialer, error)
 }
 
