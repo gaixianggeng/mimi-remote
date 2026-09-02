@@ -12,6 +12,7 @@ struct ConversationTimelineReducer {
 
     struct RebaseResult {
         let messages: [ConversationMessage]
+        let snapshotMessageIDs: Set<UUID>
         let stableIDAliases: [MessageID: UUID]
         let ambiguousAliasCount: Int
         let hadOrderingCycle: Bool
@@ -153,10 +154,12 @@ struct ConversationTimelineReducer {
                 stableIDAliases[stableID] = message.id
             }
         }
+        let snapshotMessageIDs = Set(nodeIndexBySnapshotIndex.values.map { nodes[$0].message.id })
 
         guard nodes.count > 1 else {
             return RebaseResult(
                 messages: nodes.map(\.message),
+                snapshotMessageIDs: snapshotMessageIDs,
                 stableIDAliases: stableIDAliases,
                 ambiguousAliasCount: ambiguousAliasCount,
                 hadOrderingCycle: false
@@ -247,6 +250,7 @@ struct ConversationTimelineReducer {
 
         return RebaseResult(
             messages: orderedNodeIndices.map { nodes[$0].message },
+            snapshotMessageIDs: snapshotMessageIDs,
             stableIDAliases: stableIDAliases,
             ambiguousAliasCount: ambiguousAliasCount,
             hadOrderingCycle: hadOrderingCycle

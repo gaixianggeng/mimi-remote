@@ -981,4 +981,94 @@ extension ConversationDataFlowTests {
             "首屏重拉不得删除条目补齐写入的历史"
         )
     }
+
+    func testFirstPageRefreshTracksUUIDRetainedBySemanticAlias() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-semantic-alias-projection"
+        let turnID = "turn-history-semantic-alias-projection"
+        store.completeMessage(
+            AgentMessage(
+                id: "live-final",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "msg-final",
+                role: .assistant,
+                kind: .message,
+                content: "旧首屏回答",
+                createdAt: Date(timeIntervalSince1970: 20),
+                seq: 1,
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "msg-final",
+                messageID: "live-final",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: Date(timeIntervalSince1970: 20)
+            ),
+            fallbackSessionID: sessionID
+        )
+        let retainedLiveID = store.messages(for: sessionID).first?.id
+        let retained = CodexHistoryMessage(
+            id: "rollout:keep",
+            role: "assistant",
+            content: "保留的新首屏回答",
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+
+        // legacy thread/read 会把实时 msg_* 重编号为 item-N。Reducer 通过语义别名合并时
+        // 保留实时消息的 UUID，首屏基线必须记录这个最终 UUID，而不是投影阶段的临时 UUID。
+        store.replaceHistorySnapshot([
+            CodexHistoryMessage(
+                id: "history-final",
+                role: "assistant",
+                content: "旧首屏回答",
+                createdAt: Date(timeIntervalSince1970: 20),
+                turnID: turnID,
+                itemID: "item-0",
+                timelineOrdinal: 0,
+                turnLifecycle: .completed
+            ),
+            retained
+        ], sessionID: sessionID)
+        XCTAssertEqual(store.messages(for: sessionID).first?.id, retainedLiveID)
+
+        store.replaceHistorySnapshot([retained], sessionID: sessionID)
+
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["保留的新首屏回答"])
+    }
+
+    func testIgnoredEmptyFirstPageKeepsLastValidProjectionBaseline() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-empty-first-page-projection"
+        let retained = CodexHistoryMessage(
+            id: "rollout:keep",
+            role: "assistant",
+            content: "保留的新首屏回答",
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+
+        store.replaceHistorySnapshot([
+            CodexHistoryMessage(
+                id: "rollout:stale",
+                role: "assistant",
+                content: "已经离开首屏的旧回答",
+                createdAt: Date(timeIntervalSince1970: 20)
+            ),
+            retained
+        ], sessionID: sessionID)
+        store.replaceHistorySnapshot([], sessionID: sessionID)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["已经离开首屏的旧回答", "保留的新首屏回答"]
+        )
+
+        store.replaceHistorySnapshot([retained], sessionID: sessionID)
+
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["保留的新首屏回答"])
+    }
 }

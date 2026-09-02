@@ -302,7 +302,7 @@ final class ConversationStore: ObservableObject {
             sessionID: sessionID,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
             snapshotOrdering: timelineMutationKind == .enrichment ? .incrementalFragments : .authoritative
-        )
+        ).messages
         recordTurnLifecycles(from: merged, sessionID: sessionID)
         if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, merged) {
             loadedHistorySessionIDs.insert(scopedSessionID)
@@ -332,7 +332,6 @@ final class ConversationStore: ObservableObject {
         _ = flushPendingAssistantDelta(sessionID: sessionID)
         let previousHistoryProjectionIDs = historyFirstPageProjectionIDsBySessionID[scopedSessionID] ?? []
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
-        historyFirstPageProjectionIDsBySessionID[scopedSessionID] = Set(converted.map(\.id))
         for message in converted {
             if let stableID = message.stableID {
                 let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
@@ -351,13 +350,15 @@ final class ConversationStore: ObservableObject {
             return
         }
 
-        let snapshot = mergeHistory(
+        let rebase = mergeHistory(
             converted,
             with: messagesByScopedSessionID[scopedSessionID] ?? [],
             sessionID: sessionID,
             replacingHistoryProjectionIDs: previousHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
+        let snapshot = rebase.messages
+        historyFirstPageProjectionIDsBySessionID[scopedSessionID] = rebase.snapshotMessageIDs
         recordTurnLifecycles(from: snapshot, sessionID: sessionID)
         if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, snapshot) {
             loadedHistorySessionIDs.insert(scopedSessionID)
@@ -1579,7 +1580,7 @@ final class ConversationStore: ObservableObject {
         replacingHistoryProjectionIDs: Set<UUID>? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         snapshotOrdering: ConversationTimelineReducer.SnapshotOrdering = .authoritative
-    ) -> [ConversationMessage] {
+    ) -> ConversationTimelineReducer.RebaseResult {
 #if DEBUG
         historyMergeInvocationCountForTesting += 1
 #endif
@@ -1599,7 +1600,7 @@ final class ConversationStore: ObservableObject {
             print("[ConversationTimeline] ambiguousAliases=\(result.ambiguousAliasCount) orderingCycle=\(result.hadOrderingCycle)")
         }
 #endif
-        return result.messages
+        return result
     }
 
     private func projectedHistoryMessages(_ history: [CodexHistoryMessage], sessionID: String) -> [ConversationMessage] {
