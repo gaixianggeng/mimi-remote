@@ -10,6 +10,10 @@ case "$command_name" in
     exit 0
     ;;
   bind)
+    command -v gobind >/dev/null 2>&1 || {
+      echo "gobind was not found" >&2
+      exit 65
+    }
     exit_code="${TAILCAT_TEST_BIND_EXIT_CODE:-0}"
     [[ "$exit_code" == "0" ]] || exit "$exit_code"
     shift

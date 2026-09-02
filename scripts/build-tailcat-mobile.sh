@@ -115,7 +115,9 @@ if framework_is_complete && [[ "$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)" 
 fi
 
 mkdir -p "$TOOL_DIR/bin" "$OUTPUT_DIR"
+export PATH="$TOOL_DIR/bin:$PATH"
 GOBIN="$TOOL_DIR/bin" "$GO_BIN" install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
+GOBIN="$TOOL_DIR/bin" "$GO_BIN" install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
 "$TOOL_DIR/bin/gomobile" init
 
 TEMPORARY_DIR="$(mktemp -d "$OUTPUT_DIR/.tailcat-mobile.XXXXXX")"

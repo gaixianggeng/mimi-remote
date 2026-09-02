@@ -49,6 +49,8 @@ bind_count() {
 run_builder >/dev/null
 assert_equal "1" "$(bind_count)" "首次执行必须生成 XCFramework"
 [[ -f "$output_dir/.tailcat-mobile-fingerprint" ]] || fail "首次执行缺少源码指纹"
+[[ -x "$tool_dir/bin/gomobile" ]] || fail "首次执行没有安装固定版本的 gomobile"
+[[ -x "$tool_dir/bin/gobind" ]] || fail "首次执行没有安装固定版本的 gobind"
 
 run_builder >/dev/null
 assert_equal "1" "$(bind_count)" "源码未变化时必须复用缓存"
