@@ -728,6 +728,44 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
     }
 
+    func testRefreshingTailcatStatusClearsRelayNoticeAndShowsRuntimeError() async {
+        let customStatus = TailcatStatus(
+            enabled: true,
+            running: true,
+            version: "v0.3.0",
+            derpMapURL: "https://relay.example/derpmap/default",
+            pairedDeviceCount: 0,
+            error: nil
+        )
+        let failedStatus = TailcatStatus(
+            enabled: true,
+            running: false,
+            version: "v0.3.0",
+            derpMapURL: "https://relay.example/derpmap/default",
+            pairedDeviceCount: 0,
+            error: "Tailcat sidecar 已退出"
+        )
+        let statusCalls = CallCounter()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                statusCalls.increment() == 1 ? customStatus : failedStatus
+            },
+            configureTailcatDERPMap: { _ in customStatus }
+        )
+
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
+        XCTAssertNotNil(store.tailcatNotice)
+
+        await store.refreshTailcatStatus()
+
+        XCTAssertNil(store.tailcatNotice)
+        XCTAssertEqual(store.tailcatStatusDetail, "Tailcat sidecar 已退出")
+    }
+
     func testDoctorKeepsHomebrewMigrationState() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
         await store.bootstrap()

@@ -569,6 +569,7 @@ final class HostStore {
         do {
             tailcatStatus = try await agent.tailcatStatus()
             tailcatError = nil
+            tailcatNotice = nil
         } catch {
             tailcatError = error.localizedDescription
         }

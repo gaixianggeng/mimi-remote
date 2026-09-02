@@ -359,7 +359,9 @@ func (s *tailcatSidecarSupervisor) ConfigureDERPMap(ctx context.Context, rawURL 
 		return s.Status(ctx), err
 	}
 	if err := s.stopForReconfiguration(ctx); err != nil {
-		return s.Status(ctx), err
+		// 请求可能在旧 sidecar 已停止后被取消。此时仍要用独立上下文
+		// 恢复原身份和进程，避免一次取消破坏现有远程入口。
+		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
 	}
 	s.mu.Lock()
 	s.config.DERPMapURL = normalized
