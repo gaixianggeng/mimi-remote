@@ -4,7 +4,9 @@
   "targetVersion": "1.2.1",
   "targetBuild": "100098",
   "preparedAt": "2026-09-02",
-  "uploadReady": true,
+  "uploadReady": false,
+  "manualAppStoreConnectUploadReady": true,
+  "publisherCompatible": false,
   "containsThirdPartyBrandingInProductUI": true,
   "locales": [
     "zh-Hans"
