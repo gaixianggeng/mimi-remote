@@ -53,6 +53,20 @@ final class AgentCommandClientTests: XCTestCase {
             AgentCommandClient.tailcatArguments(action: "enable"),
             ["tailcat", "enable", "--json"]
         )
+        XCTAssertEqual(
+            AgentCommandClient.tailcatArguments(
+                action: "configure",
+                derpMapURL: "https://relay.example/derpmap/default"
+            ),
+            [
+                "tailcat", "configure", "--json",
+                "--derp-map-url=https://relay.example/derpmap/default",
+            ]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.tailcatArguments(action: "configure", derpMapURL: ""),
+            ["tailcat", "configure", "--json", "--derp-map-url="]
+        )
     }
 
     func testProcessCancellationIsReportedAsCancellation() async {

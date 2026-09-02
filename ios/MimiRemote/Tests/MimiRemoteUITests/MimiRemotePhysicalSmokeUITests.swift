@@ -432,7 +432,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
         let diagnostics = app.descendant(identifier: "settings.diagnostics")
         let advanced = app.descendant(identifier: "settings.advancedDevelopment")
-        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
         let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
         XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
@@ -475,7 +474,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
         // “Mac 与设备”已在页面顶部验证；滚到底部后它可能被 List 懒加载卸载，
         // 这里只检查当前可见的“更多”入口，避免把视口状态误判为功能缺失。
-        let bottomRows = [experimentalFeatures, diagnostics, advanced, aboutLegal]
+        let bottomRows = [diagnostics, advanced, aboutLegal]
         for row in bottomRows {
             XCTAssertTrue(row.waitForExistence(timeout: 4), "“更多”分区入口应存在")
             XCTAssertEqual(
@@ -492,32 +491,57 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(bottomScreenshot)
     }
 
-    func testExperimentalFeaturesExposeTailcatModeToggle() throws {
+    func testMacConnectionExposesTailcatModeToggle() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
 
-        let experimentalFeatures = app.descendant(identifier: "settings.experimentalFeatures")
+        let macConnection = app.descendant(identifier: "settings.connectionManagement")
+        XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
+        macConnection.tap()
+
+        let experimentalFeatures = app.descendant(identifier: "settings.connection.tailcat")
         XCTAssertTrue(
             scrollUntilHittable(experimentalFeatures, maximumSwipes: 8),
-            "我的页面应能滚动到实验功能入口"
+            "Mac 连接页应能滚动到 Tailcat 入口"
         )
         XCTAssertEqual(
             experimentalFeatures.frame.height,
             52,
             accuracy: 1,
-            "实验功能入口应保持设置页标准行高"
+            "Tailcat 入口应保持设置页标准行高"
         )
         experimentalFeatures.tap()
         XCTAssertTrue(
             app.descendant(identifier: "settings.experimentalFeatures.detail")
                 .waitForExistence(timeout: 5),
-            "实验功能入口应进入 Tailcat 实验设置"
+            "Mac 连接页的 Tailcat 入口应进入实验设置"
         )
         let modeToggle = app.descendant(identifier: "settings.experimentalFeatures.tailcatToggle")
         XCTAssertTrue(
             scrollUntilHittable(modeToggle, maximumSwipes: 4),
             "实验功能页应提供明确的 Tailcat 模式开关"
         )
+    }
+
+    func testMacConnectionOffersTailscaleAndTailcatSpeedRoutes() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let macConnection = app.descendant(identifier: "settings.connectionManagement")
+        XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
+        macConnection.tap()
+
+        let speedTest = app.descendant(identifier: "settings.connectionSpeedTest")
+        XCTAssertTrue(scrollUntilHittable(speedTest, maximumSwipes: 8), "Mac 连接页应提供统一测速入口")
+        speedTest.tap()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.connectionSpeedTest.route")
+                .waitForExistence(timeout: 5),
+            "连接测速应提供连接方式选择"
+        )
+        XCTAssertTrue(app.buttons["Tailscale"].exists, "连接测速应支持 Tailscale")
+        XCTAssertTrue(app.buttons["Tailcat"].exists, "连接测速应支持 Tailcat")
     }
 
     func testComposerPlanGoalAndModelMenusSurviveRotationWithoutCrash() throws {

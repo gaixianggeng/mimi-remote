@@ -39182,6 +39182,20 @@
         }
       }
     },
+    "ui.connection_speed_test_route_tailcat": {
+      "comment": "Tailcat route label in the unified connection speed test.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat" } }
+      }
+    },
+    "ui.connection_speed_test_route_tailscale": {
+      "comment": "Tailscale route label in the unified connection speed test.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailscale" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailscale" } }
+      }
+    },
     "ui.tailcat_experiment": {
       "comment": "Name of the opt-in Tailcat transport experiment.",
       "localizations": {
@@ -39220,8 +39234,8 @@
     "ui.tailcat_pairing_help": {
       "comment": "Explains the Tailcat QR pairing flow.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from the normal add or repair computer entry. A successful scan enables this experiment automatically." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 的实验功能中生成 Tailcat 二维码，再从常规的添加或修复电脑入口扫码。配对成功后会自动开启本实验。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from Mac Connection. A successful scan enables this experiment automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 中生成 Tailcat 二维码，再从“Mac 连接”扫码。配对成功后会自动开启本实验。" } }
       }
     },
     "ui.tailcat_pairing_address_missing": {

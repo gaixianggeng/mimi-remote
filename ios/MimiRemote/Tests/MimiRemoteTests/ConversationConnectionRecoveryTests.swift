@@ -921,6 +921,47 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
     }
 
+    func testCancelledForegroundResumeDoesNotReconnectAfterReturningToBackground() async {
+        let project = makeProject(id: "proj_cancelled_foreground_resume")
+        let session = makeSession(
+            id: "thread_cancelled_foreground_resume",
+            projectID: project.id,
+            title: "锁屏恢复",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(session)
+        let initialConnectCount = socket.connectedSessionIDs.count
+        store.suspendForBackground()
+
+        let resumeTask = Task { await store.resumeFromForeground() }
+        await client.waitForBlockedSessionListRefresh()
+        resumeTask.cancel()
+        store.suspendForBackground()
+        client.releaseBlockedSessionListRefresh()
+        await resumeTask.value
+
+        XCTAssertTrue(store.isAppInBackground)
+        XCTAssertNil(store.connectedSessionID)
+        XCTAssertEqual(socket.connectedSessionIDs.count, initialConnectCount)
+    }
+
     func testBootstrapHonorsThreadListRetryAfterBeforeRetrying() async {
         let project = makeProject(id: "proj_list_retry_after")
         let session = makeSession(id: "thread_list_retry_after", projectID: project.id, title: "限流恢复", status: "history", source: "codex")

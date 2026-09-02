@@ -18,6 +18,9 @@ struct AgentCommandClient: Sendable {
     var setTailcatEnabled: @Sendable (_ enabled: Bool) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
+    var configureTailcatDERPMap: @Sendable (_ derpMapURL: String) async throws -> TailcatStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 中继配置。")
+    }
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
@@ -167,6 +170,14 @@ extension AgentCommandClient {
                     timeout: .seconds(25)
                 ))
             },
+            configureTailcatDERPMap: { derpMapURL in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: "configure", derpMapURL: derpMapURL),
+                    timeout: .seconds(55)
+                ))
+            },
             resetTailcat: {
                 let binary = try requireEmbeddedBinary()
                 return try decode(TailcatStatus.self, from: try await execute(
@@ -228,8 +239,12 @@ extension AgentCommandClient {
         ]
     }
 
-    static func tailcatArguments(action: String) -> [String] {
-        ["tailcat", action, "--json"]
+    static func tailcatArguments(action: String, derpMapURL: String? = nil) -> [String] {
+        var arguments = ["tailcat", action, "--json"]
+        if let derpMapURL {
+            arguments.append("--derp-map-url=\(derpMapURL)")
+        }
+        return arguments
     }
 
 }

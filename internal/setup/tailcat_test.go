@@ -48,6 +48,82 @@ func TestConfigureTailcatPreservesUnknownConfiguration(t *testing.T) {
 	}
 }
 
+func TestConfigureTailcatDERPMapSupportsCustomAndDefaultModes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{
+  "listen": "127.0.0.1:8787",
+  "auth": {"token": "0123456789abcdef0123456789abcdef"},
+  "future": {"kept": true},
+  "tailcat": {"enabled": true, "future": 7}
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configured, err := ConfigureTailcatDERPMap(configPath, "  https://relay.example/derpmap/default  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configured.Changed || configured.DERPMapURL != "https://relay.example/derpmap/default" || configured.PreviousDERPMapURL != "" {
+		t.Fatalf("自定义中继结果异常：%+v", configured)
+	}
+
+	restored, err := ConfigureTailcatDERPMap(configPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Changed || restored.DERPMapURL != "" || restored.PreviousDERPMapURL != configured.DERPMapURL {
+		t.Fatalf("恢复默认中继结果异常：%+v", restored)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	var tailcat map[string]json.RawMessage
+	if err := json.Unmarshal(document["tailcat"], &tailcat); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := tailcat["derp_map_url"]; exists {
+		t.Fatalf("默认模式必须删除 derp_map_url：%v", tailcat)
+	}
+	var future map[string]bool
+	if err := json.Unmarshal(document["future"], &future); err != nil || !future["kept"] {
+		t.Fatalf("未知顶层字段未保留：%s", document["future"])
+	}
+	if string(tailcat["future"]) != "7" {
+		t.Fatalf("未知字段未保留：tailcat=%v document=%v", tailcat, document)
+	}
+}
+
+func TestConfigureTailcatDERPMapRejectsUnsafeURLWithoutChangingConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"tailcat":{"enabled":true,"derp_map_url":"https://relay.example/map"}}`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{
+		"http://relay.example/map",
+		"https://user:password@relay.example/map",
+		"not-a-url",
+	} {
+		if _, err := ConfigureTailcatDERPMap(configPath, candidate); err == nil {
+			t.Fatalf("不安全地址必须拒绝：%q", candidate)
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != string(original) {
+			t.Fatalf("校验失败不能修改配置：got=%s want=%s", data, original)
+		}
+	}
+}
+
 func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef"
 	configPath := filepath.Join(t.TempDir(), "config.json")
