@@ -1351,6 +1351,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 28D3653ED215D7D57FC301A4 /* Build configuration list for PBXNativeTarget "MimiRemote" */;
 			buildPhases = (
+				A9E2E61E30A2A8ED4A4BD73E /* Build Tailcat iOS framework */,
 				C5C19408FFE66D0C309E1100 /* Sources */,
 				E1CA0CE3254B35C0BBF722B0 /* Resources */,
 				0D40A44B88B0F065FC0383A3 /* Frameworks */,
@@ -1596,6 +1597,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A9E2E61E30A2A8ED4A4BD73E /* Build Tailcat iOS framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Tailcat iOS framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "case \"${PLATFORM_NAME:-}\" in\n  iphoneos|iphonesimulator)\n    export PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/local/go/bin:$PATH\"\n    export GOTOOLCHAIN=\"${GOTOOLCHAIN:-auto}\"\n    bash \"$SRCROOT/../../scripts/build-tailcat-mobile.sh\"\n    ;;\nesac\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		4AA24A8387E0D5CF621FCC07 /* Sources */ = {
@@ -1877,8 +1900,11 @@
 				CURRENT_PROJECT_VERSION = 100098;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
 				INFOPLIST_FILE = Resources/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Resources/Info-Catalyst.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2011,8 +2037,11 @@
 				CURRENT_PROJECT_VERSION = 100098;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
 				INFOPLIST_FILE = Resources/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Resources/Info-Catalyst.plist";
 				LD_RUNPATH_SEARCH_PATHS = (

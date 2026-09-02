@@ -91,6 +91,9 @@ assert_scope ios_device_lease false true false false false scripts/ios-device-le
 assert_scope ios_device_gui_handoff false true false false false scripts/ios-device-gui-handoff-macos.sh
 assert_scope ios_device_management false true false false false scripts/test-ios-device-management.sh
 assert_scope ios_device_fixture false true false false false scripts/testdata/ios-device-management/simulators.json
+assert_scope tailcat_source false true false false false experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go
+assert_scope tailcat_builder false true false false false scripts/build-tailcat-mobile.sh
+assert_scope tailcat_fixture false true false false false scripts/testdata/tailcat-mobile/fake-go.sh
 assert_scope docs_only false false false false true CONTRIBUTING.md
 assert_scope workflow true true true true true .github/workflows/pr-gate.yml
 assert_scope mixed true true true false true \

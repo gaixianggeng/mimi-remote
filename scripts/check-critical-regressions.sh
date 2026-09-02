@@ -45,9 +45,22 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh 
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
 conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
 release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
-if grep -Fq 'actions/setup-go@' <<<"$conversation_job"; then
-  fail "iOS 回归 job 仍在重复初始化 Go 工具链。"
-fi
+[[ "$(grep -Fc 'actions/setup-go@' <<<"$conversation_job")" == "1" ]] \
+  || fail "iOS 回归 job 必须且只能初始化一次 Tailcat Go 工具链。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有使用 Tailcat go.mod 固定 Go 版本。"
+grep -Fq "cd experiments/tailcat && go test ./... -run '^$' -count=1" <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有编译 Tailcat Go module 测试。"
+grep -Fq 'bash ./scripts/test-tailcat-mobile-build.sh' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有验证 Tailcat XCFramework 缓存链路。"
+grep -Fq 'Build Tailcat iOS framework' ios/MimiRemote/project.yml \
+  || fail "MimiRemote project.yml 没有接入 Tailcat iOS 构建阶段。"
+grep -Fq 'bash "$SRCROOT/../../scripts/build-tailcat-mobile.sh"' ios/MimiRemote/project.yml \
+  || fail "MimiRemote project.yml 的 Tailcat 构建阶段没有调用统一 builder。"
+grep -Fq 'ENABLE_USER_SCRIPT_SANDBOXING: "NO"' ios/MimiRemote/project.yml \
+  || fail "MimiRemote 没有允许 Tailcat 构建阶段写入 Generated 缓存。"
+grep -Fq 'Build Tailcat iOS framework' ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj \
+  || fail "已提交的 Xcode 工程没有 Tailcat iOS 构建阶段。"
 [[ "$(grep -Fc 'actions/setup-go@' <<<"$release_job")" == "1" ]] \
   || fail "iOS 发布 job 必须且只能初始化一次 Tailcat Go 工具链。"
 grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$release_job" \
