@@ -32,11 +32,11 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-iphone-current.jpg" alt="Four current Mimi Remote promotional screens on an orange iPhone: session handoff, multi-device control, Codex and Claude Code continuity, and native mobile design" width="100%" />
+  <img src="web/assets/promo-iphone-current.jpg" alt="Four current Mimi Remote promotional screens on orange iPhones: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design" width="100%" />
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-ipad-current.jpg" alt="Four current Mimi Remote promotional screens on a silver iPad: session handoff, multi-device control, Codex and Claude Code continuity, and native tablet design" width="100%" />
+  <img src="web/assets/promo-ipad-current.jpg" alt="Four current Mimi Remote promotional screens on silver iPads: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design" width="100%" />
 </p>
 
 <p align="center">

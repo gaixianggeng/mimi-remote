@@ -356,7 +356,11 @@ a   { color: inherit; }
 
 /* device stage */
 .stage { position: relative; margin: 0; padding-bottom: 7%; isolation: isolate; }
-.stage--promo { padding-bottom: 0; }
+.stage--promo {
+  display: grid;
+  gap: clamp(12px, 1.8vw, 20px);
+  padding-bottom: 0;
+}
 .stage__promo {
   display: block;
   width: 100%;
