@@ -83,8 +83,7 @@
 
       "alt.ipadWorkspace": "Mimi Remote's workspace on iPad: a sidebar of sessions and workspaces beside project tabs and recent conversations.",
       "alt.iphoneWorkspace": "The same workspace on iPhone, as a single column with a compact tab bar.",
-      "alt.promoIphone": "Four Mimi Remote promotional screens on orange iPhones: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design.",
-      "alt.promoIpad": "Four Mimi Remote promotional screens on silver iPads: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design.",
+      "alt.promoOverview": "Mimi Remote promotional overview showing conversations, live session progress, and control of development computers from iPhone.",
       "alt.ipadSessions": "The session list on iPad, grouped by day, with the sidebar showing just-finished and recent work.",
       "alt.iphoneSessions": "The same session list on iPhone, one column, with a floating tab bar.",
       "alt.cropSessions": "A close crop of the session list: a day heading with several conversations beneath it.",
@@ -159,8 +158,7 @@
 
       "alt.ipadWorkspace": "Mimi Remote 在 iPad 上的工作区：侧栏是会话与工作区，右侧是项目标签和最近对话。",
       "alt.iphoneWorkspace": "同一个工作区在 iPhone 上的样子：单列布局，底部是紧凑的标签栏。",
-      "alt.promoIphone": "Mimi Remote 四张橙色 iPhone 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计。",
-      "alt.promoIpad": "Mimi Remote 四张银色 iPad 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计。",
+      "alt.promoOverview": "Mimi Remote 推广总览：在 iPhone 上继续对话、跟进会话进度并控制自己的开发电脑。",
       "alt.ipadSessions": "iPad 上的会话列表，按天分组，侧栏显示刚完成和最近的任务。",
       "alt.iphoneSessions": "同一份会话列表在 iPhone 上：单列，底部悬浮标签栏。",
       "alt.cropSessions": "会话列表的局部特写：一个日期分组下面跟着若干条对话。",
@@ -215,6 +213,9 @@
       var shot = img.getAttribute("data-shot");
       var override = SHOT_LANG[shot] && SHOT_LANG[shot][lang];
       img.setAttribute("src", "./assets/" + (override || shot) + "-" + theme + ".png");
+    });
+    each("[data-promo-shot]", function (img) {
+      img.setAttribute("src", "./assets/promo-overview-" + lang + ".png");
     });
   }
 

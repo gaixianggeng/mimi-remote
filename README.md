@@ -32,9 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-iphone-conversation-current.jpg" alt="Mimi Remote session handoff promotion on an orange iPhone" width="29%" />
-  &nbsp;&nbsp;
-  <img src="web/assets/promo-ipad-workspace-current.jpg" alt="Mimi Remote Codex and Claude Code session continuity promotion on a silver iPad" width="50%" />
+  <img src="web/assets/promo-iphone-current.jpg" alt="Four Mimi Remote promotional screens on iPhone: session handoff, multi-device control, Codex and Claude Code continuity, and a refined interface" width="100%" />
 </p>
 
 <p align="center">
@@ -47,26 +45,16 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
 
 > Install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. [TestFlight](https://testflight.apple.com/join/jhGPbSk6) remains available for beta builds, and developers can build from source.
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <strong>iPhone · same capabilities, compact layout</strong><br />
-      <sub>Continue sessions, follow progress, handle approvals, and control tasks in one column.</sub>
-    </td>
-    <td width="50%" align="center">
-      <strong>iPad · same capabilities, expanded layout</strong><br />
-      <sub>Open the same sessions and controls into a multi-column workspace with more context.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote session list on iPhone in light mode" width="58%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote session list on iPad with the sidebar visible" width="100%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote session list on iPhone in light mode" width="24%" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote session list on iPad with the sidebar visible" width="70%" />
+</p>
+
+<p align="center">
+  <sub><strong>iPhone</strong> · same capabilities in one column: continue sessions, follow progress, handle approvals, control tasks.<br />
+  <strong>iPad</strong> · the same sessions and controls opened into a multi-column workspace with more context.</sub>
+</p>
 
 Both devices share the complete session, approval, and task-control surface; only the layout, information density, and input ergonomics change. The native SwiftUI interface tunes compact navigation, wide-screen columns, touch feedback, and transitions for each device. With Reduce Motion enabled, movement falls back to restrained fades or static feedback. These images reuse the current [`web/assets`](web/assets) capture set and come from Debug-only seeded UI with demo hosts, projects, sessions, paths, and usage values—never a maintainer's live workspace or credentials. The interface uses the Simplified Chinese localization; the app also supports English.
 
@@ -94,26 +82,16 @@ When you need to finish deeper development work, advanced tools can inspect diff
 
 Mimi Remote keeps the same project and session model across devices, but each surface follows the way that device is actually used. iPhone keeps one-handed navigation compact, iPad opens the same capabilities into a context-preserving multi-column workbench, and the host computer continues running the agents. The device changes the presentation, not the available capabilities.
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <strong>Appearance is first-class</strong><br />
-      <sub>Choose light or dark mode, workspace icon sets, and editor-inspired themes.</sub>
-    </td>
-    <td width="50%" align="center">
-      <strong>Usage and host state stay visible</strong><br />
-      <sub>Token windows, connected hosts, language, model, and permissions share one home.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote appearance and workspace icon settings on iPhone in light mode" width="58%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote token usage, connected host, and preferences on iPhone in dark mode" width="58%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote appearance and workspace icon settings on iPhone in light mode" width="30%" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote token usage, connected host, and preferences on iPhone in dark mode" width="30%" />
+</p>
+
+<p align="center">
+  <sub><strong>Appearance is first-class</strong> · light or dark mode, workspace icon sets, and editor-inspired themes.<br />
+  <strong>Usage and host state stay visible</strong> · token windows, connected hosts, language, model, and permissions share one home.</sub>
+</p>
 
 <p align="center">
   <img src="artifacts/app-screenshots/mac-menu-bar-debug-2026-07-28.png" alt="Mimi Remote Mac menu bar control surface with service, runtime, and quota status" width="340" />

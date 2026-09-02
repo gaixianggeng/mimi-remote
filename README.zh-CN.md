@@ -31,9 +31,7 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-iphone-conversation-current.jpg" alt="Mimi Remote 橙色 iPhone 会话接力推广图" width="29%" />
-  &nbsp;&nbsp;
-  <img src="web/assets/promo-ipad-workspace-current.jpg" alt="Mimi Remote 银色 iPad Codex 与 Claude Code 会话接力推广图" width="50%" />
+  <img src="web/assets/promo-iphone-current.jpg" alt="Mimi Remote 四张 iPhone 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力、优雅设计" width="100%" />
 </p>
 
 <p align="center">
@@ -46,26 +44,16 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
 
 > Mimi Remote 已在部分地区的 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 上架。[TestFlight](https://testflight.apple.com/join/jhGPbSk6) 继续提供 Beta 构建，开发者也可以从源码构建。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <strong>iPhone · 完整能力，紧凑布局</strong><br />
-      <sub>在单列界面中继续会话、跟进进度、处理审批和控制任务。</sub>
-    </td>
-    <td width="50%" align="center">
-      <strong>iPad · 完整能力，展开布局</strong><br />
-      <sub>同样的会话与控制在多栏工作台中展开，保留更多上下文。</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的会话列表" width="58%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote 在 iPad 上同时展示侧栏与会话列表" width="100%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的会话列表" width="24%" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote 在 iPad 上同时展示侧栏与会话列表" width="70%" />
+</p>
+
+<p align="center">
+  <sub><strong>iPhone · 完整能力，紧凑布局</strong> — 在单列界面中继续会话、跟进进度、处理审批和控制任务。<br />
+  <strong>iPad · 完整能力，展开布局</strong> — 同样的会话与控制在多栏工作台中展开，保留更多上下文。</sub>
+</p>
 
 两端共用完整的会话、审批与任务控制能力，区别只在布局、信息密度和输入方式。原生 SwiftUI 界面分别打磨了紧凑导航、宽屏分栏、触控反馈与过渡动画；开启 Reduce Motion 后，动态效果会降级为克制的淡化或静态反馈。这些图片直接复用 [`web/assets`](web/assets) 中的当前官网截图，全部来自 Debug 专用种子界面，其中的主机、项目、会话、路径和用量均为演示数据，不使用维护者的真实工作区或凭据。截图展示简体中文界面，App 同时支持英文。
 
@@ -95,26 +83,16 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
 
 Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPhone 用紧凑层级保持单手操作，iPad 展开为保留上下文的多栏工作台，宿主电脑则继续运行 Agent。设备改变的是呈现方式，不是可用能力。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <strong>外观与个性化是一等能力</strong><br />
-      <sub>可选择深浅色、工作区图标套装和编辑器风格主题。</sub>
-    </td>
-    <td width="50%" align="center">
-      <strong>用量与宿主状态集中可见</strong><br />
-      <sub>Token 周期、已连接宿主、语言、模型和权限集中在「我的」。</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的外观与工作区图标设置" width="58%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote 在 iPhone 深色模式下的 Token 用量、已连接宿主与偏好设置" width="58%" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的外观与工作区图标设置" width="30%" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote 在 iPhone 深色模式下的 Token 用量、已连接宿主与偏好设置" width="30%" />
+</p>
+
+<p align="center">
+  <sub><strong>外观与个性化是一等能力</strong> — 深浅色、工作区图标套装与编辑器风格主题。<br />
+  <strong>用量与宿主状态集中可见</strong> — Token 周期、已连接宿主、语言、模型和权限集中在「我的」。</sub>
+</p>
 
 <p align="center">
   <img src="artifacts/app-screenshots/mac-menu-bar-debug-2026-07-28.png" alt="同时展示服务、运行时与额度状态的 Mimi Remote Mac 菜单栏控制面" width="340" />
