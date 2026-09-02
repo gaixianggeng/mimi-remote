@@ -45,9 +45,14 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh 
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
 conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
 release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
-if grep -Fq 'actions/setup-go@' <<<"$conversation_job"; then
-  fail "iOS 回归 job 仍在重复初始化 Go 工具链。"
-fi
+[[ "$(grep -Fc 'actions/setup-go@' <<<"$conversation_job")" == "1" ]] \
+  || fail "iOS 回归 job 必须且只能初始化一次 Tailcat Go 工具链。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有使用 Tailcat go.mod 固定 Go 版本。"
+grep -Fq 'cd experiments/tailcat && go test ./... -count=1' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有验证 Tailcat Go module。"
+grep -Fq 'bash ./scripts/test-tailcat-mobile-build.sh' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有验证 Tailcat XCFramework 缓存链路。"
 [[ "$(grep -Fc 'actions/setup-go@' <<<"$release_job")" == "1" ]] \
   || fail "iOS 发布 job 必须且只能初始化一次 Tailcat Go 工具链。"
 grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$release_job" \

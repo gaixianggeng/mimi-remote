@@ -132,6 +132,15 @@ else
         ;;
     esac
 
+    # Tailcat 是独立 Go module，但只作为 iOS 内嵌网络运行时发布。它必须进入
+    # iOS Gate，不能被通用 *.go 规则误分到根模块 Go CI。
+    case "$changed_path" in
+      experiments/tailcat/*|experiments/tailcat/**/*)
+        ios_scope=true
+        continue
+        ;;
+    esac
+
     case "$changed_path" in
       *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
         go_scope=true
@@ -145,7 +154,7 @@ else
       ios/MimiRemote/*|ios/MimiRemote/**/*|.xcodebuildmcp/*|.xcodebuildmcp/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|internal/protocolcontract/*|internal/protocolcontract/**/*)
         ios_scope=true
         ;;
-      scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/ios-device-management/**/*|scripts/ios_testflight_ci.sh|scripts/ios_testflight_local.sh|scripts/ios_asc_*|scripts/test-ios-asc-cli.sh|scripts/distribute_internal_build.rb|scripts/generate-nightly-what-to-test.rb|scripts/git-testflight-push|scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/test-ios-localization-smoke.sh|scripts/check-ios-*|scripts/check-app-store-metadata.sh|scripts/check-source-size.sh|scripts/deploy-ipad.sh|config/release/ios-asc-cli.env|config/release/ios-testflight.local.env)
+      scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/ios-device-management/**/*|scripts/testdata/tailcat-mobile/*|scripts/testdata/tailcat-mobile/**/*|scripts/ios_testflight_ci.sh|scripts/ios_testflight_local.sh|scripts/ios_asc_*|scripts/test-ios-asc-cli.sh|scripts/distribute_internal_build.rb|scripts/generate-nightly-what-to-test.rb|scripts/git-testflight-push|scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/test-ios-localization-smoke.sh|scripts/check-ios-*|scripts/check-app-store-metadata.sh|scripts/check-source-size.sh|scripts/deploy-ipad.sh|config/release/ios-asc-cli.env|config/release/ios-testflight.local.env)
         ios_scope=true
         ;;
     esac

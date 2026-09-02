@@ -1,5 +1,9 @@
 #import "MimiTailcatBridge.h"
 
+#if defined(MIMI_REQUIRE_TAILCAT) && MIMI_REQUIRE_TAILCAT && !__has_include(<TailcatMobile/TailcatMobile.h>)
+#error "iOS 构建缺少 TailcatMobile.xcframework，请通过 scripts/ios-dev.sh 构建"
+#endif
+
 #if __has_include(<TailcatMobile/TailcatMobile.h>)
 #import <TailcatMobile/TailcatMobile.h>
 #define MIMI_TAILCAT_AVAILABLE 1

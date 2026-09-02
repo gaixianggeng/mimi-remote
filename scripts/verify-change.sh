@@ -161,6 +161,11 @@ is_control_path() {
 
 is_go_source_path() {
   case "$1" in
+    experiments/tailcat/*)
+      return 1
+      ;;
+  esac
+  case "$1" in
     *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*)
       return 0
       ;;
@@ -170,7 +175,7 @@ is_go_source_path() {
 
 is_ios_source_path() {
   case "$1" in
-    ios/MimiRemote/*|contracts/mimi-protocol/*|internal/protocolcontract/*)
+    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*)
       return 0
       ;;
   esac
@@ -211,6 +216,7 @@ has_source_size_control=false
 has_repository_security_control=false
 has_ios_privacy_control=false
 has_ios_device_control=false
+has_tailcat_source=false
 has_ios_asc_control=false
 has_critical_mapping_control=false
 has_linear_polling_control=false
@@ -336,6 +342,11 @@ for path in "${changed_paths[@]:-}"; do
   fi
 
   case "$path" in
+    experiments/tailcat/*)
+      has_tailcat_source=true
+      ;;
+  esac
+  case "$path" in
     contracts/mimi-protocol/*|internal/protocolcontract/*)
       has_contract=true
       ;;
@@ -381,7 +392,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*)
+    scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/tailcat-mobile/*)
       has_ios_device_control=true
       ;;
   esac
@@ -527,7 +538,7 @@ if [[ "$has_ios_privacy_control" == true ]]; then
   add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
+  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
@@ -565,6 +576,10 @@ if [[ "$direct_go" == true ]]; then
   if [[ "$mode" == "full" ]]; then
     add_check "Go full 补充静态分析" "go vet ./..."
   fi
+fi
+
+if [[ "$has_tailcat_source" == true ]]; then
+  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)"
 fi
 
 if [[ "$direct_ios" == true ]]; then

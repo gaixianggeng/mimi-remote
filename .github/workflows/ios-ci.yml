@@ -23,14 +23,18 @@ on:
       - main
     paths:
       - "ios/MimiRemote/**"
+      - "experiments/tailcat/**"
       - "contracts/mimi-protocol/**"
       - "internal/protocolcontract/**"
       - "scripts/ios-dev.sh"
+      - "scripts/build-tailcat-mobile.sh"
       - "scripts/ios-device-lease.sh"
       - "scripts/ios-device-gui-handoff-macos.sh"
       - "scripts/test-ios-device-management.sh"
+      - "scripts/test-tailcat-mobile-build.sh"
       - "scripts/test-ios-device-gui-handoff-macos.sh"
       - "scripts/testdata/ios-device-management/**"
+      - "scripts/testdata/tailcat-mobile/**"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-critical-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
@@ -88,6 +92,12 @@ jobs:
           fetch-depth: 0
           clean: true
 
+      - name: Setup Go for Tailcat
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+
       - name: Show toolchain
         run: |
           xcodebuild -version
@@ -129,6 +139,12 @@ jobs:
       - name: Check iOS device selection and leases
         run: bash ./scripts/test-ios-device-management.sh
 
+      - name: Check Tailcat mobile build cache
+        run: bash ./scripts/test-tailcat-mobile-build.sh
+
+      - name: Test Tailcat module
+        run: cd experiments/tailcat && go test ./... -count=1
+
       - name: Check physical-device GUI handoff
         run: bash ./scripts/test-ios-device-gui-handoff-macos.sh
 
@@ -151,7 +167,7 @@ jobs:
         run: bash ./scripts/check-source-size.sh
 
       - name: Run core regressions
-        # Go 与共享契约由独立 Go CI 覆盖；macOS runner 只执行 iOS selector。
+        # 根模块 Go 与共享契约由独立 Go CI 覆盖；这里已单独验证 Tailcat module。
         run: bash ./scripts/test-conversation-regressions.sh --ios-only
 
       # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时

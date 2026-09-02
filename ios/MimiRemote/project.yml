@@ -75,6 +75,8 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Sources/MimiRemote-Bridging-Header.h
         "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64"
         "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator"
+        "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
+        "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Resources/MimiRemote.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Resources/MimiRemote.entitlements
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_PROVISIONING_PROFILE_SPECIFIER)"

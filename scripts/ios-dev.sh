@@ -19,6 +19,7 @@ XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
 XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
 OPEN_BIN="${IOS_OPEN_BIN:-open}"
 DEVICE_GUI_HANDOFF_BIN="${IOS_DEVICE_GUI_HANDOFF_BIN:-$ROOT_DIR/scripts/ios-device-gui-handoff-macos.sh}"
+TAILCAT_MOBILE_BUILD_SCRIPT="${IOS_TAILCAT_BUILD_SCRIPT:-$ROOT_DIR/scripts/build-tailcat-mobile.sh}"
 
 # shellcheck source=./ios-device-lease.sh
 source "$ROOT_DIR/scripts/ios-device-lease.sh"
@@ -52,6 +53,7 @@ usage() {
   macOS 真机 build/run 固定交给当前登录用户的 GUI LaunchAgent，确保 codesign
   不依赖 Codex Desktop、CLI 或 agentd 的启动会话；
   XcodeBuildMCP 的 Simulator workflow 只用于测试、快照和明确的兼容性验收。
+  每次 iOS build/test/run 都会先按源码指纹准备 Tailcat XCFramework；未变化时复用缓存。
 
 可选覆盖：
   IOS_TARGET_MODE         auto（默认）、device 或 simulator
@@ -78,6 +80,17 @@ require_command() {
     echo "缺少命令：$command_name" >&2
     exit 1
   fi
+}
+
+ensure_tailcat_mobile() {
+  [[ -f "$TAILCAT_MOBILE_BUILD_SCRIPT" ]] || {
+    echo "缺少 Tailcat iOS 构建脚本：$TAILCAT_MOBILE_BUILD_SCRIPT" >&2
+    exit 1
+  }
+  echo "==> 准备 Tailcat iOS 框架"
+  IOS_TAILCAT_BUILD_ACTION="$command_name" \
+    GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" \
+    bash "$TAILCAT_MOBILE_BUILD_SCRIPT"
 }
 
 simulator_record() {
@@ -606,6 +619,7 @@ case "$command_name" in
     require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
     select_and_acquire_build_target "$lease_command"
+    ensure_tailcat_mobile
     if [[ "$SELECTED_KIND" == "device" ]]; then
       run_device_action build "$@"
     else
@@ -618,6 +632,7 @@ case "$command_name" in
     require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
     acquire_fixed_test_target "$lease_command"
+    ensure_tailcat_mobile
     run_xcodebuild "$command_name" "$@"
     ;;
   run)
@@ -626,6 +641,7 @@ case "$command_name" in
     require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
     select_and_acquire_build_target "$lease_command"
+    ensure_tailcat_mobile
     if [[ "$SELECTED_KIND" == "device" ]]; then
       run_device_action run "$@"
       exit 0

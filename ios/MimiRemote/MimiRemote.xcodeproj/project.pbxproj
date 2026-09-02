@@ -1879,6 +1879,8 @@
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
 				INFOPLIST_FILE = Resources/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Resources/Info-Catalyst.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2013,6 +2015,8 @@
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = "$(inherited) MIMI_REQUIRE_TAILCAT=1";
 				INFOPLIST_FILE = Resources/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Resources/Info-Catalyst.plist";
 				LD_RUNPATH_SEARCH_PATHS = (

@@ -74,6 +74,12 @@ assert_contains "$ios_output" "check-source-size.sh"
 assert_not_contains "$ios_output" "go test"
 assert_not_contains "$ios_output" "cargo test"
 
+tailcat_output="$(assert_plan tailcat experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go)"
+assert_contains "$tailcat_output" "PR Gate scope：go=false, ios=true"
+assert_contains "$tailcat_output" "(cd experiments/tailcat && go test ./... -count=1)"
+assert_contains "$tailcat_output" "ios-dev.sh build-for-testing"
+assert_not_contains "$tailcat_output" "Go 受影响范围使用完整回归"
+
 go_output="$(assert_plan go_only internal/httpapi/router.go)"
 assert_contains "$go_output" "go test ./internal/httpapi -count=1"
 assert_not_contains "$go_output" "ios-dev.sh build-for-testing"
@@ -134,6 +140,7 @@ powershell_output="$(assert_plan powershell_control scripts/check-windows-instal
 assert_contains "$powershell_output" "延后到 Windows CI"
 
 device_control_output="$(assert_plan device_control scripts/ios-dev.sh)"
+assert_contains "$device_control_output" "test-tailcat-mobile-build.sh"
 assert_contains "$device_control_output" "test-ios-device-management.sh"
 assert_contains "$device_control_output" "test-ios-device-gui-handoff-macos.sh"
 assert_not_contains "$device_control_output" "ios-dev.sh build-for-testing"
