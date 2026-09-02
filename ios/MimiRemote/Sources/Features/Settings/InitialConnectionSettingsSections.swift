@@ -210,33 +210,34 @@ struct InitialConnectionSettingsSections: View {
                         .padding(.vertical, 2)
                     }
 #endif
-                    VStack(spacing: 10) {
-                        Button {
-                            beginScanningHost()
-                        } label: {
-                            Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(tokens.primaryAction)
-                        .controlSize(.large)
-                        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                        .accessibilityIdentifier("settings.connection.scanQRCode")
-
-                        Button(action: pasteConnectionInfo) {
-                            Label(
-                                L10n.text("ui.paste_connection_info"),
-                                systemImage: "doc.on.clipboard"
-                            )
+                    // 这一节的 footer 已经写明推荐扫码，布局也要说同一句话：
+                    // 只有扫码保留满宽强调按钮，粘贴与命令行、手动连接同属备选路径，
+                    // 一起降级成列表行，避免两颗等重的大按钮互相抵消主次。
+                    Button {
+                        beginScanningHost()
+                    } label: {
+                        Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
                             .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(tokens.primaryAction)
-                        .controlSize(.large)
-                        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                        .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                        .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tokens.primaryAction)
+                    .controlSize(.large)
+                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+                    .accessibilityIdentifier("settings.connection.scanQRCode")
+
+                    Button(action: pasteConnectionInfo) {
+                        Label(
+                            L10n.text("ui.paste_connection_info"),
+                            systemImage: "doc.on.clipboard"
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .tint(tokens.primaryAction)
+                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+                    .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+                    .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
 
                     advancedConnectionOptions(tokens: tokens)
                 } header: {
