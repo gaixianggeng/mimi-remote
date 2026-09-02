@@ -62,10 +62,10 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote session list on iPhone in light mode" width="58%" />
+      <img src="web/assets/promo-iphone-sessions-current.jpg" alt="Mimi Remote multi-device control promotion on an orange iPhone" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote session list on iPad with the sidebar visible" width="100%" />
+      <img src="web/assets/promo-ipad-sessions-current.jpg" alt="Mimi Remote multi-device control promotion on a silver iPad" width="100%" />
     </td>
   </tr>
 </table>
