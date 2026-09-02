@@ -467,6 +467,8 @@ final class SessionStore: ObservableObject {
     var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     var historySeenPreviousCursorsBySessionID: [SessionID: Set<String>] = [:]
+    /// 已经加载过旧页的会话必须保留当前深层 cursor 和完整消息窗口。
+    var historySessionsWithAdditionalPages: Set<SessionID> = []
     var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]

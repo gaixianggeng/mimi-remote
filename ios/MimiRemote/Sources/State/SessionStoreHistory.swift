@@ -700,6 +700,14 @@ extension SessionStore {
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.parse_historical_messages"), fraction: 0.74)
         }
+        if !conversationStore.hasLoadedHistory(sessionID: sessionID) {
+            // ConversationStore 会独立按 LRU 淘汰正文。正文不存在时，SessionStore 中残留的
+            // 深层 cursor 或 exhausted 状态已经失去对应时间线，必须让新首屏重建分页基线。
+            historySessionsWithAdditionalPages.remove(sessionID)
+            historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
+            historyHasMoreBeforeBySessionID.removeValue(forKey: sessionID)
+            historySeenPreviousCursorsBySessionID.removeValue(forKey: sessionID)
+        }
         applyHistoryFirstPage(result.page, sessionID: sessionID)
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.update_interface"), fraction: 0.94)
@@ -2650,6 +2658,12 @@ extension SessionStore {
     ) {
         recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
         if requestedCursor == nil {
+            if historySessionsWithAdditionalPages.contains(sessionID),
+               historyHasMoreBeforeBySessionID[sessionID] != nil {
+                // 用户已经翻到更深窗口后，首屏刷新只合并最新内容。不能让滑出首屏的
+                // 有效历史消失，也不能用首屏 cursor 覆盖深层或已耗尽的分页状态。
+                return
+            }
             if let cursor = page.previousCursor, page.hasMoreBefore {
                 historyPreviousCursorBySessionID[sessionID] = cursor
                 historyHasMoreBeforeBySessionID[sessionID] = true
@@ -3395,6 +3409,7 @@ extension SessionStore {
         historyPreviousCursorBySessionID = historyPreviousCursorBySessionID.filter { validSessionIDs.contains($0.key) }
         historyHasMoreBeforeBySessionID = historyHasMoreBeforeBySessionID.filter { validSessionIDs.contains($0.key) }
         historySeenPreviousCursorsBySessionID = historySeenPreviousCursorsBySessionID.filter { validSessionIDs.contains($0.key) }
+        historySessionsWithAdditionalPages.formIntersection(validSessionIDs)
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }

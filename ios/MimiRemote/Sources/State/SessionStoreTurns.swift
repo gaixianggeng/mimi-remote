@@ -377,6 +377,7 @@ extension SessionStore {
                 requestedCursor: cursor,
                 preserveExistingCursorOnEmptyPage: false
             )
+            historySessionsWithAdditionalPages.insert(session.id)
             appendHistoryItemEnrichment(page: page, sessionID: session.id)
             setErrorMessage(nil)
         } catch {

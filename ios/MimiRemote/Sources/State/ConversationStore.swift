@@ -324,7 +324,6 @@ final class ConversationStore: ObservableObject {
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         _ = flushPendingAssistantDelta(sessionID: sessionID)
-        let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[scopedSessionID]?.messages.map(\.id) ?? [])
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         for message in converted {
             if let stableID = message.stableID {
@@ -344,11 +343,12 @@ final class ConversationStore: ObservableObject {
             return
         }
 
+        // 首屏是有上限的滑动窗口，缺席只表示滑出窗口，不能解释为服务端删除。
+        // 这里始终合并；已完成 Turn 的权威 Item 集仍会清理确定失效的过程条目。
         let snapshot = mergeHistory(
             converted,
             with: messagesByScopedSessionID[scopedSessionID] ?? [],
             sessionID: sessionID,
-            replacingHistoryProjectionIDs: previousHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
         recordTurnLifecycles(from: snapshot, sessionID: sessionID)
@@ -1568,7 +1568,6 @@ final class ConversationStore: ObservableObject {
         _ history: [ConversationMessage],
         with local: [ConversationMessage],
         sessionID: String,
-        replacingHistoryProjectionIDs: Set<UUID>? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         snapshotOrdering: ConversationTimelineReducer.SnapshotOrdering = .authoritative
     ) -> [ConversationMessage] {
@@ -1578,7 +1577,6 @@ final class ConversationStore: ObservableObject {
         let result = timelineReducer.rebase(
             snapshot: history,
             current: local,
-            replacingHistoryProjectionIDs: replacingHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
             snapshotOrdering: snapshotOrdering
         )

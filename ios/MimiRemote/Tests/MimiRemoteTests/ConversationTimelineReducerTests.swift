@@ -922,4 +922,165 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(final.role, .assistant)
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
+
+    /// 首屏是有上限的滑动窗口。分页 prepend 与条目补齐写入的消息都可能不在下一轮首屏中，
+    /// 重连、回前台或手动刷新不得因此删除它们。
+    func testFirstPageRefreshKeepsEarlierPagePrependedBySetHistory() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-pagination-projection"
+        let firstPage = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "较新的问题", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        let olderPage = [
+            CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
+        ]
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+        store.setHistory(olderPage, sessionID: sessionID, timelineMutationKind: .prepend)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["更早的问题", "较新的问题", "较新的回答"]
+        )
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["更早的问题", "较新的问题", "较新的回答"],
+            "首屏重拉不得删除已翻页的更早历史"
+        )
+    }
+
+    func testFirstPageRefreshKeepsHistoryItemsAddedByEnrichment() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-enrichment-projection"
+        let firstPage = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "看看这张图", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "已生成。", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        // Item 页补齐的条目不属于首屏投影：summary 首屏并不携带它们，
+        // 因此首屏重拉时不能把它们当成过期首屏内容清掉。
+        let enriched = [
+            CodexHistoryMessage(id: "rollout:250", role: "assistant", content: "补齐的中间条目", createdAt: Date(timeIntervalSince1970: 25))
+        ]
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+        store.setHistory(enriched, sessionID: sessionID, timelineMutationKind: .enrichment)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["看看这张图", "补齐的中间条目", "已生成。"]
+        )
+
+        store.replaceHistorySnapshot(firstPage, sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["看看这张图", "补齐的中间条目", "已生成。"],
+            "首屏重拉不得删除条目补齐写入的历史"
+        )
+    }
+
+    func testFirstPageRefreshKeepsSemanticallyAliasedMessageOutsideShiftedWindow() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-semantic-alias-projection"
+        let turnID = "turn-history-semantic-alias-projection"
+        store.completeMessage(
+            AgentMessage(
+                id: "live-final",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "msg-final",
+                role: .assistant,
+                kind: .message,
+                content: "旧首屏回答",
+                createdAt: Date(timeIntervalSince1970: 20),
+                seq: 1,
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "msg-final",
+                messageID: "live-final",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: Date(timeIntervalSince1970: 20)
+            ),
+            fallbackSessionID: sessionID
+        )
+        let retainedLiveID = store.messages(for: sessionID).first?.id
+        let retained = CodexHistoryMessage(
+            id: "rollout:keep",
+            role: "assistant",
+            content: "保留的新首屏回答",
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+        let added = CodexHistoryMessage(
+            id: "rollout:latest",
+            role: "user",
+            content: "刷新后新增的问题",
+            createdAt: Date(timeIntervalSince1970: 40)
+        )
+
+        // legacy thread/read 会把实时 msg_* 重编号为 item-N。Reducer 通过语义别名合并后
+        // 会保留实时消息的 UUID；后续滑动首屏缺少该条目时，也必须保留已经展示的消息。
+        store.replaceHistorySnapshot([
+            CodexHistoryMessage(
+                id: "history-final",
+                role: "assistant",
+                content: "旧首屏回答",
+                createdAt: Date(timeIntervalSince1970: 20),
+                turnID: turnID,
+                itemID: "item-0",
+                timelineOrdinal: 0,
+                turnLifecycle: .completed
+            ),
+            retained
+        ], sessionID: sessionID)
+        XCTAssertEqual(store.messages(for: sessionID).first?.id, retainedLiveID)
+
+        store.replaceHistorySnapshot([retained, added], sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["旧首屏回答", "保留的新首屏回答", "刷新后新增的问题"],
+            "有上限的首屏窗口前移时，缺席不能被解释为删除"
+        )
+    }
+
+    func testEmptyFirstPageDoesNotClearBoundedHistory() {
+        let store = ConversationStore()
+        let sessionID = "thread-history-empty-first-page-projection"
+        let retained = CodexHistoryMessage(
+            id: "rollout:keep",
+            role: "assistant",
+            content: "保留的新首屏回答",
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+
+        store.replaceHistorySnapshot([
+            CodexHistoryMessage(
+                id: "rollout:stale",
+                role: "assistant",
+                content: "已经离开首屏的旧回答",
+                createdAt: Date(timeIntervalSince1970: 20)
+            ),
+            retained
+        ], sessionID: sessionID)
+        store.replaceHistorySnapshot([], sessionID: sessionID)
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["已经离开首屏的旧回答", "保留的新首屏回答"]
+        )
+
+        store.replaceHistorySnapshot([retained], sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["已经离开首屏的旧回答", "保留的新首屏回答"]
+        )
+    }
 }

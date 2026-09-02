@@ -26,7 +26,6 @@ struct ConversationTimelineReducer {
     func rebase(
         snapshot rawSnapshot: [ConversationMessage],
         current: [ConversationMessage],
-        replacingHistoryProjectionIDs: Set<UUID>? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         snapshotOrdering: SnapshotOrdering = .authoritative
     ) -> RebaseResult {
@@ -133,9 +132,6 @@ struct ConversationTimelineReducer {
                 }
                 continue
             }
-            if replacingHistoryProjectionIDs?.contains(existing.id) == true {
-                continue
-            }
             if shouldPruneProjectedProcess(existing, authoritativeCompletedTurnItems: authoritativeCompletedTurnItems) {
                 continue
             }
@@ -153,7 +149,6 @@ struct ConversationTimelineReducer {
                 stableIDAliases[stableID] = message.id
             }
         }
-
         guard nodes.count > 1 else {
             return RebaseResult(
                 messages: nodes.map(\.message),
