@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -15,6 +16,10 @@ private enum TailcatRelayMode: String, CaseIterable, Identifiable {
     }
 }
 
+private enum ExperimentInputField: Hashable {
+    case derpMapURL
+}
+
 /// 实验功能只承载可独立启停、失败时不影响主连接的通道。
 struct ExperimentsView: View {
     let store: HostStore
@@ -24,6 +29,7 @@ struct ExperimentsView: View {
     @State private var confirmsRelayChange = false
     @State private var relayMode: TailcatRelayMode = .tailcatDefault
     @State private var customDERPMapURL = ""
+    @FocusState private var focusedInputField: ExperimentInputField?
 
     var body: some View {
         Form {
@@ -89,9 +95,10 @@ struct ExperimentsView: View {
                     TextField(
                         "DERP Map HTTPS 地址",
                         text: $customDERPMapURL,
-                        prompt: Text("https://relay.example/derpmap/default")
+                        prompt: Text("粘贴完整的 HTTPS 地址")
                     )
                     .textFieldStyle(.roundedBorder)
+                    .focused($focusedInputField, equals: .derpMapURL)
 
                     if let relayValidationMessage {
                         Text(relayValidationMessage)
@@ -151,9 +158,14 @@ struct ExperimentsView: View {
         .formStyle(.grouped)
         .scenePadding()
         .frame(width: 520, height: 720)
+        .background(ExperimentWindowActivationGuard())
         .task {
             await store.refreshTailcatStatus()
             syncRelayConfiguration()
+            focusDERPMapInputIfNeeded()
+        }
+        .onChange(of: relayMode) { _, _ in
+            focusDERPMapInputIfNeeded()
         }
         .onChange(of: store.tailcatDERPMapURL) { _, _ in
             syncRelayConfiguration()
@@ -222,6 +234,42 @@ struct ExperimentsView: View {
         relayMode = configuredURL.isEmpty ? .tailcatDefault : .custom
         if !configuredURL.isEmpty {
             customDERPMapURL = configuredURL
+        }
+    }
+
+    private func focusDERPMapInputIfNeeded() {
+        guard relayMode == .custom else {
+            focusedInputField = nil
+            return
+        }
+        // 菜单栏 App 的独立窗口出现后，再把键盘焦点交给输入框，避免焦点留在 MenuBarExtra。
+        DispatchQueue.main.async {
+            focusedInputField = .derpMapURL
+        }
+    }
+}
+
+/// LSUIElement 创建 SwiftUI Window 时不一定自动成为 key window；在内容真正挂载后再激活。
+private struct ExperimentWindowActivationGuard: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        ExperimentWindowProbeView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class ExperimentWindowProbeView: NSView {
+    private weak var activatedWindow: NSWindow?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window, activatedWindow !== window else { return }
+        activatedWindow = window
+
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
         }
     }
 }
