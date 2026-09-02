@@ -2623,6 +2623,7 @@ extension SessionStore {
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
         historySeenPreviousCursorsBySessionID = [:]
+        historySessionsWithAdditionalPages = []
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }

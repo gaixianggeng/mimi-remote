@@ -923,9 +923,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
 
-    /// 首屏刷新只能替换“上一轮首屏投影”。分页 prepend 与条目补齐同样会走
-    /// projectedHistoryMessages，若它们污染了首屏投影记录，重连/回前台的首屏重拉会把
-    /// 用户翻上来的更早历史整段删掉，界面表现为内容突然缩短并跳位。
+    /// 首屏是有上限的滑动窗口。分页 prepend 与条目补齐写入的消息都可能不在下一轮首屏中，
+    /// 重连、回前台或手动刷新不得因此删除它们。
     func testFirstPageRefreshKeepsEarlierPagePrependedBySetHistory() {
         let store = ConversationStore()
         let sessionID = "thread-history-pagination-projection"
@@ -982,7 +981,7 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testFirstPageRefreshTracksUUIDRetainedBySemanticAlias() {
+    func testFirstPageRefreshKeepsSemanticallyAliasedMessageOutsideShiftedWindow() {
         let store = ConversationStore()
         let sessionID = "thread-history-semantic-alias-projection"
         let turnID = "turn-history-semantic-alias-projection"
@@ -1019,9 +1018,15 @@ extension ConversationDataFlowTests {
             content: "保留的新首屏回答",
             createdAt: Date(timeIntervalSince1970: 30)
         )
+        let added = CodexHistoryMessage(
+            id: "rollout:latest",
+            role: "user",
+            content: "刷新后新增的问题",
+            createdAt: Date(timeIntervalSince1970: 40)
+        )
 
-        // legacy thread/read 会把实时 msg_* 重编号为 item-N。Reducer 通过语义别名合并时
-        // 保留实时消息的 UUID，首屏基线必须记录这个最终 UUID，而不是投影阶段的临时 UUID。
+        // legacy thread/read 会把实时 msg_* 重编号为 item-N。Reducer 通过语义别名合并后
+        // 会保留实时消息的 UUID；后续滑动首屏缺少该条目时，也必须保留已经展示的消息。
         store.replaceHistorySnapshot([
             CodexHistoryMessage(
                 id: "history-final",
@@ -1037,12 +1042,16 @@ extension ConversationDataFlowTests {
         ], sessionID: sessionID)
         XCTAssertEqual(store.messages(for: sessionID).first?.id, retainedLiveID)
 
-        store.replaceHistorySnapshot([retained], sessionID: sessionID)
+        store.replaceHistorySnapshot([retained, added], sessionID: sessionID)
 
-        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["保留的新首屏回答"])
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["旧首屏回答", "保留的新首屏回答", "刷新后新增的问题"],
+            "有上限的首屏窗口前移时，缺席不能被解释为删除"
+        )
     }
 
-    func testIgnoredEmptyFirstPageKeepsLastValidProjectionBaseline() {
+    func testEmptyFirstPageDoesNotClearBoundedHistory() {
         let store = ConversationStore()
         let sessionID = "thread-history-empty-first-page-projection"
         let retained = CodexHistoryMessage(
@@ -1069,6 +1078,9 @@ extension ConversationDataFlowTests {
 
         store.replaceHistorySnapshot([retained], sessionID: sessionID)
 
-        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["保留的新首屏回答"])
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["已经离开首屏的旧回答", "保留的新首屏回答"]
+        )
     }
 }

@@ -34,12 +34,6 @@ final class ConversationStore: ObservableObject {
     private var messageIndexByClientMessageIDBySessionID: [ScopedSessionID: [ClientMessageID: Int]] = [:]
     private var messageIndexByUUIDBySessionID: [ScopedSessionID: [UUID: Int]] = [:]
     private var historyProjectionCacheBySessionID: [ScopedSessionID: HistoryProjectionCache] = [:]
-    // 上一轮 canonical 首屏历史投影的 UUID。replaceHistorySnapshot 用它判断“旧首屏里
-    // 这轮不再出现的消息”应当被替换掉，因此只能由首屏自己写入。
-    // 不能复用 historyProjectionCacheBySessionID：分页 prepend 与条目补齐同样走
-    // projectedHistoryMessages 并覆写那份投影复用缓存，共用会让翻上来的更早历史和已补齐的
-    // 媒体条目在下一次首屏刷新时被误判成过期首屏投影而整段删除。
-    private var historyFirstPageProjectionIDsBySessionID: [ScopedSessionID: Set<UUID>] = [:]
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
     private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
@@ -302,7 +296,7 @@ final class ConversationStore: ObservableObject {
             sessionID: sessionID,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
             snapshotOrdering: timelineMutationKind == .enrichment ? .incrementalFragments : .authoritative
-        ).messages
+        )
         recordTurnLifecycles(from: merged, sessionID: sessionID)
         if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, merged) {
             loadedHistorySessionIDs.insert(scopedSessionID)
@@ -330,7 +324,6 @@ final class ConversationStore: ObservableObject {
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         _ = flushPendingAssistantDelta(sessionID: sessionID)
-        let previousHistoryProjectionIDs = historyFirstPageProjectionIDsBySessionID[scopedSessionID] ?? []
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         for message in converted {
             if let stableID = message.stableID {
@@ -350,15 +343,14 @@ final class ConversationStore: ObservableObject {
             return
         }
 
-        let rebase = mergeHistory(
+        // 首屏是有上限的滑动窗口，缺席只表示滑出窗口，不能解释为服务端删除。
+        // 这里始终合并；已完成 Turn 的权威 Item 集仍会清理确定失效的过程条目。
+        let snapshot = mergeHistory(
             converted,
             with: messagesByScopedSessionID[scopedSessionID] ?? [],
             sessionID: sessionID,
-            replacingHistoryProjectionIDs: previousHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
-        let snapshot = rebase.messages
-        historyFirstPageProjectionIDsBySessionID[scopedSessionID] = rebase.snapshotMessageIDs
         recordTurnLifecycles(from: snapshot, sessionID: sessionID)
         if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, snapshot) {
             loadedHistorySessionIDs.insert(scopedSessionID)
@@ -1413,7 +1405,6 @@ final class ConversationStore: ObservableObject {
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
         messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
         historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
-        historyFirstPageProjectionIDsBySessionID.removeValue(forKey: scopedSessionID)
         historyTimelineMutationBySessionID.removeValue(forKey: scopedSessionID)
         pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
@@ -1577,17 +1568,15 @@ final class ConversationStore: ObservableObject {
         _ history: [ConversationMessage],
         with local: [ConversationMessage],
         sessionID: String,
-        replacingHistoryProjectionIDs: Set<UUID>? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         snapshotOrdering: ConversationTimelineReducer.SnapshotOrdering = .authoritative
-    ) -> ConversationTimelineReducer.RebaseResult {
+    ) -> [ConversationMessage] {
 #if DEBUG
         historyMergeInvocationCountForTesting += 1
 #endif
         let result = timelineReducer.rebase(
             snapshot: history,
             current: local,
-            replacingHistoryProjectionIDs: replacingHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems,
             snapshotOrdering: snapshotOrdering
         )
@@ -1600,7 +1589,7 @@ final class ConversationStore: ObservableObject {
             print("[ConversationTimeline] ambiguousAliases=\(result.ambiguousAliasCount) orderingCycle=\(result.hadOrderingCycle)")
         }
 #endif
-        return result
+        return result.messages
     }
 
     private func projectedHistoryMessages(_ history: [CodexHistoryMessage], sessionID: String) -> [ConversationMessage] {

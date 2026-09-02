@@ -2650,6 +2650,12 @@ extension SessionStore {
     ) {
         recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
         if requestedCursor == nil {
+            if historySessionsWithAdditionalPages.contains(sessionID),
+               historyHasMoreBeforeBySessionID[sessionID] != nil {
+                // 用户已经翻到更深窗口后，首屏刷新只合并最新内容。不能让滑出首屏的
+                // 有效历史消失，也不能用首屏 cursor 覆盖深层或已耗尽的分页状态。
+                return
+            }
             if let cursor = page.previousCursor, page.hasMoreBefore {
                 historyPreviousCursorBySessionID[sessionID] = cursor
                 historyHasMoreBeforeBySessionID[sessionID] = true
@@ -3395,6 +3401,7 @@ extension SessionStore {
         historyPreviousCursorBySessionID = historyPreviousCursorBySessionID.filter { validSessionIDs.contains($0.key) }
         historyHasMoreBeforeBySessionID = historyHasMoreBeforeBySessionID.filter { validSessionIDs.contains($0.key) }
         historySeenPreviousCursorsBySessionID = historySeenPreviousCursorsBySessionID.filter { validSessionIDs.contains($0.key) }
+        historySessionsWithAdditionalPages.formIntersection(validSessionIDs)
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }

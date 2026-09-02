@@ -4770,9 +4770,9 @@ extension ConversationDataFlowTests {
         let older = [
             CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
         ]
-        let client = MockSessionStoreClient(
+        let client = MutableSessionPageClient(
             projects: [project],
-            sessions: [history],
+            page: SessionsPage(sessions: [history]),
             historyPages: [
                 history.id: HistoryMessagesPage(messages: newer, previousCursor: "older_cursor", hasMoreBefore: true)
             ],
@@ -4792,14 +4792,30 @@ extension ConversationDataFlowTests {
         await store.selectSession(history)
         await store.loadEarlierHistoryForSelectedSession()
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["更早的问题", "较新的问题", "较新的回答"])
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id))
+
+        client.historyPages[history.id] = HistoryMessagesPage(
+            messages: [
+                newer[1],
+                CodexHistoryMessage(
+                    id: "rollout:400",
+                    role: "user",
+                    content: "刷新后新增的问题",
+                    createdAt: Date(timeIntervalSince1970: 40)
+                )
+            ],
+            previousCursor: "shifted_older_cursor",
+            hasMoreBefore: true
+        )
 
         _ = await store.loadHistory(for: history, quiet: true, force: true)
 
         XCTAssertEqual(
             conversationStore.messages(for: history.id).map(\.content),
-            ["更早的问题", "较新的问题", "较新的回答"],
-            "强制重拉首屏不得删除已翻页的更早历史"
+            ["更早的问题", "较新的问题", "较新的回答", "刷新后新增的问题"],
+            "首屏窗口前移时不得删除已经显示的有效历史"
         )
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id), "已耗尽的分页入口不得被首屏 cursor 重新激活")
     }
 
 
