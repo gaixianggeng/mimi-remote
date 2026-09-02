@@ -20,6 +20,8 @@ struct RootView: View {
     @State private var workbenchRouteRevision: UInt64 = 0
     @State private var pendingNotificationRouteRevision: UInt64?
     @State private var activeRestorationProfileID: String?
+    @State private var needsTailcatRecoveryAfterBackground = false
+    @State private var foregroundResumeTask: Task<Void, Never>?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -126,7 +128,10 @@ struct RootView: View {
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
         }
         .onChange(of: scenePhase) { _, phase in
+            foregroundResumeTask?.cancel()
+            foregroundResumeTask = nil
             if phase == .background {
+                needsTailcatRecoveryAfterBackground = true
                 persistActiveHostRestoration()
                 hostStatusStore.cancel()
                 sessionStore.suspendForBackground()
@@ -136,9 +141,19 @@ struct RootView: View {
             guard phase == .active else {
                 return
             }
-            Task {
+            let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
+            foregroundResumeTask = Task {
                 do {
                     try await appStore.restoreCredentialsForForeground()
+                    try Task.checkCancellation()
+                    if shouldRecoverTailcat {
+                        let tailcatReady = await tailcatExperimentController
+                            .recoverRouteFromForeground(appStore: appStore)
+                        guard tailcatReady else { return }
+                        try Task.checkCancellation()
+                        needsTailcatRecoveryAfterBackground = false
+                    }
+                    try Task.checkCancellation()
                     await sessionStore.resumeFromForeground()
                 } catch is CancellationError {
                     // 后台/前台快速抖动或同时切换主机时由最新生命周期操作接管。

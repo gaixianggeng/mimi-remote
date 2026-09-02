@@ -41,7 +41,7 @@ struct TailcatPathDiagnostic: Codable, Equatable, Identifiable {
     }
 }
 
-struct TailcatDiscoPingPayload: Decodable {
+struct TailcatDiscoPingPayload: Decodable, Sendable {
     let path: String
     let latencyMillis: Int
     let derpRegionCode: String?
@@ -53,16 +53,40 @@ struct TailcatDiscoPingPayload: Decodable {
     }
 }
 
-actor TailcatExperimentRuntime {
+protocol TailcatExperimentRuntimeProtocol: Actor {
+    func start(address: String, privateKey: String) async throws -> String
+    func discoPing() throws -> TailcatDiscoPingPayload
+    func stop() throws
+    func stop(ifCurrentEndpoint endpoint: String) throws
+}
+
+struct TailcatExperimentBridgeAdapter {
+    let isAvailable: Bool
+    let generatePrivateKey: () throws -> String
+    let publicKey: (String) throws -> String
+
+    static let live = TailcatExperimentBridgeAdapter(
+        isAvailable: MimiTailcatBridge.isAvailable,
+        generatePrivateKey: { try MimiTailcatBridge.generatePrivateKey() },
+        publicKey: { try MimiTailcatBridge.publicKey(privateKey: $0) }
+    )
+}
+
+actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
     private var proxy: MimiTailcatProxy?
 
-    func start(address: String, privateKey: String) throws -> String {
+    func start(address: String, privateKey: String) async throws -> String {
+        try Task.checkCancellation()
         try stop()
         let nextProxy = try MimiTailcatBridge.startProxy(
             address: address,
             privateKey: privateKey,
             remotePort: 8787
         )
+        guard !Task.isCancelled else {
+            try? nextProxy.close()
+            throw CancellationError()
+        }
         let endpoint = nextProxy.localEndpoint
         guard !endpoint.isEmpty else {
             try? nextProxy.close()
@@ -82,6 +106,11 @@ actor TailcatExperimentRuntime {
         guard let proxy else { return }
         self.proxy = nil
         try proxy.close()
+    }
+
+    func stop(ifCurrentEndpoint endpoint: String) throws {
+        guard proxy?.localEndpoint == endpoint else { return }
+        try stop()
     }
 }
 
@@ -104,15 +133,26 @@ final class TailcatExperimentController: ObservableObject {
         let previousAddress: String
     }
 
+    private struct RoutePreparation {
+        let id: UUID
+        let task: Task<Result<String, Error>, Never>
+    }
+
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
-    private let runtime = TailcatExperimentRuntime()
+    private let runtime: any TailcatExperimentRuntimeProtocol
+    private let bridge: TailcatExperimentBridgeAdapter
     private var generation: UInt64 = 0
-    private var preparationTask: Task<Result<String, Error>, Never>?
+    private var preparationTask: RoutePreparation?
     private var pendingPairing: PendingPairing?
 
-    init(defaults: UserDefaults = .standard, tokenStore: TokenStore = TokenStore()) {
-        let available = MimiTailcatBridge.isAvailable
+    init(
+        defaults: UserDefaults = .standard,
+        tokenStore: TokenStore = TokenStore(),
+        runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime(),
+        bridge: TailcatExperimentBridgeAdapter = .live
+    ) {
+        let available = bridge.isAvailable
         let savedEnabled = defaults.bool(forKey: Self.enabledKey)
         var savedAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
         if savedAddress.isEmpty,
@@ -126,6 +166,8 @@ final class TailcatExperimentController: ObservableObject {
         let initialEnabled = savedEnabled && available
         self.defaults = defaults
         self.tokenStore = tokenStore
+        self.runtime = runtime
+        self.bridge = bridge
         address = savedAddress
         diagnostics = Self.loadDiagnostics(defaults: defaults)
         isEnabled = initialEnabled
@@ -143,14 +185,14 @@ final class TailcatExperimentController: ObservableObject {
         }
     }
 
-    var isAvailable: Bool { MimiTailcatBridge.isAvailable }
+    var isAvailable: Bool { bridge.isAvailable }
     var lastDiagnostic: TailcatPathDiagnostic? { diagnostics.first }
 
     func loadPublicKey() {
         guard isAvailable, publicKey.isEmpty else { return }
         do {
             let privateKey = try loadOrCreatePrivateKey()
-            publicKey = try MimiTailcatBridge.publicKey(privateKey: privateKey)
+            publicKey = try bridge.publicKey(privateKey)
         } catch {
             state = .failed(message: error.localizedDescription)
         }
@@ -177,7 +219,7 @@ final class TailcatExperimentController: ObservableObject {
             isEnabled = false
             defaults.set(false, forKey: Self.enabledKey)
             pendingPairing = nil
-            preparationTask?.cancel()
+            preparationTask?.task.cancel()
             preparationTask = nil
             try? await runtime.stop()
             appStore.setTailcatExperimentModeEnabled(false)
@@ -201,6 +243,28 @@ final class TailcatExperimentController: ObservableObject {
 
     @discardableResult
     func prepareRoute(appStore: AppStore) async -> Bool {
+        await prepareRoute(appStore: appStore, forceRestart: false)
+    }
+
+    /// iOS 锁屏会挂起 Tailcat 的 DERP/WireGuard 状态，但旧 proxy 仍可能保留本地 listener。
+    /// 真正经历后台后创建全新 Client，确保重新握手，再让 REST/WebSocket 恢复。
+    @discardableResult
+    func recoverRouteFromForeground(appStore: AppStore) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard isEnabled else { return true }
+        if let inFlightPreparation = preparationTask {
+            _ = await inFlightPreparation.task.value
+            if preparationTask?.id == inFlightPreparation.id {
+                preparationTask = nil
+            }
+        }
+        guard !Task.isCancelled else { return false }
+        generation &+= 1
+        appStore.setTailcatExperimentEndpoint(nil)
+        return await prepareRoute(appStore: appStore, forceRestart: true)
+    }
+
+    private func prepareRoute(appStore: AppStore, forceRestart: Bool) async -> Bool {
         appStore.setTailcatExperimentModeEnabled(isEnabled)
         guard isAvailable else {
             state = .unavailable
@@ -216,21 +280,23 @@ final class TailcatExperimentController: ObservableObject {
             state = .needsAddress
             return false
         }
-        if case .connected(let endpoint) = state,
+        if !forceRestart,
+           case .connected(let endpoint) = state,
            appStore.tailcatExperimentEndpoint == endpoint {
             return true
         }
 
         let capturedGeneration = generation
         state = .starting
+        var preparationID: UUID?
         do {
             let privateKey = try loadOrCreatePrivateKey()
-            publicKey = try MimiTailcatBridge.publicKey(privateKey: privateKey)
-            let task: Task<Result<String, Error>, Never>
+            publicKey = try bridge.publicKey(privateKey)
+            let preparation: RoutePreparation
             if let preparationTask {
-                task = preparationTask
+                preparation = preparationTask
             } else {
-                task = Task {
+                let task = Task<Result<String, Error>, Never> {
                     do {
                         return .success(try await runtime.start(
                             address: capturedAddress,
@@ -240,12 +306,20 @@ final class TailcatExperimentController: ObservableObject {
                         return .failure(error)
                     }
                 }
-                preparationTask = task
+                preparation = RoutePreparation(id: UUID(), task: task)
+                preparationTask = preparation
             }
-            let endpoint = try await task.value.get()
-            preparationTask = nil
-            guard capturedGeneration == generation, isEnabled, capturedAddress == address else {
-                try? await runtime.stop()
+            preparationID = preparation.id
+            let result = await preparation.task.value
+            if preparationTask?.id == preparation.id {
+                preparationTask = nil
+            }
+            let endpoint = try result.get()
+            guard !Task.isCancelled,
+                  capturedGeneration == generation,
+                  isEnabled,
+                  capturedAddress == address else {
+                try? await runtime.stop(ifCurrentEndpoint: endpoint)
                 return false
             }
             appStore.setTailcatExperimentEndpoint(endpoint)
@@ -253,7 +327,10 @@ final class TailcatExperimentController: ObservableObject {
             Task { await refreshPathDiagnostic(appStore: appStore) }
             return true
         } catch {
-            preparationTask = nil
+            if let preparationID, preparationTask?.id == preparationID {
+                preparationTask = nil
+            }
+            guard !Task.isCancelled, capturedGeneration == generation else { return false }
             appStore.setTailcatExperimentEndpoint(nil)
             state = .failed(message: error.localizedDescription)
             return false
@@ -277,7 +354,7 @@ final class TailcatExperimentController: ObservableObject {
         generation &+= 1
         do {
             let privateKey = try loadOrCreatePrivateKey()
-            let clientKey = try MimiTailcatBridge.publicKey(privateKey: privateKey)
+            let clientKey = try bridge.publicKey(privateKey)
             publicKey = clientKey
             let pairingEndpoint = try await runtime.start(
                 address: link.pairAddress,
@@ -441,7 +518,7 @@ final class TailcatExperimentController: ObservableObject {
     private func loadOrCreatePrivateKey() throws -> String {
         let saved = try tokenStore.loadTailcatExperimentPrivateKey()
         if !saved.isEmpty { return saved }
-        let privateKey = try MimiTailcatBridge.generatePrivateKey()
+        let privateKey = try bridge.generatePrivateKey()
         try tokenStore.saveTailcatExperimentPrivateKey(privateKey)
         return privateKey
     }
