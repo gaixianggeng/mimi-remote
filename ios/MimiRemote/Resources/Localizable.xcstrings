@@ -39182,6 +39182,20 @@
         }
       }
     },
+    "ui.connection_speed_test_route_tailcat": {
+      "comment": "Tailcat route label in the unified connection speed test.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat" } }
+      }
+    },
+    "ui.connection_speed_test_route_tailscale": {
+      "comment": "Tailscale route label in the unified connection speed test.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailscale" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailscale" } }
+      }
+    },
     "ui.tailcat_experiment": {
       "comment": "Name of the opt-in Tailcat transport experiment.",
       "localizations": {

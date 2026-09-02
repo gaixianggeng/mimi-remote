@@ -16,8 +16,8 @@ struct ConnectionSpeedTestView: View {
         Form {
             Section(L10n.text("ui.connection_method")) {
                 Picker(L10n.text("ui.connection_method"), selection: $selectedRoute) {
-                    Text("Tailscale").tag(ConnectionTestRoute.tailscale)
-                    Text("Tailcat").tag(ConnectionTestRoute.tailcat)
+                    Text(ConnectionTestRoute.tailscale.title).tag(ConnectionTestRoute.tailscale)
+                    Text(ConnectionTestRoute.tailcat.title).tag(ConnectionTestRoute.tailcat)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -451,9 +451,9 @@ private extension ConnectionTestRoute {
     var title: String {
         switch self {
         case .tailscale:
-            return "Tailscale"
+            return L10n.text("ui.connection_speed_test_route_tailscale")
         case .tailcat:
-            return "Tailcat"
+            return L10n.text("ui.connection_speed_test_route_tailcat")
         }
     }
 
