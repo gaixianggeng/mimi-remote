@@ -106,6 +106,31 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.20:8787")
     }
 
+    func testTailcatPreparationValidatesLoopbackRouteButKeepsCanonicalEndpoint() async throws {
+        let suiteName = "TailscaleStableHostnameTests.TailcatRoute.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in await recorder.record(endpoint) }
+        )
+
+        let prepared = try await store.prepareRoutedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            activeEndpoint: "http://127.0.0.1:28787",
+            token: "tailcat-token",
+            profileTarget: .currentOrNew(displayName: nil)
+        )
+
+        let probedEndpoints = await recorder.endpoints()
+        XCTAssertEqual(probedEndpoints, ["http://127.0.0.1:28787"])
+        XCTAssertEqual(prepared.endpoint, "http://100.64.0.20:8787")
+        XCTAssertEqual(prepared.activeEndpoint, "http://127.0.0.1:28787")
+    }
+
     func testMetadataRefreshRequiresStableIdentityAndPreservesCustomName() throws {
         let suiteName = "TailscaleStableHostnameTests.MetadataRefresh.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

@@ -492,7 +492,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(bottomScreenshot)
     }
 
-    func testExperimentalFeaturesGuideExplainsMacSetup() throws {
+    func testExperimentalFeaturesExposeTailcatModeToggle() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
 
@@ -511,12 +511,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(
             app.descendant(identifier: "settings.experimentalFeatures.detail")
                 .waitForExistence(timeout: 5),
-            "实验功能入口应进入 Mac 端开启引导"
+            "实验功能入口应进入 Tailcat 实验设置"
         )
-        let finalStep = app.descendant(identifier: "settings.experimentalFeatures.step.5")
+        let modeToggle = app.descendant(identifier: "settings.experimentalFeatures.tailcatToggle")
         XCTAssertTrue(
-            scrollUntilHittable(finalStep, maximumSwipes: 4),
-            "实验功能引导应完整展示重启和跨端验证步骤"
+            scrollUntilHittable(modeToggle, maximumSwipes: 4),
+            "实验功能页应提供明确的 Tailcat 模式开关"
         )
     }
 

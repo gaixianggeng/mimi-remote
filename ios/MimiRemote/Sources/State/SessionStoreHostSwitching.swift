@@ -108,14 +108,33 @@ extension SessionStore {
     @discardableResult
     func applyPairingURL(_ url: URL) async throws -> Bool {
         try await performPreparedConnectionChange {
-            try await self.appStore.preparePairingURL(url)
+            if let controller = self.tailcatExperimentController,
+               try TailcatPairingLink.parse(url) != nil {
+                return try await controller.preparePairingURL(
+                    url,
+                    appStore: self.appStore,
+                    profileTarget: .currentOrNew(displayName: nil)
+                )
+            }
+            return try await self.appStore.preparePairingURL(url)
         }
     }
 
     @discardableResult
     func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
         try await performPreparedConnectionChange {
-            try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
+            if let controller = self.tailcatExperimentController,
+               try TailcatPairingLink.parse(url) != nil {
+                return try await controller.preparePairingURL(
+                    url,
+                    appStore: self.appStore,
+                    profileTarget: .newProfile(
+                        id: UUID().uuidString,
+                        displayName: displayName
+                    )
+                )
+            }
+            return try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
         }
     }
 
@@ -159,12 +178,17 @@ extension SessionStore {
                 throw CancellationError()
             }
             let committed = try await commitPreparedConnection(prepared)
+            tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
             return committed
         } catch {
             if let preparedCandidate {
                 await preparedCandidate.hostContext?.discard()
             }
+            await tailcatExperimentController?.discardPreparedRouteIfNeeded(
+                preparedCandidate,
+                appStore: appStore
+            )
             // 失败时恢复验证前的展示状态，但若等待期间旧 WS 已进入鉴权终态，必须保留
             // 新终态；否则一次失败的切换会把“访问码已失效”错误覆盖回已连接。
             if connectionTermination == previousSessionTermination,

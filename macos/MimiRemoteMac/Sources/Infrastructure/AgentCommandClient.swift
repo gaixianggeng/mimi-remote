@@ -12,6 +12,15 @@ struct AgentCommandClient: Sendable {
     ) async throws -> ClaudeConfigurationResult
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
+    var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+    }
+    var setTailcatEnabled: @Sendable (_ enabled: Bool) async throws -> TailcatStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+    }
+    var resetTailcat: @Sendable () async throws -> TailcatStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+    }
     var version: @Sendable () async throws -> String
 }
 
@@ -138,12 +147,32 @@ extension AgentCommandClient {
                 let binary = try requireEmbeddedBinary()
                 return try decode(PairingInfo.self, from: try await execute(
                     binary: binary,
-                    arguments: [
-                        "pair",
-                        "--network", network.rawValue,
-                        "--json",
-                        "--qr-only",
-                    ]
+                    arguments: pairArguments(network: network),
+                    timeout: network == .tailcat ? .seconds(25) : .seconds(15)
+                ))
+            },
+            tailcatStatus: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: "status"),
+                    timeout: .seconds(8)
+                ))
+            },
+            setTailcatEnabled: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: enabled ? "enable" : "disable"),
+                    timeout: .seconds(25)
+                ))
+            },
+            resetTailcat: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: "reset"),
+                    timeout: .seconds(15)
                 ))
             },
             version: {
@@ -185,6 +214,22 @@ extension AgentCommandClient {
             arguments.append("--restore-enabled=\(restoreEnabled)")
         }
         return arguments
+    }
+
+    static func pairArguments(network: PairingNetwork) -> [String] {
+        if network == .tailcat {
+            return ["tailcat", "pair", "--json", "--qr-only"]
+        }
+        return [
+            "pair",
+            "--network", network.rawValue,
+            "--json",
+            "--qr-only",
+        ]
+    }
+
+    static func tailcatArguments(action: String) -> [String] {
+        ["tailcat", action, "--json"]
     }
 
 }

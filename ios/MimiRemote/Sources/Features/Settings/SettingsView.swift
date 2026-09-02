@@ -86,6 +86,7 @@ struct SettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
 
     let isInitialSetup: Bool
     var showsDoneButton = true
@@ -299,6 +300,20 @@ struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    TailcatExperimentSettingsView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.experimental_features"),
+                        value: tailcatExperimentController.isEnabled
+                            ? L10n.text("ui.tailcat_experiment_enabled")
+                            : L10n.text("ui.tailcat_experiment_disabled"),
+                        systemImage: "flask"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.experimentalFeatures")
+
                 NavigationLink {
                     AppearanceView(profileID: appStore.activeHostScope.profileID)
                 } label: {

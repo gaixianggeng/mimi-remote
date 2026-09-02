@@ -40,6 +40,7 @@ xcuserdata/
 *.xcodeproj/xcuserdata/
 ios/MimiRemote/build/
 ios/MimiRemote/build-test/
+ios/MimiRemote/Generated/TailcatMobile.xcframework/
 
 # 本机设计草稿；不是构建或发布所需文件。
 docs/ios-markdown-rendering-design.md

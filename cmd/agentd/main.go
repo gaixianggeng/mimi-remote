@@ -81,6 +81,8 @@ func run(args []string) error {
 		return runLogs(args)
 	case "pair":
 		return runPair(args)
+	case "tailcat":
+		return runTailcat(args)
 	case "network":
 		return runNetwork(args)
 	case "runtime":
@@ -90,7 +92,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、runtime、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、serve、doctor、version", cmd)
 	}
 }
 

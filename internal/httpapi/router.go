@@ -28,6 +28,7 @@ import (
 
 type Router struct {
 	cfg            config.Config
+	configPath     string
 	projects       *projects.Registry
 	sessions       *session.Manager
 	doctor         *doctor.Checker
@@ -89,6 +90,8 @@ type Router struct {
 	claudeProbe                   appServerBridgeProbe
 	activeClaudeBridge            int
 	claudeBridge                  *claudeBridgeSupervisor
+	tailcat                       tailcatSidecar
+	tailcatLocalToken             string
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -107,6 +110,9 @@ type Router struct {
 type RouterOptions struct {
 	ConfigPath   string
 	AppServerSSH appServerSSHTransport
+	tailcat      tailcatSidecar
+	// tailcatLocalToken 只供同包测试注入；生产值来自配置目录中的 0600 文件。
+	tailcatLocalToken string
 }
 
 type appServerSSHTransport interface {
@@ -156,8 +162,17 @@ func NewRouterWithInstallationIDAndOptions(
 	options RouterOptions,
 ) (http.Handler, *Router) {
 	fileUploads := newFileUploadStore(defaultFileUploadRoot())
+	tailcat := options.tailcat
+	if tailcat == nil {
+		tailcat = newTailcatSidecarSupervisor(cfg, options.ConfigPath)
+	}
+	tailcatLocalToken := strings.TrimSpace(options.tailcatLocalToken)
+	if tailcatLocalToken == "" {
+		tailcatLocalToken, _ = ReadTailcatLocalControlToken(options.ConfigPath)
+	}
 	r := &Router{
 		cfg:            cfg,
+		configPath:     options.ConfigPath,
 		projects:       registry,
 		sessions:       manager,
 		doctor:         checker,
@@ -182,7 +197,16 @@ func NewRouterWithInstallationIDAndOptions(
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
+		tailcat:                     tailcat,
+		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
+	}
+	if cfg.Tailcat.Enabled {
+		go func() {
+			if err := r.tailcat.Start(context.Background()); err != nil {
+				log.Printf("tailcat sidecar start failed: %v", err)
+			}
+		}()
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
@@ -207,6 +231,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/doctor", authed(http.HandlerFunc(r.doctorHandler)))
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
+	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
 	if cfg.Debug.EnableCodexHistory {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
@@ -266,6 +291,9 @@ func (r *Router) Shutdown() {
 	}
 	r.runtimeStatus.Close()
 	r.claudeBridge.shutdown()
+	if r.tailcat != nil {
+		r.tailcat.Close()
+	}
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {

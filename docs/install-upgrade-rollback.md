@@ -2,7 +2,7 @@
 
 ## 目标
 
-让个人开发者在 Windows、Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
+让个人开发者在 macOS、Windows 或 Linux 电脑上启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
 
 ## 方案
 
@@ -29,7 +29,7 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 摘要必须与 `.sha256` 一致。元数据为 `authenticode-pfx` 时，签名状态必须为 `Valid`；元数据为 `unsigned-release` 时，状态应为 `NotSigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。
 
-安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它注册名为 `Mimi Remote agentd` 的 limited 当前用户任务，并在完成前等待 `/api/readyz` 和真实 App Server `initialize`。配置与配对 Token 保留在 `%APPDATA%\mimi-remote`，日志保留在 `%LOCALAPPDATA%\Mimi Remote\logs`。覆盖安装不会轮换现有 Token。
+安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它注册名为 `Mimi Remote agentd` 的 limited 当前用户任务，并在完成前等待 `/api/readyz` 和真实 App Server `initialize`。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。配置与配对 Token 保留在 `%APPDATA%\mimi-remote`，日志保留在 `%LOCALAPPDATA%\Mimi Remote\logs`。覆盖安装不会轮换现有 Token。
 
 Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
 

@@ -71,6 +71,12 @@ func (p *appServerGatewayPolicy) prunePendingThreadsLocked(now time.Time) {
 			// 才能证明该 cwd 不再处于未完成使用窗口。
 			continue
 		}
+		if pending.method == "thread/fork" {
+			// fork 是非幂等写请求，且旧 App Server 可能在任意时长后返回完整历史。
+			// 固定 TTL 会让迟到响应绕过裁剪和新线程授权；只允许明确响应、失败
+			// 或连接关闭释放。pending 总量上限继续约束异常连接的内存占用。
+			continue
+		}
 		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingThreadTTL {
 			delete(p.pendingThreads, id)
 		}
@@ -243,6 +249,17 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))
 		return payload, true, nil
 	}
+	if pending.method == "thread/fork" {
+		rewritten, result, err := sanitizeThreadForkResponse(payload)
+		if err != nil {
+			p.forgetPending(frame.ID)
+			return payload, false, &appServerGatewayPolicyError{
+				id: frame.ID, message: err.Error(), target: "client",
+			}
+		}
+		p.completePendingThreadResponse(key, pending, p.threadsFromResult(result, pending))
+		return rewritten, true, nil
+	}
 	if pending.method == "thread/read" {
 		if err := p.validateReadOnlyThreadResponse(frame.Result, pending); err != nil {
 			p.forgetPending(frame.ID)
@@ -261,6 +278,39 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
 	// pending-use。转换期间至少有一种保护存在，cleanup 看不到可删除窗口。
 	return payload, true, nil
+}
+
+func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error) {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response 无效")
+	}
+	var result map[string]json.RawMessage
+	if raw := response["result"]; len(raw) == 0 || json.Unmarshal(raw, &result) != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.result 必须是对象")
+	}
+	var thread map[string]json.RawMessage
+	if raw := result["thread"]; len(raw) == 0 || json.Unmarshal(raw, &thread) != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.thread 必须是对象")
+	}
+	// excludeTurns 是主路径；这里再做响应侧兜底，避免旧 App Server
+	// 忽略该字段时把完整历史写向移动端并阻塞同连接上的后续小 RPC。
+	thread["turns"] = json.RawMessage(`[]`)
+	threadRaw, err := json.Marshal(thread)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.thread 无法裁剪")
+	}
+	result["thread"] = threadRaw
+	resultRaw, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.result 无法裁剪")
+	}
+	response["result"] = resultRaw
+	rewritten, err := json.Marshal(response)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response 无法裁剪")
+	}
+	return rewritten, resultRaw, nil
 }
 
 func (p *appServerGatewayPolicy) resolveGlobalListCursor(params map[string]any) error {

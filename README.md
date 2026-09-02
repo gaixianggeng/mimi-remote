@@ -5,12 +5,12 @@
 <h1 align="center">Mimi Remote</h1>
 
 <p align="center">
-  <strong>Continue your Mac agent sessions on iPhone or iPad.</strong>
+  <strong>Continue your computer's agent sessions on iPhone or iPad.</strong>
 </p>
 
 <p align="center">
   An open-source, native mobile workspace for Codex and Claude Code.<br />
-  Connect directly to your Mac and pick up sessions across devices without rebuilding context—follow work live, continue conversations, and handle approvals.
+  Connect directly to your computer and pick up sessions across devices without rebuilding context—follow work live, continue conversations, and handle approvals.
 </p>
 
 <p align="center">
@@ -31,22 +31,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
 </p>
 
-<table>
-  <tr>
-    <td width="33%" valign="middle" align="center">
-      <img src="web/assets/iphone-workspace-light.png" alt="Mimi Remote workspace on iPhone with projects, recent conversations, and runtime selection in a compact column" width="88%" />
-    </td>
-    <td width="67%" valign="middle" align="center">
-      <img src="web/assets/ipad-workspace-light.png" alt="Mimi Remote workspace on iPad with projects, recent conversations, and runtime selection visible together" width="96%" />
-    </td>
-  </tr>
-</table>
-
 <p align="center">
-  <sub>The current Mimi Remote workspaces on iPhone and iPad: the same capabilities, adapted layouts.</sub>
+  <img src="web/assets/promo-overview-en.png" alt="Mimi Remote promotional overview showing conversations, live session progress, and control of development computers from iPhone" width="100%" />
 </p>
 
-Mimi Remote connects directly to your Mac through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your Mac remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.
+<p align="center">
+  <sub>Continue conversations, follow live work, and control your own development computers.</sub>
+</p>
+
+Mimi Remote connects directly to your macOS, Windows, or Linux computer through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your computer remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale. Codex is the primary supported runtime; the optional Claude Code bridge is experimental.
 
@@ -75,11 +68,11 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
 
 Both devices share the complete session, approval, and task-control surface; only the layout, information density, and input ergonomics change. The native SwiftUI interface tunes compact navigation, wide-screen columns, touch feedback, and transitions for each device. With Reduce Motion enabled, movement falls back to restrained fades or static feedback. These images reuse the current [`web/assets`](web/assets) capture set and come from Debug-only seeded UI with demo hosts, projects, sessions, paths, and usage values—never a maintainer's live workspace or credentials. The interface uses the Simplified Chinese localization; the app also supports English.
 
-## Carry the session from Mac to mobile
+## Carry the session from your computer to mobile
 
-The common need is rarely “open a terminal on a phone.” It is to leave the Mac and keep the same agent session moving without explaining the context again.
+The common need is rarely “open a terminal on a phone.” It is to leave your computer and keep the same agent session moving without explaining the context again.
 
-- **Continue:** pick up existing sessions across Mac, iPhone, and iPad instead of starting over when you leave the desk.
+- **Continue:** pick up existing sessions across your computer, iPhone, and iPad instead of starting over when you leave the desk.
 - **Follow live:** see whether a task is thinking, waiting, failed, or complete while structured replies and execution progress arrive.
 - **Stay in control:** add context, queue the next instruction, change model or reasoning, answer a prompt, approve an action, or interrupt the turn.
 
@@ -88,16 +81,16 @@ When you need to finish deeper development work, advanced tools can inspect diff
 ## More than a pocket terminal
 
 - Mimi Remote groups Codex and Claude Code messages, reasoning, commands, tool calls, approvals, and work into a readable timeline.
-- New Codex sessions receive a concise model-generated title from the Mac host; title generation is asynchronous and never blocks the conversation.
+- New Codex sessions receive a concise model-generated title from the host computer; title generation is asynchronous and never blocks the conversation.
 - Model, reasoning level, Skill, speed, permission mode, and queued turns stay next to the composer.
 - Markdown, images, file references, voice input, and safe Quick Look reads work as mobile-native content.
 - Spacing, hierarchy, touch feedback, and transitions are tuned separately for iPhone and iPad; Reduce Motion keeps the same state changes clear without spatial effects.
-- Multiple Mac profiles keep separate tokens in Keychain; one active connection keeps the mental model simple.
+- Multiple host profiles keep separate tokens in Keychain; one active connection keeps the mental model simple.
 - Readiness checks, reconnection, diagnostics, and bounded log export help recover without returning to the desk.
 
 ## Designed around context, not screen size
 
-Mimi Remote keeps the same project and session model across devices, but each surface follows the way that device is actually used. iPhone keeps one-handed navigation compact, iPad opens the same capabilities into a context-preserving multi-column workbench, and the Mac continues running the agents and host controls. The device changes the presentation, not the available capabilities.
+Mimi Remote keeps the same project and session model across devices, but each surface follows the way that device is actually used. iPhone keeps one-handed navigation compact, iPad opens the same capabilities into a context-preserving multi-column workbench, and the host computer continues running the agents. The device changes the presentation, not the available capabilities.
 
 <table>
   <tr>
@@ -107,7 +100,7 @@ Mimi Remote keeps the same project and session model across devices, but each su
     </td>
     <td width="50%" align="center">
       <strong>Usage and host state stay visible</strong><br />
-      <sub>Token windows, connected Macs, language, model, and permissions share one home.</sub>
+      <sub>Token windows, connected hosts, language, model, and permissions share one home.</sub>
     </td>
   </tr>
   <tr>
@@ -115,7 +108,7 @@ Mimi Remote keeps the same project and session model across devices, but each su
       <img src="web/assets/iphone-appearance-light.png" alt="Mimi Remote appearance and workspace icon settings on iPhone in light mode" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote token usage, connected Mac, and preferences on iPhone in dark mode" width="58%" />
+      <img src="web/assets/iphone-me-dark.png" alt="Mimi Remote token usage, connected host, and preferences on iPhone in dark mode" width="58%" />
     </td>
   </tr>
 </table>
@@ -142,9 +135,9 @@ The mobile images above are the same current assets used by the Mimi Remote webs
 ```mermaid
 flowchart LR
     Mobile["iPhone / iPad<br/>Mimi Remote"]
-    Gateway["Your host<br/>agentd secure gateway"]
+    Gateway["Your computer<br/>agentd secure gateway"]
     Codex["Codex<br/>App Server"]
-    Desktop["Codex Desktop<br/>SSH hosts"]
+    Desktop["Codex Desktop<br/>local or SSH"]
     Claude["Claude Code<br/>experimental bridge"]
 
     Mobile <-->|"LAN or Tailscale<br/>live sessions and approvals"| Gateway
@@ -153,12 +146,12 @@ flowchart LR
     Gateway <--> Claude
 ```
 
-This repository ships the complete link: the native iPhone/iPad app, the Mac menu bar host, the Windows tray host, the Go `agentd` gateway, and the Claude Code compatibility bridge. The mobile app connects only to your own host, so project files, session history, and runtime credentials stay there.
+This repository ships the complete link: the native iPhone/iPad app, the Go `agentd` gateway for macOS, Windows, and Linux, the Mac menu bar app, the Windows tray app, and the Claude Code compatibility bridge. The mobile app connects only to your own host computer, so project files, session history, and runtime credentials stay on that computer.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
 - **Platform-specific Codex transport:** macOS and Linux connect through SSH to a shared Unix App Server. A Windows host owns one Codex App Server on a loopback-only WebSocket. Neither path uses Desktop private IPC.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
-- **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the host. The host must remain awake and privately reachable.
+- **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the host computer. That computer must remain awake and privately reachable.
 
 For protocol details and exact capability boundaries, see [project status](docs/project-status.md) and the [Claude bridge architecture](docs/claude-bridge-architecture.md).
 
@@ -166,18 +159,18 @@ For protocol details and exact capability boundaries, see [project status](docs/
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a macOS or Windows computer that can keep the host service running, and Codex CLI 0.149.1 or later installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
+- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a macOS, Windows, or Linux computer that can keep the host service running, and Codex CLI 0.149.1 or later installed and ready on that computer. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** install the public release from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available. Use [TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds, or build from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
-- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+- **Developer-only tools:** the normal packaged host install does not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details and current package availability.
 
 ## Install and run
 
 ### First installation in four steps
 
 1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
-2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
+2. **Install and start the host:** follow the [platform installation guide](docs/install-upgrade-rollback.md), finish first-run setup, and confirm the service is ready.
 3. **Install the iOS app:** download Mimi Remote from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, or join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for beta builds. Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
@@ -227,7 +220,7 @@ agentd stop
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
 From an agent, automation, or retained remote log, use `agentd up --no-pair` / `agentd restart --no-pair` so the output contains no pairing QR code, endpoint, or long-lived access token. `agentd up --no-pair --json` returns only the version, readiness state, and safe warnings rather than the complete setup result. When pairing is needed, have the user run `agentd pair --qr-only` in a local terminal.
 
-For macOS and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md). Maintainers can find the daily Internal TestFlight and formal host release flow in [Nightly and release (Chinese)](docs/nightly-release.md).
+For macOS, Windows, and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md). Maintainers can find the daily Internal TestFlight and formal host release flow in [Nightly and release (Chinese)](docs/nightly-release.md).
 
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 

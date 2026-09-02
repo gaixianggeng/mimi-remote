@@ -181,6 +181,8 @@ private struct PairingNetworkPicker: View {
             Picker("配对网络", selection: $selection) {
                 Text("Tailscale")
                     .tag(PairingNetwork.tailscale)
+                Text("Tailcat 实验")
+                    .tag(PairingNetwork.tailcat)
                 Text("局域网")
                     .tag(PairingNetwork.localNetwork)
             }
@@ -208,6 +210,8 @@ private struct PairingNetworkPicker: View {
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
             "设备需在同一局域网 · 首次启用会重启服务"
+        case .tailcat:
+            "邀请实验 · 不依赖已安装的 Tailscale 客户端"
         }
     }
 
@@ -216,6 +220,7 @@ private struct PairingNetworkPicker: View {
         case .automatic: "arrow.triangle.branch"
         case .tailscale: "network"
         case .localNetwork: "wifi"
+        case .tailcat: "point.3.connected.trianglepath.dotted"
         }
     }
 }
