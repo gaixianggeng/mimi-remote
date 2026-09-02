@@ -31,11 +31,9 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-iphone-current.jpg" alt="Mimi Remote 当前四张橙色 iPhone 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计" width="100%" />
-</p>
-
-<p align="center">
-  <img src="web/assets/promo-ipad-current.jpg" alt="Mimi Remote 当前四张银色 iPad 推广图：会话接力、多设备控制、Codex 与 Claude Code 无缝接力和优雅设计" width="100%" />
+  <img src="web/assets/promo-iphone-conversation-current.jpg" alt="Mimi Remote 橙色 iPhone 会话接力推广图" width="29%" />
+  &nbsp;&nbsp;
+  <img src="web/assets/promo-ipad-workspace-current.jpg" alt="Mimi Remote 银色 iPad Codex 与 Claude Code 会话接力推广图" width="50%" />
 </p>
 
 <p align="center">
@@ -61,10 +59,10 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/promo-iphone-sessions-current.jpg" alt="Mimi Remote 橙色 iPhone 多设备控制推广图" width="58%" />
+      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote 在 iPhone 浅色模式下的会话列表" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/promo-ipad-sessions-current.jpg" alt="Mimi Remote 银色 iPad 多设备控制推广图" width="100%" />
+      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote 在 iPad 上同时展示侧栏与会话列表" width="100%" />
     </td>
   </tr>
 </table>

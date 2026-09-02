@@ -32,11 +32,9 @@
 </p>
 
 <p align="center">
-  <img src="web/assets/promo-iphone-current.jpg" alt="Four current Mimi Remote promotional screens on orange iPhones: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design" width="100%" />
-</p>
-
-<p align="center">
-  <img src="web/assets/promo-ipad-current.jpg" alt="Four current Mimi Remote promotional screens on silver iPads: session handoff, multi-device control, Codex and Claude Code continuity, and elegant design" width="100%" />
+  <img src="web/assets/promo-iphone-conversation-current.jpg" alt="Mimi Remote session handoff promotion on an orange iPhone" width="29%" />
+  &nbsp;&nbsp;
+  <img src="web/assets/promo-ipad-workspace-current.jpg" alt="Mimi Remote Codex and Claude Code session continuity promotion on a silver iPad" width="50%" />
 </p>
 
 <p align="center">
@@ -62,10 +60,10 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/promo-iphone-sessions-current.jpg" alt="Mimi Remote multi-device control promotion on an orange iPhone" width="58%" />
+      <img src="web/assets/iphone-sessions-light.png" alt="Mimi Remote session list on iPhone in light mode" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="web/assets/promo-ipad-sessions-current.jpg" alt="Mimi Remote multi-device control promotion on a silver iPad" width="100%" />
+      <img src="web/assets/ipad-sessions-light.png" alt="Mimi Remote session list on iPad with the sidebar visible" width="100%" />
     </td>
   </tr>
 </table>
