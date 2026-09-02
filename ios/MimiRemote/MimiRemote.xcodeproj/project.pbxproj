@@ -1866,7 +1866,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Resources/MimiRemote.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100070;
+				CURRENT_PROJECT_VERSION = 100098;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
@@ -1877,7 +1877,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = MimiRemote;
 				PRODUCT_NAME = MimiRemote;
@@ -2000,7 +2000,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Resources/MimiRemote.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100070;
+				CURRENT_PROJECT_VERSION = 100098;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64";
@@ -2011,7 +2011,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = MimiRemote;
 				PRODUCT_NAME = MimiRemote;
@@ -2050,14 +2050,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = WidgetExtension/MimiCarStatusWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 100070;
+				CURRENT_PROJECT_VERSION = 100098;
 				INFOPLIST_FILE = WidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.carstatuswidget;
 				PRODUCT_NAME = MimiCarStatusWidget;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)";
@@ -2138,14 +2138,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = WidgetExtension/MimiCarStatusWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 100070;
+				CURRENT_PROJECT_VERSION = 100098;
 				INFOPLIST_FILE = WidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.carstatuswidget;
 				PRODUCT_NAME = MimiCarStatusWidget;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)";

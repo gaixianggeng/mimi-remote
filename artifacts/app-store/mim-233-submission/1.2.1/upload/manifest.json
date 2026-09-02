@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "issue": "MIM-233",
+  "targetVersion": "1.2.1",
+  "targetBuild": "100098",
+  "preparedAt": "2026-09-02",
+  "uploadReady": true,
+  "containsThirdPartyBrandingInProductUI": true,
+  "locales": [
+    "zh-Hans"
+  ],
+  "scenes": [
+    "conversation",
+    "sessions",
+    "workspace",
+    "connection"
+  ],
+  "files": [
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/iphone-6.5/01-conversation.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 1749399,
+      "sha256": "c14ad6952e5a49d67993059fd3943125e8f8f83f71911b211facf7cd97e1ddcb",
+      "locale": "zh-Hans",
+      "device": "iphone-6.5",
+      "scene": "conversation",
+      "order": 1
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/iphone-6.5/02-sessions.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 1590370,
+      "sha256": "76492efc7005d777f67bb72f1997e32f98829176440e94ea432e175adedcfb92",
+      "locale": "zh-Hans",
+      "device": "iphone-6.5",
+      "scene": "sessions",
+      "order": 2
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/iphone-6.5/03-workspace.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 2332436,
+      "sha256": "da6406e54038b6eaa9b46e3c7afbcb917dd2b8a8385089ca6b15d42fc96ef7fa",
+      "locale": "zh-Hans",
+      "device": "iphone-6.5",
+      "scene": "workspace",
+      "order": 3
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/iphone-6.5/04-connection.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 1751402,
+      "sha256": "c63cac9dcffd9571d23783825f503229ca980a5e15acdd0b8f51dc832f78f5f7",
+      "locale": "zh-Hans",
+      "device": "iphone-6.5",
+      "scene": "connection",
+      "order": 4
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/ipad-13/01-conversation.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 2566587,
+      "sha256": "257a97ecb092ad8484f92e42d903278f39868fac320d6797f6161076a1f8cd94",
+      "locale": "zh-Hans",
+      "device": "ipad-13",
+      "scene": "conversation",
+      "order": 1
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/ipad-13/02-sessions.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 2717985,
+      "sha256": "ff23bb863d9fe0be9b40421126944eefbbc4b44ea5a3dc3b0e614f8e842ceb12",
+      "locale": "zh-Hans",
+      "device": "ipad-13",
+      "scene": "sessions",
+      "order": 2
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/ipad-13/03-workspace.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 2989165,
+      "sha256": "e866a0eb5009155556fc9dbe7cb9d3d7b4de61ca32d5ea68c509c773278ec253",
+      "locale": "zh-Hans",
+      "device": "ipad-13",
+      "scene": "workspace",
+      "order": 3
+    },
+    {
+      "path": "artifacts/app-store/mim-233-submission/1.2.1/upload/zh-Hans/ipad-13/04-connection.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 3043453,
+      "sha256": "0f96b5af993e148c7c1dbd978ea48df9bc5d79aa909e620e2422801442d2e63a",
+      "locale": "zh-Hans",
+      "device": "ipad-13",
+      "scene": "connection",
+      "order": 4
+    }
+  ]
+}
