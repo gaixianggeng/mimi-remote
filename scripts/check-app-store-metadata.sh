@@ -46,7 +46,7 @@ for locale in ("en-US", "zh-Hans"):
 
 expected_names = {
     "en-US": "Mimi Remote",
-    "zh-Hans": "咪咪 Remote",
+    "zh-Hans": "Mimi Remote",
 }
 for locale, expected_name in expected_names.items():
     actual_name = (root / locale / "name.txt").read_text(encoding="utf-8").strip()
