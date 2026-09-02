@@ -1954,8 +1954,17 @@ final class PairingLinkTests: XCTestCase {
             ]
         )
 
+        XCTAssertEqual(report.route, .tailscale)
         XCTAssertEqual(report.slowestStage?.kind, .appServerGateway)
         XCTAssertEqual(report.failedStage?.kind, .version)
+
+        let tailcatReport = ConnectionTestReport(
+            route: .tailcat,
+            startedAt: Date(timeIntervalSince1970: 0),
+            totalMillis: 120,
+            stages: []
+        )
+        XCTAssertEqual(tailcatReport.route, .tailcat)
     }
 
     func testTailscaleNetworkPathDecodesKnownAndFutureKinds() throws {

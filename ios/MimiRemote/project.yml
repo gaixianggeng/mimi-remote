@@ -91,9 +91,9 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         # UI 文案统一由显式 L10n key 管理，关闭编译器自动提取，避免 Xcode 把技术字符串写回目录。
         SWIFT_EMIT_LOC_STRINGS: "NO"
-        # 1.1 已在 App Store Connect 关闭新构建上传，本次发布切换到 1.2 通道。
-        CURRENT_PROJECT_VERSION: "100070"
-        MARKETING_VERSION: "1.2"
+        # 1.2 已通过审核；本次仅更新商店名称与截图，使用 1.2.1 通道。
+        CURRENT_PROJECT_VERSION: "100098"
+        MARKETING_VERSION: "1.2.1"
   MimiCarStatusWidgetExtension:
     type: app-extension
     platform: iOS
@@ -119,8 +119,8 @@ targets:
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)"
         SKIP_INSTALL: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
-        CURRENT_PROJECT_VERSION: "100070"
-        MARKETING_VERSION: "1.2"
+        CURRENT_PROJECT_VERSION: "100098"
+        MARKETING_VERSION: "1.2.1"
         SWIFT_EMIT_LOC_STRINGS: "NO"
   MimiRemoteTests:
     type: bundle.unit-test

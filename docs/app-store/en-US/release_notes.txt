@@ -1,6 +1,2 @@
-- Added an in-app language selector with complete English and Simplified Chinese interfaces.
-- Improved session restoration, queued input, and structured question forms.
-- Refined iPhone and iPad workbench navigation.
-- Added direct access to Privacy Policy, Terms of Use, and Support.
-- Added a choice between live on-device and host-mediated Codex voice transcription.
-- Refreshed the iPhone and iPad interfaces and clarified compatible runtime choices.
+- Unified the product name as Mimi Remote.
+- Refreshed the App Store screenshots for iPhone and iPad.

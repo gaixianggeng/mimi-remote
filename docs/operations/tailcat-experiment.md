@@ -36,17 +36,26 @@ ios/MimiRemote/Generated/TailcatMobile.xcframework
 
 ### 2. 在 Mac 开启实验并生成二维码
 
-打开 Mac 版 Mimi 的“实验功能”，开启 Tailcat 实验。状态必须显示 sidecar 正在运行。然后点击“生成 Tailcat 配对二维码”。
+打开 Mac 版 Mimi 的“实验功能”，开启 Tailcat 实验。状态必须显示 sidecar 正在运行。中继节点可选“Tailcat 默认”或“自定义”。自定义模式填写完整的 DERP Map HTTPS 地址，再点击“应用中继配置”。切换成功后需要重新生成二维码并扫码；切换失败时会自动恢复原中继。
 
 也可以用命令行执行同一控制流程：
 
 ```bash
 agentd tailcat status
 agentd tailcat enable
+agentd tailcat configure --derp-map-url=https://relay.example/derpmap/default
 agentd tailcat pair
 ```
 
 `agentd tailcat pair` 只输出短期配对链接。它不会输出或修改长期 Agent Token。
+
+恢复 Tailcat 默认中继：
+
+```bash
+agentd tailcat configure --derp-map-url=
+```
+
+这里需要填写 DERP Map 地址，不是 DERP 服务的 IP 和端口。
 
 ### 3. 在 iPad 扫码
 

@@ -132,6 +132,7 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var tailcatController: TailcatExperimentController
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     @State private var endpoint = ""
@@ -264,62 +265,40 @@ struct InitialConnectionSettingsSections: View {
                     }
 
                     if appStore.isConfigured {
-                        Button {
-                            Task {
-                                await appStore.testConnection(
-                                    endpoint: appStore.endpoint,
-                                    token: appStore.token
-                                )
-                            }
+                        NavigationLink {
+                            ConnectionSpeedTestView()
                         } label: {
-                            HStack(spacing: 8) {
-                                if isConnectionTesting {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else {
-                                    Image(systemName: "bolt.horizontal.circle")
-                                }
-                                Text(isConnectionTesting ? L10n.text("ui.under_test") : L10n.text("ui.test_connection"))
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            SettingsValueLabel(
+                                title: L10n.text("ui.connection_speed_test"),
+                                value: tailcatController.isEnabled ? "Tailcat" : "Tailscale",
+                                systemImage: "gauge.with.dots.needle.67percent"
+                            )
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(isConnectionTesting)
-                        .accessibilityIdentifier("settings.connection.test")
-                    }
-
-                    if connectionTestDurationText != nil || appStore.lastConnectionTestReport != nil {
-                        DisclosureGroup(L10n.text("ui.connection_diagnostics")) {
-                            if let connectionTestDurationText {
-                                LabeledContent(L10n.text("ui.testing_time"), value: connectionTestDurationText)
-                                    .foregroundStyle(statusColor)
-                            }
-                            if let report = appStore.lastConnectionTestReport {
-                                if let networkPath = report.tailscaleNetworkPath {
-                                    ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
-                                }
-                                if let failedStage = report.failedStage {
-                                    connectionStageSummaryRow(title: L10n.text("ui.failure_link"), stage: failedStage, color: .red)
-                                } else if let slowestStage = report.slowestStage {
-                                    connectionStageSummaryRow(title: L10n.text("ui.slowest_link"), stage: slowestStage, color: tokens.warning)
-                                }
-                                if appStore.recentConnectionTestReports.count > 1,
-                                   let unstableStage = appStore.mostUnstableConnectionTestStage {
-                                    connectionStabilityRow(unstableStage)
-                                }
-                                ForEach(report.stages) { stage in
-                                    connectionStageRow(stage)
-                                }
-                                if let diagnostics = report.gatewayDiagnostics {
-                                    connectionGatewayDiagnosticsRows(diagnostics)
-                                } else if let diagnosticsError = report.gatewayDiagnosticsError {
-                                    connectionGatewayDiagnosticsErrorRow(diagnosticsError)
-                                }
-                            }
-                        }
+                        .settingsStandardListRow()
+                        .accessibilityIdentifier("settings.connectionSpeedTest")
                     }
                 } header: {
                     Text(L10n.text("ui.status"))
+                }
+            }
+
+            if appStore.isConfigured {
+                Section {
+                    NavigationLink {
+                        TailcatExperimentSettingsView()
+                    } label: {
+                        SettingsValueLabel(
+                            title: L10n.text("ui.tailcat_experiment"),
+                            value: tailcatController.isEnabled
+                                ? L10n.text("ui.tailcat_experiment_enabled")
+                                : L10n.text("ui.tailcat_experiment_disabled"),
+                            systemImage: "point.3.connected.trianglepath.dotted"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.connection.tailcat")
+                } header: {
+                    Text(L10n.text("ui.connection_method"))
                 }
             }
 
@@ -1015,6 +994,9 @@ struct InitialConnectionSettingsSections: View {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
         }
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
+            if appStore.isTailcatExperimentModeEnabled {
+                return L10n.text("ui.please_check_mac_assistant_and_network_connections")
+            }
             return L10n.text("ui.the_current_device_cannot_find_this_mac_at")
         }
         if raw == L10n.text("ui.the_connection_credentials_have_been_saved_safely_but") ||

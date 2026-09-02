@@ -9,7 +9,8 @@ import (
 )
 
 type tailcatControlRequest struct {
-	Action string `json:"action"`
+	Action     string `json:"action"`
+	DERPMapURL string `json:"derp_map_url,omitempty"`
 }
 
 func (r *Router) tailcatLocalHandler(w http.ResponseWriter, req *http.Request) {
@@ -73,8 +74,15 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
+	case "configure":
+		status, err := r.tailcat.ConfigureDERPMap(req.Context(), payload.DERPMapURL)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
 	default:
-		writeError(w, http.StatusBadRequest, "Tailcat action 只支持 enable、disable、pair 或 reset")
+		writeError(w, http.StatusBadRequest, "Tailcat action 只支持 enable、disable、pair、reset 或 configure")
 	}
 }
 

@@ -96,6 +96,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     let enabled: Bool
     let running: Bool
     let version: String?
+    let derpMapURL: String?
     let pairedDeviceCount: Int
     let error: String?
 
@@ -103,6 +104,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case enabled
         case running
         case version
+        case derpMapURL = "derp_map_url"
         case pairedDeviceCount = "paired_device_count"
         case error
     }

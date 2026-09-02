@@ -1382,6 +1382,7 @@ extension SessionStore {
             return
         }
 #endif
+        guard !Task.isCancelled else { return }
         isAppInBackground = false
         // 不用常驻 timer：App 每次回前台同步清理已触发提醒，离线或未配置时也能保持本地状态准确。
         reloadSessionReminders()
@@ -1416,6 +1417,7 @@ extension SessionStore {
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: false)
+        guard !Task.isCancelled, !isAppInBackground else { return }
         var didReconcileFullHistory = false
         if let reconnectSessionID, selectedSessionID == reconnectSessionID {
             didReconcileFullHistory = await reconcileHistoryForRecovery(
@@ -1423,6 +1425,7 @@ extension SessionStore {
                 generation: recoveryGeneration
             )
         }
+        guard !Task.isCancelled, !isAppInBackground else { return }
         ensureAllQueuedSessionMonitoring()
 
         guard connectionTermination == nil,

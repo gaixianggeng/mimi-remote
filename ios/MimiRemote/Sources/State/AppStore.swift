@@ -61,7 +61,7 @@ final class AppStore: ObservableObject {
     var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
-    private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
+    let debugLaunchConfiguration = DebugLaunchConfiguration.current()
 #endif
 
     init(
@@ -985,15 +985,22 @@ final class AppStore: ObservableObject {
         connectionProfiles = nextProfiles
     }
     @discardableResult
-    func validateConnection(endpoint: String, token: String) async throws -> String {
+    func validateConnection(
+        endpoint: String,
+        token: String,
+        route: ConnectionTestRoute = .tailscale,
+        affectsConnectionStatus: Bool = true
+    ) async throws -> String {
         let startedAt = Date()
         var stages: [ConnectionTestStageTiming] = []
         var gatewayDiagnosticsBaseline: RelayDiagnosticsResponse?
         var gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
         var gatewayDiagnosticsError: String?
         var tailscaleNetworkPath: TailscaleNetworkPathResponse?
-        connectionStatus = .testing
-        lastError = nil
+        if affectsConnectionStatus {
+            connectionStatus = .testing
+            lastError = nil
+        }
         lastConnectionTestDurationMillis = nil
         lastConnectionTestReport = nil
 
@@ -1009,6 +1016,7 @@ final class AppStore: ObservableObject {
             // 诊断快照是为了定位瓶颈，不属于真实业务链路；总耗时只汇总上面几个测试阶段。
             let totalMillis = stages.reduce(0) { $0 + $1.durationMillis }
             let report = ConnectionTestReport(
+                route: route,
                 startedAt: startedAt,
                 totalMillis: totalMillis,
                 stages: stages,
@@ -1086,15 +1094,21 @@ final class AppStore: ObservableObject {
         } catch {
             appendStage(.appServerGateway, since: gatewayStartedAt, status: .failed(error.localizedDescription))
             await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
-            await captureTailscaleNetworkPath(client: client)
+            if route == .tailscale {
+                await captureTailscaleNetworkPath(client: client)
+            }
             publishReport()
             throw error
         }
 
         await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
-        await captureTailscaleNetworkPath(client: client)
+        if route == .tailscale {
+            await captureTailscaleNetworkPath(client: client)
+        }
         publishReport()
-        connectionStatus = .connected(version.version)
+        if affectsConnectionStatus {
+            connectionStatus = .connected(version.version)
+        }
         return normalized
     }
 
@@ -1119,18 +1133,6 @@ final class AppStore: ObservableObject {
         let overflow = recentConnectionTestReports.count - maxConnectionTestReportHistory
         if overflow > 0 {
             recentConnectionTestReports.removeFirst(overflow)
-        }
-    }
-
-    func testConnection(endpoint: String, token: String) async {
-#if DEBUG
-        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return }
-#endif
-        do {
-            _ = try await validateConnection(endpoint: endpoint, token: token)
-        } catch {
-            connectionStatus = .failed(error.localizedDescription)
-            lastError = error.localizedDescription
         }
     }
 
@@ -1174,7 +1176,11 @@ final class AppStore: ObservableObject {
             return false
         }
 
-        await testConnection(endpoint: connectionEndpoint, token: token)
+        await testConnection(
+            endpoint: connectionEndpoint,
+            token: token,
+            route: isTailcatExperimentModeEnabled ? .tailcat : .tailscale
+        )
         if Task.isCancelled {
             shouldRetryAfterCancellation = true
         }

@@ -24,6 +24,7 @@ final class HostStore {
     private(set) var tailcatStatus: TailcatStatus?
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
+    private(set) var tailcatNotice: String?
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
@@ -46,6 +47,10 @@ final class HostStore {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
 
+    var tailcatDERPMapURL: String {
+        tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     var tailcatStatusTitle: String {
         if isUpdatingTailcat { return "正在更新" }
         guard let tailcatStatus else { return "尚未检查" }
@@ -58,6 +63,7 @@ final class HostStore {
             return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 实验。"
         }
         if let tailcatError { return tailcatError }
+        if let tailcatNotice { return tailcatNotice }
         if let error = tailcatStatus?.error, !error.isEmpty { return error }
         guard let tailcatStatus, tailcatStatus.enabled else {
             return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
@@ -563,6 +569,7 @@ final class HostStore {
         do {
             tailcatStatus = try await agent.tailcatStatus()
             tailcatError = nil
+            tailcatNotice = nil
         } catch {
             tailcatError = error.localizedDescription
         }
@@ -576,6 +583,7 @@ final class HostStore {
         isBusy = true
         isUpdatingTailcat = true
         tailcatError = nil
+        tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
             isBusy = false
@@ -587,8 +595,37 @@ final class HostStore {
                 pairingNetwork = .tailscale
             }
         } catch {
-            tailcatError = error.localizedDescription
+            let updateError = error.localizedDescription
             await refreshTailcatStatus()
+            tailcatError = updateError
+        }
+    }
+
+    func configureTailcatDERPMap(_ derpMapURL: String) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        tailcatNotice = nil
+        let wasEnabled = tailcatEnabled
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.configureTailcatDERPMap(derpMapURL)
+            if pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+            tailcatNotice = wasEnabled
+                ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
+                : "中继配置已保存，将在启用 Tailcat 后生效。"
+        } catch {
+            tailcatError = error.localizedDescription
         }
     }
 
@@ -597,6 +634,7 @@ final class HostStore {
         isBusy = true
         isUpdatingTailcat = true
         tailcatError = nil
+        tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
             isBusy = false

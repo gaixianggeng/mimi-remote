@@ -1498,7 +1498,7 @@ struct TailcatExperimentSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .navigationTitle(L10n.text("ui.experimental_features"))
+        .navigationTitle(L10n.text("ui.tailcat_experiment"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
     }

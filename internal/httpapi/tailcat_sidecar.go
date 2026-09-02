@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 const (
@@ -34,6 +35,7 @@ type tailcatStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
+	DERPMapURL        string `json:"derp_map_url,omitempty"`
 	Address           string `json:"address,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
@@ -48,12 +50,15 @@ type tailcatSidecar interface {
 	Pair(context.Context) (tailcatStatus, error)
 	AllowClient(context.Context, string) (tailcatStatus, error)
 	Reset(context.Context) (tailcatStatus, error)
+	ConfigureDERPMap(context.Context, string) (tailcatStatus, error)
 	Close()
 }
 
 type tailcatSidecarSupervisor struct {
+	operationMu sync.Mutex
 	mu          sync.Mutex
 	config      config.TailcatConfig
+	configPath  string
 	stateDir    string
 	controlPath string
 	targetAddr  string
@@ -68,6 +73,7 @@ func newTailcatSidecarSupervisor(cfg config.Config, configPath string) *tailcatS
 	stateDir, _ := tailcatStateDirectory(configPath)
 	supervisor := &tailcatSidecarSupervisor{
 		config:      cfg.Tailcat,
+		configPath:  configPath,
 		stateDir:    stateDir,
 		controlPath: filepath.Join(stateDir, "control.sock"),
 		targetAddr:  tailcatLoopbackTarget(cfg.Listen),
@@ -81,6 +87,15 @@ func newTailcatSidecarSupervisor(cfg config.Config, configPath string) *tailcatS
 }
 
 func (s *tailcatSidecarSupervisor) Start(ctx context.Context) error {
+	if s == nil {
+		return errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	return s.start(ctx)
+}
+
+func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	if s == nil {
 		return errors.New("Tailcat 管理器未初始化")
 	}
@@ -188,6 +203,15 @@ func (s *tailcatSidecarSupervisor) Stop(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	return s.stop(ctx)
+}
+
+func (s *tailcatSidecarSupervisor) stop(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	s.config.Enabled = false
 	cmd := s.cmd
@@ -227,17 +251,19 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 	}
 	s.mu.Lock()
 	enabled := s.config.Enabled
+	derpMapURL := s.config.DERPMapURL
 	running := s.cmd != nil
 	starting := s.starting
 	lastError := s.lastError
 	s.mu.Unlock()
-	status := tailcatStatus{Enabled: enabled, Running: running}
+	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL}
 	if !enabled {
 		return status
 	}
 	if running {
 		if err := s.call(ctx, http.MethodGet, "/status", nil, &status); err == nil {
 			status.Enabled = true
+			status.DERPMapURL = derpMapURL
 			return status
 		} else if lastError == "" && !starting {
 			lastError = err.Error()
@@ -252,30 +278,197 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 }
 
 func (s *tailcatSidecarSupervisor) Pair(ctx context.Context) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	var status tailcatStatus
 	err := s.call(ctx, http.MethodPost, "/pair", nil, &status)
-	status.Enabled = true
+	s.applyConfigurationToStatus(&status)
 	return status, err
 }
 
 func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	var status tailcatStatus
 	err := s.call(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
-	status.Enabled = true
+	s.applyConfigurationToStatus(&status)
 	return status, err
 }
 
 func (s *tailcatSidecarSupervisor) Reset(ctx context.Context) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	var status tailcatStatus
 	err := s.call(ctx, http.MethodPost, "/reset", nil, &status)
-	status.Enabled = true
+	s.applyConfigurationToStatus(&status)
 	return status, err
+}
+
+func (s *tailcatSidecarSupervisor) applyConfigurationToStatus(status *tailcatStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status.Enabled = s.config.Enabled
+	status.DERPMapURL = s.config.DERPMapURL
+}
+
+// ConfigureDERPMap 原子切换用户选择的 DERP Map。Tailcat 连接地址内嵌中继
+// 区域，因此成功切换必须重建主机身份并清空配对；启动或写配置失败时恢复
+// 原状态，不能让一次设置操作破坏现有远程入口。
+func (s *tailcatSidecarSupervisor) ConfigureDERPMap(ctx context.Context, rawURL string) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	normalized, err := config.NormalizeTailcatDERPMapURL(rawURL)
+	if err != nil {
+		return s.Status(ctx), err
+	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return tailcatStatus{}, errors.New("Tailcat 管理器正在关闭")
+	}
+	if s.starting {
+		s.mu.Unlock()
+		return tailcatStatus{}, errors.New("Tailcat 正在启动")
+	}
+	previousConfig := s.config
+	wasRunning := s.cmd != nil
+	stateDir := s.stateDir
+	s.mu.Unlock()
+	if stateDir == "" {
+		return tailcatStatus{}, errors.New("Tailcat 缺少配置文件路径")
+	}
+	previousURL, _ := config.NormalizeTailcatDERPMapURL(previousConfig.DERPMapURL)
+	if normalized == previousURL {
+		return s.Status(ctx), nil
+	}
+
+	snapshot, err := snapshotTailcatIdentityState(stateDir)
+	if err != nil {
+		return s.Status(ctx), err
+	}
+	if err := s.stopForReconfiguration(ctx); err != nil {
+		// 请求可能在旧 sidecar 已停止后被取消。此时仍要用独立上下文
+		// 恢复原身份和进程，避免一次取消破坏现有远程入口。
+		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
+	}
+	s.mu.Lock()
+	s.config.DERPMapURL = normalized
+	s.mu.Unlock()
+	if err := clearTailcatIdentityState(stateDir); err != nil {
+		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
+	}
+	if previousConfig.Enabled {
+		if err := s.start(ctx); err != nil {
+			return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
+		}
+	}
+	if _, err := agentsetup.ConfigureTailcatDERPMap(s.configPath, normalized); err != nil {
+		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
+	}
+	return s.Status(ctx), nil
+}
+
+func (s *tailcatSidecarSupervisor) stopForReconfiguration(ctx context.Context) error {
+	s.mu.Lock()
+	cmd := s.cmd
+	done := s.done
+	s.mu.Unlock()
+	return s.stopProcess(ctx, cmd, done)
+}
+
+func (s *tailcatSidecarSupervisor) rollbackDERPMap(
+	ctx context.Context,
+	previousConfig config.TailcatConfig,
+	wasRunning bool,
+	snapshot tailcatIdentitySnapshot,
+	applyError error,
+) (tailcatStatus, error) {
+	_ = s.stopForReconfiguration(context.Background())
+	restoreError := restoreTailcatIdentityState(s.stateDir, snapshot)
+	s.mu.Lock()
+	s.config = previousConfig
+	s.mu.Unlock()
+	if restoreError == nil && wasRunning {
+		// 新中继的就绪等待可能已经耗尽原请求 deadline。恢复必须使用独立
+		// 的短期上下文，否则会留下 enabled 但未运行的旧配置。
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		restoreError = s.start(restoreCtx)
+		cancel()
+	}
+	if restoreError != nil {
+		return s.Status(ctx), fmt.Errorf("应用 Tailcat 中继失败：%v；恢复原中继也失败：%w", applyError, restoreError)
+	}
+	return s.Status(ctx), fmt.Errorf("应用 Tailcat 中继失败，已恢复原配置：%w", applyError)
+}
+
+var tailcatIdentityFiles = []string{
+	"host.private.json",
+	"host.address",
+	"clients.json",
+	"pair.private.json",
+	"pair.address",
+}
+
+type tailcatIdentitySnapshot map[string][]byte
+
+func snapshotTailcatIdentityState(stateDir string) (tailcatIdentitySnapshot, error) {
+	snapshot := tailcatIdentitySnapshot{}
+	for _, name := range tailcatIdentityFiles {
+		data, err := os.ReadFile(filepath.Join(stateDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("备份 Tailcat 状态：%w", err)
+		}
+		snapshot[name] = data
+	}
+	return snapshot, nil
+}
+
+func clearTailcatIdentityState(stateDir string) error {
+	for _, name := range tailcatIdentityFiles {
+		if err := os.Remove(filepath.Join(stateDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("清理 Tailcat %s：%w", name, err)
+		}
+	}
+	return nil
+}
+
+func restoreTailcatIdentityState(stateDir string, snapshot tailcatIdentitySnapshot) error {
+	if err := clearTailcatIdentityState(stateDir); err != nil {
+		return err
+	}
+	for _, name := range tailcatIdentityFiles {
+		data, exists := snapshot[name]
+		if !exists {
+			continue
+		}
+		if err := writeTailcatPrivateFile(filepath.Join(stateDir, name), data); err != nil {
+			return fmt.Errorf("恢复 Tailcat %s：%w", name, err)
+		}
+	}
+	return nil
 }
 
 func (s *tailcatSidecarSupervisor) Close() {
 	if s == nil {
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	s.closing = true
 	cmd := s.cmd
