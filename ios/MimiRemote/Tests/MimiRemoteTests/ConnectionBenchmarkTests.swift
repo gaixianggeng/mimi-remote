@@ -114,9 +114,25 @@ final class ConnectionBenchmarkTests: XCTestCase {
 
         XCTAssertEqual(statistics.sampleCount, 21)
         XCTAssertEqual(statistics.successCount, 20)
-        XCTAssertEqual(statistics.medianMillis, 1_000)
+        XCTAssertEqual(statistics.medianMillis, 1_050)
         XCTAssertEqual(statistics.p95Millis, 1_900)
         XCTAssertEqual(statistics.failureRate, 1.0 / 21.0, accuracy: 0.000_001)
+    }
+
+    func testStatisticsAverageMiddleValuesForEvenSampleCount() {
+        let samples = [
+            makeSample(route: .tailcat, scenario: .warm, path: .direct, milliseconds: 100, succeeded: true),
+            makeSample(route: .tailcat, scenario: .warm, path: .direct, milliseconds: 1_000, succeeded: true)
+        ]
+
+        let statistics = ConnectionBenchmarkStatistics.make(
+            samples: samples,
+            route: .tailcat,
+            scenario: .warm
+        )
+
+        XCTAssertEqual(statistics.medianMillis, 550)
+        XCTAssertEqual(statistics.p95Millis, 1_000)
     }
 
     func testRecoveryRateUsesOnlyRecoverySamples() throws {

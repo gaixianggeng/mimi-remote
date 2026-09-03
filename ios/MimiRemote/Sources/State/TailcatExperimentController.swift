@@ -334,13 +334,20 @@ final class TailcatExperimentController: ObservableObject {
 
     @discardableResult
     func prepareRoute(appStore: AppStore) async -> Bool {
-        await prepareRoute(appStore: appStore, forceRestart: false)
+        await prepareRoute(
+            appStore: appStore,
+            forceRestart: false,
+            refreshPathDiagnosticAfterPreparation: true
+        )
     }
 
     /// iOS 锁屏会挂起 Tailcat 的 DERP/WireGuard 状态，但旧 proxy 仍可能保留本地 listener。
     /// 真正经历后台后创建全新 Client，确保重新握手，再让 REST/WebSocket 恢复。
     @discardableResult
-    func recoverRouteFromForeground(appStore: AppStore) async -> Bool {
+    func recoverRouteFromForeground(
+        appStore: AppStore,
+        refreshPathDiagnosticAfterPreparation: Bool = true
+    ) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard isEnabled else { return true }
         if let inFlightPreparation = preparationTask {
@@ -352,10 +359,18 @@ final class TailcatExperimentController: ObservableObject {
         guard !Task.isCancelled else { return false }
         generation &+= 1
         appStore.setTailcatExperimentEndpoint(nil)
-        return await prepareRoute(appStore: appStore, forceRestart: true)
+        return await prepareRoute(
+            appStore: appStore,
+            forceRestart: true,
+            refreshPathDiagnosticAfterPreparation: refreshPathDiagnosticAfterPreparation
+        )
     }
 
-    private func prepareRoute(appStore: AppStore, forceRestart: Bool) async -> Bool {
+    private func prepareRoute(
+        appStore: AppStore,
+        forceRestart: Bool,
+        refreshPathDiagnosticAfterPreparation: Bool
+    ) async -> Bool {
         appStore.setTailcatExperimentModeEnabled(isEnabled)
         guard isAvailable else {
             state = .unavailable
@@ -415,7 +430,9 @@ final class TailcatExperimentController: ObservableObject {
             }
             appStore.setTailcatExperimentEndpoint(endpoint)
             state = .connected(endpoint: endpoint)
-            Task { await refreshPathDiagnostic(appStore: appStore) }
+            if refreshPathDiagnosticAfterPreparation {
+                Task { await refreshPathDiagnostic(appStore: appStore) }
+            }
             return true
         } catch {
             if let preparationID, preparationTask?.id == preparationID {

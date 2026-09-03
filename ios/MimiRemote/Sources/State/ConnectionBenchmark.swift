@@ -217,7 +217,7 @@ struct ConnectionBenchmarkStatistics: Codable, Equatable {
             relayRegion: relayRegion,
             sampleCount: filtered.count,
             successCount: successfulDurations.count,
-            medianMillis: percentile(successfulDurations, percentile: 0.5),
+            medianMillis: median(successfulDurations),
             p95Millis: percentile(successfulDurations, percentile: 0.95),
             failureRate: filtered.isEmpty
                 ? 0
@@ -233,6 +233,17 @@ struct ConnectionBenchmarkStatistics: Codable, Equatable {
         // 使用 nearest-rank，确保小样本和导出后的离线复算口径一致。
         let rank = max(1, Int(ceil(percentile * Double(sortedValues.count))))
         return sortedValues[min(sortedValues.count - 1, rank - 1)]
+    }
+
+    private static func median(_ sortedValues: [Int]) -> Int? {
+        guard !sortedValues.isEmpty else { return nil }
+        let upperIndex = sortedValues.count / 2
+        guard sortedValues.count.isMultiple(of: 2) else {
+            return sortedValues[upperIndex]
+        }
+        let lower = sortedValues[upperIndex - 1]
+        let upper = sortedValues[upperIndex]
+        return lower + (upper - lower) / 2
     }
 }
 

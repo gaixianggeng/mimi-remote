@@ -518,7 +518,10 @@ struct ConnectionSpeedTestView: View {
         case .tailcat where shouldRecordBenchmark && scenario == .cold:
             preparation = .tailcatControlledRestart
             let preparationStartedAt = Date()
-            preparationSucceeded = await tailcatController.recoverRouteFromForeground(appStore: appStore)
+            preparationSucceeded = await tailcatController.recoverRouteFromForeground(
+                appStore: appStore,
+                refreshPathDiagnosticAfterPreparation: false
+            )
             preparationMillis = elapsedMilliseconds(since: preparationStartedAt)
             guard preparationSucceeded, let restartedEndpoint = selectedEndpoint else {
                 appStore.lastConnectionTestDurationMillis = nil
