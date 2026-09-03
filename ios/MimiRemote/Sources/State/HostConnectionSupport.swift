@@ -154,7 +154,7 @@ struct ConnectionTestStageTiming: Identifiable, Equatable {
     }
 }
 
-enum ConnectionTestRoute: String, CaseIterable, Equatable {
+enum ConnectionTestRoute: String, CaseIterable, Codable, Equatable {
     case tailscale
     case tailcat
 }

@@ -6418,6 +6418,118 @@
         }
       }
     },
+    "ui.connection_benchmark_clear": {
+      "comment": "Destructive action that clears locally stored connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除样本" } }
+      }
+    },
+    "ui.connection_benchmark_clear_confirmation": {
+      "comment": "Confirmation before clearing all locally stored connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear all comparison samples?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除全部对照样本？" } }
+      }
+    },
+    "ui.connection_benchmark_cold_footer": {
+      "comment": "Measurement instructions for cold connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat is restarted under app control. Tailscale is system-managed, so its sample records the next request after you prepare a cold system state." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 会由 App 控制重启。Tailscale 由系统管理，请先准备冷启动状态，再立即开始测试。" } }
+      }
+    },
+    "ui.connection_benchmark_export": {
+      "comment": "Action that exports privacy-safe connection benchmark samples as JSON.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Export JSON" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导出 JSON" } }
+      }
+    },
+    "ui.connection_benchmark_export_failed": {
+      "comment": "Alert title shown when benchmark JSON export fails.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unable to export comparison results" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法导出对照结果" } }
+      }
+    },
+    "ui.connection_benchmark_latency_value": {
+      "comment": "Median and P95 benchmark latency values. First argument is median, second is P95.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Median %@ · P95 %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "中位数 %@ · P95 %@" } }
+      }
+    },
+    "ui.connection_benchmark_privacy_footer": {
+      "comment": "Privacy explanation for connection benchmark recording.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Off by default. Samples contain route type, coarse path, timings, and result only. Addresses, IPs, access codes, and keys are never recorded." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "默认关闭。样本只包含线路类型、粗粒度路径、耗时和结果，不记录地址、IP、访问码或密钥。" } }
+      }
+    },
+    "ui.connection_benchmark_progress_value": {
+      "comment": "Current benchmark sample count followed by target count.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ of %@ samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ / %@ 个样本" } }
+      }
+    },
+    "ui.connection_benchmark_record_samples": {
+      "comment": "Toggle that records connection tests into a comparison dataset.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Record comparison samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "记录对照样本" } }
+      }
+    },
+    "ui.connection_benchmark_recovery_footer": {
+      "comment": "Measurement instructions for network recovery benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switch Wi-Fi or cellular first, then start immediately. Recovery time is measured from the test button, not from the system network-change event." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先切换 Wi-Fi 或蜂窝网络，再立即开始。恢复耗时从点击测试按钮起算，不冒充系统网络切换的完整耗时。" } }
+      }
+    },
+    "ui.connection_benchmark_scenario": {
+      "comment": "Picker title for a benchmark connection lifecycle scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scenario" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "测试场景" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_cold": {
+      "comment": "Cold connection benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cold" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "冷连接" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_recovery": {
+      "comment": "Network recovery benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recovery" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络恢复" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_warm": {
+      "comment": "Warm connection benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Warm" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "热连接" } }
+      }
+    },
+    "ui.connection_benchmark_title": {
+      "comment": "Title for the optional Tailcat and Tailscale comparison recorder.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Controlled comparison" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "对照记录" } }
+      }
+    },
+    "ui.connection_benchmark_warm_footer": {
+      "comment": "Measurement instructions for warm connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Keep the device and network unchanged. Run both routes repeatedly without restarting either client." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保持设备和网络不变，不重启客户端，分别重复测试两条线路。" } }
+      }
+    },
     "ui.connection_status": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
