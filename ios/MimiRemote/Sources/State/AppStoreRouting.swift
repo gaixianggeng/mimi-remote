@@ -2,6 +2,21 @@ import CryptoKit
 import Foundation
 
 extension AppStore {
+    func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
+        guard let profileID = activeConnectionProfileID,
+              let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
+              connectionProfiles[index].connectionRoute != route else {
+            return
+        }
+        var nextProfiles = connectionProfiles
+        nextProfiles[index].connectionRoute = route
+        nextProfiles[index].revision &+= 1
+        if profileID != ephemeralLocalProfileID {
+            persistProfiles(try JSONEncoder().encode(nextProfiles))
+        }
+        connectionProfiles = nextProfiles
+    }
+
     func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
         guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
             throw ConnectionProfileError.notFound

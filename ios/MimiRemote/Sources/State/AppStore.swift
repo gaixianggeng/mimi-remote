@@ -46,7 +46,7 @@ final class AppStore: ObservableObject {
     private let routeProbe: ConnectionRouteProbe
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let usesDefaultRouteProbe: Bool
-    private var ephemeralLocalProfileID: String?
+    var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
@@ -258,21 +258,6 @@ final class AppStore: ObservableObject {
             activeRouteEndpoint = nil
             activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         }
-    }
-
-    func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
-        guard let profileID = activeConnectionProfileID,
-              let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
-              connectionProfiles[index].connectionRoute != route else {
-            return
-        }
-        var nextProfiles = connectionProfiles
-        nextProfiles[index].connectionRoute = route
-        nextProfiles[index].revision &+= 1
-        if profileID != ephemeralLocalProfileID {
-            persistProfiles(try JSONEncoder().encode(nextProfiles))
-        }
-        connectionProfiles = nextProfiles
     }
 
     /// 只为主机选择器生成探活描述；Token 读取在独立 actor 中执行。
@@ -1559,7 +1544,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func persistProfiles(_ encodedProfiles: Data) {
+    func persistProfiles(_ encodedProfiles: Data) {
         // V1 镜像保留一个兼容周期，确保旧版本回滚后仍可读取连接档案；Token 仍只在 Keychain。
         defaults.set(encodedProfiles, forKey: Self.profilesKey)
         defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
