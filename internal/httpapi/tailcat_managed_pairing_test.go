@@ -695,6 +695,38 @@ func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
 	}
 }
 
+func TestManagedPairingResetRetriesRuntimeClearAfterTemporaryFailure(t *testing.T) {
+	now := time.Date(2026, 9, 4, 17, 10, 0, 0, time.UTC)
+	fake := &fakeTailcatSidecar{
+		status: tailcatStatus{
+			Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+		},
+		operationErr: errors.New("control socket unavailable"),
+	}
+	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	if err := controller.Reset(context.Background()); err == nil {
+		t.Fatal("运行时清空失败应返回明确错误")
+	}
+	if controller.state.HostID != "" || fake.managedCalls != 1 {
+		t.Fatalf("运行时失败不能回滚已持久化的空登记：state=%+v calls=%d", controller.state, fake.managedCalls)
+	}
+	fake.operationErr = nil
+	if err := controller.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.managedCalls != 2 || len(fake.managedKeys) != 0 {
+		t.Fatalf("后台同步必须重试清空运行时白名单：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
+	}
+}
+
 func TestValidManagedTailcatPublicKeyRequiresCanonicalNodeKey(t *testing.T) {
 	for _, value := range []string{
 		"",

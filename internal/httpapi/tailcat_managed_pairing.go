@@ -271,7 +271,10 @@ func (c *managedPairingController) Sync(ctx context.Context) error {
 		return c.stateLoadError
 	}
 	if strings.TrimSpace(c.state.HostID) == "" {
-		return nil
+		// 本地登记清空后仍要持续协调 sidecar。上一次重置如果因取消或
+		// 控制 socket 故障失败，后台同步必须继续移除旧的托管白名单。
+		_, err := c.applyPolicyLocked(ctx, nil)
+		return err
 	}
 	status := c.tailcat.Status(ctx)
 	if !status.Running || strings.TrimSpace(status.PublicKey) == "" {
@@ -685,7 +688,20 @@ func writeManagedPairingState(path string, state managedPairingState) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	// 文件 fsync 只保证临时文件内容；目录 fsync 才保证替换后的文件名
+	// 在突然断电后仍指向最新的撤销状态。
+	return directory.Sync()
 }
 
 func decodeManagedDeviceToken(value string) ([]byte, error) {
