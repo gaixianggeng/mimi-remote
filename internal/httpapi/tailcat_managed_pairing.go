@@ -352,10 +352,13 @@ func (c *managedPairingController) Complete(
 		complete, err = c.completeCloudPairing(ctx, parsedSession.String(), grant, status.PublicKey)
 	}
 	if err != nil {
-		if cloudError := (*managedCloudError)(nil); !errors.As(err, &cloudError) {
-			return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(ctx, err)
+		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) &&
+			cloudError.StatusCode >= 400 && cloudError.StatusCode < 500 &&
+			cloudError.StatusCode != http.StatusRequestTimeout &&
+			cloudError.StatusCode != http.StatusTooManyRequests {
+			return tailcatStatus{}, err
 		}
-		return tailcatStatus{}, err
+		return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(ctx, err)
 	}
 	parsedHostID, parseErr := uuid.Parse(complete.Host.ID)
 	if parseErr != nil || parsedHostID.Version() != 4 {

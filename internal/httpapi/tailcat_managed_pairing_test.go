@@ -307,6 +307,34 @@ func TestManagedPairingCloudRejectionsNeverApplyAuthorization(t *testing.T) {
 	}
 }
 
+func TestManagedPairingRetryableCompletionFailureInvalidatesOldPolicy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"code":"upstream_failure"}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, Address: "tailcat:stable", PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, time.Now, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		PolicyValidUntil:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	_, err := controller.Complete(context.Background(), testManagedSessionID, managedToken('g'), testManagedMobileKey)
+	if err == nil || !strings.Contains(err.Error(), "upstream_failure") {
+		t.Fatalf("网关失败应保留服务端错误：%v", err)
+	}
+	if !controller.state.AuthorizationInvalid || len(controller.state.AllowedMobileKeys) != 0 ||
+		fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("不确定的网关失败必须撤销旧策略：state=%+v calls=%d keys=%v", controller.state, fake.managedCalls, fake.managedKeys)
+	}
+}
+
 func TestManagedPolicyUnauthorizedClearsAuthorizationImmediately(t *testing.T) {
 	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
