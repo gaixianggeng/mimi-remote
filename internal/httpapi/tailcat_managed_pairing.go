@@ -85,6 +85,7 @@ type managedPairingController struct {
 
 	state             managedPairingState
 	stateLoadError    error
+	stateWritePending bool
 	appliedKeys       []string
 	appliedHostKey    string
 	appliedInstanceID string
@@ -270,6 +271,14 @@ func (c *managedPairingController) Sync(ctx context.Context) error {
 	if c.stateLoadError != nil {
 		return c.stateLoadError
 	}
+	if c.stateWritePending {
+		if err := c.saveStateLocked(c.state); err != nil {
+			// 磁盘中可能仍保留旧白名单。在失效状态真正落盘前，只持续
+			// 清空运行时授权，不向控制面领取并应用任何新策略。
+			_, applyErr := c.applyPolicyLocked(ctx, nil)
+			return errors.Join(err, applyErr)
+		}
+	}
 	if strings.TrimSpace(c.state.HostID) == "" {
 		// 本地登记清空后仍要持续协调 sidecar。上一次重置如果因取消或
 		// 控制 socket 故障失败，后台同步必须继续移除旧的托管白名单。
@@ -351,7 +360,8 @@ func (c *managedPairingController) Complete(
 	}
 	hostID := parsedHostID.String()
 	next := c.state
-	if next.HostID != "" && next.HostID != hostID {
+	hostChanged := next.HostID != "" && next.HostID != hostID
+	if hostChanged {
 		c.clearPolicyInState(&next)
 	}
 	next.Version = 1
@@ -359,6 +369,12 @@ func (c *managedPairingController) Complete(
 	next.MacTailcatPublicKey = status.PublicKey
 	next.AuthorizationInvalid = false
 	if err := c.saveStateLocked(next); err != nil {
+		if hostChanged {
+			// 控制面已经把这台 Mac 归入另一个主机记录。新身份不能落盘时，
+			// 旧主机策略已经过期，必须先持久化失效标记并清空运行时授权。
+			_, invalidateErr := c.invalidatePolicyLocked(ctx, err)
+			return tailcatStatus{}, invalidateErr
+		}
 		return tailcatStatus{}, err
 	}
 	updated, err := c.refreshPolicyLocked(ctx)
@@ -470,6 +486,7 @@ func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) 
 	if saveErr != nil {
 		// 落盘失败不能阻止运行时重置，也不能让后台同步恢复旧授权。
 		c.state = next
+		c.stateWritePending = true
 	}
 	// 与服务端撤销一致，先清空持久状态，再执行可能耗时的 Tailcat 重启。
 	_, applyErr := c.applyPolicyLocked(ctx, nil)
@@ -504,6 +521,7 @@ func (c *managedPairingController) invalidatePolicyLocked(
 	if saveErr != nil {
 		// 落盘失败不能阻止运行时撤销，也不能让下一次临时网络故障恢复旧白名单。
 		c.state = next
+		c.stateWritePending = true
 	}
 	// 先持久化失效标记，再执行可能耗时的 Tailcat 重启。进程在重启期间退出时，
 	// 下次启动也不会从磁盘恢复刚撤销的权限。
@@ -565,6 +583,7 @@ func (c *managedPairingController) saveStateLocked(next managedPairingState) err
 	}
 	c.state = next
 	c.stateLoadError = nil
+	c.stateWritePending = false
 	return nil
 }
 

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -230,6 +231,29 @@ func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testin
 	}
 	if fakeManaged.completeCall != 0 || fakeTailcat.allowCalls != 0 {
 		t.Fatal("不完整托管授权不能修改任何白名单")
+	}
+}
+
+func TestTailcatLocalResetContinuesAfterManagedCleanupFailure(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{operationErr: errors.New("disk full")}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	server.router.tailcatLocalToken = "local-only-token"
+
+	request := authedRequest(t, http.MethodPost, "/api/local/tailcat", tailcatControlRequest{Action: "reset"})
+	request.RemoteAddr = "127.0.0.1:54321"
+	request.Host = "127.0.0.1:8787"
+	request.Header.Set(TailcatLocalControlHeader, "local-only-token")
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "disk full") {
+		t.Fatalf("托管清理失败应返回明确错误：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeTailcat.resetCalls != 1 {
+		t.Fatalf("托管清理失败后仍应重置底层 Tailcat：calls=%d", fakeTailcat.resetCalls)
 	}
 }
 

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -72,14 +73,14 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
 	case "reset":
+		var managedResetErr error
 		if r.managedPairing != nil {
-			if err := r.managedPairing.Reset(req.Context()); err != nil {
-				writeError(w, http.StatusServiceUnavailable, err.Error())
-				return
-			}
+			managedResetErr = r.managedPairing.Reset(req.Context())
 		}
-		status, err := r.tailcat.Reset(req.Context())
-		if err != nil {
+		// 显式重置必须同时移除托管授权和 clients.json 中的免费授权。
+		// 即使托管状态落盘失败，也不能跳过底层 Tailcat 身份重置。
+		status, tailcatResetErr := r.tailcat.Reset(req.Context())
+		if err := errors.Join(managedResetErr, tailcatResetErr); err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}

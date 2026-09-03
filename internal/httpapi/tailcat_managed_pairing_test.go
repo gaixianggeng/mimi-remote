@@ -697,9 +697,14 @@ func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
 		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
 	}}
 	persistAttemptedBeforeRuntimeClear := false
+	writeCalls := 0
 	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, func() time.Time { return now }, func(string, managedPairingState) error {
+		writeCalls++
 		persistAttemptedBeforeRuntimeClear = fake.managedCalls == 0
-		return errors.New("disk full")
+		if writeCalls == 1 {
+			return errors.New("disk full")
+		}
+		return nil
 	})
 	controller.state = managedPairingState{
 		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
@@ -719,8 +724,45 @@ func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
 	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
 		t.Fatalf("重置落盘失败不能保留运行时授权：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
 	}
-	if err := controller.Sync(context.Background()); err != nil || fake.managedCalls != 1 {
-		t.Fatalf("后台同步不能恢复已重置授权：err=%v calls=%d", err, fake.managedCalls)
+	if err := controller.Sync(context.Background()); err != nil || fake.managedCalls != 1 || writeCalls != 2 {
+		t.Fatalf("后台同步应补写空登记且不能恢复授权：err=%v runtime_calls=%d writes=%d", err, fake.managedCalls, writeCalls)
+	}
+}
+
+func TestManagedPairingHostReassignmentWriteFailureRevokesOldRuntimePolicy(t *testing.T) {
+	newHostID := "40000000-0000-4000-8000-000000000002"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/pairing-sessions/"+testManagedSessionID+"/complete" {
+			t.Fatalf("主机身份写盘失败后不应读取新策略：%s", request.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"host":{"id":"`+newHostID+`"}}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, Address: "tailcat:stable", PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, time.Now, func(string, managedPairingState) error {
+		return errors.New("disk full")
+	})
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		PolicyValidUntil:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	_, err := controller.Complete(context.Background(), testManagedSessionID, managedToken('g'), testManagedMobileKey)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("主机身份写盘失败应返回明确错误：%v", err)
+	}
+	if controller.state.HostID != testManagedHostID || !controller.state.AuthorizationInvalid ||
+		len(controller.state.AllowedMobileKeys) != 0 {
+		t.Fatalf("新主机身份写盘失败后旧策略必须失效：%+v", controller.state)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("新主机身份写盘失败后必须清空运行时授权：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
 	}
 }
 
