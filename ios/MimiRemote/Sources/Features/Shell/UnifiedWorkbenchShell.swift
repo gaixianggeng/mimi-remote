@@ -94,6 +94,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .onChange(of: appStore.activeHostScope.profileID) { _, _ in
                 synchronizeSidebarLifecycle()
+                selectedWorkspaceSessionRuntime = .codex // Runtime 能力按主机隔离，切换后不能继承旧主机选择。
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 handleLayoutModeChange(
