@@ -24,7 +24,7 @@ func (r *Router) tailcatLocalHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	switch req.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, r.tailcat.Status(req.Context()))
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case http.MethodPost:
 		r.tailcatLocalAction(w, req)
 	default:
@@ -49,7 +49,11 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, r.tailcat.Status(req.Context()))
+		if r.managedPairing != nil {
+			r.managedPairing.Start()
+			_ = r.managedPairing.Sync(req.Context())
+		}
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "disable":
 		if _, err := agentsetup.ConfigureTailcat(r.configPath, false); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -59,31 +63,42 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, r.tailcat.Status(req.Context()))
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "pair":
 		status, err := r.tailcat.Pair(req.Context())
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
 	case "reset":
+		if r.managedPairing != nil {
+			if err := r.managedPairing.Reset(req.Context()); err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
+		}
 		status, err := r.tailcat.Reset(req.Context())
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
 	case "configure":
 		status, err := r.tailcat.ConfigureDERPMap(req.Context(), payload.DERPMapURL)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
 	default:
 		writeError(w, http.StatusBadRequest, "Tailcat action 只支持 enable、disable、pair、reset 或 configure")
 	}
+}
+
+func (r *Router) decorateTailcatStatus(status tailcatStatus) tailcatStatus {
+	status.MacInstallationID = strings.TrimSpace(r.installationID)
+	return status
 }
 
 func (r *Router) isAuthorizedTailcatLocalRequest(req *http.Request) bool {

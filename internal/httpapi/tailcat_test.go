@@ -19,6 +19,8 @@ type fakeTailcatSidecar struct {
 	status         tailcatStatus
 	allowedKey     string
 	allowCalls     int
+	managedKeys    []string
+	managedCalls   int
 	startCalls     int
 	stopCalls      int
 	pairCalls      int
@@ -26,6 +28,32 @@ type fakeTailcatSidecar struct {
 	configureCalls int
 	configuredURL  string
 	operationErr   error
+}
+
+type fakeManagedPairingService struct {
+	status       tailcatStatus
+	sessionID    string
+	grant        string
+	mobileKey    string
+	completeCall int
+	operationErr error
+}
+
+func (f *fakeManagedPairingService) Start()                      {}
+func (f *fakeManagedPairingService) Sync(context.Context) error  { return f.operationErr }
+func (f *fakeManagedPairingService) Reset(context.Context) error { return f.operationErr }
+func (f *fakeManagedPairingService) Close()                      {}
+func (f *fakeManagedPairingService) Complete(
+	_ context.Context,
+	sessionID string,
+	grant string,
+	mobileKey string,
+) (tailcatStatus, error) {
+	f.completeCall++
+	f.sessionID = sessionID
+	f.grant = grant
+	f.mobileKey = mobileKey
+	return f.status, f.operationErr
 }
 
 func (f *fakeTailcatSidecar) Status(context.Context) tailcatStatus { return f.status }
@@ -44,6 +72,11 @@ func (f *fakeTailcatSidecar) Pair(context.Context) (tailcatStatus, error) {
 func (f *fakeTailcatSidecar) AllowClient(_ context.Context, key string) (tailcatStatus, error) {
 	f.allowCalls++
 	f.allowedKey = key
+	return f.status, f.operationErr
+}
+func (f *fakeTailcatSidecar) ReplaceManagedClients(_ context.Context, keys []string) (tailcatStatus, error) {
+	f.managedCalls++
+	f.managedKeys = append([]string(nil), keys...)
 	return f.status, f.operationErr
 }
 func (f *fakeTailcatSidecar) Reset(context.Context) (tailcatStatus, error) {
@@ -138,6 +171,65 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 	}
 	if fake.allowCalls != 1 {
 		t.Fatalf("无效票据不能修改白名单：calls=%d", fake.allowCalls)
+	}
+}
+
+func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{status: tailcatStatus{
+		Enabled: true, Running: true, Address: "tailcat-managed-address",
+	}}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	payload := pairingClaimRequest{
+		Endpoint:         ticket.Endpoint,
+		IssuedAt:         ticket.IssuedAt,
+		ExpiresAt:        ticket.ExpiresAt,
+		Signature:        ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+		ManagedSessionID: testManagedSessionID,
+		ManagedGrant:     managedToken('g'),
+	}
+
+	response := performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("托管 Tailcat 配对失败：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.completeCall != 1 || fakeManaged.sessionID != payload.ManagedSessionID ||
+		fakeManaged.grant != payload.ManagedGrant || fakeManaged.mobileKey != payload.TailcatClientKey {
+		t.Fatalf("托管配对参数未完整传递：%+v", fakeManaged)
+	}
+	if fakeTailcat.allowCalls != 0 {
+		t.Fatal("托管配对不能写入永久免费的 clients.json 白名单")
+	}
+}
+
+func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	payload := pairingClaimRequest{
+		Endpoint:         ticket.Endpoint,
+		IssuedAt:         ticket.IssuedAt,
+		ExpiresAt:        ticket.ExpiresAt,
+		Signature:        ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+		ManagedSessionID: testManagedSessionID,
+	}
+
+	response := performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("不完整托管授权必须拒绝：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.completeCall != 0 || fakeTailcat.allowCalls != 0 {
+		t.Fatal("不完整托管授权不能修改任何白名单")
 	}
 }
 

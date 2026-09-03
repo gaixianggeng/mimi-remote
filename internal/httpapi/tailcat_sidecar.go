@@ -35,8 +35,11 @@ type tailcatStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
+	InstanceID        string `json:"instance_id,omitempty"`
 	DERPMapURL        string `json:"derp_map_url,omitempty"`
 	Address           string `json:"address,omitempty"`
+	PublicKey         string `json:"public_key,omitempty"`
+	MacInstallationID string `json:"mac_installation_id,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
@@ -49,6 +52,7 @@ type tailcatSidecar interface {
 	Stop(context.Context) error
 	Pair(context.Context) (tailcatStatus, error)
 	AllowClient(context.Context, string) (tailcatStatus, error)
+	ReplaceManagedClients(context.Context, []string) (tailcatStatus, error)
 	Reset(context.Context) (tailcatStatus, error)
 	ConfigureDERPMap(context.Context, string) (tailcatStatus, error)
 	Close()
@@ -297,6 +301,27 @@ func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey st
 	defer s.operationMu.Unlock()
 	var status tailcatStatus
 	err := s.call(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
+	s.applyConfigurationToStatus(&status)
+	return status, err
+}
+
+func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
+	ctx context.Context,
+	publicKeys []string,
+) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	var status tailcatStatus
+	err := s.call(
+		ctx,
+		http.MethodPut,
+		"/managed-clients",
+		map[string][]string{"public_keys": publicKeys},
+		&status,
+	)
 	s.applyConfigurationToStatus(&status)
 	return status, err
 }
