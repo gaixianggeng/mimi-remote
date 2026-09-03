@@ -268,7 +268,7 @@ func (m *Manager) schedulePairExpiryLocked(generation uint64, delay time.Duratio
 	time.AfterFunc(delay, func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if m.pairGeneration != generation || m.pairHost == nil {
+		if m.pairGeneration != generation {
 			return
 		}
 		if err := m.closePairLocked(); err != nil {
