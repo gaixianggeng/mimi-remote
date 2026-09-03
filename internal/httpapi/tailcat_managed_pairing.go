@@ -330,7 +330,9 @@ func (c *managedPairingController) Complete(
 		// Mac 被用户撤销后，控制面要求用新 Token 重新登记。只在显式新配对中
 		// 轮换一次；后台同步永远不会自行替换设备凭证。
 		if rotateErr := c.rotateHostTokenLocked(); rotateErr != nil {
-			return tailcatStatus{}, rotateErr
+			// 控制面已经明确撤销旧凭证。即使新凭证无法落盘，也必须清空
+			// 本地登记与运行时授权，不能让旧客户端继续连接。
+			return tailcatStatus{}, errors.Join(rotateErr, c.clearRegistrationLocked(ctx))
 		}
 		if _, clearErr := c.applyPolicyLocked(ctx, nil); clearErr != nil {
 			return tailcatStatus{}, clearErr
