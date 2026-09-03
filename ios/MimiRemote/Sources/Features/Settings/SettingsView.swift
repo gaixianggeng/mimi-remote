@@ -555,7 +555,9 @@ struct SettingsValueLabel: View {
     var value: String? = nil
     let systemImage: String
     var valueTint: Color? = nil
+    var symbolTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
+    var showsProgress = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -564,7 +566,7 @@ struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.secondaryText)
+                .foregroundStyle(symbolTint ?? tokens.secondaryText)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
@@ -574,13 +576,13 @@ struct SettingsValueLabel: View {
             if dynamicTypeSize.isAccessibilitySize, let value {
                 VStack(alignment: .leading, spacing: 2) {
                     titleText(tokens: tokens)
-                    valueText(value, tokens: tokens)
+                    valueCluster(value, tokens: tokens)
                 }
             } else if let value {
                 HStack(alignment: .center, spacing: 12) {
                     titleText(tokens: tokens)
                     Spacer(minLength: 12)
-                    valueText(value, tokens: tokens)
+                    valueCluster(value, tokens: tokens)
                 }
             } else {
                 titleText(tokens: tokens)
@@ -612,6 +614,17 @@ struct SettingsValueLabel: View {
             .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
             .minimumScaleFactor(0.82)
             .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+    }
+
+    private func valueCluster(_ value: String, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 6) {
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(valueTint ?? tokens.secondaryText)
+            }
+            valueText(value, tokens: tokens)
+        }
     }
 
     private var rowHeight: CGFloat {
@@ -647,6 +660,7 @@ private struct ConnectionManagementView: View {
             for: .scrollContent
         )
         .navigationTitle(L10n.text("ui.mac_connection"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
