@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ConnectionSpeedTestView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -9,6 +10,13 @@ struct ConnectionSpeedTestView: View {
     @State private var selectedRoute: ConnectionTestRoute = .tailscale
     @State private var isRunningTest = false
     @State private var didSelectInitialRoute = false
+    @State private var recordsBenchmarkSamples = false
+    @State private var benchmarkScenario: ConnectionBenchmarkScenario = .warm
+    @State private var benchmarkDataset = ConnectionBenchmarkDataset.load()
+    @State private var benchmarkExportDocument: ConnectionBenchmarkExportDocument?
+    @State private var isPresentingBenchmarkExporter = false
+    @State private var benchmarkExportError: String?
+    @State private var confirmsBenchmarkReset = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -23,6 +31,8 @@ struct ConnectionSpeedTestView: View {
                 .labelsHidden()
                 .accessibilityIdentifier("settings.connectionSpeedTest.route")
             }
+
+            benchmarkRecordingSection(tokens: tokens)
 
             Section {
                 HStack(alignment: .center, spacing: 12) {
@@ -132,6 +142,118 @@ struct ConnectionSpeedTestView: View {
             didSelectInitialRoute = true
             selectedRoute = appStore.activeConnectionRoute == .tailcat ? .tailcat : .tailscale
         }
+        .fileExporter(
+            isPresented: $isPresentingBenchmarkExporter,
+            document: benchmarkExportDocument,
+            contentType: ConnectionBenchmarkExportDocument.contentType,
+            defaultFilename: benchmarkExportFilename
+        ) { result in
+            if case .failure(let error) = result {
+                benchmarkExportError = error.localizedDescription
+            }
+        }
+        .alert(L10n.text("ui.connection_benchmark_export_failed"), isPresented: benchmarkExportErrorBinding) {
+            Button(L10n.text("ui.got_it"), role: .cancel) {}
+        } message: {
+            Text(benchmarkExportError ?? L10n.text("ui.please_try_again_later"))
+        }
+        .confirmationDialog(
+            L10n.text("ui.connection_benchmark_clear_confirmation"),
+            isPresented: $confirmsBenchmarkReset,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.text("ui.connection_benchmark_clear"), role: .destructive) {
+                benchmarkDataset = .clear()
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {}
+        }
+    }
+
+    @ViewBuilder
+    private func benchmarkRecordingSection(tokens: ThemeTokens) -> some View {
+        Section {
+            Toggle(L10n.text("ui.connection_benchmark_record_samples"), isOn: $recordsBenchmarkSamples)
+                .accessibilityIdentifier("settings.connectionSpeedTest.benchmark.enabled")
+                .disabled(isTesting)
+
+            if recordsBenchmarkSamples {
+                Picker(L10n.text("ui.connection_benchmark_scenario"), selection: $benchmarkScenario) {
+                    ForEach(ConnectionBenchmarkScenario.allCases) { scenario in
+                        Text(scenario.title).tag(scenario)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.connectionSpeedTest.benchmark.scenario")
+                .disabled(isTesting)
+
+                ForEach(ConnectionTestRoute.allCases, id: \.rawValue) { route in
+                    benchmarkProgressRow(route: route, tokens: tokens)
+                }
+
+                if !benchmarkDataset.samples.isEmpty {
+                    HStack(spacing: 12) {
+                        Button {
+                            prepareBenchmarkExport()
+                        } label: {
+                            Label(L10n.text("ui.connection_benchmark_export"), systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(isTesting)
+
+                        Spacer(minLength: 8)
+
+                        Button(role: .destructive) {
+                            confirmsBenchmarkReset = true
+                        } label: {
+                            Text(L10n.text("ui.connection_benchmark_clear"))
+                        }
+                        .disabled(isTesting)
+                    }
+                }
+            }
+        } header: {
+            Text(L10n.text("ui.connection_benchmark_title"))
+        } footer: {
+            if recordsBenchmarkSamples {
+                Text(benchmarkScenario.footer)
+            } else {
+                Text(L10n.text("ui.connection_benchmark_privacy_footer"))
+            }
+        }
+    }
+
+    private func benchmarkProgressRow(
+        route: ConnectionTestRoute,
+        tokens: ThemeTokens
+    ) -> some View {
+        let statistics = benchmarkDataset.statistics(route: route, scenario: benchmarkScenario)
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(route.title)
+                    .foregroundStyle(tokens.primaryText)
+                Text(L10n.format(
+                    "ui.connection_benchmark_progress_value",
+                    String(statistics.sampleCount),
+                    String(ConnectionBenchmarkDataset.targetSampleCount)
+                ))
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+            }
+
+            Spacer(minLength: 8)
+
+            if let median = statistics.medianMillis, let p95 = statistics.p95Millis {
+                Text(L10n.format(
+                    "ui.connection_benchmark_latency_value",
+                    AppStore.connectionTestDurationText(milliseconds: median),
+                    AppStore.connectionTestDurationText(milliseconds: p95)
+                ))
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(tokens.secondaryText)
+                .multilineTextAlignment(.trailing)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func connectionSpeedResultSummary(
@@ -380,20 +502,136 @@ struct ConnectionSpeedTestView: View {
     }
 
     private func runSelectedTest() async {
-        guard let endpoint = selectedEndpoint else { return }
         let route = selectedRoute
+        let scenario = benchmarkScenario
+        let shouldRecordBenchmark = recordsBenchmarkSamples
+        guard var endpoint = selectedEndpoint else { return }
         isRunningTest = true
         defer { isRunningTest = false }
 
-        if route == .tailcat {
-            await tailcatController.refreshPathDiagnostic()
+        var preparation: ConnectionBenchmarkPreparation
+        var preparationMillis: Int?
+        var preparationSucceeded = true
+        switch route {
+        case .tailscale:
+            preparation = .tailscaleSystemManaged
+        case .tailcat where shouldRecordBenchmark && scenario == .cold:
+            preparation = .tailcatControlledRestart
+            let preparationStartedAt = Date()
+            preparationSucceeded = await tailcatController.recoverRouteFromForeground(appStore: appStore)
+            preparationMillis = elapsedMilliseconds(since: preparationStartedAt)
+            guard preparationSucceeded, let restartedEndpoint = selectedEndpoint else {
+                appStore.lastConnectionTestDurationMillis = nil
+                appStore.lastConnectionTestReport = nil
+                if shouldRecordBenchmark {
+                    recordBenchmarkSample(
+                        route: route,
+                        scenario: scenario,
+                        endpoint: endpoint,
+                        report: nil,
+                        tailcatDiagnostic: nil,
+                        preparation: preparation,
+                        preparationMillis: preparationMillis,
+                        preparationSucceeded: false
+                    )
+                }
+                return
+            }
+            endpoint = restartedEndpoint
+        case .tailcat:
+            preparation = .tailcatReusedClient
         }
+
         await appStore.testConnection(
             endpoint: endpoint,
             token: appStore.token,
             route: route,
             affectsConnectionStatus: route.isActive(in: appStore)
         )
+
+        var tailcatDiagnostic: TailcatPathDiagnostic?
+        if route == .tailcat {
+            // 路径探测放在业务测速之后，避免 DISCO Ping 预热冷连接样本。
+            await tailcatController.refreshPathDiagnostic()
+            tailcatDiagnostic = tailcatController.lastDiagnostic
+        }
+        guard shouldRecordBenchmark,
+              let report = appStore.lastConnectionTestReport,
+              report.route == route else { return }
+        recordBenchmarkSample(
+            route: route,
+            scenario: scenario,
+            endpoint: endpoint,
+            report: report,
+            tailcatDiagnostic: tailcatDiagnostic,
+            preparation: preparation,
+            preparationMillis: preparationMillis,
+            preparationSucceeded: preparationSucceeded
+        )
+    }
+
+    private func recordBenchmarkSample(
+        route: ConnectionTestRoute,
+        scenario: ConnectionBenchmarkScenario,
+        endpoint: String,
+        report: ConnectionTestReport?,
+        tailcatDiagnostic: TailcatPathDiagnostic?,
+        preparation: ConnectionBenchmarkPreparation,
+        preparationMillis: Int?,
+        preparationSucceeded: Bool
+    ) {
+        benchmarkDataset.append(ConnectionBenchmarkSample.make(
+            route: route,
+            scenario: scenario,
+            endpoint: endpoint,
+            report: report,
+            tailcatDiagnostic: tailcatDiagnostic,
+            preparation: preparation,
+            preparationMillis: preparationMillis,
+            preparationSucceeded: preparationSucceeded
+        ))
+        benchmarkDataset.persist()
+    }
+
+    private func prepareBenchmarkExport() {
+        do {
+            let data = try benchmarkDataset.encodedExport(
+                appVersion: SessionLogExportBuilder.currentAppVersion(),
+                osVersion: ProcessInfo.processInfo.operatingSystemVersionString
+            )
+            benchmarkExportDocument = ConnectionBenchmarkExportDocument(data: data)
+            isPresentingBenchmarkExporter = true
+        } catch {
+            benchmarkExportError = error.localizedDescription
+        }
+    }
+
+    private var benchmarkExportErrorBinding: Binding<Bool> {
+        Binding(
+            get: { benchmarkExportError != nil },
+            set: { isPresented in
+                if !isPresented {
+                    benchmarkExportError = nil
+                }
+            }
+        )
+    }
+
+    private var benchmarkExportFilename: String {
+        "Mimi-Connection-Benchmark-\(Self.filenameTimestamp(Date())).json"
+    }
+
+    private func elapsedMilliseconds(since date: Date) -> Int {
+        max(0, Int((Date().timeIntervalSince(date) * 1_000).rounded()))
+    }
+
+    private static func filenameTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: date)
     }
 
     private var resultTitle: String {
@@ -464,6 +702,30 @@ private extension ConnectionTestRoute {
             return appStore.activeConnectionRoute != .tailcat
         case .tailcat:
             return appStore.activeConnectionRoute == .tailcat
+        }
+    }
+}
+
+private extension ConnectionBenchmarkScenario {
+    var title: String {
+        switch self {
+        case .cold:
+            return L10n.text("ui.connection_benchmark_scenario_cold")
+        case .warm:
+            return L10n.text("ui.connection_benchmark_scenario_warm")
+        case .networkRecovery:
+            return L10n.text("ui.connection_benchmark_scenario_recovery")
+        }
+    }
+
+    var footer: String {
+        switch self {
+        case .cold:
+            return L10n.text("ui.connection_benchmark_cold_footer")
+        case .warm:
+            return L10n.text("ui.connection_benchmark_warm_footer")
+        case .networkRecovery:
+            return L10n.text("ui.connection_benchmark_recovery_footer")
         }
     }
 }
@@ -555,6 +817,25 @@ private struct ConnectionSpeedMetricRow: View {
             Text(value)
                 .monospacedDigit()
         }
+    }
+}
+
+private struct ConnectionBenchmarkExportDocument: FileDocument {
+    static let contentType = UTType.json
+    static var readableContentTypes: [UTType] { [.json] }
+
+    private let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 
