@@ -145,6 +145,7 @@ struct InitialConnectionSettingsSections: View {
     @State private var profileOperationID: String?
     @State private var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @State private var isShowingAdvancedManualConnection = false
+    @State private var isShowingAddConnection = false
     @State private var localError: String?
     @State private var copyingConnectionProfileID: String?
     @State private var copiedConnectionProfileID: String?
@@ -158,99 +159,42 @@ struct InitialConnectionSettingsSections: View {
 
         Group {
             if !appStore.connectionProfiles.isEmpty {
-                Section {
-                    if let current = appStore.connectionProfileSettingsModel.current {
-                        connectionProfileRow(current)
-                    }
-                    ForEach(appStore.connectionProfileSettingsModel.others) { item in
-                        connectionProfileRow(item)
-                    }
-                } header: {
-                    Text(L10n.text("ui.saved_mac"))
-                } footer: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
-                        Text(L10n.text("ui.connection_info_copy_security_notice"))
-                    }
-                }
+                savedConnectionsSection(tokens: tokens)
             }
 
             // 状态和线路描述的就是上面那台当前电脑，紧跟其后才符合"控件靠近它作用的对象"。
-            // 添加电脑是低频动作，让位到页尾，首屏先回答"我连着哪台机器、通不通"。
             if appStore.isConfigured {
                 connectionStatusSection
                 connectionMethodSection
             }
 
-            if !appStore.isConfigured && !appStore.localAgentDetected {
-                HostInstallationSetupView(
-                    connectionFooter: connectionSectionFooter,
-                    isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
-                    onScan: beginScanningHost,
-                    onPasteConnectionInfo: pasteConnectionInfo
-                )
+            // 配对完成后"添加"是列表自己的动作，已经收进列表末尾那一行并推一层；
+            // 首次配对、以及有配置却没有档案的兼容路径，仍然把入口直接铺在页面上。
+            if !usesCollapsibleAddConnection {
+                if !appStore.isConfigured && !appStore.localAgentDetected {
+                    HostInstallationSetupView(
+                        connectionFooter: connectionSectionFooter,
+                        isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
+                        onScan: beginScanningHost,
+                        onPasteConnectionInfo: pasteConnectionInfo
+                    )
 
-                connectionPresentationSection {
-                    advancedConnectionOptions(tokens: tokens)
-                } header: {
-                    Text(L10n.text("ui.other_connection_methods"))
-                } footer: {
-                    EmptyView()
-                }
-            } else {
-                connectionPresentationSection {
-#if targetEnvironment(macCatalyst)
-                    if appStore.localAgentDetected {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label(
-                                appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
-                                systemImage: "checkmark.circle.fill"
-                            )
-                            .font(themeStore.uiFont(.body, weight: .semibold))
-                            .foregroundStyle(tokens.success)
-                            if !appStore.isConfigured {
-                                Text(localAgentPairingHint)
-                                    .font(themeStore.uiFont(.footnote))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 2)
+                    connectionPresentationSection {
+                        advancedConnectionOptions(tokens: tokens)
+                    } header: {
+                        Text(L10n.text("ui.other_connection_methods"))
+                    } footer: {
+                        EmptyView()
                     }
-#endif
-                    // 这一节的 footer 已经写明推荐扫码，布局也要说同一句话：
-                    // 只有扫码保留满宽强调按钮，粘贴与命令行、手动连接同属备选路径，
-                    // 一起降级成列表行，避免两颗等重的大按钮互相抵消主次。
-                    Button {
-                        beginScanningHost()
-                    } label: {
-                        Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
-                            .frame(maxWidth: .infinity)
+                } else {
+                    connectionPresentationSection {
+                        addConnectionControls(tokens: tokens)
+                        advancedConnectionOptions(tokens: tokens)
+                    } header: {
+                        Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.start_setup"))
+                    } footer: {
+                        Text(connectionSectionFooter)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                    .accessibilityIdentifier("settings.connection.scanQRCode")
-
-                    Button(action: pasteConnectionInfo) {
-                        Label(
-                            L10n.text("ui.paste_connection_info"),
-                            systemImage: "doc.on.clipboard"
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }
-                    .tint(tokens.primaryAction)
-                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                    .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                    .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
-
-                    advancedConnectionOptions(tokens: tokens)
-                } header: {
-                    Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.start_setup"))
-                } footer: {
-                    Text(connectionSectionFooter)
                 }
             }
 
@@ -345,6 +289,131 @@ struct InitialConnectionSettingsSections: View {
                 Text(L10n.text("ui.connection_method"))
             }
         }
+    }
+
+    /// 列表里已经有机器、且配对完成时，"添加电脑"退回成列表自己的一行，就地展开。
+    /// 首次配对必须把扫码铺在页面上，有配置却没有档案的兼容路径同理，都走常驻分支。
+    private var usesCollapsibleAddConnection: Bool {
+        appStore.isConfigured && !appStore.connectionProfiles.isEmpty
+    }
+
+    /// 添加入口并进这一节之后，原先挂在"添加电脑"那节上的回调与确认框要跟着搬家：
+    /// 删除凭据本来就由本节的 ⋯ 菜单触发，扫码回调也只能有一个 presenter。
+    @ViewBuilder
+    private func savedConnectionsSection(tokens: ThemeTokens) -> some View {
+        if usesCollapsibleAddConnection {
+            connectionPresentationSection {
+                savedConnectionsRows(tokens: tokens)
+            } header: {
+                Text(L10n.text("ui.saved_mac"))
+            } footer: {
+                savedConnectionsFooter
+            }
+        } else {
+            Section {
+                savedConnectionsRows(tokens: tokens)
+            } header: {
+                Text(L10n.text("ui.saved_mac"))
+            } footer: {
+                savedConnectionsFooter
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func savedConnectionsRows(tokens: ThemeTokens) -> some View {
+        if let current = appStore.connectionProfileSettingsModel.current {
+            connectionProfileRow(current)
+        }
+        ForEach(appStore.connectionProfileSettingsModel.others) { item in
+            connectionProfileRow(item)
+        }
+        if usesCollapsibleAddConnection {
+            addConnectionDisclosure(tokens: tokens)
+        }
+    }
+
+    private var savedConnectionsFooter: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
+            Text(L10n.text("ui.connection_info_copy_security_notice"))
+        }
+    }
+
+    /// 添加入口一共只有四条，推一层不值得：多一次进出、还要离开这一页才能看到
+    /// 自己刚加的机器。就地展开/收起既保住第一屏的显眼度，也不增加导航深度。
+    /// 图标槽宽度与 HostPlatformGlyph 一致，收起时这一行和上面几台机器对齐。
+    private func addConnectionDisclosure(tokens: ThemeTokens) -> some View {
+        DisclosureGroup(isExpanded: $isShowingAddConnection) {
+            addConnectionControls(tokens: tokens)
+            advancedConnectionOptions(tokens: tokens)
+            Text(connectionSectionFooter)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "plus.circle")
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(tokens.primaryAction)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+
+                Text(L10n.text("ui.add_mac"))
+                    .font(themeStore.uiFont(.body))
+            }
+        }
+        .accessibilityIdentifier("settings.connection.addMac")
+    }
+
+    @ViewBuilder
+    private func addConnectionControls(tokens: ThemeTokens) -> some View {
+#if targetEnvironment(macCatalyst)
+        if appStore.localAgentDetected {
+            VStack(alignment: .leading, spacing: 5) {
+                Label(
+                    appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.success)
+                if !appStore.isConfigured {
+                    Text(localAgentPairingHint)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+#endif
+        // 这一节的 footer 已经写明推荐扫码，布局也要说同一句话：
+        // 只有扫码保留满宽强调按钮，粘贴与命令行、手动连接同属备选路径，
+        // 一起降级成列表行，避免两颗等重的大按钮互相抵消主次。
+        Button {
+            beginScanningHost()
+        } label: {
+            Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(tokens.primaryAction)
+        .controlSize(.large)
+        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+        .accessibilityIdentifier("settings.connection.scanQRCode")
+
+        Button(action: pasteConnectionInfo) {
+            Label(
+                L10n.text("ui.paste_connection_info"),
+                systemImage: "doc.on.clipboard"
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .tint(tokens.primaryAction)
+        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+        .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+        .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
     }
 
     /// 首次连接时只把高级恢复入口放进这一节；已有连接仍复用同一组控件。
