@@ -409,6 +409,9 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 	if policy.HostID != c.state.HostID || policy.PolicyVersion == 0 {
 		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略身份或版本无效"))
 	}
+	if c.state.PolicyVersion != 0 && policy.PolicyVersion < c.state.PolicyVersion {
+		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略版本发生回退"))
+	}
 	validUntil, parseErr := time.Parse(time.RFC3339Nano, policy.ValidUntil)
 	if parseErr != nil || !validUntil.After(c.now()) {
 		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略已经失效"))
@@ -443,11 +446,15 @@ func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) 
 }
 
 func (c *managedPairingController) cachedPolicyFreshLocked() bool {
-	if c.state.PolicyFetchedAt == "" || c.state.AuthorizationInvalid {
+	if c.state.PolicyFetchedAt == "" || c.state.PolicyValidUntil == "" || c.state.AuthorizationInvalid {
 		return false
 	}
 	fetchedAt, err := time.Parse(time.RFC3339Nano, c.state.PolicyFetchedAt)
 	if err != nil || fetchedAt.After(c.now().Add(time.Minute)) {
+		return false
+	}
+	validUntil, err := time.Parse(time.RFC3339Nano, c.state.PolicyValidUntil)
+	if err != nil || !validUntil.After(c.now()) {
 		return false
 	}
 	return c.now().Sub(fetchedAt) <= c.offlineTTL
@@ -464,6 +471,11 @@ func (c *managedPairingController) invalidatePolicyLocked(
 	next.AuthorizationInvalid = true
 	_, applyErr := c.applyPolicyLocked(ctx, nil)
 	saveErr := c.saveStateLocked(next)
+	if saveErr != nil {
+		// 持久化失败时仍保留内存中的失效标记，避免下一次临时网络故障
+		// 重新应用刚被服务端撤销的旧白名单。
+		c.state = next
+	}
 	return tailcatStatus{}, errors.Join(policyError, applyErr, saveErr)
 }
 
