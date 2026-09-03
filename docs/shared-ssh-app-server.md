@@ -1,6 +1,6 @@
 # 共享 SSH App Server
 
-本文描述 macOS 默认使用的共享 SSH transport，以及 Linux 显式指定远端 SSH target 时的高级模式。Linux 默认与 Windows 相同，由 `agentd` 管理 loopback WebSocket App Server，不要求 SSH，也不使用 Desktop 私有 IPC。
+本文描述 macOS 默认使用的共享 SSH transport、Linux 默认使用的本机 Unix control socket，以及 Linux 显式指定远端 SSH target 时的高级模式。Linux 本机模式不要求 SSH，也不使用 Desktop 私有 IPC。
 
 ## 目标
 
@@ -10,9 +10,24 @@ Mimi、远程 Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 U
 Mimi App -> agentd 鉴权 WebSocket -> localhost SSH -> codex app-server proxy --┐
 本机 Desktop -----------------------> localhost SSH -> proxy -----------------+-> ~/.codex/app-server-control/app-server-control.sock
 远程 Desktop -------------------------------> Mac SSH -> proxy ---------------┘
+
+Linux：Mimi App -> agentd -> ~/.codex/app-server-control/app-server-control.sock <- codex --remote unix://
 ```
 
-OpenClaw 和 Desktop 的普通 “This Mac” 模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+
+Linux 默认配置为：
+
+```json
+{
+  "app_server": {
+    "transport": "local",
+    "auto_title": true
+  }
+}
+```
+
+agentd 直接连接标准 control socket。socket 缺失时，它优先通过独立的 user-systemd scope 启动 `codex app-server --listen unix://`；因此 agentd 重启不会终止 resident。没有可用 user-systemd 时会退回同一用户下的 detached 进程。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
 ## 配置
 

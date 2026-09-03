@@ -360,7 +360,7 @@ main() {
     if [[ -n "$app_server_ssh_target" ]]; then
       fail "远端 SSH App Server 预检失败；请先确认 ssh ${app_server_ssh_target} true 可无交互执行，并确认远端 Codex 已安装。"
     fi
-    fail "Linux 本机 App Server 预检失败；请确认 Codex CLI 已安装、已登录，并支持 app-server WebSocket。"
+    fail "Linux 共享本机 App Server 预检失败；请确认 Codex CLI 已安装、已登录，并支持 app-server Unix control socket。"
   fi
 
   mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/code"

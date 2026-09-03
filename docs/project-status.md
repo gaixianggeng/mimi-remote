@@ -18,7 +18,8 @@ Mimi Remote 的目标是让 iPhone / iPad 安全连接用户自己的 Mac，在�
 iPhone / iPad SwiftUI App
   -> 宿主的 Tailscale 或同一局域网 Endpoint:8787
   -> agentd Bearer 鉴权、工作区授权和 JSON-RPC 安全校验
-  -> Linux/Windows：agentd 托管的 loopback WebSocket Codex App Server
+  -> Linux：与本机终端共享的 Unix control socket Codex App Server
+  -> Windows：agentd 托管的 loopback WebSocket Codex App Server
      或 macOS：localhost SSH -> codex app-server proxy -> 共享 Unix App Server
   -> 本机 Codex 凭证、线程状态和项目目录
 ```
@@ -28,13 +29,13 @@ iPhone / iPad SwiftUI App
 ### 已确定的边界
 
 - `agentd` 是薄网关，不复制一套 Codex 业务协议。
-- Linux/Windows 由 `agentd` 托管官方 App Server 的 loopback WebSocket 生命周期；macOS 使用官方 SSH bootstrap、`app-server proxy` 和默认 Unix Socket。main 不读取或控制 Codex Desktop 私有 IPC，也不使用 `app-server daemon` 生命周期。
-- macOS 上 Mimi、本机 Desktop SSH 主机和远程 Desktop SSH 主机共享同一个 Unix App Server。Linux/Windows 的受管 App Server 与 Desktop 普通本地模式、OpenClaw 保持独立；agentd 不枚举或停止不属于自己的进程。
+- Linux 由 `agentd` 直接连接默认 Unix control socket，并与本机终端共享 resident；macOS 使用 SSH bootstrap、`app-server proxy` 和同类默认 Unix Socket；Windows 由 `agentd` 托管 loopback WebSocket 生命周期。main 不读取或控制 Codex Desktop 私有 IPC，也不依赖仅支持 standalone 安装的 `app-server daemon` 生命周期。
+- macOS 上 Mimi、本机 Desktop SSH 主机和远程 Desktop SSH 主机共享同一个 Unix App Server。Linux 上 Mimi 与使用 control socket 的本机终端共享同一个 App Server。Windows 的受管 App Server 以及 OpenClaw 等其他 runtime 保持独立；agentd 不枚举或停止不属于自己的进程。
 - 从共享实验版本升级前，必须先在旧版本中关闭 Codex Desktop 共享。新版本检测到旧配置、LaunchAgent job、plist 或 Mimi ownership 环境时会拒绝启动，并保持文件和进程不变；它不会在后台终止 Desktop 任务。旧 LaunchAgent 若用 `--codex-daemon-supervisor` 启动新 App，新 App 只退出该后台进程，不会恢复 daemon 或误开第二个菜单栏实例。
 - 生产主链路使用 `/api/app-server/ws`；旧 `/api/sessions*`、Web/PWA 和 PTY 文本解析链路不再恢复。
 - 未显式选择模型时不发送 `model`，交给本机 app-server rollout 决定；不要在客户端写死某个模型版本。
 - Codex 默认保持网络关闭；只有用户显式选择 `danger-full-access` 或 `:danger-full-access` 时允许 `approvalPolicy=never`，其它模式继续由 Gateway 收敛审批策略。
-- iPad 只保存外侧 `agentd` Token；macOS 的 SSH host key、密钥和 Unix Socket，以及 Linux/Windows 的 App Server capability token，都只留在对应宿主。
+- iPad 只保存外侧 `agentd` Token；macOS 的 SSH host key、密钥和 Unix Socket、Linux 的 Unix Socket，以及 Windows 的 App Server capability token，都只留在对应宿主。
 - 项目目录、`browse_roots` 内明确打开的目录和 agentd 管理的 Worktree 都要绑定到真实 canonical cwd，不能跨授权根切换。
 - 任意 shell 不是移动端 MVP。远程命令只允许执行配置中的 action，并保留确认、超时和输出截断。
 

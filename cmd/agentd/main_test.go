@@ -29,6 +29,39 @@ import (
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
+func TestMain(m *testing.M) {
+	var cleanup func()
+	if runtime.GOOS == "linux" {
+		dir, err := os.MkdirTemp("", "agentd-main-codex-")
+		if err != nil {
+			panic(err)
+		}
+		codexBin := filepath.Join(dir, "codex")
+		body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'codex-cli 0.149.1'; fi\nexit 0\n"
+		if err := os.WriteFile(codexBin, []byte(body), 0o700); err != nil {
+			panic(err)
+		}
+		cleanup = func() { _ = os.RemoveAll(dir) }
+		migrateAppServerToSharedLocal = func(ctx context.Context, path string) error {
+			return agentsetup.MigrateAppServerToSharedLocalWithPreflight(
+				ctx,
+				path,
+				func(context.Context, string, map[string]string) error { return nil },
+			)
+		}
+		runAgentSetup = func(ctx context.Context, options agentsetup.Options) (agentsetup.Result, error) {
+			options.CodexBin = codexBin
+			options.LocalAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
+			return agentsetup.Run(ctx, options)
+		}
+	}
+	code := m.Run()
+	if cleanup != nil {
+		cleanup()
+	}
+	os.Exit(code)
+}
+
 func TestVersionDoesNotRequireConfig(t *testing.T) {
 	if err := run([]string{"agentd", "version"}); err != nil {
 		t.Fatalf("version 不应依赖配置：%v", err)
@@ -1664,16 +1697,20 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	afterAppServer := after["app_server"].(map[string]any)
 	if config.SupportsManagedAppServer() {
 		if !bytes.Equal(updated, append(original, '\n')) {
-			t.Fatalf("Windows/Linux 应继续使用原有受管 WS 配置：\nwant=%s\n got=%s", original, updated)
+			t.Fatalf("Windows 应继续使用原有受管 WS 配置：\nwant=%s\n got=%s", original, updated)
 		}
 		loaded, loadErr := config.Load(configPath)
 		if loadErr != nil || loaded.AppServer.Transport != "ws" || !loaded.AppServer.Managed {
-			t.Fatalf("Windows/Linux 受管 WS 配置必须保持可加载：cfg=%+v err=%v", loaded.AppServer, loadErr)
+			t.Fatalf("Windows 受管 WS 配置必须保持可加载：cfg=%+v err=%v", loaded.AppServer, loadErr)
 		}
 		return
 	}
-	if afterAppServer["transport"] != "ssh" || afterAppServer["ssh_target"] != "127.0.0.1" {
-		t.Fatalf("doctor --fix 应迁移为默认共享 SSH 配置：%+v", afterAppServer)
+	wantTransport := "ssh"
+	if runtime.GOOS == "linux" {
+		wantTransport = "local"
+	}
+	if afterAppServer["transport"] != wantTransport || (wantTransport == "ssh" && afterAppServer["ssh_target"] != "127.0.0.1") {
+		t.Fatalf("doctor --fix 应迁移为平台共享 App Server 配置：%+v", afterAppServer)
 	}
 	var before map[string]any
 	if err := json.Unmarshal(original, &before); err != nil {
@@ -1683,8 +1720,10 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	delete(beforeAppServer, "managed")
 	delete(beforeAppServer, "listen")
 	delete(beforeAppServer, "ws_token_file")
-	beforeAppServer["transport"] = "ssh"
-	beforeAppServer["ssh_target"] = "127.0.0.1"
+	beforeAppServer["transport"] = wantTransport
+	if wantTransport == "ssh" {
+		beforeAppServer["ssh_target"] = "127.0.0.1"
+	}
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("doctor --fix 只能改写旧 WS 迁移所需字段：\nwant=%+v\n got=%+v", before, after)
 	}
@@ -1699,8 +1738,9 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrated.Runtime.Type != "codex_app_server" || migrated.AppServer.Transport != "ssh" || migrated.AppServer.SSHTarget == "" {
-		t.Fatalf("配置必须迁移为共享 SSH：%+v %+v", migrated.Runtime, migrated.AppServer)
+	if migrated.Runtime.Type != "codex_app_server" || migrated.AppServer.Transport != wantTransport ||
+		(wantTransport == "ssh" && migrated.AppServer.SSHTarget == "") {
+		t.Fatalf("配置必须迁移为平台共享 App Server：%+v %+v", migrated.Runtime, migrated.AppServer)
 	}
 	if migrated.Auth.Token != authToken || len(migrated.Actions) != 1 || len(migrated.BrowseRoots) != 1 {
 		t.Fatalf("修复后业务配置必须保留：%+v", migrated)
@@ -1742,7 +1782,11 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	}
 	if config.SupportsManagedAppServer() {
 		if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen == "" {
-			t.Fatalf("Windows/Linux 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
+			t.Fatalf("Windows 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
+		}
+	} else if runtime.GOOS == "linux" {
+		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
+			t.Fatalf("Linux 完整 setup 应生成共享本机配置：%+v", cfg.AppServer)
 		}
 	} else if cfg.AppServer.SSHTarget == "" {
 		t.Fatalf("完整 setup 应生成 SSH target：%+v", cfg)
@@ -2248,8 +2292,12 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 		t.Fatalf("平台默认路径迁移必须保留未知字段：%+v", destination)
 	}
 	if migratesSSH && !config.SupportsManagedAppServer() {
-		if appServer["transport"] != "ssh" || appServer["ssh_target"] != "127.0.0.1" {
-			t.Fatalf("新配置必须将旧 WS 迁移为共享 SSH：%+v", destination)
+		wantTransport := "ssh"
+		if runtime.GOOS == "linux" {
+			wantTransport = "local"
+		}
+		if appServer["transport"] != wantTransport || (wantTransport == "ssh" && appServer["ssh_target"] != "127.0.0.1") {
+			t.Fatalf("新配置必须将旧 WS 迁移为平台共享 transport：%+v", destination)
 		}
 		for _, obsolete := range []string{"managed", "listen", "ws_token_file", "remote_gateway"} {
 			if _, ok := appServer[obsolete]; ok {

@@ -32,6 +32,11 @@ type Options struct {
 	Listen             string
 	AppServerSSHTarget string
 	Force              bool
+	// CodexBin overrides CLI discovery for embedding integrations and tests.
+	CodexBin string
+	// LocalAppServerPreflight is an integration seam for command-level tests.
+	// Production callers leave it nil and use the real control-socket handshake.
+	LocalAppServerPreflight func(context.Context, string, map[string]string) error
 }
 
 type Result struct {
@@ -57,6 +62,10 @@ func Run(ctx context.Context, options Options) (Result, error) {
 }
 
 func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTransactionOps) (Result, error) {
+	sharedLocalPreflight := localAppServerPreflight
+	if options.LocalAppServerPreflight != nil {
+		sharedLocalPreflight = options.LocalAppServerPreflight
+	}
 	cfgPath, err := resolveConfigPath(options.ConfigPath)
 	if err != nil {
 		return Result{}, err
@@ -71,6 +80,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		// 继续把失效 transport 当成当前配置。
 		if runtime.GOOS == "darwin" {
 			if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
+				return Result{}, err
+			}
+		} else if runtime.GOOS == "linux" {
+			if err := MigrateAppServerToSharedLocalWithPreflight(ctx, cfgPath, sharedLocalPreflight); err != nil {
 				return Result{}, err
 			}
 		}
@@ -93,14 +106,22 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
 	}
 	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
+	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
+	codexBin := strings.TrimSpace(options.CodexBin)
+	if codexBin == "" {
+		codexBin = defaultCodexBin()
+	}
 	appServerConfig := config.DefaultManagedAppServerConfig()
+	if useSharedLocalAppServer {
+		appServerConfig = config.DefaultSharedLocalAppServerConfig()
+	}
 	appServerSSHTarget := ""
 	if runtime.GOOS == "windows" && strings.TrimSpace(options.AppServerSSHTarget) != "" {
 		if err := appserver.ValidateSSHTarget(options.AppServerSSHTarget); err != nil {
 			return Result{}, fmt.Errorf("app_server.ssh_target 无效：%w", err)
 		}
 	}
-	if !useManagedLocalAppServer {
+	if !useManagedLocalAppServer && !useSharedLocalAppServer {
 		appServerSSHTarget, err = normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
 		if err != nil {
 			return Result{}, err
@@ -118,10 +139,9 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			SSHTarget: appServerSSHTarget,
 			AutoTitle: true,
 		}
-	} else if runtime.GOOS == "linux" {
-		codexBin := defaultCodexBin()
+	} else if useSharedLocalAppServer {
 		codexEnv := map[string]string{"TERM": "xterm-256color"}
-		if err := localAppServerPreflight(ctx, codexBin, codexEnv); err != nil {
+		if err := sharedLocalPreflight(ctx, codexBin, codexEnv); err != nil {
 			return Result{}, fmt.Errorf("Linux 本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	}
@@ -194,7 +214,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		},
 		AppServer: appServerConfig,
 		Codex: config.CodexConfig{
-			Bin:         defaultCodexBin(),
+			Bin:         codexBin,
 			DefaultArgs: []string{"--no-alt-screen"},
 			Env: map[string]string{
 				"TERM": "xterm-256color",

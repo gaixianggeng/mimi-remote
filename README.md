@@ -129,7 +129,7 @@ flowchart LR
 This repository ships the complete link: the native iPhone/iPad app, the Go `agentd` gateway for macOS, Windows, and Linux, the Mac menu bar app, the Windows tray app, and the Claude Code compatibility bridge. The mobile app connects only to your own host computer, so project files, session history, and runtime credentials stay on that computer.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
-- **Platform-specific Codex transport:** Linux and Windows let `agentd` own one Codex App Server on a loopback-only WebSocket. macOS connects through SSH to a shared Unix App Server. Neither path uses Desktop private IPC.
+- **Platform-specific Codex transport:** Linux and local terminal clients share one resident App Server through Codex's standard Unix control socket. macOS reaches the same socket through SSH, while Windows lets `agentd` own a loopback-only WebSocket App Server. None of these paths uses Desktop private IPC.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
 - **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the host computer. That computer must remain awake and privately reachable.
 
@@ -166,7 +166,7 @@ Private-LAN access is opt-in. Setup only enables it on a Private Windows network
 
 Linux uses the release archive and a per-user systemd service. Install and sign in to Codex CLI 0.149.1 or later as the same Linux user, verify the release checksums, extract the archive, and run `bash ./scripts/install-linux.sh install`.
 
-By default, Linux does not require `sshd`, an SSH key, or changes to `authorized_keys`. `agentd` starts one Codex App Server at `ws://127.0.0.1:4222` with a private capability-token file, verifies a real protocol initialization before becoming ready, and stops that child process with the service. An explicit `AGENTD_APP_SERVER_SSH_TARGET` remains available for advanced remote-host deployments.
+By default, Linux does not require `sshd`, an SSH key, or changes to `authorized_keys`. `agentd` attaches to `~/.codex/app-server-control/app-server-control.sock`; if it is absent, setup starts one resident Codex App Server in an independent user-systemd scope. A local terminal client launched with `codex --remote unix://` and Mimi can therefore open the same Thread through the same backend, and restarting `agentd` does not stop that backend. An explicit `AGENTD_APP_SERVER_SSH_TARGET` remains available for advanced remote-host deployments.
 
 ### macOS host
 

@@ -10,14 +10,17 @@ import (
 	"testing"
 )
 
-func TestSetupUsesManagedLocalAppServerOnLinuxWithoutExplicitSSH(t *testing.T) {
+func TestSetupUsesSharedLocalAppServerOnLinuxWithoutExplicitSSH(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-specific transport selection")
 	}
-	if !setupUsesManagedLocalAppServer("") {
-		t.Fatal("Linux 默认应使用本机受管 App Server")
+	if setupUsesManagedLocalAppServer("") {
+		t.Fatal("Linux 默认不应使用本机受管 WebSocket")
 	}
-	if setupUsesManagedLocalAppServer("127.0.0.1") {
+	if !setupUsesSharedLocalAppServer("") {
+		t.Fatal("Linux 默认应使用共享本机 App Server")
+	}
+	if setupUsesSharedLocalAppServer("127.0.0.1") {
 		t.Fatal("Linux 显式 SSH target 时应保留远端 SSH 模式")
 	}
 }

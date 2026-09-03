@@ -8,7 +8,7 @@
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
 - Windows 普通用户使用按用户 EXE 安装器；后台由当前用户计划任务托管，Codex App Server 只监听本机 loopback WebSocket。
-- Linux 使用发布包中的 user-systemd 模板；`agentd` 默认直接托管本机 loopback WebSocket App Server，不要求 SSH。
+- Linux 使用发布包中的 user-systemd 模板；`agentd` 默认连接 Codex 标准 Unix control socket，与本机终端共享 resident，不要求 SSH。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - 配置和移动端配对 Token 都留在系统用户配置目录，升级二进制不会删除它们。
 - 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
@@ -276,7 +276,7 @@ tar -xzf "$archive"
 bash ./scripts/install-linux.sh install
 ```
 
-默认模式直接使用当前 Linux 用户的 Codex CLI，不需要安装或配置 `sshd`，也不会读取或修改 `authorized_keys`。安装脚本会在替换二进制或 unit 前，用候选版本启动一次短命的本机 App Server，并完成 Codex 版本与真实 `initialize` 预检；正式服务随后管理一个带私有 capability-token 文件、只监听 `ws://127.0.0.1:4222` 的 App Server。
+默认模式直接使用当前 Linux 用户的 Codex CLI，不需要安装或配置 `sshd`，也不会读取或修改 `authorized_keys`。安装脚本会在替换二进制或 unit 前连接或启动 `~/.codex/app-server-control/app-server-control.sock` 并完成真实 `initialize` 预检；正式服务继续连接这个 resident，本机终端可通过 `codex --remote unix://` 打开同一个后端和 Thread。resident 优先运行在独立 user-systemd scope 中，不随 agentd 重启而停止。
 
 若确实要把 Codex 放到另一台 SSH 主机，可显式执行 `AGENTD_APP_SERVER_SSH_TARGET=user@host bash ./scripts/install-linux.sh install`。该高级模式才要求预先配置 host key 和非交互密钥认证；安装器仍不会修改 `authorized_keys` 或放宽 sshd。首次 setup 会把目标持久化到配置，systemd unit 不需要继承该环境变量。
 
