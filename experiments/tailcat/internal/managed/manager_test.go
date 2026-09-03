@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"tailscale.com/types/key"
@@ -59,6 +60,75 @@ func TestReplaceManagedClientsRetainsOldHostWhenCloseFails(t *testing.T) {
 	}
 	if !oldHost.closed || oldHost.closeCalls != 2 || startCalls != 1 {
 		t.Fatalf("下一次同步应重试关闭并完成替换：closed=%t closes=%d starts=%d", oldHost.closed, oldHost.closeCalls, startCalls)
+	}
+}
+
+func TestStartPairingRetainsOldPairHostWhenCloseFails(t *testing.T) {
+	oldPairHost := &fakeManagedHost{closeErr: errors.New("close failed")}
+	startCalls := 0
+	manager := &Manager{
+		config:        Config{StateDir: t.TempDir()},
+		pairHost:      oldPairHost,
+		pairExpiresAt: time.Now().Add(time.Minute),
+		startHost: func(tunnel.HostConfig) (managedHost, error) {
+			startCalls++
+			return &fakeManagedHost{}, nil
+		},
+	}
+
+	if _, err := manager.StartPairing(time.Minute); err == nil {
+		t.Fatal("旧配对主机关闭失败时应中止新配对")
+	}
+	if manager.pairHost != oldPairHost || oldPairHost.closeCalls != 1 || startCalls != 0 {
+		t.Fatalf("关闭失败后必须保留旧配对主机：retained=%t closes=%d starts=%d", manager.pairHost == oldPairHost, oldPairHost.closeCalls, startCalls)
+	}
+}
+
+func TestExpiredPairHostRetriesCloseFailure(t *testing.T) {
+	oldPairHost := &fakeManagedHost{closeErr: errors.New("close failed")}
+	manager := &Manager{
+		config:         Config{StateDir: t.TempDir()},
+		pairHost:       oldPairHost,
+		pairExpiresAt:  time.Now().Add(-time.Second),
+		pairGeneration: 7,
+	}
+
+	manager.mu.Lock()
+	manager.schedulePairExpiryLocked(7, 0)
+	manager.mu.Unlock()
+	for range 100 {
+		manager.mu.Lock()
+		closeAttempted := oldPairHost.closeCalls > 0
+		manager.mu.Unlock()
+		if closeAttempted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	manager.mu.Lock()
+	retainedAfterFailure := manager.pairHost == oldPairHost && oldPairHost.closeCalls > 0
+	manager.mu.Unlock()
+	if !retainedAfterFailure {
+		t.Fatal("过期配对主机关闭失败时应保留句柄并安排重试")
+	}
+
+	manager.mu.Lock()
+	oldPairHost.closeErr = nil
+	manager.schedulePairExpiryLocked(7, 0)
+	manager.mu.Unlock()
+	for range 100 {
+		manager.mu.Lock()
+		closed := manager.pairHost == nil
+		manager.mu.Unlock()
+		if closed {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.pairHost != nil || !oldPairHost.closed || oldPairHost.closeCalls < 2 {
+		t.Fatalf("后续重试应关闭过期配对主机：host=%v closed=%t calls=%d", manager.pairHost, oldPairHost.closed, oldPairHost.closeCalls)
 	}
 }
 

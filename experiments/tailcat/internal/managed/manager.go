@@ -18,7 +18,10 @@ import (
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 )
 
-const Version = "0.1"
+const (
+	Version             = "0.1"
+	pairCloseRetryDelay = time.Second
+)
 
 type Config struct {
 	TargetAddr  string
@@ -108,7 +111,9 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closePairLocked()
+	if err := m.closePairLocked(); err != nil {
+		return Status{}, fmt.Errorf("关闭旧 Tailcat 配对服务：%w", err)
+	}
 	pairIdentity := filepath.Join(m.config.StateDir, "pair.private.json")
 	pairAddress := filepath.Join(m.config.StateDir, "pair.address")
 	_ = os.Remove(pairIdentity)
@@ -128,13 +133,7 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	m.pairExpiresAt = time.Now().UTC().Add(ttl)
 	m.pairGeneration++
 	generation := m.pairGeneration
-	time.AfterFunc(ttl, func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.pairGeneration == generation {
-			m.closePairLocked()
-		}
-	})
+	m.schedulePairExpiryLocked(generation, ttl)
 	return m.statusLocked(), nil
 }
 
@@ -197,7 +196,9 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 func (m *Manager) Reset() (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closePairLocked()
+	if err := m.closePairLocked(); err != nil {
+		return Status{}, fmt.Errorf("关闭待重置 Tailcat 配对服务：%w", err)
+	}
 	if m.host != nil {
 		if err := m.host.Close(); err != nil {
 			return Status{}, fmt.Errorf("关闭待重置 Tailcat 服务：%w", err)
@@ -225,17 +226,17 @@ func (m *Manager) Close() error {
 	if m.listener != nil {
 		_ = m.listener.Close()
 	}
-	m.closePairLocked()
-	var err error
+	pairErr := m.closePairLocked()
+	var hostErr error
 	if m.host != nil {
-		err = m.host.Close()
-		if err == nil {
+		hostErr = m.host.Close()
+		if hostErr == nil {
 			m.host = nil
 		}
 	}
 	m.mu.Unlock()
 	_ = os.Remove(m.config.ControlPath)
-	return err
+	return errors.Join(pairErr, hostErr)
 }
 
 func (m *Manager) startStableLocked() error {
@@ -263,14 +264,36 @@ func (m *Manager) startStableHostLocked(managedClients []string) (managedHost, e
 	return host, nil
 }
 
-func (m *Manager) closePairLocked() {
+func (m *Manager) schedulePairExpiryLocked(generation uint64, delay time.Duration) {
+	time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.pairGeneration != generation || m.pairHost == nil {
+			return
+		}
+		if err := m.closePairLocked(); err != nil {
+			// 短期配对主机允许任意客户端接入。关闭失败时保留句柄并持续
+			// 重试，不能因为第一次 Close 失败就让临时入口无限期存活。
+			m.schedulePairExpiryLocked(generation, pairCloseRetryDelay)
+		}
+	})
+}
+
+func (m *Manager) closePairLocked() error {
 	if m.pairHost != nil {
-		_ = m.pairHost.Close()
+		if err := m.pairHost.Close(); err != nil {
+			return err
+		}
 		m.pairHost = nil
 	}
 	m.pairExpiresAt = time.Time{}
-	_ = os.Remove(filepath.Join(m.config.StateDir, "pair.private.json"))
-	_ = os.Remove(filepath.Join(m.config.StateDir, "pair.address"))
+	var cleanupErr error
+	for _, name := range []string{"pair.private.json", "pair.address"} {
+		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("删除 Tailcat 配对状态 %s：%w", name, err))
+		}
+	}
+	return cleanupErr
 }
 
 func (m *Manager) statusLocked() Status {
