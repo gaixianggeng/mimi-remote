@@ -1060,41 +1060,38 @@ struct AccountTokenUsageCard: View {
         )
     }
 
+    /// caption 只在 empty 与 stale 两种状态下有文字。此前无论哪种状态都留着这块
+    /// 空间，代价是常态（loaded）里卡片底部常驻约 20pt 空白——用每次都付的留白，
+    /// 换一次很少发生的跳变。而最频繁的 loading → loaded 两端本就都没有 caption，
+    /// 原本也不会跳；真正会改变高度的只有 empty/stale 之间的切换，那一刻界面本就该变。
+    /// 候选文案的等高测量保留在有 caption 的分支内，两条 caption 互相切换时仍然不跳。
+    @ViewBuilder
     private func activityCaptionArea(tokens: ThemeTokens) -> some View {
-        let caption = activityCaptionText
+        if let caption = activityCaptionText {
+            ZStack(alignment: .topLeading) {
+                // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
+                // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
+                ForEach(
+                    Array(activityCaptionCandidates.enumerated()),
+                    id: \.offset
+                ) { candidate in
+                    Text(candidate.element)
+                        .font(themeStore.uiFont(.caption2))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
 
-        return ZStack(alignment: .topLeading) {
-            // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
-            // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
-            ForEach(
-                Array(activityCaptionCandidates.enumerated()),
-                id: \.offset
-            ) { candidate in
-                Text(candidate.element)
-                    .font(themeStore.uiFont(.caption2))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hidden()
-                    .accessibilityHidden(true)
-            }
-
-            if let caption {
                 Text(caption)
                     .font(themeStore.uiFont(.caption2))
                     .foregroundStyle(activityCaptionTint(tokens: tokens))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier(activityCaptionIdentifier)
-            } else {
-                // loaded/loading/unsupported/failed(nil) 没有 caption，但必须保留相同布局空间；
-                // 透明占位不能进入 VoiceOver，否则会多出一个空的可访问元素。
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .accessibilityHidden(true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityHidden(caption == nil)
     }
 
     private var activityCaptionText: String? {
