@@ -141,6 +141,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
 			return payload, false, nil
 		}
+		if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && !p.codexServerRequestAllowed(frame.Params) {
+			return payload, false, nil
+		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
@@ -148,6 +151,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
+			return payload, false, nil
+		}
+		if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && !p.codexNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
 		p.clearPendingServerRequestsForNotification(&frame)
@@ -311,6 +317,124 @@ func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error)
 		return nil, nil, fmt.Errorf("thread/fork response 无法裁剪")
 	}
 	return rewritten, resultRaw, nil
+}
+
+var codexGlobalNotificationMethods = map[string]struct{}{
+	"account/rateLimits/updated":      {},
+	"mcpServer/startupStatus/updated": {},
+	"deprecationNotice":               {},
+}
+
+func (p *appServerGatewayPolicy) codexServerRequestAllowed(rawParams json.RawMessage) bool {
+	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
+	_, ok := p.allowedThread(threadID)
+	return ok
+}
+
+func (p *appServerGatewayPolicy) codexNotificationAllowed(frame *appServerGatewayFrame) bool {
+	method := strings.TrimSpace(frame.Method)
+	if _, ok := codexGlobalNotificationMethods[method]; ok {
+		return true
+	}
+	if method == "serverRequest/resolved" {
+		return p.codexResolvedNotificationAllowed(frame.Params)
+	}
+	threadID := appServerGatewayThreadIDFromParams(frame.Params)
+	if method == "thread/started" {
+		return p.allowCodexStartedThread(frame.Params, threadID)
+	}
+	_, ok := p.allowedThread(threadID)
+	return ok
+}
+
+func appServerGatewayThreadIDFromParams(rawParams json.RawMessage) string {
+	params, err := decodeGatewayParams(rawParams)
+	if err != nil {
+		return ""
+	}
+	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
+		if threadID, _ := gatewayStringParam(params, key); threadID != "" {
+			return threadID
+		}
+	}
+	if thread, ok := params["thread"].(map[string]any); ok {
+		for _, key := range []string{"id", "threadId", "thread_id", "sessionId", "session_id"} {
+			if threadID, _ := gatewayStringParam(thread, key); threadID != "" {
+				return threadID
+			}
+		}
+	}
+	return ""
+}
+
+func (p *appServerGatewayPolicy) allowCodexStartedThread(rawParams json.RawMessage, threadID string) bool {
+	params, err := decodeGatewayParams(rawParams)
+	if err != nil || threadID == "" || p.router == nil {
+		return false
+	}
+	// 共享 App Server 会把其他本地客户端创建的 thread 广播到所有连接。
+	// cwd 白名单只能证明目录可访问，不能证明这个 thread 属于当前 Bearer
+	// Token。新 thread 必须先通过本连接请求的响应进入授权表；这里仅校验并
+	// 转发已经授权的 thread/started，避免跨客户端把广播误登记为本连接会话。
+	allowed, ok := p.allowedThread(threadID)
+	if !ok {
+		return false
+	}
+	thread, _ := params["thread"].(map[string]any)
+	cwd, _ := gatewayStringParam(thread, "cwd")
+	if cwd == "" {
+		cwd, _ = gatewayStringParam(thread, "path")
+	}
+	if cwd == "" {
+		cwd, _ = gatewayStringParam(params, "cwd")
+	}
+	if cwd == "" || cwd != strings.TrimSpace(cwd) || !filepath.IsAbs(cwd) {
+		return false
+	}
+	scope, ok := p.router.gatewayScopeForPath(cwd)
+	if !ok || scope.id != allowed.scopeID {
+		return false
+	}
+	return true
+}
+
+func (p *appServerGatewayPolicy) codexResolvedNotificationAllowed(rawParams json.RawMessage) bool {
+	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
+	if _, ok := p.allowedThread(threadID); ok {
+		return true
+	}
+	for _, key := range gatewayResolutionRequestKeys(rawParams) {
+		p.mu.Lock()
+		pending, ok := p.pendingServerRequests[key]
+		p.mu.Unlock()
+		if ok {
+			if _, allowed := p.allowedThread(pending.threadID); allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gatewayResolutionRequestKeys(rawParams json.RawMessage) []string {
+	var params struct {
+		RequestID  json.RawMessage `json:"requestId"`
+		RequestID2 json.RawMessage `json:"request_id"`
+		ID         json.RawMessage `json:"id"`
+		ApprovalID json.RawMessage `json:"approvalId"`
+		ItemID     json.RawMessage `json:"itemId"`
+		ItemID2    json.RawMessage `json:"item_id"`
+	}
+	if json.Unmarshal(rawParams, &params) != nil {
+		return nil
+	}
+	keys := make([]string, 0, 6)
+	for _, id := range []json.RawMessage{params.RequestID, params.RequestID2, params.ID, params.ApprovalID, params.ItemID, params.ItemID2} {
+		if key := gatewayRequestIDKey(rawMessagePointer(id)); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func (p *appServerGatewayPolicy) resolveGlobalListCursor(params map[string]any) error {
@@ -897,6 +1021,15 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
 		if threadID, _ = gatewayStringParam(params, key); threadID != "" {
 			break
+		}
+	}
+	if threadID == "" {
+		if thread, ok := params["thread"].(map[string]any); ok {
+			for _, key := range []string{"id", "threadId", "thread_id", "sessionId", "session_id"} {
+				if threadID, _ = gatewayStringParam(thread, key); threadID != "" {
+					break
+				}
+			}
 		}
 	}
 	turnID, _ := gatewayStringParam(params, "turnId")

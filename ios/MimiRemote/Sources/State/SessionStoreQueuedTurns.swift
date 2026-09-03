@@ -1392,10 +1392,13 @@ extension SessionStore {
             conversationStore.updateSendStatus(
                 clientMessageID: clientMessageID,
                 sessionID: sessionID,
-                status: .failed
+                status: .uncertain
             )
             clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+            // 写入已开始后的断线/超时不是明确失败。保持中性待确认状态，不能展示会诱导
+            // 普通重试的错误横幅；持久化队列已在上面的专用分支进入 needsConfirmation。
+            setErrorMessage(nil)
+            setStatusMessage(L10n.text("ui.sending_result_pending_confirmation"))
         }
     }
 }

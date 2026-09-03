@@ -82,7 +82,10 @@ type Router struct {
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
 	codexGatewayMu                sync.Mutex
-	activeCodexGateway            int
+	codexGatewayClosing           bool
+	codexGatewayNextID            uint64
+	codexGateways                 map[uint64]*codexGatewayConnection
+	codexGatewayWG                sync.WaitGroup
 	appServerSSH                  appServerSSHTransport
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
@@ -102,6 +105,7 @@ type Router struct {
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
+	shutdownOnce      sync.Once
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
@@ -191,6 +195,7 @@ func NewRouterWithInstallationIDAndOptions(
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
+		codexGateways:               map[uint64]*codexGatewayConnection{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
@@ -286,14 +291,21 @@ func (r *Router) Shutdown() {
 	if r == nil {
 		return
 	}
-	if r.autoThreadTitles != nil {
-		r.autoThreadTitles.Close()
-	}
-	r.runtimeStatus.Close()
-	r.claudeBridge.shutdown()
-	if r.tailcat != nil {
-		r.tailcat.Close()
-	}
+	r.shutdownOnce.Do(func() {
+		r.shutdownCodexGateways()
+		if r.autoThreadTitles != nil {
+			r.autoThreadTitles.Close()
+		}
+		if r.runtimeStatus != nil {
+			r.runtimeStatus.Close()
+		}
+		if r.claudeBridge != nil {
+			r.claudeBridge.shutdown()
+		}
+		if r.tailcat != nil {
+			r.tailcat.Close()
+		}
+	})
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {

@@ -1041,6 +1041,9 @@ func TestAppServerGatewayDoesNotUseLegacyUpstreamWSToken(t *testing.T) {
 	if !strings.Contains(errFrame.message, "CODEX_UPSTREAM_UNAVAILABLE") {
 		t.Fatalf("未携带旧 WS token 时应安全报告 upstream 不可用：%+v", errFrame)
 	}
+	if errFrame.data["reason"] != "codex_upstream_unavailable" {
+		t.Fatalf("upstream 不可用错误应携带稳定 reason：%+v", errFrame)
+	}
 	if connections.Load() == 0 {
 		t.Fatal("共享 SSH gateway 应至少尝试一次无旧 token 的连接")
 	}

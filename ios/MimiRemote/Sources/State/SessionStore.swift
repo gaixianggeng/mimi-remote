@@ -1234,6 +1234,11 @@ final class SessionStore: ObservableObject {
             turnPayload: item.payload,
             userDelivery: .guided
         )
+        conversationStore.bindTurnID(
+            activeTurnID,
+            clientMessageID: item.clientMessageID,
+            sessionID: session.id
+        )
         setForegroundActivity(.waitingForAssistant, sessionID: session.id)
         setStatusMessage(L10n.text("ui.directed_current_reply_immediately"))
         return true

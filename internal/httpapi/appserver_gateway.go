@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -31,6 +33,7 @@ const (
 	// 个人/小团队场景通常只有 1–2 个移动端。保留重连余量，同时限制一个泄漏的 token
 	// 无限建立“移动端 WS + 本机 upstream WS”连接，避免耗尽文件描述符和 goroutine。
 	appServerGatewayMaxConnections = 8
+	appServerGatewayShutdownWait   = 2 * time.Second
 	appServerGatewayThreadCacheMax = 2048
 	appServerGatewayThreadCacheTTL = 24 * time.Hour
 	defaultCodexReasoningEffort    = "xhigh"
@@ -45,6 +48,72 @@ const (
 	appServerGatewayInitialTurnsMaxLimit     = 5
 	appServerGatewayGlobalCursorMax          = 128
 )
+
+var (
+	errCodexGatewayClosing = errors.New("Codex gateway 正在关闭")
+	errCodexGatewayFull    = errors.New("Codex gateway 连接数已达上限")
+)
+
+type codexGatewayConnection struct {
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	client   io.Closer
+	upstream io.Closer
+	closed   bool
+}
+
+func (c *codexGatewayConnection) attachClient(conn *websocket.Conn) bool {
+	return c.attach(conn, true)
+}
+
+func (c *codexGatewayConnection) attachUpstream(conn *websocket.Conn) bool {
+	return c.attach(conn, false)
+}
+
+func (c *codexGatewayConnection) attach(conn io.Closer, client bool) bool {
+	if c == nil || conn == nil {
+		return false
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return false
+	}
+	if client {
+		c.client = conn
+	} else {
+		c.upstream = conn
+	}
+	c.mu.Unlock()
+	return true
+}
+
+func (c *codexGatewayConnection) close() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
+	cancel := c.cancel
+	client := c.client
+	upstream := c.upstream
+	c.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+	if upstream != nil {
+		_ = upstream.Close()
+	}
+}
 
 var (
 	appServerGatewayReadLimit  int64 = 64 << 20
@@ -555,12 +624,22 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusBadRequest, "app-server gateway 需要 WebSocket Upgrade")
 		return
 	}
-	if !r.acquireCodexGatewaySlot() {
+	gateway, gatewayCtx, err := r.acquireCodexGateway(req.Context())
+	if errors.Is(err, errCodexGatewayClosing) {
+		writeError(w, http.StatusServiceUnavailable, "Codex gateway 正在关闭")
+		return
+	}
+	if errors.Is(err, errCodexGatewayFull) {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "Codex gateway 连接数已达上限，请稍后重试")
 		return
 	}
-	defer r.releaseCodexGatewaySlot()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Codex gateway 暂时不可用")
+		return
+	}
+	defer r.releaseCodexGateway(gateway)
+	req = req.WithContext(gatewayCtx)
 
 	upstreamURL, err := r.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -585,13 +664,16 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	defer client.Close()
+	if !gateway.attachClient(client) {
+		return
+	}
 
 	// 正常链路直接建立这一条连接，避免为每个移动端连接额外创建 readiness proxy。
 	// 只有首次拨号失败时才进入带 single-flight 的 Socket 探测/bootstrap，然后重试一次。
 	// 外侧握手必须先成功，畸形请求和超额连接不能触发任何 SSH 子进程。
 	dialUpstream := func() (*websocket.Conn, time.Duration, error) {
 		dialStart := time.Now()
-		conn, response, dialErr := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
+		conn, response, dialErr := dialer.DialContext(gatewayCtx, upstreamURL, upstreamHeaders)
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}
@@ -599,7 +681,7 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	}
 	upstream, dialDuration, err := dialUpstream()
 	if err != nil {
-		readyCtx, cancelReady := context.WithTimeout(req.Context(), 15*time.Second)
+		readyCtx, cancelReady := context.WithTimeout(gatewayCtx, 15*time.Second)
 		readyErr := r.appServerSSH.EnsureReady(readyCtx)
 		cancelReady()
 		if readyErr == nil {
@@ -614,28 +696,104 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	defer upstream.Close()
+	if !gateway.attachUpstream(upstream) {
+		return
+	}
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
 	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
-	r.proxyAppServerGateway(req.Context(), client, upstream, monitor)
+	r.proxyAppServerGateway(gatewayCtx, client, upstream, monitor)
 }
 
-func (r *Router) acquireCodexGatewaySlot() bool {
+func (r *Router) acquireCodexGateway(parent context.Context) (*codexGatewayConnection, context.Context, error) {
+	if r == nil {
+		return nil, nil, errors.New("Codex gateway 未初始化")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
 	r.codexGatewayMu.Lock()
 	defer r.codexGatewayMu.Unlock()
-	if r.activeCodexGateway >= appServerGatewayMaxConnections {
-		return false
+	if r.codexGatewayClosing {
+		return nil, nil, errCodexGatewayClosing
 	}
-	r.activeCodexGateway++
-	return true
+	if len(r.codexGateways) >= appServerGatewayMaxConnections {
+		return nil, nil, errCodexGatewayFull
+	}
+	if r.codexGateways == nil {
+		r.codexGateways = map[uint64]*codexGatewayConnection{}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	r.codexGatewayNextID++
+	connection := &codexGatewayConnection{cancel: cancel}
+	r.codexGateways[r.codexGatewayNextID] = connection
+	r.codexGatewayWG.Add(1)
+	return connection, ctx, nil
 }
 
-func (r *Router) releaseCodexGatewaySlot() {
+func (r *Router) releaseCodexGateway(connection *codexGatewayConnection) {
+	if r == nil || connection == nil {
+		return
+	}
+	connection.close()
 	r.codexGatewayMu.Lock()
-	if r.activeCodexGateway > 0 {
-		r.activeCodexGateway--
+	for id, current := range r.codexGateways {
+		if current == connection {
+			delete(r.codexGateways, id)
+			r.codexGatewayWG.Done()
+			break
+		}
 	}
 	r.codexGatewayMu.Unlock()
+}
+
+func (r *Router) shutdownCodexGateways() {
+	if r == nil {
+		return
+	}
+	r.codexGatewayMu.Lock()
+	r.codexGatewayClosing = true
+	connections := make([]*codexGatewayConnection, 0, len(r.codexGateways))
+	for _, connection := range r.codexGateways {
+		connections = append(connections, connection)
+	}
+	r.codexGatewayMu.Unlock()
+
+	var cleanup sync.WaitGroup
+	cleanup.Add(len(connections))
+	for _, connection := range connections {
+		go func() {
+			defer cleanup.Done()
+			connection.close()
+		}()
+	}
+	if transport, ok := r.appServerSSH.(interface{ Shutdown() }); ok {
+		cleanup.Add(1)
+		go func() {
+			defer cleanup.Done()
+			transport.Shutdown()
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		cleanup.Wait()
+		r.codexGatewayWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(appServerGatewayShutdownWait):
+		log.Printf("Codex gateway 关闭等待超时 active=%d", r.activeCodexGatewayCount())
+	}
+}
+
+func (r *Router) activeCodexGatewayCount() int {
+	if r == nil {
+		return 0
+	}
+	r.codexGatewayMu.Lock()
+	defer r.codexGatewayMu.Unlock()
+	return len(r.codexGateways)
 }
 
 func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message string) {
@@ -645,6 +803,9 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 		"error": map[string]any{
 			"code":    appServerPolicyErrorCode,
 			"message": code + ": " + message,
+			"data": map[string]any{
+				"reason": strings.ToLower(code),
+			},
 		},
 	})
 	if err != nil {

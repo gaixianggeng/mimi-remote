@@ -417,7 +417,7 @@ extension SessionStore {
                 sessionID: sessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: sessionID)
             clearPendingApprovalDecisions(sessionID: sessionID)
             clearPendingUserInputResponses(sessionID: sessionID)
             clearForegroundActivity(sessionID: sessionID)
@@ -467,7 +467,7 @@ extension SessionStore {
                 sessionID: sessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: sessionID)
             clearPendingApprovalDecisions(sessionID: sessionID)
             clearForegroundActivity(sessionID: sessionID)
             if canReconnect {
@@ -570,7 +570,7 @@ extension SessionStore {
                 sessionID: previousSessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: previousSessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: previousSessionID)
         }
         pendingApprovalDecisionIDsBySessionID.removeAll()
         pendingUserInputResponseIDsBySessionID.removeAll()

@@ -180,6 +180,7 @@ enum CodexAppServerConnectionError: LocalizedError, CredentialInvalidatingError 
     case notInitialized
     case duplicateRequestID(CodexAppServerRequestID)
     case timeout(method: String, id: CodexAppServerRequestID)
+    case outcomeUnknown(method: String, id: CodexAppServerRequestID, cause: String)
     case appServer(CodexAppServerError)
     case decoding(Error)
     case transport(Error)
@@ -208,7 +209,12 @@ enum CodexAppServerConnectionError: LocalizedError, CredentialInvalidatingError 
             return L10n.format("ui.duplicate_json_rpc_request_id_value", id)
         case .timeout(let method, let id):
             return L10n.format("ui.app_server_request_timeout_value_value", method, id)
+        case .outcomeUnknown(let method, let id, let cause):
+            return L10n.format("ui.app_server_request_outcome_unknown_value_value_value", method, id, cause)
         case .appServer(let error):
+            if error.data?.objectValue?["reason"]?.stringValue == "codex_upstream_unavailable" {
+                return L10n.text("ui.codex_upstream_unavailable")
+            }
             return error.localizedDescription
         case .decoding(let error):
             return L10n.format("ui.app_server_message_parsing_failed_value", error.localizedDescription)
@@ -218,10 +224,16 @@ enum CodexAppServerConnectionError: LocalizedError, CredentialInvalidatingError 
     }
 }
 
+private enum PendingCodexAppServerResponsePhase {
+    case registered
+    case writeStarted
+}
+
 private struct PendingCodexAppServerResponse {
     let method: String
     let continuation: CheckedContinuation<CodexAppServerJSONValue?, Error>
     let timeoutTask: Task<Void, Never>
+    var phase: PendingCodexAppServerResponsePhase
 }
 
 /// JSON-RPC 请求 id 的全进程分配器：每条连接都从上一条连接用完的地方继续，
@@ -442,25 +454,68 @@ actor CodexAppServerConnection {
         }
 
         let timeoutNanoseconds = timeout.map { UInt64(max(0.1, $0) * 1_000_000_000) } ?? requestTimeoutNanoseconds
-        return try await withCheckedThrowingContinuation { continuation in
-            let timeoutTask = Task { [timeoutNanoseconds] in
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                self.timeoutRequest(id: request.id)
-            }
-            pendingResponses[request.id] = PendingCodexAppServerResponse(
-                method: request.method,
-                continuation: continuation,
-                timeoutTask: timeoutTask
-            )
-            Task {
-                do {
-                    try await self.sendEncodedRequest(request)
-                } catch {
-                    let wrapped = CodexAppServerConnectionError.transport(error)
-                    self.failPendingRequest(id: request.id, error: wrapped)
-                    self.markDisconnected(with: wrapped)
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let timeoutTask = Task { [timeoutNanoseconds] in
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    self.timeoutRequest(id: request.id)
+                }
+                pendingResponses[request.id] = PendingCodexAppServerResponse(
+                    method: request.method,
+                    continuation: continuation,
+                    timeoutTask: timeoutTask,
+                    phase: .registered
+                )
+                // cancellation handler 可能先于 actor 上的注册任务执行。注册后再读一次当前
+                // Task 状态，封住“handler 已返回、随后仍发送”的窗口。
+                guard !Task.isCancelled else {
+                    cancelPendingRequest(id: request.id)
+                    return
+                }
+                Task {
+                    guard self.beginSendingRequest(id: request.id) else {
+                        return
+                    }
+                    do {
+                        try await self.sendEncodedRequest(request)
+                    } catch {
+                        let wrapped = CodexAppServerConnectionError.transport(error)
+                        self.failPendingRequest(id: request.id, error: wrapped)
+                        self.markDisconnected(with: wrapped)
+                    }
                 }
             }
+        } onCancel: {
+            Task {
+                await self.cancelPendingRequest(id: request.id)
+            }
+        }
+    }
+
+    private func beginSendingRequest(id: CodexAppServerRequestID) -> Bool {
+        guard var pending = pendingResponses[id] else {
+            return false
+        }
+        pending.phase = .writeStarted
+        pendingResponses[id] = pending
+        return true
+    }
+
+    private func cancelPendingRequest(id: CodexAppServerRequestID) {
+        guard let pending = pendingResponses.removeValue(forKey: id) else {
+            return
+        }
+        pending.timeoutTask.cancel()
+        switch pending.phase {
+        case .registered:
+            pending.continuation.resume(throwing: CancellationError())
+        case .writeStarted:
+            pending.continuation.resume(throwing: CodexAppServerConnectionError.outcomeUnknown(
+                method: pending.method,
+                id: id,
+                cause: L10n.text("ui.request_cancelled_after_sending")
+            ))
         }
     }
 
@@ -495,12 +550,17 @@ actor CodexAppServerConnection {
                 serverRequestContinuation?.yield(request)
             }
         } catch {
-            // 单个坏帧不能拖垮整条 JSON-RPC 连接；真正丢失的响应会由对应请求的超时兜底。
-            return
+            failProtocolConnection(CodexAppServerConnectionError.decoding(error))
         }
     }
 
     private func resolve(_ response: CodexAppServerResponse) {
+        if response.id == .null {
+            failProtocolConnection(CodexAppServerConnectionError.appServer(
+                response.error ?? CodexAppServerError(code: -32600, message: "JSON-RPC response id is null", data: nil)
+            ))
+            return
+        }
         if let error = response.error,
            error.data?.objectValue?["response_to_server_request"]?.boolValue == true {
             // server request 的 response 是 fire-and-forget，不在 pendingResponses
@@ -536,7 +596,16 @@ actor CodexAppServerConnection {
         guard let pending = pendingResponses.removeValue(forKey: id) else {
             return
         }
-        pending.continuation.resume(throwing: CodexAppServerConnectionError.timeout(method: pending.method, id: id))
+        switch pending.phase {
+        case .registered:
+            pending.continuation.resume(throwing: CodexAppServerConnectionError.timeout(method: pending.method, id: id))
+        case .writeStarted:
+            pending.continuation.resume(throwing: CodexAppServerConnectionError.outcomeUnknown(
+                method: pending.method,
+                id: id,
+                cause: L10n.text("ui.request_timed_out_after_sending")
+            ))
+        }
     }
 
     private func failPendingRequest(id: CodexAppServerRequestID, error: Error) {
@@ -544,16 +613,38 @@ actor CodexAppServerConnection {
             return
         }
         pending.timeoutTask.cancel()
-        pending.continuation.resume(throwing: error)
+        pending.continuation.resume(throwing: failureForPending(pending, id: id, underlying: error))
     }
 
     private func failAllPending(with error: Error) {
         let pending = pendingResponses
         pendingResponses.removeAll(keepingCapacity: false)
-        for item in pending.values {
+        for (id, item) in pending {
             item.timeoutTask.cancel()
-            item.continuation.resume(throwing: error)
+            item.continuation.resume(throwing: failureForPending(item, id: id, underlying: error))
         }
+    }
+
+    private func failureForPending(
+        _ pending: PendingCodexAppServerResponse,
+        id: CodexAppServerRequestID,
+        underlying error: Error
+    ) -> Error {
+        guard case .writeStarted = pending.phase else {
+            return error
+        }
+        return CodexAppServerConnectionError.outcomeUnknown(
+            method: pending.method,
+            id: id,
+            cause: error.localizedDescription
+        )
+    }
+
+    private func failProtocolConnection(_ error: Error) {
+        receiveTask?.cancel()
+        receiveTask = nil
+        markDisconnected(with: error)
+        Task { await transport.close() }
     }
 
     private func markDisconnected(with error: Error) {

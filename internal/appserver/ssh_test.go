@@ -20,7 +20,10 @@ import (
 	"time"
 )
 
-const sshHelperEnv = "MIMI_SSH_HELPER"
+const (
+	sshHelperEnv           = "MIMI_SSH_HELPER"
+	sshHelperProxyDelayEnv = "MIMI_SSH_PROXY_DELAY"
+)
 
 func TestSSHHelperProcess(t *testing.T) {
 	if os.Getenv(sshHelperEnv) != "1" {
@@ -60,6 +63,9 @@ func TestSSHHelperProcess(t *testing.T) {
 	case sshProxyRemoteCommand:
 		if !helperFileExists(os.Getenv("MIMI_SSH_SERVER_MARKER")) || helperFileExists(os.Getenv("MIMI_SSH_FAIL_MARKER")) {
 			os.Exit(92)
+		}
+		if delay, err := time.ParseDuration(os.Getenv(sshHelperProxyDelayEnv)); err == nil && delay > 0 {
+			time.Sleep(delay)
 		}
 		serveSSHHelperWebSocket()
 		if exitMarker := os.Getenv("MIMI_SSH_PROXY_EXIT_MARKER"); exitMarker != "" {
