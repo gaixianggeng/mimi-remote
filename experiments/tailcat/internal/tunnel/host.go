@@ -28,7 +28,7 @@ type HostConfig struct {
 
 type Host struct {
 	server  *tailcat.Server
-	address tailcat.ConnBlob
+	address tailcat.Addr
 }
 
 func StartHost(config HostConfig) (*Host, error) {
@@ -90,7 +90,7 @@ func StartHost(config HostConfig) (*Host, error) {
 	if err := server.Start(); err != nil {
 		return nil, fmt.Errorf("启动 Tailcat 服务端：%w", err)
 	}
-	address := server.ConnBlob()
+	address := server.TailcatAddr()
 	if savedInfo == nil {
 		if err := saveHostIdentity(config.IdentityPath, privateKey, address); err != nil {
 			server.Close()
