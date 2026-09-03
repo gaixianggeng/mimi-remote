@@ -1134,6 +1134,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             let connection = app.descendant(identifier: "settings.connectionManagement")
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
+            // 配对完成后扫码入口收在「添加电脑」的折叠区里，要先展开；首次配对则直接铺在页面上。
+            let addMac = app.descendant(identifier: "settings.connection.addMac")
+            if scrollUntilHittable(addMac, maximumSwipes: 4) {
+                addMac.tap()
+            }
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
             let setupScan = app.descendant(identifier: "settings.hostInstaller.scan")
             if scrollUntilHittable(scan, maximumSwipes: 4) {
