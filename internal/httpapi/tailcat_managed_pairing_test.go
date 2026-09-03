@@ -766,6 +766,75 @@ func TestManagedPairingHostReassignmentWriteFailureRevokesOldRuntimePolicy(t *te
 	}
 }
 
+func TestManagedPairingMalformedSuccessfulCompletionInvalidatesOldPolicy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/pairing-sessions/"+testManagedSessionID+"/complete" {
+			t.Fatalf("响应无法确认后不应读取策略：%s", request.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"host":`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, Address: "tailcat:stable", PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, time.Now, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		PolicyValidUntil:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	_, err := controller.Complete(context.Background(), testManagedSessionID, managedToken('g'), testManagedMobileKey)
+	if err == nil || !strings.Contains(err.Error(), "解析 Mimi 托管服务响应失败") {
+		t.Fatalf("无法解析成功响应时应返回明确错误：%v", err)
+	}
+	if !controller.state.AuthorizationInvalid || len(controller.state.AllowedMobileKeys) != 0 {
+		t.Fatalf("无法确认完成结果后旧策略必须失效：%+v", controller.state)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("无法确认完成结果后必须清空运行时授权：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
+	}
+}
+
+func TestManagedPolicyClearsAuthorizationWhenSidecarIdentityChangesDuringApply(t *testing.T) {
+	now := time.Date(2026, 9, 4, 17, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/hosts/"+testManagedHostID+"/policy" {
+			t.Fatalf("意外请求：%s", request.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"hostId":"`+testManagedHostID+`","policyVersion":2,"validUntil":"2026-09-04T18:30:00Z","allowedMobileTailcatPublicKeys":["`+testManagedMobileKey+`"]}`)
+	}))
+	defer server.Close()
+	newStatus := tailcatStatus{
+		Running:    true,
+		PublicKey:  "nodekey:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		InstanceID: "sidecar-b",
+	}
+	fake := &fakeTailcatSidecar{
+		status:        tailcatStatus{Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a"},
+		managedStatus: &newStatus,
+	}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "身份已改变") {
+		t.Fatalf("应用期间主机身份变化应要求重新配对：%v", err)
+	}
+	if controller.state.HostID != "" || fake.managedCalls != 2 || len(fake.managedKeys) != 0 {
+		t.Fatalf("应用期间主机身份变化后必须清空登记和授权：state=%+v calls=%d keys=%v", controller.state, fake.managedCalls, fake.managedKeys)
+	}
+}
+
 func TestManagedPairingResetRetriesRuntimeClearAfterTemporaryFailure(t *testing.T) {
 	now := time.Date(2026, 9, 4, 17, 10, 0, 0, time.UTC)
 	fake := &fakeTailcatSidecar{

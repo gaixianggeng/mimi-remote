@@ -22,6 +22,7 @@ type fakeTailcatSidecar struct {
 	allowCalls     int
 	managedKeys    []string
 	managedCalls   int
+	managedStatus  *tailcatStatus
 	startCalls     int
 	stopCalls      int
 	pairCalls      int
@@ -78,6 +79,10 @@ func (f *fakeTailcatSidecar) AllowClient(_ context.Context, key string) (tailcat
 func (f *fakeTailcatSidecar) ReplaceManagedClients(_ context.Context, keys []string) (tailcatStatus, error) {
 	f.managedCalls++
 	f.managedKeys = append([]string(nil), keys...)
+	if f.managedStatus != nil {
+		f.status = *f.managedStatus
+		f.managedStatus = nil
+	}
 	return f.status, f.operationErr
 }
 func (f *fakeTailcatSidecar) Reset(context.Context) (tailcatStatus, error) {

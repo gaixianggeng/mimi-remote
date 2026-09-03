@@ -352,6 +352,15 @@ func (c *managedPairingController) Complete(
 		complete, err = c.completeCloudPairing(ctx, parsedSession.String(), grant, status.PublicKey)
 	}
 	if err != nil {
+		if responseError := (*managedCloudResponseError)(nil); errors.As(err, &responseError) {
+			// 2xx 表示控制面可能已经提交主机变更，但响应无法确认结果。
+			// 此时旧策略不再可信，必须在返回错误前撤销本地运行时授权。
+			if c.state.HostID == "" {
+				return tailcatStatus{}, errors.Join(err, c.clearRegistrationLocked(ctx))
+			}
+			_, invalidateErr := c.invalidatePolicyLocked(ctx, err)
+			return tailcatStatus{}, invalidateErr
+		}
 		return tailcatStatus{}, err
 	}
 	parsedHostID, parseErr := uuid.Parse(complete.Host.ID)
@@ -433,7 +442,7 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 			return c.invalidatePolicyLocked(ctx, err)
 		}
 		if c.cachedPolicyFreshLocked() {
-			_, applyErr := c.applyPolicyLocked(ctx, c.state.AllowedMobileKeys)
+			_, applyErr := c.applyRegisteredPolicyLocked(ctx, c.state.AllowedMobileKeys)
 			if applyErr != nil {
 				return tailcatStatus{}, applyErr
 			}
@@ -470,7 +479,24 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 		// 旧授权又可能已被该版本撤销，因此统一进入 fail-closed。
 		return c.invalidatePolicyLocked(ctx, err)
 	}
-	return c.applyPolicyLocked(ctx, keys)
+	return c.applyRegisteredPolicyLocked(ctx, keys)
+}
+
+func (c *managedPairingController) applyRegisteredPolicyLocked(
+	ctx context.Context,
+	keys []string,
+) (tailcatStatus, error) {
+	expectedHostKey := c.state.MacTailcatPublicKey
+	status, err := c.applyPolicyLocked(ctx, keys)
+	if err != nil {
+		return tailcatStatus{}, err
+	}
+	if status.PublicKey == expectedHostKey {
+		return status, nil
+	}
+	// ConfigureDERPMap 或显式重置可能在取策略期间替换 sidecar。
+	// 刚应用到新身份的旧策略必须立即清空，并要求重新托管配对。
+	return tailcatStatus{}, c.clearIdentityMismatchLocked(ctx)
 }
 
 func (c *managedPairingController) clearIdentityMismatchLocked(ctx context.Context) error {
