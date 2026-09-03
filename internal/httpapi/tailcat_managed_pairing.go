@@ -352,20 +352,17 @@ func (c *managedPairingController) Complete(
 		complete, err = c.completeCloudPairing(ctx, parsedSession.String(), grant, status.PublicKey)
 	}
 	if err != nil {
-		if responseError := (*managedCloudResponseError)(nil); errors.As(err, &responseError) {
-			// 2xx 表示控制面可能已经提交主机变更，但响应无法确认结果。
-			// 此时旧策略不再可信，必须在返回错误前撤销本地运行时授权。
-			if c.state.HostID == "" {
-				return tailcatStatus{}, errors.Join(err, c.clearRegistrationLocked(ctx))
-			}
-			_, invalidateErr := c.invalidatePolicyLocked(ctx, err)
-			return tailcatStatus{}, invalidateErr
+		if cloudError := (*managedCloudError)(nil); !errors.As(err, &cloudError) {
+			return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(ctx, err)
 		}
 		return tailcatStatus{}, err
 	}
 	parsedHostID, parseErr := uuid.Parse(complete.Host.ID)
 	if parseErr != nil || parsedHostID.Version() != 4 {
-		return tailcatStatus{}, errors.New("托管连接服务返回了无效主机身份")
+		return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(
+			ctx,
+			errors.New("托管连接服务返回了无效主机身份"),
+		)
 	}
 	hostID := parsedHostID.String()
 	next := c.state
@@ -394,6 +391,19 @@ func (c *managedPairingController) Complete(
 		return tailcatStatus{}, errors.New("托管配对公钥与已授权移动设备不一致")
 	}
 	return updated, nil
+}
+
+func (c *managedPairingController) invalidateAmbiguousCompletionLocked(
+	ctx context.Context,
+	completionError error,
+) error {
+	// POST 在传输中断或 2xx 响应损坏前可能已经提交主机变更。
+	// 结果无法确认时，旧策略不再可信，必须在返回错误前撤销运行时授权。
+	if c.state.HostID == "" {
+		return errors.Join(completionError, c.clearRegistrationLocked(ctx))
+	}
+	_, err := c.invalidatePolicyLocked(ctx, completionError)
+	return err
 }
 
 func (c *managedPairingController) Reset(ctx context.Context) error {
