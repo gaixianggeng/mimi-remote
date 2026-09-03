@@ -23,6 +23,7 @@ const (
 	testManagedHostID         = "40000000-0000-4000-8000-000000000001"
 	testManagedMacKey         = "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	testManagedMobileKey      = "nodekey:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testManagedOtherMobileKey = "nodekey:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 )
 
 func managedToken(fill byte) string {
@@ -395,6 +396,99 @@ func TestManagedPolicyRejectsMalformedTailcatPublicKey(t *testing.T) {
 	}
 	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 || !controller.state.AuthorizationInvalid {
 		t.Fatalf("格式错误的公钥必须清空旧授权：calls=%d keys=%v state=%+v", fake.managedCalls, fake.managedKeys, controller.state)
+	}
+}
+
+func TestManagedPolicyMalformedSuccessResponseDoesNotReuseCache(t *testing.T) {
+	now := time.Date(2026, 9, 4, 14, 48, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"hostId":`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "解析 Mimi 托管服务响应失败") {
+		t.Fatalf("损坏的成功响应应被明确拒绝：%v", err)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 || !controller.state.AuthorizationInvalid {
+		t.Fatalf("损坏的成功响应不能沿用缓存：calls=%d keys=%v state=%+v", fake.managedCalls, fake.managedKeys, controller.state)
+	}
+}
+
+func TestManagedPolicyPersistsInvalidationBeforeClearingRuntime(t *testing.T) {
+	now := time.Date(2026, 9, 4, 14, 49, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"code":"unauthorized"}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	persistedBeforeRuntimeClear := false
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, func(path string, state managedPairingState) error {
+		persistedBeforeRuntimeClear = state.AuthorizationInvalid && len(state.AllowedMobileKeys) == 0 && fake.managedCalls == 0
+		return writeManagedPairingState(path, state)
+	})
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	if err := controller.Sync(context.Background()); err == nil {
+		t.Fatal("撤销应返回未授权错误")
+	}
+	if !persistedBeforeRuntimeClear || fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("必须先持久化失效标记再清空运行时授权：persisted=%t calls=%d keys=%v", persistedBeforeRuntimeClear, fake.managedCalls, fake.managedKeys)
+	}
+}
+
+func TestManagedPolicyCanonicalizesAllowlistOrder(t *testing.T) {
+	now := time.Date(2026, 9, 4, 14, 50, 0, 0, time.UTC)
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		keys := `[` + `"` + testManagedMobileKey + `","` + testManagedOtherMobileKey + `"]`
+		if requestCount == 2 {
+			keys = `[` + `"` + testManagedOtherMobileKey + `","` + testManagedMobileKey + `"]`
+		}
+		_, _ = io.WriteString(w, `{"hostId":"`+testManagedHostID+`","policyVersion":1,"validUntil":"2026-09-04T15:00:00Z","allowedMobileTailcatPublicKeys":`+keys+`}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey,
+	}
+
+	if err := controller.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.managedCalls != 1 {
+		t.Fatalf("白名单仅顺序变化时不应重启稳定主机：calls=%d", fake.managedCalls)
+	}
+	if !reflect.DeepEqual(controller.state.AllowedMobileKeys, []string{testManagedMobileKey, testManagedOtherMobileKey}) {
+		t.Fatalf("白名单未按 canonical 顺序保存：%v", controller.state.AllowedMobileKeys)
 	}
 }
 

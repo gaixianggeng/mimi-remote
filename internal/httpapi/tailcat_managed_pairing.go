@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +108,18 @@ type managedCloudError struct {
 	StatusCode int
 	Code       string
 	Message    string
+}
+
+type managedCloudResponseError struct {
+	cause error
+}
+
+func (e *managedCloudResponseError) Error() string {
+	return fmt.Sprintf("解析 Mimi 托管服务响应失败：%v", e.cause)
+}
+
+func (e *managedCloudResponseError) Unwrap() error {
+	return e.cause
 }
 
 func (e *managedCloudError) Error() string {
@@ -390,7 +403,12 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 		&policy,
 	)
 	if err != nil {
-		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) && cloudError.StatusCode == http.StatusUnauthorized {
+		if responseError := (*managedCloudResponseError)(nil); errors.As(err, &responseError) {
+			return c.invalidatePolicyLocked(ctx, err)
+		}
+		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) &&
+			cloudError.StatusCode >= 400 && cloudError.StatusCode < 500 &&
+			cloudError.StatusCode != http.StatusRequestTimeout && cloudError.StatusCode != http.StatusTooManyRequests {
 			return c.invalidatePolicyLocked(ctx, err)
 		}
 		if c.cachedPolicyFreshLocked() {
@@ -475,13 +493,14 @@ func (c *managedPairingController) invalidatePolicyLocked(
 	next.PolicyFetchedAt = c.now().Format(time.RFC3339Nano)
 	next.PolicyValidUntil = ""
 	next.AuthorizationInvalid = true
-	_, applyErr := c.applyPolicyLocked(ctx, nil)
 	saveErr := c.saveStateLocked(next)
 	if saveErr != nil {
-		// 持久化失败时仍保留内存中的失效标记，避免下一次临时网络故障
-		// 重新应用刚被服务端撤销的旧白名单。
+		// 落盘失败不能阻止运行时撤销，也不能让下一次临时网络故障恢复旧白名单。
 		c.state = next
 	}
+	// 先持久化失效标记，再执行可能耗时的 Tailcat 重启。进程在重启期间退出时，
+	// 下次启动也不会从磁盘恢复刚撤销的权限。
+	_, applyErr := c.applyPolicyLocked(ctx, nil)
 	return tailcatStatus{}, errors.Join(policyError, applyErr, saveErr)
 }
 
@@ -587,7 +606,7 @@ func (c *managedPairingController) doJSON(
 		return nil
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(result); err != nil {
-		return fmt.Errorf("解析 Mimi 托管服务响应失败：%w", err)
+		return &managedCloudResponseError{cause: err}
 	}
 	return nil
 }
@@ -692,6 +711,8 @@ func normalizeManagedPolicyKeys(rawKeys []string) ([]string, error) {
 		seen[key] = struct{}{}
 		keys = append(keys, key)
 	}
+	// 策略语义是集合；固定顺序可避免控制面返回顺序变化时重启稳定主机。
+	sort.Strings(keys)
 	return keys, nil
 }
 
