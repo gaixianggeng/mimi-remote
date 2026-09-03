@@ -70,6 +70,11 @@ enum HostPlatformIconKind: Equatable {
     case genericComputer
 }
 
+enum ConnectionProfileRoute: String, Codable, Equatable {
+    case configured
+    case tailcat
+}
+
 /// 一台已保存电脑的本地连接档案。
 ///
 /// `id` 是客户端数据隔离命名空间；`installationID` 是 agentd 返回的稳定安装身份；
@@ -84,6 +89,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     var lastSuccessfulAt: Date?
     var installationID: String?
     var hostPlatform: HostPlatform
+    var connectionRoute: ConnectionProfileRoute
     var revision: UInt64
 
     enum CodingKeys: String, CodingKey {
@@ -96,6 +102,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         case lastSuccessfulAt
         case installationID
         case hostPlatform
+        case connectionRoute
         case revision
     }
 
@@ -109,6 +116,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         lastSuccessfulAt: Date?,
         installationID: String? = nil,
         hostPlatform: HostPlatform = .unknown,
+        connectionRoute: ConnectionProfileRoute = .configured,
         revision: UInt64 = 0
     ) {
         self.id = id
@@ -135,6 +143,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
         self.hostPlatform = hostPlatform
+        self.connectionRoute = connectionRoute
         self.revision = revision
     }
 
@@ -170,6 +179,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
         hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
+        connectionRoute = try container.decodeIfPresent(ConnectionProfileRoute.self, forKey: .connectionRoute) ?? .configured
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
     }
 
@@ -460,12 +470,25 @@ enum PreparedConnectionProfileTarget: Equatable {
     case existingProfile(id: String)
 }
 
+enum PreparedConnectionRoute: Equatable {
+    case configured
+    case tailcat(address: String)
+
+    var profileRoute: ConnectionProfileRoute {
+        switch self {
+        case .configured: return .configured
+        case .tailcat: return .tailcat
+        }
+    }
+}
+
 /// 已完成目标电脑验证、等待事务提交的值对象。
 struct PreparedConnectionSettings: Equatable {
     /// 扫码或手动配置的可恢复地址；配对时通常是 Tailscale IP。
     let endpoint: String
     /// 本次已完成 REST/WebSocket 验证的真实路由，提交后供所有请求复用。
     let activeEndpoint: String
+    let route: PreparedConnectionRoute
     let token: String
     let profileTarget: PreparedConnectionProfileTarget
     let validatedAt: Date
@@ -479,6 +502,7 @@ struct PreparedConnectionSettings: Equatable {
     init(
         endpoint: String,
         activeEndpoint: String? = nil,
+        route: PreparedConnectionRoute = .configured,
         token: String,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         validatedAt: Date = Date(),
@@ -491,6 +515,7 @@ struct PreparedConnectionSettings: Equatable {
     ) {
         self.endpoint = endpoint
         self.activeEndpoint = activeEndpoint ?? endpoint
+        self.route = route
         self.token = token
         self.profileTarget = profileTarget
         self.validatedAt = validatedAt
@@ -512,6 +537,7 @@ struct PreparedConnectionSettings: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.endpoint == rhs.endpoint &&
             lhs.activeEndpoint == rhs.activeEndpoint &&
+            lhs.route == rhs.route &&
             lhs.token == rhs.token &&
             lhs.profileTarget == rhs.profileTarget &&
             lhs.validatedAt == rhs.validatedAt &&

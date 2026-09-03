@@ -187,7 +187,7 @@ struct MimiRemoteApp: App {
             profiles: appStore.connectionProfiles
         )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
-        let tailcatExperimentController = TailcatExperimentController()
+        let tailcatExperimentController = TailcatExperimentController(appStore: appStore)
         // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
         // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。
         let sessionStore = SessionStore(
