@@ -179,7 +179,7 @@ struct InitialConnectionSettingsSections: View {
                         onPasteConnectionInfo: pasteConnectionInfo
                     )
 
-                    connectionPresentationSection {
+                    qrScannerPresentationSection {
                         advancedConnectionOptions(tokens: tokens)
                     } header: {
                         Text(L10n.text("ui.other_connection_methods"))
@@ -187,7 +187,7 @@ struct InitialConnectionSettingsSections: View {
                         EmptyView()
                     }
                 } else {
-                    connectionPresentationSection {
+                    qrScannerPresentationSection {
                         addConnectionControls(tokens: tokens)
                         advancedConnectionOptions(tokens: tokens)
                     } header: {
@@ -297,25 +297,29 @@ struct InitialConnectionSettingsSections: View {
         appStore.isConfigured && !appStore.connectionProfiles.isEmpty
     }
 
-    /// 添加入口并进这一节之后，原先挂在"添加电脑"那节上的回调与确认框要跟着搬家：
-    /// 删除凭据本来就由本节的 ⋯ 菜单触发，扫码回调也只能有一个 presenter。
+    /// 删除确认始终挂在触发它的保存列表上，避免清除当前连接后因为布局切换，
+    /// 把弹窗锚到另一段可能已经离屏的内容上。扫码回调仍只保留一个 presenter。
     @ViewBuilder
     private func savedConnectionsSection(tokens: ThemeTokens) -> some View {
         if usesCollapsibleAddConnection {
-            connectionPresentationSection {
-                savedConnectionsRows(tokens: tokens)
-            } header: {
-                Text(L10n.text("ui.saved_mac"))
-            } footer: {
-                savedConnectionsFooter
+            credentialRemovalPresentation {
+                qrScannerPresentationSection {
+                    savedConnectionsRows(tokens: tokens)
+                } header: {
+                    Text(L10n.text("ui.saved_mac"))
+                } footer: {
+                    savedConnectionsFooter
+                }
             }
         } else {
-            Section {
-                savedConnectionsRows(tokens: tokens)
-            } header: {
-                Text(L10n.text("ui.saved_mac"))
-            } footer: {
-                savedConnectionsFooter
+            credentialRemovalPresentation {
+                Section {
+                    savedConnectionsRows(tokens: tokens)
+                } header: {
+                    Text(L10n.text("ui.saved_mac"))
+                } footer: {
+                    savedConnectionsFooter
+                }
             }
         }
     }
@@ -487,9 +491,9 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
-    /// 业务回调和弹窗只挂到每条连接流程中的一个原生 Section，
+    /// 扫码回调只挂到每条连接流程中的一个原生 Section，
     /// 避免系统权限弹窗期间因多个 presenter 同时存在而重复呈现。
-    private func connectionPresentationSection<Content: View, Header: View, Footer: View>(
+    private func qrScannerPresentationSection<Content: View, Header: View, Footer: View>(
         @ViewBuilder content: () -> Content,
         @ViewBuilder header: () -> Header,
         @ViewBuilder footer: () -> Footer
@@ -503,6 +507,12 @@ struct InitialConnectionSettingsSections: View {
         }
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
+    }
+
+    private func credentialRemovalPresentation<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
         .confirmationDialog(
             pendingRemovalConfirmation?.title ?? L10n.text("ui.confirm_to_delete_connection_credentials"),
             isPresented: removalConfirmationBinding,
