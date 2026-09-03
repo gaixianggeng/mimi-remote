@@ -634,7 +634,9 @@ func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
 		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
 	}}
+	persistAttemptedBeforeRuntimeClear := false
 	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, func() time.Time { return now }, func(string, managedPairingState) error {
+		persistAttemptedBeforeRuntimeClear = fake.managedCalls == 0
 		return errors.New("disk full")
 	})
 	controller.state = managedPairingState{
@@ -649,7 +651,7 @@ func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("重置落盘失败应返回明确错误：%v", err)
 	}
-	if controller.state.HostID != "" || len(controller.state.AllowedMobileKeys) != 0 {
+	if !persistAttemptedBeforeRuntimeClear || controller.state.HostID != "" || len(controller.state.AllowedMobileKeys) != 0 {
 		t.Fatalf("重置落盘失败后内存登记仍必须清空：%+v", controller.state)
 	}
 	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {

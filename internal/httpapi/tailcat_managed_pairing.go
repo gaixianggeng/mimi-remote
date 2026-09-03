@@ -329,11 +329,11 @@ func (c *managedPairingController) Complete(
 	if isManagedCloudCode(err, "host_token_conflict") {
 		// Mac 被用户撤销后，控制面要求用新 Token 重新登记。只在显式新配对中
 		// 轮换一次；后台同步永远不会自行替换设备凭证。
-		if _, clearErr := c.applyPolicyLocked(ctx, nil); clearErr != nil {
-			return tailcatStatus{}, clearErr
-		}
 		if rotateErr := c.rotateHostTokenLocked(); rotateErr != nil {
 			return tailcatStatus{}, rotateErr
+		}
+		if _, clearErr := c.applyPolicyLocked(ctx, nil); clearErr != nil {
+			return tailcatStatus{}, clearErr
 		}
 		complete, err = c.completeCloudPairing(ctx, parsedSession.String(), grant, status.PublicKey)
 	}
@@ -458,14 +458,14 @@ func (c *managedPairingController) clearIdentityMismatchLocked(ctx context.Conte
 }
 
 func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) error {
-	_, applyErr := c.applyPolicyLocked(ctx, nil)
 	next := managedPairingState{Version: 1}
 	saveErr := c.saveStateLocked(next)
 	if saveErr != nil {
-		// 重置落盘失败时也必须丢弃内存里的旧主机和白名单，避免后台同步
-		// 在同一进程内重新授权已重置的设备。
+		// 落盘失败不能阻止运行时重置，也不能让后台同步恢复旧授权。
 		c.state = next
 	}
+	// 与服务端撤销一致，先清空持久状态，再执行可能耗时的 Tailcat 重启。
+	_, applyErr := c.applyPolicyLocked(ctx, nil)
 	return errors.Join(applyErr, saveErr)
 }
 
