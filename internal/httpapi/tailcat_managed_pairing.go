@@ -398,11 +398,14 @@ func (c *managedPairingController) invalidateAmbiguousCompletionLocked(
 	completionError error,
 ) error {
 	// POST 在传输中断或 2xx 响应损坏前可能已经提交主机变更。
-	// 结果无法确认时，旧策略不再可信，必须在返回错误前撤销运行时授权。
+	// 结果无法确认时，旧策略不再可信。原请求此时经常已经超时，
+	// 因此用独立的短上下文完成运行时撤销，不能把清理一并取消。
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if c.state.HostID == "" {
-		return errors.Join(completionError, c.clearRegistrationLocked(ctx))
+		return errors.Join(completionError, c.clearRegistrationLocked(cleanupContext))
 	}
-	_, err := c.invalidatePolicyLocked(ctx, completionError)
+	_, err := c.invalidatePolicyLocked(cleanupContext, completionError)
 	return err
 }
 
