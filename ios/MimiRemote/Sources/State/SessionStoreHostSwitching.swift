@@ -185,6 +185,7 @@ extension SessionStore {
                   !isAppInBackground else {
                 throw CancellationError()
             }
+            try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
             let committed = try await commitPreparedConnection(prepared)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
