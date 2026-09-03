@@ -1036,3 +1036,63 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         )
     }
 }
+
+extension ConversationDataFlowTests {
+    /// MIM-247：Claude 的 item/tool/requestUserInput 从投影到提交必须走通同一套 key。
+    /// 卡片能出现却提交报「请求已失效」，说明注册与查找在某一层错位。
+    func testClaudeToolRequestUserInputRegistersLookupKeysForSubmit() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            runtimeProvider: "claude"
+        )
+        let request = CodexAppServerServerRequest(
+            id: .string("claude-req-1"),
+            method: "item/tool/requestUserInput",
+            params: .object([
+                "threadId": .string("thr_claude_input"),
+                "turnId": .string("turn_claude_input"),
+                "itemId": .string("toolu_014MPNAn1XapgUZpDWR5odD6"),
+                "questions": .array([
+                    .object([
+                        "id": .string("question-0"),
+                        "header": .string("目标平台"),
+                        "question": .string("先做哪个平台？"),
+                        "options": .array([
+                            .object(["label": .string("iOS")]),
+                            .object(["label": .string("Server")])
+                        ])
+                    ])
+                ])
+            ])
+        )
+
+        await runtime.handle(request)
+
+        // 1) 卡片确实产出，且 UI 侧 id 用的是 itemId（截图里的报错就是这个 id）
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_claude_input")
+        let card = pending.compactMap { event -> AgentUserInputRequest? in
+            if case .userInputRequest(let input, _) = event { return input }
+            return nil
+        }.first
+        let unwrapped = try XCTUnwrap(card, "补充信息卡片必须产出")
+        XCTAssertEqual(unwrapped.id, "toolu_014MPNAn1XapgUZpDWR5odD6")
+
+        // 2) 用卡片上的 id 提交，必须能查到请求，不能抛 userInputRequestNotFound
+        do {
+            try await runtime.respondToUserInput(
+                sessionID: "thr_claude_input",
+                requestID: unwrapped.id,
+                answers: ["question-0": ["iOS"]]
+            )
+            XCTFail("未连接时应该因连接不可用失败，而不是静默成功")
+        } catch let error as CodexAppServerSessionRuntimeError {
+            if case .userInputRequestNotFound(let id) = error {
+                XCTFail("请求应已注册，却报已失效：\(id)")
+            }
+            // 其它错误（如连接不可用）是预期的：本用例只验证查找不失败。
+        } catch {
+            // 同上：非 runtime 错误说明已经越过查找这一步。
+        }
+    }
+}
