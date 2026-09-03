@@ -1550,6 +1550,10 @@ final class AppStore: ObservableObject {
         defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
     }
 
+    func replaceConnectionProfiles(_ profiles: [ConnectionProfile]) {
+        connectionProfiles = profiles
+    }
+
     private static func normalizedProfileDisplayName(_ raw: String, endpoint: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? defaultProfileDisplayName(endpoint: endpoint) : trimmed

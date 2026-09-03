@@ -609,6 +609,32 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(try tokenStore.loadTailcatExperimentAddress(), "tailcat:legacy")
     }
 
+    func testDeleteProfileRouteOnlyDeletesTargetProfilesAddress() throws {
+        let suiteName = "TailcatExperimentRoutingTests.DeleteProfileRoute.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.saveTailcatAddress("tailcat:mac-a", profileID: "mac-a")
+        try tokenStore.saveTailcatAddress("tailcat:mac-b", profileID: "mac-b")
+        let store = AppStore(defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false)
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: TailcatExperimentRuntimeStub(startResults: []),
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+
+        try controller.deleteProfileRoute(profileID: "mac-a")
+
+        XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: "mac-a"), "")
+        XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: "mac-b"), "tailcat:mac-b")
+    }
+
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
         blockedStartCall: Int? = nil

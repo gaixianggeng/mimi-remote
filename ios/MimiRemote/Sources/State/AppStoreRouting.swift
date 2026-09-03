@@ -14,7 +14,7 @@ extension AppStore {
         if profileID != ephemeralLocalProfileID {
             persistProfiles(try JSONEncoder().encode(nextProfiles))
         }
-        connectionProfiles = nextProfiles
+        replaceConnectionProfiles(nextProfiles)
     }
 
     func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
