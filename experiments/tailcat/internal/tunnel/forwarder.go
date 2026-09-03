@@ -37,7 +37,7 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 	if err := requireLoopbackAddress(config.ListenAddr); err != nil {
 		return nil, fmt.Errorf("本地监听地址：%w", err)
 	}
-	if _, err := tailcat.ParseConnBlob(tailcat.ConnBlob(config.Address)); err != nil {
+	if _, err := tailcat.ParseAddr(tailcat.Addr(config.Address)); err != nil {
 		return nil, fmt.Errorf("解析 Tailcat 地址：%w", err)
 	}
 	privateKey, err := clientPrivateKey(config)
@@ -45,7 +45,7 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 		return nil, err
 	}
 	client := &tailcat.Client{
-		Server: tailcat.ConnBlob(config.Address),
+		Server: tailcat.Addr(config.Address),
 		Key:    privateKey,
 		Logf:   logger.Discard,
 	}
