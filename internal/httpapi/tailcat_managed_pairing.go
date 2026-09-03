@@ -450,7 +450,9 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 	next.AllowedMobileKeys = keys
 	next.AuthorizationInvalid = false
 	if err := c.saveStateLocked(next); err != nil {
-		return tailcatStatus{}, err
+		// 不能在新策略持久化失败时保留旧运行时白名单。新授权尚未落盘，
+		// 旧授权又可能已被该版本撤销，因此统一进入 fail-closed。
+		return c.invalidatePolicyLocked(ctx, err)
 	}
 	return c.applyPolicyLocked(ctx, keys)
 }

@@ -236,8 +236,37 @@ func TestManagedPolicyWriteFailureNeverAppliesNewAuthorization(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("策略写入失败应中止托管配对：%v", err)
 	}
-	if fake.managedCalls != 0 {
-		t.Fatal("新策略落盘失败时不能先修改运行中白名单")
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("新策略落盘失败时只能清空运行中白名单：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
+	}
+}
+
+func TestManagedPolicyUpdateWriteFailureClearsOldRuntimeAuthorization(t *testing.T) {
+	now := time.Date(2026, 9, 4, 13, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"hostId":"`+testManagedHostID+`","policyVersion":2,"validUntil":"2026-09-04T13:40:00Z","allowedMobileTailcatPublicKeys":[]}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, func(string, managedPairingState) error {
+		return errors.New("disk full")
+	})
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("撤销策略落盘失败应返回明确错误：%v", err)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 || !controller.state.AuthorizationInvalid {
+		t.Fatalf("撤销策略落盘失败必须清空旧授权：calls=%d keys=%v state=%+v", fake.managedCalls, fake.managedKeys, controller.state)
 	}
 }
 
