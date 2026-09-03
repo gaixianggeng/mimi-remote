@@ -131,6 +131,7 @@ final class TailcatExperimentController: ObservableObject {
         let localEndpoint: String
         let previousEnabled: Bool
         let previousAddress: String
+        let previousLegacyAddress: String?
     }
 
     private struct RoutePreparation {
@@ -147,6 +148,7 @@ final class TailcatExperimentController: ObservableObject {
     private var pendingPairing: PendingPairing?
 
     init(
+        appStore: AppStore,
         defaults: UserDefaults = .standard,
         tokenStore: TokenStore = TokenStore(),
         runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime(),
@@ -154,16 +156,42 @@ final class TailcatExperimentController: ObservableObject {
     ) {
         let available = bridge.isAvailable
         let savedEnabled = defaults.bool(forKey: Self.enabledKey)
-        var savedAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
-        if savedAddress.isEmpty,
-           let legacyAddress = defaults.string(forKey: Self.legacyAddressKey),
-           !legacyAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var legacyAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
+        if legacyAddress.isEmpty,
+           let legacyDefaultAddress = defaults.string(forKey: Self.legacyAddressKey),
+           !legacyDefaultAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
-            savedAddress = legacyAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-            try? tokenStore.saveTailcatExperimentAddress(savedAddress)
+            let migrated = legacyDefaultAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? tokenStore.saveTailcatExperimentAddress(migrated)
+            legacyAddress = migrated
         }
         defaults.removeObject(forKey: Self.legacyAddressKey)
-        let initialEnabled = savedEnabled && available
+        var savedAddress = legacyAddress
+        var profileRoute = appStore.activeConnectionProfile?.connectionRoute ?? .configured
+        if let profileID = appStore.activeConnectionProfileID {
+            let profileAddress = (try? tokenStore.loadTailcatAddress(profileID: profileID)) ?? ""
+            var profileAddressReady = !profileAddress.isEmpty
+            if !profileAddress.isEmpty {
+                savedAddress = profileAddress
+            } else if !legacyAddress.isEmpty {
+                do {
+                    try tokenStore.saveTailcatAddress(legacyAddress, profileID: profileID)
+                    savedAddress = legacyAddress
+                    profileAddressReady = true
+                } catch {}
+            }
+            if savedEnabled, !savedAddress.isEmpty {
+                try? appStore.setActiveConnectionProfileRoute(.tailcat)
+                profileRoute = .tailcat
+            }
+            if profileAddressReady {
+                try? tokenStore.deleteTailcatExperimentAddress()
+                defaults.removeObject(forKey: Self.enabledKey)
+            }
+        }
+        let initialEnabled = (appStore.activeConnectionProfileID == nil
+            ? savedEnabled
+            : profileRoute == .tailcat) && available
         self.defaults = defaults
         self.tokenStore = tokenStore
         self.runtime = runtime
@@ -217,7 +245,12 @@ final class TailcatExperimentController: ObservableObject {
         generation &+= 1
         if !enabled {
             isEnabled = false
-            defaults.set(false, forKey: Self.enabledKey)
+            if appStore.activeConnectionProfileID == nil {
+                defaults.set(false, forKey: Self.enabledKey)
+            } else {
+                defaults.removeObject(forKey: Self.enabledKey)
+                try? appStore.setActiveConnectionProfileRoute(.configured)
+            }
             pendingPairing = nil
             preparationTask?.task.cancel()
             preparationTask = nil
@@ -230,6 +263,10 @@ final class TailcatExperimentController: ObservableObject {
             state = .unavailable
             return false
         }
+        if let profileID = appStore.activeConnectionProfileID {
+            address = ((try? tokenStore.loadTailcatAddress(profileID: profileID)) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !address.isEmpty else {
             isEnabled = false
             defaults.set(false, forKey: Self.enabledKey)
@@ -237,8 +274,14 @@ final class TailcatExperimentController: ObservableObject {
             return false
         }
         isEnabled = true
-        defaults.set(true, forKey: Self.enabledKey)
-        return await prepareRoute(appStore: appStore)
+        if appStore.activeConnectionProfileID == nil {
+            defaults.set(true, forKey: Self.enabledKey)
+        }
+        let ready = await prepareRoute(appStore: appStore)
+        if ready {
+            try? appStore.setActiveConnectionProfileRoute(.tailcat)
+        }
+        return ready
     }
 
     @discardableResult
@@ -350,6 +393,7 @@ final class TailcatExperimentController: ObservableObject {
         }
         let previousEnabled = isEnabled
         let previousAddress = address
+        let previousLegacyAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
         state = .starting
         generation &+= 1
         do {
@@ -377,6 +421,7 @@ final class TailcatExperimentController: ObservableObject {
             let prepared = try await appStore.prepareRoutedConnectionSettings(
                 endpoint: canonicalEndpoint,
                 activeEndpoint: stableEndpoint,
+                tailcatAddress: stableAddress,
                 token: response.token,
                 profileTarget: profileTarget
             )
@@ -385,28 +430,100 @@ final class TailcatExperimentController: ObservableObject {
                 stableAddress: stableAddress,
                 localEndpoint: stableEndpoint,
                 previousEnabled: previousEnabled,
-                previousAddress: previousAddress
+                previousAddress: previousAddress,
+                previousLegacyAddress: previousLegacyAddress
             )
             return prepared
         } catch {
             await restoreAfterPairingFailure(
                 previousEnabled: previousEnabled,
                 previousAddress: previousAddress,
+                previousLegacyAddress: previousLegacyAddress,
                 appStore: appStore
             )
             throw error
         }
     }
 
-    func commitPreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings, appStore: AppStore) {
+    func prepareConnectionProfileSwitch(
+        id: String,
+        appStore: AppStore
+    ) async throws -> PreparedConnectionSettings {
+        guard let profile = appStore.connectionProfiles.first(where: { $0.id == id }) else {
+            throw ConnectionProfileError.notFound
+        }
+        guard profile.connectionRoute == .tailcat else {
+            return try await appStore.prepareConnectionProfileSwitch(id: id)
+        }
+        let targetAddress = try tokenStore.loadTailcatAddress(profileID: id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetAddress.isEmpty else {
+            throw PairingLinkError.missingTailcatAddress
+        }
+        let previousEnabled = isEnabled
+        let previousAddress = address
+        generation &+= 1
+        state = .starting
+        do {
+            let endpoint = try await runtime.start(
+                address: targetAddress,
+                privateKey: try loadOrCreatePrivateKey()
+            )
+            let prepared = try await appStore.prepareConnectionProfileSwitch(
+                id: id,
+                activeEndpoint: endpoint,
+                tailcatAddress: targetAddress
+            )
+            pendingPairing = PendingPairing(
+                stableAddress: targetAddress,
+                localEndpoint: endpoint,
+                previousEnabled: previousEnabled,
+                previousAddress: previousAddress,
+                previousLegacyAddress: nil
+            )
+            return prepared
+        } catch {
+            await restoreAfterPairingFailure(
+                previousEnabled: previousEnabled,
+                previousAddress: previousAddress,
+                previousLegacyAddress: nil,
+                appStore: appStore
+            )
+            throw error
+        }
+    }
+
+    func commitPreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings, appStore: AppStore) async {
+        guard case .tailcat = prepared.route else {
+            pendingPairing = nil
+            generation &+= 1
+            try? await runtime.stop()
+            isEnabled = false
+            defaults.removeObject(forKey: Self.enabledKey)
+            if let profileID = appStore.activeConnectionProfileID {
+                address = ((try? tokenStore.loadTailcatAddress(profileID: profileID)) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                address = ""
+            }
+            appStore.setTailcatExperimentModeEnabled(false)
+            state = isAvailable ? .disabled : .unavailable
+            return
+        }
         guard let pendingPairing,
               AgentAPIClient.normalizedEndpoint(pendingPairing.localEndpoint) ==
                 AgentAPIClient.normalizedEndpoint(prepared.activeEndpoint)
         else { return }
         self.pendingPairing = nil
+        if let profileID = appStore.activeConnectionProfileID {
+            do {
+                try tokenStore.saveTailcatAddress(pendingPairing.stableAddress, profileID: profileID)
+                try? tokenStore.deleteTailcatExperimentAddress()
+                defaults.removeObject(forKey: Self.enabledKey)
+            } catch {}
+        }
         address = pendingPairing.stableAddress
         isEnabled = true
-        defaults.set(true, forKey: Self.enabledKey)
         appStore.setTailcatExperimentEndpoint(pendingPairing.localEndpoint)
         appStore.setTailcatExperimentModeEnabled(true)
         state = .connected(endpoint: pendingPairing.localEndpoint)
@@ -424,8 +541,13 @@ final class TailcatExperimentController: ObservableObject {
         await restoreAfterPairingFailure(
             previousEnabled: pendingPairing.previousEnabled,
             previousAddress: pendingPairing.previousAddress,
+            previousLegacyAddress: pendingPairing.previousLegacyAddress,
             appStore: appStore
         )
+    }
+
+    func deleteProfileRoute(profileID: String) throws {
+        try tokenStore.deleteTailcatAddress(profileID: profileID)
     }
 
     func refreshPathDiagnostic(appStore: AppStore? = nil) async {
@@ -484,16 +606,23 @@ final class TailcatExperimentController: ObservableObject {
     private func restoreAfterPairingFailure(
         previousEnabled: Bool,
         previousAddress: String,
+        previousLegacyAddress: String?,
         appStore: AppStore
     ) async {
-        if previousAddress.isEmpty {
-            try? tokenStore.deleteTailcatExperimentAddress()
-        } else {
-            try? tokenStore.saveTailcatExperimentAddress(previousAddress)
+        if let previousLegacyAddress {
+            if previousLegacyAddress.isEmpty {
+                try? tokenStore.deleteTailcatExperimentAddress()
+            } else {
+                try? tokenStore.saveTailcatExperimentAddress(previousLegacyAddress)
+            }
         }
         address = previousAddress
         isEnabled = previousEnabled
-        defaults.set(previousEnabled, forKey: Self.enabledKey)
+        if previousLegacyAddress != nil {
+            defaults.set(previousEnabled, forKey: Self.enabledKey)
+        } else {
+            defaults.removeObject(forKey: Self.enabledKey)
+        }
         guard previousEnabled, !previousAddress.isEmpty else {
             try? await runtime.stop()
             appStore.setTailcatExperimentModeEnabled(false)

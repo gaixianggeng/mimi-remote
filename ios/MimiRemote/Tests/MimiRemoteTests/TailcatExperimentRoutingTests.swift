@@ -253,6 +253,152 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(store.token, "existing-agentd-token")
     }
 
+    func testDirectConnectionCommitDoesNotReusePreviousTailcatRoute() async throws {
+        let suiteName = "TailcatExperimentRoutingTests.DirectCommit.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let tokenStore = TokenStore(keychain: keychain)
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil,
+            connectionRoute: .tailcat
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        try tokenStore.save("token-a", profileID: profile.id)
+        try tokenStore.saveTailcatAddress("tailcat:mac-a", profileID: profile.id)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let runtime = TailcatExperimentRuntimeStub(startResults: [.success("http://127.0.0.1:49152")])
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: runtime,
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+        let initialRouteReady = await controller.prepareRoute(appStore: store)
+        XCTAssertTrue(initialRouteReady)
+
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b"
+        )
+        _ = try await store.commitConnectionSettings(prepared)
+        await controller.commitPreparedRouteIfNeeded(prepared, appStore: store)
+
+        XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.20:8787")
+        XCTAssertEqual(store.activeConnectionRoute, .configured)
+        XCTAssertEqual(store.activeConnectionProfile?.connectionRoute, .configured)
+        XCTAssertFalse(controller.isEnabled)
+    }
+
+    func testSwitchingTailcatProfilesLoadsEachProfilesOwnAddress() async throws {
+        let suiteName = "TailcatExperimentRoutingTests.ProfileSwitch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a", displayName: "Mac A", endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+            ConnectionProfile(
+                id: "mac-b", displayName: "Mac B", endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.save("token-a", profileID: "mac-a")
+        try tokenStore.save("token-b", profileID: "mac-b")
+        try tokenStore.saveTailcatAddress("tailcat:mac-a", profileID: "mac-a")
+        try tokenStore.saveTailcatAddress("tailcat:mac-b", profileID: "mac-b")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let runtime = TailcatExperimentRuntimeStub(startResults: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
+        ])
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: runtime,
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+        let initialRouteReady = await controller.prepareRoute(appStore: store)
+        XCTAssertTrue(initialRouteReady)
+
+        let preparedB = try await controller.prepareConnectionProfileSwitch(id: "mac-b", appStore: store)
+        _ = try await store.commitConnectionSettings(preparedB)
+        await controller.commitPreparedRouteIfNeeded(preparedB, appStore: store)
+        XCTAssertEqual(controller.address, "tailcat:mac-b")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:49153")
+
+        let preparedA = try await controller.prepareConnectionProfileSwitch(id: "mac-a", appStore: store)
+        _ = try await store.commitConnectionSettings(preparedA)
+        await controller.commitPreparedRouteIfNeeded(preparedA, appStore: store)
+        XCTAssertEqual(controller.address, "tailcat:mac-a")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:49154")
+        XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: "mac-b"), "tailcat:mac-b")
+    }
+
+    func testLegacyGlobalAddressMigratesToActiveProfile() throws {
+        let suiteName = "TailcatExperimentRoutingTests.LegacyMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a", displayName: "Mac A", endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(true, forKey: TailcatExperimentController.enabledKey)
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.save("token-a", profileID: profile.id)
+        try tokenStore.saveTailcatExperimentAddress("tailcat:legacy")
+        let store = AppStore(defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false)
+
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: TailcatExperimentRuntimeStub(startResults: []),
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+
+        XCTAssertTrue(controller.isEnabled)
+        XCTAssertEqual(controller.address, "tailcat:legacy")
+        XCTAssertEqual(store.activeConnectionProfile?.connectionRoute, .tailcat)
+        XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: profile.id), "tailcat:legacy")
+        XCTAssertEqual(try tokenStore.loadTailcatExperimentAddress(), "")
+    }
+
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
         blockedStartCall: Int? = nil
@@ -275,16 +421,19 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             generatePrivateKey: { "private-key" },
             publicKey: { _ in "nodekey:public-key" }
         )
-        let controller = TailcatExperimentController(
-            defaults: defaults,
-            tokenStore: TokenStore(keychain: TestKeychainOperations()),
-            runtime: runtime,
-            bridge: bridge
-        )
+        let keychain = TestKeychainOperations()
+        let tokenStore = TokenStore(keychain: keychain)
         let store = AppStore(
             defaults: defaults,
-            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            tokenStore: tokenStore,
             prefersLocalConnection: false
+        )
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: runtime,
+            bridge: bridge
         )
         return (controller, runtime, store, defaults, suiteName)
     }

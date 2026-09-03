@@ -37,7 +37,7 @@ final class AppStore: ObservableObject {
     private let maxConnectionTestReportHistory = 20
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
-    private let credentialVault: HostCredentialVault
+    let credentialVault: HostCredentialVault
     private let routeProbeTimeout: TimeInterval
     private let prefersLocalConnection: Bool
     private let allowsEphemeralLocalCredentialFallback: Bool
@@ -258,6 +258,21 @@ final class AppStore: ObservableObject {
             activeRouteEndpoint = nil
             activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         }
+    }
+
+    func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
+        guard let profileID = activeConnectionProfileID,
+              let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
+              connectionProfiles[index].connectionRoute != route else {
+            return
+        }
+        var nextProfiles = connectionProfiles
+        nextProfiles[index].connectionRoute = route
+        nextProfiles[index].revision &+= 1
+        if profileID != ephemeralLocalProfileID {
+            persistProfiles(try JSONEncoder().encode(nextProfiles))
+        }
+        connectionProfiles = nextProfiles
     }
 
     /// 只为主机选择器生成探活描述；Token 读取在独立 actor 中执行。
@@ -526,23 +541,6 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
-        guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
-            throw ConnectionProfileError.notFound
-        }
-        let profileToken = try await credentialVault.token(for: id)
-        guard !profileToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ConnectionProfileError.missingToken
-        }
-        return try await prepareConnectionSettings(
-            endpoint: profile.endpoint,
-            token: profileToken,
-            profileTarget: .existingProfile(id: id),
-            tailscaleDNSName: profile.tailscaleDNSName,
-            tailscaleDeviceName: profile.tailscaleDeviceName
-        )
-    }
-
     func preparePairingURL(
         _ url: URL,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
@@ -634,6 +632,7 @@ final class AppStore: ObservableObject {
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID ?? current.installationID,
                     hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: current.hostPlatform),
+                    connectionRoute: prepared.route.profileRoute,
                     revision: current.revision &+ 1
                 )
             } else {
@@ -653,7 +652,8 @@ final class AppStore: ObservableObject {
                     isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID,
-                    hostPlatform: prepared.hostPlatform
+                    hostPlatform: prepared.hostPlatform,
+                    connectionRoute: prepared.route.profileRoute
                 )
             }
         case .newProfile(let id, let displayName):
@@ -673,7 +673,8 @@ final class AppStore: ObservableObject {
                 isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID,
-                hostPlatform: prepared.hostPlatform
+                hostPlatform: prepared.hostPlatform,
+                connectionRoute: prepared.route.profileRoute
             )
         case .existingProfile(let id):
             guard let existing = connectionProfiles.first(where: { $0.id == id }) else {
@@ -705,6 +706,7 @@ final class AppStore: ObservableObject {
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID ?? existing.installationID,
                 hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: existing.hostPlatform),
+                connectionRoute: prepared.route.profileRoute,
                 revision: existing.revision &+ 1
             )
         }
@@ -724,7 +726,8 @@ final class AppStore: ObservableObject {
             targetProfile.tailscaleDNSName != activeConnectionProfile?.tailscaleDNSName ||
             targetProfile.tailscaleDeviceName != activeConnectionProfile?.tailscaleDeviceName ||
             targetProfile.displayName != activeConnectionProfile?.displayName ||
-            targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform
+            targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform ||
+            targetProfile.connectionRoute != activeConnectionProfile?.connectionRoute
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
         // 未签入 provisioning profile 的开发包只在受限私网 + -34018 时使用进程内凭据。
@@ -795,10 +798,14 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        if isTailcatExperimentModeEnabled {
-            activeRouteEndpoint = tailcatExperimentEndpoint
+        if case .tailcat = prepared.route {
+            isTailcatExperimentModeEnabled = true
+            tailcatExperimentEndpoint = normalizedActiveEndpoint
+            activeRouteEndpoint = normalizedActiveEndpoint
             activeConnectionRoute = .tailcat
         } else {
+            isTailcatExperimentModeEnabled = false
+            tailcatExperimentEndpoint = nil
             activeRouteEndpoint = normalizedActiveEndpoint
             activeConnectionRoute = .configured
         }
@@ -1546,6 +1553,7 @@ final class AppStore: ObservableObject {
                 lastSuccessfulAt: profile.lastSuccessfulAt,
                 installationID: normalizedInstallationID(profile.installationID),
                 hostPlatform: profile.hostPlatform,
+                connectionRoute: profile.connectionRoute,
                 revision: profile.revision
             )
         }
