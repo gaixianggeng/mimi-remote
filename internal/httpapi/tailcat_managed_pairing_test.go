@@ -21,8 +21,8 @@ const (
 	testManagedInstallationID = "20000000-0000-4000-8000-000000000001"
 	testManagedSessionID      = "30000000-0000-4000-8000-000000000001"
 	testManagedHostID         = "40000000-0000-4000-8000-000000000001"
-	testManagedMacKey         = "nodekey:managed-mac-public-key"
-	testManagedMobileKey      = "nodekey:managed-mobile-public-key"
+	testManagedMacKey         = "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testManagedMobileKey      = "nodekey:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
 func managedToken(fill byte) string {
@@ -371,6 +371,33 @@ func TestManagedPolicyInvalidCloudResponseDoesNotReuseCache(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyRejectsMalformedTailcatPublicKey(t *testing.T) {
+	now := time.Date(2026, 9, 4, 14, 47, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"hostId":"`+testManagedHostID+`","policyVersion":2,"validUntil":"2026-09-04T14:57:00Z","allowedMobileTailcatPublicKeys":["not-a-key"]}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "无效 Tailcat 公钥") {
+		t.Fatalf("格式错误的 Tailcat 公钥应被明确拒绝：%v", err)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 || !controller.state.AuthorizationInvalid {
+		t.Fatalf("格式错误的公钥必须清空旧授权：calls=%d keys=%v state=%+v", fake.managedCalls, fake.managedKeys, controller.state)
+	}
+}
+
 func TestManagedPolicyRejectsVersionRollback(t *testing.T) {
 	now := time.Date(2026, 9, 4, 14, 50, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -489,7 +516,7 @@ func TestManagedPairingRotatesRevokedHostTokenOnceAndFailsClosedDuringRetry(t *t
 
 func TestManagedPolicyClearsRegistrationWhenMacTailcatIdentityChanges(t *testing.T) {
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
-		Running: true, PublicKey: "nodekey:new-managed-mac-key", InstanceID: "sidecar-b",
+		Running: true, PublicKey: "nodekey:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", InstanceID: "sidecar-b",
 	}}
 	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, time.Now, nil)
 	controller.state = managedPairingState{
@@ -505,6 +532,55 @@ func TestManagedPolicyClearsRegistrationWhenMacTailcatIdentityChanges(t *testing
 	}
 	if controller.state.HostID != "" || fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
 		t.Fatalf("身份变化后必须清空登记和运行时授权：state=%+v calls=%d keys=%v", controller.state, fake.managedCalls, fake.managedKeys)
+	}
+}
+
+func TestManagedPairingResetStaysClearedWhenStateWriteFails(t *testing.T) {
+	now := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, func() time.Time { return now }, func(string, managedPairingState) error {
+		return errors.New("disk full")
+	})
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Reset(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("重置落盘失败应返回明确错误：%v", err)
+	}
+	if controller.state.HostID != "" || len(controller.state.AllowedMobileKeys) != 0 {
+		t.Fatalf("重置落盘失败后内存登记仍必须清空：%+v", controller.state)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 {
+		t.Fatalf("重置落盘失败不能保留运行时授权：calls=%d keys=%v", fake.managedCalls, fake.managedKeys)
+	}
+	if err := controller.Sync(context.Background()); err != nil || fake.managedCalls != 1 {
+		t.Fatalf("后台同步不能恢复已重置授权：err=%v calls=%d", err, fake.managedCalls)
+	}
+}
+
+func TestValidManagedTailcatPublicKeyRequiresCanonicalNodeKey(t *testing.T) {
+	for _, value := range []string{
+		"",
+		"not-a-key",
+		"nodekey:" + strings.Repeat("0", 64),
+		"nodekey:" + strings.Repeat("A", 64),
+		"nodekey:" + strings.Repeat("a", 63),
+		" nodekey:" + strings.Repeat("a", 64),
+	} {
+		if validManagedTailcatPublicKey(value) {
+			t.Fatalf("应拒绝非 canonical Tailcat 公钥：%q", value)
+		}
+	}
+	if !validManagedTailcatPublicKey(testManagedMobileKey) {
+		t.Fatal("应接受 canonical Tailcat 节点公钥")
 	}
 }
 

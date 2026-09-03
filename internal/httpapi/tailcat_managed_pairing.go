@@ -441,7 +441,13 @@ func (c *managedPairingController) clearIdentityMismatchLocked(ctx context.Conte
 
 func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) error {
 	_, applyErr := c.applyPolicyLocked(ctx, nil)
-	saveErr := c.saveStateLocked(managedPairingState{Version: 1})
+	next := managedPairingState{Version: 1}
+	saveErr := c.saveStateLocked(next)
+	if saveErr != nil {
+		// 重置落盘失败时也必须丢弃内存里的旧主机和白名单，避免后台同步
+		// 在同一进程内重新授权已重置的设备。
+		c.state = next
+	}
 	return errors.Join(applyErr, saveErr)
 }
 
@@ -690,15 +696,22 @@ func normalizeManagedPolicyKeys(rawKeys []string) ([]string, error) {
 }
 
 func validManagedTailcatPublicKey(value string) bool {
-	if value == "" || len(value) > 72 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+	const prefix = "nodekey:"
+	const encodedKeyLength = 64
+	if len(value) != len(prefix)+encodedKeyLength || !utf8.ValidString(value) ||
+		!strings.HasPrefix(value, prefix) || strings.TrimSpace(value) != value {
 		return false
 	}
-	for _, character := range value {
-		if character < 32 || character == 127 {
+	isZero := true
+	for _, character := range value[len(prefix):] {
+		if !('0' <= character && character <= '9') && !('a' <= character && character <= 'f') {
 			return false
 		}
+		if character != '0' {
+			isZero = false
+		}
 	}
-	return true
+	return !isZero
 }
 
 func isManagedCloudCode(err error, code string) bool {
