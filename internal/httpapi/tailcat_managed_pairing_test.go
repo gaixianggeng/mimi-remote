@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func TestManagedPairingCompletesCloudAuthorizationBeforeApplyingPolicy(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("托管策略权限为 %o，预期 0600", info.Mode().Perm())
 	}
 	raw, err := os.ReadFile(controller.statePath)
