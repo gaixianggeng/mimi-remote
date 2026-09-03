@@ -10,17 +10,56 @@ import (
 )
 
 type fakeManagedHost struct {
-	address   string
-	publicKey string
-	closed    bool
+	address    string
+	publicKey  string
+	closed     bool
+	closeCalls int
+	closeErr   error
 }
 
 func (h *fakeManagedHost) AddAllowedClient(string) error { return nil }
 func (h *fakeManagedHost) Address() string               { return h.address }
 func (h *fakeManagedHost) PublicKey() string             { return h.publicKey }
 func (h *fakeManagedHost) Close() error {
+	h.closeCalls++
+	if h.closeErr != nil {
+		return h.closeErr
+	}
 	h.closed = true
 	return nil
+}
+
+func TestReplaceManagedClientsRetainsOldHostWhenCloseFails(t *testing.T) {
+	oldManagedKey := key.NewNode().Public().String()
+	newManagedKey := key.NewNode().Public().String()
+	oldHost := &fakeManagedHost{closeErr: errors.New("close failed")}
+	startCalls := 0
+	manager := &Manager{
+		host:           oldHost,
+		managedClients: []string{oldManagedKey},
+		startHost: func(tunnel.HostConfig) (managedHost, error) {
+			startCalls++
+			return &fakeManagedHost{}, nil
+		},
+	}
+
+	if _, err := manager.ReplaceManagedClients([]string{newManagedKey}); err == nil {
+		t.Fatal("旧主机关闭失败时应中止替换")
+	}
+	if manager.host != oldHost || oldHost.closed || oldHost.closeCalls != 1 || startCalls != 0 {
+		t.Fatalf("关闭失败后必须保留旧主机供重试：host=%v closed=%t closes=%d starts=%d", manager.host == oldHost, oldHost.closed, oldHost.closeCalls, startCalls)
+	}
+	if !reflect.DeepEqual(manager.managedClients, []string{oldManagedKey}) {
+		t.Fatal("关闭失败不能提交新托管策略")
+	}
+
+	oldHost.closeErr = nil
+	if _, err := manager.ReplaceManagedClients([]string{newManagedKey}); err != nil {
+		t.Fatal(err)
+	}
+	if !oldHost.closed || oldHost.closeCalls != 2 || startCalls != 1 {
+		t.Fatalf("下一次同步应重试关闭并完成替换：closed=%t closes=%d starts=%d", oldHost.closed, oldHost.closeCalls, startCalls)
+	}
 }
 
 func TestReplaceManagedClientsRestartsWithFreeAndManagedUnion(t *testing.T) {

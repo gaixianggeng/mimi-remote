@@ -177,7 +177,11 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 		return m.statusLocked(), nil
 	}
 	if m.host != nil {
-		_ = m.host.Close()
+		if err := m.host.Close(); err != nil {
+			// Close 失败时旧主机可能仍在接受连接。保留句柄并中止替换，
+			// 让下一次策略同步可以继续重试关闭，不能启动第二个主机。
+			return Status{}, fmt.Errorf("关闭旧稳定 Tailcat 服务：%w", err)
+		}
 		m.host = nil
 	}
 	host, err := m.startStableHostLocked(next)
@@ -195,7 +199,9 @@ func (m *Manager) Reset() (Status, error) {
 	defer m.mu.Unlock()
 	m.closePairLocked()
 	if m.host != nil {
-		_ = m.host.Close()
+		if err := m.host.Close(); err != nil {
+			return Status{}, fmt.Errorf("关闭待重置 Tailcat 服务：%w", err)
+		}
 		m.host = nil
 	}
 	for _, name := range []string{"host.private.json", "host.address", "clients.json"} {
@@ -223,7 +229,9 @@ func (m *Manager) Close() error {
 	var err error
 	if m.host != nil {
 		err = m.host.Close()
-		m.host = nil
+		if err == nil {
+			m.host = nil
+		}
 	}
 	m.mu.Unlock()
 	_ = os.Remove(m.config.ControlPath)
