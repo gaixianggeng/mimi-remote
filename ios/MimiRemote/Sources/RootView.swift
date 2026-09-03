@@ -48,6 +48,10 @@ struct RootView: View {
             // 从 App 启动开始监听未完成和后续交易；任务随 RootView 生命周期取消。
             await managedConnectionEntitlementStore.observeTransactionUpdates()
         }
+        .task(id: managedConnectionEntitlementStore.currentGrant?.tokenExpiresAt) {
+            // App 长时间停留前台时，也要在短期 Token 到期前主动续期。
+            await managedConnectionEntitlementStore.maintainCurrentGrant()
+        }
         .onChange(of: appStore.connectionProfiles) { _, _ in
             // 删除重复 endpoint 后，旧数据可能刚刚变成可唯一归属；此时立即重试，
             // 不要求用户先进入工作区页面才能恢复原来的图标偏好。

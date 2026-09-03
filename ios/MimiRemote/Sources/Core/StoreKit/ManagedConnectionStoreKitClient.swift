@@ -35,11 +35,16 @@ enum ManagedConnectionCurrentEntitlementOutcome: Equatable, Sendable {
     case unverified
 }
 
+enum ManagedConnectionTransactionUpdate: Equatable, Sendable {
+    case verified(ManagedConnectionTransactionEvidence)
+    case unverified
+}
+
 protocol ManagedConnectionStoreKitClient: Sendable {
     func products() async throws -> [ManagedConnectionProduct]
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome
     func currentEntitlement(productID: String) async -> ManagedConnectionCurrentEntitlementOutcome
-    func transactionUpdates() -> AsyncStream<Void>
+    func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate>
     func signedAppTransaction() async throws -> String
     func finish(transactionID: UInt64) async
     func syncPurchases() async throws
@@ -130,19 +135,25 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
         return currentOutcome(from: verification)
     }
 
-    nonisolated func transactionUpdates() -> AsyncStream<Void> {
+    nonisolated func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate> {
         AsyncStream { continuation in
             let listener = Task {
                 for await verification in Transaction.updates {
-                    let transaction: Transaction
                     switch verification {
-                    case .verified(let value), .unverified(let value, _):
-                        transaction = value
+                    case .verified(let transaction):
+                        guard ManagedConnectionProductID.all.contains(transaction.productID) else {
+                            continue
+                        }
+                        await rememberUnfinished(transaction)
+                        continuation.yield(
+                            .verified(Self.evidence(from: verification, transaction: transaction))
+                        )
+                    case .unverified(let transaction, _):
+                        guard ManagedConnectionProductID.all.contains(transaction.productID) else {
+                            continue
+                        }
+                        continuation.yield(.unverified)
                     }
-                    guard ManagedConnectionProductID.all.contains(transaction.productID) else {
-                        continue
-                    }
-                    continuation.yield(())
                 }
                 continuation.finish()
             }
@@ -150,6 +161,10 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
                 listener.cancel()
             }
         }
+    }
+
+    private func rememberUnfinished(_ transaction: Transaction) {
+        unfinishedTransactions[transaction.id] = transaction
     }
 
     private func currentOutcome(

@@ -20,16 +20,24 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     private let storeKit: any ManagedConnectionStoreKitClient
     private let entitlementAPI: any ManagedConnectionEntitlementAPIClient
     private let now: () -> Date
+    private let sleepUntil: @Sendable (Date) async throws -> Void
     private var operationGeneration = 0
 
     init(
         storeKit: any ManagedConnectionStoreKitClient,
         entitlementAPI: any ManagedConnectionEntitlementAPIClient,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        sleepUntil: @escaping @Sendable (Date) async throws -> Void = { date in
+            let delay = max(0, date.timeIntervalSinceNow)
+            if delay > 0 {
+                try await Task.sleep(for: .seconds(delay))
+            }
+        }
     ) {
         self.storeKit = storeKit
         self.entitlementAPI = entitlementAPI
         self.now = now
+        self.sleepUntil = sleepUntil
     }
 
     func load() async {
@@ -59,9 +67,67 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     func observeTransactionUpdates() async {
         // Ask to Buy、另一设备购买等交易会在 App 运行期间异步完成。
         // 收到变化后仍走统一的服务端校验路径，监听器本身不直接授予权益。
-        for await _ in storeKit.transactionUpdates() {
+        for await update in storeKit.transactionUpdates() {
             guard !Task.isCancelled else { return }
+            switch update {
+            case .verified(let evidence):
+                await resolveTransactionUpdate(evidence)
+            case .unverified:
+                // 未验证事件本身不能改变权益；重新读取 Apple 当前已验证权益。
+                await refreshEntitlement()
+            }
+        }
+    }
+
+    func maintainCurrentGrant() async {
+        guard let scheduledGrant = usableCurrentGrant else { return }
+        var refreshAt = scheduledGrant.tokenExpiresAt.addingTimeInterval(-60)
+
+        while !Task.isCancelled {
+            do {
+                try await sleepUntil(max(refreshAt, now()))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  currentGrant?.token == scheduledGrant.token,
+                  currentGrant?.tokenExpiresAt == scheduledGrant.tokenExpiresAt
+            else {
+                return
+            }
+
             await refreshEntitlement()
+
+            guard currentGrant?.token == scheduledGrant.token,
+                  currentGrant?.tokenExpiresAt == scheduledGrant.tokenExpiresAt,
+                  now() < scheduledGrant.tokenExpiresAt
+            else {
+                return
+            }
+            // 提前刷新遇到瞬时故障时，最迟在旧 Token 到期时再尝试一次。
+            refreshAt = scheduledGrant.tokenExpiresAt
+        }
+    }
+
+    private func resolveTransactionUpdate(_ evidence: ManagedConnectionTransactionEvidence) async {
+        let generation = beginOperation()
+        let previousGrant = usableCurrentGrant
+        status = .resolving
+        do {
+            let grant = try await resolve(evidence)
+            guard isLatest(generation) else { return }
+            currentGrant = grant
+            status = .entitled(grant.entitlement)
+            await storeKit.finish(transactionID: evidence.transactionID)
+        } catch is CancellationError {
+            guard isLatest(generation) else { return }
+            restore(previousGrant, otherwise: .available)
+        } catch {
+            guard isLatest(generation) else { return }
+            applyFailure(error, fallbackGrant: previousGrant)
+            if isTerminalServerDecision(error) {
+                await storeKit.finish(transactionID: evidence.transactionID)
+            }
         }
     }
 
@@ -223,6 +289,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         default:
             return .failed(userFacingMessage(for: error))
         }
+    }
+
+    private func isTerminalServerDecision(_ error: Error) -> Bool {
+        guard let apiError = error as? ManagedConnectionEntitlementAPIError,
+              case .rejected(let code) = apiError
+        else {
+            return false
+        }
+        return ["expired", "revoked", "no_current_entitlement"].contains(code)
     }
 
     private var usableCurrentGrant: ManagedConnectionEntitlementGrant? {

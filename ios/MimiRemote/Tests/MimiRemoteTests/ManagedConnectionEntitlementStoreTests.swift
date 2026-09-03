@@ -134,7 +134,7 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
             productID: ManagedConnectionProductID.monthly
         )
 
-        await storeKit.sendTransactionUpdate()
+        await storeKit.sendTransactionUpdate(.verified(Self.evidence))
         for _ in 0..<100 {
             if await api.resolveCount > 0 { break }
             await Task.yield()
@@ -147,6 +147,64 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertEqual(store.status, .entitled(Self.grant.entitlement))
         XCTAssertEqual(finishedTransactionIDs, [Self.evidence.transactionID])
         XCTAssertEqual(resolveCount, 1)
+    }
+
+    func testVerifiedRevocationUpdateSendsItsJWSAndFinishesAfterServerDecision() async {
+        let storeKit = StoreKitFake()
+        let api = EntitlementAPIFake(
+            result: .failure(ManagedConnectionEntitlementAPIError.rejected(code: "revoked"))
+        )
+        let store = ManagedConnectionEntitlementStore(storeKit: storeKit, entitlementAPI: api)
+        let observer = Task { await store.observeTransactionUpdates() }
+
+        await storeKit.sendTransactionUpdate(.verified(Self.evidence))
+        for _ in 0..<100 {
+            if await api.resolveCount > 0 { break }
+            await Task.yield()
+        }
+
+        observer.cancel()
+        await observer.value
+        let finishedTransactionIDs = await storeKit.finishedTransactionIDs
+        XCTAssertEqual(store.status, .revoked)
+        XCTAssertNil(store.currentGrant)
+        XCTAssertEqual(finishedTransactionIDs, [Self.evidence.transactionID])
+    }
+
+    func testGrantRefreshesBeforeTokenExpiresWhileAppRemainsActive() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstGrant = Self.grant(now: base)
+        let renewedGrant = ManagedConnectionEntitlementGrant(
+            entitlement: firstGrant.entitlement,
+            token: "renewed-token",
+            tokenExpiresAt: base.addingTimeInterval(1_800)
+        )
+        let storeKit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(firstGrant))
+        let sleeper = SleepUntilFake()
+        await storeKit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: api,
+            now: { base },
+            sleepUntil: { date in try await sleeper.sleep(until: date) }
+        )
+        await store.refreshEntitlement()
+        await api.setResult(.success(renewedGrant))
+
+        let maintenance = Task { await store.maintainCurrentGrant() }
+        for _ in 0..<100 {
+            if await sleeper.hasWaiter { break }
+            await Task.yield()
+        }
+        let scheduledDate = await sleeper.scheduledDate
+        await sleeper.resume()
+        await maintenance.value
+
+        let resolveCount = await api.resolveCount
+        XCTAssertEqual(scheduledDate, firstGrant.tokenExpiresAt.addingTimeInterval(-60))
+        XCTAssertEqual(store.currentGrant, renewedGrant)
+        XCTAssertEqual(resolveCount, 2)
     }
 
     func testOlderSuccessCannotReviveGrantAfterNewerRevocation() async {
@@ -528,8 +586,8 @@ final class ManagedConnectionEntitlementAPIClientTests: XCTestCase {
 }
 
 private actor StoreKitFake: ManagedConnectionStoreKitClient {
-    nonisolated private let updates: AsyncStream<Void>
-    nonisolated private let updatesContinuation: AsyncStream<Void>.Continuation
+    nonisolated private let updates: AsyncStream<ManagedConnectionTransactionUpdate>
+    nonisolated private let updatesContinuation: AsyncStream<ManagedConnectionTransactionUpdate>.Continuation
     private var purchaseOutcome: ManagedConnectionPurchaseOutcome = .cancelled
     private var currentByProductID: [String: ManagedConnectionCurrentEntitlementOutcome] = [:]
     private(set) var finishedTransactionIDs: [UInt64] = []
@@ -539,7 +597,7 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     private var purchaseError: Error?
 
     init() {
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let (stream, continuation) = AsyncStream<ManagedConnectionTransactionUpdate>.makeStream()
         updates = stream
         updatesContinuation = continuation
     }
@@ -578,12 +636,12 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
         currentByProductID[productID] ?? .none
     }
 
-    nonisolated func transactionUpdates() -> AsyncStream<Void> {
+    nonisolated func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate> {
         updates
     }
 
-    func sendTransactionUpdate() {
-        updatesContinuation.yield(())
+    func sendTransactionUpdate(_ update: ManagedConnectionTransactionUpdate) {
+        updatesContinuation.yield(update)
     }
 
     func signedAppTransaction() async throws -> String { "signed-app-transaction" }
@@ -595,6 +653,34 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     func syncPurchases() async throws {
         syncCount += 1
         if let syncError { throw syncError }
+    }
+}
+
+private actor SleepUntilFake {
+    private(set) var scheduledDate: Date?
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    var hasWaiter: Bool { continuation != nil }
+
+    func sleep(until date: Date) async throws {
+        scheduledDate = date
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func cancel() {
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
     }
 }
 
