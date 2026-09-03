@@ -353,9 +353,7 @@ func (c *managedPairingController) Complete(
 	}
 	if err != nil {
 		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) &&
-			cloudError.StatusCode >= 400 && cloudError.StatusCode < 500 &&
-			cloudError.StatusCode != http.StatusRequestTimeout &&
-			cloudError.StatusCode != http.StatusTooManyRequests {
+			isDefinitiveManagedClientRejection(cloudError.StatusCode) {
 			return tailcatStatus{}, err
 		}
 		return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(ctx, err)
@@ -452,10 +450,12 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 		if responseError := (*managedCloudResponseError)(nil); errors.As(err, &responseError) {
 			return c.invalidatePolicyLocked(ctx, err)
 		}
-		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) &&
-			cloudError.StatusCode >= 400 && cloudError.StatusCode < 500 &&
-			cloudError.StatusCode != http.StatusRequestTimeout && cloudError.StatusCode != http.StatusTooManyRequests {
-			return c.invalidatePolicyLocked(ctx, err)
+		if cloudError := (*managedCloudError)(nil); errors.As(err, &cloudError) {
+			// 离线缓存只覆盖明确的瞬时服务故障。3xx、非重试型 4xx 和
+			// 其它意外状态都不是可信策略响应，必须立即撤销。
+			if !isRetryableManagedCloudStatus(cloudError.StatusCode) {
+				return c.invalidatePolicyLocked(ctx, err)
+			}
 		}
 		if c.cachedPolicyFreshLocked() {
 			_, applyErr := c.applyRegisteredPolicyLocked(ctx, c.state.AllowedMobileKeys)
@@ -496,6 +496,16 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 		return c.invalidatePolicyLocked(ctx, err)
 	}
 	return c.applyRegisteredPolicyLocked(ctx, keys)
+}
+
+func isDefinitiveManagedClientRejection(statusCode int) bool {
+	return statusCode >= 400 && statusCode < 500 && !isRetryableManagedCloudStatus(statusCode)
+}
+
+func isRetryableManagedCloudStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout ||
+		statusCode == http.StatusTooManyRequests ||
+		statusCode >= 500
 }
 
 func (c *managedPairingController) applyRegisteredPolicyLocked(

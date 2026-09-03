@@ -429,6 +429,33 @@ func TestManagedPolicyInvalidCloudResponseDoesNotReuseCache(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyUnexpectedRedirectStatusDoesNotReuseCache(t *testing.T) {
+	now := time.Date(2026, 9, 4, 14, 46, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	err := controller.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HTTP 304") {
+		t.Fatalf("意外 3xx 策略响应应返回明确错误：%v", err)
+	}
+	if fake.managedCalls != 1 || len(fake.managedKeys) != 0 || !controller.state.AuthorizationInvalid {
+		t.Fatalf("意外 3xx 不能复用离线策略：calls=%d keys=%v state=%+v", fake.managedCalls, fake.managedKeys, controller.state)
+	}
+}
+
 func TestManagedPolicyRejectsMalformedTailcatPublicKey(t *testing.T) {
 	now := time.Date(2026, 9, 4, 14, 47, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
