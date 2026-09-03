@@ -34,6 +34,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var didApplyDebugLaunchRoute = false
     @State private var selectedRelatedSubagent: SessionContextSubagent?
     @State private var relatedSubagentParentID: SessionID?
+    @State private var selectedWorkspaceSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -1209,6 +1210,7 @@ struct UnifiedWorkbenchShell: View {
         }
 
         return WorkspaceRootView(
+            selectedSessionRuntime: $selectedWorkspaceSessionRuntime,
             onStartSession: { project, runtimeChoice in
                 Task {
                     await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
