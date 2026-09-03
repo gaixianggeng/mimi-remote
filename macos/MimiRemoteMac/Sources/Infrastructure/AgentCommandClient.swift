@@ -4,6 +4,7 @@ struct AgentCommandClient: Sendable {
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
     var status: @Sendable () async throws -> AgentStatus
+    var readiness: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
     var configureClaude: @Sendable (
@@ -95,6 +96,14 @@ extension AgentCommandClient {
                 return try decode(AgentStatus.self, from: try await execute(
                     binary: binary,
                     arguments: statusArguments(includeRuntime: true),
+                    timeout: .seconds(8)
+                ))
+            },
+            readiness: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: statusArguments(includeRuntime: false),
                     timeout: .seconds(8)
                 ))
             },

@@ -24,7 +24,9 @@ struct ConversationHistoryTimelineMutation: Equatable {
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private var activeProfileID = ""
-    @Published private var messagesByScopedSessionID: [ScopedSessionID: [ConversationMessage]] = [:]
+    // 读取放开到模块内，写入仍限本文件：投递对账扩展只读快照，改写一律走
+    // replaceMessagesWithoutEquivalenceCheck，避免绕过索引重建。
+    @Published private(set) var messagesByScopedSessionID: [ScopedSessionID: [ConversationMessage]] = [:]
 
     private var loadedHistorySessionIDs: Set<ScopedSessionID> = []
     private var lastSeenSeqBySessionID: [ScopedSessionID: EventSequence] = [:]
@@ -36,7 +38,7 @@ final class ConversationStore: ObservableObject {
     private var historyProjectionCacheBySessionID: [ScopedSessionID: HistoryProjectionCache] = [:]
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
-    private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
+    private(set) var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
     private var historyTimelineMutationBySessionID: [ScopedSessionID: ConversationHistoryTimelineMutation] = [:]
     private var historyTimelineMutationGeneration: UInt64 = 0
     private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
@@ -211,7 +213,7 @@ final class ConversationStore: ObservableObject {
                 continue
             }
             switch message.sendStatus {
-            case .sending, .sent, .failed:
+            case .sending, .uncertain, .sent, .failed:
                 return true
             case .local, .confirmed:
                 return false
@@ -224,17 +226,11 @@ final class ConversationStore: ObservableObject {
         // authoritative reopen 只有在历史明确带回终态 turn 后才能清理“等待回复”。
         // 空首屏会保留本地消息；本地 waiting/partial assistant 都没有终态 lifecycle，
         // 因而不会被误当成已经对账完成。
-        var sawTerminalAssistant = false
-        for message in messages(for: sessionID).reversed() where message.kind == .message {
-            if message.role == .assistant {
-                sawTerminalAssistant = sawTerminalAssistant || message.turnLifecycle?.isTerminal == true
-                continue
-            }
-            if message.role == .user {
-                return message.turnLifecycle?.isTerminal == true || sawTerminalAssistant
-            }
-        }
-        return false
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        return ConversationMessageDeliveryReconciler.hasTerminalTurnAfterLatestUser(
+            messages(for: sessionID),
+            turnLifecycles: turnLifecycleBySessionID[scopedSessionID] ?? [:]
+        )
     }
 
     func lastSeenSeq(for sessionID: String?) -> EventSequence? {
@@ -825,7 +821,25 @@ final class ConversationStore: ObservableObject {
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
         var list = messagesByScopedSessionID[scopedSessionID] ?? []
-        if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
+        let matchingClientIndex = clientMessageID.flatMap { clientMessageID -> Int? in
+            guard let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) else {
+                return nil
+            }
+            let boundTurnID = list[index].turnID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let incomingTurnID = message.turnID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard boundTurnID?.isEmpty != false || boundTurnID == incomingTurnID else {
+                return nil
+            }
+            return index
+        }
+        let matchingStableIndex = messageIndex(stableID: stableID, sessionID: sessionID).flatMap { index -> Int? in
+            guard clientMessageID != nil,
+                  list[index].clientMessageID == clientMessageID,
+                  let boundTurnID = list[index].turnID,
+                  !boundTurnID.isEmpty else { return index }
+            return message.turnID == boundTurnID ? index : nil
+        }
+        if let index = matchingStableIndex ?? matchingClientIndex {
             let previous = list[index]
             list[index].stableID = stableID
             // 服务端 user item 回显可能早于或晚于 turn/start ACK。两条链路都要把
@@ -1038,6 +1052,8 @@ final class ConversationStore: ObservableObject {
             return next == .confirmed
         case .failed:
             return next == .sending
+        case .uncertain:
+            return next == .sent || next == .confirmed || next == .failed || next == .sending
         case .sending, .local:
             return true
         }
@@ -1287,7 +1303,7 @@ final class ConversationStore: ObservableObject {
         return true
     }
 
-    private func replaceMessagesWithoutEquivalenceCheck(
+    func replaceMessagesWithoutEquivalenceCheck(
         _ list: [ConversationMessage],
         sessionID: String,
         rebuildIndexes: Bool = true,
@@ -1970,7 +1986,7 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
+    func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
         ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
     }
 

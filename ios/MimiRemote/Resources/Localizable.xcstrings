@@ -1995,6 +1995,24 @@
         }
       }
     },
+    "ui.app_server_request_outcome_unknown_value_value_value": {
+      "comment": "App Server write request whose result cannot be determined after transmission began.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Server request outcome is unknown: %1$@ (%2$@), %3$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Server 请求结果无法确认：%1$@（%2$@），%3$@"
+          }
+        }
+      }
+    },
     "ui.app_server_request_parameters_are_unsafe_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -5213,6 +5231,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "Codex 会在 Mac 端保存此选择；本设备不保存 MCP 凭据。"
+          }
+        }
+      }
+    },
+    "ui.codex_upstream_unavailable": {
+      "comment": "The local Codex App Server cannot currently be reached through SSH.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local Codex service is unavailable. Check SSH and the Codex App Server."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机 Codex 服务不可用，请检查 SSH 和 Codex App Server。"
           }
         }
       }
@@ -21868,6 +21904,24 @@
         }
       }
     },
+    "ui.request_cancelled_after_sending": {
+      "comment": "Reason shown when a request is cancelled after bytes may have been sent.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cancelled after sending began"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送开始后被取消"
+          }
+        }
+      }
+    },
     "ui.request_doctor_diagnosis_results_from_mac_assistant": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24159,6 +24213,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "发送失败：WebSocket 未连接"
+          }
+        }
+      }
+    },
+    "ui.sending_result_pending_confirmation": {
+      "comment": "Neutral message delivery state when the request may have reached the server.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delivery pending confirmation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送结果待确认"
           }
         }
       }
@@ -39425,6 +39497,24 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Protocol" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "协议" } }
+      }
+    },
+    "ui.request_timed_out_after_sending": {
+      "comment": "Reason shown when a request times out after bytes may have been sent.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "timed out after sending began"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送开始后超时"
+          }
+        }
       }
     },
     "ui.requested_permissions": {

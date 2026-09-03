@@ -3974,6 +3974,7 @@ extension ConversationDataFlowTests {
                 $0.role == .assistant && $0.content == "程序员去海边，发现浪都是递归的。"
             }
         )
+        XCTAssertTrue(conversationStore.hasTerminalTurnAfterLatestUserMessage(sessionID: running.id))
         XCTAssertNil(store.foregroundActivityBySessionID[running.id])
         XCTAssertFalse(store.activeSessions.contains { $0.id == running.id })
         XCTAssertTrue(store.recentHistorySessions.contains { $0.id == running.id })
@@ -4050,6 +4051,7 @@ extension ConversationDataFlowTests {
         )
         await secondReopen.value
 
+        XCTAssertTrue(conversationStore.hasTerminalTurnAfterLatestUserMessage(sessionID: completed.id))
         XCTAssertNil(store.foregroundActivityBySessionID[completed.id])
         XCTAssertTrue(
             conversationStore.messages(for: completed.id).contains {

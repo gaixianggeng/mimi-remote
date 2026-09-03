@@ -20,9 +20,14 @@ import (
 func TestAppServerGatewayRedactsImageGenerationNotificationsAndDeduplicates(t *testing.T) {
 	t.Setenv("AGENTD_MEDIA_REDACT_NOTIFICATIONS", "")
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
-	policy := &appServerGatewayPolicy{router: router, runtimeID: "codex"}
+	policy := &appServerGatewayPolicy{
+		router: router, runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-media": {id: "thread-media", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+		},
+	}
 	imagePayload := base64.StdEncoding.EncodeToString(testHistoryNoisyPNG(t, 256, 256))
-	payload := []byte(`{"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + imagePayload + `"}}}`)
+	payload := []byte(`{"method":"item/completed","params":{"threadId":"thread-media","item":{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + imagePayload + `"}}}`)
 
 	first, forward, policyErr := policy.observeUpstreamFrame(1, payload)
 	if policyErr != nil || !forward {
@@ -46,9 +51,14 @@ func TestAppServerGatewayRedactsImageGenerationNotificationsAndDeduplicates(t *t
 func TestAppServerGatewayNotificationRedactionCanBeDisabled(t *testing.T) {
 	t.Setenv("AGENTD_MEDIA_REDACT_NOTIFICATIONS", "off")
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
-	policy := &appServerGatewayPolicy{router: router, runtimeID: "codex"}
+	policy := &appServerGatewayPolicy{
+		router: router, runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-media": {id: "thread-media", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+		},
+	}
 	imagePayload := base64.StdEncoding.EncodeToString(testHistoryNoisyPNG(t, 256, 256))
-	payload := []byte(`{"method":"item/completed","params":{"item":{"type":"imageGeneration","result":"` + imagePayload + `"}}}`)
+	payload := []byte(`{"method":"item/completed","params":{"threadId":"thread-media","item":{"type":"imageGeneration","result":"` + imagePayload + `"}}}`)
 
 	got, forward, policyErr := policy.observeUpstreamFrame(1, payload)
 	if policyErr != nil || !forward {

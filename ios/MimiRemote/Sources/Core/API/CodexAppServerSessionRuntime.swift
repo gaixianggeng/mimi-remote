@@ -94,6 +94,7 @@ struct CodexAppServerConnectionAttempt {
     let id: UUID
     let connection: CodexAppServerConnection
     let task: Task<CodexAppServerPreparedConnection, Error>
+    var waiterIDs: Set<UUID>
 }
 
 struct CodexAppServerResolvedServerRequests {
@@ -179,6 +180,7 @@ actor CodexAppServerSessionRuntime {
     var config: CodexAppServerConfigResponse?
     var connection: CodexAppServerConnection?
     var connectionAttempt: CodexAppServerConnectionAttempt?
+    var connectionAttemptWaiters: [UUID: CheckedContinuation<CodexAppServerPreparedConnection, Error>] = [:]
     var notificationPumpTask: Task<Void, Never>?
     var serverRequestPumpTask: Task<Void, Never>?
     var projector = CodexAppServerEventProjector()
@@ -2944,172 +2946,6 @@ actor CodexAppServerSessionRuntime {
         return next
     }
 
-    func ensureConnection() async throws -> CodexAppServerConnection {
-        if let connection {
-            if await connection.isReadyForRequests() {
-                return connection
-            }
-            await retireConnection(connection)
-        }
-        if let connectionAttempt {
-            return try await installPreparedConnectionIfNeeded(from: connectionAttempt)
-        }
-        let config = try await connectionConfig()
-        guard runtimeGatewayAvailable(in: config) else {
-            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-        }
-        let gatewayURL = try gatewayURL(from: config)
-        let next = CodexAppServerConnection(transport: transportFactory(), requestTimeout: requestTimeout)
-        let task = Task { [next, gatewayURL, token] in
-            let notifications = await next.notifications()
-            let serverRequests = await next.serverRequests()
-            try await next.connect(url: gatewayURL, token: token)
-            return CodexAppServerPreparedConnection(
-                connection: next,
-                notifications: notifications,
-                serverRequests: serverRequests
-            )
-        }
-        let attempt = CodexAppServerConnectionAttempt(
-            id: UUID(),
-            connection: next,
-            task: task
-        )
-        connectionAttempt = attempt
-        return try await installPreparedConnectionIfNeeded(from: attempt)
-    }
-
-    func installPreparedConnectionIfNeeded(
-        from attempt: CodexAppServerConnectionAttempt
-    ) async throws -> CodexAppServerConnection {
-        try await withTaskCancellationHandler {
-            let prepared: CodexAppServerPreparedConnection
-            do {
-                prepared = try await attempt.task.value
-                try Task.checkCancellation()
-            } catch {
-                await cancelConnectionAttempt(id: attempt.id)
-                throw error
-            }
-
-            // 相同 single-flight 可能有多个等待者；只有仍持有租约的第一个等待者可以安装连接。
-            // 旧尝试即使迟到成功，也只能复用已经安装的新连接或立即释放，不能覆盖当前代次。
-            guard connectionAttempt?.id == attempt.id else {
-                if let connection, await connection.isReadyForRequests() {
-                    return connection
-                }
-                await prepared.connection.disconnect()
-                throw CancellationError()
-            }
-            connectionAttempt = nil
-            if let connection, await connection.isReadyForRequests() {
-                if connection !== prepared.connection {
-                    await prepared.connection.disconnect()
-                }
-                return connection
-            }
-            try Task.checkCancellation()
-            installConnection(prepared)
-            return prepared.connection
-        } onCancel: {
-            // Task.value 不会把等待者的取消自动传给非结构化 Task。转回 runtime actor 后按租约
-            // 同时取消连接任务和 candidate，disconnect 会恢复 initialize 的挂起 continuation。
-            Task {
-                await self.cancelConnectionAttempt(id: attempt.id)
-            }
-        }
-    }
-
-    func cancelConnectionAttempt(id: UUID? = nil) async {
-        guard let attempt = connectionAttempt,
-              id == nil || attempt.id == id else {
-            return
-        }
-        connectionAttempt = nil
-        attempt.task.cancel()
-        await attempt.connection.disconnect()
-    }
-
-    func connectionConfig() async throws -> CodexAppServerConfigResponse {
-        let cached = try await ensureConfig()
-        if runtimeGatewayAvailable(in: cached) {
-            return cached
-        }
-        // 首次冷启动时 agentd 可能先返回项目列表，但 app-server gateway 仍在启动。
-        // 这种不可用 config 不能长期缓存，否则 bootstrap 重试会一直复用旧状态，直到用户杀掉 APP。
-        let fresh = try await ensureConfig(forceRefresh: true)
-        if runtimeGatewayAvailable(in: fresh) {
-            return fresh
-        }
-        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-    }
-
-    func installConnection(_ prepared: CodexAppServerPreparedConnection) {
-        notificationPumpTask?.cancel()
-        serverRequestPumpTask?.cancel()
-        cancelAllTurnInterruptRecoveryTasks()
-        threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
-        threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
-        // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
-        threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        connection = prepared.connection
-        notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
-            for await notification in notifications {
-                await self?.handle(notification)
-            }
-            guard !Task.isCancelled else {
-                return
-            }
-            await self?.handleNotificationStreamEnded(for: installedConnection)
-        }
-        serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
-            for await request in serverRequests {
-                await self?.handle(request)
-            }
-        }
-    }
-
-    func handleNotificationStreamEnded(for endedConnection: CodexAppServerConnection) async {
-        guard let current = connection, current === endedConnection else {
-            return
-        }
-
-        // 底层 receive 失败会结束 notification stream。这里必须继续结束上层 AgentEvent stream，
-        // 否则 SessionWebSocketClient 的 for-await 永远不退出，UI 会一直误认为连接仍是 connected。
-        notificationPumpTask = nil
-        serverRequestPumpTask?.cancel()
-        serverRequestPumpTask = nil
-        cancelThreadResumeTasks(for: endedConnection)
-        connection = nil
-        threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
-        threadUnsubscribeRetryTasksBySessionID.removeAll(keepingCapacity: true)
-        let affected = clearAllPendingServerRequests()
-        for sessionID in affected.approvalSessionIDs {
-            emitApprovalResolved(sessionID: sessionID)
-        }
-        for sessionID in affected.userInputSessionIDs {
-            emitUserInputResolved(sessionID: sessionID, skipped: false)
-        }
-        finishAttachedEventStreams()
-        await endedConnection.disconnect()
-    }
-
-    func finishAttachedEventStreams() {
-        let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
-        eventMailboxesBySessionID.removeAll(keepingCapacity: true)
-        for mailbox in mailboxes {
-            mailbox.finishFromProducer()
-        }
-    }
-
-    func finishAttachedEventStreams(sessionID: SessionID) {
-        let mailboxes = eventMailboxesBySessionID.removeValue(forKey: sessionID)?.values ?? [:].values
-        for mailbox in mailboxes {
-            mailbox.finishFromProducer()
-        }
-    }
-
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
         timeout: TimeInterval? = nil
@@ -3190,11 +3026,15 @@ actor CodexAppServerSessionRuntime {
             return false
         }
         switch error {
-        case .disconnected, .notInitialized, .transport:
+        case .disconnected, .notInitialized, .transport, .decoding:
             return true
+        case .outcomeUnknown:
+            // 写入后的超时也使用 outcomeUnknown，但连接及事件流仍然健康；真实 transport
+            // 断线会由 connection 自身结束 notification stream 并触发淘汰，不在这里误杀。
+            return false
         case .appServer(let appServerError):
             return isStaleInitializationAppServerError(appServerError)
-        case .timeout, .duplicateRequestID, .decoding:
+        case .timeout, .duplicateRequestID:
             return false
         }
     }

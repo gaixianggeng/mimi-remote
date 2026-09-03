@@ -1771,9 +1771,9 @@ final class AppStore: ObservableObject {
             return false
         }
         switch connectionError {
-        case .disconnected, .notInitialized, .timeout, .transport:
+        case .disconnected, .notInitialized, .timeout, .transport, .outcomeUnknown, .decoding:
             return true
-        case .duplicateRequestID, .appServer, .decoding:
+        case .duplicateRequestID, .appServer:
             return false
         }
     }

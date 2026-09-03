@@ -52,7 +52,7 @@ type SSHTransportOptions struct {
 }
 
 // SSHTransport 负责把每个本地 WebSocket 连接映射到一个短生命周期 SSH proxy。
-// 它不拥有远端 App Server；Close 只关闭本地 proxy，不会停止 resident Codex。
+// 它不拥有远端 App Server；Shutdown 只结束本地工作，不会停止 resident Codex。
 type SSHTransport struct {
 	target string
 	sshBin string
@@ -62,8 +62,16 @@ type SSHTransport struct {
 	retryInterval    time.Duration
 
 	readyMu       sync.Mutex
-	readyErr      error
-	readyInFlight chan struct{}
+	readyInFlight *sshReadyFlight
+	lifetimeCtx   context.Context
+	lifetimeStop  context.CancelFunc
+	closed        bool
+	proxies       map[*sshProxyConn]struct{}
+}
+
+type sshReadyFlight struct {
+	done chan struct{}
+	err  error
 }
 
 // NewSSHTransport 构造 SSH transport。空 target 不在这里默默替换，调用方应先
@@ -89,12 +97,16 @@ func NewSSHTransport(options SSHTransportOptions) (*SSHTransport, error) {
 	if retryInterval <= 0 {
 		retryInterval = defaultSSHRetryInterval
 	}
+	lifetimeCtx, lifetimeStop := context.WithCancel(context.Background())
 	return &SSHTransport{
 		target:           target,
 		sshBin:           sshBin,
 		readyTimeout:     readyTimeout,
 		bootstrapTimeout: bootstrapTimeout,
 		retryInterval:    retryInterval,
+		lifetimeCtx:      lifetimeCtx,
+		lifetimeStop:     lifetimeStop,
+		proxies:          map[*sshProxyConn]struct{}{},
 	}, nil
 }
 
@@ -172,34 +184,74 @@ func (t *SSHTransport) EnsureReady(ctx context.Context) error {
 	if t == nil {
 		return errors.New("SSH transport 未初始化")
 	}
-	t.readyMu.Lock()
-	if t.readyInFlight != nil {
-		inFlight := t.readyInFlight
-		t.readyMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-inFlight:
-		}
-		t.readyMu.Lock()
-		err := t.readyErr
-		t.readyMu.Unlock()
-		return err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	inFlight := make(chan struct{})
-	t.readyInFlight = inFlight
+	t.readyMu.Lock()
+	if t.closed {
+		t.readyMu.Unlock()
+		return errors.New("SSH transport 已关闭")
+	}
+	flight := t.readyInFlight
+	if flight == nil {
+		flight = &sshReadyFlight{done: make(chan struct{})}
+		t.readyInFlight = flight
+		go t.runReadyFlight(flight)
+	}
 	t.readyMu.Unlock()
 
-	readyCtx, cancel := context.WithTimeout(ctx, t.readyTimeout)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-flight.done:
+		return flight.err
+	}
+}
+
+func (t *SSHTransport) runReadyFlight(flight *sshReadyFlight) {
+	readyCtx, cancel := context.WithTimeout(t.lifetimeCtx, t.readyTimeout)
 	err := t.ensureReadyOnce(readyCtx)
 	cancel()
 
 	t.readyMu.Lock()
-	t.readyErr = err
-	t.readyInFlight = nil
-	close(inFlight)
+	flight.err = err
+	if t.readyInFlight == flight {
+		t.readyInFlight = nil
+	}
+	close(flight.done)
 	t.readyMu.Unlock()
-	return err
+}
+
+// Shutdown 只终止 agentd 自己仍在执行的 readiness/bootstrap。
+// 每条已建立的 proxy 由 Router 持有并关闭；远端常驻 App Server 不属于本 transport。
+func (t *SSHTransport) Shutdown() {
+	if t == nil {
+		return
+	}
+	t.readyMu.Lock()
+	if t.closed {
+		t.readyMu.Unlock()
+		return
+	}
+	t.closed = true
+	stop := t.lifetimeStop
+	proxies := make([]*sshProxyConn, 0, len(t.proxies))
+	for proxy := range t.proxies {
+		proxies = append(proxies, proxy)
+	}
+	t.readyMu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	var closeGroup sync.WaitGroup
+	closeGroup.Add(len(proxies))
+	for _, proxy := range proxies {
+		go func() {
+			defer closeGroup.Done()
+			_ = proxy.Close()
+		}()
+	}
+	closeGroup.Wait()
 }
 
 func (t *SSHTransport) ensureReadyOnce(ctx context.Context) error {
@@ -280,6 +332,12 @@ func (t *SSHTransport) WebSocketDialer(timeout time.Duration) (websocket.Dialer,
 	if err := ValidateSSHTarget(t.target); err != nil {
 		return websocket.Dialer{}, err
 	}
+	t.readyMu.Lock()
+	closed := t.closed
+	t.readyMu.Unlock()
+	if closed {
+		return websocket.Dialer{}, errors.New("SSH transport 已关闭")
+	}
 	if timeout <= 0 {
 		timeout = 4 * time.Second
 	}
@@ -324,6 +382,21 @@ func (t *SSHTransport) probeProxy(ctx context.Context) error {
 
 func (t *SSHTransport) dialWebSocketRaw(ctx context.Context, headers http.Header) (*websocket.Conn, *http.Response, error) {
 	var proxy *sshProxyConn
+	var proxyMu sync.Mutex
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			proxyMu.Lock()
+			activeProxy := proxy
+			proxyMu.Unlock()
+			if activeProxy != nil {
+				_ = activeProxy.Close()
+			}
+		case <-watchDone:
+		}
+	}()
 	dialer, err := t.WebSocketDialer(4 * time.Second)
 	if err != nil {
 		return nil, nil, err
@@ -332,15 +405,24 @@ func (t *SSHTransport) dialWebSocketRaw(ctx context.Context, headers http.Header
 	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
 		conn, err := baseDial(dialCtx, network, address)
 		if typed, ok := conn.(*sshProxyConn); ok {
+			proxyMu.Lock()
 			proxy = typed
+			canceled := ctx.Err() != nil
+			proxyMu.Unlock()
+			if canceled {
+				_ = typed.Close()
+			}
 		}
 		return conn, err
 	}
 	conn, response, err := dialer.DialContext(ctx, CodexAppServerWebSocketURL, headers)
 	if err != nil {
-		if proxy != nil {
-			proxy.Close()
-			return nil, response, proxy.dialError(err)
+		proxyMu.Lock()
+		failedProxy := proxy
+		proxyMu.Unlock()
+		if failedProxy != nil {
+			_ = failedProxy.Close()
+			return nil, response, failedProxy.dialError(err)
 		}
 		return nil, response, err
 	}
@@ -627,6 +709,12 @@ type sshProxyConn struct {
 }
 
 func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
+	t.readyMu.Lock()
+	closed := t.closed
+	t.readyMu.Unlock()
+	if closed {
+		return nil, &SSHProxyError{StartError: errors.New("SSH transport 已关闭"), ExitCode: -1}
+	}
 	if err := t.SSHBinaryAvailable(); err != nil {
 		return nil, &SSHProxyError{StartError: err, ExitCode: -1}
 	}
@@ -661,12 +749,25 @@ func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
 		waitCh: make(chan error, 1),
 		doneCh: make(chan struct{}),
 	}
+	t.readyMu.Lock()
+	registered := !t.closed
+	if registered {
+		t.proxies[proxy] = struct{}{}
+	}
+	t.readyMu.Unlock()
 	go proxy.captureStderr(stderr)
 	go func() {
 		err := cmd.Wait()
+		t.readyMu.Lock()
+		delete(t.proxies, proxy)
+		t.readyMu.Unlock()
 		proxy.waitCh <- err
 		close(proxy.doneCh)
 	}()
+	if !registered {
+		_ = proxy.Close()
+		return nil, &SSHProxyError{StartError: errors.New("SSH transport 已关闭"), ExitCode: -1}
+	}
 	// Gorilla v1.5.3 会在 DialContext 返回时取消它为 HandshakeTimeout
 	// 派生的 context。这里不能把该 context 当作连接生命周期；握手失败时
 	// Gorilla 自己会关闭 net.Conn，握手超时则由它设置在连接上的 deadline 负责。

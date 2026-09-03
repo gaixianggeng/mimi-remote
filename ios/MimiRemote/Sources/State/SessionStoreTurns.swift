@@ -370,6 +370,11 @@ extension SessionStore {
                 authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems,
                 timelineMutationKind: .prepend
             )
+            conversationStore.reconcileUncertainGuidedMessages(
+                sessionID: session.id,
+                authoritativeHistory: page.messages,
+                historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
+            )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(
                 sessionID: session.id,
@@ -934,6 +939,11 @@ extension SessionStore {
                 setErrorMessage(L10n.text("ui.failed_to_guide_conversation_there_is_no_active"))
                 return false
             }
+            conversationStore.bindTurnID(
+                activeTurnID,
+                clientMessageID: clientMessageID,
+                sessionID: session.id
+            )
             let didAcceptLocally = socket.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: activeTurnID)
             guard didAcceptLocally else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)

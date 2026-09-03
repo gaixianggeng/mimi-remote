@@ -511,7 +511,7 @@ extension ConversationDataFlowTests {
         await connection.disconnect()
     }
 
-    func testCodexAppServerConnectionSkipsMalformedFrameWithoutFailingPendingRequests() async throws {
+    func testCodexAppServerConnectionRetiresMalformedFrameAndFailsPendingRequests() async throws {
         let transport = FakeCodexAppServerTransport()
         let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
         try await connectFakeAppServer(connection, transport: transport)
@@ -528,10 +528,16 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(request.method, "thread/list")
 
         transport.enqueue(#"{"id": "#)
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: request.id)),"result":{"name":"still-ok"}}"#)
-
-        let result = try await requestTask.value?.objectValue
-        XCTAssertEqual(result?["name"]?.stringValue, "still-ok")
+        do {
+            _ = try await requestTask.value
+            XCTFail("Expected malformed frame to retire the connection")
+        } catch CodexAppServerConnectionError.outcomeUnknown(let method, _, _) {
+            XCTAssertEqual(method, "thread/list")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let isReady = await connection.isReadyForRequests()
+        XCTAssertFalse(isReady)
 
         await connection.disconnect()
     }

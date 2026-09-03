@@ -141,6 +141,8 @@ final class HostStore {
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
     private var lastStatusRefreshAt: Date?
+    private var lastReadinessCommandSuccessAt: Date?
+    private var readinessFailureStartedAt: Date?
     // 每次开始 agent.status() 都先分配单调序号，只允许最新请求落地。
     private var statusRequestSequence: UInt64 = 0
 
@@ -1067,7 +1069,7 @@ final class HostStore {
         )
     }
 
-    private func refreshMacAgentStatus() async {
+    private func refreshMacAgentStatus(preserveStateOnCommandFailure: Bool = false, now: Date = Date()) async {
         switch services.agentStatus() {
         case .enabled:
             do {
@@ -1075,7 +1077,11 @@ final class HostStore {
             } catch is CancellationError {
                 return
             } catch {
-                fail(error)
+                if preserveStateOnCommandFailure {
+                    applyReadinessStalenessIfNeeded(now: now)
+                } else {
+                    fail(error)
+                }
             }
         case .requiresApproval:
             lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
@@ -1147,6 +1153,8 @@ final class HostStore {
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
+        lastReadinessCommandSuccessAt = Date()
+        readinessFailureStartedAt = nil
         if resolved.serviceOK {
             lifecycle = .ready
         } else if resolved.processOK {
@@ -1237,18 +1245,70 @@ final class HostStore {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled else { return }
                 tick += 1
-                if let endpoint = self.status?.endpoint,
-                   (self.lifecycle == .ready || self.lifecycle == .migrationRequired),
-                   !(await self.health.check(endpoint))
-                {
-                    await self.refresh()
-                } else if tick.isMultiple(of: 30) {
-                    // 常驻监控每 10 秒只做 loopback healthz；完整 status 会执行带鉴权的
-                    // upstream WebSocket readiness，降到 5 分钟一次，避免控制面持续干扰数据面。
-                    await self.refresh()
-                }
+                await self.performMonitoringTick(tick, now: Date())
             }
         }
+    }
+
+    /// 常驻监控始终以 healthz 作为进程探针；readiness 和完整 runtime 状态按不同频率读取。
+    /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
+    func performMonitoringTick(_ tick: Int, now: Date) async {
+        guard owner != .none, let endpoint = status?.endpoint else { return }
+        guard await health.check(endpoint) else {
+            await refresh()
+            return
+        }
+        if owner == .homebrew {
+            if tick.isMultiple(of: 30) {
+                await refresh()
+            }
+            return
+        }
+        if tick.isMultiple(of: 30) {
+            // 完整 status 已包含 readyz，本轮不再重复执行轻量 readiness。
+            await refreshMacAgentStatus(preserveStateOnCommandFailure: true, now: now)
+            // healthz 已在本轮确认进程存活；status 中的 process_ok 即使瞬时为 false，
+            // 也不能把一个明确的 readiness 故障误报为进程停止。
+            if let current = status, !current.serviceOK {
+                lifecycle = .degraded(current.serviceError ?? "Codex 服务尚未就绪。")
+            }
+        } else if tick.isMultiple(of: 6) {
+            await refreshReadinessStatus(now: now)
+        } else {
+            applyReadinessStalenessIfNeeded(now: now)
+        }
+    }
+
+    private func refreshReadinessStatus(now: Date) async {
+        // 轻量 readiness 与完整 status 写入同一份状态。二者必须共享请求序号，
+        // 否则先发出的慢 readiness 会在较新的完整状态之后回写旧结果。
+        let sequence = nextStatusRequestSequence()
+        do {
+            let current = try await agent.readiness()
+            guard sequence == statusRequestSequence else { return }
+            lastReadinessCommandSuccessAt = now
+            readinessFailureStartedAt = nil
+            let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+            status = resolved
+            doctor = resolved.doctor
+            lastStatusRefreshAt = now
+            lifecycle = current.serviceOK
+                ? .ready
+                : .degraded(current.serviceError ?? "Codex 服务尚未就绪。")
+        } catch is CancellationError {
+            return
+        } catch {
+            applyReadinessStalenessIfNeeded(now: now)
+        }
+    }
+
+    func applyReadinessStalenessIfNeeded(now: Date) {
+        if readinessFailureStartedAt == nil {
+            readinessFailureStartedAt = now
+        }
+        guard let baseline = lastReadinessCommandSuccessAt ?? readinessFailureStartedAt,
+              now.timeIntervalSince(baseline) >= 90 else { return }
+        lifecycle = .degraded("进程存活，但 Codex 服务状态暂时无法确认")
     }
 
     private func scheduleRuntimeStatusFollowUp() {
@@ -1423,6 +1483,7 @@ final class HostStore {
             configExists: { lifecycle != .notConfigured },
             setup: { _ in PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
             status: { status },
+            readiness: { status },
             statusAt: { _ in status },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
             configureClaude: { preference, restoreEnabled in

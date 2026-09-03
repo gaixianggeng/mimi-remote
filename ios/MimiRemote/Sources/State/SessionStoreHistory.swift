@@ -1242,6 +1242,11 @@ extension SessionStore {
             sessionID: sessionID,
             authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
         )
+        conversationStore.reconcileUncertainGuidedMessages(
+            sessionID: sessionID,
+            authoritativeHistory: page.messages,
+            historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
+        )
         reconcilePendingPermissionTurnBoundaries(
             sessionID: sessionID,
             historyMessages: page.messages
