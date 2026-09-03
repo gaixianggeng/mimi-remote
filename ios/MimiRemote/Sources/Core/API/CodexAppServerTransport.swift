@@ -633,6 +633,12 @@ actor CodexAppServerConnection {
         guard case .writeStarted = pending.phase else {
             return error
         }
+        // 凭证被拒是明确结论，不是"结果未知"：握手 401/403 时请求根本没有被接受。
+        // 包成 outcomeUnknown 会同时丢掉 invalidatesCredentials 和被拒指纹，
+        // 让上层把过期 token 当成可重试的网关故障而不是提示重新配对。
+        if isCredentialInvalidatingError(error) {
+            return error
+        }
         return CodexAppServerConnectionError.outcomeUnknown(
             method: pending.method,
             id: id,
