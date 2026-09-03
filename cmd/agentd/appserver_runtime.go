@@ -39,8 +39,8 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 		log.Printf("agentd shared app-server ssh target=%s codex_version=%s", transport.Target(), remoteVersion)
 		result.routerOptions.AppServerSSH = transport
 	case "ws":
-		if runtime.GOOS != "windows" {
-			return nil, fmt.Errorf("受管 app-server WebSocket 只支持 Windows 本机宿主")
+		if !config.SupportsManagedAppServer() {
+			return nil, fmt.Errorf("受管 app-server WebSocket 只支持 Windows/Linux 本机宿主")
 		}
 		process, err := appserver.StartManagedWebSocket(prepareCtx, appserver.ManagedWebSocketOptions{
 			CodexBin:    cfg.Codex.Bin,
@@ -55,11 +55,11 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 			_ = process.Shutdown(context.Background())
 			return nil, fmt.Errorf("本机 Codex app-server initialize 失败：%w", err)
 		}
-		log.Printf("agentd managed Windows app-server ws upstream=%s", cfg.AppServer.Listen)
+		log.Printf("agentd managed local app-server ws upstream=%s platform=%s", cfg.AppServer.Listen, runtime.GOOS)
 		result.routerOptions.AppServerSSH = process
 		result.managedWS = process
 	default:
-		return nil, fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh，Windows 另支持受管 ws")
+		return nil, fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh，Windows/Linux 另支持受管 ws")
 	}
 	return result, nil
 }
@@ -100,7 +100,7 @@ func shutdownServeResources(
 	if apiRouter != nil {
 		apiRouter.Shutdown()
 	}
-	// SSH resident belongs to the remote host and is preserved. Only the
-	// Windows-local managed WebSocket process is owned and stopped here.
+	// SSH resident belongs to the remote host and is preserved. A local managed
+	// WebSocket process is owned by agentd and stopped on Windows and Linux.
 	return appServerRuntime.shutdown()
 }

@@ -26,7 +26,7 @@ type ManagedWebSocketOptions struct {
 	EarlyExitGrace time.Duration
 }
 
-// ManagedWebSocketProcess is the Windows-local counterpart to SSHTransport.
+// ManagedWebSocketProcess is the Windows/Linux-local counterpart to SSHTransport.
 // It owns exactly one loopback Codex App Server and exposes the same gateway
 // contract without reintroducing the removed macOS Desktop IPC lifecycle.
 type ManagedWebSocketProcess struct {

@@ -261,7 +261,7 @@ func (c *Checker) configFileCheck() Check {
 }
 
 func (c *Checker) appServerTokenFileCheck() Check {
-	if runtime.GOOS != "windows" ||
+	if !config.SupportsManagedAppServer() ||
 		!strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "ws") ||
 		!c.cfg.AppServer.Managed {
 		return Check{}
@@ -272,7 +272,7 @@ func (c *Checker) appServerTokenFileCheck() Check {
 			Name:    "app-server-token-file",
 			OK:      false,
 			Message: "app-server token file 未配置",
-			Fix:     "运行 agentd setup --force 重新生成 Windows 本机 App Server 配置",
+			Fix:     "运行 agentd setup --force 重新生成本机 App Server 配置",
 		}
 	}
 	return sensitiveFileCheck("app-server-token-file", "app-server token file", path)
@@ -350,15 +350,15 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 		}
 		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用共享 SSH proxy"}
 	case "ws":
-		if runtime.GOOS != "windows" || !c.cfg.AppServer.Managed {
-			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 模式无效", Fix: "Windows 必须使用受管 loopback WebSocket；其他平台使用 ssh"}
+		if !config.SupportsManagedAppServer() || !c.cfg.AppServer.Managed {
+			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 模式无效", Fix: "Windows/Linux 必须使用受管 loopback WebSocket；macOS 使用 ssh"}
 		}
 		if !isLoopbackListen(c.cfg.AppServer.Listen) {
 			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 不在 loopback", Fix: "将 app_server.listen 设置为 ws://127.0.0.1:<port>"}
 		}
-		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用 Windows 本机受管 WebSocket"}
+		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用本机受管 WebSocket"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ssh；Windows 本机宿主可使用受管 ws"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "将 app_server.transport 设置为 ssh；Windows/Linux 本机宿主可使用受管 ws"}
 	}
 }
 

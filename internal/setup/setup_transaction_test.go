@@ -110,13 +110,13 @@ func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) 
 			}
 			assertDefaultSetupResultAppServer(t, result)
 			assertPrivateRegularFile(t, configPath)
-			if runtime.GOOS == "windows" {
+			if config.SupportsManagedAppServer() {
 				newToken, err := os.ReadFile(tokenPath)
 				if err != nil || len(strings.TrimSpace(string(newToken))) != 64 {
-					t.Fatalf("Windows setup 必须生成独立的 32-byte hex upstream token：err=%v raw=%q", err, newToken)
+					t.Fatalf("本机 setup 必须生成独立的 32-byte hex upstream token：err=%v raw=%q", err, newToken)
 				}
 				if testCase.existing && bytes.Equal(newToken, oldToken) {
-					t.Fatal("Windows setup --force 必须轮换 upstream token")
+					t.Fatal("本机 setup --force 必须轮换 upstream token")
 				}
 				assertPrivateRegularFile(t, tokenPath)
 			} else if testCase.existing {
@@ -133,7 +133,7 @@ func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) 
 			if len(cfg.Auth.Token) != 64 {
 				t.Fatalf("提交后的配置缺少外侧 token：%+v", cfg)
 			}
-			if testCase.existing || runtime.GOOS == "windows" {
+			if testCase.existing || config.SupportsManagedAppServer() {
 				assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
 			} else {
 				assertSetupDirectoryEntries(t, dir, "config.json")

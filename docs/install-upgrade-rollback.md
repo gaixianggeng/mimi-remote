@@ -8,8 +8,8 @@
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
 - Windows 普通用户使用按用户 EXE 安装器；后台由当前用户计划任务托管，Codex App Server 只监听本机 loopback WebSocket。
+- Linux 使用发布包中的 user-systemd 模板；`agentd` 默认直接托管本机 loopback WebSocket App Server，不要求 SSH。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
-- Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和移动端配对 Token 都留在系统用户配置目录，升级二进制不会删除它们。
 - 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
 
@@ -48,7 +48,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 ### macOS 首次安装（推荐）
 
-前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。启用“远程登录”，并先确认 `ssh 127.0.0.1 codex --version` 无需输入登录密码即可成功。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。启用“远程登录”，并先确认 `ssh 127.0.0.1 true` 无需输入登录密码即可成功。agentd 会为非交互 SSH 补齐 Homebrew、npm 和 mise 的常见 Codex 安装路径。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
 从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
 
@@ -197,7 +197,7 @@ brew services stop mimi-remote
 systemctl --user stop mimi-remote.service
 ```
 
-收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS/Linux 会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server。Windows 会停止自己管理的 loopback App Server 完整子进程树。App Server 或 transport 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
+收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS 和 Linux 显式远端模式会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server；Windows 与 Linux 默认模式会停止自己管理的 loopback App Server 子进程。App Server 或 transport 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
 
 ### macOS Homebrew 应急回滚
 
@@ -273,15 +273,17 @@ curl --fail --location --remote-name \
 
 awk -v archive="$archive" '$2 == archive { print }' checksums.txt | sha256sum -c -
 tar -xzf "$archive"
-ssh 127.0.0.1 codex --version
-AGENTD_APP_SERVER_SSH_TARGET=127.0.0.1 bash ./scripts/install-linux.sh install
+bash ./scripts/install-linux.sh install
 ```
 
-先配置本机 sshd、host key 和非交互密钥认证。安装脚本会在替换二进制或 unit 前，用候选版本完成 SSH、Codex 版本和真实 `initialize` 预检。首次 setup 会把环境变量中的目标持久化到配置；systemd unit 不需要继承该环境变量。
+默认模式直接使用当前 Linux 用户的 Codex CLI，不需要安装或配置 `sshd`，也不会读取或修改 `authorized_keys`。安装脚本会在替换二进制或 unit 前，用候选版本启动一次短命的本机 App Server，并完成 Codex 版本与真实 `initialize` 预检；正式服务随后管理一个带私有 capability-token 文件、只监听 `ws://127.0.0.1:4222` 的 App Server。
+
+若确实要把 Codex 放到另一台 SSH 主机，可显式执行 `AGENTD_APP_SERVER_SSH_TARGET=user@host bash ./scripts/install-linux.sh install`。该高级模式才要求预先配置 host key 和非交互密钥认证；安装器仍不会修改 `authorized_keys` 或放宽 sshd。首次 setup 会把目标持久化到配置，systemd unit 不需要继承该环境变量。
 
 脚本只接受正式版本号，拒绝 `devel`、错误架构、root、非默认 `AGENTD_CONFIG` 和不一致的 `XDG_CONFIG_HOME`。它会：
 
 - 原子安装 `~/.local/bin/agentd` 和 user-systemd unit；
+- 默认生成本机受管 WebSocket 配置和权限为 `0600` 的独立 App Server token 文件；
 - 首次安装时静默创建默认配置，已有配置和 Token 不会被覆盖；服务真正就绪且安装事务提交后，才输出不含长期 Token/connect link 的短期配对二维码；
 - 升级前保存 `agentd.previous` 和上一版 unit；
 - 显式重启已经运行的旧进程，并等待服务健康；

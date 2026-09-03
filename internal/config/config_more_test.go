@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -287,17 +286,17 @@ func TestValidateRejectsNonSSHAppServer(t *testing.T) {
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
 	cfg.AppServer.Transport = "ws"
 	cfg.AppServer.Managed = true
-	cfg.AppServer.Listen = DefaultWindowsAppServerListen()
+	cfg.AppServer.Listen = DefaultManagedAppServerListen()
 	cfg.AppServer.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
 
 	err := cfg.Validate()
-	if runtime.GOOS == "windows" {
+	if SupportsManagedAppServer() {
 		if err != nil {
-			t.Fatalf("Windows 应允许受管 loopback WebSocket：%v", err)
+			t.Fatalf("Windows/Linux 应允许受管 loopback WebSocket：%v", err)
 		}
-	} else if err == nil || !strings.Contains(err.Error(), "只支持 Windows") {
-		t.Fatalf("非 Windows 必须拒绝本机 WebSocket：%v", err)
+	} else if err == nil || !strings.Contains(err.Error(), "Windows/Linux") {
+		t.Fatalf("非 Windows/Linux 必须拒绝本机 WebSocket：%v", err)
 	}
 }
 

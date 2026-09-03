@@ -1,10 +1,10 @@
 # 共享 SSH App Server
 
-本文只描述 macOS/Linux 的共享 SSH transport。Windows `agentd` 宿主管理一个 loopback WebSocket App Server，不使用 Unix Socket、SSH proxy 或 Desktop 私有 IPC。
+本文描述 macOS 默认使用的共享 SSH transport，以及 Linux 显式指定远端 SSH target 时的高级模式。Linux 默认与 Windows 相同，由 `agentd` 管理 loopback WebSocket App Server，不要求 SSH，也不使用 Desktop 私有 IPC。
 
 ## 目标
 
-Mimi、Windows Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
+Mimi、远程 Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
 
 ```text
 Mimi App -> agentd 鉴权 WebSocket -> localhost SSH -> codex app-server proxy --┐
@@ -16,7 +16,7 @@ OpenClaw 和 Desktop 的普通 “This Mac” 模式继续使用自己的 App Se
 
 ## 配置
 
-`~/Library/Application Support/mimi-remote/config.json` 的 Codex 部分使用以下配置：
+macOS 的 `~/Library/Application Support/mimi-remote/config.json`（或 Linux 显式远端模式的对应配置文件）使用以下 Codex 配置：
 
 ```json
 {
@@ -40,10 +40,10 @@ AGENTD_APP_SERVER_SSH_TARGET=user@mac-host agentd up
 agentd 不保存 SSH 密码或私钥。启动前必须确保 Remote Login、host key 和非交互密钥认证可用：
 
 ```bash
-ssh 127.0.0.1 codex --version
+ssh 127.0.0.1 true
 ```
 
-首次运行会要求确认本机 SSH host key。命令必须在无需输入登录密码的情况下成功。完成后运行：
+首次运行会要求确认本机 SSH host key。命令必须在无需输入登录密码的情况下成功。agentd 的固定远端命令会显式补齐 `~/.local/bin`、`~/.npm-global/bin`、mise shims / latest Codex、Homebrew 和系统目录，不依赖非交互 SSH 是否加载 shell rc。完成后运行：
 
 ```bash
 agentd doctor

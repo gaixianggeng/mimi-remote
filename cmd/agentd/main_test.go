@@ -1662,13 +1662,13 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 		t.Fatal(err)
 	}
 	afterAppServer := after["app_server"].(map[string]any)
-	if runtime.GOOS == "windows" {
+	if config.SupportsManagedAppServer() {
 		if !bytes.Equal(updated, append(original, '\n')) {
-			t.Fatalf("Windows 应继续使用原有受管 WS 配置：\nwant=%s\n got=%s", original, updated)
+			t.Fatalf("Windows/Linux 应继续使用原有受管 WS 配置：\nwant=%s\n got=%s", original, updated)
 		}
 		loaded, loadErr := config.Load(configPath)
 		if loadErr != nil || loaded.AppServer.Transport != "ws" || !loaded.AppServer.Managed {
-			t.Fatalf("Windows 受管 WS 配置必须保持可加载：cfg=%+v err=%v", loaded.AppServer, loadErr)
+			t.Fatalf("Windows/Linux 受管 WS 配置必须保持可加载：cfg=%+v err=%v", loaded.AppServer, loadErr)
 		}
 		return
 	}
@@ -1740,9 +1740,9 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	if cfg.Auth.Token == "" {
 		t.Fatalf("完整 setup 应生成外侧 token：%+v", cfg)
 	}
-	if runtime.GOOS == "windows" {
+	if config.SupportsManagedAppServer() {
 		if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen == "" {
-			t.Fatalf("Windows 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
+			t.Fatalf("Windows/Linux 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
 		}
 	} else if cfg.AppServer.SSHTarget == "" {
 		t.Fatalf("完整 setup 应生成 SSH target：%+v", cfg)
@@ -1944,20 +1944,20 @@ func TestMainSSHHelperProcess(t *testing.T) {
 	}
 	sshArgs := os.Args[separator+1:]
 	command := sshArgs[len(sshArgs)-1]
-	switch command {
-	case "codex --version":
+	switch {
+	case strings.HasSuffix(command, "codex --version"):
 		fmt.Fprintln(os.Stdout, "codex-cli 0.149.1")
-	case `if test -S "$HOME/.codex/app-server-control/app-server-control.sock"; then printf socket-present; else printf socket-missing; fi`:
+	case command == `if test -S "$HOME/.codex/app-server-control/app-server-control.sock"; then printf socket-present; else printf socket-missing; fi`:
 		if mainTestFileExists(os.Getenv("MIMI_AGENTD_SSH_SERVER_MARKER")) {
 			fmt.Fprint(os.Stdout, "socket-present")
 		} else {
 			fmt.Fprint(os.Stdout, "socket-missing")
 		}
-	case "nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &":
+	case strings.Contains(command, "nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex"):
 		if err := os.WriteFile(os.Getenv("MIMI_AGENTD_SSH_SERVER_MARKER"), []byte("ready"), 0o600); err != nil {
 			os.Exit(91)
 		}
-	case "codex app-server proxy":
+	case strings.HasSuffix(command, "exec codex app-server proxy"):
 		if !mainTestFileExists(os.Getenv("MIMI_AGENTD_SSH_SERVER_MARKER")) {
 			os.Exit(92)
 		}
@@ -2247,7 +2247,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	if destination["future_unknown_field"] == nil {
 		t.Fatalf("平台默认路径迁移必须保留未知字段：%+v", destination)
 	}
-	if migratesSSH && runtime.GOOS != "windows" {
+	if migratesSSH && !config.SupportsManagedAppServer() {
 		if appServer["transport"] != "ssh" || appServer["ssh_target"] != "127.0.0.1" {
 			t.Fatalf("新配置必须将旧 WS 迁移为共享 SSH：%+v", destination)
 		}

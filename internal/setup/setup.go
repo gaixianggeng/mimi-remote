@@ -69,7 +69,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		// 已有配置时默认只读取配对信息，避免误覆盖用户已经绑定到 iPad 的 token。
 		// 旧版 managed WS 配置必须先完成 SSH 预检和原子迁移，不能让 Pair
 		// 继续把失效 transport 当成当前配置。
-		if runtime.GOOS != "windows" {
+		if runtime.GOOS == "darwin" {
 			if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
 				return Result{}, err
 			}
@@ -88,14 +88,19 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
 		}
 	}
-	appServerConfig := config.DefaultWindowsAppServerConfig()
+	requestedSSHTarget := strings.TrimSpace(options.AppServerSSHTarget)
+	if requestedSSHTarget == "" {
+		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
+	}
+	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
+	appServerConfig := config.DefaultManagedAppServerConfig()
 	appServerSSHTarget := ""
 	if runtime.GOOS == "windows" && strings.TrimSpace(options.AppServerSSHTarget) != "" {
 		if err := appserver.ValidateSSHTarget(options.AppServerSSHTarget); err != nil {
 			return Result{}, fmt.Errorf("app_server.ssh_target 无效：%w", err)
 		}
 	}
-	if runtime.GOOS != "windows" {
+	if !useManagedLocalAppServer {
 		appServerSSHTarget, err = normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
 		if err != nil {
 			return Result{}, err
@@ -104,7 +109,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		if transportErr != nil {
 			return Result{}, fmt.Errorf("准备 SSH App Server 失败：%w", transportErr)
 		}
-		// 非 Windows 首次安装和 --force 必须先验证真实 SSH + initialize。
+		// macOS 与 Linux 显式远端模式必须先验证真实 SSH + initialize。
 		if err := sshPreflight(ctx, sshTransport); err != nil {
 			return Result{}, fmt.Errorf("SSH 预检失败，配置未修改：%w", err)
 		}
@@ -112,6 +117,12 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Transport: config.DefaultAppServerTransport(),
 			SSHTarget: appServerSSHTarget,
 			AutoTitle: true,
+		}
+	} else if runtime.GOOS == "linux" {
+		codexBin := defaultCodexBin()
+		codexEnv := map[string]string{"TERM": "xterm-256color"}
+		if err := localAppServerPreflight(ctx, codexBin, codexEnv); err != nil {
+			return Result{}, fmt.Errorf("Linux 本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	}
 
@@ -141,7 +152,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	}
 	appServerToken := ""
 	appServerTokenFile := ""
-	if runtime.GOOS == "windows" {
+	if useManagedLocalAppServer {
 		appServerToken, err = randomHex(32)
 		if err != nil {
 			return Result{}, err
@@ -210,7 +221,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			if err := validateOriginal(); err != nil {
 				return err
 			}
-			if runtime.GOOS == "windows" {
+			if useManagedLocalAppServer {
 				return writeSetupFilesAtomically(
 					cfgPath,
 					appServerTokenFile,

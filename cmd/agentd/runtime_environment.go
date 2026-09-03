@@ -42,10 +42,10 @@ func ensureProcessUserEnvironment() error {
 	return nil
 }
 
-// ensureAppServerSSHMigration 在正式 Load 前原子迁移旧 managed WS 配置。
-// SSH 预检失败时原文件保持不变，避免升级留下两套都不可用的配置。
+// ensureAppServerSSHMigration 只在 macOS 正式 Load 前原子迁移旧 managed WS
+// 配置。Linux 与 Windows 都支持受管本机 WebSocket，不应被改写回 SSH。
 func ensureAppServerSSHMigration(ctx context.Context, configPath string, target string) error {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS != "darwin" {
 		return nil
 	}
 	if err := agentsetup.MigrateAppServerToSSH(ctx, configPath, target); err != nil {
