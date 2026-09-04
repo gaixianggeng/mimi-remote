@@ -535,11 +535,34 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return page
     }
 
+    /// 搜索的分页由 Codex 的 thread/search 独占驱动：只有首页会额外查一次 Claude，
+    /// 并把结果拼在后面。Claude 没有 thread/search，它走 thread/list + searchTerm，
+    /// 按单页返回。这样既让 Claude 会话可搜到，也不需要把两条游标流编进一个复合
+    /// cursor（那会重新引入跨 Runtime 的分页状态机）。
+    ///
+    /// 代价说明：Claude 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
+    /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
-        // Codex 的 thread/search 是独立能力；Claude channel 目前没有同构接口，避免为搜索额外发双路请求。
-        let page = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
-        bundle.routes.remember(page.sessions)
-        return page
+        let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
+        bundle.routes.remember(codexPage.sessions)
+        guard cursor == nil else {
+            return codexPage
+        }
+        // Claude 搜索是增强项：bridge 未启用或不健康时不能连带让 Codex 搜索失败。
+        guard let claudePage = try? await bundle.claude.globalThreadListSearchPage(
+            query: query,
+            limit: limit
+        ), !claudePage.results.isEmpty else {
+            return codexPage
+        }
+        bundle.routes.remember(claudePage.sessions)
+        let existingIDs = Set(codexPage.results.map(\.session.id))
+        let merged = codexPage.results + claudePage.results.filter { !existingIDs.contains($0.session.id) }
+        return ThreadSearchPage(
+            results: merged,
+            nextCursor: codexPage.nextCursor,
+            backwardsCursor: codexPage.backwardsCursor
+        )
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {

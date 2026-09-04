@@ -534,6 +534,40 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    /// 面向没有 thread/search 的 runtime（Claude）的搜索：走 thread/list + searchTerm。
+    /// 结果按单页返回且不给 nextCursor —— 翻页由 Codex 的 thread/search 驱动。
+    /// bridge 的 thread/list 不返回命中片段，因此用会话 preview 兜底当 snippet；
+    /// 为空时上层会自动不渲染片段行，不会留下空白。
+    func globalThreadListSearchPage(query: String, limit: Int?) async throws -> ThreadSearchPage {
+        let searchTerm = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchTerm.isEmpty else {
+            return ThreadSearchPage(results: [])
+        }
+        let config = try await ensureConfig()
+        guard config.policy.allowedMethods.contains("thread/list") else {
+            throw CodexAppServerSessionRuntimeError.threadSearchUnavailable
+        }
+        let projects = config.projects
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: projects)
+                .searchThreadListGlobally(query: searchTerm, limit: limit),
+            timeout: longRunningRequestTimeout
+        )
+        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return ThreadSearchPage(
+            results: page.sessions.map {
+                ThreadSearchResult(session: $0, snippet: $0.preview ?? "")
+            }
+        )
+    }
+
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
         // resolve 是 agentd 控制面的 REST 接口（非 app-server JSON-RPC），用 runtime 自己的 endpoint/token 直接请求。
         try await AgentAPIClient(endpoint: endpoint, token: token).resolveWorkspace(path: path)

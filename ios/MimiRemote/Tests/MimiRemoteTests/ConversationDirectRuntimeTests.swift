@@ -2544,3 +2544,129 @@ extension ConversationDataFlowTests {
     }
 
 }
+
+// MARK: - MIM-246 全局搜索按 runtime 分头请求
+
+extension ConversationDataFlowTests {
+    private func makeSearchRoutingClient() -> (
+        client: CodexAppServerRuntimeRoutingSessionAPIClient,
+        codexTransport: FakeCodexAppServerTransport,
+        claudeTransport: FakeCodexAppServerTransport
+    ) {
+        let project = AgentProject(id: "proj_search", name: "Search", path: "/tmp/search")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: ["initialize", "initialized", "thread/list", "thread/search"],
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "t",
+            runtimeProvider: "codex",
+            transportFactory: { codexTransport },
+            configProvider: { config }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "t",
+            runtimeProvider: "claude",
+            transportFactory: { claudeTransport },
+            configProvider: { config }
+        )
+        return (
+            CodexAppServerRuntimeRoutingSessionAPIClient(codexRuntime: codex, claudeRuntime: claude),
+            codexTransport,
+            claudeTransport
+        )
+    }
+
+    private func completeInitialize(_ transport: FakeCodexAppServerTransport) async throws {
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake","platformFamily":"macos"}"#
+        )
+    }
+
+    /// 首页搜索必须同时命中两条 runtime：Claude 没有 thread/search，走 thread/list
+    /// + searchTerm。回归前 searchSessions 硬编码只查 Codex，Claude 会话搜不到。
+    func testGlobalSearchFirstPageMergesClaudeResultsBehindCodex() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: nil, limit: 50) }
+
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(
+            codexTransport,
+            id: search.id,
+            result: #"{"data":[{"thread":{"id":"codex-hit","cwd":"/tmp/search"},"snippet":"codex 片段"}],"nextCursor":"codex_more"}"#
+        )
+
+        try await completeInitialize(claudeTransport)
+        let list = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
+        XCTAssertEqual(
+            list.params?.objectValue?["searchTerm"]?.stringValue,
+            "游标",
+            "Claude 搜索必须把关键词放进 thread/list 的 searchTerm"
+        )
+        XCTAssertNil(
+            list.params?.objectValue?["cwd"],
+            "全局搜索不带 cwd，否则又退回逐目录检索"
+        )
+        transportResponse(
+            claudeTransport,
+            id: list.id,
+            result: #"{"data":[{"id":"claude-hit","cwd":"/tmp/search","preview":"claude 预览"}]}"#
+        )
+
+        let page = try await searchTask.value
+        XCTAssertEqual(
+            page.results.map(\.session.id),
+            ["codex-hit", "claude-hit"],
+            "Codex 结果在前，Claude 结果拼在后面"
+        )
+        XCTAssertEqual(page.results.last?.snippet, "claude 预览", "无命中片段时用会话 preview 兜底")
+        XCTAssertEqual(
+            page.nextCursor,
+            "codex_more",
+            "翻页游标只来自 Codex，不引入跨 Runtime 的复合游标"
+        )
+    }
+
+    /// 翻页只推进 Codex：带 cursor 时不得再打扰 Claude。
+    func testGlobalSearchPaginationDoesNotQueryClaude() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: "codex_more", limit: 50) }
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(codexTransport, id: search.id, result: #"{"data":[]}"#)
+
+        _ = try await searchTask.value
+        let claudeMessages = await claudeTransport.sentMessages()
+        XCTAssertTrue(claudeMessages.isEmpty, "翻页阶段不应向 Claude 发任何请求")
+    }
+
+    /// Claude 搜索是增强项：bridge 不可用时不能连带让 Codex 搜索失败。
+    func testGlobalSearchKeepsCodexResultsWhenClaudeFails() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: nil, limit: 50) }
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(
+            codexTransport,
+            id: search.id,
+            result: #"{"data":[{"thread":{"id":"codex-hit","cwd":"/tmp/search"},"snippet":"codex 片段"}]}"#
+        )
+
+        try await completeInitialize(claudeTransport)
+        let list = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
+        transportErrorResponse(claudeTransport, id: list.id, code: -32000, message: "claude bridge unavailable")
+
+        let page = try await searchTask.value
+        XCTAssertEqual(page.results.map(\.session.id), ["codex-hit"], "Claude 失败不得清空 Codex 结果")
+    }
+}

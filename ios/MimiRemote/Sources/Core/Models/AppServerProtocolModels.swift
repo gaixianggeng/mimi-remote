@@ -407,6 +407,23 @@ struct CodexAppServerRequestBuilder {
 
     /// 无 cwd 列表只用于 agentd 的受控全局发现。客户端不携带项目过滤器，也不
     /// 依赖 experimental parent/ancestor API；路径与仓库身份裁剪完全由 gateway 完成。
+    /// Claude bridge 没有 thread/search，搜索走 thread/list 的 searchTerm
+    /// （bridge 早已支持，gateway 也已放行）。这里不带 cursor：搜索按单页返回，
+    /// 翻页仍由 Codex 的 thread/search 驱动，避免引入跨 Runtime 的分页状态机。
+    func searchThreadListGlobally(
+        query: String,
+        limit: Int? = 50
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
+            "limit": limit.map { .int(Int64($0)) },
+            "searchTerm": .string(query),
+            "sortKey": .string("updated_at"),
+            "sortDirection": .string("desc"),
+            "archived": .bool(false),
+            "useStateDbOnly": .bool(false)
+        ]))
+    }
+
     func controlledGlobalThreadList(
         limit: Int? = 50,
         cursor: String? = nil
