@@ -107,7 +107,7 @@ Gateway 保持 Notification 透明转发，移动客户端第一批明确消费�
 
 未知 Notification 不会造成连接失败，但在移动客户端明确适配前不会被当作已支持的产品能力。
 
-新建 Codex 会话的自动标题使用一条独立的本机 SSH proxy 连接，不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个成功转发的普通 `thread/queue/add`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
+新建 Codex 会话的自动标题使用一条独立的 App Server 连接（macOS 为 SSH proxy，Linux 为共享本机 control socket，Windows 为本机受管 WebSocket），不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个成功转发的普通 `thread/queue/add`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
 
 ## 明确不开放
 

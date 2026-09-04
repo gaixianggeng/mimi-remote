@@ -273,7 +273,7 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	}
 }
 
-func TestCheckerRejectsUnmanagedWindowsAppServer(t *testing.T) {
+func TestCheckerRejectsUnmanagedLocalAppServer(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
@@ -291,14 +291,14 @@ func TestCheckerRejectsUnmanagedWindowsAppServer(t *testing.T) {
 
 	results := checker.Run(context.Background(), false)
 	if results.OK {
-		t.Fatalf("未受管的 Windows App Server 不应通过 doctor：%+v", results)
+		t.Fatalf("未受管的本机 App Server 不应通过 doctor：%+v", results)
 	}
 	for _, check := range results.Checks {
 		if check.Name == "app-server" && !check.OK && strings.Contains(check.Fix, "受管") {
 			return
 		}
 	}
-	t.Fatalf("doctor 必须说明 Windows WebSocket 的受管边界：%+v", results.Checks)
+	t.Fatalf("doctor 必须说明本机 WebSocket 的受管边界：%+v", results.Checks)
 }
 
 func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
@@ -308,8 +308,8 @@ func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
 	t.Setenv("PATH", binDir)
 
 	appServerConfig := config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"}
-	if runtime.GOOS == "windows" {
-		appServerConfig = config.DefaultWindowsAppServerConfig()
+	if config.SupportsManagedAppServer() {
+		appServerConfig = config.DefaultManagedAppServerConfig()
 		appServerConfig.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
 		if err := os.WriteFile(appServerConfig.WSTokenFile, []byte("local-capability-token\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -335,8 +335,8 @@ func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
 	if !hasCheck(results, "app-server") {
 		t.Fatalf("启用 app-server gateway 时应检查 app-server：%+v", results.Checks)
 	}
-	if runtime.GOOS == "windows" && !hasCheck(results, "app-server-token-file") {
-		t.Fatalf("Windows 受管 WebSocket 必须检查独立 token file：%+v", results.Checks)
+	if config.SupportsManagedAppServer() && !hasCheck(results, "app-server-token-file") {
+		t.Fatalf("本机受管 WebSocket 必须检查独立 token file：%+v", results.Checks)
 	}
 }
 
@@ -651,6 +651,10 @@ func writeFakeCodexWithAppServerHelp(t *testing.T, path string) string {
 		return path
 	}
 	body := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'codex-cli 0.149.1'
+  exit 0
+fi
 if [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then
   printf '%s\n' '--listen --ws-auth --ws-token-file'
   exit 0

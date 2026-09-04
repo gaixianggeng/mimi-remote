@@ -107,7 +107,7 @@ trap - EXIT
 service_file="packaging/systemd/mimi-remote.service"
 grep -Fqx 'ExecStart=%h/.local/bin/agentd serve --config %h/.config/mimi-remote/config.json' "$service_file" \
   || fail "systemd ExecStart 没有固定使用用户安装目录和 mimi-remote 默认配置。"
-grep -Fqx 'Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' "$service_file" \
+grep -Fqx 'Environment=PATH=%h/.local/bin:%h/.npm-global/bin:%h/.local/share/mise/shims:%h/.local/share/mise/installs/codex/latest/bin:/usr/local/bin:/usr/bin:/bin' "$service_file" \
   || fail "systemd PATH 缺少用户二进制目录或系统目录。"
 grep -Fqx 'UMask=0077' "$service_file" \
   || fail "systemd service 没有使用私有文件 umask。"

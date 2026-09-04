@@ -25,14 +25,20 @@ const (
 	CodexAppServerWebSocketURL = "ws://codex-app-server/rpc"
 	MinimumCodexVersion        = "0.149.1"
 
-	sshProxyRemoteCommand = "codex app-server proxy"
+	// SSH 的非交互 shell 通常不会加载用户的 shell rc。显式补齐受支持平台上的
+	// 常见用户级安装目录，让 Homebrew、npm 和 mise 安装的 Codex 在 systemd
+	// 启动的 agentd 中仍可被远端命令稳定发现。
+	sshRemoteCodexPath           = `$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.local/share/mise/shims:$HOME/.local/share/mise/installs/codex/latest/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
+	sshRemotePathSetup           = `PATH="` + sshRemoteCodexPath + `:${PATH:-}"; export PATH; `
+	sshCodexVersionRemoteCommand = sshRemotePathSetup + "codex --version"
+	sshProxyRemoteCommand        = sshRemotePathSetup + "exec codex app-server proxy"
 	// App Server 会为仍处于加载宽限期的 Thread 保留 session 和 MCP 文件描述符。
 	// SSH 登录在 macOS 上默认只有 256，无法承载 Desktop 与 Mimi 的正常并发恢复。
 	// 这里保证新 resident 至少有 8192；客户端仍必须按生命周期取消 Thread 订阅。
 	sshAppServerOpenFileSoftLimit = 8192
 	// SSH resident 只服务 Unix proxy。禁止它继承 Desktop 保存的 Remote Control
 	// 身份，否则移动端请求可能进入第二个 App Server，并与官方进程争用 Thread writer。
-	sshBootstrapRemoteCommand = `/bin/sh -c 'open_file_limit=$(ulimit -Sn); if test "$open_file_limit" != unlimited && test "$open_file_limit" -lt 8192; then ulimit -Sn 8192 || { printf "远端 open-file soft limit 无法提高到 8192\n" >&2; exit 72; }; fi; nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &'`
+	sshBootstrapRemoteCommand = sshRemotePathSetup + `/bin/sh -c 'open_file_limit=$(ulimit -Sn); if test "$open_file_limit" != unlimited && test "$open_file_limit" -lt 8192; then ulimit -Sn 8192 || { printf "远端 open-file soft limit 无法提高到 8192\n" >&2; exit 72; }; fi; nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &'`
 	sshSocketStateCommand     = `if test -S "$HOME/.codex/app-server-control/app-server-control.sock"; then printf socket-present; else printf socket-missing; fi`
 
 	defaultSSHReadyTimeout     = 12 * time.Second
@@ -146,9 +152,9 @@ func (t *SSHTransport) SSHBinaryAvailable() error {
 // SSHCheckCommand 返回用户可以直接复制执行的 host/auth 检查命令。
 func (t *SSHTransport) SSHCheckCommand() string {
 	if t == nil {
-		return "ssh <target> codex --version"
+		return "ssh <target> '" + sshCodexVersionRemoteCommand + "'"
 	}
-	return "ssh " + t.target + " codex --version"
+	return "ssh " + t.target + " '" + sshCodexVersionRemoteCommand + "'"
 }
 
 // CheckRemoteCodex 检查 SSH host/auth 和远端 Codex 版本。它不会启动 App Server。
@@ -161,7 +167,7 @@ func (t *SSHTransport) CheckRemoteCodex(ctx context.Context) (string, error) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, "codex --version")...)
+	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, sshCodexVersionRemoteCommand)...)
 	cmd.Env = buildManagedEnv(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

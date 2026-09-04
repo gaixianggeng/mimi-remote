@@ -130,7 +130,7 @@ flowchart LR
 这个仓库包含完整链路：iPhone / iPad 原生 App、支持 macOS、Windows 与 Linux 的 Go `agentd` 网关、Mac 菜单栏 App、Windows 托盘 App，以及 Claude Code 兼容 bridge。移动端只连接你自己的宿主电脑，项目文件、会话历史和 Runtime 凭证都留在这台电脑上。
 
 - **直连、响应快：**通过私有网络上的 REST 与 WebSocket 实时传递输出、追问、任务控制和审批，不经过 Mimi 运营的应用层中转。
-- **单一共享的 Codex 运行时：**`agentd`、本机 Desktop 连接和远程 Desktop SSH 主机都通过 `codex app-server proxy` 连接同一个 App Server。Desktop 普通本地模式与 OpenClaw 保持独立，agentd 不通过私有 IPC 控制它们。
+- **按平台选择 Codex transport：**Linux 与 Windows 由 `agentd` 托管只监听 loopback 的 Codex App Server；macOS 通过 SSH 接入共享 Unix App Server。两条链路都不依赖 Desktop 私有 IPC。
 - **双 Runtime、统一体验：**Codex 是主 Runtime；可选的 Claude Code bridge 把会话与审批适配到同一套结构化移动界面。
 - **边界小而明确：**`agentd` 在宿主电脑上完成认证、工作区授权和 Runtime 路由。宿主电脑需要保持唤醒并能从私有网络访问。
 
@@ -163,6 +163,12 @@ Windows 可以运行 `agentd` 并托管 Mimi Remote 会话。Windows 版本使�
 
 MIM-207 暂停的是 Windows 公开安装包发布，不是 Windows Runtime 支持。安装包是否可用以当前 [GitHub Release](https://github.com/gaixianggeng/mimi-remote/releases/latest) 为准。当前 Windows 分发边界见[各平台安装说明](docs/install-upgrade-rollback.md)。
 
+### Linux 宿主
+
+Linux 使用 Release 归档中的安装脚本和当前用户的 systemd 服务。以运行服务的同一用户安装并登录 Codex CLI 0.149.1 或更高版本，校验 Release 摘要、解压后运行 `bash ./scripts/install-linux.sh install`。
+
+Linux 默认不要求 `sshd`、SSH 密钥，也不会修改 `authorized_keys`。`agentd` 会用私有 capability token 在 `ws://127.0.0.1:4222` 托管一个本机 Codex App Server，完成真实协议初始化后才报告就绪，并在服务停止时回收子进程。只有高级远端部署显式设置 `AGENTD_APP_SERVER_SSH_TARGET` 时才使用 SSH。
+
 ### Mac 安装
 
 要求：
@@ -186,7 +192,7 @@ codex app-server --help
 agentd up
 ```
 
-首次启动前先启用“远程登录”，并确认 `ssh 127.0.0.1 codex --version` 无需输入登录密码即可成功。`agentd up` 会生成用户私有配置，通过 localhost SSH 接入共享 Unix App Server，完成真实协议初始化后再显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 SSH App Server](docs/shared-ssh-app-server.md)。
+首次启动前先启用“远程登录”，并确认 `ssh 127.0.0.1 true` 无需输入登录密码即可成功。`agentd` 通过非交互 SSH 检查 Codex 时会补齐 Homebrew、npm 与 mise 的常见安装路径；仍有运行时路径问题时由 `agentd doctor` 给出诊断。`agentd up` 会生成用户私有配置，通过 localhost SSH 接入共享 Unix App Server，完成真实协议初始化后再显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 SSH App Server](docs/shared-ssh-app-server.md)。
 
 Homebrew / CLI 常用命令：
 

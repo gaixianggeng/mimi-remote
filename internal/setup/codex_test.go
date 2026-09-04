@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -55,6 +56,27 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	want, _ := filepath.Abs(embedded)
 	if resolved != filepath.Clean(want) {
 		t.Fatalf("应恢复桌面 App 内置 Codex：%s", resolved)
+	}
+}
+
+func TestLinuxCodexCandidatesCoverCommonUserInstallers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux candidate list only applies to Linux hosts")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := platformCodexCandidates()
+	for _, expected := range []string{
+		filepath.Join(home, ".local", "bin", "codex"),
+		filepath.Join(home, ".npm-global", "bin", "codex"),
+		filepath.Join(home, ".local", "share", "mise", "shims", "codex"),
+		filepath.Join(home, ".local", "share", "mise", "installs", "codex", "latest", "bin", "codex"),
+	} {
+		if !slices.Contains(candidates, expected) {
+			t.Fatalf("Linux Codex fallback 缺少 %q：%v", expected, candidates)
+		}
 	}
 }
 
