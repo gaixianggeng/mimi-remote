@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,6 +165,52 @@ func TestResetClearsInMemoryClientsBeforeIdentityCleanupFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "clients.json")); !os.IsNotExist(err) {
 		t.Fatalf("持久白名单应在身份文件前删除：%v", err)
+	}
+}
+
+func TestResetContinuesStableRevocationAfterPairingFileCleanupFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "clients.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pairIdentityDirectory := filepath.Join(stateDir, "pair.private.json")
+	if err := os.Mkdir(pairIdentityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pairIdentityDirectory, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldPairHost := &fakeManagedHost{}
+	oldStableHost := &fakeManagedHost{}
+	newStableHost := &fakeManagedHost{address: "new"}
+	var started tunnel.HostConfig
+	manager := &Manager{
+		config:         Config{StateDir: stateDir},
+		host:           oldStableHost,
+		pairHost:       oldPairHost,
+		clients:        []string{key.NewNode().Public().String()},
+		managedClients: []string{key.NewNode().Public().String()},
+		startHost: func(config tunnel.HostConfig) (managedHost, error) {
+			started = config
+			return newStableHost, nil
+		},
+	}
+
+	status, err := manager.Reset()
+	if err == nil || !strings.Contains(err.Error(), "pair.private.json") {
+		t.Fatalf("配对文件清理失败应返回明确错误：%v", err)
+	}
+	if !oldPairHost.closed || manager.pairHost != nil {
+		t.Fatal("配对主机关闭成功后不能因文件清理失败恢复")
+	}
+	if !oldStableHost.closed || manager.host != newStableHost || status.Address != "new" {
+		t.Fatalf("配对文件清理失败后仍应重建空白稳定主机：closed=%t current=%t status=%+v", oldStableHost.closed, manager.host == newStableHost, status)
+	}
+	if len(manager.clients) != 0 || len(manager.managedClients) != 0 || len(started.AllowedClientKeys) != 0 {
+		t.Fatalf("稳定主机必须撤销全部白名单：free=%v managed=%v started=%v", manager.clients, manager.managedClients, started.AllowedClientKeys)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "clients.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("持久免费白名单必须删除：%v", statErr)
 	}
 }
 

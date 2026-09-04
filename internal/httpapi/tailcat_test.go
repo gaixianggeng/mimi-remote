@@ -24,6 +24,7 @@ type fakeTailcatSidecar struct {
 	managedCalls   int
 	managedStatus  *tailcatStatus
 	managedCtxErr  error
+	managedCtxErrs []error
 	startCalls     int
 	stopCalls      int
 	pairCalls      int
@@ -92,6 +93,7 @@ func (f *fakeTailcatSidecar) ReplaceManagedClients(ctx context.Context, keys []s
 	f.managedCalls++
 	f.managedKeys = append([]string(nil), keys...)
 	f.managedCtxErr = ctx.Err()
+	f.managedCtxErrs = append(f.managedCtxErrs, ctx.Err())
 	if f.managedStatus != nil {
 		f.status = *f.managedStatus
 		f.managedStatus = nil

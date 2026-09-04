@@ -346,7 +346,10 @@ func (c *managedPairingController) Complete(
 			// 本地登记与运行时授权，不能让旧客户端继续连接。
 			return tailcatStatus{}, errors.Join(rotateErr, c.clearRegistrationLocked(ctx))
 		}
-		if _, clearErr := c.applyPolicyLocked(ctx, nil); clearErr != nil {
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		_, clearErr := c.applyPolicyLocked(cleanupContext, nil)
+		cancel()
+		if clearErr != nil {
 			return tailcatStatus{}, clearErr
 		}
 		complete, err = c.completeCloudPairing(ctx, parsedSession.String(), grant, status.PublicKey)
@@ -529,6 +532,8 @@ func (c *managedPairingController) clearIdentityMismatchLocked(ctx context.Conte
 }
 
 func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) error {
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	next := managedPairingState{Version: 1}
 	saveErr := c.saveStateLocked(next)
 	if saveErr != nil {
@@ -537,7 +542,7 @@ func (c *managedPairingController) clearRegistrationLocked(ctx context.Context) 
 		c.stateWritePending = true
 	}
 	// 与服务端撤销一致，先清空持久状态，再执行可能耗时的 Tailcat 重启。
-	_, applyErr := c.applyPolicyLocked(ctx, nil)
+	_, applyErr := c.applyPolicyLocked(cleanupContext, nil)
 	return errors.Join(applyErr, saveErr)
 }
 

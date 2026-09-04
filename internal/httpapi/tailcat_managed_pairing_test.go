@@ -713,6 +713,40 @@ func TestManagedPairingRotatesRevokedHostTokenOnceAndFailsClosedDuringRetry(t *t
 	}
 }
 
+func TestManagedPairingHostTokenConflictRevokesWithLiveContextAfterCancellation(t *testing.T) {
+	now := time.Date(2026, 9, 4, 16, 15, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"code":"host_token_conflict","message":"Mac 已撤销"}`)
+	}))
+	defer server.Close()
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, Address: "tailcat:stable", PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	controller := newManagedControllerForTest(t, server.URL, fake, func() time.Time { return now }, func(_ string, state managedPairingState) error {
+		if state.HostID == "" && state.HostDeviceToken == managedToken('h') {
+			cancelRequest()
+		}
+		return nil
+	})
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('o'),
+		MacTailcatPublicKey: testManagedMacKey, PolicyVersion: 1,
+		PolicyFetchedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		PolicyValidUntil:  now.Add(time.Hour).Format(time.RFC3339Nano),
+		AllowedMobileKeys: []string{testManagedMobileKey},
+	}
+
+	_, err := controller.Complete(requestContext, testManagedSessionID, managedToken('g'), testManagedMobileKey)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消后的配对重试应返回请求错误：%v", err)
+	}
+	if len(fake.managedCtxErrs) == 0 || fake.managedCtxErrs[0] != nil || len(fake.managedKeys) != 0 {
+		t.Fatalf("凭证冲突后的第一次撤销必须使用有效上下文：contexts=%v keys=%v", fake.managedCtxErrs, fake.managedKeys)
+	}
+}
+
 func TestManagedPairingHostTokenConflictClearsRuntimeWhenRotationWriteFails(t *testing.T) {
 	now := time.Date(2026, 9, 4, 16, 30, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

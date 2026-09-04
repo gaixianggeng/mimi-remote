@@ -196,12 +196,13 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 func (m *Manager) Reset() (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.closePairLocked(); err != nil {
-		return Status{}, fmt.Errorf("关闭待重置 Tailcat 配对服务：%w", err)
+	pairErr := m.closePairLocked()
+	if pairErr != nil {
+		pairErr = fmt.Errorf("关闭待重置 Tailcat 配对服务：%w", pairErr)
 	}
 	if m.host != nil {
 		if err := m.host.Close(); err != nil {
-			return Status{}, fmt.Errorf("关闭待重置 Tailcat 服务：%w", err)
+			return Status{}, errors.Join(pairErr, fmt.Errorf("关闭待重置 Tailcat 服务：%w", err))
 		}
 		m.host = nil
 	}
@@ -209,15 +210,19 @@ func (m *Manager) Reset() (Status, error) {
 	// 后续身份文件清理失败时，后台协调也只能用空集合重启。
 	m.clients = nil
 	m.managedClients = nil
+	var cleanupErr error
 	for _, name := range []string{"clients.json", "host.private.json", "host.address"} {
 		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
-			return Status{}, fmt.Errorf("重置 Tailcat %s：%w", name, err)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("重置 Tailcat %s：%w", name, err))
 		}
 	}
-	if err := m.startStableLocked(); err != nil {
-		return Status{}, err
+	if cleanupErr != nil {
+		return Status{}, errors.Join(pairErr, cleanupErr)
 	}
-	return m.statusLocked(), nil
+	if err := m.startStableLocked(); err != nil {
+		return Status{}, errors.Join(pairErr, err)
+	}
+	return m.statusLocked(), pairErr
 }
 
 func (m *Manager) Close() error {
