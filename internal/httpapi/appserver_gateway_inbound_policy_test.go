@@ -167,3 +167,121 @@ func quoteJSON(value string) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)
 }
+
+// MIM-248：Claude 路径的下行门禁。独立 fixture，不复用 Codex 的用例，
+// 因为两条链路的全局通知集合与 replay 语义并不相同。
+func newClaudeInboundPolicyForTest(t *testing.T) (*appServerGatewayPolicy, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{
+		ID: "project", Name: "Project", Path: projectDir,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		cfg: config.Config{}, projects: registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             "claude",
+		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	policy.allowThread(appServerGatewayAllowedThread{
+		id: "allowed", runtimeID: "claude", cwd: projectDir, scopeID: "project",
+	})
+	return policy, projectDir
+}
+
+func TestClaudeGatewayAuthorizesInboundNotificationsByThread(t *testing.T) {
+	policy, _ := newClaudeInboundPolicyForTest(t)
+
+	cases := []struct {
+		name    string
+		payload string
+		forward bool
+	}{
+		{
+			name:    "已授权 thread 的通知放行",
+			payload: `{"method":"turn/completed","params":{"threadId":"allowed","turnId":"turn-1"}}`,
+			forward: true,
+		},
+		{
+			name:    "未授权 thread 的通知丢弃",
+			payload: `{"method":"turn/completed","params":{"threadId":"intruder","turnId":"turn-1"}}`,
+			forward: false,
+		},
+		{
+			name:    "Claude 实际会发的无 thread 全局通知放行",
+			payload: `{"method":"account/rateLimits/updated","params":{"rateLimits":{}}}`,
+			forward: true,
+		},
+		{
+			name:    "未登记的无 thread 通知丢弃",
+			payload: `{"method":"account/somethingNew/updated","params":{}}`,
+			forward: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, []byte(tc.payload))
+			if policyErr != nil {
+				t.Fatalf("通知不应产生策略错误：%+v", policyErr)
+			}
+			if forward != tc.forward {
+				t.Fatalf("转发判定不符：want=%t got=%t payload=%s", tc.forward, forward, tc.payload)
+			}
+		})
+	}
+}
+
+func TestClaudeGatewayRequiresAuthorizedThreadForReverseRequests(t *testing.T) {
+	policy, _ := newClaudeInboundPolicyForTest(t)
+
+	allowed := []byte(`{"id":"req-1","method":"item/tool/requestUserInput","params":{"threadId":"allowed","itemId":"toolu_1"}}`)
+	if _, forward, err := policy.observeUpstreamFrame(websocket.TextMessage, allowed); err != nil || !forward {
+		t.Fatalf("已授权 thread 的反向请求应转发：forward=%t err=%+v", forward, err)
+	}
+
+	intruder := []byte(`{"id":"req-2","method":"item/tool/requestUserInput","params":{"threadId":"intruder","itemId":"toolu_2"}}`)
+	if _, forward, err := policy.observeUpstreamFrame(websocket.TextMessage, intruder); err != nil || forward {
+		t.Fatalf("未授权 thread 的反向请求必须丢弃：forward=%t err=%+v", forward, err)
+	}
+	// 丢弃的请求不得登记 pending，否则客户端后续可以用它的 id 回一个从未展示过的答复。
+	intruderID := json.RawMessage(`"req-2"`)
+	if _, ok := policy.consumePendingServerRequest(&intruderID); ok {
+		t.Fatal("被丢弃的反向请求不应登记 pending")
+	}
+}
+
+// replay 信封是 Claude 重连恢复挂起卡片的唯一通道：整帧丢掉会让用户永远等不到
+// 那张卡，整帧放行又会泄露未授权 thread 的挂起请求，所以必须按条目裁剪。
+func TestClaudeGatewayFiltersReplayEnvelopeByThreadAuthorization(t *testing.T) {
+	policy, _ := newClaudeInboundPolicyForTest(t)
+
+	replay := []byte(`{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[` +
+		`{"id":"keep","method":"item/tool/requestUserInput","params":{"threadId":"allowed","itemId":"toolu_ok"}},` +
+		`{"id":"drop","method":"item/tool/requestUserInput","params":{"threadId":"intruder","itemId":"toolu_bad"}}]}}`)
+	got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, replay)
+	if policyErr != nil || !forward {
+		t.Fatalf("replay 信封必须转发：forward=%t err=%+v", forward, policyErr)
+	}
+	if !bytes.Contains(got, []byte(`"keep"`)) {
+		t.Fatalf("已授权 thread 的挂起请求必须保留，否则重连恢复不了：%s", got)
+	}
+	if bytes.Contains(got, []byte(`"drop"`)) || bytes.Contains(got, []byte("toolu_bad")) {
+		t.Fatalf("未授权 thread 的挂起请求不应下发：%s", got)
+	}
+
+	keepID := json.RawMessage(`"keep"`)
+	if _, ok := policy.consumePendingServerRequest(&keepID); !ok {
+		t.Fatal("保留下来的重放请求应登记 pending，否则客户端答不了")
+	}
+	dropID := json.RawMessage(`"drop"`)
+	if _, ok := policy.consumePendingServerRequest(&dropID); ok {
+		t.Fatal("被裁掉的重放请求不应登记 pending")
+	}
+}
