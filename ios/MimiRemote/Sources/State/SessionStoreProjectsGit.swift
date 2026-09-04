@@ -935,6 +935,7 @@ extension SessionStore {
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
         sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
+        removeWorkspaceDirectorySessionScopes(workspaceID: project.id)
         let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             $0.key.workspaceID != project.id
         }
@@ -1683,18 +1684,14 @@ extension SessionStore {
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
-                        // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
-                        // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
+                        // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
                         let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
                         if expandedControlledIDs != controlledGlobalSessionIDs {
                             controlledGlobalSessionIDs = expandedControlledIDs
                         }
-                        // 全局发现只携带根项目归属；进入 canonical sessions 前先沿用 Store
-                        // 已知的 workspace identity（已有同 ID 会话或 dir 命中 recent workspace）。
-                        // 否则同一 session.id 的全局响应会把稳定的 workspace projectID 覆盖回
-                        // root projectID，导致侧栏分组和会话头像命名空间在两种身份之间来回跳变。
-                        // 未命中的外部 worktree 仍返回原始 session，保留既有受控发现行为。
-                        mergeSessionPage(page.sessions.map(alignSessionToKnownWorkspace))
+                        // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
+                        // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
+                        mergeSessionPage(page.sessions.map(alignGlobalSessionToKnownDirectoryScope))
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor else {
@@ -1749,6 +1746,7 @@ extension SessionStore {
                     return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
                 }
                 if !revokedSessionIDs.isEmpty {
+                    removeWorkspaceDirectorySessionIDs(Set(revokedSessionIDs))
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
                     if retainedSessions != sessions {
                         // 授权撤销与列表删除必须在同一轮完成。不能等待精确 cwd 刷新：
@@ -1786,17 +1784,12 @@ extension SessionStore {
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
         for workspace in workspaces {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            let result = await sessionLibraryPage(
+            await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
                 consistency: consistency,
                 client: client,
-                hostScope: hostScope
-            )
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            mergeSessionLibraryPages(
-                [result],
-                generation: generation,
-                consistency: consistency
+                hostScope: hostScope,
+                generation: generation
             )
         }
     }

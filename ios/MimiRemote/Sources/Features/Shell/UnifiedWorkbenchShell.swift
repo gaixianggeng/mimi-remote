@@ -1001,12 +1001,9 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
-        let openedWorkspaceSessions = sessionStore.sortedAllSessions.compactMap {
-            sessionStore.sessionAlignedToOpenedWorkspace($0)
-        }
-        let chronologicallySortedSessions = openedWorkspaceSessions.isEmpty
-            ? SessionStore.sortedSessions(sessionStore.openedWorkspaceSessionLibrarySessions)
-            : openedWorkspaceSessions
+        let chronologicallySortedSessions = SessionStore.sortedSessions(
+            sessionStore.openedWorkspaceSessionLibrarySessions
+        )
         return SessionListPresentation.sidebarSections(
             sessions: chronologicallySortedSessions,
             pinnedIDs: sessionStore.pinnedSessionIDs,

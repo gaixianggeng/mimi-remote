@@ -372,6 +372,8 @@ final class SessionStore: ObservableObject {
             rebuildProjectSessionListSnapshots()
         }
     }
+    /// 记录按工作区真实目录查询到的会话 ID。默认列表只用这份证据接纳全局发现结果。
+    @Published var workspaceDirectorySessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -1606,14 +1608,13 @@ final class SessionStore: ObservableObject {
         return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
-    /// 受控全局发现继续保留 canonical 会话；会话 Tab 只消费真实目录命中已打开工作区的投影。
-    /// 投影同时按目录修正 workspace identity，避免外部 Worktree 沿用根项目标注。
+    /// 受控全局发现继续保留 canonical 会话；会话 Tab 只消费目录查询确认属于已打开工作区的投影。
     var openedWorkspaceSessionLibrarySessions: [AgentSession] {
         sessionLibrarySessions.compactMap(sessionAlignedToOpenedWorkspace)
     }
 
     func sessionAlignedToOpenedWorkspace(_ item: AgentSession) -> AgentSession? {
-        workspaceForPath(item.dir).map { session(item, in: $0) }
+        workspaceForDirectoryScopedSession(item).map { session(item, in: $0) }
     }
 
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。
