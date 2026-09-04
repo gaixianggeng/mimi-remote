@@ -2,11 +2,44 @@ import CryptoKit
 import Foundation
 
 extension AppStore {
+    func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
+        guard let profileID = activeConnectionProfileID,
+              let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
+              connectionProfiles[index].connectionRoute != route else {
+            return
+        }
+        var nextProfiles = connectionProfiles
+        nextProfiles[index].connectionRoute = route
+        nextProfiles[index].revision &+= 1
+        if profileID != ephemeralLocalProfileID {
+            persistProfiles(try JSONEncoder().encode(nextProfiles))
+        }
+        replaceConnectionProfiles(nextProfiles)
+    }
+
+    func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
+        guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
+            throw ConnectionProfileError.notFound
+        }
+        let profileToken = try await credentialVault.token(for: id)
+        guard !profileToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ConnectionProfileError.missingToken
+        }
+        return try await prepareConnectionSettings(
+            endpoint: profile.endpoint,
+            token: profileToken,
+            profileTarget: .existingProfile(id: id),
+            tailscaleDNSName: profile.tailscaleDNSName,
+            tailscaleDeviceName: profile.tailscaleDeviceName
+        )
+    }
+
     /// 先通过 Tailcat 的本机代理完成完整连接验证，同时继续把 Mac 的规范地址写入档案。
     /// 这样关闭实验开关后，现有 Tailscale 地址可以直接恢复，不会被 loopback 地址覆盖。
     func prepareRoutedConnectionSettings(
         endpoint: String,
         activeEndpoint: String,
+        tailcatAddress: String,
         token: String,
         profileTarget: PreparedConnectionProfileTarget
     ) async throws -> PreparedConnectionSettings {
@@ -19,6 +52,7 @@ extension AppStore {
         return PreparedConnectionSettings(
             endpoint: canonicalEndpoint,
             activeEndpoint: routed.activeEndpoint,
+            route: .tailcat(address: tailcatAddress),
             token: routed.token,
             profileTarget: routed.profileTarget,
             validatedAt: routed.validatedAt,
@@ -28,6 +62,27 @@ extension AppStore {
             hostPlatform: routed.hostPlatform,
             hostContext: routed.hostContext,
             capabilityNegotiation: routed.capabilityNegotiation
+        )
+    }
+
+    func prepareConnectionProfileSwitch(
+        id: String,
+        activeEndpoint: String,
+        tailcatAddress: String
+    ) async throws -> PreparedConnectionSettings {
+        guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
+            throw ConnectionProfileError.notFound
+        }
+        let profileToken = try await credentialVault.token(for: id)
+        guard !profileToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ConnectionProfileError.missingToken
+        }
+        return try await prepareRoutedConnectionSettings(
+            endpoint: profile.endpoint,
+            activeEndpoint: activeEndpoint,
+            tailcatAddress: tailcatAddress,
+            token: profileToken,
+            profileTarget: .existingProfile(id: id)
         )
     }
 

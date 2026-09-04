@@ -249,7 +249,7 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
-    @State private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
+    @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
@@ -267,6 +267,7 @@ struct WorkspaceRootView: View {
     @State private var pendingHapticWorkspaceID: String?
     @State private var suppressedHapticWorkspaceID: String?
     init(
+        selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         manageConnections: (() -> Void)? = nil,
@@ -280,6 +281,7 @@ struct WorkspaceRootView: View {
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.currentDate = currentDate
+        _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
         // 正常入口仍由 synchronizeSelection 恢复选择；显式初值只服务于确定性的预览和视觉快照。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)

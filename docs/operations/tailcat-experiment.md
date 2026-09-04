@@ -4,7 +4,7 @@
 
 验证 iPad 不安装 Tailscale 客户端时，Mimi Remote 能否仅通过 Tailcat 连接 Mac 上的 `agentd`，并保持现有 HTTP、WebSocket、认证和大文件传输能力。
 
-本实验固定使用 Tailcat `v0.3.0`。这是 2026-09-01 GitHub 上最新的稳定版本。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。
+本实验固定使用 Tailcat `v0.5.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。
 
 ## 方案
 
@@ -20,7 +20,7 @@ Mac 和 iPad 设置页都提供显式实验开关。开关打开后，App 只使
 
 ### 1. 生成 iOS 框架
 
-需要 Xcode 27 和可自动获取 Go 1.26 或更高版本工具链的 Go 环境。仓库根目录执行：
+需要 Xcode 27 和可自动获取 Go 1.27 工具链的 Go 环境。仓库根目录执行：
 
 ```bash
 bash ./scripts/build-tailcat-mobile.sh
@@ -48,6 +48,19 @@ agentd tailcat pair
 ```
 
 `agentd tailcat pair` 只输出短期配对链接。它不会输出或修改长期 Agent Token。
+
+二维码会同时携带 Mac 的随机安装 ID 和稳定 Tailcat 公钥。这两项都是公开身份，
+不是访问凭证。免费自建 Tailcat 仍按原流程把扫码设备公钥写入 `clients.json`。
+
+Mimi 托管连接会在移动端取得订阅权益和 10 分钟配对授权后，把授权一并提交给
+`agentd`。`agentd` 先让官方控制面完成 Mac 登记，再应用控制面返回的移动设备
+公钥白名单。短期配对授权不会写入磁盘。
+
+托管策略保存在 Tailcat 状态目录的 `managed-policy.json`，文件权限固定为 `0600`，
+写入采用临时文件替换。`agentd` 启动后立即同步，此后每 5 分钟同步一次。在线撤销
+最迟在 10 分钟内生效。控制面临时不可达时可以继续使用最后一次有效策略，但最多
+保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费自建
+白名单与托管白名单分开保存，应用策略时才合并，托管撤销不会删除免费配对。
 
 恢复 Tailcat 默认中继：
 
@@ -88,7 +101,7 @@ bash ./scripts/ios-dev.sh run
 
 - 本地 DERP/STUN 集成测试通过，覆盖 HTTP 401/200、WebSocket 二进制回显、1 MB 以上上传、客户端重连和服务端重启。
 - 默认 `tailcat.dev` DERP Map 的实连冒烟通过，Tailcat 能把请求转发到当前运行的真实 `agentd`。
-- Tailcat `v0.3.0` 模块测试通过，覆盖稳定服务允许列表、短期二维码和本地控制边界。
+- Tailcat `v0.5.0` 模块测试通过，覆盖稳定服务允许列表、短期二维码和本地控制边界。
 - Mac App 60 项测试通过，且可嵌入、签名和启动独立 sidecar。
 - `gomobile bind` 已生成真机和 Simulator 两个平台的 XCFramework。
 - iOS 覆盖二维码字段、Tailcat-only 路由验证和规范地址保留测试。
@@ -97,7 +110,7 @@ bash ./scripts/ios-dev.sh run
 
 ## 风险与优化
 
-- Tailcat `v0.3.0` 未承诺 API 或连接地址格式稳定。升级前必须重新构建和回归。
+- Tailcat `v0.5.0` 未承诺 API 或连接地址格式稳定。升级前必须重新构建和回归。
 - 本地生成的 XCFramework 约 137 MB；当前 Debug App 约 98 MB。此体积不能直接视为发布包体积，但需要在发布前单独评估。
 - 当前自动测试验证了 HTTP、WebSocket、认证、1 MB 以上二进制传输、重连和身份持久化。真实蜂窝网络、NAT 切换、后台恢复、耗电和长期稳定性仍需真机验证。
 - DERP 是外部依赖。中继不可用时，无法直连的设备会断开。国内自建 DERP Map 仍需在跨网络验收时确认地址、证书和可达性。
