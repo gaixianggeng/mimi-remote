@@ -511,10 +511,7 @@ final class ManagedConnectionEntitlementAPIClientTests: XCTestCase {
         )
         let session = makeSession()
         defer { session.invalidateAndCancel() }
-        let client = LiveManagedConnectionEntitlementAPIClient(
-            baseURL: URL(string: "https://api.code89757.com")!,
-            session: session
-        )
+        let client = LiveManagedConnectionEntitlementAPIClient(session: session)
 
         let grant = try await client.resolve(
             signedAppTransaction: "signed-app-transaction",
@@ -522,7 +519,7 @@ final class ManagedConnectionEntitlementAPIClientTests: XCTestCase {
         )
 
         let request = try XCTUnwrap(ManagedConnectionEntitlementURLProtocol.capturedRequest())
-        XCTAssertEqual(request.url?.absoluteString, "https://api.code89757.com/v1/entitlements/resolve")
+        XCTAssertEqual(request.url?.absoluteString, "https://mimi.code89757.com/v1/entitlements/resolve")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         let body = try XCTUnwrap(ManagedConnectionEntitlementURLProtocol.capturedBody())

@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	defaultManagedConnectionAPIBaseURL = "https://api.code89757.com"
+	defaultManagedConnectionAPIBaseURL = "https://mimi.code89757.com"
 	defaultManagedPolicySyncInterval   = 5 * time.Minute
 	defaultManagedPolicyOfflineTTL     = 24 * time.Hour
 	managedPairingStateFileName        = "managed-policy.json"

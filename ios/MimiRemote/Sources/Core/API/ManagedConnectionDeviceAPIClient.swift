@@ -63,7 +63,7 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
     private let session: URLSession
 
     init(
-        baseURL: URL = URL(string: "https://api.code89757.com")!,
+        baseURL: URL = URL(string: "https://mimi.code89757.com")!,
         session: URLSession = .shared
     ) {
         self.baseURL = baseURL

@@ -26,6 +26,7 @@ final class ManagedConnectionDeviceAPIClientTests: XCTestCase {
         let request = try XCTUnwrap(MIM260DeviceURLProtocol.capturedRequest())
         let body = try XCTUnwrap(MIM260DeviceURLProtocol.capturedBody())
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+        XCTAssertEqual(request.url?.absoluteString, "https://mimi.code89757.com/v1/devices")
         XCTAssertEqual(request.url?.path, "/v1/devices")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(

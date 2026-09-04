@@ -30,6 +30,12 @@ func managedToken(fill byte) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat(string([]byte{fill}), 32)))
 }
 
+func TestManagedConnectionUsesDedicatedControlPlane(t *testing.T) {
+	if defaultManagedConnectionAPIBaseURL != "https://mimi.code89757.com" {
+		t.Fatalf("托管连接控制面地址异常：%s", defaultManagedConnectionAPIBaseURL)
+	}
+}
+
 func newManagedControllerForTest(
 	t *testing.T,
 	serverURL string,
