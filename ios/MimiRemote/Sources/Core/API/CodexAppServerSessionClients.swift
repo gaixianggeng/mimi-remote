@@ -518,8 +518,19 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
-        // 受控全局发现是 Codex App Server 能力；Claude bridge 没有同构的无 cwd 合同。
-        let page = try await codexClient.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
+        try await controlledGlobalSessionsPage(runtimeProvider: "codex", cursor: cursor, limit: limit)
+    }
+
+    /// 受控全局发现按 runtime 分头遍历：两条 opaque cursor 流各自独立推进，
+    /// 从不交织成一条，调用方把两趟结果并进同一份 canonical sessions。
+    /// 这样既让 Claude 会话在「会话」tab 可见，也不引入跨 Runtime 排序状态机。
+    func controlledGlobalSessionsPage(
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
+        let page = try await bundle.runtime(for: runtimeProvider)
+            .controlledGlobalSessionsPage(cursor: cursor, limit: limit)
         bundle.routes.remember(page.sessions)
         return page
     }

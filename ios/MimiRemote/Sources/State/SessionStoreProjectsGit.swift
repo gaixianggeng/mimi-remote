@@ -1650,61 +1650,76 @@ extension SessionStore {
             return
         }
 
-        // 先用最多 4 页、每页 50 条的有界全局发现补齐 Codex 外部 Worktree。
+        // 先用最多 4 页、每页 50 条的有界全局发现补齐外部 Worktree。
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
+        //
+        // 两条 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
+        // discoveredSessionIDs 由 canonical sessions 统一归并，因此不需要跨 Runtime
+        // 的排序状态机。撤权只在**两趟都完整走完**时才允许——否则 Codex 那趟会把
+        // Claude 刚发现的会话当成"已不存在"删掉。
         if !controlledGlobalDiscoveryUnavailable {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
-            var cursor: String?
             var discoveredSessionIDs: Set<SessionID> = []
-            var reachedTraversalEnd = false
-            for pageIndex in 0..<4 {
-                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-                let hostRequestStartedAt = sessionListNow()
-                do {
-                    let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
-                    guard appStore.connectionGeneration == generation else { return }
-                    recordCarStatusHostObservation(at: sessionListNow())
-                    let pageSessionIDs = Set(page.sessions.map(\.id))
-                    discoveredSessionIDs.formUnion(pageSessionIDs)
-                    // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
-                    // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
-                    let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
-                    if expandedControlledIDs != controlledGlobalSessionIDs {
-                        controlledGlobalSessionIDs = expandedControlledIDs
-                    }
-                    // 全局发现只携带根项目归属；进入 canonical sessions 前先沿用 Store
-                    // 已知的 workspace identity（已有同 ID 会话或 dir 命中 recent workspace）。
-                    // 否则同一 session.id 的全局响应会把稳定的 workspace projectID 覆盖回
-                    // root projectID，导致侧栏分组和会话头像命名空间在两种身份之间来回跳变。
-                    // 未命中的外部 worktree 仍返回原始 session，保留既有受控发现行为。
-                    mergeSessionPage(page.sessions.map(alignSessionToKnownWorkspace))
-                    guard page.hasMore,
-                          let nextCursor = page.nextCursor,
-                          nextCursor != cursor else {
-                        reachedTraversalEnd = !page.hasMore
+            var reachedTraversalEnd = true
+            for runtimeProvider in ["codex", "claude"] {
+                var cursor: String?
+                var runtimeReachedEnd = false
+                for pageIndex in 0..<4 {
+                    guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                    let hostRequestStartedAt = sessionListNow()
+                    do {
+                        let page = try await client.controlledGlobalSessionsPage(
+                            runtimeProvider: runtimeProvider,
+                            cursor: cursor,
+                            limit: 50
+                        )
+                        guard appStore.connectionGeneration == generation else { return }
+                        recordCarStatusHostObservation(at: sessionListNow())
+                        let pageSessionIDs = Set(page.sessions.map(\.id))
+                        discoveredSessionIDs.formUnion(pageSessionIDs)
+                        // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
+                        // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
+                        let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
+                        if expandedControlledIDs != controlledGlobalSessionIDs {
+                            controlledGlobalSessionIDs = expandedControlledIDs
+                        }
+                        // 全局发现只携带根项目归属；进入 canonical sessions 前先沿用 Store
+                        // 已知的 workspace identity（已有同 ID 会话或 dir 命中 recent workspace）。
+                        // 否则同一 session.id 的全局响应会把稳定的 workspace projectID 覆盖回
+                        // root projectID，导致侧栏分组和会话头像命名空间在两种身份之间来回跳变。
+                        // 未命中的外部 worktree 仍返回原始 session，保留既有受控发现行为。
+                        mergeSessionPage(page.sessions.map(alignSessionToKnownWorkspace))
+                        guard page.hasMore,
+                              let nextCursor = page.nextCursor,
+                              nextCursor != cursor else {
+                            runtimeReachedEnd = !page.hasMore
+                            break
+                        }
+                        cursor = nextCursor
+                    } catch {
+                        guard appStore.activeHostScope == hostScope,
+                              appStore.connectionGeneration == generation,
+                              !Task.isCancelled else {
+                            // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
+                            return
+                        }
+                        // 只有 Codex 报不可用才整体停掉受控发现：Claude bridge 未启用或
+                        // 不健康是常态，不能因此让 Codex 的外部 Worktree 也发现不到。
+                        if pageIndex == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
+                            controlledGlobalDiscoveryUnavailable = true
+                        }
+                        if !isCancellationError(error) {
+                            if Self.carStatusHostDidRespond(to: error) {
+                                recordCarStatusHostObservation(at: sessionListNow())
+                            } else {
+                                invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                            }
+                        }
                         break
                     }
-                    cursor = nextCursor
-                } catch {
-                    guard appStore.activeHostScope == hostScope,
-                          appStore.connectionGeneration == generation,
-                          !Task.isCancelled else {
-                        // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
-                        return
-                    }
-                    if pageIndex == 0, isControlledGlobalDiscoveryUnavailable(error) {
-                        controlledGlobalDiscoveryUnavailable = true
-                    }
-                    if !isCancellationError(error) {
-                        if Self.carStatusHostDidRespond(to: error) {
-                            recordCarStatusHostObservation(at: sessionListNow())
-                        } else {
-                            invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
-                        }
-                    }
-                    break
                 }
+                reachedTraversalEnd = reachedTraversalEnd && runtimeReachedEnd
             }
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,

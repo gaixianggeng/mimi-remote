@@ -197,6 +197,104 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.sessions.allSatisfy { !$0.allowsDirectInput })
     }
 
+    /// MIM-246：受控全局发现必须对 Codex 与 Claude 各跑一趟独立遍历。
+    /// 回归前 Claude 那趟根本不发，Claude 会话在「会话」tab 完全不出现。
+    func testControlledGlobalDiscoveryTraversesBothRuntimesAndMergesSessions() async {
+        let project = makeProject(id: "proj_dual")
+        let codexSession = makeSession(
+            id: "codex-global",
+            projectID: project.id,
+            title: "Codex 会话",
+            status: "history",
+            source: "codex",
+            resumeID: "codex-global"
+        )
+        let claudeSession = makeSession(
+            id: "claude-global",
+            projectID: project.id,
+            title: "Claude 会话",
+            status: "history",
+            source: "claude",
+            resumeID: "claude-global"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, cursor, limit in
+                XCTAssertEqual(limit, 50)
+                XCTAssertNil(cursor, "两条 runtime 的游标流互不交织，各自从头开始")
+                switch runtimeProvider {
+                case "codex":
+                    return SessionsPage(sessions: [codexSession])
+                case "claude":
+                    return SessionsPage(sessions: [claudeSession])
+                default:
+                    XCTFail("不应请求未知 runtime：\(runtimeProvider)")
+                    return SessionsPage(sessions: [])
+                }
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertEqual(
+            client.requestedControlledGlobalRuntimes,
+            ["codex", "claude"],
+            "两条 runtime 都要遍历，且顺序稳定"
+        )
+        XCTAssertEqual(
+            Set(store.sessions.map(\.id)),
+            ["codex-global", "claude-global"],
+            "两趟结果并进同一份 canonical sessions"
+        )
+    }
+
+    /// 撤权只在两趟都完整走完时才允许。否则先跑的 Codex 那趟会把 Claude 刚发现的
+    /// 会话当成「已不存在」删掉 —— 这是加第二条 runtime 时最容易引入的回归。
+    func testControlledGlobalDiscoveryKeepsSessionsWhenOneRuntimeTraversalIsIncomplete() async {
+        let project = makeProject(id: "proj_partial")
+        let claudeSession = makeSession(
+            id: "claude-partial",
+            projectID: project.id,
+            title: "Claude 会话",
+            status: "history",
+            source: "claude",
+            resumeID: "claude-partial"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, _, _ in
+                switch runtimeProvider {
+                case "codex":
+                    // Codex 这趟没走到底（还有下一页），因此本轮不具备撤权证据。
+                    return SessionsPage(sessions: [], nextCursor: "codex_more", hasMore: true)
+                default:
+                    return SessionsPage(sessions: [claudeSession])
+                }
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertTrue(
+            store.sessions.contains { $0.id == "claude-partial" },
+            "Codex 遍历未走完时不得撤销 Claude 发现的会话"
+        )
+    }
+
     func testControlledGlobalDerivedReadOnlySessionsReceiveBoundedStableRecentHistoryVisibility() async {
         let project = makeProject(id: "proj_derived_visibility")
         var newestStructuralChild = makeSession(
