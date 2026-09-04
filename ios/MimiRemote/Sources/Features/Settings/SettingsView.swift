@@ -301,7 +301,9 @@ struct SettingsView: View {
 
             Section {
                 NavigationLink {
-                    ManagedConnectionSubscriptionView()
+                    ManagedConnectionSubscriptionView(
+                        qrScannerPresentation: qrScannerPresentation
+                    )
                 } label: {
                     SettingsValueLabel(
                         title: L10n.text("ui.managed_subscription_title"),
