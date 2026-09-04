@@ -714,16 +714,25 @@ extension SessionStore {
         }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
+        // full 页自带 notice 只有一种成因：本页 Turn 需要补 Item，而当前 runtime 没有
+        // thread/items/list。这时快照不完整，既不能标 .full 也不能清掉提示。
+        let pageReportsIncompleteItems = !(result.page.notice ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
         if job.loadMode == .economy {
             historyLoadedQualityBySessionID[sessionID] = .summary
-        } else if result.page.itemContinuations.isEmpty {
-            historyLoadedQualityBySessionID[sessionID] = .full
-        } else {
+        } else if !result.page.itemContinuations.isEmpty {
             historyLoadedQualityBySessionID[sessionID] = .enriching
+        } else if pageReportsIncompleteItems {
+            historyLoadedQualityBySessionID[sessionID] = .summary
+        } else {
+            historyLoadedQualityBySessionID[sessionID] = .full
         }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
-            historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            if !pageReportsIncompleteItems {
+                historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            }
         } else if !effectiveQuiet {
             setHistoryLoadNotice(
                 sessionID: sessionID,
@@ -1256,8 +1265,9 @@ extension SessionStore {
     }
 
     func updateHistorySavingsNotice(sessionID: SessionID, page: HistoryMessagesPage) {
-        guard page.loadMode == .economy,
-              let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
+        // full 页也可能带 notice：runtime 缺少 thread/items/list 时首屏内容确实补不齐。
+        // 是否提示只看 page.notice 本身，不再由 loadMode 反推。
+        guard let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
               !notice.isEmpty
         else {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
