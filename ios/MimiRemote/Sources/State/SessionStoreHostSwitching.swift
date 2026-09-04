@@ -129,6 +129,22 @@ extension SessionStore {
     }
 
     @discardableResult
+    func applyManagedPairingURL(_ url: URL) async throws -> Bool {
+        try await performPreparedConnectionChange {
+            guard let controller = self.tailcatExperimentController,
+                  try TailcatPairingLink.parse(url) != nil else {
+                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+            }
+            return try await controller.preparePairingURL(
+                url,
+                appStore: self.appStore,
+                profileTarget: .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true
+            )
+        }
+    }
+
+    @discardableResult
     func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
         try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
@@ -143,6 +159,22 @@ extension SessionStore {
                 )
             }
             return try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
+        }
+    }
+
+    @discardableResult
+    func addManagedConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
+        try await performPreparedConnectionChange {
+            guard let controller = self.tailcatExperimentController,
+                  try TailcatPairingLink.parse(url) != nil else {
+                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+            }
+            return try await controller.preparePairingURL(
+                url,
+                appStore: self.appStore,
+                profileTarget: .newProfile(id: UUID().uuidString, displayName: displayName),
+                requiresManagedAuthorization: true
+            )
         }
     }
 

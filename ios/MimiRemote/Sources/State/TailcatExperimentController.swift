@@ -188,6 +188,7 @@ final class TailcatExperimentController: ObservableObject {
     private let tokenStore: TokenStore
     private let runtime: any TailcatExperimentRuntimeProtocol
     private let bridge: TailcatExperimentBridgeAdapter
+    private let managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)?
     private var generation: UInt64 = 0
     private var preparationTask: RoutePreparation?
     private var pendingPairing: PendingPairing?
@@ -197,7 +198,8 @@ final class TailcatExperimentController: ObservableObject {
         defaults: UserDefaults = .standard,
         tokenStore: TokenStore = TokenStore(),
         runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime(),
-        bridge: TailcatExperimentBridgeAdapter = .live
+        bridge: TailcatExperimentBridgeAdapter = .live,
+        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil
     ) {
         let available = bridge.isAvailable
         let savedEnabled = defaults.bool(forKey: Self.enabledKey)
@@ -244,6 +246,7 @@ final class TailcatExperimentController: ObservableObject {
         self.tokenStore = tokenStore
         self.runtime = runtime
         self.bridge = bridge
+        self.managedPairingAuthorizer = managedPairingAuthorizer
         address = savedAddress
         diagnostics = Self.loadDiagnostics(defaults: defaults)
         isEnabled = initialEnabled
@@ -448,7 +451,8 @@ final class TailcatExperimentController: ObservableObject {
     func preparePairingURL(
         _ url: URL,
         appStore: AppStore,
-        profileTarget: PreparedConnectionProfileTarget
+        profileTarget: PreparedConnectionProfileTarget,
+        requiresManagedAuthorization: Bool = false
     ) async throws -> PreparedConnectionSettings {
         guard let link = try TailcatPairingLink.parse(url) else {
             throw PairingLinkError.unsupportedURL
@@ -473,14 +477,43 @@ final class TailcatExperimentController: ObservableObject {
             let privateKey = try loadOrCreatePrivateKey()
             let clientKey = try bridge.publicKey(privateKey)
             publicKey = clientKey
+            let managedAuthorization: ManagedConnectionPairingAuthorization?
+            if requiresManagedAuthorization {
+                guard let macInstallationID = link.managedMacInstallationID,
+                      let macTailcatPublicKey = link.managedMacTailcatPublicKey,
+                      let managedPairingAuthorizer
+                else {
+                    throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+                }
+                managedAuthorization = try await managedPairingAuthorizer.authorizeManagedPairing(
+                    macInstallationID: macInstallationID,
+                    macTailcatPublicKey: macTailcatPublicKey,
+                    mobileTailcatPublicKey: clientKey
+                )
+            } else {
+                managedAuthorization = nil
+            }
             let pairingEndpoint = try await runtime.prepare(
                 address: link.pairAddress,
                 privateKey: privateKey
             )
             let response: PairingClaimResponse
             do {
+                let claimRequest: PairingClaimRequest
+                if let managedAuthorization {
+                    claimRequest = link.ticket.managedClaimRequest(
+                        tailcatClientKey: clientKey,
+                        pairingSessionID: managedAuthorization.sessionID,
+                        managedPairingGrant: managedAuthorization.grant
+                    )
+                } else {
+                    claimRequest = link.ticket.claimRequest(tailcatClientKey: clientKey)
+                }
                 response = try await AgentAPIClient(endpoint: pairingEndpoint, token: "")
-                    .claimPairing(link.ticket.claimRequest(tailcatClientKey: clientKey))
+                    .claimPairing(claimRequest)
+                if let managedAuthorization {
+                    managedPairingAuthorizer?.didCompleteManagedPairing(managedAuthorization)
+                }
             } catch {
                 try? await runtime.discardPrepared(endpoint: pairingEndpoint)
                 throw error

@@ -39668,6 +39668,188 @@
         }
       }
     },
+    "ui.managed_devices_added_detail": {
+      "comment": "Managed device registration date and non-secret ID suffix.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Added %1$@ · ID %2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@ 添加 · ID %2$@" } }
+      }
+    },
+    "ui.managed_devices_authorization_expired": {
+      "comment": "Shown when a managed connection device credential expired or was revoked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Device authorization expired. Check the subscription and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备授权已失效，请检查订阅后重试。" } }
+      }
+    },
+    "ui.managed_devices_connect_mac": {
+      "comment": "Action to scan a Mac QR code and create a managed connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan a Mac QR Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描 Mac 二维码" } }
+      }
+    },
+    "ui.managed_devices_connecting": {
+      "comment": "Progress shown while managed pairing is being authorized and completed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Authorizing this Mac…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在授权这台 Mac…" } }
+      }
+    },
+    "ui.managed_devices_connection": {
+      "comment": "Section title for adding a Mac through Mimi Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect a Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接 Mac" } }
+      }
+    },
+    "ui.managed_devices_credential_conflict": {
+      "comment": "Shown when the local managed device credential conflicts with the server record.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This installation already uses another device credential. Remove the old device and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次安装已登记其他设备凭证，请移除旧设备后重试。" } }
+      }
+    },
+    "ui.managed_devices_empty": {
+      "comment": "Empty state for the managed device list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No devices are using this subscription yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅尚未登记设备。" } }
+      }
+    },
+    "ui.managed_devices_limit_reached": {
+      "comment": "Managed device quota error. First value is device type and second is limit.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@ limit reached (%2$@). Remove an old device and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@名额已满（最多 %2$@ 台），请移除旧设备后重试。" } }
+      }
+    },
+    "ui.managed_devices_loading": {
+      "comment": "Progress shown while loading managed devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Loading devices…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在加载设备…" } }
+      }
+    },
+    "ui.managed_devices_mac": {
+      "comment": "Mac device type in managed device quota and list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mac" } }
+      }
+    },
+    "ui.managed_devices_mobile": {
+      "comment": "iPhone and iPad device type in managed device quota and list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "iPhone & iPad" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "iPhone 与 iPad" } }
+      }
+    },
+    "ui.managed_devices_network_error": {
+      "comment": "Generic network error while managing devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't update devices. Check your connection and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法更新设备，请检查网络后重试。" } }
+      }
+    },
+    "ui.managed_devices_not_found": {
+      "comment": "Shown when a managed device was already removed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This device was already removed. Refresh the list and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此设备已被移除，请刷新列表后重试。" } }
+      }
+    },
+    "ui.managed_devices_pairing_conflict": {
+      "comment": "Shown when the managed pairing request conflicts with an earlier request.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The pairing request conflicts with an earlier request. Scan the Mac code again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "配对请求与之前的请求冲突，请重新扫描 Mac 二维码。" } }
+      }
+    },
+    "ui.managed_devices_privacy_notice": {
+      "comment": "Privacy disclosure below managed devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi stores only random installation identifiers and credential hashes. It doesn't upload device names, Tailcat addresses, agentd tokens, or private keys." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 只保存随机安装标识和凭证哈希，不上传设备名称、Tailcat 地址、agentd Token 或私钥。" } }
+      }
+    },
+    "ui.managed_devices_qr_required": {
+      "comment": "Shown when managed pairing receives a QR code without managed host metadata.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use the current Mimi agentd to generate a Tailcat pairing QR code on your Mac." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请在 Mac 上使用当前版本的 Mimi agentd 生成 Tailcat 配对二维码。" } }
+      }
+    },
+    "ui.managed_devices_remove_action": {
+      "comment": "Action to remove a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove Device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除设备" } }
+      }
+    },
+    "ui.managed_devices_remove_message": {
+      "comment": "Confirmation message before revoking a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The device will immediately lose managed access. To use it again, register it and rescan each Mac." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去托管访问权限。再次使用时，需要重新登记并扫描每台 Mac。" } }
+      }
+    },
+    "ui.managed_devices_remove_title": {
+      "comment": "Confirmation title before revoking a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove this device?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除此设备？" } }
+      }
+    },
+    "ui.managed_devices_rescan_notice": {
+      "comment": "Explains that restored purchases don't copy host credentials.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Restoring a subscription doesn't copy Mac credentials. On a new iPhone or iPad, scan every Mac you want to use." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "恢复订阅不会同步 Mac 凭证。更换 iPhone 或 iPad 后，需要重新扫描每台要访问的 Mac。" } }
+      }
+    },
+    "ui.managed_devices_server_invalid": {
+      "comment": "Shown when the managed device service returns malformed data.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The managed device service returned an invalid response." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备服务返回了无效响应。" } }
+      }
+    },
+    "ui.managed_devices_server_rejected": {
+      "comment": "Generic managed device service rejection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The managed device request was rejected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备请求被拒绝。" } }
+      }
+    },
+    "ui.managed_devices_subscription_required": {
+      "comment": "Shown when managed pairing is attempted without an active verified subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "An active Mimi Managed Connection subscription is required." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要有效的 Mimi 托管连接订阅。" } }
+      }
+    },
+    "ui.managed_devices_this_device": {
+      "comment": "Marks the current iPhone or iPad in the managed device list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本设备" } }
+      }
+    },
+    "ui.managed_devices_title": {
+      "comment": "Managed device quota and list section title.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Device slots" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备名额" } }
+      }
+    },
+    "ui.managed_devices_usage": {
+      "comment": "Managed device quota usage. First value is used count and second is limit.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@ of %2$@ used" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已用 %1$@ / %2$@" } }
+      }
+    },
     "ui.managed_subscription_active": {
       "comment": "Active Mimi Managed Connection subscription status.",
       "localizations": {

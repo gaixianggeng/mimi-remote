@@ -165,6 +165,7 @@ struct SettingsView: View {
         // 顶部再来一个同名大标题只是白占一屏高度。
         .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
         .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
+        .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
             ConnectionManagementView(
                 qrScannerPresentation: qrScannerPresentation,

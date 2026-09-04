@@ -117,7 +117,98 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
 }
 
 @MainActor
+private final class ManagedPairingAuthorizerStub: ManagedConnectionPairingAuthorizing {
+    private(set) var requests: [(macInstallationID: String, macKey: String, mobileKey: String)] = []
+    private(set) var completions: [ManagedConnectionPairingAuthorization] = []
+
+    func authorizeManagedPairing(
+        macInstallationID: String,
+        macTailcatPublicKey: String,
+        mobileTailcatPublicKey: String
+    ) async throws -> ManagedConnectionPairingAuthorization {
+        requests.append((macInstallationID, macTailcatPublicKey, mobileTailcatPublicKey))
+        return ManagedConnectionPairingAuthorization(sessionID: "managed-session", grant: "managed-grant")
+    }
+
+    func didCompleteManagedPairing(_ authorization: ManagedConnectionPairingAuthorization) {
+        completions.append(authorization)
+    }
+}
+
+@MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testManagedPairingRequiresManagedQRCodeBeforeStartingRuntime() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.freeTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true
+            )
+        )
+
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertTrue(authorizer.requests.isEmpty)
+        XCTAssertEqual(startCallCount, 0)
+    }
+
+    func testManagedPairingAuthorizesBeforePreparingTailcatRoute() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true
+            )
+        )
+
+        XCTAssertEqual(authorizer.requests.count, 1)
+        XCTAssertEqual(authorizer.requests.first?.macInstallationID, "20000000-0000-4000-8000-000000000001")
+        XCTAssertEqual(authorizer.requests.first?.macKey, "nodekey:mac-public")
+        XCTAssertEqual(authorizer.requests.first?.mobileKey, "nodekey:public-key")
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertTrue(authorizer.completions.isEmpty)
+    }
+
+    func testFreeTailcatPairingDoesNotRequestManagedAuthorization() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+        )
+
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertTrue(authorizer.requests.isEmpty)
+        XCTAssertEqual(startCallCount, 1)
+    }
+
     func testConnectedPrepareRouteDoesNotRestartProxy() async throws {
         let fixture = try makeControllerFixture(startResults: [
             .success("http://127.0.0.1:49152"),
@@ -637,7 +728,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
-        blockedStartCall: Int? = nil
+        blockedStartCall: Int? = nil,
+        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil
     ) throws -> (
         controller: TailcatExperimentController,
         runtime: TailcatExperimentRuntimeStub,
@@ -669,8 +761,16 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             defaults: defaults,
             tokenStore: tokenStore,
             runtime: runtime,
-            bridge: bridge
+            bridge: bridge,
+            managedPairingAuthorizer: managedPairingAuthorizer
         )
         return (controller, runtime, store, defaults, suiteName)
     }
+
+    private static let freeTailcatPairingURL =
+        "mimiremote://pair?endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-09-01T00%3A00%3A00Z&expires_at=4102444800&pair_sig=abcdef&transport=tailcat&tailcat_pair_address=tc%3Atest-address"
+
+    private static let managedTailcatPairingURL = freeTailcatPairingURL
+        + "&managed_mac_installation_id=20000000-0000-4000-8000-000000000001"
+        + "&managed_mac_tailcat_public_key=nodekey%3Amac-public"
 }
