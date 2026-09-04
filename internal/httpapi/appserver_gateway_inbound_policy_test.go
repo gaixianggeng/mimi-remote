@@ -12,6 +12,32 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
+func newInboundPolicyForTest(t *testing.T, runtimeID string) (*appServerGatewayPolicy, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{
+		ID: "project", Name: "Project", Path: projectDir,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		cfg: config.Config{}, projects: registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:                router,
+		runtimeID:             runtimeID,
+		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	policy.allowThread(appServerGatewayAllowedThread{
+		id: "allowed", runtimeID: runtimeID, cwd: projectDir, scopeID: "project",
+	})
+	return policy, projectDir
+}
+
 func newCodexInboundPolicyForTest(t *testing.T) (*appServerGatewayPolicy, string) {
 	t.Helper()
 	projectDir := t.TempDir()
@@ -283,5 +309,35 @@ func TestClaudeGatewayFiltersReplayEnvelopeByThreadAuthorization(t *testing.T) {
 	dropID := json.RawMessage(`"drop"`)
 	if _, ok := policy.consumePendingServerRequest(&dropID); ok {
 		t.Fatal("被裁掉的重放请求不应登记 pending")
+	}
+}
+
+// MIM-246：受控全局发现要经过完整的 validateClientFrame 入口才算数。
+// 只测 observeUpstreamFrame / validateThreadCapability 会漏掉更早的 scope 校验
+// （appserver_gateway_scope.go 的 allowsControlledGlobalList），那一层曾经只放行
+// codex，导致 Claude 的无 cwd thread/list 在到达能力校验之前就被拒。
+func TestGatewayAllowsControlledGlobalThreadListWithoutCWDForBothRuntimes(t *testing.T) {
+	globalList := []byte(`{"id":1,"method":"thread/list","params":{"limit":50,"sortKey":"updated_at","sortDirection":"desc","archived":false}}`)
+
+	for _, runtimeID := range []string{"codex", "claude"} {
+		t.Run(runtimeID, func(t *testing.T) {
+			policy, _ := newInboundPolicyForTest(t, runtimeID)
+			if _, err := policy.validateClientFrame(websocket.TextMessage, globalList); err != nil {
+				t.Fatalf("%s 的无 cwd 全局发现必须放行：%v", runtimeID, err)
+			}
+		})
+	}
+}
+
+func TestGatewayStillRequiresCWDForNonGlobalListMethods(t *testing.T) {
+	// 例外只针对 thread/list：其余需要 cwd 的方法不得被顺带放开。
+	start := []byte(`{"id":2,"method":"thread/start","params":{"input":"hi"}}`)
+	for _, runtimeID := range []string{"codex", "claude"} {
+		t.Run(runtimeID, func(t *testing.T) {
+			policy, _ := newInboundPolicyForTest(t, runtimeID)
+			if _, err := policy.validateClientFrame(websocket.TextMessage, start); err == nil {
+				t.Fatalf("%s 的无 cwd thread/start 必须被拒", runtimeID)
+			}
+		})
 	}
 }

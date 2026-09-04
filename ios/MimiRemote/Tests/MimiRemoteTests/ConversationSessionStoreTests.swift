@@ -295,6 +295,64 @@ extension ConversationDataFlowTests {
         )
     }
 
+    /// MIM-248 评审提出的 P2：撤权必须按 runtime 独立结算。
+    /// Claude bridge 未启用或不健康是常态，若因此卡住 Codex 的撤权，
+    /// 已删除的 Codex 会话会永远留在列表里。
+    func testControlledGlobalDiscoveryRevokesCodexEvenWhenClaudeTraversalFails() async {
+        let project = makeProject(id: "proj_revoke")
+        let staleCodex = makeSession(
+            id: "codex-stale",
+            projectID: project.id,
+            title: "已删除的 Codex 会话",
+            status: "history",
+            source: "codex",
+            resumeID: "codex-stale"
+        )
+        let liveCodex = makeSession(
+            id: "codex-live",
+            projectID: project.id,
+            title: "仍在的 Codex 会话",
+            status: "history",
+            source: "codex",
+            resumeID: "codex-live"
+        )
+        var claudeShouldFail = false
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, _, _ in
+                switch runtimeProvider {
+                case "codex":
+                    return SessionsPage(sessions: claudeShouldFail ? [liveCodex] : [staleCodex, liveCodex])
+                default:
+                    if claudeShouldFail {
+                        throw MockError.unimplemented
+                    }
+                    return SessionsPage(sessions: [])
+                }
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertTrue(store.sessions.contains { $0.id == "codex-stale" }, "首轮应发现两条 Codex 会话")
+
+        // 第二轮：Codex 完整遍历且不再返回 codex-stale，Claude 那趟失败。
+        claudeShouldFail = true
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertFalse(
+            store.sessions.contains { $0.id == "codex-stale" },
+            "Codex 完整遍历后必须撤销已消失的会话，不能被 Claude 的失败卡住"
+        )
+        XCTAssertTrue(store.sessions.contains { $0.id == "codex-live" }, "仍被发现的会话必须保留")
+    }
+
     func testControlledGlobalDerivedReadOnlySessionsReceiveBoundedStableRecentHistoryVisibility() async {
         let project = makeProject(id: "proj_derived_visibility")
         var newestStructuralChild = makeSession(

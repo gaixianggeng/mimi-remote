@@ -1661,7 +1661,11 @@ extension SessionStore {
         if !controlledGlobalDiscoveryUnavailable {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
             var discoveredSessionIDs: Set<SessionID> = []
-            var reachedTraversalEnd = true
+            // 撤权按 runtime 独立结算：Claude bridge 未启用或不健康是常态，
+            // 不能因为它那趟没走完，就让已经完整遍历的 Codex 永远撤不掉
+            // 已删除的会话（反之亦然）。
+            var discoveredByRuntime: [String: Set<SessionID>] = [:]
+            var completedRuntimes: Set<String> = []
             for runtimeProvider in ["codex", "claude"] {
                 var cursor: String?
                 var runtimeReachedEnd = false
@@ -1678,6 +1682,7 @@ extension SessionStore {
                         recordCarStatusHostObservation(at: sessionListNow())
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
+                        discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
                         // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
                         // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
                         let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
@@ -1719,15 +1724,30 @@ extension SessionStore {
                         break
                     }
                 }
-                reachedTraversalEnd = reachedTraversalEnd && runtimeReachedEnd
+                if runtimeReachedEnd {
+                    completedRuntimes.insert(runtimeProvider)
+                }
             }
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
-            if reachedTraversalEnd {
+            if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
-                let revokedSessionIDs = controlledIDsBeforeTraversal.subtracting(discoveredSessionIDs)
+                //
+                // 归属未知的旧 ID（会话已不在 store 里，无从判断 runtime）保守保留：
+                // 宁可多留一条，也不要因为归属判断不了而误删别的 runtime 的会话。
+                let runtimeBySessionID = Dictionary(
+                    sessions.map { ($0.id, Self.normalizedRuntimeProvider($0.runtimeProvider)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                let revokedSessionIDs = controlledIDsBeforeTraversal.filter { sessionID in
+                    guard let runtime = runtimeBySessionID[sessionID],
+                          completedRuntimes.contains(runtime) else {
+                        return false
+                    }
+                    return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
+                }
                 if !revokedSessionIDs.isEmpty {
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
                     if retainedSessions != sessions {
@@ -1747,8 +1767,11 @@ extension SessionStore {
                         remoteSessionSearchSnippetByID.removeValue(forKey: sessionID)
                     }
                 }
-                if controlledGlobalSessionIDs != discoveredSessionIDs {
-                    controlledGlobalSessionIDs = discoveredSessionIDs
+                let retainedFromUnsettledRuntimes = controlledIDsBeforeTraversal
+                    .subtracting(revokedSessionIDs)
+                let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
+                if controlledGlobalSessionIDs != settledIDs {
+                    controlledGlobalSessionIDs = settledIDs
                 }
             } else {
                 let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
