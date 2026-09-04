@@ -141,7 +141,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
 			return payload, false, nil
 		}
-		if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && !p.codexServerRequestAllowed(frame.Params) {
+		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(frame.Params) {
 			return payload, false, nil
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
@@ -153,10 +153,14 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
 			return payload, false, nil
 		}
-		if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && !p.codexNotificationAllowed(&frame) {
+		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
 		p.clearPendingServerRequestsForNotification(&frame)
+		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
+			payload = filtered
+			_ = json.Unmarshal(payload, &frame)
+		}
 		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -319,29 +323,51 @@ func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error)
 	return rewritten, resultRaw, nil
 }
 
-var codexGlobalNotificationMethods = map[string]struct{}{
+// 下行门禁适用于我们自己拥有的两条 runtime。未知 runtime 保持既有透传语义
+// （见 TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude 的
+// unknown-runtime-passthrough 子用例）：那是一个独立的产品决定，新接入 runtime 时
+// 应当显式纳入这里，而不是靠这个函数悄悄改变语义。
+func (p *appServerGatewayPolicy) enforcesInboundThreadAuthorization() bool {
+	switch normalizeAppServerRuntimeID(p.runtimeID) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+// 无 thread 归属、因而无法按 thread 授权的全局通知。Codex 与 Claude 共用这一份：
+// Claude bridge 目前只发其中的 account/rateLimits/updated，多出的两条它不会发，
+// 放在这里不扩大暴露面。新增任何全局通知都必须显式登记，否则会被静默丢弃。
+var inboundGlobalNotificationMethods = map[string]struct{}{
 	"account/rateLimits/updated":      {},
 	"mcpServer/startupStatus/updated": {},
 	"deprecationNotice":               {},
 }
 
-func (p *appServerGatewayPolicy) codexServerRequestAllowed(rawParams json.RawMessage) bool {
+func (p *appServerGatewayPolicy) inboundServerRequestAllowed(rawParams json.RawMessage) bool {
 	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
 	_, ok := p.allowedThread(threadID)
 	return ok
 }
 
-func (p *appServerGatewayPolicy) codexNotificationAllowed(frame *appServerGatewayFrame) bool {
+func (p *appServerGatewayPolicy) inboundNotificationAllowed(frame *appServerGatewayFrame) bool {
 	method := strings.TrimSpace(frame.Method)
-	if _, ok := codexGlobalNotificationMethods[method]; ok {
+	if _, ok := inboundGlobalNotificationMethods[method]; ok {
+		return true
+	}
+	// serverRequest/replay 是 Claude 重连时的挂起请求信封，顶层没有 threadId：
+	// 授权必须按 outstanding 条目逐个判定（见 sanitizeReplayedServerRequests）。
+	// 整帧丢弃会打断重连恢复，整帧放行又会泄露未授权 thread 的挂起请求。
+	if method == claudeBridgeServerRequestReplayMethod {
 		return true
 	}
 	if method == "serverRequest/resolved" {
-		return p.codexResolvedNotificationAllowed(frame.Params)
+		return p.inboundResolvedNotificationAllowed(frame.Params)
 	}
 	threadID := appServerGatewayThreadIDFromParams(frame.Params)
 	if method == "thread/started" {
-		return p.allowCodexStartedThread(frame.Params, threadID)
+		return p.allowInboundStartedThread(frame.Params, threadID)
 	}
 	_, ok := p.allowedThread(threadID)
 	return ok
@@ -367,7 +393,7 @@ func appServerGatewayThreadIDFromParams(rawParams json.RawMessage) string {
 	return ""
 }
 
-func (p *appServerGatewayPolicy) allowCodexStartedThread(rawParams json.RawMessage, threadID string) bool {
+func (p *appServerGatewayPolicy) allowInboundStartedThread(rawParams json.RawMessage, threadID string) bool {
 	params, err := decodeGatewayParams(rawParams)
 	if err != nil || threadID == "" || p.router == nil {
 		return false
@@ -398,7 +424,7 @@ func (p *appServerGatewayPolicy) allowCodexStartedThread(rawParams json.RawMessa
 	return true
 }
 
-func (p *appServerGatewayPolicy) codexResolvedNotificationAllowed(rawParams json.RawMessage) bool {
+func (p *appServerGatewayPolicy) inboundResolvedNotificationAllowed(rawParams json.RawMessage) bool {
 	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
 	if _, ok := p.allowedThread(threadID); ok {
 		return true
@@ -945,6 +971,64 @@ func (p *appServerGatewayPolicy) prunePendingClientRequestsLocked(now time.Time)
 // registered and `validateClientResponse` rejected the user's answer as "not
 // issued by app-server" — the prompt would come back after a reconnect and
 // then refuse to be answered.
+// sanitizeReplayedServerRequests 把 serverRequest/replay 的 outstanding 裁剪到
+// 当前连接已授权的 thread。信封本身要保留：它是 Claude 重连恢复挂起审批与补充
+// 信息卡的唯一通道，整帧丢掉会让用户重连后永远等不到那张卡。
+func (p *appServerGatewayPolicy) sanitizeReplayedServerRequests(payload []byte, frame *appServerGatewayFrame) ([]byte, bool) {
+	if !p.enforcesInboundThreadAuthorization() ||
+		strings.TrimSpace(frame.Method) != claudeBridgeServerRequestReplayMethod ||
+		len(frame.Params) == 0 {
+		return payload, false
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(frame.Params, &params) != nil {
+		return payload, false
+	}
+	rawOutstanding, ok := params["outstanding"]
+	if !ok {
+		return payload, false
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(rawOutstanding, &entries) != nil {
+		return payload, false
+	}
+	kept := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		var scoped struct {
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(entry, &scoped) != nil {
+			continue
+		}
+		if !p.inboundServerRequestAllowed(scoped.Params) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if len(kept) == len(entries) {
+		return payload, false
+	}
+	rewrittenOutstanding, err := json.Marshal(kept)
+	if err != nil {
+		return payload, false
+	}
+	params["outstanding"] = rewrittenOutstanding
+	rewrittenParams, err := json.Marshal(params)
+	if err != nil {
+		return payload, false
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(payload, &envelope) != nil {
+		return payload, false
+	}
+	envelope["params"] = rewrittenParams
+	rewritten, err := json.Marshal(envelope)
+	if err != nil {
+		return payload, false
+	}
+	return rewritten, true
+}
+
 func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServerGatewayFrame) {
 	if strings.TrimSpace(frame.Method) != claudeBridgeServerRequestReplayMethod || len(frame.Params) == 0 {
 		return
@@ -967,6 +1051,9 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 		if !appServerServerRequestAllowed(p.runtimeID, entry.Method) {
 			// The client cannot render it, so it will never answer it; leaving
 			// it unregistered keeps the pending table honest.
+			continue
+		}
+		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(entry.Params) {
 			continue
 		}
 		if err := p.rememberPendingServerRequest(entry.ID, entry.Method, entry.Params); err != nil {

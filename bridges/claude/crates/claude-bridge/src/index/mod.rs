@@ -77,6 +77,16 @@ pub fn entry_from_claude(info: &ClaudeSessionInfo) -> IndexEntry {
 
 /// Render an index row as a wire `Thread`.
 pub fn entry_to_thread(entry: &IndexEntry) -> Thread {
+    entry_to_thread_with_git_info(entry, None)
+}
+
+/// 列表路径专用：git_info 每次调用会 fork 三个 git 子进程（rev-parse / branch /
+/// config）。一页 50 条会产生 150 个进程、约 3 秒，而同一页里的 thread 往往共享
+/// 少数几个 cwd。调用方按 cwd 去重后把结果传进来，避免重复计算。
+pub fn entry_to_thread_with_git_info(
+    entry: &IndexEntry,
+    git_info: Option<Option<alleycat_codex_proto::GitInfo>>,
+) -> Thread {
     Thread {
         id: entry.thread_id.clone(),
         session_id: entry.metadata.claude_session_id.clone(),
@@ -100,7 +110,7 @@ pub fn entry_to_thread(entry: &IndexEntry) -> Thread {
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
-        git_info: alleycat_bridge_core::git_info_for_cwd(&entry.cwd),
+        git_info: git_info.unwrap_or_else(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd)),
         name: entry.name.clone(),
         turns: Vec::new(),
     }

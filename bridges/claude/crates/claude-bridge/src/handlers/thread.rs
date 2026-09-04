@@ -662,11 +662,22 @@ pub async fn handle_thread_list(
         .into_iter()
         .filter(|id| !id.starts_with("utility_"))
         .collect();
+    // git_info 每条要 fork 三个 git 子进程。全局列表一页 50 条会产生 150 个进程、
+    // 实测约 3 秒；同一页里的 thread 通常只落在少数几个 cwd 上，按 cwd 去重后
+    // 降到个位数。
+    let mut git_info_by_cwd: std::collections::HashMap<
+        String,
+        Option<alleycat_codex_proto::GitInfo>,
+    > = std::collections::HashMap::new();
     let data = page
         .data
         .into_iter()
         .map(|entry| {
-            let mut t = thread_from_entry(&entry);
+            let git_info = git_info_by_cwd
+                .entry(entry.cwd.clone())
+                .or_insert_with(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd))
+                .clone();
+            let mut t = crate::index::entry_to_thread_with_git_info(&entry, Some(git_info));
             let is_loaded = loaded.contains(&t.id);
             apply_live_thread_status(&mut t, is_loaded);
             t

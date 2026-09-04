@@ -1760,14 +1760,26 @@ func TestAppServerGatewayRegistersReplayedServerRequests(t *testing.T) {
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "claude",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thr_1": {id: "thr_1", runtimeID: "claude", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	replay := []byte(`{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[` +
 		`{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_1"}},` +
 		`{"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"thr_1"}},` +
 		`{"id":"req-nope","method":"account/chatgptAuthTokens/refresh","params":{}}]}}`)
 	got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, replay)
-	if policyErr != nil || !forward || !bytes.Equal(got, replay) {
-		t.Fatalf("replay 通知应原样转发 forward=%v err=%+v got=%s", forward, policyErr, got)
+	if policyErr != nil || !forward {
+		t.Fatalf("replay 信封必须转发，否则重连恢复不了挂起卡片 forward=%v err=%+v", forward, policyErr)
+	}
+	// 已授权 thread 的条目原样保留。
+	if !bytes.Contains(got, []byte(`"req-abc"`)) || !bytes.Contains(got, []byte(`"item/tool/requestUserInput"`)) {
+		t.Fatalf("已授权 thread 的重放条目不应被剥掉：%s", got)
+	}
+	// 移动端渲染不了、也拿不到 thread 归属的条目不再下发（MIM-248）：
+	// 转发它只会让客户端看到一条永远不会被回答的挂起请求。
+	if bytes.Contains(got, []byte(`"req-nope"`)) {
+		t.Fatalf("未授权条目不应下发给客户端：%s", got)
 	}
 
 	for _, expected := range []struct {
@@ -2244,6 +2256,9 @@ func TestClaudeGatewayPassesThroughServerRequestResolvedAfterDecision(t *testing
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "claude",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {id: "thread-1", runtimeID: "claude", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	request := []byte(`{"id":"claude-approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","path":"README.md"}}`)
 	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
@@ -2707,10 +2722,9 @@ func TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude(t *tes
 		t.Run(runtimeID, func(t *testing.T) {
 			router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 			policy := &appServerGatewayPolicy{router: router, runtimeID: runtimeID}
-			if runtimeID == "codex" {
-				policy.allowedThreads = map[string]appServerGatewayAllowedThread{
-					"thread-media": {id: "thread-media", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
-				}
+			// 两条 runtime 现在都受 thread 授权门禁（MIM-248），fixture 必须各自授权。
+			policy.allowedThreads = map[string]appServerGatewayAllowedThread{
+				"thread-media": {id: "thread-media", runtimeID: runtimeID, cwd: "/repo", scopeID: "repo"},
 			}
 			forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, notification)
 			if policyErr != nil || !forward {
