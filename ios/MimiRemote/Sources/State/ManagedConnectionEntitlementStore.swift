@@ -1,5 +1,10 @@
 import Foundation
 
+struct ManagedConnectionPurchaseEvidence: Equatable, Sendable {
+    let signedAppTransaction: String
+    let signedTransaction: String
+}
+
 @MainActor
 final class ManagedConnectionEntitlementStore: ObservableObject {
     enum Status: Equatable {
@@ -16,6 +21,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     @Published private(set) var products: [ManagedConnectionProduct] = []
     @Published private(set) var status: Status = .loading
     @Published private(set) var currentGrant: ManagedConnectionEntitlementGrant?
+    private(set) var currentEvidence: ManagedConnectionTransactionEvidence?
 
     private let storeKit: any ManagedConnectionStoreKitClient
     private let entitlementAPI: any ManagedConnectionEntitlementAPIClient
@@ -117,6 +123,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             let grant = try await resolve(evidence)
             guard isLatest(generation) else { return }
             currentGrant = grant
+            currentEvidence = evidence
             status = .entitled(grant.entitlement)
             await storeKit.finish(transactionID: evidence.transactionID)
         } catch is CancellationError {
@@ -144,6 +151,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                 continue
             case .unverified:
                 currentGrant = nil
+                currentEvidence = nil
                 status = .failed(L10n.text("ui.managed_subscription_unverified"))
                 return
             case .verified(let evidence):
@@ -151,6 +159,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     let grant = try await resolve(evidence)
                     guard isLatest(generation) else { return }
                     currentGrant = grant
+                    currentEvidence = evidence
                     status = .entitled(grant.entitlement)
                     await storeKit.finish(transactionID: evidence.transactionID)
                     return
@@ -167,6 +176,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         }
 
         currentGrant = nil
+        currentEvidence = nil
         status = .available
     }
 
@@ -194,6 +204,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     let grant = try await resolve(evidence)
                     guard isLatest(generation) else { return }
                     currentGrant = grant
+                    currentEvidence = evidence
                     status = .entitled(grant.entitlement)
                     // 服务端是权益事实来源。只有它接受两份 JWS 后，才结束 StoreKit 交易。
                     await storeKit.finish(transactionID: evidence.transactionID)
@@ -235,6 +246,19 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
     var isBusy: Bool {
         status == .loading || status == .resolving
+    }
+
+    func managementPurchaseEvidence() async throws -> ManagedConnectionPurchaseEvidence {
+        guard let currentGrant = usableCurrentGrant,
+              let currentEvidence,
+              currentEvidence.productID == currentGrant.entitlement.productID
+        else {
+            throw ManagedConnectionDeviceStoreError.subscriptionRequired
+        }
+        return ManagedConnectionPurchaseEvidence(
+            signedAppTransaction: try await storeKit.signedAppTransaction(),
+            signedTransaction: currentEvidence.signedTransaction
+        )
     }
 
     private func beginOperation() -> Int {
@@ -332,6 +356,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         switch failureStatus {
         case .available, .expired, .revoked:
             currentGrant = nil
+            currentEvidence = nil
             status = failureStatus
         case .failed:
             if let apiError = error as? ManagedConnectionEntitlementAPIError,
@@ -339,6 +364,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                code == "unverified_transaction"
             {
                 currentGrant = nil
+                currentEvidence = nil
                 status = failureStatus
             } else {
                 restore(fallbackGrant, otherwise: failureStatus)
