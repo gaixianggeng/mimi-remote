@@ -8,10 +8,13 @@ project_path="macos/MimiRemoteMac/MimiRemoteMac.xcodeproj"
 scheme="MimiRemoteMac"
 configuration="${MACOS_TEST_CONFIGURATION:-Debug}"
 architecture="${MACOS_TEST_ARCH:-$(uname -m)}"
-derived_data="${MACOS_DERIVED_DATA_PATH:-$ROOT_DIR/.build/MimiRemoteMacTests}"
-# 传给 Xcode build phase 的可复用缓存必须位于 DerivedData 或调用方明确指定的
-# 临时目录；默认值不会把 Rust/Go 的中间产物写进仓库。
-embed_cache="${MACOS_EMBED_CACHE_DIR:-$derived_data/MimiRemoteMacEmbedCache}"
+development_cache="$(
+  bash "$ROOT_DIR/scripts/development-cache-path.sh" \
+    "xcode/macos/$architecture/$configuration"
+)"
+derived_data="${MACOS_DERIVED_DATA_PATH:-$development_cache/DerivedData}"
+embed_cache="${MACOS_EMBED_CACHE_DIR:-$development_cache/EmbedCache}"
+cache_lock="${MACOS_DEVELOPMENT_CACHE_LOCK:-$derived_data.lock}"
 
 log() {
   printf '[macos-test %s] %s\n' "$(date '+%H:%M:%S')" "$*"
@@ -34,7 +37,8 @@ done
 # 编译 Mac App、内嵌 agentd / Claude bridge 和现有单测，但不读取发布签名凭据。
 log "开始真实 Scheme 测试：scheme=${scheme} configuration=${configuration} arch=${architecture}"
 log "DerivedData=${derived_data} embed-cache=${embed_cache}"
-xcodebuild \
+bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$cache_lock" -- \
+  xcodebuild \
   -project "$project_path" \
   -scheme "$scheme" \
   -configuration "$configuration" \

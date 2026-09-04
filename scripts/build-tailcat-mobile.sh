@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODULE_DIR="${TAILCAT_MOBILE_MODULE_DIR:-$REPO_ROOT/experiments/tailcat}"
-TOOL_DIR="${TAILCAT_MOBILE_TOOL_DIR:-$REPO_ROOT/.build/tailcat-mobile-tools}"
+DEVELOPMENT_CACHE_ROOT="$(
+  bash "$REPO_ROOT/scripts/development-cache-path.sh" "go/tailcat-mobile"
+)"
+TOOL_DIR="${TAILCAT_MOBILE_TOOL_DIR:-$DEVELOPMENT_CACHE_ROOT/tools}"
 OUTPUT_DIR="${TAILCAT_MOBILE_OUTPUT_DIR:-$REPO_ROOT/ios/MimiRemote/Generated}"
 OUTPUT="$OUTPUT_DIR/TailcatMobile.xcframework"
 FINGERPRINT_FILE="$OUTPUT_DIR/.tailcat-mobile-fingerprint"

@@ -3,7 +3,13 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/../../.." && pwd)"
-source_app="$repo_root/.build/MimiRemoteMac/Build/Products/Release/Mimi Remote Mac.app"
+architecture="$(uname -m)"
+development_cache="$(
+  bash "$repo_root/scripts/development-cache-path.sh" \
+    "xcode/macos/$architecture/Release"
+)"
+derived_data="${MACOS_DERIVED_DATA_PATH:-$development_cache/DerivedData}"
+source_app="$derived_data/Build/Products/Release/Mimi Remote Mac.app"
 
 # Default to wherever the app is already installed. Picking a fixed default
 # instead is how a rebuild silently lands beside the running copy: the new

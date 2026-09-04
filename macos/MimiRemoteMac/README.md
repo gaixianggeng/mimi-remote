@@ -23,19 +23,11 @@ App 不读取或展示长期 Token。设置和配对只调用 `agentd ... --qr-o
 ### 构建与测试
 
 ```bash
-cd macos/MimiRemoteMac
-xcodegen generate --spec project.yml
-
-cd ../..
-xcodebuild \
-  -project macos/MimiRemoteMac/MimiRemoteMac.xcodeproj \
-  -scheme MimiRemoteMac \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath .build/MimiRemoteMac \
-  CODE_SIGN_STYLE=Automatic \
-  test
+bash scripts/test-macos-app.sh
 ```
+
+本地构建和测试默认把 DerivedData、Go 与 Rust 中间产物放到仓库外的共享开发缓存。
+同一仓库的不同 Worktree 会复用该目录，并通过缓存锁避免并发写入。
 
 构建本地 Release：
 

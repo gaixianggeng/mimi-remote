@@ -221,6 +221,7 @@ has_ios_asc_control=false
 has_critical_mapping_control=false
 has_linear_polling_control=false
 has_agentd_restart_control=false
+has_development_cache_control=false
 unknown_paths=()
 shell_paths=()
 yaml_paths=()
@@ -416,6 +417,11 @@ for path in "${changed_paths[@]:-}"; do
       has_agentd_restart_control=true
       ;;
   esac
+  case "$path" in
+    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
+      has_development_cache_control=true
+      ;;
+  esac
 
   case "$path" in
     *.sh|scripts/git-testflight-push)
@@ -552,6 +558,9 @@ fi
 if [[ "$has_agentd_restart_control" == true ]]; then
   add_check "agentd 本地重启链路只执行无安装副作用的 self-test" "bash ./scripts/restart-agentd-dev-macos.sh --self-test"
 fi
+if [[ "$has_development_cache_control" == true ]]; then
+  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh"
+fi
 if [[ "$has_contract" == true ]]; then
   add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh"
 fi
@@ -596,7 +605,7 @@ fi
 
 if [[ "$direct_rust" == true ]]; then
   add_check "Rust 格式检查" "cargo fmt --all -- --check"
-  rust_test_command="cargo test --locked"
+  rust_test_command='CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(bash ./scripts/development-cache-path.sh cargo/target)}" cargo test --locked'
   if [[ "$rust_all" == true || "$mode" == "full" ]]; then
     rust_codex=true
     rust_core=true
