@@ -417,6 +417,10 @@ final class TailcatExperimentController: ObservableObject {
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard isEnabled else { return true }
+        if case .usingTemporaryRoute = state {
+            // “仅本次使用”覆盖整个当前进程。前后台切换不应被当成用户主动重试。
+            return true
+        }
         if let inFlightPreparation = preparationTask {
             _ = await inFlightPreparation.task.value
             if preparationTask?.id == inFlightPreparation.id {
@@ -464,6 +468,7 @@ final class TailcatExperimentController: ObservableObject {
         let capturedGeneration = generation
         state = .starting
         var preparationID: UUID?
+        var ownsPreparation = false
         do {
             let privateKey = try loadOrCreatePrivateKey()
             publicKey = try bridge.publicKey(privateKey)
@@ -471,6 +476,7 @@ final class TailcatExperimentController: ObservableObject {
             if let preparationTask {
                 preparation = preparationTask
             } else {
+                ownsPreparation = true
                 let task = Task<Result<String, Error>, Never> {
                     do {
                         return .success(try await runtime.start(
@@ -499,7 +505,7 @@ final class TailcatExperimentController: ObservableObject {
             }
             appStore.setTailcatExperimentEndpoint(endpoint)
             state = .connected(endpoint: endpoint)
-            if refreshPathDiagnosticAfterPreparation {
+            if refreshPathDiagnosticAfterPreparation, ownsPreparation {
                 Task {
                     await refreshPathDiagnostic(
                         appStore: appStore,
@@ -516,14 +522,16 @@ final class TailcatExperimentController: ObservableObject {
             guard !Task.isCancelled, capturedGeneration == generation else { return false }
             appStore.setTailcatExperimentEndpoint(nil)
             state = .failed(message: error.localizedDescription)
-            await reportManagedConnectionAttempt(
-                enabled: reportsManagedConnection,
-                path: .unknown,
-                succeeded: false,
-                startedAt: connectionStartedAt,
-                error: error,
-                regionCode: nil
-            )
+            if ownsPreparation {
+                enqueueManagedConnectionAttempt(
+                    enabled: reportsManagedConnection,
+                    path: .unknown,
+                    succeeded: false,
+                    startedAt: connectionStartedAt,
+                    error: error,
+                    regionCode: nil
+                )
+            }
             return false
         }
     }
@@ -642,7 +650,7 @@ final class TailcatExperimentController: ObservableObject {
                 previousLegacyAddress: previousLegacyAddress,
                 appStore: appStore
             )
-            await reportManagedConnectionAttempt(
+            enqueueManagedConnectionAttempt(
                 enabled: requiresManagedAuthorization,
                 path: .unknown,
                 succeeded: false,
@@ -950,6 +958,28 @@ final class TailcatExperimentController: ObservableObject {
                 appVersion: appVersion()
             )
         )
+    }
+
+    private func enqueueManagedConnectionAttempt(
+        enabled: Bool,
+        path: ManagedConnectionEventPath,
+        succeeded: Bool,
+        startedAt: Date,
+        error: Error?,
+        regionCode: String?
+    ) {
+        guard enabled, managedConnectionEventReporter != nil else { return }
+        // 遥测是旁路能力。网络故障时不能让它延迟失败状态和恢复按钮。
+        Task { [weak self] in
+            await self?.reportManagedConnectionAttempt(
+                enabled: true,
+                path: path,
+                succeeded: succeeded,
+                startedAt: startedAt,
+                error: error,
+                regionCode: regionCode
+            )
+        }
     }
 
     private func restoreProfileAddress(_ address: String, profileID: String) throws {
