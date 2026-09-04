@@ -83,6 +83,22 @@
 - 不得通过压缩代码、合并无关语句、删除必要测试或添加目录、通配符豁免来绕过门禁。
 - 只有确实无法立即拆分且有明确原因时，才允许在 `scripts/check-source-size.sh` 中添加精确文件路径例外。例外必须写明原因和后续拆分方向，不能作为长期默认方案。
 
+## 分层验证执行规范
+
+- 开发过程中只运行与当前行为直接相关的最小检查。Go 优先运行变更 package 的测试；iOS 优先运行精确 XCTest selector、相关快照或静态检查。不要在每次微调后运行 quick、完整 XCTest 或全仓测试。
+- 完成最后一次代码修改后，交付或 push 前只执行一次：
+  - `bash ./scripts/verify-change.sh --plan`
+  - `bash ./scripts/verify-change.sh`
+- quick 是普通 Issue 的默认收尾。iOS quick 只在固定 `iPad Pro 13-inch (M5)` Simulator 上编译 App，不编译或运行整个 XCTest 测试包；需要回归测试时，在开发阶段运行与问题直接相关的 selector。
+- 只有以下任一条件成立时，才允许执行一次 `bash ./scripts/verify-change.sh --full`：
+  - 修改 Go/iOS 共享协议、跨栈接口或同一用户链路的多个产品栈；
+  - 修改鉴权、权限、持久化格式或迁移、消息 exactly-once、并发、重连等高风险语义；
+  - 大范围重构导致直接影响范围无法可靠界定；
+  - 准备正式发布，或用户明确要求完整回归。
+- Issue 已完成、改动文件较多、准备提交和“为了保险”都不是 full 的触发条件。quick 或 CI 失败时先定位并重跑失败项，不自动升级为全量流程。
+- 真机验证仍只用于相机、通知、Keychain、Tailscale/弱网、性能、发布前专项或 Issue 明确要求。普通 UI、文案、局部状态和单 package 修复不得默认启动真机。
+- 交付时只报告实际执行的检查，并明确列出延后到 PR Gate、真机或发布阶段的范围。不得把 quick 结果表述为完整回归通过。
+
 ## iOS 日常构建与模拟器标准
 
 ### 默认链路

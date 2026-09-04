@@ -38,18 +38,20 @@ quick 验证。脚本会合并 `origin/main...HEAD`、暂存区、工作区和�
 - 纯文档不启动 Go、Cargo、Xcode 或真机；
 - CI、脚本和发布控制面只运行语法检查及对应的无设备自测；
 - Go 默认只测试直接变更的 package；
-- iOS 默认固定 `iPad Pro 13-inch (M5)`，只生成一次可复用测试产物；
+- iOS 默认固定 `iPad Pro 13-inch (M5)`，只编译 App，不编译或运行整个 XCTest 测试包；
 - Rust、Mac App、共享契约和打包改动只进入各自的必要门禁；
 - 未映射路径会明确失败，不会被静默当作通过。
 
-只有跨模块重构、共享协议/发布链路、准备正式发布，或 quick 无法覆盖风险时才升级：
+开发过程中需要 XCTest 时，只运行与当前问题直接相关的 selector。只有共享协议或跨栈接口、
+鉴权/权限/持久化/并发/重连等高风险语义、大范围重构、准备正式发布，或用户明确要求时才升级：
 
 ```bash
 bash ./scripts/verify-change.sh --full
 ```
 
-`--full` 仍只覆盖受影响语言栈，并补齐仓库级 Gate。CI 红灯时先重跑或定位失败的
-具体 job，不要为了“保险”把所有本地流程再跑一遍。
+`--full` 仍只覆盖受影响语言栈，并补齐仓库级 Gate。普通 UI、文案、单 package、测试文件、
+改动文件较多和准备提交都不是 full 的触发条件。CI 红灯时先重跑或定位失败的具体 job，
+不要为了“保险”把所有本地流程再跑一遍。
 
 日常 `build` / `run` 只通过 `bash ./scripts/ios-dev.sh` 执行，优先租用 available、paired、USB 连接的真机，再选择可达的本地网络真机。只有没有可达真机时才回退 `iPad Pro 13-inch (M5)` Simulator；检测到真机但全部忙时明确失败，不静默切换设备类型。`build-for-testing`、`test`、快照与 CI 精确固定这台 M5 iPad，忙或缺失时不切换 iPad mini。使用 `bash ./scripts/ios-dev.sh target` 查看目标和选择原因，使用 `bash ./scripts/ios-dev.sh leases` 查看跨 Worktree 租约和外部 `xcodebuild`；兼容性运行通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
