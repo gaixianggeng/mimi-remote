@@ -120,6 +120,8 @@ pub async fn handle_thread_start(
         metadata: crate::index::ClaudeSessionRef {
             claude_session_path: claude_session_path_for(&cwd, &thread_id),
             claude_session_id: thread_id.clone(),
+            // transcript 还没写标题；首次历史扫描会补上。
+            claude_title: None,
         },
     };
     state
@@ -328,6 +330,9 @@ pub async fn handle_thread_fork(
         metadata: crate::index::ClaudeSessionRef {
             claude_session_path: new_session_path,
             claude_session_id: new_thread_id.clone(),
+            // 名字是从源线程整行拷来的，来源标记也一起拷，
+            // 否则新线程自己的 transcript 标题会被当成用户命名挡住。
+            claude_title: source.metadata.claude_title.clone(),
         },
     };
     state
