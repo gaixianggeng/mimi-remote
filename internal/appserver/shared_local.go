@@ -245,8 +245,16 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 }
 
 func startResidentCommand(bin string, args []string, extraEnv map[string]string) error {
+	workingDirectory, err := sharedLocalWorkingDirectory(extraEnv)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(context.Background(), bin, args...)
 	configureSharedLocalCommand(cmd)
+	// The installer may invoke agentd from a temporary extraction directory.
+	// The resident server outlives that directory, and Codex needs a valid cwd
+	// later when it resolves thread/list workspace filters.
+	cmd.Dir = workingDirectory
 	cmd.Env = buildManagedEnv(extraEnv)
 	cmd.Stdout = io.Discard
 	// resident outlives agentd. It must not retain a pipe whose reader
@@ -263,6 +271,31 @@ func startResidentCommand(bin string, args []string, extraEnv map[string]string)
 	case <-time.After(sharedLocalStartGrace):
 		return nil
 	}
+}
+
+func sharedLocalWorkingDirectory(extraEnv map[string]string) (string, error) {
+	home, overridden := extraEnv["HOME"]
+	if !overridden {
+		home = os.Getenv("HOME")
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", errors.New("启动共享 Codex App Server 需要有效的 HOME")
+	}
+	if !filepath.IsAbs(home) {
+		return "", errors.New("启动共享 Codex App Server 要求 HOME 使用绝对路径")
+	}
+	info, err := os.Stat(home)
+	if err != nil {
+		return "", fmt.Errorf("共享 Codex App Server 的 HOME 不存在或不可访问：%w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("共享 Codex App Server 的 HOME 不是目录")
+	}
+	if canonical, evalErr := filepath.EvalSymlinks(home); evalErr == nil {
+		home = canonical
+	}
+	return filepath.Clean(home), nil
 }
 
 func cloneStringMap(source map[string]string) map[string]string {

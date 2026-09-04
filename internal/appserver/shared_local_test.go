@@ -141,6 +141,65 @@ func TestSharedLocalTransportDoesNotReplaceUnresponsiveSocket(t *testing.T) {
 	}
 }
 
+func TestStartResidentCommandUsesStableHome(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	launchDirectory := filepath.Join(root, "temporary-launch")
+	home := filepath.Join(root, "home")
+	for _, directory := range []string{launchDirectory, home} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chdir(launchDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	marker := filepath.Join(root, "resident-cwd")
+	err = startResidentCommand(
+		"/bin/sh",
+		[]string{"-c", `pwd > "$MIMI_SHARED_LOCAL_CWD_MARKER"; sleep 1`},
+		map[string]string{
+			"HOME":                         home,
+			"MIMI_SHARED_LOCAL_CWD_MARKER": marker,
+		},
+	)
+	if chdirErr := os.Chdir(originalDirectory); chdirErr != nil {
+		t.Fatal(chdirErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(launchDirectory); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(contents)); got != home {
+		t.Fatalf("resident cwd = %q, want stable HOME %q", got, home)
+	}
+}
+
+func TestSharedLocalWorkingDirectoryRejectsInvalidHome(t *testing.T) {
+	for name, home := range map[string]string{
+		"empty":    "",
+		"relative": "relative/home",
+		"missing":  filepath.Join(t.TempDir(), "missing"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := sharedLocalWorkingDirectory(map[string]string{"HOME": home}); err == nil {
+				t.Fatalf("HOME %q should be rejected", home)
+			}
+		})
+	}
+}
+
 func shortSharedLocalCodexHome(t *testing.T) string {
 	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "msl-")
