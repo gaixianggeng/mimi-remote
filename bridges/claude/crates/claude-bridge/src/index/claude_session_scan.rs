@@ -172,8 +172,8 @@ async fn build_session_info(path: &Path) -> Option<ClaudeSessionInfo> {
         };
         if title_candidate {
             match title_record(&value) {
-                Some(TitleRecord::Custom(title)) => custom_title = Some(title),
-                Some(TitleRecord::Ai(title)) => ai_title = Some(title),
+                Some(TitleRecord::Custom(title)) => custom_title = title,
+                Some(TitleRecord::Ai(title)) => ai_title = title,
                 None => {}
             }
         }
@@ -221,9 +221,11 @@ async fn build_session_info(path: &Path) -> Option<ClaudeSessionInfo> {
     })
 }
 
+/// 外层 `Option` 区分“不是标题记录”；变体里的 `Option` 区分有效标题和空标题。
+/// 空标题必须保留下来清除同类型的旧值，不能在解析阶段直接丢弃。
 enum TitleRecord {
-    Custom(String),
-    Ai(String),
+    Custom(Option<String>),
+    Ai(Option<String>),
 }
 
 /// 便宜的预筛：只有出现过标题记录类型字面量的行才值得整行 JSON 解析。
@@ -239,10 +241,12 @@ fn looks_like_title_record(line: &str) -> bool {
 
 fn title_record(value: &Value) -> Option<TitleRecord> {
     match value.get("type").and_then(Value::as_str)? {
-        CUSTOM_TITLE_TYPE => {
-            title_text(value, "customTitle", "custom_title").map(TitleRecord::Custom)
-        }
-        AI_TITLE_TYPE => title_text(value, "aiTitle", "ai_title").map(TitleRecord::Ai),
+        CUSTOM_TITLE_TYPE => Some(TitleRecord::Custom(title_text(
+            value,
+            "customTitle",
+            "custom_title",
+        ))),
+        AI_TITLE_TYPE => Some(TitleRecord::Ai(title_text(value, "aiTitle", "ai_title"))),
         _ => None,
     }
 }
@@ -376,13 +380,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falls_back_to_ai_title_and_ignores_blank_titles() {
+    async fn latest_blank_custom_title_clears_previous_value_and_falls_back_to_ai_title() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("ai-only.jsonl");
         let records = [
-            r#"{"type":"custom-title","customTitle":"   ","sessionId":"ai-only"}"#,
             r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"hello"},"timestamp":"2026-09-04T10:00:00Z"}"#,
             r#"{"type":"ai-title","aiTitle":"自动标题","sessionId":"ai-only"}"#,
+            r#"{"type":"custom-title","customTitle":"旧的自定义标题","sessionId":"ai-only"}"#,
+            r#"{"type":"custom-title","customTitle":"   ","sessionId":"ai-only"}"#,
         ];
         std::fs::write(&path, records.join("\n")).unwrap();
 
