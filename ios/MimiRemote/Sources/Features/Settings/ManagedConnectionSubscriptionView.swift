@@ -7,7 +7,7 @@ struct ManagedConnectionSubscriptionView: View {
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var deviceStore: ManagedConnectionDeviceStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
-    @EnvironmentObject private var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?

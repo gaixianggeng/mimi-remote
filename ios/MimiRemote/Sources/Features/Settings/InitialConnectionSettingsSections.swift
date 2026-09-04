@@ -681,7 +681,9 @@ struct InitialConnectionSettingsSections: View {
     @ViewBuilder
     private var tailcatSettingsDestination: some View {
         if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
-            ManagedConnectionSubscriptionView()
+            ManagedConnectionSubscriptionView(
+                qrScannerPresentation: qrScannerPresentation
+            )
         } else {
             TailcatExperimentSettingsView()
         }
