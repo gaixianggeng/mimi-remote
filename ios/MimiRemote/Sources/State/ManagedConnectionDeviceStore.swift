@@ -28,11 +28,18 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
 
     private struct PendingPairingAuthorization {
         let macInstallationID: String
+        let macTailcatPublicKey: String
         let mobileTailcatPublicKey: String
         let requestID: String
         let grant: String
         var session: ManagedConnectionPairingSession?
         let localExpiresAt: Date
+    }
+
+    private struct CachedManagementSession {
+        let session: ManagedConnectionManagementSession
+        let transactionID: UInt64
+        let productID: String
     }
 
     private let entitlementStore: ManagedConnectionEntitlementStore
@@ -41,7 +48,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     private let now: () -> Date
     private let makeUUID: () -> UUID
     private let makeToken: () throws -> String
-    private var managementSession: ManagedConnectionManagementSession?
+    private var managementSession: CachedManagementSession?
     private var pendingPairing: PendingPairingAuthorization?
 
     init(
@@ -77,8 +84,10 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         defer { isRefreshing = false }
         do {
             let token = try await validManagementToken()
-            devices = try await api.listDevices(managementToken: token)
+            let refreshedDevices = try await api.listDevices(managementToken: token)
                 .sorted { $0.createdAt > $1.createdAt }
+            devices = refreshedDevices
+            try reconcileCurrentDeviceAfterRemoteRevocation(refreshedDevices)
             errorMessage = nil
         } catch {
             errorMessage = userFacingMessage(for: error)
@@ -91,7 +100,12 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         defer { removingDeviceID = nil }
         do {
             let token = try await validManagementToken()
-            try await api.removeDevice(id: device.id, managementToken: token)
+            do {
+                try await api.removeDevice(id: device.id, managementToken: token)
+            } catch let error as ManagedConnectionDeviceAPIError
+                where error.rejectionCode == "device_not_found" {
+                // 服务端删除已完成但客户端未收到响应时，重试仍要完成本地凭证轮换。
+            }
             try identityStore.rotateCredentialAfterRevocation(deviceID: device.id)
             if currentDeviceID == nil {
                 pendingPairing = nil
@@ -111,6 +125,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         let identity = try await ensureMobileDeviceRegistered()
         let pending = try reusableOrNewPendingPairing(
             macInstallationID: macInstallationID,
+            macTailcatPublicKey: macTailcatPublicKey,
             mobileTailcatPublicKey: mobileTailcatPublicKey
         )
         if let session = pending.session, session.expiresAt > now() {
@@ -189,26 +204,34 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     }
 
     private func validManagementToken() async throws -> String {
-        if let managementSession,
-           managementSession.expiresAt.timeIntervalSince(now()) > 5
-        {
-            return managementSession.token
-        }
         let evidence = try await entitlementStore.managementPurchaseEvidence()
+        if let managementSession,
+           managementSession.transactionID == evidence.transactionID,
+           managementSession.productID == evidence.productID,
+           managementSession.session.expiresAt.timeIntervalSince(now()) > 5
+        {
+            return managementSession.session.token
+        }
         let session = try await api.createManagementSession(
             signedAppTransaction: evidence.signedAppTransaction,
             signedTransaction: evidence.signedTransaction
         )
-        managementSession = session
+        managementSession = CachedManagementSession(
+            session: session,
+            transactionID: evidence.transactionID,
+            productID: evidence.productID
+        )
         return session.token
     }
 
     private func reusableOrNewPendingPairing(
         macInstallationID: String,
+        macTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) throws -> PendingPairingAuthorization {
         if let pendingPairing,
            pendingPairing.macInstallationID == macInstallationID,
+           pendingPairing.macTailcatPublicKey == macTailcatPublicKey,
            pendingPairing.mobileTailcatPublicKey == mobileTailcatPublicKey,
            pendingPairing.localExpiresAt > now()
         {
@@ -216,6 +239,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         }
         let pending = PendingPairingAuthorization(
             macInstallationID: macInstallationID,
+            macTailcatPublicKey: macTailcatPublicKey,
             mobileTailcatPublicKey: mobileTailcatPublicKey,
             requestID: makeUUID().uuidString.lowercased(),
             grant: try makeToken(),
@@ -224,6 +248,18 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         )
         pendingPairing = pending
         return pending
+    }
+
+    private func reconcileCurrentDeviceAfterRemoteRevocation(
+        _ refreshedDevices: [ManagedConnectionDevice]
+    ) throws {
+        guard let currentDeviceID,
+              !refreshedDevices.contains(where: { $0.id == currentDeviceID }) else {
+            return
+        }
+        // DELETE 成功后的进程中断或 Keychain 失败会留下旧本地凭证；每次刷新都重试收敛。
+        try identityStore.rotateCredentialAfterRevocation(deviceID: currentDeviceID)
+        pendingPairing = nil
     }
 
     private func userFacingMessage(for error: Error) -> String {

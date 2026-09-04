@@ -69,6 +69,26 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         XCTAssertEqual(fixture.identity.registeredDeviceID, "mobile-device-id")
     }
 
+    func testMacKeyRotationDoesNotReusePairingAuthorization() async throws {
+        let fixture = await makeFixture()
+
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001",
+            macTailcatPublicKey: "nodekey:mac-old",
+            mobileTailcatPublicKey: "nodekey:mobile"
+        )
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001",
+            macTailcatPublicKey: "nodekey:mac-new",
+            mobileTailcatPublicKey: "nodekey:mobile"
+        )
+
+        let authorizationCount = await fixture.api.authorizationCount
+        let authorizedRequest = await fixture.api.lastAuthorizedRequest
+        XCTAssertEqual(authorizationCount, 2)
+        XCTAssertEqual(authorizedRequest?.macKey, "nodekey:mac-new")
+    }
+
     func testMobileQuotaFailureStopsBeforePairingAuthorization() async {
         let fixture = await makeFixture()
         await fixture.api.setRegistrationFailure(
@@ -124,10 +144,75 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.mobileCount, 0)
     }
 
+    func testManagementSessionIsRecreatedWhenVerifiedTransactionChanges() async {
+        let fixture = await makeFixture()
+
+        await fixture.store.refreshDevices()
+        await fixture.store.refreshDevices()
+        await fixture.storeKit.setEvidence(
+            ManagedConnectionTransactionEvidence(
+                transactionID: 43,
+                productID: ManagedConnectionProductID.monthly,
+                signedTransaction: "signed-transaction-new-account"
+            )
+        )
+        await fixture.entitlementStore.refreshEntitlement()
+        await fixture.store.refreshDevices()
+
+        let sessionCount = await fixture.api.managementSessionCount
+        let evidence = await fixture.api.lastManagementEvidence
+        XCTAssertEqual(sessionCount, 2, "同一交易复用会话，交易身份变化后必须重新创建")
+        XCTAssertEqual(evidence?.transaction, "signed-transaction-new-account")
+    }
+
+    func testRevocationReconcilesAfterLocalCredentialRotationInitiallyFails() async {
+        let fixture = await makeFixture()
+        let current = ManagedConnectionDevice(
+            id: "mobile-device-id",
+            deviceType: .mobile,
+            createdAt: now
+        )
+        fixture.identity.rememberRegisteredDeviceID(current.id)
+        fixture.identity.failNextCredentialRotations()
+        await fixture.api.setDevices([current])
+
+        await fixture.store.refreshDevices()
+        await fixture.store.removeDevice(current)
+        XCTAssertEqual(fixture.identity.registeredDeviceID, current.id)
+
+        await fixture.store.refreshDevices()
+
+        XCTAssertNil(fixture.identity.registeredDeviceID)
+        XCTAssertEqual(fixture.identity.rotatedDeviceIDs, [current.id])
+        XCTAssertTrue(fixture.store.devices.isEmpty)
+        XCTAssertNil(fixture.store.errorMessage)
+    }
+
+    func testAlreadyMissingRemoteDeviceStillRotatesLocalCredential() async {
+        let fixture = await makeFixture()
+        let current = ManagedConnectionDevice(
+            id: "mobile-device-id",
+            deviceType: .mobile,
+            createdAt: now
+        )
+        fixture.identity.rememberRegisteredDeviceID(current.id)
+        await fixture.api.setRemovalFailure(
+            .rejected(code: "device_not_found", deviceType: nil, limit: nil)
+        )
+
+        await fixture.store.removeDevice(current)
+
+        XCTAssertNil(fixture.identity.registeredDeviceID)
+        XCTAssertEqual(fixture.identity.rotatedDeviceIDs, [current.id])
+        XCTAssertNil(fixture.store.errorMessage)
+    }
+
     private func makeFixture() async -> (
         store: ManagedConnectionDeviceStore,
         api: MIM260DeviceAPIFake,
-        identity: MIM260IdentityFake
+        identity: MIM260IdentityFake,
+        entitlementStore: ManagedConnectionEntitlementStore,
+        storeKit: MIM260StoreKitFake
     ) {
         let storeKit = MIM260StoreKitFake(evidence: Self.evidence)
         let entitlementAPI = MIM260EntitlementAPIFake(grant: grant)
@@ -155,7 +240,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
             },
             makeToken: { Self.token(byte: 4) }
         )
-        return (store, api, identity)
+        return (store, api, identity, entitlementStore, storeKit)
     }
 
     private var grant: ManagedConnectionEntitlementGrant {
@@ -199,9 +284,13 @@ private final class TokenSequence {
 }
 
 private actor MIM260StoreKitFake: ManagedConnectionStoreKitClient {
-    let evidence: ManagedConnectionTransactionEvidence
+    private var evidence: ManagedConnectionTransactionEvidence
 
     init(evidence: ManagedConnectionTransactionEvidence) {
+        self.evidence = evidence
+    }
+
+    func setEvidence(_ evidence: ManagedConnectionTransactionEvidence) {
         self.evidence = evidence
     }
 
@@ -237,6 +326,7 @@ private actor MIM260EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
 private final class MIM260IdentityFake: ManagedConnectionMobileIdentityStoring {
     private var identity: ManagedConnectionMobileIdentity
     private(set) var rotatedDeviceIDs: [String] = []
+    private var remainingRotationFailures = 0
 
     var registeredDeviceID: String? { identity.registeredDeviceID }
 
@@ -254,8 +344,16 @@ private final class MIM260IdentityFake: ManagedConnectionMobileIdentityStoring {
         )
     }
 
+    func failNextCredentialRotations(_ count: Int = 1) {
+        remainingRotationFailures = count
+    }
+
     func rotateCredentialAfterRevocation(deviceID: String) throws {
         guard identity.registeredDeviceID == deviceID else { return }
+        if remainingRotationFailures > 0 {
+            remainingRotationFailures -= 1
+            throw URLError(.cannotWriteToFile)
+        }
         rotatedDeviceIDs.append(deviceID)
         identity = ManagedConnectionMobileIdentity(
             installationID: identity.installationID,
@@ -279,7 +377,9 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
     private(set) var lastAuthorizedRequest: AuthorizedRequest?
     private(set) var lastManagementEvidence: (app: String, transaction: String)?
     private(set) var removedDeviceIDs: [String] = []
+    private(set) var managementSessionCount = 0
     private var registrationFailure: ManagedConnectionDeviceAPIError?
+    private var removalFailure: ManagedConnectionDeviceAPIError?
     private var devices: [ManagedConnectionDevice] = []
 
     init(now: Date) {
@@ -292,6 +392,10 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
 
     func setDevices(_ devices: [ManagedConnectionDevice]) {
         self.devices = devices
+    }
+
+    func setRemovalFailure(_ error: ManagedConnectionDeviceAPIError?) {
+        removalFailure = error
     }
 
     func registerMobileDevice(
@@ -338,9 +442,10 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionManagementSession {
+        managementSessionCount += 1
         lastManagementEvidence = (signedAppTransaction, signedTransaction)
         return ManagedConnectionManagementSession(
-            token: "management-token-that-is-long-enough",
+            token: "management-token-\(managementSessionCount)-that-is-long-enough",
             expiresAt: now.addingTimeInterval(600)
         )
     }
@@ -350,6 +455,7 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
     }
 
     func removeDevice(id: String, managementToken: String) async throws {
+        if let removalFailure { throw removalFailure }
         removedDeviceIDs.append(id)
         devices.removeAll { $0.id == id }
     }

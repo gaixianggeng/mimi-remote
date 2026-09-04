@@ -1,6 +1,8 @@
 import Foundation
 
 struct ManagedConnectionPurchaseEvidence: Equatable, Sendable {
+    let transactionID: UInt64
+    let productID: String
     let signedAppTransaction: String
     let signedTransaction: String
 }
@@ -256,6 +258,8 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             throw ManagedConnectionDeviceStoreError.subscriptionRequired
         }
         return ManagedConnectionPurchaseEvidence(
+            transactionID: currentEvidence.transactionID,
+            productID: currentEvidence.productID,
             signedAppTransaction: try await storeKit.signedAppTransaction(),
             signedTransaction: currentEvidence.signedTransaction
         )
