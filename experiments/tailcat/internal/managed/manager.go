@@ -205,13 +205,15 @@ func (m *Manager) Reset() (Status, error) {
 		}
 		m.host = nil
 	}
-	for _, name := range []string{"host.private.json", "host.address", "clients.json"} {
+	// 稳定主机已经关闭后，先提交内存中的撤销结果并优先删除持久白名单。
+	// 后续身份文件清理失败时，后台协调也只能用空集合重启。
+	m.clients = nil
+	m.managedClients = nil
+	for _, name := range []string{"clients.json", "host.private.json", "host.address"} {
 		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
 			return Status{}, fmt.Errorf("重置 Tailcat %s：%w", name, err)
 		}
 	}
-	m.clients = nil
-	m.managedClients = nil
 	if err := m.startStableLocked(); err != nil {
 		return Status{}, err
 	}

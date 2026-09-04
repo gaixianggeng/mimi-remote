@@ -464,11 +464,7 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 			}
 			return tailcatStatus{}, err
 		}
-		_, applyErr := c.applyPolicyLocked(ctx, nil)
-		if applyErr != nil {
-			return tailcatStatus{}, applyErr
-		}
-		return tailcatStatus{}, err
+		return c.invalidatePolicyLocked(ctx, err)
 	}
 	if policy.HostID != c.state.HostID || policy.PolicyVersion == 0 {
 		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略身份或版本无效"))
@@ -564,6 +560,8 @@ func (c *managedPairingController) invalidatePolicyLocked(
 	ctx context.Context,
 	policyError error,
 ) (tailcatStatus, error) {
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	next := c.state
 	next.AllowedMobileKeys = nil
 	next.PolicyFetchedAt = c.now().Format(time.RFC3339Nano)
@@ -577,7 +575,7 @@ func (c *managedPairingController) invalidatePolicyLocked(
 	}
 	// 先持久化失效标记，再执行可能耗时的 Tailcat 重启。进程在重启期间退出时，
 	// 下次启动也不会从磁盘恢复刚撤销的权限。
-	_, applyErr := c.applyPolicyLocked(ctx, nil)
+	_, applyErr := c.applyPolicyLocked(cleanupContext, nil)
 	return tailcatStatus{}, errors.Join(policyError, applyErr, saveErr)
 }
 

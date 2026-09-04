@@ -209,6 +209,27 @@ func TestManagedPolicyCacheStopsAtServerValidityDeadline(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyCanceledRequestStillClearsRuntimeWithLiveContext(t *testing.T) {
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Running: true, PublicKey: testManagedMacKey, InstanceID: "sidecar-a",
+	}}
+	controller := newManagedControllerForTest(t, "http://127.0.0.1", fake, time.Now, nil)
+	controller.state = managedPairingState{
+		Version: 1, HostID: testManagedHostID, HostDeviceToken: managedToken('h'),
+		MacTailcatPublicKey: testManagedMacKey,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := controller.Sync(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("已取消策略请求应保留原始错误：%v", err)
+	}
+	if fake.managedCalls != 1 || fake.managedCtxErr != nil || len(fake.managedKeys) != 0 {
+		t.Fatalf("策略请求取消后仍应使用有效上下文清空授权：calls=%d ctx_err=%v keys=%v", fake.managedCalls, fake.managedCtxErr, fake.managedKeys)
+	}
+}
+
 func TestManagedPolicyWriteFailureNeverAppliesNewAuthorization(t *testing.T) {
 	now := time.Date(2026, 9, 4, 13, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

@@ -2,6 +2,8 @@ package managed
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -129,6 +131,39 @@ func TestExpiredPairHostRetriesCloseFailure(t *testing.T) {
 	defer manager.mu.Unlock()
 	if manager.pairHost != nil || !oldPairHost.closed || oldPairHost.closeCalls < 2 {
 		t.Fatalf("后续重试应关闭过期配对主机：host=%v closed=%t calls=%d", manager.pairHost, oldPairHost.closed, oldPairHost.closeCalls)
+	}
+}
+
+func TestResetClearsInMemoryClientsBeforeIdentityCleanupFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "clients.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 非空目录无法用 os.Remove 删除，用它稳定模拟 clients.json 已清理后
+	// host.private.json 清理失败的路径。
+	identityDirectory := filepath.Join(stateDir, "host.private.json")
+	if err := os.Mkdir(identityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(identityDirectory, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldHost := &fakeManagedHost{}
+	manager := &Manager{
+		config:         Config{StateDir: stateDir},
+		host:           oldHost,
+		clients:        []string{key.NewNode().Public().String()},
+		managedClients: []string{key.NewNode().Public().String()},
+	}
+
+	if _, err := manager.Reset(); err == nil {
+		t.Fatal("身份文件清理失败时 reset 应返回错误")
+	}
+	if !oldHost.closed || manager.host != nil || len(manager.clients) != 0 || len(manager.managedClients) != 0 {
+		t.Fatalf("文件清理失败前必须清空运行时白名单：closed=%t host=%v clients=%v managed=%v", oldHost.closed, manager.host, manager.clients, manager.managedClients)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "clients.json")); !os.IsNotExist(err) {
+		t.Fatalf("持久白名单应在身份文件前删除：%v", err)
 	}
 }
 
