@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -197,6 +198,74 @@ func TestSharedLocalWorkingDirectoryRejectsInvalidHome(t *testing.T) {
 				t.Fatalf("HOME %q should be rejected", home)
 			}
 		})
+	}
+}
+
+func TestSystemdResidentCommandUsesIndependentService(t *testing.T) {
+	args := systemdResidentCommandArgs(
+		"mimi-test.service",
+		"/home/tester",
+		"/home/tester/.codex/control/environment",
+		"/usr/bin/codex",
+		[]string{"app-server", "--listen", "unix://"},
+	)
+	for _, want := range []string{
+		"--service-type=exec",
+		"--working-directory=/home/tester",
+		"--property=EnvironmentFile=/home/tester/.codex/control/environment",
+		"--property=StandardOutput=null",
+		"--property=StandardError=null",
+	} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("systemd-run args missing %q: %v", want, args)
+		}
+	}
+	if slices.Contains(args, "--scope") {
+		t.Fatalf("resident must not inherit agentd mount namespace: %v", args)
+	}
+}
+
+func TestWriteSystemdEnvironmentFile(t *testing.T) {
+	path, err := writeSystemdEnvironmentFile(t.TempDir(), []string{
+		`HOME=/home/test user`,
+		`QUOTED=value "quoted"`,
+		`BACKSLASH=C:\tools\codex`,
+		"MULTILINE=first\nsecond",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "HOME=\"/home/test user\"\n" +
+		"QUOTED=\"value \\\"quoted\\\"\"\n" +
+		"BACKSLASH=\"C:\\\\tools\\\\codex\"\n" +
+		"MULTILINE=\"first\nsecond\"\n"
+	if string(contents) != want {
+		t.Fatalf("environment file = %q, want %q", contents, want)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("environment file mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestSharedLocalResidentEnvironmentDropsServiceIdentity(t *testing.T) {
+	env := sharedLocalResidentEnvironment(map[string]string{
+		"INVOCATION_ID":  "old-service",
+		"JOURNAL_STREAM": "old-journal",
+		"PATH":           "/usr/bin:/bin",
+	})
+	if slices.Contains(env, "INVOCATION_ID=old-service") ||
+		slices.Contains(env, "JOURNAL_STREAM=old-journal") {
+		t.Fatalf("resident inherited agentd service identity: %v", env)
+	}
+	if !slices.Contains(env, "PATH=/usr/bin:/bin") {
+		t.Fatalf("resident lost configured PATH: %v", env)
 	}
 }
 

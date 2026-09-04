@@ -210,7 +210,7 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 	return initializeWebSocket(ctx, conn)
 }
 
-var sharedLocalScopeCounter atomic.Uint64
+var sharedLocalUnitCounter atomic.Uint64
 
 func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) error {
 	if _, err := CheckLocalCodex(ctx, options.CodexBin); err != nil {
@@ -226,14 +226,45 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 	}
 	env := cloneStringMap(options.Env)
 	env["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1"
+	workingDirectory, err := sharedLocalWorkingDirectory(env)
+	if err != nil {
+		return err
+	}
+	env["PWD"] = workingDirectory
 
 	if systemdRun, lookupErr := exec.LookPath("systemd-run"); lookupErr == nil {
-		unit := fmt.Sprintf("mimi-codex-app-server-%d-%d.scope", os.Getpid(), sharedLocalScopeCounter.Add(1))
-		args := []string{
-			"--user", "--scope", "--collect", "--quiet", "--unit=" + unit,
-			resolvedBin, "-c", "features.code_mode_host=true", "app-server", "--listen", "unix://",
+		socketPath, socketErr := SharedLocalSocketPath(env)
+		if socketErr != nil {
+			return socketErr
 		}
-		if err := startResidentCommand(systemdRun, args, env); err == nil {
+		environmentFile, environmentErr := writeSystemdEnvironmentFile(
+			filepath.Dir(socketPath),
+			sharedLocalResidentEnvironment(env),
+		)
+		if environmentErr != nil {
+			return environmentErr
+		}
+		unit := fmt.Sprintf(
+			"mimi-codex-app-server-%d-%d.service",
+			os.Getpid(),
+			sharedLocalUnitCounter.Add(1),
+		)
+		args := systemdResidentCommandArgs(
+			unit,
+			workingDirectory,
+			environmentFile,
+			resolvedBin,
+			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
+		)
+		launchErr := runSystemdResidentCommand(
+			ctx,
+			systemdRun,
+			args,
+			workingDirectory,
+			buildManagedEnv(env),
+		)
+		_ = os.Remove(environmentFile)
+		if launchErr == nil {
 			return nil
 		}
 	}
@@ -242,6 +273,129 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
 		env,
 	)
+}
+
+func systemdResidentCommandArgs(
+	unit string,
+	workingDirectory string,
+	environmentFile string,
+	bin string,
+	args []string,
+) []string {
+	command := []string{
+		"--user",
+		"--collect",
+		"--quiet",
+		"--service-type=exec",
+		"--unit=" + unit,
+		"--working-directory=" + workingDirectory,
+		"--property=EnvironmentFile=" + environmentFile,
+		"--property=StandardOutput=null",
+		"--property=StandardError=null",
+		bin,
+	}
+	return append(command, args...)
+}
+
+func runSystemdResidentCommand(
+	ctx context.Context,
+	bin string,
+	args []string,
+	workingDirectory string,
+	env []string,
+) error {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = workingDirectory
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	diagnostic := sanitizeDiagnostic(string(output))
+	if len(diagnostic) > 2048 {
+		diagnostic = diagnostic[:2048]
+	}
+	if diagnostic == "" {
+		diagnostic = err.Error()
+	}
+	return fmt.Errorf("通过 systemd 启动共享 Codex App Server 失败：%s", diagnostic)
+}
+
+func sharedLocalResidentEnvironment(extraEnv map[string]string) []string {
+	blocked := map[string]struct{}{
+		"CREDENTIALS_DIRECTORY": {},
+		"INVOCATION_ID":         {},
+		"JOURNAL_STREAM":        {},
+		"LISTEN_FDS":            {},
+		"LISTEN_FDNAMES":        {},
+		"LISTEN_PID":            {},
+		"NOTIFY_SOCKET":         {},
+		"SYSTEMD_EXEC_PID":      {},
+		"WATCHDOG_PID":          {},
+		"WATCHDOG_USEC":         {},
+	}
+	managed := buildManagedEnv(extraEnv)
+	result := make([]string, 0, len(managed))
+	for _, entry := range managed {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || !validSystemdEnvironmentName(key) {
+			continue
+		}
+		if _, excluded := blocked[key]; excluded {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+func writeSystemdEnvironmentFile(directory string, env []string) (path string, returnErr error) {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("创建共享 App Server control 目录失败：%w", err)
+	}
+	file, err := os.CreateTemp(directory, ".resident-env-")
+	if err != nil {
+		return "", fmt.Errorf("创建共享 App Server 临时环境文件失败：%w", err)
+	}
+	path = file.Name()
+	defer func() {
+		if closeErr := file.Close(); returnErr == nil && closeErr != nil {
+			returnErr = fmt.Errorf("关闭共享 App Server 临时环境文件失败：%w", closeErr)
+		}
+		if returnErr != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !validSystemdEnvironmentName(key) {
+			return "", fmt.Errorf("共享 App Server 环境变量名称无效：%q", key)
+		}
+		if strings.ContainsRune(value, '\x00') {
+			return "", fmt.Errorf("共享 App Server 环境变量 %s 包含 NUL", key)
+		}
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+		if _, err := fmt.Fprintf(file, "%s=\"%s\"\n", key, quoted); err != nil {
+			return "", fmt.Errorf("写入共享 App Server 临时环境文件失败：%w", err)
+		}
+	}
+	return path, nil
+}
+
+func validSystemdEnvironmentName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index, character := range value {
+		if character == '_' ||
+			character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			index > 0 && character >= '0' && character <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func startResidentCommand(bin string, args []string, extraEnv map[string]string) error {
