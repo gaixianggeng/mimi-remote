@@ -40,6 +40,7 @@ extension AppStore {
         endpoint: String,
         activeEndpoint: String,
         tailcatAddress: String,
+        managed: Bool = false,
         token: String,
         profileTarget: PreparedConnectionProfileTarget
     ) async throws -> PreparedConnectionSettings {
@@ -52,7 +53,9 @@ extension AppStore {
         return PreparedConnectionSettings(
             endpoint: canonicalEndpoint,
             activeEndpoint: routed.activeEndpoint,
-            route: .tailcat(address: tailcatAddress),
+            route: managed
+                ? .managedTailcat(address: tailcatAddress)
+                : .customTailcat(address: tailcatAddress),
             token: routed.token,
             profileTarget: routed.profileTarget,
             validatedAt: routed.validatedAt,
@@ -68,7 +71,8 @@ extension AppStore {
     func prepareConnectionProfileSwitch(
         id: String,
         activeEndpoint: String,
-        tailcatAddress: String
+        tailcatAddress: String,
+        managed: Bool
     ) async throws -> PreparedConnectionSettings {
         guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
             throw ConnectionProfileError.notFound
@@ -81,6 +85,7 @@ extension AppStore {
             endpoint: profile.endpoint,
             activeEndpoint: activeEndpoint,
             tailcatAddress: tailcatAddress,
+            managed: managed,
             token: profileToken,
             profileTarget: .existingProfile(id: id)
         )
@@ -102,6 +107,19 @@ extension AppStore {
 
     var isUsingLocalConnection: Bool {
         activeConnectionRoute == .local
+    }
+
+    var savedFallbackConnectionRoute: ConnectionProfileRoute? {
+        guard let profile = activeConnectionProfile else { return nil }
+        return .configuredValue(
+            endpoint: profile.endpoint,
+            tailscaleDNSName: profile.tailscaleDNSName
+        )
+    }
+
+    func canUseSavedFallback(_ route: ConnectionProfileRoute) -> Bool {
+        guard route == .tailscale || route == .lan || route == .https else { return false }
+        return savedFallbackConnectionRoute == route
     }
 
     /// 通知路由优先使用持久化 profile ID；legacy/debug 单连接才退回规范 endpoint 的 SHA-256。

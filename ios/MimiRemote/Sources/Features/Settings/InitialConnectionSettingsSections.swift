@@ -270,7 +270,9 @@ struct InitialConnectionSettingsSections: View {
                         } label: {
                             SettingsValueLabel(
                                 title: L10n.text("ui.connection_speed_test"),
-                                value: tailcatController.isEnabled ? "Tailcat" : "Tailscale",
+                                value: tailcatController.isEnabled
+                                    ? (appStore.activeConnectionProfile?.connectionRoute.title ?? "Tailcat")
+                                    : (appStore.savedFallbackConnectionRoute?.title ?? "Tailscale"),
                                 systemImage: "gauge.with.dots.needle.67percent"
                             )
                         }
@@ -285,13 +287,13 @@ struct InitialConnectionSettingsSections: View {
             if appStore.isConfigured {
                 Section {
                     NavigationLink {
-                        TailcatExperimentSettingsView()
+                        tailcatSettingsDestination
                     } label: {
                         SettingsValueLabel(
-                            title: L10n.text("ui.tailcat_experiment"),
+                            title: tailcatConnectionTitle,
                             value: tailcatController.isEnabled
-                                ? L10n.text("ui.tailcat_experiment_enabled")
-                                : L10n.text("ui.tailcat_experiment_disabled"),
+                                ? L10n.text("ui.connected")
+                                : L10n.text("ui.deactivated"),
                             systemImage: "point.3.connected.trianglepath.dotted"
                         )
                     }
@@ -658,7 +660,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func connectionProfileRouteDetail(_ item: ConnectionProfileSettingsItem) -> String {
-        var details: [String] = []
+        var details: [String] = [item.profile.connectionRoute.title]
         if let dnsName = item.profile.tailscaleDNSName {
             details.append("MagicDNS \(dnsName)")
         }
@@ -668,6 +670,21 @@ struct InitialConnectionSettingsSections: View {
             details.append("\(L10n.text("ui.current_connection")) \(appStore.connectionEndpoint)")
         }
         return details.joined(separator: " · ")
+    }
+
+    private var tailcatConnectionTitle: String {
+        appStore.activeConnectionProfile?.connectionRoute.isManaged == true
+            ? L10n.text("ui.managed_subscription_title")
+            : L10n.text("ui.custom_tailcat")
+    }
+
+    @ViewBuilder
+    private var tailcatSettingsDestination: some View {
+        if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
+            ManagedConnectionSubscriptionView()
+        } else {
+            TailcatExperimentSettingsView()
+        }
     }
 
     private var endpointTransportAssessment: EndpointTransportAssessment {

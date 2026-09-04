@@ -39381,10 +39381,10 @@
       }
     },
     "ui.tailcat_experiment": {
-      "comment": "Name of the opt-in Tailcat transport experiment.",
+      "comment": "Generic Tailcat route name retained for compatibility.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Tailcat experiment" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 实验" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat" } }
       }
     },
     "ui.tailcat_experiment_enabled": {
@@ -39418,8 +39418,8 @@
     "ui.tailcat_pairing_help": {
       "comment": "Explains the Tailcat QR pairing flow.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from Mac Connection. A successful scan enables this experiment automatically." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 中生成 Tailcat 二维码，再从“Mac 连接”扫码。配对成功后会自动开启本实验。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from Mac Connection. A successful scan selects this route automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 中生成 Tailcat 二维码，再从“Mac 连接”扫码。配对成功后会自动选择此线路。" } }
       }
     },
     "ui.tailcat_pairing_address_missing": {
@@ -40002,6 +40002,104 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Valid until %@" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "有效期至 %@" } }
+      }
+    },
+    "ui.custom_tailcat": {
+      "comment": "Name of the free user-managed Tailcat connection type.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Self-hosted Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自建 Tailcat" } }
+      }
+    },
+    "ui.enable_custom_tailcat": {
+      "comment": "Toggle label for the free user-managed Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use self-hosted Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用自建 Tailcat" } }
+      }
+    },
+    "ui.custom_tailcat_summary": {
+      "comment": "Explains the self-hosted Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This free option uses the Tailcat address and relay service you manage. Turning it off keeps the saved address and uses the saved direct route." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此免费方式使用你自行管理的 Tailcat 地址和中转服务。关闭后仍保留地址，并改用已保存的直连线路。" } }
+      }
+    },
+    "ui.custom_tailcat_safety_note": {
+      "comment": "Security responsibility notice for self-hosted Tailcat.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You are responsible for relay access control, availability, and updates. The Tailcat private key remains in this device's Keychain." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你需要自行负责中转准入、可用性和升级。Tailcat 私钥只保存在本设备的 Keychain 中。" } }
+      }
+    },
+    "ui.local_network": {
+      "comment": "LAN connection type name.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Local network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "局域网" } }
+      }
+    },
+    "ui.managed_connection_recommended_title": {
+      "comment": "Section title that prioritizes managed connection during first setup.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recommended" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "推荐" } }
+      }
+    },
+    "ui.managed_connection_recommended_value": {
+      "comment": "Short value for the managed connection setup entry.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No relay setup" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "免配置中转" } }
+      }
+    },
+    "ui.managed_connection_recommended_summary": {
+      "comment": "First-setup explanation for the managed connection product.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Subscribe with your Apple Account and scan each Mac. LAN, Tailscale, and self-hosted Tailcat remain free below." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 Apple 账户订阅后扫描每台 Mac。局域网、Tailscale 和自建 Tailcat 仍可在下方免费使用。" } }
+      }
+    },
+    "ui.managed_connection_route_status": {
+      "comment": "Section title for the active managed connection route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connection route" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接线路" } }
+      }
+    },
+    "ui.managed_connection_retry": {
+      "comment": "Action to retry the managed Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Retry Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重试托管连接" } }
+      }
+    },
+    "ui.managed_connection_use_tailscale_once": {
+      "comment": "Action to use a saved Tailscale route without changing the default.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Tailscale This Time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次使用 Tailscale" } }
+      }
+    },
+    "ui.managed_connection_use_lan_once": {
+      "comment": "Action to use a saved LAN route without changing the default.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Local Network This Time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次使用局域网" } }
+      }
+    },
+    "ui.managed_connection_using_temporary_route": {
+      "comment": "Status when the user temporarily selected a free route. Placeholder is the route name.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Using %@ for this session" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次正在使用 %@" } }
+      }
+    },
+    "ui.managed_connection_fallback_notice": {
+      "comment": "Explains that temporary fallback is explicit and only saved routes are available.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Only a route already saved for this Mac can be selected. This choice does not change the default or delete any configuration." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "只能选择这台 Mac 已保存的线路。本次选择不会修改默认线路，也不会删除任何配置。" } }
       }
     },
     "ui.restore_purchases": {

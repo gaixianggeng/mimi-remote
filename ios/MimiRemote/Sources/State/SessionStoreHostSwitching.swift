@@ -26,6 +26,26 @@ extension SessionStore {
     }
 
     @discardableResult
+    func retryManagedConnection() async -> Bool {
+        guard let tailcatExperimentController else { return false }
+        resetConnectionForSettingsChange()
+        guard await tailcatExperimentController.retryManagedConnection(appStore: appStore) else {
+            return false
+        }
+        return await refreshAfterConnectionCommit(maxWait: 10)
+    }
+
+    @discardableResult
+    func useSavedConnectionRouteOnce(_ route: ConnectionProfileRoute) async -> Bool {
+        guard let tailcatExperimentController else { return false }
+        resetConnectionForSettingsChange()
+        guard await tailcatExperimentController.useSavedRouteOnce(route, appStore: appStore) else {
+            return false
+        }
+        return await refreshAfterConnectionCommit(maxWait: 10)
+    }
+
+    @discardableResult
     func applyConnectionSettings(
         endpoint: String,
         token: String

@@ -5,6 +5,7 @@ enum TailcatExperimentState: Equatable {
     case needsAddress
     case starting
     case connected(endpoint: String)
+    case usingTemporaryRoute(ConnectionProfileRoute)
     case failed(message: String)
     case unavailable
 }
@@ -172,6 +173,7 @@ final class TailcatExperimentController: ObservableObject {
     private struct PendingPairing {
         let stableAddress: String
         let localEndpoint: String
+        let connectionStartedAt: Date
         let previousEnabled: Bool
         let previousAddress: String
         let previousLegacyAddress: String?
@@ -189,6 +191,9 @@ final class TailcatExperimentController: ObservableObject {
     private let runtime: any TailcatExperimentRuntimeProtocol
     private let bridge: TailcatExperimentBridgeAdapter
     private let managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)?
+    private let managedConnectionEventReporter: (any ManagedConnectionEventReporting)?
+    private let now: () -> Date
+    private let appVersion: () -> String
     private var generation: UInt64 = 0
     private var preparationTask: RoutePreparation?
     private var pendingPairing: PendingPairing?
@@ -199,7 +204,13 @@ final class TailcatExperimentController: ObservableObject {
         tokenStore: TokenStore = TokenStore(),
         runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime(),
         bridge: TailcatExperimentBridgeAdapter = .live,
-        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil
+        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil,
+        managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil,
+        now: @escaping () -> Date = Date.init,
+        appVersion: @escaping () -> String = {
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                ?? "unknown"
+        }
     ) {
         let available = bridge.isAvailable
         let savedEnabled = defaults.bool(forKey: Self.enabledKey)
@@ -214,7 +225,7 @@ final class TailcatExperimentController: ObservableObject {
         }
         defaults.removeObject(forKey: Self.legacyAddressKey)
         var savedAddress = legacyAddress
-        var profileRoute = appStore.activeConnectionProfile?.connectionRoute ?? .configured
+        var profileRoute = appStore.activeConnectionProfile?.connectionRoute ?? .tailscale
         if let profileID = appStore.activeConnectionProfileID {
             let profileAddress = (try? tokenStore.loadTailcatAddress(profileID: profileID)) ?? ""
             var profileAddressReady = !profileAddress.isEmpty
@@ -231,8 +242,8 @@ final class TailcatExperimentController: ObservableObject {
                 } catch {}
             }
             if savedEnabled, profileAddressReady, !savedAddress.isEmpty {
-                try? appStore.setActiveConnectionProfileRoute(.tailcat)
-                profileRoute = .tailcat
+                try? appStore.setActiveConnectionProfileRoute(.customTailcat)
+                profileRoute = .customTailcat
             }
             if profileAddressReady, appStore.connectionProfiles.count == 1 {
                 try? tokenStore.deleteTailcatExperimentAddress()
@@ -241,12 +252,15 @@ final class TailcatExperimentController: ObservableObject {
         }
         let initialEnabled = (appStore.activeConnectionProfileID == nil
             ? savedEnabled
-            : profileRoute == .tailcat) && available
+            : profileRoute.usesTailcat) && available
         self.defaults = defaults
         self.tokenStore = tokenStore
         self.runtime = runtime
         self.bridge = bridge
         self.managedPairingAuthorizer = managedPairingAuthorizer
+        self.managedConnectionEventReporter = managedConnectionEventReporter
+        self.now = now
+        self.appVersion = appVersion
         address = savedAddress
         diagnostics = Self.loadDiagnostics(defaults: defaults)
         isEnabled = initialEnabled
@@ -300,7 +314,14 @@ final class TailcatExperimentController: ObservableObject {
                 defaults.set(false, forKey: Self.enabledKey)
             } else {
                 defaults.removeObject(forKey: Self.enabledKey)
-                try? appStore.setActiveConnectionProfileRoute(.configured)
+                if let profile = appStore.activeConnectionProfile {
+                    try? appStore.setActiveConnectionProfileRoute(
+                        .configuredValue(
+                            endpoint: profile.endpoint,
+                            tailscaleDNSName: profile.tailscaleDNSName
+                        )
+                    )
+                }
             }
             pendingPairing = nil
             preparationTask?.task.cancel()
@@ -330,9 +351,52 @@ final class TailcatExperimentController: ObservableObject {
         }
         let ready = await prepareRoute(appStore: appStore)
         if ready {
-            try? appStore.setActiveConnectionProfileRoute(.tailcat)
+            try? appStore.setActiveConnectionProfileRoute(.customTailcat)
         }
         return ready
+    }
+
+    /// 用户明确选择后只修改本次进程内的活动线路。Profile 的托管默认值保持不变，
+    /// 下次启动或用户点击重试时仍回到 Mimi 托管连接。
+    @discardableResult
+    func useSavedRouteOnce(
+        _ route: ConnectionProfileRoute,
+        appStore: AppStore
+    ) async -> Bool {
+        guard appStore.activeConnectionProfile?.connectionRoute.isManaged == true,
+              appStore.canUseSavedFallback(route) else {
+            return false
+        }
+        generation &+= 1
+        preparationTask?.task.cancel()
+        preparationTask = nil
+        pendingPairing = nil
+        try? await runtime.stop()
+        appStore.setTailcatExperimentModeEnabled(false)
+        let connected = await appStore.preflightConnection(
+            force: true,
+            preferredProfileRoute: route
+        )
+        state = connected
+            ? .usingTemporaryRoute(route)
+            : .failed(message: appStore.lastError ?? URLError(.cannotConnectToHost).localizedDescription)
+        return connected
+    }
+
+    @discardableResult
+    func retryManagedConnection(appStore: AppStore) async -> Bool {
+        guard appStore.activeConnectionProfile?.connectionRoute.isManaged == true else {
+            return false
+        }
+        let routeReady = await prepareRoute(appStore: appStore)
+        guard routeReady else { return false }
+        let connected = await appStore.preflightConnection(force: true)
+        if !connected {
+            state = .failed(
+                message: appStore.lastError ?? URLError(.cannotConnectToHost).localizedDescription
+            )
+        }
+        return connected
     }
 
     @discardableResult
@@ -374,6 +438,8 @@ final class TailcatExperimentController: ObservableObject {
         forceRestart: Bool,
         refreshPathDiagnosticAfterPreparation: Bool
     ) async -> Bool {
+        let connectionStartedAt = now()
+        let reportsManagedConnection = appStore.activeConnectionProfile?.connectionRoute.isManaged == true
         appStore.setTailcatExperimentModeEnabled(isEnabled)
         guard isAvailable else {
             state = .unavailable
@@ -434,7 +500,13 @@ final class TailcatExperimentController: ObservableObject {
             appStore.setTailcatExperimentEndpoint(endpoint)
             state = .connected(endpoint: endpoint)
             if refreshPathDiagnosticAfterPreparation {
-                Task { await refreshPathDiagnostic(appStore: appStore) }
+                Task {
+                    await refreshPathDiagnostic(
+                        appStore: appStore,
+                        reportManagedConnectionEvent: reportsManagedConnection,
+                        connectionStartedAt: connectionStartedAt
+                    )
+                }
             }
             return true
         } catch {
@@ -444,6 +516,14 @@ final class TailcatExperimentController: ObservableObject {
             guard !Task.isCancelled, capturedGeneration == generation else { return false }
             appStore.setTailcatExperimentEndpoint(nil)
             state = .failed(message: error.localizedDescription)
+            await reportManagedConnectionAttempt(
+                enabled: reportsManagedConnection,
+                path: .unknown,
+                succeeded: false,
+                startedAt: connectionStartedAt,
+                error: error,
+                regionCode: nil
+            )
             return false
         }
     }
@@ -454,6 +534,7 @@ final class TailcatExperimentController: ObservableObject {
         profileTarget: PreparedConnectionProfileTarget,
         requiresManagedAuthorization: Bool = false
     ) async throws -> PreparedConnectionSettings {
+        let connectionStartedAt = now()
         guard let link = try TailcatPairingLink.parse(url) else {
             throw PairingLinkError.unsupportedURL
         }
@@ -536,12 +617,14 @@ final class TailcatExperimentController: ObservableObject {
                 endpoint: canonicalEndpoint,
                 activeEndpoint: stableEndpoint,
                 tailcatAddress: stableAddress,
+                managed: requiresManagedAuthorization,
                 token: response.token,
                 profileTarget: resolvedProfileTarget
             )
             pendingPairing = PendingPairing(
                 stableAddress: stableAddress,
                 localEndpoint: stableEndpoint,
+                connectionStartedAt: connectionStartedAt,
                 previousEnabled: previousEnabled,
                 previousAddress: previousAddress,
                 previousLegacyAddress: previousLegacyAddress,
@@ -559,6 +642,14 @@ final class TailcatExperimentController: ObservableObject {
                 previousLegacyAddress: previousLegacyAddress,
                 appStore: appStore
             )
+            await reportManagedConnectionAttempt(
+                enabled: requiresManagedAuthorization,
+                path: .unknown,
+                succeeded: false,
+                startedAt: connectionStartedAt,
+                error: error,
+                regionCode: nil
+            )
             throw error
         }
     }
@@ -570,7 +661,7 @@ final class TailcatExperimentController: ObservableObject {
         guard let profile = appStore.connectionProfiles.first(where: { $0.id == id }) else {
             throw ConnectionProfileError.notFound
         }
-        guard profile.connectionRoute == .tailcat else {
+        guard profile.connectionRoute.usesTailcat else {
             return try await appStore.prepareConnectionProfileSwitch(id: id)
         }
         let targetAddress = try tokenStore.loadTailcatAddress(profileID: id)
@@ -592,11 +683,13 @@ final class TailcatExperimentController: ObservableObject {
             let prepared = try await appStore.prepareConnectionProfileSwitch(
                 id: id,
                 activeEndpoint: endpoint,
-                tailcatAddress: targetAddress
+                tailcatAddress: targetAddress,
+                managed: profile.connectionRoute.isManaged
             )
             pendingPairing = PendingPairing(
                 stableAddress: targetAddress,
                 localEndpoint: endpoint,
+                connectionStartedAt: now(),
                 previousEnabled: previousEnabled,
                 previousAddress: previousAddress,
                 previousLegacyAddress: nil,
@@ -619,7 +712,7 @@ final class TailcatExperimentController: ObservableObject {
     }
 
     func stagePreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings, appStore: AppStore) async throws {
-        guard case .tailcat = prepared.route,
+        guard prepared.route.usesTailcat,
               var pendingPairing,
               AgentAPIClient.normalizedEndpoint(pendingPairing.localEndpoint) ==
                 AgentAPIClient.normalizedEndpoint(prepared.activeEndpoint)
@@ -653,7 +746,7 @@ final class TailcatExperimentController: ObservableObject {
     }
 
     func commitPreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings, appStore: AppStore) async {
-        guard case .tailcat = prepared.route else {
+        guard prepared.route.usesTailcat else {
             pendingPairing = nil
             generation &+= 1
             try? await runtime.stop()
@@ -691,7 +784,13 @@ final class TailcatExperimentController: ObservableObject {
         appStore.setTailcatExperimentEndpoint(pendingPairing.localEndpoint)
         appStore.setTailcatExperimentModeEnabled(true)
         state = .connected(endpoint: pendingPairing.localEndpoint)
-        Task { await refreshPathDiagnostic(appStore: appStore) }
+        Task {
+            await refreshPathDiagnostic(
+                appStore: appStore,
+                reportManagedConnectionEvent: prepared.route.profileRoute.isManaged,
+                connectionStartedAt: pendingPairing.connectionStartedAt
+            )
+        }
     }
 
     func discardPreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings?, appStore: AppStore) async {
@@ -719,19 +818,27 @@ final class TailcatExperimentController: ObservableObject {
         try tokenStore.deleteTailcatAddress(profileID: profileID)
     }
 
-    func refreshPathDiagnostic(appStore: AppStore? = nil) async {
-        guard isEnabled else { return }
+    @discardableResult
+    func refreshPathDiagnostic(
+        appStore: AppStore? = nil,
+        reportManagedConnectionEvent: Bool = false,
+        connectionStartedAt: Date? = nil
+    ) async -> TailcatPathDiagnostic? {
+        guard isEnabled else { return nil }
         var path = "failed"
         var latencyMillis: Int?
         var derpRegionCode: String?
         var pathSucceeded = false
+        var connectionError: Error?
         do {
             let result = try await runtime.discoPing()
             path = result.path
             latencyMillis = result.latencyMillis
             derpRegionCode = result.derpRegionCode
             pathSucceeded = true
-        } catch {}
+        } catch {
+            connectionError = error
+        }
 
         var requestLatencyMillis: Int?
         var requestSucceeded: Bool?
@@ -746,6 +853,7 @@ final class TailcatExperimentController: ObservableObject {
                 requestSucceeded = true
             } catch {
                 requestSucceeded = false
+                connectionError = error
             }
         }
         let diagnostic = TailcatPathDiagnostic(
@@ -763,6 +871,19 @@ final class TailcatExperimentController: ObservableObject {
         if let encoded = try? JSONEncoder().encode(diagnostics) {
             defaults.set(encoded, forKey: Self.diagnosticsKey)
         }
+        if reportManagedConnectionEvent,
+           appStore?.activeConnectionProfile?.connectionRoute.isManaged == true {
+            let succeeded = pathSucceeded && requestSucceeded == true
+            await reportManagedConnectionAttempt(
+                enabled: true,
+                path: ManagedConnectionEventPath(tailcatPath: path),
+                succeeded: succeeded,
+                startedAt: connectionStartedAt ?? diagnostic.checkedAt,
+                error: succeeded ? nil : connectionError,
+                regionCode: derpRegionCode
+            )
+        }
+        return diagnostic
     }
 
     var redactedDiagnosticsText: String {
@@ -807,6 +928,28 @@ final class TailcatExperimentController: ObservableObject {
         let privateKey = try bridge.generatePrivateKey()
         try tokenStore.saveTailcatExperimentPrivateKey(privateKey)
         return privateKey
+    }
+
+    private func reportManagedConnectionAttempt(
+        enabled: Bool,
+        path: ManagedConnectionEventPath,
+        succeeded: Bool,
+        startedAt: Date,
+        error: Error?,
+        regionCode: String?
+    ) async {
+        guard enabled, let managedConnectionEventReporter else { return }
+        let durationMillis = max(0, Int((now().timeIntervalSince(startedAt) * 1_000).rounded()))
+        await managedConnectionEventReporter.report(
+            ManagedConnectionEvent(
+                path: path,
+                succeeded: succeeded,
+                durationMillis: durationMillis,
+                errorCategory: ManagedConnectionEventErrorCategory(error: error),
+                regionCode: regionCode,
+                appVersion: appVersion()
+            )
+        )
     }
 
     private func restoreProfileAddress(_ address: String, profileID: String) throws {

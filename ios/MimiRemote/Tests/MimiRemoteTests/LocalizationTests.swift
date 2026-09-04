@@ -99,8 +99,9 @@ final class LocalizationTests: XCTestCase {
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
             ("ui.experimental_features", "Experimental Features", "实验功能"),
-            ("ui.tailcat_experiment", "Tailcat experiment", "Tailcat 实验"),
-            ("ui.enable_tailcat_experiment", "Use Tailcat experimental mode", "使用 Tailcat 实验模式"),
+            ("ui.tailcat_experiment", "Tailcat", "Tailcat"),
+            ("ui.managed_subscription_title", "Mimi Managed Connection", "Mimi 托管连接"),
+            ("ui.custom_tailcat", "Self-hosted Tailcat", "自建 Tailcat"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
