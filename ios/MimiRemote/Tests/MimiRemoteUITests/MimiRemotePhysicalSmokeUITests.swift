@@ -832,8 +832,13 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let workspaceBrowser = app.descendant(identifier: "workspace.browser")
         XCTAssertTrue(workspaceBrowser.waitForExistence(timeout: 10), "工作区内容应保持可访问")
 
-        let session = app.descendant(identifier: "workspace.session.debug-session-layout")
-        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Debug 会话入口")
+        let claudeRuntime = app.descendant(identifier: "workspace.sessions.runtime.claude")
+        XCTAssertTrue(claudeRuntime.waitForExistence(timeout: 8), "工作区应提供 Claude Runtime 标签")
+        claudeRuntime.tap()
+        XCTAssertTrue(claudeRuntime.isSelected, "Claude Runtime 标签应进入选中态")
+
+        let session = app.descendant(identifier: "workspace.session.debug-session-claude")
+        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Claude Debug 会话入口")
         session.tap()
 
         let workspaceBack = app.descendant(identifier: "sessionDetail.workspaceBack")
@@ -873,6 +878,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             workspaceBack.waitForNonExistence(timeout: 8),
             "回到工作区后不应残留会话详情返回按钮"
         )
+        XCTAssertTrue(claudeRuntime.isSelected, "返回工作区后应保留进入详情前的 Claude Runtime 标签")
         if showSidebar.exists {
             // 恢复共享的 SceneStorage 状态，避免影响后续 UI 用例。
             showSidebar.tap()

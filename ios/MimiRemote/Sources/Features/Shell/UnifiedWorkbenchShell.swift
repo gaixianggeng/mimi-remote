@@ -34,6 +34,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var didApplyDebugLaunchRoute = false
     @State private var selectedRelatedSubagent: SessionContextSubagent?
     @State private var relatedSubagentParentID: SessionID?
+    @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -93,6 +94,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .onChange(of: appStore.activeHostScope.profileID) { _, _ in
                 synchronizeSidebarLifecycle()
+                workspaceRuntimeSelection.resetForHostChange()
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 handleLayoutModeChange(
@@ -1199,31 +1201,17 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func workspaces(layout: WorkbenchLayout) -> some View {
-        let manageConnections: (() -> Void)?
-        if layout.usesCompactNavigation && layout.isPhone {
-            manageConnections = {
+        WorkspaceWorkbenchRootView(
+            usesCompactNavigation: layout.usesCompactNavigation,
+            isPhone: layout.isPhone,
+            onManageConnections: {
                 openConnectionSettings(layout: layout)
-            }
-        } else {
-            manageConnections = nil
-        }
-
-        return WorkspaceRootView(
-            onStartSession: { project, runtimeChoice in
-                Task {
-                    await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
-                }
             },
             onOpenSession: { session in
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
             },
-            manageConnections: manageConnections,
-            // 紧凑布局的 destination 必须复用外层绑定 path 的 NavigationStack。
-            embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
-                usesCompactNavigation: layout.usesCompactNavigation
-            ),
-            appearanceStore: workspaceAppearanceStore
+            selectedRuntime: $workspaceRuntimeSelection.selectedRuntime
         )
     }
 

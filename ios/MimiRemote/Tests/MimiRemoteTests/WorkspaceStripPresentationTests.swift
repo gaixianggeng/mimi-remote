@@ -2,6 +2,14 @@ import XCTest
 @testable import MimiRemote
 
 final class WorkspaceStripPresentationTests: XCTestCase {
+    func testWorkspaceRuntimeSelectionResetsForHostChange() {
+        var state = WorkspaceRuntimeSelectionState(selectedRuntime: .claude)
+
+        state.resetForHostChange()
+
+        XCTAssertEqual(state.selectedRuntime, .codex)
+    }
+
     func testBottomTabBarMappingUsesDeviceSizeClassAndSystemGeneration() {
         XCTAssertTrue(
             WorkbenchPageLayout.hasBottomTabBar(
