@@ -1001,9 +1001,9 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
-        let chronologicallySortedSessions = sessionStore.sortedAllSessions.isEmpty
-            ? SessionStore.sortedSessions(sessionStore.sessionLibrarySessions)
-            : sessionStore.sortedAllSessions
+        let chronologicallySortedSessions = SessionStore.sortedSessions(
+            sessionStore.openedWorkspaceSessionLibrarySessions
+        )
         return SessionListPresentation.sidebarSections(
             sessions: chronologicallySortedSessions,
             pinnedIDs: sessionStore.pinnedSessionIDs,
@@ -1736,7 +1736,7 @@ struct UnifiedWorkbenchShell: View {
         case .selectSession(let sessionID):
             let session = preferredSession?.id == sessionID
                 ? preferredSession
-                : sessionStore.sessionLibrarySessions.first(where: { $0.id == sessionID })
+                : sessionStore.openedWorkspaceSessionLibrarySessions.first(where: { $0.id == sessionID })
             guard let session else {
                 applyNavigation(.sessionSelectionFinished(sessionID), layout: layout)
                 return

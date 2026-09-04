@@ -952,11 +952,10 @@ struct WorkspaceRootView: View {
         let cachedPageState = runtimeSessionPagesByKey[presentationKey]
         // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
         // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
-        let storedRuntimeSessions = sessionStore.sessions(forProjectID: project.id).filter { session in
-            sessionStore.isListableSession(session)
-                && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-                    == presentationKey.runtimeProvider
-        }
+        let storedRuntimeSessions = sessionStore.directoryScopedSessions(
+            workspaceID: project.id,
+            runtimeProvider: presentationKey.runtimeProvider
+        )
         let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
         let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
@@ -1190,16 +1189,10 @@ struct WorkspaceRootView: View {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
         let canonicalSessionIDsBeforeLoad = Set<SessionID>(
-            sessionStore.sessions(forProjectID: project.id).compactMap { session in
-                guard sessionStore.isListableSession(session),
-                      CodexAppServerSessionRuntime.normalizedRuntimeProvider(
-                          session.runtimeProvider ?? session.source
-                      ) == presentationKey.runtimeProvider
-                else {
-                    return nil
-                }
-                return session.id
-            }
+            sessionStore.directoryScopedSessions(
+                workspaceID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider
+            ).map(\.id)
         )
         sessionLoadStates[presentationKey] = .loading
         do {
