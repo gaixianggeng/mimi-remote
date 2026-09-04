@@ -1364,6 +1364,57 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testDirectoryScopedProjectionPreservesSymlinkCWDReturnedForCanonicalWorkspace() async {
+        let rootProject = AgentProject(
+            id: "proj_symlink_scope_root",
+            name: "Root",
+            path: "/Users/test/code/root"
+        )
+        let workspace = AgentWorkspace(
+            id: "ws_symlink_scope",
+            name: "canonical-workspace",
+            path: "/Users/test/real/canonical-workspace",
+            rootProjectID: rootProject.id,
+            rootProjectName: rootProject.name,
+            rootProjectPath: rootProject.path
+        )
+        let symlinkSession = AgentSession(
+            id: "thread-symlink-scope",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: "/Users/test/links/workspace-alias",
+            title: "Symlink cwd",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-symlink-scope",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            workspaceSessions: [workspace.id: [symlinkSession]],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: [symlinkSession])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        let visible = store.openedWorkspaceSessionLibrarySessions
+        XCTAssertEqual(visible.map(\.id), [symlinkSession.id])
+        XCTAssertEqual(visible.first?.projectID, workspace.id)
+        XCTAssertEqual(visible.first?.dir, symlinkSession.dir, "展示归属应使用 canonical workspace，同时保留上游 cwd")
+    }
+
     func testSessionLibrarySerializesBackgroundWorkspaceRequests() async throws {
         let firstProject = makeProject(id: "proj_library_serial_first")
         let secondProject = makeProject(id: "proj_library_serial_second")

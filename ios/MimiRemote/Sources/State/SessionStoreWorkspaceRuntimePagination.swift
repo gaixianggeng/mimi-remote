@@ -22,6 +22,8 @@ extension SessionStore {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
         let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
         let key = workspaceDirectoryScopeKey(for: workspace, runtimeProvider: normalizedRuntime)
+        // agentd 已按 canonical scope 校验本次 cwd 查询；返回项仍可能保留 symlink 形式的上游 cwd。
+        // 因此归属只认“由该查询返回的 ID”，不能再次用 item.dir 的原始拼写做路径比较。
         let pageIDs = Set(items.compactMap { item in
             Self.normalizedRuntimeProvider(item.runtimeProvider ?? item.source) == normalizedRuntime
                 ? item.id
