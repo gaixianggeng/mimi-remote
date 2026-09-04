@@ -94,6 +94,7 @@ type Router struct {
 	activeClaudeBridge            int
 	claudeBridge                  *claudeBridgeSupervisor
 	tailcat                       tailcatSidecar
+	managedPairing                managedPairingService
 	tailcatLocalToken             string
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
@@ -115,6 +116,8 @@ type RouterOptions struct {
 	ConfigPath   string
 	AppServerSSH appServerSSHTransport
 	tailcat      tailcatSidecar
+	// managedPairing 只供同包测试注入；生产值使用官方控制面和本机 0600 状态。
+	managedPairing managedPairingService
 	// tailcatLocalToken 只供同包测试注入；生产值来自配置目录中的 0600 文件。
 	tailcatLocalToken string
 }
@@ -170,6 +173,10 @@ func NewRouterWithInstallationIDAndOptions(
 	if tailcat == nil {
 		tailcat = newTailcatSidecarSupervisor(cfg, options.ConfigPath)
 	}
+	managedPairing := options.managedPairing
+	if managedPairing == nil {
+		managedPairing = newDefaultManagedPairingController(options.ConfigPath, installationID, tailcat)
+	}
 	tailcatLocalToken := strings.TrimSpace(options.tailcatLocalToken)
 	if tailcatLocalToken == "" {
 		tailcatLocalToken, _ = ReadTailcatLocalControlToken(options.ConfigPath)
@@ -203,6 +210,7 @@ func NewRouterWithInstallationIDAndOptions(
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
 		tailcat:                     tailcat,
+		managedPairing:              managedPairing,
 		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
 	}
@@ -210,6 +218,10 @@ func NewRouterWithInstallationIDAndOptions(
 		go func() {
 			if err := r.tailcat.Start(context.Background()); err != nil {
 				log.Printf("tailcat sidecar start failed: %v", err)
+				return
+			}
+			if r.managedPairing != nil {
+				r.managedPairing.Start()
 			}
 		}()
 	}
@@ -303,6 +315,9 @@ func (r *Router) Shutdown() {
 			r.claudeBridge.shutdown()
 		}
 		if r.tailcat != nil {
+			if r.managedPairing != nil {
+				r.managedPairing.Close()
+			}
 			r.tailcat.Close()
 		}
 	})

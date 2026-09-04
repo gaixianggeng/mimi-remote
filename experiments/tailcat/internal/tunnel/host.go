@@ -29,6 +29,7 @@ type HostConfig struct {
 type Host struct {
 	server  *tailcat.Server
 	address tailcat.Addr
+	public  string
 }
 
 func StartHost(config HostConfig) (*Host, error) {
@@ -101,7 +102,7 @@ func StartHost(config HostConfig) (*Host, error) {
 		server.Close()
 		return nil, fmt.Errorf("写入 Tailcat 地址：%w", err)
 	}
-	return &Host{server: server, address: address}, nil
+	return &Host{server: server, address: address, public: privateKey.Public().String()}, nil
 }
 
 func (h *Host) AddAllowedClient(rawKey string) error {
@@ -118,6 +119,15 @@ func (h *Host) AddAllowedClient(rawKey string) error {
 
 func (h *Host) Address() string {
 	return string(h.address)
+}
+
+// PublicKey 返回稳定主机身份中的公开部分。它可以进入配对二维码和控制面，
+// 但私钥仍只保存在本机 0600 状态文件中。
+func (h *Host) PublicKey() string {
+	if h == nil {
+		return ""
+	}
+	return h.public
 }
 
 func (h *Host) Close() error {
