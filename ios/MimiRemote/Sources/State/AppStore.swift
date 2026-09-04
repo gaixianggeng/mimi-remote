@@ -783,7 +783,7 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        if case .tailcat = prepared.route {
+        if prepared.route.usesTailcat {
             isTailcatExperimentModeEnabled = true
             tailcatExperimentEndpoint = normalizedActiveEndpoint
             activeRouteEndpoint = normalizedActiveEndpoint
@@ -1181,7 +1181,10 @@ final class AppStore: ObservableObject {
 
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
-    func preflightConnection(force: Bool = false) async -> Bool {
+    func preflightConnection(
+        force: Bool = false,
+        preferredProfileRoute: ConnectionProfileRoute? = nil
+    ) async -> Bool {
 #if DEBUG
         if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return true }
 #endif
@@ -1192,7 +1195,10 @@ final class AppStore: ObservableObject {
             lastError = error.localizedDescription
             return false
         }
-        let localAvailable = usesTailcatExperiment ? false : await detectLocalAgent(force: force)
+        let shouldProbeLocal = preferredProfileRoute == nil || preferredProfileRoute == .lan
+        let localAvailable = usesTailcatExperiment || !shouldProbeLocal
+            ? false
+            : await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
             return true
         }
@@ -1248,12 +1254,14 @@ final class AppStore: ObservableObject {
             ))
         }
         let configuredEndpoints: [String]
+        let matchesPreferredRoute = preferredProfileRoute.map(canUseSavedFallback) ?? true
         if !usesTailcatExperiment, let profile = activeConnectionProfile,
            AgentAPIClient.normalizedEndpoint(profile.endpoint) ==
-            AgentAPIClient.normalizedEndpoint(normalizedEndpoint) {
+            AgentAPIClient.normalizedEndpoint(normalizedEndpoint),
+           matchesPreferredRoute {
             configuredEndpoints = profile.connectionCandidates
         } else {
-            configuredEndpoints = [normalizedEndpoint]
+            configuredEndpoints = preferredProfileRoute == nil ? [normalizedEndpoint] : []
         }
         for configuredEndpoint in configuredEndpoints {
             let route: ActiveConnectionRoute = usesTailcatExperiment

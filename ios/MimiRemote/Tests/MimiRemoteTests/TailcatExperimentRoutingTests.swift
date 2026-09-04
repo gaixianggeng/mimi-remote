@@ -136,7 +136,108 @@ private final class ManagedPairingAuthorizerStub: ManagedConnectionPairingAuthor
 }
 
 @MainActor
+private final class ManagedConnectionEventReporterStub: ManagedConnectionEventReporting {
+    private(set) var events: [ManagedConnectionEvent] = []
+    var onReport: (() -> Void)?
+    var blocksReports = false
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+
+    func report(_ event: ManagedConnectionEvent) async {
+        events.append(event)
+        onReport?()
+        if blocksReports {
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+            }
+        }
+    }
+
+    func releaseBlockedReport() {
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+    }
+}
+
+@MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testForegroundRecoveryPreservesTemporaryManagedFallback() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        let usedFallback = await fixture.controller.useSavedRouteOnce(.tailscale, appStore: fixture.store)
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        let startCallCount = await fixture.runtime.startCallCount()
+
+        XCTAssertTrue(prepared)
+        XCTAssertTrue(usedFallback)
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertEqual(fixture.controller.state, .usingTemporaryRoute(.tailscale))
+        XCTAssertFalse(fixture.store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+    }
+
+    func testManagedFailureTelemetryDoesNotDelayFailureResult() async throws {
+        let reporter = ManagedConnectionEventReporterStub()
+        reporter.blocksReports = true
+        let reportStarted = expectation(description: "telemetry started")
+        reporter.onReport = { reportStarted.fulfill() }
+        let routeFinished = expectation(description: "route failure returned")
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedProfile: true,
+            managedConnectionEventReporter: reporter
+        )
+        defer {
+            reporter.releaseBlockedReport()
+            fixture.defaults.removePersistentDomain(forName: fixture.suiteName)
+        }
+
+        Task { @MainActor in
+            let ready = await fixture.controller.prepareRoute(appStore: fixture.store)
+            XCTAssertFalse(ready)
+            routeFinished.fulfill()
+        }
+
+        await fulfillment(of: [routeFinished, reportStarted], timeout: 1)
+        guard case .failed = fixture.controller.state else {
+            return XCTFail("线路失败必须先于旁路遥测返回")
+        }
+    }
+
+    func testConcurrentManagedPreparationEmitsOneConnectionEvent() async throws {
+        let reporter = ManagedConnectionEventReporterStub()
+        let reported = expectation(description: "one managed event")
+        reporter.onReport = { reported.fulfill() }
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            blockedStartCall: 1,
+            managedProfile: true,
+            managedConnectionEventReporter: reporter
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let first = Task { await fixture.controller.prepareRoute(appStore: fixture.store) }
+        await fixture.runtime.waitForBlockedStart()
+        let second = Task { await fixture.controller.prepareRoute(appStore: fixture.store) }
+        await Task.yield()
+        await fixture.runtime.releaseBlockedStart()
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+        await fulfillment(of: [reported], timeout: 1)
+        for _ in 0..<5 { await Task.yield() }
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertTrue(firstResult)
+        XCTAssertTrue(secondResult)
+        XCTAssertEqual(reporter.events.count, 1)
+        XCTAssertEqual(startCallCount, 1)
+    }
+
     func testManagedPairingRequiresManagedQRCodeBeforeStartingRuntime() async throws {
         let authorizer = ManagedPairingAuthorizerStub()
         let fixture = try makeControllerFixture(
@@ -729,7 +830,9 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
         blockedStartCall: Int? = nil,
-        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil
+        managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil,
+        managedProfile: Bool = false,
+        managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil
     ) throws -> (
         controller: TailcatExperimentController,
         runtime: TailcatExperimentRuntimeStub,
@@ -751,10 +854,24 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         )
         let keychain = TestKeychainOperations()
         let tokenStore = TokenStore(keychain: keychain)
+        if managedProfile {
+            let profile = ConnectionProfile(
+                id: "managed-mac",
+                displayName: "Managed Mac",
+                endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil,
+                connectionRoute: .managedTailcat
+            )
+            defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+            defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+            try tokenStore.save("managed-token", profileID: profile.id)
+            try tokenStore.saveTailcatAddress("tailcat:managed-mac", profileID: profile.id)
+        }
         let store = AppStore(
             defaults: defaults,
             tokenStore: tokenStore,
-            prefersLocalConnection: false
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
         )
         let controller = TailcatExperimentController(
             appStore: store,
@@ -762,7 +879,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             tokenStore: tokenStore,
             runtime: runtime,
             bridge: bridge,
-            managedPairingAuthorizer: managedPairingAuthorizer
+            managedPairingAuthorizer: managedPairingAuthorizer,
+            managedConnectionEventReporter: managedConnectionEventReporter
         )
         return (controller, runtime, store, defaults, suiteName)
     }

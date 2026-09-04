@@ -193,12 +193,18 @@ struct MimiRemoteApp: App {
             storeKit: LiveManagedConnectionStoreKitClient(),
             entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
         )
+        let managedConnectionIdentityStore = ManagedConnectionMobileIdentityStore()
         let managedConnectionDeviceStore = ManagedConnectionDeviceStore(
-            entitlementStore: managedConnectionEntitlementStore
+            entitlementStore: managedConnectionEntitlementStore,
+            identityStore: managedConnectionIdentityStore
+        )
+        let managedConnectionEventReporter = ManagedConnectionEventReporter(
+            identityStore: managedConnectionIdentityStore
         )
         let tailcatExperimentController = TailcatExperimentController(
             appStore: appStore,
-            managedPairingAuthorizer: managedConnectionDeviceStore
+            managedPairingAuthorizer: managedConnectionDeviceStore,
+            managedConnectionEventReporter: managedConnectionEventReporter
         )
         // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
         // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。

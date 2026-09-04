@@ -71,8 +71,74 @@ enum HostPlatformIconKind: Equatable {
 }
 
 enum ConnectionProfileRoute: String, Codable, Equatable {
-    case configured
-    case tailcat
+    case managedTailcat
+    case customTailcat
+    case tailscale
+    case lan
+    case https
+
+    var usesTailcat: Bool {
+        self == .managedTailcat || self == .customTailcat
+    }
+
+    var isManaged: Bool { self == .managedTailcat }
+
+    var title: String {
+        switch self {
+        case .managedTailcat:
+            return L10n.text("ui.managed_subscription_title")
+        case .customTailcat:
+            return L10n.text("ui.custom_tailcat")
+        case .tailscale:
+            return "Tailscale"
+        case .lan:
+            return L10n.text("ui.local_network")
+        case .https:
+            return "HTTPS"
+        }
+    }
+
+    /// 旧版本只区分 configured/tailcat。升级时把旧 Tailcat 明确归入免费自建线路，
+    /// configured 则根据已经保存的地址保守分类，避免把现有用户静默转成付费托管。
+    static func persistedValue(
+        _ rawValue: String?,
+        endpoint: String,
+        tailscaleDNSName: String?
+    ) -> ConnectionProfileRoute {
+        switch rawValue {
+        case managedTailcat.rawValue:
+            return .managedTailcat
+        case customTailcat.rawValue, "tailcat":
+            return .customTailcat
+        case tailscale.rawValue:
+            return .tailscale
+        case lan.rawValue:
+            return .lan
+        case https.rawValue:
+            return .https
+        case "configured", nil:
+            return configuredValue(endpoint: endpoint, tailscaleDNSName: tailscaleDNSName)
+        default:
+            return configuredValue(endpoint: endpoint, tailscaleDNSName: tailscaleDNSName)
+        }
+    }
+
+    static func configuredValue(
+        endpoint: String,
+        tailscaleDNSName: String? = nil
+    ) -> ConnectionProfileRoute {
+        if ConnectionProfile.isTailscaleIPEndpoint(endpoint) || tailscaleDNSName != nil {
+            return .tailscale
+        }
+        if URLComponents(string: endpoint)?.scheme?.lowercased() == "https" {
+            return .https
+        }
+        return .lan
+    }
+
+    // 只保留给旧测试和调用点的源码兼容别名；新版持久化永远写入明确类型。
+    static var configured: ConnectionProfileRoute { .tailscale }
+    static var tailcat: ConnectionProfileRoute { .customTailcat }
 }
 
 /// 一台已保存电脑的本地连接档案。
@@ -116,7 +182,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         lastSuccessfulAt: Date?,
         installationID: String? = nil,
         hostPlatform: HostPlatform = .unknown,
-        connectionRoute: ConnectionProfileRoute = .configured,
+        connectionRoute: ConnectionProfileRoute? = nil,
         revision: UInt64 = 0
     ) {
         self.id = id
@@ -143,7 +209,10 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
         self.hostPlatform = hostPlatform
-        self.connectionRoute = connectionRoute
+        self.connectionRoute = connectionRoute ?? ConnectionProfileRoute.configuredValue(
+            endpoint: endpoint,
+            tailscaleDNSName: normalizedDNSName
+        )
         self.revision = revision
     }
 
@@ -179,7 +248,11 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
         hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
-        connectionRoute = try container.decodeIfPresent(ConnectionProfileRoute.self, forKey: .connectionRoute) ?? .configured
+        connectionRoute = ConnectionProfileRoute.persistedValue(
+            try container.decodeIfPresent(String.self, forKey: .connectionRoute),
+            endpoint: endpoint,
+            tailscaleDNSName: tailscaleDNSName
+        )
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
     }
 
@@ -471,14 +544,54 @@ enum PreparedConnectionProfileTarget: Equatable {
 }
 
 enum PreparedConnectionRoute: Equatable {
-    case configured
-    case tailcat(address: String)
+    case tailscale
+    case lan
+    case https
+    case customTailcat(address: String)
+    case managedTailcat(address: String)
 
     var profileRoute: ConnectionProfileRoute {
         switch self {
-        case .configured: return .configured
-        case .tailcat: return .tailcat
+        case .tailscale: return .tailscale
+        case .lan: return .lan
+        case .https: return .https
+        case .customTailcat: return .customTailcat
+        case .managedTailcat: return .managedTailcat
         }
+    }
+
+    var usesTailcat: Bool { profileRoute.usesTailcat }
+
+    var tailcatAddress: String? {
+        switch self {
+        case .customTailcat(let address), .managedTailcat(let address):
+            return address
+        case .tailscale, .lan, .https:
+            return nil
+        }
+    }
+
+    static func configured(
+        endpoint: String,
+        tailscaleDNSName: String? = nil
+    ) -> PreparedConnectionRoute {
+        switch ConnectionProfileRoute.configuredValue(
+            endpoint: endpoint,
+            tailscaleDNSName: tailscaleDNSName
+        ) {
+        case .tailscale:
+            return .tailscale
+        case .lan:
+            return .lan
+        case .https:
+            return .https
+        case .managedTailcat, .customTailcat:
+            return .lan
+        }
+    }
+
+    static func tailcat(address: String) -> PreparedConnectionRoute {
+        .customTailcat(address: address)
     }
 }
 
@@ -502,7 +615,7 @@ struct PreparedConnectionSettings: Equatable {
     init(
         endpoint: String,
         activeEndpoint: String? = nil,
-        route: PreparedConnectionRoute = .configured,
+        route: PreparedConnectionRoute? = nil,
         token: String,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         validatedAt: Date = Date(),
@@ -515,7 +628,10 @@ struct PreparedConnectionSettings: Equatable {
     ) {
         self.endpoint = endpoint
         self.activeEndpoint = activeEndpoint ?? endpoint
-        self.route = route
+        self.route = route ?? .configured(
+            endpoint: endpoint,
+            tailscaleDNSName: tailscaleDNSName
+        )
         self.token = token
         self.profileTarget = profileTarget
         self.validatedAt = validatedAt

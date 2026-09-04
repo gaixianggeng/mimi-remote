@@ -6,17 +6,23 @@ struct ManagedConnectionSubscriptionView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var deviceStore: ManagedConnectionDeviceStore
+    @EnvironmentObject private var tailcatController: TailcatExperimentController
     @EnvironmentObject private var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
     @State private var isConnectingMac = false
+    @State private var isChangingRoute = false
+    @State private var managedRouteError: String?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
             statusSection
+            if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
+                managedRouteSection
+            }
             if isEntitled {
                 connectionSection
                 devicesSection
@@ -181,6 +187,131 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.managed_devices_connection"))
         } footer: {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
+        }
+    }
+
+    private var managedRouteSection: some View {
+        Section {
+            Label(managedRouteStatusText, systemImage: managedRouteStatusImage)
+                .foregroundStyle(managedRouteStatusColor)
+
+            if let diagnostic = tailcatController.lastDiagnostic {
+                Label(diagnostic.summary, systemImage: "point.3.connected.trianglepath.dotted")
+                if let requestSummary = diagnostic.requestSummary {
+                    Label(requestSummary, systemImage: "stopwatch")
+                }
+            }
+
+            if showsManagedRecoveryActions {
+                Button {
+                    performRouteChange { await sessionStore.retryManagedConnection() }
+                } label: {
+                    Label(L10n.text("ui.managed_connection_retry"), systemImage: "arrow.clockwise")
+                        .frame(minHeight: 44)
+                }
+                .disabled(isChangingRoute)
+                .accessibilityIdentifier("settings.managedConnection.retry")
+
+                Button {
+                    performRouteChange { await sessionStore.useSavedConnectionRouteOnce(.tailscale) }
+                } label: {
+                    Label(L10n.text("ui.managed_connection_use_tailscale_once"), systemImage: "network")
+                        .frame(minHeight: 44)
+                }
+                .disabled(isChangingRoute || !appStore.canUseSavedFallback(.tailscale))
+                .accessibilityIdentifier("settings.managedConnection.useTailscaleOnce")
+
+                Button {
+                    performRouteChange { await sessionStore.useSavedConnectionRouteOnce(.lan) }
+                } label: {
+                    Label(L10n.text("ui.managed_connection_use_lan_once"), systemImage: "wifi.router")
+                        .frame(minHeight: 44)
+                }
+                .disabled(isChangingRoute || !appStore.canUseSavedFallback(.lan))
+                .accessibilityIdentifier("settings.managedConnection.useLANOnce")
+            }
+
+            if isChangingRoute {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text(L10n.text("ui.connecting"))
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            if let managedRouteError {
+                Label(managedRouteError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text(L10n.text("ui.managed_connection_route_status"))
+        } footer: {
+            if showsManagedRecoveryActions {
+                Text(L10n.text("ui.managed_connection_fallback_notice"))
+            }
+        }
+    }
+
+    private var showsManagedRecoveryActions: Bool {
+        if case .usingTemporaryRoute = tailcatController.state { return true }
+        if case .failed = tailcatController.state { return true }
+        if case .failed = appStore.connectionStatus { return true }
+        return false
+    }
+
+    private var managedRouteStatusText: String {
+        switch tailcatController.state {
+        case .disabled, .needsAddress:
+            return L10n.text("ui.tailcat_needs_address")
+        case .starting:
+            return L10n.text("ui.connecting")
+        case .connected:
+            return L10n.text("ui.connected")
+        case .usingTemporaryRoute(let route):
+            return L10n.format("ui.managed_connection_using_temporary_route", route.title)
+        case .failed(let message):
+            return L10n.format("ui.tailcat_connection_failed_value", message)
+        case .unavailable:
+            return L10n.text("ui.tailcat_framework_unavailable")
+        }
+    }
+
+    private var managedRouteStatusImage: String {
+        switch tailcatController.state {
+        case .connected:
+            return "checkmark.circle.fill"
+        case .usingTemporaryRoute:
+            return "arrow.triangle.branch"
+        case .failed, .unavailable:
+            return "exclamationmark.triangle.fill"
+        case .starting:
+            return "arrow.trianglehead.2.clockwise.rotate.90"
+        case .disabled, .needsAddress:
+            return "circle.dashed"
+        }
+    }
+
+    private var managedRouteStatusColor: Color {
+        switch tailcatController.state {
+        case .connected:
+            return .green
+        case .failed, .unavailable:
+            return .orange
+        case .disabled, .needsAddress, .starting, .usingTemporaryRoute:
+            return .secondary
+        }
+    }
+
+    private func performRouteChange(_ operation: @escaping @MainActor () async -> Bool) {
+        guard !isChangingRoute else { return }
+        isChangingRoute = true
+        managedRouteError = nil
+        Task { @MainActor in
+            let succeeded = await operation()
+            if !succeeded {
+                managedRouteError = appStore.lastError ?? L10n.text("ui.managed_devices_network_error")
+            }
+            isChangingRoute = false
         }
     }
 
