@@ -500,7 +500,7 @@ struct SessionListView: View {
     }
 
     private var visibleSessions: [AgentSession] {
-        sessionStore.sessionLibrarySessions.filter { session in
+        sessionStore.openedWorkspaceSessionLibrarySessions.filter { session in
             (selectedWorkspaceID == "all" || session.projectID == selectedWorkspaceID) &&
                 selectedStatus.includes(session)
         }

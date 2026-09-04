@@ -1218,6 +1218,89 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessionsByID[globalUnknownExternal.id]?.projectID, rootProject.id)
     }
 
+    func testSessionTabProjectionUsesOnlyOpenedWorkspaceDirectoriesAndRealPathIdentity() {
+        let rootProject = AgentProject(
+            id: "proj_session_tab_root",
+            name: "Root",
+            path: "/Users/test/code/root"
+        )
+        let openedWorktree = AgentWorkspace(
+            id: "ws_session_tab_opened",
+            name: "Opened worktree",
+            path: "/Users/test/worktrees/opened",
+            rootProjectID: rootProject.id,
+            rootProjectName: rootProject.name,
+            rootProjectPath: rootProject.path
+        )
+
+        func makeProjectedSession(
+            id: String,
+            dir: String,
+            source: String,
+            updatedAt: TimeInterval
+        ) -> AgentSession {
+            AgentSession(
+                id: id,
+                projectID: rootProject.id,
+                project: rootProject.name,
+                dir: dir,
+                title: id,
+                status: "history",
+                source: source,
+                runtimeProvider: source,
+                resumeID: id,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: updatedAt)
+            )
+        }
+
+        let rootCodex = makeProjectedSession(
+            id: "root-codex",
+            dir: rootProject.path + "/Sources",
+            source: "codex",
+            updatedAt: 2
+        )
+        let openedClaude = makeProjectedSession(
+            id: "opened-claude",
+            dir: openedWorktree.path,
+            source: "claude",
+            updatedAt: 3
+        )
+        let unopenedCodex = makeProjectedSession(
+            id: "unopened-codex",
+            dir: "/Users/test/worktrees/unopened-codex",
+            source: "codex",
+            updatedAt: 4
+        )
+        let unopenedClaude = makeProjectedSession(
+            id: "unopened-claude",
+            dir: "/Users/test/worktrees/unopened-claude",
+            source: "claude",
+            updatedAt: 5
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [AgentWorkspace(project: rootProject), openedWorktree]
+        store.sessions = [rootCodex, openedClaude, unopenedCodex, unopenedClaude]
+
+        let visible = store.openedWorkspaceSessionLibrarySessions
+
+        XCTAssertEqual(visible.map(\.id), [openedClaude.id, rootCodex.id])
+        XCTAssertEqual(visible.first(where: { $0.id == openedClaude.id })?.projectID, openedWorktree.id)
+        XCTAssertEqual(visible.first(where: { $0.id == openedClaude.id })?.dir, openedWorktree.path)
+        XCTAssertEqual(
+            Set(store.sessions.map(\.id)),
+            Set([rootCodex.id, openedClaude.id, unopenedCodex.id, unopenedClaude.id])
+        )
+
+        store.recentWorkspaces = []
+        XCTAssertTrue(store.openedWorkspaceSessionLibrarySessions.isEmpty)
+    }
+
     func testSessionLibrarySerializesBackgroundWorkspaceRequests() async throws {
         let firstProject = makeProject(id: "proj_library_serial_first")
         let secondProject = makeProject(id: "proj_library_serial_second")

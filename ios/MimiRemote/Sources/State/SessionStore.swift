@@ -1606,6 +1606,16 @@ final class SessionStore: ObservableObject {
         return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
+    /// 受控全局发现继续保留 canonical 会话；会话 Tab 只消费真实目录命中已打开工作区的投影。
+    /// 投影同时按目录修正 workspace identity，避免外部 Worktree 沿用根项目标注。
+    var openedWorkspaceSessionLibrarySessions: [AgentSession] {
+        sessionLibrarySessions.compactMap(sessionAlignedToOpenedWorkspace)
+    }
+
+    func sessionAlignedToOpenedWorkspace(_ item: AgentSession) -> AgentSession? {
+        workspaceForPath(item.dir).map { session(item, in: $0) }
+    }
+
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。
     var recentSessions: [AgentSession] {
         Array(Self.sortedSessions(sessions.filter(isListableSession)).prefix(8))
