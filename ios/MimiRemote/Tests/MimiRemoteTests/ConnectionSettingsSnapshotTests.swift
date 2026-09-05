@@ -29,6 +29,16 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance() {
+        assertConnectionSettings(
+            profiles: [],
+            width: 720,
+            height: 1_000,
+            colorScheme: .dark,
+            named: "unconfigured-wide-dark"
+        )
+    }
+
     func testSingleUnavailableConnectionKeepsRecoveryActionsVisible() {
         assertConnectionSettings(
             profiles: [
@@ -43,7 +53,28 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             ],
             width: 393,
             height: 852,
+            connectionStatus: .failed("快照中的电脑当前不可用"),
             named: "single-unavailable"
+        )
+    }
+
+    func testSingleConnectedComputerOnCompactWidth() {
+        assertConnectionSettings(
+            profiles: [
+                makeProfile(
+                    id: "studio-mac",
+                    name: "工作室 Mac",
+                    endpoint: "http://100.64.0.10:8787",
+                    dnsName: "studio-mac.tail.example.ts.net",
+                    deviceName: "studio-mac",
+                    platform: .apple
+                )
+            ],
+            width: 393,
+            height: 852,
+            colorScheme: .dark,
+            connectionStatus: .connected("snapshot"),
+            named: "single-connected-compact"
         )
     }
 
@@ -70,6 +101,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             width: 720,
             height: 1_000,
             dynamicTypeSize: .accessibility2,
+            connectionStatus: .failed("快照中的电脑当前不可用"),
             named: "multiple-unavailable-accessibility"
         )
     }
@@ -79,12 +111,17 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         width: CGFloat,
         height: CGFloat,
         dynamicTypeSize: DynamicTypeSize = .large,
+        colorScheme: ColorScheme = .light,
+        connectionStatus: ConnectionStatus? = nil,
         named name: String,
         file: StaticString = #file,
         testName: String = #function,
         line: UInt = #line
     ) {
-        let fixture = makeFixture(profiles: profiles)
+        let fixture = makeFixture(
+            profiles: profiles,
+            connectionStatus: connectionStatus
+        )
         // 导航由真实入口持有；这里固定表单容器，独立验证分组、按钮和电脑行的布局。
         let view = ConnectionSettingsView(
             qrScannerPresentation: fixture.qrScannerPresentation,
@@ -94,7 +131,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(fixture.sessionStore)
         .environmentObject(fixture.themeStore)
         .environmentObject(fixture.tailcatController)
-        .environment(\.colorScheme, .light)
+        .environment(\.colorScheme, colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: width, height: height)
 
@@ -118,7 +155,10 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         }
     }
 
-    private func makeFixture(profiles: [ConnectionProfile]) -> Fixture {
+    private func makeFixture(
+        profiles: [ConnectionProfile],
+        connectionStatus: ConnectionStatus?
+    ) -> Fixture {
         let suiteName = "ConnectionSettingsSnapshotTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -138,8 +178,8 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             tokenStore: tokenStore,
             prefersLocalConnection: false
         )
-        if !profiles.isEmpty {
-            appStore.connectionStatus = .failed("快照中的电脑当前不可用")
+        if let connectionStatus {
+            appStore.connectionStatus = connectionStatus
         }
         let tailcatController = TailcatExperimentController(
             appStore: appStore,

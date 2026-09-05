@@ -19,7 +19,9 @@ struct ConnectionSettingsView: View {
             )
         }
         .themedSettingsForm(tokens: tokens)
-        .tint(tokens.accent)
+        // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
+        .tint(tokens.secondaryText)
+        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)

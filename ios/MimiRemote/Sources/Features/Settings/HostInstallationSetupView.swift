@@ -61,7 +61,7 @@ enum HostInstallationPlatform: String, CaseIterable, Identifiable {
     }
 }
 
-/// 安装说明是连接操作旁的辅助入口，两处连接页面保持相同的展开方式。
+/// 安装说明放在添加电脑模块中，两处连接页面保持相同的展开方式。
 /// 平台选择只改变远端安装入口；配对和凭据处理继续复用同一条安全链路。
 struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -79,6 +79,7 @@ struct HostInstallationSetupView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .tint(tokens.accent)
                 .accessibilityIdentifier("settings.hostInstaller.platform")
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -132,7 +133,7 @@ struct HostInstallationSetupView: View {
                     )
                 }
                 .buttonStyle(.bordered)
-                .tint(tokens.primaryAction)
+                .tint(tokens.secondaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
                 Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
@@ -180,20 +181,68 @@ struct ConnectionActionLabel: View {
 
 /// 普通连接入口使用固定图标列，让标题与说明共享同一条起始边。
 struct ConnectionRowLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
+    @ScaledMetric(relativeTo: .body) private var titlePointSize = 17.0
+    @ScaledMetric(relativeTo: .subheadline) private var valuePointSize = 15.0
+
     let title: String
+    var value: String? = nil
     let systemImage: String
+    var valueTint: Color? = nil
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(.body))
-                .frame(width: SettingsLayoutMetrics.iconSlot)
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
                 .accessibilityHidden(true)
-            Text(title)
-                .font(themeStore.uiFont(.body))
+
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    titleText(tokens: tokens)
+                    valueText(tokens: tokens)
+                }
+            } else {
+                titleText(tokens: tokens)
+                if value != nil {
+                    Spacer(minLength: 12)
+                    valueText(tokens: tokens)
+                }
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize
+                ? SettingsLayoutMetrics.accessibilityRowHeight
+                : SettingsLayoutMetrics.standardRowHeight,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func titleText(tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(size: titlePointSize))
+            .foregroundStyle(tokens.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+    }
+
+    @ViewBuilder
+    private func valueText(tokens: ThemeTokens) -> some View {
+        if let value {
+            Text(value)
+                .font(themeStore.uiFont(size: valuePointSize))
+                .foregroundStyle(valueTint ?? tokens.secondaryText)
+                .multilineTextAlignment(dynamicTypeSize.isAccessibilitySize ? .leading : .trailing)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(minHeight: 44, alignment: .leading)
     }
 }
