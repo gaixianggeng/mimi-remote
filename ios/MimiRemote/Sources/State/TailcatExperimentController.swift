@@ -250,9 +250,12 @@ final class TailcatExperimentController: ObservableObject {
                 defaults.removeObject(forKey: Self.enabledKey)
             }
         }
-        let initialEnabled = (appStore.activeConnectionProfileID == nil
+        let requestsTailcat = appStore.activeConnectionProfileID == nil
             ? savedEnabled
-            : profileRoute.usesTailcat) && available
+            : profileRoute.usesTailcat
+        // 托管档案即使无法启动 Tailcat，也要保持 loopback fail-closed。
+        // 只有用户明确选择临时线路后，才允许请求回到已保存的地址。
+        let initialEnabled = requestsTailcat && (available || profileRoute.isManaged)
         self.defaults = defaults
         self.tokenStore = tokenStore
         self.runtime = runtime
