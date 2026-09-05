@@ -41,6 +41,8 @@ for required_file in \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
   scripts/install-linux.sh \
+  scripts/install-linux-tray.sh \
+  scripts/test-install-linux-tray.sh \
   scripts/ios-dev.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
@@ -70,6 +72,8 @@ bash -n \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/install-linux.sh \
+  scripts/install-linux-tray.sh \
+  scripts/test-install-linux-tray.sh \
   scripts/test-install-linux.sh \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
@@ -78,6 +82,7 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
 bash ./scripts/test-install-linux.sh >/dev/null
+bash ./scripts/test-install-linux-tray.sh >/dev/null
 
 if [[ -f SKILL.md ]] && ! cmp -s SKILL.md packaging/skill/install-mimi-remote/SKILL.md; then
   fail "根 SKILL.md 与独立 Skill 包内容不一致。"
@@ -103,6 +108,12 @@ bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
 ) || fail "Skill 发布包 SHA-256 校验失败。"
 rm -rf "$skill_dist"
 trap - EXIT
+
+for tray_file in scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
+  [[ -f "$tray_file" ]] || fail "缺少 Linux 托盘文件 $tray_file。"
+  grep -Fq "$tray_file" .goreleaser.yml || fail "Linux 归档没有包含 $tray_file。"
+done
+grep -Fq 'binary: mimi-remote-tray' .goreleaser.yml || fail "Linux 发布缺少托盘二进制。"
 
 service_file="packaging/systemd/mimi-remote.service"
 grep -Fqx 'ExecStart=%h/.local/bin/agentd serve --config %h/.config/mimi-remote/config.json' "$service_file" \

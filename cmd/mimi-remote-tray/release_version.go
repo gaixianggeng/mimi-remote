@@ -2,7 +2,7 @@ package main
 
 import "strings"
 
-// releaseVersion is injected by the Windows packaging script from the same
+// releaseVersion is injected by the platform packaging scripts from the same
 // version value used for the installer and GitHub Release tag.
 var releaseVersion = "dev"
 
