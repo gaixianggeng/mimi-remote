@@ -28,6 +28,7 @@ final class ManagedConnectionEventAPIClientTests: XCTestCase {
         let request = try XCTUnwrap(MIM261EventURLProtocol.capturedRequest)
         let body = try XCTUnwrap(MIM261EventURLProtocol.capturedBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(request.url?.absoluteString, "https://mimi.code89757.com/v1/connection-events")
         XCTAssertEqual(request.url?.path, "/v1/connection-events")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(Self.deviceToken)")
