@@ -97,6 +97,7 @@ struct TailcatPairingLink: Equatable {
     let pairAddress: String
     let managedMacInstallationID: String?
     let managedMacTailcatPublicKey: String?
+    let managedPairTailcatPublicKey: String?
 
     @MainActor
     static func parse(_ url: URL) throws -> TailcatPairingLink? {
@@ -119,16 +120,22 @@ struct TailcatPairingLink: Equatable {
         let managedMacTailcatPublicKey = components?.queryItems?
             .first(where: { $0.name == "managed_mac_tailcat_public_key" })?.value?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let managedPairTailcatPublicKey = components?.queryItems?
+            .first(where: { $0.name == "managed_pair_tailcat_public_key" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let hasManagedInstallationID = !(managedMacInstallationID ?? "").isEmpty
         let hasManagedPublicKey = !(managedMacTailcatPublicKey ?? "").isEmpty
-        guard hasManagedInstallationID == hasManagedPublicKey else {
+        let hasManagedPairPublicKey = !(managedPairTailcatPublicKey ?? "").isEmpty
+        guard hasManagedInstallationID == hasManagedPublicKey,
+              !hasManagedPairPublicKey || hasManagedInstallationID else {
             throw PairingLinkError.unsupportedURL
         }
         return TailcatPairingLink(
             ticket: ticket,
             pairAddress: pairAddress,
             managedMacInstallationID: hasManagedInstallationID ? managedMacInstallationID : nil,
-            managedMacTailcatPublicKey: hasManagedPublicKey ? managedMacTailcatPublicKey : nil
+            managedMacTailcatPublicKey: hasManagedPublicKey ? managedMacTailcatPublicKey : nil,
+            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil
         )
     }
 }

@@ -49,11 +49,13 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         let first = try await fixture.store.authorizeManagedPairing(
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair",
             mobileTailcatPublicKey: "nodekey:mobile"
         )
         let retry = try await fixture.store.authorizeManagedPairing(
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair",
             mobileTailcatPublicKey: "nodekey:mobile"
         )
 
@@ -66,6 +68,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         XCTAssertEqual(authorizationCount, 1, "响应丢失后的同一逻辑配对应复用授权")
         XCTAssertEqual(authorizedRequest?.mobileKey, "nodekey:mobile")
         XCTAssertEqual(authorizedRequest?.macKey, "nodekey:mac")
+        XCTAssertEqual(authorizedRequest?.pairingMacKey, "nodekey:pair")
         XCTAssertEqual(fixture.identity.registeredDeviceID, "mobile-device-id")
     }
 
@@ -75,11 +78,13 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         _ = try await fixture.store.authorizeManagedPairing(
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             macTailcatPublicKey: "nodekey:mac-old",
+            pairingMacTailcatPublicKey: "nodekey:pair",
             mobileTailcatPublicKey: "nodekey:mobile"
         )
         _ = try await fixture.store.authorizeManagedPairing(
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             macTailcatPublicKey: "nodekey:mac-new",
+            pairingMacTailcatPublicKey: "nodekey:pair",
             mobileTailcatPublicKey: "nodekey:mobile"
         )
 
@@ -87,6 +92,28 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         let authorizedRequest = await fixture.api.lastAuthorizedRequest
         XCTAssertEqual(authorizationCount, 2)
         XCTAssertEqual(authorizedRequest?.macKey, "nodekey:mac-new")
+    }
+
+    func testTemporaryPairKeyRotationDoesNotReusePairingAuthorization() async throws {
+        let fixture = await makeFixture()
+
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001",
+            macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair-old",
+            mobileTailcatPublicKey: "nodekey:mobile"
+        )
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001",
+            macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair-new",
+            mobileTailcatPublicKey: "nodekey:mobile"
+        )
+
+        let authorizationCount = await fixture.api.authorizationCount
+        let authorizedRequest = await fixture.api.lastAuthorizedRequest
+        XCTAssertEqual(authorizationCount, 2)
+        XCTAssertEqual(authorizedRequest?.pairingMacKey, "nodekey:pair-new")
     }
 
     func testMobileQuotaFailureStopsBeforePairingAuthorization() async {
@@ -99,6 +126,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
             _ = try await fixture.store.authorizeManagedPairing(
                 macInstallationID: "20000000-0000-4000-8000-000000000001",
                 macTailcatPublicKey: "nodekey:mac",
+                pairingMacTailcatPublicKey: "nodekey:pair",
                 mobileTailcatPublicKey: "nodekey:mobile"
             )
             XCTFail("第六台移动设备必须被名额门禁拒绝")
@@ -368,6 +396,7 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         let requestID: String
         let mobileKey: String
         let macKey: String
+        let pairingMacKey: String
         let grant: String
     }
 
@@ -421,6 +450,7 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         macInstallationID: String,
         mobileTailcatPublicKey: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession {
         authorizationCount += 1
@@ -428,6 +458,7 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
             requestID: requestID,
             mobileKey: mobileTailcatPublicKey,
             macKey: macTailcatPublicKey,
+            pairingMacKey: pairingMacTailcatPublicKey,
             grant: managedPairingGrant
         )
         return ManagedConnectionPairingSession(

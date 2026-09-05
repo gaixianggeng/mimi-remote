@@ -87,6 +87,25 @@ func TestStartPairingRetainsOldPairHostWhenCloseFails(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesOnlyCurrentPairHostPublicKey(t *testing.T) {
+	pairHost := &fakeManagedHost{address: "pair-address", publicKey: "nodekey:pair-public"}
+	manager := &Manager{
+		pairHost:      pairHost,
+		pairExpiresAt: time.Now().Add(time.Minute),
+	}
+
+	status := manager.Status()
+	if status.PairAddress != pairHost.address || status.PairPublicKey != pairHost.publicKey {
+		t.Fatalf("有效配对状态缺少临时主机身份：%+v", status)
+	}
+
+	manager.pairExpiresAt = time.Now().Add(-time.Second)
+	status = manager.Status()
+	if status.PairAddress != "" || status.PairPublicKey != "" || status.PairExpiresAt != "" {
+		t.Fatalf("过期配对状态不能暴露临时主机身份：%+v", status)
+	}
+}
+
 func TestExpiredPairHostRetriesCloseFailure(t *testing.T) {
 	oldPairHost := &fakeManagedHost{closeErr: errors.New("close failed")}
 	manager := &Manager{

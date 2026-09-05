@@ -57,6 +57,7 @@ final class ManagedConnectionDeviceAPIClientTests: XCTestCase {
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             mobileTailcatPublicKey: "nodekey:mobile",
             macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair",
             managedPairingGrant: grant
         )
 
@@ -66,7 +67,15 @@ final class ManagedConnectionDeviceAPIClientTests: XCTestCase {
         XCTAssertEqual(json["macInstallationId"], "20000000-0000-4000-8000-000000000001")
         XCTAssertEqual(json["mobileTailcatPublicKey"], "nodekey:mobile")
         XCTAssertEqual(json["macTailcatPublicKey"], "nodekey:mac")
+        XCTAssertEqual(json["pairingMacTailcatPublicKey"], "nodekey:pair")
         XCTAssertEqual(json["managedPairingGrant"], grant)
+        XCTAssertEqual(
+            Set(json.keys),
+            Set([
+                "requestId", "macInstallationId", "mobileTailcatPublicKey",
+                "macTailcatPublicKey", "pairingMacTailcatPublicKey", "managedPairingGrant"
+            ])
+        )
         XCTAssertEqual(result.macSlot, .reserved)
     }
 

@@ -47,6 +47,7 @@ type Status struct {
 	Address           string `json:"address,omitempty"`
 	PublicKey         string `json:"public_key,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
+	PairPublicKey     string `json:"pair_public_key,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 }
@@ -316,6 +317,7 @@ func (m *Manager) statusLocked() Status {
 	}
 	if m.pairHost != nil && time.Now().Before(m.pairExpiresAt) {
 		status.PairAddress = m.pairHost.Address()
+		status.PairPublicKey = m.pairHost.PublicKey()
 		status.PairExpiresAt = m.pairExpiresAt.Format(time.RFC3339Nano)
 	}
 	return status

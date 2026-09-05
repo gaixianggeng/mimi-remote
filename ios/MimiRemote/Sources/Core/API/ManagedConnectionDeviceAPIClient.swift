@@ -46,6 +46,7 @@ protocol ManagedConnectionDeviceAPIClient: Sendable {
         macInstallationID: String,
         mobileTailcatPublicKey: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession
 
@@ -96,6 +97,7 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
         macInstallationID: String,
         mobileTailcatPublicKey: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession {
         var request = jsonRequest(
@@ -109,6 +111,7 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
                 macInstallationId: macInstallationID,
                 mobileTailcatPublicKey: mobileTailcatPublicKey,
                 macTailcatPublicKey: macTailcatPublicKey,
+                pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
                 managedPairingGrant: managedPairingGrant
             )
         )
@@ -280,6 +283,7 @@ private struct AuthorizePairingRequest: Encodable {
     let macInstallationId: String
     let mobileTailcatPublicKey: String
     let macTailcatPublicKey: String
+    let pairingMacTailcatPublicKey: String
     let managedPairingGrant: String
 }
 

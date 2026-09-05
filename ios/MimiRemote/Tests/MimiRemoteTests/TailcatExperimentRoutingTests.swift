@@ -118,15 +118,16 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
 
 @MainActor
 private final class ManagedPairingAuthorizerStub: ManagedConnectionPairingAuthorizing {
-    private(set) var requests: [(macInstallationID: String, macKey: String, mobileKey: String)] = []
+    private(set) var requests: [(macInstallationID: String, macKey: String, pairingMacKey: String, mobileKey: String)] = []
     private(set) var completions: [ManagedConnectionPairingAuthorization] = []
 
     func authorizeManagedPairing(
         macInstallationID: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization {
-        requests.append((macInstallationID, macTailcatPublicKey, mobileTailcatPublicKey))
+        requests.append((macInstallationID, macTailcatPublicKey, pairingMacTailcatPublicKey, mobileTailcatPublicKey))
         return ManagedConnectionPairingAuthorization(sessionID: "managed-session", grant: "managed-grant")
     }
 
@@ -238,23 +239,26 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(startCallCount, 1)
     }
 
-    func testManagedPairingRequiresManagedQRCodeBeforeStartingRuntime() async throws {
+    func testManagedPairingRequiresCurrentManagedQRCodeBeforeStartingRuntime() async throws {
         let authorizer = ManagedPairingAuthorizerStub()
         let fixture = try makeControllerFixture(
             startResults: [.failure(.startFailed)],
             managedPairingAuthorizer: authorizer
         )
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        let url = try XCTUnwrap(URL(string: Self.freeTailcatPairingURL))
+        let url = try XCTUnwrap(URL(string: Self.legacyManagedTailcatPairingURL))
 
-        await XCTAssertThrowsErrorAsync(
+        do {
             try await fixture.controller.preparePairingURL(
                 url,
                 appStore: fixture.store,
                 profileTarget: .currentOrNew(displayName: nil),
                 requiresManagedAuthorization: true
             )
-        )
+            XCTFail("旧版托管二维码缺少临时配对公钥时必须停止")
+        } catch {
+            XCTAssertEqual(error as? ManagedConnectionDeviceStoreError, .managedQRCodeRequired)
+        }
 
         let startCallCount = await fixture.runtime.startCallCount()
         XCTAssertTrue(authorizer.requests.isEmpty)
@@ -282,6 +286,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(authorizer.requests.count, 1)
         XCTAssertEqual(authorizer.requests.first?.macInstallationID, "20000000-0000-4000-8000-000000000001")
         XCTAssertEqual(authorizer.requests.first?.macKey, "nodekey:mac-public")
+        XCTAssertEqual(authorizer.requests.first?.pairingMacKey, "nodekey:pair-public")
         XCTAssertEqual(authorizer.requests.first?.mobileKey, "nodekey:public-key")
         let startCallCount = await fixture.runtime.startCallCount()
         XCTAssertEqual(startCallCount, 1)
@@ -888,7 +893,10 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     private static let freeTailcatPairingURL =
         "mimiremote://pair?endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-09-01T00%3A00%3A00Z&expires_at=4102444800&pair_sig=abcdef&transport=tailcat&tailcat_pair_address=tc%3Atest-address"
 
-    private static let managedTailcatPairingURL = freeTailcatPairingURL
+    private static let legacyManagedTailcatPairingURL = freeTailcatPairingURL
         + "&managed_mac_installation_id=20000000-0000-4000-8000-000000000001"
         + "&managed_mac_tailcat_public_key=nodekey%3Amac-public"
+
+    private static let managedTailcatPairingURL = legacyManagedTailcatPairingURL
+        + "&managed_pair_tailcat_public_key=nodekey%3Apair-public"
 }
