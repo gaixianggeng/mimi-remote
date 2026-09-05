@@ -172,10 +172,12 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
     ) -> ManagedConnectionCurrentEntitlementOutcome {
         guard case .verified(let transaction) = verification,
               transaction.revocationDate == nil,
-              transaction.expirationDate.map({ $0 > Date() }) ?? true
+              !transaction.isUpgraded
         else {
             return .unverified
         }
+        // currentEntitlements 已按 StoreKit 的订阅状态筛选，并会返回宽限期交易。
+        // 宽限期内原服务期可能已过，不能再次按 expirationDate 把它降为无权益。
         // 冷启动可能恢复到尚未 finish 的已验证交易；服务端授权后再幂等 finish。
         unfinishedTransactions[transaction.id] = transaction
         return .verified(Self.evidence(from: verification, transaction: transaction))

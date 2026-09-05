@@ -176,6 +176,8 @@ targets:
       - path: Tests/MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
         destinationFilters:
           - iOS
+      - path: Resources/MimiRemote.storekit
+        buildPhase: resources
     dependencies:
       - target: MimiRemote
       - package: SnapshotTesting
