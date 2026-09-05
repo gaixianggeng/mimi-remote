@@ -1,7 +1,10 @@
 import SwiftUI
 
-struct InitialPairingView: View {
+/// 两个连接入口共用页面外壳，避免标题、内容宽度和滚动留白各自演进。
+struct ConnectionSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     let onRequestProfileRename: (ConnectionProfile) -> Void
@@ -10,38 +13,28 @@ struct InitialPairingView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            Section {
-                NavigationLink {
-                    ManagedConnectionSubscriptionView(
-                        qrScannerPresentation: qrScannerPresentation
-                    )
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.managed_subscription_title"),
-                        value: L10n.text("ui.managed_connection_recommended_value"),
-                        systemImage: "network.badge.shield.half.filled"
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.initial.managedConnection")
-            } header: {
-                Text(L10n.text("ui.managed_connection_recommended_title"))
-            } footer: {
-                Text(L10n.text("ui.managed_connection_recommended_summary"))
-            }
-
             InitialConnectionSettingsSections(
                 qrScannerPresentation: qrScannerPresentation,
                 onRequestProfileRename: onRequestProfileRename
             )
         }
         .themedSettingsForm(tokens: tokens)
-        // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。
+        // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
+        .tint(tokens.secondaryText)
+        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
+        .navigationTitle(L10n.text("ui.mac_connection"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
+
 private struct SettingsDashboardSection<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore

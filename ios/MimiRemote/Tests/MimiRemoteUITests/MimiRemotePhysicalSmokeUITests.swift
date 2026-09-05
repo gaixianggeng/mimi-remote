@@ -65,9 +65,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供电脑连接管理入口")
         connection.tap()
 
+        let installerDisclosure = app.descendant(identifier: "settings.hostInstaller.disclosure")
+        XCTAssertTrue(
+            scrollUntilHittable(installerDisclosure),
+            "连接设置页应提供折叠的电脑安装说明"
+        )
+        installerDisclosure.tap()
         XCTAssertTrue(
             app.descendant(identifier: "settings.hostInstaller.platform").waitForExistence(timeout: 8),
-            "未配对时连接管理页应展示电脑平台选择器"
+            "展开安装说明后应展示电脑平台选择器"
         )
     }
 
@@ -1129,11 +1135,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 扫码页关闭后会回到连接管理页。优先复用当前页面的入口，避免为了第二次
         // 拉起扫码器又退回工作台并重新进入设置，降低实体机导航差异带来的误报。
         let currentConnectionScan = app.descendant(identifier: "settings.connection.scanQRCode")
-        let firstSetupScan = app.descendant(identifier: "settings.hostInstaller.scan")
         if currentConnectionScan.exists, currentConnectionScan.isHittable {
             currentConnectionScan.tap()
-        } else if firstSetupScan.exists, firstSetupScan.isHittable {
-            firstSetupScan.tap()
         } else {
             try enterWorkbenchIfNeeded()
             try openSettings()
@@ -1141,13 +1144,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-            let setupScan = app.descendant(identifier: "settings.hostInstaller.scan")
-            if scrollUntilHittable(scan, maximumSwipes: 4) {
-                scan.tap()
-            } else {
-                XCTAssertTrue(scrollUntilHittable(setupScan), "连接管理页应提供二维码扫码入口")
-                setupScan.tap()
-            }
+            XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "连接设置页应提供二维码扫码入口")
+            scan.tap()
         }
 
         handleCameraPermissionIfPresented()

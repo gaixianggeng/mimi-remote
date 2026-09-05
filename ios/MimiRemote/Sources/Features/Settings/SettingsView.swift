@@ -150,7 +150,7 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                InitialPairingView(
+                ConnectionSettingsView(
                     qrScannerPresentation: qrScannerPresentation,
                     onRequestProfileRename: { profileRenamePresentation.present($0) }
                 )
@@ -159,15 +159,13 @@ struct SettingsView: View {
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
+                    .navigationTitle("")
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
-        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
-        // 顶部再来一个同名大标题只是白占一屏高度。
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
-        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
         .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionManagementView(
+            ConnectionSettingsView(
                 qrScannerPresentation: qrScannerPresentation,
                 onRequestProfileRename: { profileRenamePresentation.present($0) }
             )
@@ -187,11 +185,6 @@ struct SettingsView: View {
         // 设置页既可作为 sheet 自持 NavigationStack，也可嵌入紧凑 Tab 的 NavigationStack。
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
-    }
-
-    private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
-        // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
-        horizontalSizeClass == .compact ? .large : .inline
     }
 
     private func applyDebugLaunchRouteIfNeeded() {
@@ -636,35 +629,6 @@ struct SettingsValueLabel: View {
         dynamicTypeSize.isAccessibilitySize
             ? SettingsLayoutMetrics.accessibilityRowHeight
             : SettingsLayoutMetrics.standardRowHeight
-    }
-}
-
-private struct ConnectionManagementView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
-    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
-    @EnvironmentObject private var themeStore: ThemeStore
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
-
-    var body: some View {
-        Form {
-            InitialConnectionSettingsSections(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
-            )
-        }
-        .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
-        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
-        .contentMargins(
-            .bottom,
-            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
-            for: .scrollContent
-        )
-        .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }
 
