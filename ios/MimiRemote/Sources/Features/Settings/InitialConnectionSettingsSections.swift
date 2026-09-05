@@ -49,6 +49,13 @@ enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
     }
 }
 
+/// 扫码 Cover 必须由当前真正显示的页面呈现；这个标识用来把同一个 presentation
+/// 对象绑定到唯一一个还在被呈现层级里的宿主，避免多个 Cover 同时抢呈现。
+enum ConnectionQRCodeScannerHost: String {
+    case connectionSettings
+    case managedConnection
+}
+
 @MainActor
 final class ConnectionQRCodeScannerPresentation: ObservableObject {
     typealias SubmissionHandler = (
@@ -58,6 +65,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 
     @Published var intent: ConnectionQRCodeScanIntent?
     @Published private(set) var isRequestingCameraAuthorization = false
+    @Published private(set) var host: ConnectionQRCodeScannerHost = .connectionSettings
 
     private var submissionHandler: SubmissionHandler?
     private var manualConnectionHandler: ((ConnectionQRCodeScanIntent) -> Void)?
@@ -73,10 +81,38 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
         dismissalHandler = onDismiss
     }
 
-    func request(_ requestedIntent: ConnectionQRCodeScanIntent) {
+    /// 只有 `host` 指向的宿主会真正呈现扫码页；其它页面拿到的绑定始终是 nil。
+    func presentationBinding(
+        for host: ConnectionQRCodeScannerHost
+    ) -> Binding<ConnectionQRCodeScanIntent?> {
+        Binding(
+            get: { [weak self] in
+                guard let self, self.host == host else {
+                    return nil
+                }
+                return self.intent
+            },
+            set: { [weak self] newValue in
+                guard let self, self.host == host else {
+                    return
+                }
+                // Cover 关闭时 SwiftUI 写回 nil；新的呈现只允许经 request(_:from:) 进入。
+                if newValue == nil {
+                    self.intent = nil
+                }
+            }
+        )
+    }
+
+    func request(
+        _ requestedIntent: ConnectionQRCodeScanIntent,
+        from host: ConnectionQRCodeScannerHost
+    ) {
         guard !isRequestingCameraAuthorization else {
             return
         }
+
+        self.host = host
 
         guard AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined else {
             intent = requestedIntent
@@ -564,7 +600,7 @@ struct InitialConnectionSettingsSections: View {
 
     @ViewBuilder
     private func connectionProfileRow(_ item: ConnectionProfileSettingsItem) -> some View {
-        // 复制与菜单贴近电脑摘要；仅在大字号下换到下一行，保留足够阅读宽度。
+        // 切换、复制与菜单同排贴近电脑摘要；仅在大字号下换到下一行，保留足够阅读宽度。
         let layout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(alignment: .center, spacing: 8))
@@ -609,20 +645,6 @@ struct InitialConnectionSettingsSections: View {
                             .padding(.vertical, 3)
                             .background(tokens.secondaryText.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
                             .fixedSize()
-                    } else if profileOperationID == item.id {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Button(L10n.text("ui.switch")) {
-                            Task { await switchConnectionProfile(id: item.id) }
-                        }
-                        .font(themeStore.uiFont(size: profileDetailPointSize, weight: .semibold))
-                        .buttonStyle(.borderless)
-                        .tint(tokens.accent)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                        .disabled(isSavingConnection || profileOperationID != nil)
-                        .accessibilityIdentifier("settings.profile.switch.\(item.id)")
                     }
                 }
                 .frame(minHeight: 28, alignment: .leading)
@@ -638,7 +660,29 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func connectionProfileActions(_ item: ConnectionProfileSettingsItem) -> some View {
-        HStack(spacing: 0) {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(spacing: 0) {
+            // 切换与复制、更多操作同排收在行尾；名称行只留标识信息，行首不再被操作打断。
+            if !item.isCurrent {
+                if profileOperationID == item.id {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 44, height: 44)
+                } else {
+                    Button(L10n.text("ui.switch")) {
+                        Task { await switchConnectionProfile(id: item.id) }
+                    }
+                    .font(themeStore.uiFont(size: profileDetailPointSize, weight: .semibold))
+                    .buttonStyle(.borderless)
+                    .tint(tokens.accent)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+                    .disabled(isSavingConnection || profileOperationID != nil)
+                    .accessibilityIdentifier("settings.profile.switch.\(item.id)")
+                }
+            }
+
             Button {
                 copyConnectionInfo(for: item.profile)
             } label: {
@@ -1099,7 +1143,7 @@ struct InitialConnectionSettingsSections: View {
             ? .initialConnection
             : .addConnectionProfile
         pendingManualConnectionIntent = nil
-        qrScannerPresentation.request(intent)
+        qrScannerPresentation.request(intent, from: .connectionSettings)
     }
 
     private func pasteConnectionInfo() {
@@ -1172,7 +1216,8 @@ struct InitialConnectionSettingsSections: View {
         }
         pendingManualConnectionIntent = nil
         qrScannerPresentation.request(
-            .repairCurrentProfile(expectedProfileID: activeProfileID)
+            .repairCurrentProfile(expectedProfileID: activeProfileID),
+            from: .connectionSettings
         )
     }
 

@@ -134,8 +134,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
         // 导航由真实入口持有；这里固定表单容器，独立验证分组、按钮和电脑行的布局。
         let view = ConnectionSettingsView(
-            qrScannerPresentation: fixture.qrScannerPresentation,
-            onRequestProfileRename: { _ in }
+            qrScannerPresentation: fixture.qrScannerPresentation
         )
         .environmentObject(fixture.appStore)
         .environmentObject(fixture.sessionStore)

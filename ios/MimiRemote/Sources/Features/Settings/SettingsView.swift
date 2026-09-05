@@ -96,7 +96,6 @@ struct SettingsView: View {
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     @State private var didApplyDebugLaunchRoute = false
     @State private var showsConnectionManagement = false
 
@@ -115,31 +114,6 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
-        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
-        // 重建，但不会再销毁负责呈现相机的宿主。
-        .fullScreenCover(
-            item: $qrScannerPresentation.intent,
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: {
-                    qrScannerPresentation.chooseManualConnection(for: intent)
-                },
-                onCode: { rawValue in
-                    await qrScannerPresentation.submit(rawValue, intent: intent)
-                }
-            )
-        }
-        // 重命名路由固定由设置根层持有，Form.Section 刷新不会销毁唯一的 sheet presenter。
-        .sheet(
-            item: profileRenameRouteBinding,
-            onDismiss: { profileRenamePresentation.dismiss() }
-        ) { route in
-            ConnectionProfileRenameSheet(route: route) { displayName in
-                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
-            }
-        }
         .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
@@ -150,10 +124,7 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                ConnectionSettingsView(
-                    qrScannerPresentation: qrScannerPresentation,
-                    onRequestProfileRename: { profileRenamePresentation.present($0) }
-                )
+                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
@@ -165,10 +136,7 @@ struct SettingsView: View {
         }
         .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionSettingsView(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: { profileRenamePresentation.present($0) }
-            )
+            ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
         }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -198,18 +166,6 @@ struct SettingsView: View {
             showsConnectionManagement = true
         }
 #endif
-    }
-
-    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
-        Binding(
-            get: { profileRenamePresentation.route },
-            set: { route in
-                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
-                if route == nil {
-                    profileRenamePresentation.dismiss()
-                }
-            }
-        )
     }
 
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {

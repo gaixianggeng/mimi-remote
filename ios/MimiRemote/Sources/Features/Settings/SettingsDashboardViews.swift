@@ -3,11 +3,15 @@ import SwiftUI
 /// 两个连接入口共用页面外壳，避免标题、内容宽度和滚动留白各自演进。
 struct ConnectionSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appStore: AppStore
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
+    // 重命名 sheet 与扫码 Cover 同样必须由当前显示的连接页持有：紧凑布局把这一页
+    // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
+    // 这里是整页而不是 Form.Section，Section 刷新不会销毁它（MIM-63）。
+    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -15,7 +19,7 @@ struct ConnectionSettingsView: View {
         Form {
             InitialConnectionSettingsSections(
                 qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
+                onRequestProfileRename: { profileRenamePresentation.present($0) }
             )
         }
         .themedSettingsForm(tokens: tokens)
@@ -32,6 +36,43 @@ struct ConnectionSettingsView: View {
         )
         .navigationTitle(L10n.text("ui.mac_connection"))
         .navigationBarTitleDisplayMode(.inline)
+        // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
+        // 紧凑布局把连接页 push 进导航栈后，根层已不在被呈现的层级里，点击扫码不会有任何反应。
+        // 这一层是整页而不是 Form.Section，权限弹窗引起的 Section 重建不会销毁它。
+        .fullScreenCover(
+            item: qrScannerPresentation.presentationBinding(for: .connectionSettings),
+            onDismiss: qrScannerPresentation.didDismiss
+        ) { intent in
+            QRCodeScannerSheet(
+                onDismiss: qrScannerPresentation.dismiss,
+                onChooseManualConnection: {
+                    qrScannerPresentation.chooseManualConnection(for: intent)
+                },
+                onCode: { rawValue in
+                    await qrScannerPresentation.submit(rawValue, intent: intent)
+                }
+            )
+        }
+        .sheet(
+            item: profileRenameRouteBinding,
+            onDismiss: { profileRenamePresentation.dismiss() }
+        ) { route in
+            ConnectionProfileRenameSheet(route: route) { displayName in
+                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
+            }
+        }
+    }
+
+    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
+        Binding(
+            get: { profileRenamePresentation.route },
+            set: { route in
+                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
+                if route == nil {
+                    profileRenamePresentation.dismiss()
+                }
+            }
+        )
     }
 }
 
