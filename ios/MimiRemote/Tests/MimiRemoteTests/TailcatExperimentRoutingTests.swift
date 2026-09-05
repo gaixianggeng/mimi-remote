@@ -160,6 +160,23 @@ private final class ManagedConnectionEventReporterStub: ManagedConnectionEventRe
 
 @MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testConnectionMethodSummaryReflectsRouteStateInsteadOfEnabledFlag() {
+        XCTAssertEqual(TailcatExperimentState.unavailable.connectionMethodSummary,
+                       L10n.text("ui.tailcat_framework_unavailable"))
+        XCTAssertEqual(TailcatExperimentState.needsAddress.connectionMethodSummary,
+                       L10n.text("ui.tailcat_needs_address"))
+        XCTAssertEqual(TailcatExperimentState.starting.connectionMethodSummary,
+                       L10n.text("ui.connecting"))
+        XCTAssertEqual(TailcatExperimentState.failed(message: "offline").connectionMethodSummary,
+                       L10n.text("ui.connection_failed"))
+        XCTAssertEqual(TailcatExperimentState.usingTemporaryRoute(.lan).connectionMethodSummary,
+                       L10n.format("ui.managed_connection_using_temporary_route", ConnectionProfileRoute.lan.title))
+        XCTAssertEqual(TailcatExperimentState.connected(endpoint: "http://127.0.0.1:8787").connectionMethodSummary,
+                       L10n.text("ui.connected"))
+        XCTAssertEqual(TailcatExperimentState.disabled.connectionMethodSummary,
+                       L10n.text("ui.deactivated"))
+    }
+
     func testUnavailableManagedRouteStaysFailClosedUntilManualFallback() async throws {
         let fixture = try makeControllerFixture(
             startResults: [],

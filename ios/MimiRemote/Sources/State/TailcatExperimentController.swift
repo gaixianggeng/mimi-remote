@@ -8,6 +8,26 @@ enum TailcatExperimentState: Equatable {
     case usingTemporaryRoute(ConnectionProfileRoute)
     case failed(message: String)
     case unavailable
+
+    var connectionMethodSummary: String {
+        // 启用线路不代表连接成功；故障关闭时仍保留启用状态，不能据此显示“已连接”。
+        switch self {
+        case .disabled:
+            return L10n.text("ui.deactivated")
+        case .needsAddress:
+            return L10n.text("ui.tailcat_needs_address")
+        case .starting:
+            return L10n.text("ui.connecting")
+        case .connected:
+            return L10n.text("ui.connected")
+        case .usingTemporaryRoute(let route):
+            return L10n.format("ui.managed_connection_using_temporary_route", route.title)
+        case .failed:
+            return L10n.text("ui.connection_failed")
+        case .unavailable:
+            return L10n.text("ui.tailcat_framework_unavailable")
+        }
+    }
 }
 
 struct TailcatPathDiagnostic: Codable, Equatable, Identifiable {
