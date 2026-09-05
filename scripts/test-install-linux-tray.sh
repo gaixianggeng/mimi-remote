@@ -23,6 +23,8 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
         (folder/'cmd/mimi-remote-tray/assets').mkdir(parents=True)
         for relative in ['scripts/install-linux-tray.sh','packaging/linux/mimi-remote.desktop','cmd/mimi-remote-tray/assets/mimi.png']:
             shutil.copy2(root/relative,folder/relative)
+        for icon in (root/'cmd/mimi-remote-tray/assets').glob('*-symbolic.svg'):
+            shutil.copy2(icon,folder/'cmd/mimi-remote-tray/assets'/icon.name)
         for name in ['agentd','mimi-remote-tray']:
             f=folder/name
             f.write_text('#!/bin/sh\ncase "$1" in\nversion) echo '+version+';;\n--quit) exit 0;;\n*) exit 2;;\nesac\n')
@@ -40,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     assert ' --show' in desktop.read_text() and ' --show' not in autostart.read_text()
     assert '%%' in desktop.read_text() and 'Exec="' in desktop.read_text()
     assert binary.stat().st_mode&0o777==0o755
+    icons=task_home/'.local/share/mimi-remote/icons'
+    assert len(list(icons.glob('*-symbolic.svg')))==3
     autostart.write_text(autostart.read_text()+'Hidden=true\n')
     run(two,'upgrade');assert version()=='1.1.0'
     assert 'Hidden=true' in autostart.read_text(),'upgrade re-enabled disabled autostart'
@@ -59,6 +63,7 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     config=task_home/'.config/mimi-remote/config.json';config.parent.mkdir();config.write_text('private-config')
     run(two,'uninstall');run(two,'uninstall')
     assert not binary.exists() and not desktop.exists() and not autostart.exists()
+    assert not list(icons.glob('*-symbolic.svg'))
     assert config.read_text()=='private-config'
     print('Linux 托盘安装回归通过：安装、空格/百分号路径、禁用自启动保留、升级、回滚、失败恢复、重复卸载。')
 PY

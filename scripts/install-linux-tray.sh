@@ -18,6 +18,10 @@ previous="$tray_data/tray.previous"
 # matching binaries and desktop metadata, including absent-file markers.
 files=("$tray_binary" "$tray_data/mimi.png" "$HOME/.local/share/applications/mimi-remote.desktop" "$tray_config/autostart/mimi-remote.desktop" "$tray_data/install-linux-tray.sh")
 modes=(755 644 644 644 755)
+for icon in mimi-remote-symbolic mimi-remote-attention-symbolic mimi-remote-offline-symbolic; do
+  files+=("$tray_data/icons/$icon.svg")
+  modes+=(644)
+done
 
 stop_tray() {
   if [[ -x "$tray_binary" ]]; then
@@ -95,6 +99,9 @@ else
   install -m 755 "$candidate" "$stage/source/0"
   install -m 644 "$TRAY_ROOT/cmd/mimi-remote-tray/assets/mimi.png" "$stage/source/1"
   install -m 755 "${BASH_SOURCE[0]}" "$stage/source/4"
+  for index in 5 6 7; do
+    install -m 644 "$TRAY_ROOT/cmd/mimi-remote-tray/assets/$(basename "${files[$index]}")" "$stage/source/$index"
+  done
   # Desktop Entry Exec has its own escaping rules; never interpolate a shell.
   desktop_exec="$tray_binary"
   desktop_exec="${desktop_exec//\\/\\\\}"

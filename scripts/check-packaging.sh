@@ -109,7 +109,7 @@ bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
 rm -rf "$skill_dist"
 trap - EXIT
 
-for tray_file in scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png; do
+for tray_file in scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
   [[ -f "$tray_file" ]] || fail "缺少 Linux 托盘文件 $tray_file。"
   grep -Fq "$tray_file" .goreleaser.yml || fail "Linux 归档没有包含 $tray_file。"
 done

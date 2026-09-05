@@ -108,6 +108,10 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 		args = []string{"doctor", "--json"}
 	case "logs":
 		args = []string{"logs", "-n", "200"}
+	case "tailcat-enable":
+		args = []string{"tailcat", "enable", "--json"}
+	case "tailcat-disable":
+		args = []string{"tailcat", "disable", "--json"}
 	default:
 		return "", errors.New("不支持的操作")
 	}
@@ -128,8 +132,17 @@ type linuxPairingInfo struct {
 	PairExpiresAt string `json:"pair_expires_at"`
 }
 
-func (c *linuxController) pairing(ctx context.Context) (linuxPairingInfo, error) {
-	payload, err := c.runner(ctx, "pair", "--qr-only", "--json")
+func (c *linuxController) pairing(ctx context.Context, network string) (linuxPairingInfo, error) {
+	var args []string
+	switch network {
+	case "tailcat":
+		args = []string{"tailcat", "pair", "--qr-only", "--json"}
+	case "tailscale", "lan":
+		args = []string{"pair", "--network", network, "--qr-only", "--json"}
+	default:
+		return linuxPairingInfo{}, errors.New("请选择 Tailcat、Tailscale 或局域网配对")
+	}
+	payload, err := c.runner(ctx, args...)
 	if err != nil {
 		return linuxPairingInfo{}, err
 	}
@@ -152,6 +165,33 @@ func (c *linuxController) pairing(ctx context.Context) (linuxPairingInfo, error)
 		return linuxPairingInfo{}, errors.New("配对票据有效期不一致或已过期")
 	}
 	result.PairExpiresAt = ticketExpiry.Format(time.RFC3339Nano)
+	if network == "tailcat" && (u.Query().Get("transport") != "tailcat" || u.Query().Get("tailcat_pair_address") == "") {
+		return linuxPairingInfo{}, errors.New("Tailcat 配对信息缺少内置连接地址")
+	}
+	if network != "tailcat" && u.Query().Get("transport") == "tailcat" {
+		return linuxPairingInfo{}, errors.New("配对网络与所选方式不一致")
+	}
+	return result, nil
+}
+
+// Read only the public status fields, never configuration or private keys.
+type linuxTailcatStatus struct {
+	Enabled           bool   `json:"enabled"`
+	Running           bool   `json:"running"`
+	PairedDeviceCount int    `json:"paired_device_count"`
+	Error             string `json:"error"`
+}
+
+func (c *linuxController) tailcatStatus(ctx context.Context) (linuxTailcatStatus, error) {
+	data, err := c.runner(ctx, "tailcat", "status", "--json")
+	if err != nil {
+		return linuxTailcatStatus{}, err
+	}
+	var result linuxTailcatStatus
+	var contract map[string]json.RawMessage
+	if json.Unmarshal(data, &result) != nil || json.Unmarshal(data, &contract) != nil || contract["enabled"] == nil || contract["running"] == nil {
+		return result, errors.New("agentd 未提供 Tailcat 状态，请更新 agentd")
+	}
 	return result, nil
 }
 

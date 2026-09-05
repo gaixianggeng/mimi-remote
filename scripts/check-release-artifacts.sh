@@ -124,7 +124,7 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
   fi
   bash "$temp_dir/scripts/install-linux.sh" --self-test >/dev/null
   if [[ "$platform" == linux_* ]]; then
-    for tray_file in mimi-remote-tray scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png; do
+    for tray_file in mimi-remote-tray scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
       grep -Fxq -- "$tray_file" <<<"$archive_listing" || { echo "Linux 归档缺少 $tray_file。" >&2; exit 1; }
       tar -xzf "$archive" -C "$temp_dir" "$tray_file"
       if [[ "$tray_file" != mimi-remote-tray ]]; then

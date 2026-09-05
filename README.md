@@ -164,7 +164,7 @@ Private-LAN access is opt-in. Setup only enables it on a Private Windows network
 
 ### Linux host
 
-The Linux release includes a desktop tray with host status, pairing, diagnostics, logs, and service controls. It uses StatusNotifierItem on compatible desktops; QR codes and confirmations open in a local browser panel. See [Linux desktop tray](docs/linux-tray.md) for desktop requirements and recovery steps.
+The Linux release includes a desktop tray with host status, Tailcat/Tailscale/LAN pairing, diagnostics, logs, and service controls. It uses theme-aware symbolic icons and StatusNotifierItem on compatible desktops; QR codes and confirmations open in your terminal. See [Linux desktop tray](docs/linux-tray.md) for desktop requirements and recovery steps.
 
 Linux uses the release archive and a per-user systemd service. Install and sign in to Codex CLI 0.149.1 or later as the same Linux user, verify the release checksums, extract the archive, and run `bash ./scripts/install-linux.sh install`.
 

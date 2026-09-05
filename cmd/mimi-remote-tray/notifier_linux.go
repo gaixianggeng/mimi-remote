@@ -7,6 +7,8 @@ import (
 	"context"
 	_ "embed"
 	"image/png"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -64,9 +66,10 @@ func newLinuxNotifier(conn *dbus.Conn, dispatch, show func(string), quit func())
 	}
 	values := map[string]any{
 		"Category": "ApplicationStatus", "Id": "mimi-remote", "Title": "Mimi Remote", "Status": "Active",
-		"WindowId": uint32(0), "IconName": "", "IconPixmap": linuxTrayPixmap(linuxTraySnapshot{}),
+		"WindowId": uint32(0), "IconName": linuxTrayIconName(linuxTraySnapshot{}), "IconPixmap": linuxTrayPixmap(linuxTraySnapshot{}),
+		"IconThemePath":   linuxTrayIconDirectory(),
 		"OverlayIconName": "", "OverlayIconPixmap": []trayPixmap{},
-		"AttentionIconName": "", "AttentionIconPixmap": linuxTrayPixmap(linuxTraySnapshot{}),
+		"AttentionIconName": "mimi-remote-attention-symbolic", "AttentionIconPixmap": linuxTrayPixmap(linuxTraySnapshot{}),
 		"AttentionMovieName": "", "ItemIsMenu": true, "Menu": trayMenuPath,
 		"ToolTip": trayTooltip{"", []trayPixmap{}, "Mimi Remote", "等待服务状态"},
 	}
@@ -101,13 +104,14 @@ func newLinuxNotifier(conn *dbus.Conn, dispatch, show func(string), quit func())
 func (n *linuxNotifier) publish(s linuxTraySnapshot) {
 	revision := n.menu.update(linuxMenuItems(s))
 	n.properties.SetMust(notifierInterface, "IconPixmap", linuxTrayPixmap(s))
+	n.properties.SetMust(notifierInterface, "IconName", linuxTrayIconName(s))
 	n.properties.SetMust(notifierInterface, "AttentionIconPixmap", linuxTrayPixmap(s))
 	state := "Active"
-	if s.Error != "" || (s.HasStatus && s.Status.ProcessOK && (!s.Status.ServiceOK || !s.Status.DoctorOK)) {
+	if s.Error != "" || s.UIError != "" || (s.HasStatus && s.Status.ProcessOK && (!s.Status.ServiceOK || !s.Status.DoctorOK)) {
 		state = "NeedsAttention"
 	}
 	n.properties.SetMust(notifierInterface, "Status", state)
-	n.properties.SetMust(notifierInterface, "ToolTip", trayTooltip{"", []trayPixmap{}, "Mimi Remote", redactTrayText(s.title() + "\n" + s.Error)})
+	n.properties.SetMust(notifierInterface, "ToolTip", trayTooltip{"", []trayPixmap{}, "Mimi Remote", redactTrayText(s.title() + "\nTailcat · " + s.tailcatTitle() + "\n" + s.Error + "\n" + s.UIError)})
 	_ = n.conn.Emit(notifierPath, notifierInterface+".NewIcon")
 	_ = n.conn.Emit(notifierPath, notifierInterface+".NewToolTip")
 	_ = n.conn.Emit(notifierPath, notifierInterface+".NewStatus", state)
@@ -147,28 +151,36 @@ func (n *linuxNotifier) watch(ctx context.Context) {
 func linuxTrayPixmap(s linuxTraySnapshot) []trayPixmap {
 	const size = 32
 	pixels := make([]byte, size*size*4)
-	color := [3]byte{115, 126, 143}
-	if s.Error != "" || !s.HasStatus || (s.Status.ProcessOK && (!s.Status.ServiceOK || !s.Status.DoctorOK)) {
-		color = [3]byte{222, 149, 46}
-	} else if s.Status.ServiceOK && s.Status.DoctorOK {
-		color = [3]byte{55, 163, 120}
-	}
 	brand, err := png.Decode(bytes.NewReader(linuxTrayBrandPNG))
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			offset := (y*size + x) * 4
 			// ARGB32, network byte order, as required by StatusNotifierItem.
-			pixels[offset] = 255
-			copy(pixels[offset+1:offset+4], color[:])
 			if err == nil && x >= 3 && x < 29 && y >= 7 && y < 25 {
 				_, _, _, alpha := brand.At((x-3)*brand.Bounds().Dx()/26, (y-7)*brand.Bounds().Dy()/18).RGBA()
-				for c := 0; c < 3; c++ {
-					pixels[offset+1+c] = byte((uint32(color[c])*(65535-alpha) + 245*alpha) / 65535)
+				pixels[offset] = byte(alpha >> 8)
+				for c := 1; c < 4; c++ {
+					pixels[offset+c] = 220
 				}
 			}
 		}
 	}
 	return []trayPixmap{{size, size, pixels}}
+}
+
+func linuxTrayIconName(s linuxTraySnapshot) string {
+	if s.Error != "" || s.UIError != "" || !s.HasStatus || (s.Status.ProcessOK && (!s.Status.ServiceOK || !s.Status.DoctorOK)) {
+		return "mimi-remote-attention-symbolic"
+	}
+	if !s.Status.ProcessOK {
+		return "mimi-remote-offline-symbolic"
+	}
+	return "mimi-remote-symbolic"
+}
+
+func linuxTrayIconDirectory() string {
+	executable, _ := os.Executable()
+	return filepath.Clean(filepath.Join(filepath.Dir(executable), "../share/mimi-remote/icons"))
 }
 
 func requestLinuxTrayControl(conn *dbus.Conn, action string) error {
