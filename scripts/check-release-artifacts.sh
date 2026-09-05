@@ -123,6 +123,21 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
     exit 1
   fi
   bash "$temp_dir/scripts/install-linux.sh" --self-test >/dev/null
+  if [[ "$platform" == linux_* ]]; then
+    for tray_file in mimi-remote-tray scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png; do
+      grep -Fxq -- "$tray_file" <<<"$archive_listing" || { echo "Linux 归档缺少 $tray_file。" >&2; exit 1; }
+      tar -xzf "$archive" -C "$temp_dir" "$tray_file"
+      if [[ "$tray_file" != mimi-remote-tray ]]; then
+        cmp -s "$tray_file" "$temp_dir/$tray_file" || { echo "Linux 托盘归档与源码不一致。" >&2; exit 1; }
+      fi
+    done
+    [[ -x "$temp_dir/mimi-remote-tray" ]] || { echo 'Linux 托盘缺少执行权限。' >&2; exit 1; }
+    tray_metadata="$(go version -m "$temp_dir/mimi-remote-tray")"
+    for expected_setting in GOOS=linux "GOARCH=${platform##*_}" CGO_ENABLED=0; do
+      grep -Fq "$expected_setting" <<<"$tray_metadata" || { echo "Linux 托盘目标不正确：$expected_setting。" >&2; exit 1; }
+    done
+  fi
+
 
   # go version -m 可跨平台读取二进制，不需要在当前机器上执行 Linux 产物。
   build_metadata="$(go version -m "$temp_dir/agentd")"

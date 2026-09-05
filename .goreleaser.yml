@@ -19,6 +19,20 @@ builds:
     ldflags:
       - -s -w -X main.version={{ .Version }}
 
+  - id: linux-tray
+    main: ./cmd/mimi-remote-tray
+    binary: mimi-remote-tray
+    env:
+      - CGO_ENABLED=0
+      - GOTOOLCHAIN=local
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.releaseVersion={{ .Version }}
+
 # 正式 tag 必须显式设置 MIMI_MACOS_SIGNING=required。GoReleaser 会先使用
 # Developer ID 对两个 Darwin 二进制签名并完成 Apple notarization，再把签名后的
 # 二进制交给 archive/checksum/Homebrew Formula 阶段。普通 snapshot 不接触发布私钥。
@@ -41,6 +55,8 @@ archives:
   - id: agentd
     ids:
       - agentd
+      - linux-tray
+    allow_different_binary_count: true
     formats:
       - tar.gz
     name_template: >-
@@ -58,6 +74,9 @@ archives:
       - config.example.json
       - packaging/systemd/mimi-remote.service
       - scripts/install-linux.sh
+      - scripts/install-linux-tray.sh
+      - packaging/linux/mimi-remote.desktop
+      - cmd/mimi-remote-tray/assets/mimi.png
 
 checksum:
   name_template: checksums.txt

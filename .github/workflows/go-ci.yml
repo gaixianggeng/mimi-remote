@@ -22,6 +22,8 @@ on:
       - "scripts/check-mimi-protocol-contract.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
+      - "scripts/install-linux-tray.sh"
+      - "scripts/test-install-linux-tray.sh"
       - "scripts/build-windows-installer.ps1"
       - "scripts/check-windows-installer.ps1"
       - "scripts/test-windows-install.ps1"
@@ -86,6 +88,13 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$RUNNER_TEMP/agentd" ./cmd/agentd
+
+      - name: Build portable Linux tray
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.releaseVersion=ci" -o "$RUNNER_TEMP/mimi-remote-tray" ./cmd/mimi-remote-tray
+          GOARCH=arm64 go build -trimpath -o "$RUNNER_TEMP/mimi-remote-tray-arm64" ./cmd/mimi-remote-tray
 
       - name: Check GoReleaser config
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6

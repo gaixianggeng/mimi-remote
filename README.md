@@ -126,7 +126,7 @@ flowchart LR
     Gateway <--> Claude
 ```
 
-This repository ships the complete link: the native iPhone/iPad app, the Go `agentd` gateway for macOS, Windows, and Linux, the Mac menu bar app, the Windows tray app, and the Claude Code compatibility bridge. The mobile app connects only to your own host computer, so project files, session history, and runtime credentials stay on that computer.
+This repository ships the complete link: the native iPhone/iPad app, the Go `agentd` gateway for macOS, Windows, and Linux, the Mac menu bar app, the Windows and Linux tray apps, and the Claude Code compatibility bridge. The mobile app connects only to your own host computer, so project files, session history, and runtime credentials stay on that computer.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
 - **Platform-specific Codex transport:** Linux and local terminal clients share one resident App Server through Codex's standard Unix control socket. macOS reaches the same socket through SSH, while Windows lets `agentd` own a loopback-only WebSocket App Server. None of these paths uses Desktop private IPC.
@@ -163,6 +163,8 @@ The per-user installer registers a limited Task Scheduler task and preserves con
 Private-LAN access is opt-in. Setup only enables it on a Private Windows network profile and limits the firewall rule to `LocalSubnet`; otherwise the host remains loopback-only unless Tailscale is available. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for verification and recovery commands.
 
 ### Linux host
+
+The Linux release includes a desktop tray with host status, pairing, diagnostics, logs, and service controls. It uses StatusNotifierItem on compatible desktops; QR codes and confirmations open in a local browser panel. See [Linux desktop tray](docs/linux-tray.md) for desktop requirements and recovery steps.
 
 Linux uses the release archive and a per-user systemd service. Install and sign in to Codex CLI 0.149.1 or later as the same Linux user, verify the release checksums, extract the archive, and run `bash ./scripts/install-linux.sh install`.
 

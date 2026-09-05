@@ -128,6 +128,16 @@ path_exists() {
   [[ -e "$1" || -L "$1" ]]
 }
 
+manage_linux_tray() {
+  local tray_mode="$1"
+  local tray_helper="$ROOT_DIR/scripts/install-linux-tray.sh"
+  if [[ "$tray_mode" == rollback || "$tray_mode" == uninstall ]]; then
+    tray_helper="$HOME/.local/share/mimi-remote/install-linux-tray.sh"
+  fi
+  [[ -f "$tray_helper" ]] || return 0
+  bash "$tray_helper" "$tray_mode"
+}
+
 uninstall_linux() {
   local destination_binary="$1"
   local previous_binary="$2"
@@ -151,6 +161,7 @@ uninstall_linux() {
   done
 
   if [[ "$has_installed_file" == "0" ]]; then
+    manage_linux_tray uninstall
     echo "Mimi Remote Linux 已处于未安装状态。"
   else
     if path_exists "$destination_service"; then
@@ -165,6 +176,8 @@ uninstall_linux() {
         return 1
       fi
     fi
+
+    manage_linux_tray uninstall
 
     # 先用 daemon-reload 作为 systemd manager 的破坏性操作前置检查；
     # 删除 unit 后再 reload 一次，确保 manager 不保留已卸载的 unit 定义。
@@ -447,6 +460,9 @@ main() {
   trap - ERR
   cleanup
   trap - EXIT
+  if ! manage_linux_tray "$mode"; then
+    echo "警告：agentd 已完成 ${mode}，托盘更新未完成；请运行 Release 包的 scripts/install-linux-tray.sh 重试。" >&2
+  fi
   echo "Mimi Remote Linux ${mode} 完成：agentd ${source_version}。"
   echo "配置：$config_path"
   echo "服务：systemctl --user status $SERVICE_NAME"
