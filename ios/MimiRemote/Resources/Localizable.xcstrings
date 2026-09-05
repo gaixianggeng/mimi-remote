@@ -26988,6 +26988,40 @@
         }
       }
     },
+    "ui.supplemental_information_request_expired": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This request for more information expired before the answer was delivered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "补充信息请求已失效，答案没有送达"
+          }
+        }
+      }
+    },
+    "ui.supplemental_information_request_expired_card_dismissed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This request for more information has expired. The card was dismissed and the session is no longer waiting on it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条补充信息请求已经失效，卡片已收起，会话不再等待输入。"
+          }
+        }
+      }
+    },
     "ui.supplementary_information_has_been_sent_waiting_for_codex": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

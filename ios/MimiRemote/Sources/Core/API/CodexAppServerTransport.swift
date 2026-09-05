@@ -28,7 +28,9 @@ protocol SessionWebSocketClient: AnyObject {
     var onSendFailure: ((ClientMessageID?, String) -> Void)? { get set }
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)? { get set }
     var onApprovalDecisionFailure: ((String, String) -> Void)? { get set }
-    var onUserInputResponseFailure: ((String, String) -> Void)? { get set }
+    /// (requestID, 展示文案, expired)。expired 表示对端已经不认识这条请求，
+    /// 重试不可能成功，调用方必须撤掉卡片而不是把它放回去。
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)? { get set }
     var onControlFailure: ((String) -> Void)? { get set }
 
     func connect(sessionID: SessionID)

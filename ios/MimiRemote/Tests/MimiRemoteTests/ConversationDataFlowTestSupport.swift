@@ -71,7 +71,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private(set) var connectedSessionIDs: [SessionID] = []
