@@ -287,10 +287,10 @@ extension SessionStore {
                 }
                 let request = self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
                 guard !expired else {
-                    // 请求已经不存在，放回去只会得到一张永远点不动的卡：
-                    // 直接收起卡片并解除「待输入」，让会话能继续用。
-                    self?.discardExpiredUserInputRequest(sessionID: session.id)
-                    self?.setErrorMessage(L10n.text("ui.supplemental_information_request_expired_card_dismissed"))
+                    // resolved 或 turn/completed 已结算的请求，其迟到回调不能改写后续状态。
+                    guard let request else { return }
+                    self?.discardExpiredUserInputRequest(request, sessionID: session.id)
+                    self?.setErrorMessage(L10n.text("ui.supplemental_information_request_expired"))
                     return
                 }
                 if let request {
@@ -2963,18 +2963,20 @@ extension SessionStore {
             SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
             fallbackSessionID: sessionID
         )
-        conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false)
+        conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false, itemID: request.itemID)
     }
 
     /// 对端已经不认识这条补充信息请求时收起卡片。
     ///
     /// 与 `acceptUserInputResponseLocally` 的区别只有一个：答案从没送达 Agent，
     /// 所以时间线要标成「已失效」，不能让用户以为自己答过了。
-    func discardExpiredUserInputRequest(sessionID: SessionID) {
+    func discardExpiredUserInputRequest(_ request: AgentUserInputRequest, sessionID: SessionID) {
+        conversationStore.markUserInputExpired(itemID: request.itemID, sessionID: sessionID)
+        // 乐观提交已经撤卡。只有同一请求被再次投影时才需要清理状态，不能影响新的阻塞点。
+        guard sessionsByID[sessionID]?.pendingUserInput?.id == request.id else {
+            return
+        }
         updateSession(sessionID) { item in
-            guard item.status == "waiting_for_input" || item.pendingUserInput != nil else {
-                return
-            }
             item.status = "running"
             item.pendingUserInput = nil
         }
@@ -2982,7 +2984,6 @@ extension SessionStore {
             SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
             fallbackSessionID: sessionID
         )
-        conversationStore.markLatestUserInputExpired(sessionID: sessionID)
     }
 
     func restoreUserInputRequestAfterFailure(_ request: AgentUserInputRequest, sessionID: SessionID) {

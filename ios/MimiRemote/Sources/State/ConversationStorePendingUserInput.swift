@@ -3,10 +3,11 @@ import Foundation
 // 补充信息（requestUserInput）在时间线上的状态机：等待、提交、跳过、失效、退回。
 // 这几段文案靠彼此的前缀互相识别，改一处必须同时看另一处，所以放在同一个文件里。
 extension ConversationStore {
-    func resolveLatestPendingUserInput(sessionID: String, skipped: Bool) {
+    func resolveLatestPendingUserInput(sessionID: String, skipped: Bool, itemID: AgentItemID? = nil) {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = list.lastIndex(where: { message in
                   message.kind == .userInput
+                      && (itemID == nil || message.itemID == nil || message.itemID == itemID)
                       && (message.content.hasPrefix(L10n.text("ui.waiting_for_additional_information_3a146c9c")) || message.content.hasPrefix(L10n.text("ui.waiting_for_boot_input")))
               }) else {
             if skipped {
@@ -16,19 +17,17 @@ extension ConversationStore {
         }
         let title = pendingUserInputTitle(from: list[index].content)
         let prefix = skipped ? L10n.text("ui.additional_information_skipped") : L10n.text("ui.additional_information_has_been_submitted")
+        // 历史记录可能没有 itemID；提交时补齐，失败回调才能按请求定位而不误改后续同标题记录。
+        list[index].itemID = list[index].itemID ?? itemID
         list[index].content = title.isEmpty ? prefix : L10n.format("ui.labeled_value", prefix, title)
         list[index].updatedAt = Date()
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
-    /// 把最后一条补充信息记录改写成「已失效」。
-    ///
-    /// 与 `resolveLatestPendingUserInput` 的差别是不挑前缀：提交是乐观收起的，
-    /// 失败传回来时那行往往已经被改写成「补充信息已提交」，再按「等待补充信息」
-    /// 去找就找不到，只能补一条无关的「已跳过」。用户需要看到的是这次没送到。
-    func markLatestUserInputExpired(sessionID: String) {
+    /// 提交已乐观改写文案，失效只能按请求身份回写，不能按前缀或最后一条记录猜测。
+    func markUserInputExpired(itemID: AgentItemID, sessionID: String) {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
-              let index = list.lastIndex(where: { $0.kind == .userInput }) else {
+              let index = list.lastIndex(where: { $0.kind == .userInput && $0.itemID == itemID }) else {
             return
         }
         list[index].content = L10n.text("ui.supplemental_information_request_expired")
