@@ -192,6 +192,7 @@ extension CodexAppServerSessionRuntime {
     }
 
     func finishAttachedEventStreams() {
+        cancelMimiTaskRequests()
         let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
         eventMailboxesBySessionID.removeAll(keepingCapacity: true)
         for mailbox in mailboxes { mailbox.finishFromProducer() }

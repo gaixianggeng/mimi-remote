@@ -102,6 +102,16 @@ struct CodexAppServerResolvedServerRequests {
     var userInputSessionIDs: [SessionID] = []
 }
 
+struct CodexMimiTaskCallIdentity: Hashable {
+    let threadID: SessionID
+    let turnID: TurnID
+    let callID: String
+}
+
+struct CodexMimiTaskExpectedDelivery {
+    let clientMessageID: ClientMessageID
+}
+
 struct CodexAppServerThreadResumeTask {
     let connection: CodexAppServerConnection
     let token: UUID
@@ -183,6 +193,10 @@ actor CodexAppServerSessionRuntime {
     var connectionAttemptWaiters: [UUID: CheckedContinuation<CodexAppServerPreparedConnection, Error>] = [:]
     var notificationPumpTask: Task<Void, Never>?
     var serverRequestPumpTask: Task<Void, Never>?
+    var mimiTaskRequests: [CodexMimiTaskCallIdentity: Task<Void, Never>] = [:]
+    var resolvedMimiTaskRequestIDs: Set<CodexMimiTaskCallIdentity> = []
+    var resolvedMimiTaskRequestOrder: [CodexMimiTaskCallIdentity] = []
+    var mimiTaskExpectedDeliveries: [SessionID: CodexMimiTaskExpectedDelivery] = [:]
     var projector = CodexAppServerEventProjector()
     var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
@@ -3349,6 +3363,10 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ request: CodexAppServerServerRequest) {
+        if request.method == "item/tool/call" {
+            handleMimiTaskRequest(request)
+            return
+        }
         if isResolvedServerRequestTombstoned(request) {
             return
         }

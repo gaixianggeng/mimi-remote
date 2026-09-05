@@ -4,11 +4,11 @@
 
 `agentd` 不是 Codex app-server 的无条件透传代理。它只开放移动端当前需要、且能在项目 allowlist 内安全约束的协议能力；Codex 新增方法时默认不自动获得远程权限。
 
-当前协议基线固定为 Codex CLI `0.149.1`：
+当前协议基线固定为 Codex CLI `0.151.0`：
 
-- Client Request：150 个
+- Client Request：154 个
 - Server Request：11 个
-- Server Notification：75 个
+- Server Notification：79 个
 
 方法快照位于 `internal/httpapi/testdata/codex-protocol/`，CI 会在 Codex 版本或方法集合漂移时失败。
 
@@ -34,7 +34,7 @@ Go Gateway 当前开放 31 个 client frame method，其中 `initialized` 是 no
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
 
-共享 SSH 模式的普通用户消息只使用 `thread/queue/add`。客户端初始化时必须声明 `experimentalApi: true`。发送结果不确定时，客户端用同一个 `clientUserMessageId` 依次查询 `thread/queue/list` 和 `thread/items/list`，不能盲目重发。`turn/start` 只保留给非共享旧链路和内部标题任务。
+共享 SSH 模式的普通用户消息只使用 `thread/queue/add`。客户端初始化时必须声明 `experimentalApi: true`。需要任务管理工具的客户端还必须声明 `mimiDynamicTaskToolsV1: true`；该私有 capability 只在 Gateway 本地生效，不会转发给 Codex。新建 Thread 只接受完整的 `mimi_tasks` V1 opt-in，Gateway 会丢弃客户端描述和 schema，并重建 `create_thread`、`list_threads`、`read_thread`、`send_message_to_thread`、`wait_threads` 五个固定 typed function。`thread/resume` 不注入工具，由 Codex 从 rollout 恢复；升级前创建的旧 Thread 不补工具。发送结果不确定时，客户端用同一个 `clientUserMessageId` 依次查询 `thread/queue/list` 和 `thread/items/list`，不能盲目重发。`turn/start` 只保留给非共享旧链路和内部标题任务。
 
 历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。线程模型、工作目录和权限是共享状态；`thread/queue/add` 不隐式修改它们。移动端提交共享队列消息时，会先用独立的 `thread/settings/update` 应用 Composer 为下一回合明确选择的模型、推理强度和协作模式，确认成功后才调用 `thread/queue/add`；权限继续走独立的受控链路。
 
@@ -46,7 +46,7 @@ Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；�
 
 `thread/search` 是跨工作区全文搜索，额外执行以下边界：
 
-- 请求只重建 Codex `0.149.1` 声明的搜索、分页、排序和来源字段，未知字段不透传；
+- 请求只重建 Codex `0.151.0` 声明的搜索、分页、排序和来源字段，未知字段不透传；
 - 响应中的每条 thread 必须携带绝对 cwd，并命中 project、`browse_roots` 或 managed Worktree；
 - cwd 缺失、畸形、目录不存在或越权时，整条 thread 和 snippet 一并删除；
 - 只有实际下发的 thread 才进入 Gateway 授权缓存，供后续 `thread/read` / `thread/resume` 使用；
@@ -80,6 +80,7 @@ Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；�
 - `item/fileChange/requestApproval`
 - `item/fileRead/requestApproval`
 - `item/permissions/requestApproval`
+- `item/tool/call`，仅限声明 V1 capability、当前连接已授权 Thread 的 `mimi_tasks`
 - `item/tool/requestUserInput`
 - `mcpServer/elicitation/request`
 
@@ -90,8 +91,9 @@ Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；�
 - `account/chatgptAuthTokens/refresh`
 - `attestation/generate`
 - `currentTime/read`
-- `item/tool/call`
 - 未来新增但尚未评估的 Server Request
+
+动态任务工具使用 `(threadId, turnId, callId)` 的 Router 级原子 claim。多个订阅连接收到同一 reverse request 时，只有第一个已声明 capability 的授权连接可以执行。claim 在响应后清除 owner 引用并保留为有界 10 分钟 tombstone，避免迟到广播重复执行 `create_thread` 或 `send_message_to_thread`。owner 断连时 claim 转为 abandoned tombstone；迟到重播只返回固定失败，不会重放副作用。结果只允许一个有界 `inputText` 和布尔 `success`；图片、额外字段和越权 Thread 均拒绝。
 
 ## 关键 Notification 投影
 

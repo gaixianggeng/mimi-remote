@@ -1068,6 +1068,15 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 }
 
+extension CodexAppServerTurnOptions {
+    var registersMimiTaskTools: Bool {
+        let runtime = runtimeProvider?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return runtime == nil || runtime == "" || runtime == "codex" || runtime == "openai"
+    }
+}
+
 struct CodexAppServerTurnPayload: Codable, Hashable {
     static let maximumEncodedInputBytes = 12 << 20
 

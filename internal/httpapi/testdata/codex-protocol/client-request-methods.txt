@@ -50,6 +50,8 @@ initialize
 marketplace/add
 marketplace/remove
 marketplace/upgrade
+mcpServer/event/stream/start
+mcpServer/event/stream/stop
 mcpServer/oauth/login
 mcpServer/resource/read
 mcpServer/tool/call
@@ -136,6 +138,7 @@ thread/section/move
 thread/settings/update
 thread/shellCommand
 thread/start
+thread/timeline/list
 thread/turns/list
 thread/unarchive
 thread/unsubscribe
@@ -144,6 +147,7 @@ threadSection/delete
 threadSection/list
 threadSection/update
 turn/interrupt
+turn/settings/update
 turn/start
 turn/steer
 windowsSandbox/readiness
