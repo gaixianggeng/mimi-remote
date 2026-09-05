@@ -1194,8 +1194,7 @@ struct WorkspaceRootView: View {
         // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
         await refreshWorkspaceSessions(
             project: project,
-            presentationKey: presentationKey,
-            refreshFromStart: true
+            presentationKey: presentationKey
         )
         guard !Task.isCancelled,
               appStore.activeHostScope == presentationKey.hostScope else { return }
@@ -1205,8 +1204,7 @@ struct WorkspaceRootView: View {
 
     private func refreshWorkspaceSessions(
         project: AgentProject,
-        presentationKey: WorkspaceSessionPresentationKey,
-        refreshFromStart: Bool = false
+        presentationKey: WorkspaceSessionPresentationKey
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
@@ -1222,8 +1220,7 @@ struct WorkspaceRootView: View {
                 projectID: project.id,
                 runtimeProvider: presentationKey.runtimeProvider,
                 cursor: nil,
-                limit: SessionStore.initialSessionPageLimit,
-                refreshFromStart: refreshFromStart
+                limit: SessionStore.initialSessionPageLimit
             )
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return

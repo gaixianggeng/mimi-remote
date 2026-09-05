@@ -127,33 +127,13 @@ extension SessionStore {
         runtimeProvider: String,
         cursor: String?,
         limit: Int,
-        excludingListableSessionIDs: Set<SessionID> = [],
-        refreshFromStart: Bool = false
+        excludingListableSessionIDs: Set<SessionID> = []
     ) async throws -> SessionsPage {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             throw CancellationError()
         }
         let lease = try captureProjectsGitHostLease()
         let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
-        if refreshFromStart, normalizedRuntime == "codex", cursor == nil {
-            // 手势之前的请求可以正常收尾，但它的结果不能冒充这次手动刷新。
-            // 不取消已经发出的 RPC，避免下一次请求撞上 Gateway 的同目录并发限制。
-            let previousRequests = sessionListFirstPageInFlightByKey.filter { key, _ in
-                key.profileID == lease.scope.profileID
-                    && key.connectionGeneration == Int(truncatingIfNeeded: lease.scope.generation)
-                    && key.workspaceID == workspace.id
-                    && key.workspacePath == workspace.path
-            }
-            for (key, request) in previousRequests {
-                _ = try? await request.task.value
-                retireSessionListFirstPageInFlight(key: key, id: request.id)
-                try requireCurrentProjectsGitHost(lease)
-            }
-            // 下拉读取最新列表头部；“显示更多”和自动首屏续跑继续使用原 cursor。
-            workspaceSessionFirstPageCompletionByKey.removeValue(
-                forKey: workspaceSessionFirstPageKey(for: workspace, hostScope: lease.scope)
-            )
-        }
         let requestedLimit = max(1, limit)
         let page: SessionsPage
         var canonicalFirstPageResult: SessionListFirstPageResult?

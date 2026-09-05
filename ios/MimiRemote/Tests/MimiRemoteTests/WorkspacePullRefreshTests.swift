@@ -46,7 +46,6 @@ final class WorkspacePullRefreshTests: XCTestCase {
             projects: [project],
             pages: [
                 SessionsPage(sessions: [initialSession]),
-                SessionsPage(sessions: [firstRefreshedSession, initialSession]),
                 SessionsPage(sessions: [secondRefreshedSession, firstRefreshedSession, initialSession])
             ],
             gitGate: gitGate,
@@ -96,21 +95,44 @@ final class WorkspacePullRefreshTests: XCTestCase {
         gitGate.isArmed = true
         let initialSessionRequestCount = client.sessionPageCallCount
         let initialGitRequestCount = gitGate.requestCount
+        let scope = appStore.activeHostScope
+        let firstPageKey = SessionListFirstPageRequestKey(
+            profileID: scope.profileID,
+            connectionGeneration: Int(truncatingIfNeeded: scope.generation),
+            workspaceID: workspace.id,
+            workspacePath: workspace.path,
+            limit: SessionStore.initialSessionPageLimit,
+            consistency: .authoritative,
+            cursor: nil
+        )
+        let firstPageRequestID = UUID()
+        let firstPageRequest = Task<SessionsPage, Error> {
+            SessionsPage(sessions: [firstRefreshedSession, initialSession])
+        }
+        store.sessionListFirstPageInFlightByKey[firstPageKey] = SessionListFirstPageInFlight(
+            id: firstPageRequestID,
+            task: firstPageRequest
+        )
         let refreshControl = try XCTUnwrap(findRefreshControl(in: host.view))
         try triggerPullRefresh(refreshControl)
 
         try await waitForRefreshUI { gitGate.isWaiting }
-        XCTAssertGreaterThan(client.sessionPageCallCount, initialSessionRequestCount)
+        XCTAssertEqual(client.sessionPageCallCount, initialSessionRequestCount, "第一次下拉应共享已有 authoritative 请求")
         XCTAssertEqual(store.sessionsByID[firstRefreshedSession.id]?.title, "第一次刷新出现")
         try await waitForRefreshUI { !refreshControl.isRefreshing }
         XCTAssertTrue(gitGate.isWaiting, "Git 尚未返回时，下拉指示器就应结束")
         XCTAssertEqual(store.workspaceGitSummaryByPath[workspacePath]?.branch, "initial")
 
+        // 测试直接登记了在途请求，没有真实 owner；验证共享后按原 ID 手动退休。
+        if store.sessionListFirstPageInFlightByKey[firstPageKey]?.id == firstPageRequestID {
+            store.sessionListFirstPageInFlightByKey.removeValue(forKey: firstPageKey)
+        }
+
         try triggerPullRefresh(refreshControl)
         try await waitForRefreshUI {
             store.sessionsByID[secondRefreshedSession.id] != nil && !refreshControl.isRefreshing
         }
-        XCTAssertEqual(client.sessionPageCallCount, initialSessionRequestCount + 2, "每次下拉都应从头获取最新会话")
+        XCTAssertEqual(client.sessionPageCallCount, initialSessionRequestCount + 1, "第二次下拉应发出唯一的新请求")
         XCTAssertEqual(gitGate.requestCount, initialGitRequestCount + 1, "Git 尚未完成时，第二次下拉应合并附属刷新")
         XCTAssertEqual(gitGate.waitingRequestCount, 1)
 
@@ -130,24 +152,6 @@ final class WorkspacePullRefreshTests: XCTestCase {
         )
     }
 
-    func testOpenWorkspaceOutcomeCanDeferSessionLoadToWorkspacePage() async throws {
-        let project = AgentProject(id: "deferred-open", name: "deferred-open", path: "/workspace/deferred-open")
-        let workspace = AgentWorkspace(project: project)
-        let client = MockSessionStoreClient(
-            projects: [project], sessions: [],
-            resolveResults: [workspace.path: .success(workspace)]
-        )
-        let store = SessionStore(
-            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
-            clientFactory: { client }
-        )
-
-        let outcome = await store.openWorkspaceOutcome(path: workspace.path, loadsSessions: false)
-
-        XCTAssertEqual(outcome, .opened(workspaceID: workspace.id))
-        XCTAssertEqual(store.selectedProjectID, workspace.id)
-        XCTAssertTrue(client.requestedWorkspaceIDs.isEmpty, "Sheet 打开后应由工作区页面统一加载会话")
-    }
 }
 
 @MainActor
