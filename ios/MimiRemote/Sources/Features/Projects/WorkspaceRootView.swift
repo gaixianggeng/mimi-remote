@@ -1171,7 +1171,6 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceContent(projectID: String) async {
-        await refreshCatalog(forceGitSummary: true)
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
@@ -1179,7 +1178,11 @@ struct WorkspaceRootView: View {
             return
         }
         let presentationKey = workspaceSessionPresentationKey(for: project)
+        // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
         await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
+        guard !Task.isCancelled,
+              appStore.activeHostScope == presentationKey.hostScope else { return }
+        await refreshCatalog(forceGitSummary: true)
     }
 
     private func refreshWorkspaceSessions(
