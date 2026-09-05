@@ -160,6 +160,80 @@ private final class ManagedConnectionEventReporterStub: ManagedConnectionEventRe
 
 @MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testConnectionMethodSummaryReflectsRouteStateInsteadOfEnabledFlag() {
+        XCTAssertEqual(TailcatExperimentState.unavailable.connectionMethodSummary,
+                       L10n.text("ui.tailcat_framework_unavailable"))
+        XCTAssertEqual(TailcatExperimentState.needsAddress.connectionMethodSummary,
+                       L10n.text("ui.tailcat_needs_address"))
+        XCTAssertEqual(TailcatExperimentState.starting.connectionMethodSummary,
+                       L10n.text("ui.connecting"))
+        XCTAssertEqual(TailcatExperimentState.failed(message: "offline").connectionMethodSummary,
+                       L10n.text("ui.connection_failed"))
+        XCTAssertEqual(TailcatExperimentState.usingTemporaryRoute(.lan).connectionMethodSummary,
+                       L10n.format("ui.managed_connection_using_temporary_route", ConnectionProfileRoute.lan.title))
+        XCTAssertEqual(TailcatExperimentState.connected(endpoint: "http://127.0.0.1:8787").connectionMethodSummary,
+                       L10n.text("ui.connected"))
+        XCTAssertEqual(TailcatExperimentState.disabled.connectionMethodSummary,
+                       L10n.text("ui.deactivated"))
+    }
+
+    func testUnavailableManagedRouteStaysFailClosedUntilManualFallback() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [],
+            managedProfile: true,
+            bridgeAvailable: false
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        let startCallCount = await fixture.runtime.startCallCount()
+
+        XCTAssertFalse(prepared)
+        XCTAssertTrue(fixture.controller.isEnabled)
+        XCTAssertEqual(fixture.controller.state, .unavailable)
+        XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
+        XCTAssertEqual(startCallCount, 0)
+        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+            tailcatState: fixture.controller.state,
+            connectionFailed: false
+        ))
+
+        let usedFallback = await fixture.controller.useSavedRouteOnce(.tailscale, appStore: fixture.store)
+
+        XCTAssertTrue(usedFallback)
+        XCTAssertEqual(fixture.controller.state, .usingTemporaryRoute(.tailscale))
+        XCTAssertFalse(fixture.store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://100.64.0.10:8787")
+    }
+
+    func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [],
+            managedProfile: true,
+            managedAddress: nil
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+
+        XCTAssertFalse(prepared)
+        XCTAssertTrue(fixture.controller.isEnabled)
+        XCTAssertEqual(fixture.controller.state, .needsAddress)
+        XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
+        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+            tailcatState: fixture.controller.state,
+            connectionFailed: false
+        ))
+
+        let usedFallback = await fixture.controller.useSavedRouteOnce(.tailscale, appStore: fixture.store)
+
+        XCTAssertTrue(usedFallback)
+        XCTAssertEqual(fixture.controller.state, .usingTemporaryRoute(.tailscale))
+        XCTAssertFalse(fixture.store.isTailcatExperimentModeEnabled)
+    }
+
     func testForegroundRecoveryPreservesTemporaryManagedFallback() async throws {
         let fixture = try makeControllerFixture(
             startResults: [.success("http://127.0.0.1:49152")],
@@ -832,6 +906,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         blockedStartCall: Int? = nil,
         managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil,
         managedProfile: Bool = false,
+        managedAddress: String? = "tailcat:managed-mac",
+        bridgeAvailable: Bool = true,
         managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil
     ) throws -> (
         controller: TailcatExperimentController,
@@ -848,7 +924,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             blockedStartCall: blockedStartCall
         )
         let bridge = TailcatExperimentBridgeAdapter(
-            isAvailable: true,
+            isAvailable: bridgeAvailable,
             generatePrivateKey: { "private-key" },
             publicKey: { _ in "nodekey:public-key" }
         )
@@ -865,7 +941,9 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
             defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
             try tokenStore.save("managed-token", profileID: profile.id)
-            try tokenStore.saveTailcatAddress("tailcat:managed-mac", profileID: profile.id)
+            if let managedAddress {
+                try tokenStore.saveTailcatAddress(managedAddress, profileID: profile.id)
+            }
         }
         let store = AppStore(
             defaults: defaults,

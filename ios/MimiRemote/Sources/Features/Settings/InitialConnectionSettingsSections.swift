@@ -291,9 +291,7 @@ struct InitialConnectionSettingsSections: View {
                     } label: {
                         SettingsValueLabel(
                             title: tailcatConnectionTitle,
-                            value: tailcatController.isEnabled
-                                ? L10n.text("ui.connected")
-                                : L10n.text("ui.deactivated"),
+                            value: tailcatController.state.connectionMethodSummary,
                             systemImage: "point.3.connected.trianglepath.dotted"
                         )
                     }

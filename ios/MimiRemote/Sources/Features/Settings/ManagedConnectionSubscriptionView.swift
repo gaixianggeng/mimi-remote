@@ -253,10 +253,28 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     private var showsManagedRecoveryActions: Bool {
-        if case .usingTemporaryRoute = tailcatController.state { return true }
-        if case .failed = tailcatController.state { return true }
-        if case .failed = appStore.connectionStatus { return true }
-        return false
+        let connectionFailed: Bool
+        if case .failed = appStore.connectionStatus {
+            connectionFailed = true
+        } else {
+            connectionFailed = false
+        }
+        return Self.showsManagedRecoveryActions(
+            tailcatState: tailcatController.state,
+            connectionFailed: connectionFailed
+        )
+    }
+
+    static func showsManagedRecoveryActions(
+        tailcatState: TailcatExperimentState,
+        connectionFailed: Bool
+    ) -> Bool {
+        switch tailcatState {
+        case .usingTemporaryRoute, .failed, .unavailable, .needsAddress:
+            return true
+        case .disabled, .starting, .connected:
+            return connectionFailed
+        }
     }
 
     private var managedRouteStatusText: String {
