@@ -76,6 +76,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         _ = try await deviceStore.authorizeManagedPairing(
             macInstallationID: "20000000-0000-4000-8000-000000000001",
             macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair-mac",
             mobileTailcatPublicKey: "nodekey:mobile"
         )
 
