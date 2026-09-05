@@ -35,27 +35,50 @@ if bash "$ROOT_DIR/scripts/development-cache-path.sh" ../outside >/dev/null 2>&1
 fi
 
 result_file="$TEMP_DIR/result"
-lock_dir="$TEMP_DIR/cache.lock"
-bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_dir" -- \
+lock_file="$TEMP_DIR/cache.lock"
+bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- \
   bash -c 'printf completed > "$1"' _ "$result_file"
 [[ "$(cat "$result_file")" == "completed" ]] || fail "缓存锁没有执行命令"
-[[ ! -e "$lock_dir" ]] || fail "命令结束后没有释放缓存锁"
+[[ -f "$lock_file" ]] || fail "锁文件必须保留，避免等待者锁住不同 inode"
+bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- true
 
-mkdir "$lock_dir"
-printf '99999999\n' > "$lock_dir/pid"
-bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_dir" -- true
-[[ ! -e "$lock_dir" ]] || fail "过期缓存锁没有被清理"
-
-mkdir "$lock_dir"
-printf '%s\n' "$$" > "$lock_dir/pid"
+bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- \
+  bash -c 'touch "$1"; while [[ ! -f "$2" ]]; do sleep 0.1; done' \
+  _ "$TEMP_DIR/ready" "$TEMP_DIR/release" &
+owner_pid=$!
+for attempt in {1..100}; do
+  [[ -f "$TEMP_DIR/ready" ]] && break
+  sleep 0.1
+done
+[[ -f "$TEMP_DIR/ready" ]] || fail "测试进程未及时取得锁"
 set +e
 MIMI_DEVELOPMENT_CACHE_LOCK_WAIT_SECONDS=0 \
-  bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_dir" -- true \
+  bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- true \
   >"$TEMP_DIR/busy.log" 2>&1
 busy_status=$?
 set -e
 [[ "$busy_status" -eq 75 ]] || fail "活跃缓存锁必须明确失败"
-rm -f "$lock_dir/pid"
-rmdir "$lock_dir"
+touch "$TEMP_DIR/release"
+wait "$owner_pid"
+
+# 同时启动多个真实进程，检查临界区不能重叠，而非只模拟 PID 文件。
+pids=()
+for attempt in {1..12}; do
+  bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- \
+    bash -euc 'mkdir "$1"; sleep 0.02; rmdir "$1"' _ "$TEMP_DIR/critical" &
+  pids+=("$!")
+done
+for child_pid in "${pids[@]}"; do
+  wait "$child_pid" || fail "并发进程同时进入了共享缓存临界区"
+done
+set +e
+bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- bash -c 'exit 42'
+failure_status=$?
+set -e
+[[ "$failure_status" -eq 42 ]] || fail "没有保留构建失败的退出码"
+MIMI_DEVELOPMENT_CACHE_LOCK_WAIT_SECONDS=0 \
+  bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$lock_file" -- true
+
+bash "$ROOT_DIR/scripts/test-macos-local-cache.sh"
 
 echo "开发缓存路径、跨 Worktree 复用和写入锁自测通过。"

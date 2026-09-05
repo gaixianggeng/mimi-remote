@@ -2,14 +2,6 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-repo_root="$(cd "$script_dir/../../.." && pwd)"
-architecture="$(uname -m)"
-development_cache="$(
-  bash "$repo_root/scripts/development-cache-path.sh" \
-    "xcode/macos/$architecture/Release"
-)"
-derived_data="${MACOS_DERIVED_DATA_PATH:-$development_cache/DerivedData}"
-source_app="$derived_data/Build/Products/Release/Mimi Remote Mac.app"
 
 # Default to wherever the app is already installed. Picking a fixed default
 # instead is how a rebuild silently lands beside the running copy: the new
@@ -41,9 +33,6 @@ else
 fi
 destination_parent="$(dirname "$destination")"
 
-if [[ ! -d "$source_app" ]]; then
-  CONFIGURATION=Release bash "$script_dir/build-local.sh"
-fi
 if [[ "$(basename "$destination")" != "Mimi Remote Mac.app" ]]; then
   echo "安装目标必须以 Mimi Remote Mac.app 结尾：$destination" >&2
   exit 2
@@ -62,8 +51,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-/usr/bin/ditto "$source_app" "$staged_app"
-/usr/bin/codesign --verify --deep --strict "$staged_app"
+# 共享目录中的现有 App 可能来自另一个 Worktree；必须先从当前源码
+# 增量构建，并在构建锁内复制到本次安装独占的暂存目录。
+CONFIGURATION=Release bash "$script_dir/build-local.sh" "$staged_app"
+codesign --verify --deep --strict "$staged_app"
 
 if [[ -e "$destination" ]]; then
   backup_app="$destination_parent/Mimi Remote Mac.backup-$(date +%Y%m%d-%H%M%S).app"

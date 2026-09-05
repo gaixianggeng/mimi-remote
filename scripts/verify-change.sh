@@ -418,7 +418,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
+    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/test-macos-local-cache.sh|scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
       has_development_cache_control=true
       ;;
   esac
