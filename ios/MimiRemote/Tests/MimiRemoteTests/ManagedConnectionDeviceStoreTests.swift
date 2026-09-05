@@ -6,6 +6,106 @@ import XCTest
 final class ManagedConnectionDeviceStoreTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testLegacyInstallationIdentityAndDeviceTokenMigrateToKeychain() throws {
+        let suiteName = "ManagedConnectionDeviceStoreTests.Migration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let tokenStore = TokenStore(keychain: keychain)
+        let installationID = "10000000-0000-4000-8000-000000000001"
+        let deviceToken = Self.token(byte: 1)
+        defaults.set(installationID, forKey: "managedConnection.mobileInstallationID.v1")
+        defaults.set("mobile-device-id", forKey: "managedConnection.mobileDeviceID.v1")
+        try tokenStore.saveManagedMobileDeviceToken(deviceToken, installationID: installationID)
+        let store = ManagedConnectionMobileIdentityStore(defaults: defaults, tokenStore: tokenStore)
+
+        let identity = try store.loadOrCreate()
+
+        XCTAssertEqual(identity.installationID, installationID)
+        XCTAssertEqual(identity.deviceToken, deviceToken)
+        XCTAssertEqual(identity.registeredDeviceID, "mobile-device-id")
+        XCTAssertEqual(try tokenStore.loadManagedMobileInstallationID(), installationID)
+    }
+
+    func testReinstalledIdentityDetectsRemoteRevocationAndReregistersWithStableInstallationID() async throws {
+        let suiteName = "ManagedConnectionDeviceStoreTests.Reinstall.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let tokenStore = TokenStore(keychain: keychain)
+        let firstStore = ManagedConnectionMobileIdentityStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            makeUUID: { UUID(uuidString: "10000000-0000-4000-8000-000000000001")! },
+            makeToken: { Self.token(byte: 1) }
+        )
+        let first = try firstStore.loadOrCreate()
+        try firstStore.rememberRegisteredDeviceID("old-local-cache")
+
+        defaults.removePersistentDomain(forName: suiteName)
+        let reinstalledStore = ManagedConnectionMobileIdentityStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            makeUUID: { UUID(uuidString: "20000000-0000-4000-8000-000000000002")! },
+            makeToken: { Self.token(byte: 2) }
+        )
+        let reinstalled = try reinstalledStore.loadOrCreate()
+
+        XCTAssertEqual(reinstalled.installationID, first.installationID)
+        XCTAssertEqual(reinstalled.deviceToken, first.deviceToken)
+        XCTAssertEqual(reinstalled.registeredDeviceID, "old-local-cache")
+
+        let storeKit = MIM260StoreKitFake(evidence: Self.evidence)
+        let entitlementStore = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: MIM260EntitlementAPIFake(grant: grant),
+            now: { self.now }
+        )
+        await entitlementStore.refreshEntitlement()
+        let api = MIM260DeviceAPIFake(now: now)
+        let deviceStore = ManagedConnectionDeviceStore(
+            entitlementStore: entitlementStore,
+            api: api,
+            identityStore: reinstalledStore,
+            now: { self.now },
+            makeUUID: { UUID(uuidString: "30000000-0000-4000-8000-000000000002")! },
+            makeToken: { Self.token(byte: 2) }
+        )
+
+        await deviceStore.refreshDevices()
+        _ = try await deviceStore.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001",
+            macTailcatPublicKey: "nodekey:mac",
+            mobileTailcatPublicKey: "nodekey:mobile"
+        )
+
+        let registeredInstallationID = await api.lastRegisteredInstallationID
+        let registeredDeviceToken = await api.lastRegisteredDeviceToken
+        XCTAssertEqual(registeredInstallationID, first.installationID)
+        XCTAssertNotEqual(registeredDeviceToken, first.deviceToken)
+        XCTAssertEqual(registeredDeviceToken, Self.token(byte: 2))
+    }
+
+    func testKeychainFailureDoesNotPublishTemporaryInstallationIdentity() throws {
+        for (name, keychain) in [
+            ("read", TestKeychainOperations(forcedCopyStatus: errSecInteractionNotAllowed)),
+            ("write", TestKeychainOperations(forcedAddStatus: errSecInteractionNotAllowed)),
+        ] {
+            let suiteName = "ManagedConnectionDeviceStoreTests.KeychainFailure.\(name).\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let store = ManagedConnectionMobileIdentityStore(
+                defaults: defaults,
+                tokenStore: TokenStore(keychain: keychain),
+                makeUUID: { UUID(uuidString: "10000000-0000-4000-8000-000000000001")! },
+                makeToken: { Self.token(byte: 1) }
+            )
+
+            XCTAssertThrowsError(try store.loadOrCreate(), name)
+            XCTAssertNil(defaults.string(forKey: "managedConnection.mobileInstallationID.v1"), name)
+        }
+    }
+
     func testMobileIdentityPersistsAcrossLaunchAndRotatesOnlyAfterThisDeviceIsRevoked() throws {
         let suiteName = "ManagedConnectionDeviceStoreTests.Identity.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -21,7 +121,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         )
 
         let first = try store.loadOrCreate()
-        store.rememberRegisteredDeviceID("mobile-device-id")
+        try store.rememberRegisteredDeviceID("mobile-device-id")
         let relaunched = ManagedConnectionMobileIdentityStore(
             defaults: defaults,
             tokenStore: tokenStore,
@@ -191,6 +291,104 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         let evidence = await fixture.api.lastManagementEvidence
         XCTAssertEqual(sessionCount, 2, "同一交易复用会话，交易身份变化后必须重新创建")
         XCTAssertEqual(evidence?.transaction, "signed-transaction-new-account")
+    }
+
+    func testDeviceRefreshReissuesCachedManagementTokenAfterUnauthorized() async {
+        let fixture = await makeFixture()
+        await fixture.store.refreshDevices()
+        await fixture.api.setListFailures([
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+            nil,
+        ])
+
+        await fixture.store.refreshDevices()
+
+        let sessionCount = await fixture.api.managementSessionCount
+        let tokens = await fixture.api.listManagementTokens
+        XCTAssertEqual(sessionCount, 2)
+        XCTAssertEqual(Array(tokens.suffix(2)), [
+            "management-token-1-that-is-long-enough",
+            "management-token-2-that-is-long-enough",
+        ])
+        XCTAssertNil(fixture.store.errorMessage)
+    }
+
+    func testDeviceRemovalReissuesCachedManagementTokenAfterUnauthorized() async {
+        let fixture = await makeFixture()
+        let device = ManagedConnectionDevice(id: "mac-device-id", deviceType: .mac, createdAt: now)
+        await fixture.api.setDevices([device])
+        await fixture.store.refreshDevices()
+        await fixture.api.setRemovalFailures([
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+            nil,
+        ])
+
+        await fixture.store.removeDevice(device)
+
+        let sessionCount = await fixture.api.managementSessionCount
+        let tokens = await fixture.api.removeManagementTokens
+        let removedDeviceIDs = await fixture.api.removedDeviceIDs
+        XCTAssertEqual(sessionCount, 2)
+        XCTAssertEqual(tokens, [
+            "management-token-1-that-is-long-enough",
+            "management-token-2-that-is-long-enough",
+        ])
+        XCTAssertEqual(removedDeviceIDs, [device.id])
+        XCTAssertNil(fixture.store.errorMessage)
+    }
+
+    func testSecondUnauthorizedStopsRetryAndLeavesNoCachedManagementToken() async {
+        let fixture = await makeFixture()
+        await fixture.store.refreshDevices()
+        await fixture.api.setListFailures([
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+        ])
+
+        await fixture.store.refreshDevices()
+
+        let failedSessionCount = await fixture.api.managementSessionCount
+        let failedRequestCount = await fixture.api.listManagementTokens.count
+        XCTAssertEqual(failedSessionCount, 2)
+        XCTAssertEqual(failedRequestCount, 3)
+        XCTAssertNotNil(fixture.store.errorMessage)
+
+        await fixture.store.refreshDevices()
+
+        let recoveredSessionCount = await fixture.api.managementSessionCount
+        XCTAssertEqual(recoveredSessionCount, 3)
+        XCTAssertNil(fixture.store.errorMessage)
+    }
+
+    func testStaleUnauthorizedCannotInvalidateNewerManagementToken() async {
+        let fixture = await makeFixture()
+        let device = ManagedConnectionDevice(id: "mac-device-id", deviceType: .mac, createdAt: now)
+        await fixture.api.setDevices([device])
+        await fixture.store.refreshDevices()
+        await fixture.api.setListFailures([
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+            nil,
+        ])
+        await fixture.api.setRemovalFailures([
+            .rejected(code: "unauthorized", deviceType: nil, limit: nil),
+            nil,
+        ])
+        await fixture.api.blockNextDeviceList()
+
+        let staleRefresh = Task { await fixture.store.refreshDevices() }
+        await fixture.api.waitForBlockedDeviceList()
+        await fixture.store.removeDevice(device)
+        await fixture.api.releaseBlockedDeviceList()
+        await staleRefresh.value
+
+        let sessionCount = await fixture.api.managementSessionCount
+        let listTokens = await fixture.api.listManagementTokens
+        XCTAssertEqual(sessionCount, 2, "旧请求的 401 不能清除并发撤销已签发的新凭证")
+        XCTAssertEqual(Array(listTokens.suffix(2)), [
+            "management-token-1-that-is-long-enough",
+            "management-token-2-that-is-long-enough",
+        ])
+        XCTAssertNil(fixture.store.errorMessage)
     }
 
     func testRevocationReconcilesAfterLocalCredentialRotationInitiallyFails() async {
@@ -402,14 +600,23 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
 
     let now: Date
     private(set) var registrationCount = 0
+    private(set) var lastRegisteredInstallationID: String?
+    private(set) var lastRegisteredDeviceToken: String?
     private(set) var authorizationCount = 0
     private(set) var lastAuthorizedRequest: AuthorizedRequest?
     private(set) var lastManagementEvidence: (app: String, transaction: String)?
     private(set) var removedDeviceIDs: [String] = []
     private(set) var managementSessionCount = 0
+    private(set) var listManagementTokens: [String] = []
+    private(set) var removeManagementTokens: [String] = []
     private var registrationFailure: ManagedConnectionDeviceAPIError?
     private var removalFailure: ManagedConnectionDeviceAPIError?
+    private var listFailures: [ManagedConnectionDeviceAPIError?] = []
+    private var removalFailures: [ManagedConnectionDeviceAPIError?] = []
     private var devices: [ManagedConnectionDevice] = []
+    private var shouldBlockNextList = false
+    private var blockedListContinuation: CheckedContinuation<Void, Never>?
+    private var blockedListWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(now: Date) {
         self.now = now
@@ -427,12 +634,42 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         removalFailure = error
     }
 
+    func setListFailures(_ failures: [ManagedConnectionDeviceAPIError?]) {
+        listFailures = failures
+    }
+
+    func setRemovalFailures(_ failures: [ManagedConnectionDeviceAPIError?]) {
+        removalFailures = failures
+    }
+
+    func blockNextDeviceList() {
+        shouldBlockNextList = true
+    }
+
+    func waitForBlockedDeviceList() async {
+        guard blockedListContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            guard blockedListContinuation == nil else {
+                continuation.resume()
+                return
+            }
+            blockedListWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedDeviceList() {
+        blockedListContinuation?.resume()
+        blockedListContinuation = nil
+    }
+
     func registerMobileDevice(
         entitlementToken: String,
         installationID: String,
         deviceToken: String
     ) async throws -> ManagedConnectionDeviceRegistration {
         registrationCount += 1
+        lastRegisteredInstallationID = installationID
+        lastRegisteredDeviceToken = deviceToken
         if let registrationFailure { throw registrationFailure }
         return ManagedConnectionDeviceRegistration(
             device: ManagedConnectionDevice(
@@ -482,10 +719,26 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
     }
 
     func listDevices(managementToken: String) async throws -> [ManagedConnectionDevice] {
-        devices
+        listManagementTokens.append(managementToken)
+        if shouldBlockNextList {
+            shouldBlockNextList = false
+            blockedListWaiters.forEach { $0.resume() }
+            blockedListWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                blockedListContinuation = continuation
+            }
+        }
+        if !listFailures.isEmpty, let failure = listFailures.removeFirst() {
+            throw failure
+        }
+        return devices
     }
 
     func removeDevice(id: String, managementToken: String) async throws {
+        removeManagementTokens.append(managementToken)
+        if !removalFailures.isEmpty, let failure = removalFailures.removeFirst() {
+            throw failure
+        }
         if let removalFailure { throw removalFailure }
         removedDeviceIDs.append(id)
         devices.removeAll { $0.id == id }

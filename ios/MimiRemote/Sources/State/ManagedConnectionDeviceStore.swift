@@ -85,8 +85,9 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            let token = try await validManagementToken()
-            let refreshedDevices = try await api.listDevices(managementToken: token)
+            let refreshedDevices = try await withRefreshedManagementToken { token in
+                try await api.listDevices(managementToken: token)
+            }
                 .sorted { $0.createdAt > $1.createdAt }
             devices = refreshedDevices
             try reconcileCurrentDeviceAfterRemoteRevocation(refreshedDevices)
@@ -101,9 +102,10 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         removingDeviceID = device.id
         defer { removingDeviceID = nil }
         do {
-            let token = try await validManagementToken()
             do {
-                try await api.removeDevice(id: device.id, managementToken: token)
+                try await withRefreshedManagementToken { token in
+                    try await api.removeDevice(id: device.id, managementToken: token)
+                }
             } catch let error as ManagedConnectionDeviceAPIError
                 where error.rejectionCode == "device_not_found" {
                 // 服务端删除已完成但客户端未收到响应时，重试仍要完成本地凭证轮换。
@@ -164,7 +166,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
                 installationID: identity.installationID,
                 deviceToken: identity.deviceToken
             )
-            identityStore.rememberRegisteredDeviceID(result.device.id)
+            try identityStore.rememberRegisteredDeviceID(result.device.id)
             return ManagedConnectionMobileIdentity(
                 installationID: identity.installationID,
                 deviceToken: identity.deviceToken,
@@ -178,7 +180,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
                 installationID: identity.installationID,
                 deviceToken: identity.deviceToken
             )
-            identityStore.rememberRegisteredDeviceID(result.device.id)
+            try identityStore.rememberRegisteredDeviceID(result.device.id)
             return ManagedConnectionMobileIdentity(
                 installationID: identity.installationID,
                 deviceToken: identity.deviceToken,
@@ -227,6 +229,35 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
             productID: evidence.productID
         )
         return session.token
+    }
+
+    private func withRefreshedManagementToken<Result>(
+        _ request: (String) async throws -> Result
+    ) async throws -> Result {
+        let token = try await validManagementToken()
+        do {
+            return try await request(token)
+        } catch let error as ManagedConnectionDeviceAPIError where error.rejectionCode == "unauthorized" {
+            invalidateManagementSession(matching: token)
+        }
+
+        let refreshedToken = try await validManagementToken()
+        do {
+            return try await request(refreshedToken)
+        } catch {
+            // 第二次 401 仍清除缓存，但不继续重试，避免失效凭证形成请求循环。
+            if let apiError = error as? ManagedConnectionDeviceAPIError,
+               apiError.rejectionCode == "unauthorized" {
+                invalidateManagementSession(matching: refreshedToken)
+            }
+            throw error
+        }
+    }
+
+    private func invalidateManagementSession(matching token: String) {
+        // await 期间可能已有另一请求签发新会话；旧 401 不能清除较新的凭证。
+        guard managementSession?.session.token == token else { return }
+        managementSession = nil
     }
 
     private func reusableOrNewPendingPairing(
