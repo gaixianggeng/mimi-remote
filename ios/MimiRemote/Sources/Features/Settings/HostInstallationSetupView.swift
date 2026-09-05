@@ -133,6 +133,7 @@ struct HostInstallationSetupView: View {
                     )
                 }
                 .buttonStyle(.bordered)
+                .buttonBorderShape(.roundedRectangle(radius: WorkbenchPageLayout.controlCornerRadius))
                 .tint(tokens.secondaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
@@ -150,32 +151,62 @@ struct HostInstallationSetupView: View {
     }
 }
 
-/// 满宽操作按钮的图标不应把标题挤离整条按钮的中心线。
-/// 两侧使用等宽占位，让标题始终相对按钮全局居中，并给大字体留出对称的换行空间。
+/// 图标与文字作为一个整体居中，避免宽窗口中两者分散到按钮两端。
 struct ConnectionActionLabel: View {
-    @ScaledMetric(relativeTo: .body) private var accessorySlotWidth = 28.0
-
     let title: String
     let systemImage: String
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             Image(systemName: systemImage)
-                .frame(width: accessorySlotWidth, alignment: .leading)
                 .accessibilityHidden(true)
 
             Text(title)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-
-            Color.clear
-                .frame(width: accessorySlotWidth)
-                .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+    }
+}
+
+/// 按容器宽度分配主辅操作，窄屏优先保证粘贴的触控区域，并让换行后的两个按钮等高。
+struct ConnectionPrimaryActionsLayout: Layout {
+    let layoutDirection: LayoutDirection
+    private let spacing: CGFloat = 8
+
+    private func widths(in width: CGFloat, minimumPasteWidth: CGFloat) -> (scan: CGFloat, paste: CGFloat) {
+        let paste = max(minimumPasteWidth, (width - spacing) * 0.12)
+        return (width - spacing - paste, paste)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let idealWidth = subviews.reduce(spacing) { $0 + $1.sizeThatFits(.unspecified).width }
+        let proposedWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        // 大字体下系统按钮可能比 44pt 更宽，按实际最小宽度留位，避免背景越过卡片内边距。
+        let minimumPasteWidth = max(44, subviews[1].sizeThatFits(.unspecified).width)
+        let width = max(44 + spacing + minimumPasteWidth, proposedWidth ?? idealWidth)
+        let sizes = widths(in: width, minimumPasteWidth: minimumPasteWidth)
+        let scanHeight = subviews[0].sizeThatFits(.init(width: sizes.scan, height: nil)).height
+        let pasteHeight = subviews[1].sizeThatFits(.init(width: sizes.paste, height: nil)).height
+        return CGSize(width: width, height: max(44, scanHeight, pasteHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let minimumPasteWidth = max(44, subviews[1].sizeThatFits(.unspecified).width)
+        let sizes = widths(in: bounds.width, minimumPasteWidth: minimumPasteWidth)
+        let isRightToLeft = layoutDirection == .rightToLeft
+        subviews[0].place(
+            at: CGPoint(x: isRightToLeft ? bounds.maxX - sizes.scan : bounds.minX, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: .init(width: sizes.scan, height: bounds.height)
+        )
+        subviews[1].place(
+            at: CGPoint(x: isRightToLeft ? bounds.minX : bounds.maxX - sizes.paste, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: .init(width: sizes.paste, height: bounds.height)
+        )
     }
 }
 

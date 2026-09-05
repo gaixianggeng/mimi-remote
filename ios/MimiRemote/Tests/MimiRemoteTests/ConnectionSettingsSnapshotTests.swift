@@ -29,6 +29,16 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize() {
+        assertConnectionSettings(
+            profiles: [],
+            width: 393,
+            height: 852,
+            dynamicTypeSize: .accessibility2,
+            named: "unconfigured-compact-accessibility"
+        )
+    }
+
     func testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance() {
         assertConnectionSettings(
             profiles: [],
@@ -43,12 +53,12 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertConnectionSettings(
             profiles: [
                 makeProfile(
-                    id: "studio-mac",
-                    name: "工作室 Mac",
+                    id: "linux-server",
+                    name: "Linux 工作站",
                     endpoint: "http://100.64.0.10:8787",
-                    dnsName: "studio-mac.tail.example.ts.net",
-                    deviceName: "studio-mac",
-                    platform: .apple
+                    dnsName: "linux-server.tail.example.ts.net",
+                    deviceName: "linux-server",
+                    platform: .linux
                 )
             ],
             width: 393,
@@ -90,12 +100,12 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     platform: .apple
                 ),
                 makeProfile(
-                    id: "travel-mac",
-                    name: "随身 MacBook Air",
+                    id: "windows-pc",
+                    name: "Windows 工作站",
                     endpoint: "http://100.64.0.20:8787",
-                    dnsName: "travel-mac.tail.example.ts.net",
-                    deviceName: "travel-mac",
-                    platform: .apple
+                    dnsName: "windows-pc.tail.example.ts.net",
+                    deviceName: "windows-pc",
+                    platform: .windows
                 )
             ],
             width: 720,

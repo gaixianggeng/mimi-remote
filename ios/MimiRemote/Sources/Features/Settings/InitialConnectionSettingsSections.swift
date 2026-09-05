@@ -130,6 +130,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 struct InitialConnectionSettingsSections: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.layoutDirection) private var layoutDirection
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -175,6 +176,7 @@ struct InitialConnectionSettingsSections: View {
                         Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
                         Text(L10n.text("ui.connection_info_copy_security_notice"))
                     }
+                    .padding(.top, 8)
                 }
             }
 
@@ -198,31 +200,38 @@ struct InitialConnectionSettingsSections: View {
                     .padding(.vertical, 2)
                 }
 #endif
-                Button(action: beginScanningHost) {
-                    ConnectionActionLabel(
-                        title: L10n.text("ui.scan_qr_code_on_computer"),
-                        systemImage: "qrcode.viewfinder"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(tokens.primaryAction)
-                .controlSize(.large)
-                .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                .accessibilityIdentifier("settings.connection.scanQRCode")
-                .foregroundStyle(tokens.primaryActionForeground)
-                .buttonBorderShape(.roundedRectangle(radius: 12))
-                .padding(.vertical, 12)
-                .listRowSeparator(.hidden)
+                ConnectionPrimaryActionsLayout(layoutDirection: layoutDirection) {
+                    Button(action: beginScanningHost) {
+                        ConnectionActionLabel(
+                            title: L10n.text("ui.scan_qr_code_on_computer"),
+                            systemImage: "qrcode.viewfinder"
+                        )
+                        .frame(maxHeight: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tokens.primaryAction)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("settings.connection.scanQRCode")
+                    .foregroundStyle(tokens.primaryActionForeground)
 
-                Button(action: pasteConnectionInfo) {
-                    ConnectionRowLabel(
-                        title: L10n.text("ui.paste_connection_info"),
-                        systemImage: "clipboard"
-                    )
+                    Button(action: pasteConnectionInfo) {
+                        Image(systemName: "clipboard")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(tokens.secondaryText)
+                    .controlSize(.regular)
+                    .accessibilityLabel(L10n.text("ui.paste_connection_info"))
+                    .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+                    .help(L10n.text("ui.paste_connection_info"))
+                    .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
                 }
                 .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
+                .buttonBorderShape(.roundedRectangle(radius: WorkbenchPageLayout.controlCornerRadius))
+                // 顶部与左右留白一致；下方普通行自带留白，避免主操作和次级入口过于分离。
+                .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
+                .padding(.bottom, 8)
+                .listRowSeparator(.hidden)
 
                 HostInstallationSetupView()
                 advancedConnectionOptions(tokens: tokens)
@@ -574,10 +583,12 @@ struct InitialConnectionSettingsSections: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return HStack(spacing: 12) {
-            // 设置列表统一采用中性轮廓图标，避免品牌彩色图标打破这一页的视觉层级。
-            Image(systemName: "desktopcomputer")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                .symbolRenderingMode(.monochrome)
+            // 保留平台轮廓帮助识别电脑；只统一颜色，避免丢失 Mac、Windows 和 Linux 的区别。
+            HostPlatformGlyph(
+                kind: item.profile.hostPlatform.iconKind,
+                size: SettingsLayoutMetrics.symbolPointSize,
+                monochrome: true
+            )
                 .foregroundStyle(tokens.secondaryText)
                 .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
                 .accessibilityHidden(true)

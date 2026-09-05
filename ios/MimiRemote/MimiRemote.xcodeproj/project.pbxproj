@@ -183,6 +183,7 @@
 		7EC0BC9D0E04B06658CC2EFC /* privacy-policy.md in Resources */ = {isa = PBXBuildFile; fileRef = 2210B237FCEF112D24D2B687 /* privacy-policy.md */; };
 		7FCF7AE789CFBC4E2148BCD3 /* ManagedPairingContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAF352234E74EEAF7B023AE /* ManagedPairingContractTests.swift */; };
 		84F5B773E0438B85B671B2F3 /* AgentAPIClientRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */; };
+		85195EE0234402279D85D486 /* testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png in Resources */ = {isa = PBXBuildFile; fileRef = FEBDB094EFEA5301CE33FD1C /* testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png */; };
 		8579BB85C852E3DD247FF7EE /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = A3BB200E07DB4CD95503B8F7 /* InfoPlist.strings */; };
 		860DD71D11A4C4AF27322417 /* testConnectionDiagnosticsNetworkPathKeepsIntrinsicHeightInsideExpandedForm.diagnostics-network-path-intrinsic-height.png in Resources */ = {isa = PBXBuildFile; fileRef = 5A88B5C73E15343C1B24DD2E /* testConnectionDiagnosticsNetworkPathKeepsIntrinsicHeightInsideExpandedForm.diagnostics-network-path-intrinsic-height.png */; };
 		8721BBEBBD69DB0B07FACFF8 /* AppServerProtocolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67866EABC0460FF9A4867E87 /* AppServerProtocolModels.swift */; };
@@ -757,6 +758,7 @@
 		FD8EF812560A139C665A9D46 /* ConversationSessionArchiveMutationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSessionArchiveMutationTests.swift; sourceTree = "<group>"; };
 		FDBE622C5ED274C1DA9803DB /* ComposerInputExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerInputExtensions.swift; sourceTree = "<group>"; };
 		FDD0D38CA5BBBF1F1D8A5F2B /* testLongEnglishFailureRemainsInline.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testLongEnglishFailureRemainsInline.1.png; sourceTree = "<group>"; };
+		FEBDB094EFEA5301CE33FD1C /* testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png"; sourceTree = "<group>"; };
 		FFB374BAC8444A29B353D6C9 /* MimiTailcatBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MimiTailcatBridge.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -1314,6 +1316,7 @@
 				3F85208D350D6CD02FE29067 /* testSingleConnectedComputerOnCompactWidth.single-connected-compact.png */,
 				ED78B2AE9E1B094B3FFD61AF /* testSingleUnavailableConnectionKeepsRecoveryActionsVisible.single-unavailable.png */,
 				B81FA7A7253DB498BE772A52 /* testUnconfiguredConnectionSettingsOnCompactWidth.unconfigured-compact.png */,
+				FEBDB094EFEA5301CE33FD1C /* testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png */,
 				16CB0D7EC045B12FA456084E /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png */,
 				06541D01185FB619F3F3FFF7 /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png */,
 			);
@@ -1727,6 +1730,7 @@
 				9F08EDD6695137214ECF7A7B /* testSkillInvocationCardLightAppearance.1.png in Resources */,
 				F52369AA62CB6C0A7664D4B0 /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png in Resources */,
 				28206688BE634BEDC4BE5F52 /* testUnconfiguredConnectionSettingsOnCompactWidth.unconfigured-compact.png in Resources */,
+				85195EE0234402279D85D486 /* testUnconfiguredConnectionSettingsOnCompactWidthAtAccessibilitySize.unconfigured-compact-accessibility.png in Resources */,
 				999E3BF5F93437E385730F0B /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png in Resources */,
 				9B9483D073425EF469DF701D /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png in Resources */,
 				3555D54084E26E1CD6667F85 /* testUnifiedWorkbenchSidebarNavigationChrome.1.png in Resources */,
