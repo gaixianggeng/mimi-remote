@@ -10,7 +10,7 @@ struct ManagedConnectionMobileIdentity: Equatable, Sendable {
 @MainActor
 protocol ManagedConnectionMobileIdentityStoring: AnyObject {
     func loadOrCreate() throws -> ManagedConnectionMobileIdentity
-    func rememberRegisteredDeviceID(_ id: String)
+    func rememberRegisteredDeviceID(_ id: String) throws
     func rotateCredentialAfterRevocation(deviceID: String) throws
 }
 
@@ -51,8 +51,7 @@ final class ManagedConnectionMobileIdentityStore: ManagedConnectionMobileIdentit
     }
 
     func loadOrCreate() throws -> ManagedConnectionMobileIdentity {
-        let installationID = validInstallationID(defaults.string(forKey: Self.installationIDKey))
-            ?? createInstallationID()
+        let installationID = try loadOrCreateInstallationID()
         var deviceToken = try tokenStore.loadManagedMobileDeviceToken(installationID: installationID)
         if !Self.isCanonicalDeviceToken(deviceToken) {
             deviceToken = try makeToken()
@@ -61,14 +60,16 @@ final class ManagedConnectionMobileIdentityStore: ManagedConnectionMobileIdentit
             }
             try tokenStore.saveManagedMobileDeviceToken(deviceToken, installationID: installationID)
         }
+        let registeredDeviceID = try loadRegisteredDeviceID()
         return ManagedConnectionMobileIdentity(
             installationID: installationID,
             deviceToken: deviceToken,
-            registeredDeviceID: defaults.string(forKey: Self.registeredDeviceIDKey)
+            registeredDeviceID: registeredDeviceID
         )
     }
 
-    func rememberRegisteredDeviceID(_ id: String) {
+    func rememberRegisteredDeviceID(_ id: String) throws {
+        try tokenStore.saveManagedMobileRegisteredDeviceID(id)
         defaults.set(id, forKey: Self.registeredDeviceIDKey)
     }
 
@@ -81,7 +82,47 @@ final class ManagedConnectionMobileIdentityStore: ManagedConnectionMobileIdentit
         }
         // 服务端明确禁止复用已撤销 Token。安装 ID 保持稳定，下一次登记生成新 Token。
         try tokenStore.deleteManagedMobileDeviceToken(installationID: installationID)
+        try tokenStore.deleteManagedMobileRegisteredDeviceID()
         defaults.removeObject(forKey: Self.registeredDeviceIDKey)
+    }
+
+    private func loadRegisteredDeviceID() throws -> String? {
+        let keychainValue = try tokenStore.loadManagedMobileRegisteredDeviceID()
+        if !keychainValue.isEmpty {
+            defaults.set(keychainValue, forKey: Self.registeredDeviceIDKey)
+            return keychainValue
+        }
+        guard let legacyValue = defaults.string(forKey: Self.registeredDeviceIDKey),
+              !legacyValue.isEmpty else {
+            return nil
+        }
+        try tokenStore.saveManagedMobileRegisteredDeviceID(legacyValue)
+        return legacyValue
+    }
+
+    private func loadOrCreateInstallationID() throws -> String {
+        let defaultsInstallationID = validInstallationID(defaults.string(forKey: Self.installationIDKey))
+        let keychainValue = try tokenStore.loadManagedMobileInstallationID()
+        if !keychainValue.isEmpty {
+            guard let installationID = validInstallationID(keychainValue) else {
+                throw ManagedConnectionDeviceAPIError.invalidResponse
+            }
+            if defaultsInstallationID != installationID {
+                defaults.removeObject(forKey: Self.registeredDeviceIDKey)
+            }
+            defaults.set(installationID, forKey: Self.installationIDKey)
+            return installationID
+        }
+
+        // 首次升级优先迁移 UserDefaults 中的旧安装身份，保持原 device token 的 Keychain account 可寻址。
+        let installationID = defaultsInstallationID ?? createInstallationID()
+        // 先持久化不可重建的安装身份；Keychain 写入失败时不能发布一个临时身份。
+        try tokenStore.saveManagedMobileInstallationID(installationID)
+        defaults.set(installationID, forKey: Self.installationIDKey)
+        if defaultsInstallationID == nil {
+            defaults.removeObject(forKey: Self.registeredDeviceIDKey)
+        }
+        return installationID
     }
 
     private func createInstallationID() -> String {
@@ -89,8 +130,6 @@ final class ManagedConnectionMobileIdentityStore: ManagedConnectionMobileIdentit
         while !Self.isUUIDv4(value) {
             value = UUID().uuidString.lowercased()
         }
-        defaults.set(value, forKey: Self.installationIDKey)
-        defaults.removeObject(forKey: Self.registeredDeviceIDKey)
         return value
     }
 

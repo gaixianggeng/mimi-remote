@@ -57,6 +57,8 @@ struct TokenStore {
     private let tailcatExperimentAccount = "tailcat-experiment-client-key.v1"
     private let tailcatExperimentAddressAccount = "tailcat-experiment-address.v1"
     private let tailcatProfileAddressAccountPrefix = "tailcat-profile-address.v1."
+    private let managedMobileInstallationIDAccount = "managed-mobile-installation-id.v1"
+    private let managedMobileRegisteredDeviceIDAccount = "managed-mobile-registered-device-id.v1"
     private let managedMobileDeviceTokenAccountPrefix = "managed-mobile-device-token.v1."
     private let keychain: any KeychainOperating
 
@@ -86,6 +88,14 @@ struct TokenStore {
 
     func loadManagedMobileDeviceToken(installationID: String) throws -> String {
         try load(account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased())
+    }
+
+    func loadManagedMobileInstallationID() throws -> String {
+        try load(account: managedMobileInstallationIDAccount)
+    }
+
+    func loadManagedMobileRegisteredDeviceID() throws -> String {
+        try load(account: managedMobileRegisteredDeviceIDAccount)
     }
 
     private func load(account: String) throws -> String {
@@ -131,6 +141,14 @@ struct TokenStore {
         try save(token, account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased())
     }
 
+    func saveManagedMobileInstallationID(_ installationID: String) throws {
+        try save(installationID.lowercased(), account: managedMobileInstallationIDAccount)
+    }
+
+    func saveManagedMobileRegisteredDeviceID(_ deviceID: String) throws {
+        try save(deviceID, account: managedMobileRegisteredDeviceIDAccount)
+    }
+
     func deleteTailcatExperimentAddress(allowMissing: Bool = true) throws {
         try delete(account: tailcatExperimentAddressAccount, allowMissing: allowMissing)
     }
@@ -144,6 +162,10 @@ struct TokenStore {
             account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased(),
             allowMissing: allowMissing
         )
+    }
+
+    func deleteManagedMobileRegisteredDeviceID(allowMissing: Bool = true) throws {
+        try delete(account: managedMobileRegisteredDeviceIDAccount, allowMissing: allowMissing)
     }
 
     private func save(_ token: String, account: String) throws {
