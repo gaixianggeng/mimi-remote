@@ -249,7 +249,7 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
-    @State private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
+    @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
@@ -267,6 +267,7 @@ struct WorkspaceRootView: View {
     @State private var pendingHapticWorkspaceID: String?
     @State private var suppressedHapticWorkspaceID: String?
     init(
+        selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         manageConnections: (() -> Void)? = nil,
@@ -280,6 +281,7 @@ struct WorkspaceRootView: View {
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.currentDate = currentDate
+        _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
         // 正常入口仍由 synchronizeSelection 恢复选择；显式初值只服务于确定性的预览和视觉快照。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
@@ -950,11 +952,10 @@ struct WorkspaceRootView: View {
         let cachedPageState = runtimeSessionPagesByKey[presentationKey]
         // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
         // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
-        let storedRuntimeSessions = sessionStore.sessions(forProjectID: project.id).filter { session in
-            sessionStore.isListableSession(session)
-                && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-                    == presentationKey.runtimeProvider
-        }
+        let storedRuntimeSessions = sessionStore.directoryScopedSessions(
+            workspaceID: project.id,
+            runtimeProvider: presentationKey.runtimeProvider
+        )
         let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
         let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
@@ -1188,16 +1189,10 @@ struct WorkspaceRootView: View {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
         let canonicalSessionIDsBeforeLoad = Set<SessionID>(
-            sessionStore.sessions(forProjectID: project.id).compactMap { session in
-                guard sessionStore.isListableSession(session),
-                      CodexAppServerSessionRuntime.normalizedRuntimeProvider(
-                          session.runtimeProvider ?? session.source
-                      ) == presentationKey.runtimeProvider
-                else {
-                    return nil
-                }
-                return session.id
-            }
+            sessionStore.directoryScopedSessions(
+                workspaceID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider
+            ).map(\.id)
         )
         sessionLoadStates[presentationKey] = .loading
         do {

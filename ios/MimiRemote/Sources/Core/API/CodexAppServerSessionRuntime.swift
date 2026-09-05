@@ -534,6 +534,40 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    /// 面向没有 thread/search 的 runtime（Claude）的搜索：走 thread/list + searchTerm。
+    /// 结果按单页返回且不给 nextCursor —— 翻页由 Codex 的 thread/search 驱动。
+    /// bridge 的 thread/list 不返回命中片段，因此用会话 preview 兜底当 snippet；
+    /// 为空时上层会自动不渲染片段行，不会留下空白。
+    func globalThreadListSearchPage(query: String, limit: Int?) async throws -> ThreadSearchPage {
+        let searchTerm = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchTerm.isEmpty else {
+            return ThreadSearchPage(results: [])
+        }
+        let config = try await ensureConfig()
+        guard config.policy.allowedMethods.contains("thread/list") else {
+            throw CodexAppServerSessionRuntimeError.threadSearchUnavailable
+        }
+        let projects = config.projects
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: projects)
+                .searchThreadListGlobally(query: searchTerm, limit: limit),
+            timeout: longRunningRequestTimeout
+        )
+        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return ThreadSearchPage(
+            results: page.sessions.map {
+                ThreadSearchResult(session: $0, snippet: $0.preview ?? "")
+            }
+        )
+    }
+
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
         // resolve 是 agentd 控制面的 REST 接口（非 app-server JSON-RPC），用 runtime 自己的 endpoint/token 直接请求。
         try await AgentAPIClient(endpoint: endpoint, token: token).resolveWorkspace(path: path)
@@ -1074,12 +1108,11 @@ actor CodexAppServerSessionRuntime {
         recoveringInterruptedTurnID: TurnID? = nil
     ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
-        let hasTurnsList = config.policy.allowedMethods.contains("thread/turns/list")
-        let hasRequiredItemsList = loadMode == .economy
-            || config.policy.allowedMethods.contains("thread/items/list")
-        guard hasTurnsList, hasRequiredItemsList else {
-            let method = hasTurnsList ? "thread/items/list" : "thread/turns/list"
-            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable(method)
+        // 首屏只依赖 thread/turns/list。能不能逐 Turn 补 Item 由每个 Turn 自己的 itemsView
+        // 决定（见 messagesPageFromTurnPages）：已经带回完整 items 的 runtime 无需补齐，
+        // 不能因为缺少 thread/items/list 就把整个 full 首屏判死。
+        guard config.policy.allowedMethods.contains("thread/turns/list") else {
+            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
             sessionID: sessionID,
@@ -1087,6 +1120,7 @@ actor CodexAppServerSessionRuntime {
             limit: limit,
             loadMode: loadMode,
             projects: config.projects,
+            canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
             recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
@@ -1095,8 +1129,7 @@ actor CodexAppServerSessionRuntime {
     /// legacy 路径的 limit 是 message 数，不具备“完整一个 turn”的增量合并语义。
     func latestTurnHistoryPage(sessionID: SessionID) async throws -> HistoryMessagesPage? {
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/turns/list"),
-              config.policy.allowedMethods.contains("thread/items/list") else {
+        guard config.policy.allowedMethods.contains("thread/turns/list") else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
@@ -1105,6 +1138,7 @@ actor CodexAppServerSessionRuntime {
             limit: 1,
             loadMode: .full,
             projects: config.projects,
+            canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
             recoveringInterruptedTurnID: nil
         )
     }
@@ -1115,6 +1149,7 @@ actor CodexAppServerSessionRuntime {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject],
+        canHydrateTurnItems: Bool,
         recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
@@ -1192,9 +1227,16 @@ actor CodexAppServerSessionRuntime {
             )
         }
         let nextCursor = reachedInheritedBoundary ? nil : upstreamNextCursor
-        let itemContinuations = loadMode == .full
+        // 只给"确实还缺 Item"的 Turn 排补齐任务。summary 请求下有的 runtime（Claude bridge）
+        // 会忽略 itemsView 直接回完整 items 并标 itemsView=full，这类 Turn 再去发
+        // thread/items/list 只会被 gateway 按 runtime 白名单打回，把一次成功的首屏
+        // 误判成"内容未加载"。runtime 根本不支持 items/list 时同样不排任务。
+        let itemContinuations = loadMode == .full && canHydrateTurnItems
             ? chronologicalTurns.enumerated().compactMap { turnIndex, turn -> HistoryTurnItemsContinuation? in
                 guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty else {
+                    return nil
+                }
+                guard Self.historyTurnNeedsItemHydration(turn) else {
                     return nil
                 }
                 var turnShell = turn
@@ -1213,13 +1255,23 @@ actor CodexAppServerSessionRuntime {
                 )
             }
             : []
+        // full 页需要补齐、但这个 runtime 没有 items/list 可用时内容确实不完整，必须如实提示，
+        // 不能沉默地把半截历史当成完整快照。
+        let hasUnhydratableTurnItems = loadMode == .full
+            && !canHydrateTurnItems
+            && chronologicalTurns.contains(where: Self.historyTurnNeedsItemHydration)
         return HistoryMessagesPage(
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
             hasMoreBefore: nextCursor != nil,
             context: context,
             loadMode: loadMode,
-            notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
+            notice: Self.historyNotice(
+                loadMode: loadMode,
+                hasMoreBefore: nextCursor != nil,
+                turns: chronologicalTurns,
+                hasUnhydratableTurnItems: hasUnhydratableTurnItems
+            ),
             authoritativeCompletedTurnItems: [:],
             itemContinuations: itemContinuations,
             latestForkableTurnID: Self.latestForkableTurnID(fromTurns: chronologicalTurns)
@@ -1231,7 +1283,7 @@ actor CodexAppServerSessionRuntime {
         continuation: HistoryTurnItemsContinuation
     ) async throws -> HistoryTurnItemsPage {
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/items/list") else {
+        guard runtimeSupportsMethod("thread/items/list", in: config) else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/items/list")
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
@@ -1727,22 +1779,34 @@ actor CodexAppServerSessionRuntime {
         }.first
     }
 
+    /// itemsView=full（或 hasFullItems=true）表示该 Turn 的 items 已随本页完整返回，
+    /// 不需要再逐页补齐。字段缺失时按"需要补齐"处理，保持既有 Codex 行为不变。
+    static func historyTurnNeedsItemHydration(_ turn: [String: CodexAppServerJSONValue]) -> Bool {
+        if turn["hasFullItems"]?.boolValue == true || turn["has_full_items"]?.boolValue == true {
+            return false
+        }
+        let itemsView = turn["itemsView"]?.stringValue ?? turn["items_view"]?.stringValue
+        return itemsView != "full"
+    }
+
     static func historyNotice(
         loadMode: HistoryMessagesPage.LoadMode,
         hasMoreBefore: Bool,
-        turns: [[String: CodexAppServerJSONValue]]
+        turns: [[String: CodexAppServerJSONValue]],
+        hasUnhydratableTurnItems: Bool = false
     ) -> String? {
+        // full 页本该补齐 Item，但当前 runtime 没有 thread/items/list 可用：内容确实不完整，
+        // 这是省流提示唯一成立的 full 场景。
+        if hasUnhydratableTurnItems {
+            return economyHistoryNotice
+        }
         guard loadMode == .economy else {
             return nil
         }
-        // 后端 summary 视图表示 item 详情可按需再拉；没有显式字段时，大历史分页也按省流提示处理。
-        let hasLazyContentSignal = turns.contains { turn in
-            turn["itemsView"]?.stringValue == "summary"
-                || turn["items_view"]?.stringValue == "summary"
-                || turn["hasFullItems"]?.boolValue == false
-                || turn["has_full_items"]?.boolValue == false
-        }
-        guard hasMoreBefore || hasLazyContentSignal || !turns.isEmpty else {
+        // 后端 summary 视图表示 item 详情可按需再拉。没有这个信号、也没有更早分页时，
+        // 这一页就是完整的——不能仅仅因为"页面非空"就声称有内容未加载。
+        let hasLazyContentSignal = turns.contains(where: historyTurnNeedsItemHydration)
+        guard hasMoreBefore || hasLazyContentSignal else {
             return nil
         }
         return economyHistoryNotice
@@ -3103,6 +3167,17 @@ actor CodexAppServerSessionRuntime {
             Self.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtimeProvider ||
                 Self.normalizedRuntimeProvider(channel.provider) == runtimeProvider
         }
+    }
+
+    /// 方法可用性必须按 runtime 判定。顶层 policy.allowed_methods 永远是 Codex 的方法表，
+    /// 各渠道的真实能力只在自己的 channel.methods 里；照着顶层表发请求会被 gateway 的
+    /// 按 runtime 白名单直接打回（例如 Claude 没有 thread/items/list）。老 agentd 不返回
+    /// channels 或 methods 时回落到顶层表，保持既有行为。
+    func runtimeSupportsMethod(_ method: String, in config: CodexAppServerConfigResponse) -> Bool {
+        if let methods = runtimeGatewayChannel(in: config)?.methods {
+            return methods.contains(method)
+        }
+        return config.policy.allowedMethods.contains(method)
     }
 
     /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前

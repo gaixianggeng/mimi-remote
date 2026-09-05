@@ -583,13 +583,14 @@ if [[ "$has_tailcat_source" == true ]]; then
 fi
 
 if [[ "$direct_ios" == true ]]; then
-  add_check "iOS 验证前只解析一次目标" "bash ./scripts/ios-dev.sh target"
-  add_check "iOS 验证前只查看一次设备占用" "bash ./scripts/ios-dev.sh leases"
   if [[ "$mode" == "full" ]]; then
     # Go 变更由上方独立 Go 计划覆盖；iOS 阶段不在 macOS/Simulator 链路重复执行。
     add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only"
   else
-    add_check "iOS quick 只编译一次可复用测试产物" "bash ./scripts/ios-dev.sh build-for-testing"
+    # quick 只证明生产 App 能在固定 M5 Simulator 上编译。整个 XCTest 测试包会随
+    # 项目增长而持续变慢；问题相关 selector 应在开发阶段单独执行，完整集合交给 full/CI。
+    add_check "iOS quick 只编译 App，不编译或运行 XCTest" \
+      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
   fi
 fi
 
@@ -629,6 +630,29 @@ else
 fi
 echo "- 去重后路径：${#changed_paths[@]}"
 echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
+echo
+
+echo "验证阶段："
+if [[ "$mode" == "full" ]]; then
+  echo "- 当前：full；交付报告必须说明命中的高风险条件。"
+else
+  echo "- 当前：quick；只在最后一次代码修改后执行一次，不要在每个微调后重复执行。"
+fi
+echo "- 开发中：只运行问题直接相关的 package、XCTest selector、快照或静态检查。"
+echo "- full 条件：共享协议/跨栈接口，高风险状态语义，影响范围无法界定的大重构，正式发布或用户明确要求。"
+echo "- 非 full 条件：普通 UI、文案、单 package、测试文件、改动文件较多、准备提交或“为了保险”。"
+if [[ "$has_contract" == true ]]; then
+  echo "- 自动高风险信号：检测到 Go/iOS 共享协议路径；建议显式评估 full。"
+elif [[ "$direct_go" == true && "$direct_ios" == true ]] || \
+     [[ "$direct_go" == true && "$direct_rust" == true ]] || \
+     [[ "$direct_go" == true && "$direct_macos" == true ]] || \
+     [[ "$direct_ios" == true && "$direct_rust" == true ]] || \
+     [[ "$direct_ios" == true && "$direct_macos" == true ]] || \
+     [[ "$direct_rust" == true && "$direct_macos" == true ]]; then
+  echo "- 自动高风险信号：检测到多个产品栈；建议确认是否修改同一跨栈接口。"
+else
+  echo "- 自动高风险信号：未检测到；除非存在脚本无法识别的高风险语义，否则保持 quick。"
+fi
 echo
 
 if [[ "${#changed_paths[@]}" -eq 0 ]]; then

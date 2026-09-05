@@ -628,7 +628,13 @@ func makeClaudeChannelMetadata() -> CodexAppServerChannelMetadata {
         experimental: true,
         lifecycle: "per_connection",
         bridge: nil,
-        methods: ["initialize", "initialized", "thread/list", "thread/start", "turn/start", "model/list"],
+        // 与 agentd 的 appServerClaudeAllowedMethods 保持一致：Claude 渠道没有
+        // thread/items/list，顶层 policy.allowed_methods 里的那一条对它不作数。
+        methods: [
+            "initialize", "initialized", "thread/list", "thread/start", "thread/resume",
+            "thread/read", "thread/turns/list", "turn/start", "turn/steer", "turn/interrupt",
+            "model/list", "account/rateLimits/read"
+        ],
         capabilities: ["history": true, "streaming": true]
     )
 }

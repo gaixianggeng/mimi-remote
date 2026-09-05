@@ -155,6 +155,8 @@ struct MimiRemoteApp: App {
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
     @StateObject private var tailcatExperimentController: TailcatExperimentController
+    @StateObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+    @StateObject private var managedConnectionDeviceStore: ManagedConnectionDeviceStore
 
     /// 紧凑布局的会话搜索走系统 `.searchable`，而系统在 iOS 26 上给它铺的是
     /// Liquid Glass——一屏里其它 chrome 全是扁平磨砂，只有它一块玻璃。
@@ -187,7 +189,23 @@ struct MimiRemoteApp: App {
             profiles: appStore.connectionProfiles
         )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
-        let tailcatExperimentController = TailcatExperimentController()
+        let managedConnectionEntitlementStore = ManagedConnectionEntitlementStore(
+            storeKit: LiveManagedConnectionStoreKitClient(),
+            entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
+        )
+        let managedConnectionIdentityStore = ManagedConnectionMobileIdentityStore()
+        let managedConnectionDeviceStore = ManagedConnectionDeviceStore(
+            entitlementStore: managedConnectionEntitlementStore,
+            identityStore: managedConnectionIdentityStore
+        )
+        let managedConnectionEventReporter = ManagedConnectionEventReporter(
+            identityStore: managedConnectionIdentityStore
+        )
+        let tailcatExperimentController = TailcatExperimentController(
+            appStore: appStore,
+            managedPairingAuthorizer: managedConnectionDeviceStore,
+            managedConnectionEventReporter: managedConnectionEventReporter
+        )
         // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
         // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。
         let sessionStore = SessionStore(
@@ -207,6 +225,12 @@ struct MimiRemoteApp: App {
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
         _tailcatExperimentController = StateObject(wrappedValue: tailcatExperimentController)
+        _managedConnectionEntitlementStore = StateObject(
+            wrappedValue: managedConnectionEntitlementStore
+        )
+        _managedConnectionDeviceStore = StateObject(
+            wrappedValue: managedConnectionDeviceStore
+        )
         _sessionStore = StateObject(wrappedValue: sessionStore)
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
@@ -227,6 +251,8 @@ struct MimiRemoteApp: App {
                 .environmentObject(notificationResponseAdapter)
                 .environmentObject(hostStatusStore)
                 .environmentObject(tailcatExperimentController)
+                .environmentObject(managedConnectionEntitlementStore)
+                .environmentObject(managedConnectionDeviceStore)
                 .onOpenURL { url in
                     Task { @MainActor in
                         do {

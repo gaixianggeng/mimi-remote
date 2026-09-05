@@ -2,6 +2,8 @@ package managed
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +18,10 @@ import (
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 )
 
-const Version = "0.1"
+const (
+	Version             = "0.1"
+	pairCloseRetryDelay = time.Second
+)
 
 type Config struct {
 	TargetAddr  string
@@ -26,10 +31,21 @@ type Config struct {
 	DERPMapURL  string
 }
 
+type managedHost interface {
+	AddAllowedClient(string) error
+	Address() string
+	PublicKey() string
+	Close() error
+}
+
+type hostStarter func(tunnel.HostConfig) (managedHost, error)
+
 type Status struct {
 	Version           string `json:"version"`
+	InstanceID        string `json:"instance_id"`
 	Running           bool   `json:"running"`
 	Address           string `json:"address,omitempty"`
+	PublicKey         string `json:"public_key,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
@@ -38,11 +54,14 @@ type Status struct {
 type Manager struct {
 	mu             sync.Mutex
 	config         Config
-	host           *tunnel.Host
-	pairHost       *tunnel.Host
+	host           managedHost
+	pairHost       managedHost
 	pairExpiresAt  time.Time
 	pairGeneration uint64
 	clients        []string
+	managedClients []string
+	startHost      hostStarter
+	instanceID     string
 	server         *http.Server
 	listener       net.Listener
 }
@@ -58,7 +77,18 @@ func Start(config Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{config: config, clients: clients}
+	instanceID, err := newInstanceID()
+	if err != nil {
+		return nil, fmt.Errorf("生成 Tailcat sidecar 实例身份：%w", err)
+	}
+	m := &Manager{
+		config:     config,
+		clients:    clients,
+		instanceID: instanceID,
+		startHost: func(config tunnel.HostConfig) (managedHost, error) {
+			return tunnel.StartHost(config)
+		},
+	}
 	if err := m.startStableLocked(); err != nil {
 		return nil, err
 	}
@@ -81,12 +111,14 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closePairLocked()
+	if err := m.closePairLocked(); err != nil {
+		return Status{}, fmt.Errorf("关闭旧 Tailcat 配对服务：%w", err)
+	}
 	pairIdentity := filepath.Join(m.config.StateDir, "pair.private.json")
 	pairAddress := filepath.Join(m.config.StateDir, "pair.address")
 	_ = os.Remove(pairIdentity)
 	_ = os.Remove(pairAddress)
-	host, err := tunnel.StartHost(tunnel.HostConfig{
+	host, err := m.startHost(tunnel.HostConfig{
 		TargetAddr:      m.config.TargetAddr,
 		RemotePort:      m.config.RemotePort,
 		IdentityPath:    pairIdentity,
@@ -101,13 +133,7 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	m.pairExpiresAt = time.Now().UTC().Add(ttl)
 	m.pairGeneration++
 	generation := m.pairGeneration
-	time.AfterFunc(ttl, func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.pairGeneration == generation {
-			m.closePairLocked()
-		}
-	})
+	m.schedulePairExpiryLocked(generation, ttl)
 	return m.statusLocked(), nil
 }
 
@@ -123,6 +149,9 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 			return m.statusLocked(), nil
 		}
 	}
+	if m.host == nil {
+		return Status{}, errors.New("Tailcat 稳定服务未运行")
+	}
 	if err := m.host.AddAllowedClient(rawKey); err != nil {
 		return Status{}, err
 	}
@@ -134,24 +163,66 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 	return m.statusLocked(), nil
 }
 
+// ReplaceManagedClients 用控制面返回的完整集合替换托管白名单。Tailcat 上游
+// 只支持追加客户端，因此删除或撤销必须重启稳定主机，不能继续复用旧内存状态。
+func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
+	next, err := normalizeClientKeys(rawKeys)
+	if err != nil {
+		return Status{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if stringSlicesEqual(m.managedClients, next) && m.host != nil {
+		return m.statusLocked(), nil
+	}
+	if m.host != nil {
+		if err := m.host.Close(); err != nil {
+			// Close 失败时旧主机可能仍在接受连接。保留句柄并中止替换，
+			// 让下一次策略同步可以继续重试关闭，不能启动第二个主机。
+			return Status{}, fmt.Errorf("关闭旧稳定 Tailcat 服务：%w", err)
+		}
+		m.host = nil
+	}
+	host, err := m.startStableHostLocked(next)
+	if err != nil {
+		// 重启失败时保持关闭，不能重新启动仍包含已撤销客户端的旧策略。
+		return Status{}, err
+	}
+	m.host = host
+	m.managedClients = next
+	return m.statusLocked(), nil
+}
+
 func (m *Manager) Reset() (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closePairLocked()
+	pairErr := m.closePairLocked()
+	if pairErr != nil {
+		pairErr = fmt.Errorf("关闭待重置 Tailcat 配对服务：%w", pairErr)
+	}
 	if m.host != nil {
-		_ = m.host.Close()
+		if err := m.host.Close(); err != nil {
+			return Status{}, errors.Join(pairErr, fmt.Errorf("关闭待重置 Tailcat 服务：%w", err))
+		}
 		m.host = nil
 	}
-	for _, name := range []string{"host.private.json", "host.address", "clients.json"} {
+	// 稳定主机已经关闭后，先提交内存中的撤销结果并优先删除持久白名单。
+	// 后续身份文件清理失败时，后台协调也只能用空集合重启。
+	m.clients = nil
+	m.managedClients = nil
+	var cleanupErr error
+	for _, name := range []string{"clients.json", "host.private.json", "host.address"} {
 		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
-			return Status{}, fmt.Errorf("重置 Tailcat %s：%w", name, err)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("重置 Tailcat %s：%w", name, err))
 		}
 	}
-	m.clients = nil
-	if err := m.startStableLocked(); err != nil {
-		return Status{}, err
+	if cleanupErr != nil {
+		return Status{}, errors.Join(pairErr, cleanupErr)
 	}
-	return m.statusLocked(), nil
+	if err := m.startStableLocked(); err != nil {
+		return Status{}, errors.Join(pairErr, err)
+	}
+	return m.statusLocked(), pairErr
 }
 
 func (m *Manager) Close() error {
@@ -162,51 +233,86 @@ func (m *Manager) Close() error {
 	if m.listener != nil {
 		_ = m.listener.Close()
 	}
-	m.closePairLocked()
-	var err error
+	pairErr := m.closePairLocked()
+	var hostErr error
 	if m.host != nil {
-		err = m.host.Close()
-		m.host = nil
+		hostErr = m.host.Close()
+		if hostErr == nil {
+			m.host = nil
+		}
 	}
 	m.mu.Unlock()
 	_ = os.Remove(m.config.ControlPath)
-	return err
+	return errors.Join(pairErr, hostErr)
 }
 
 func (m *Manager) startStableLocked() error {
-	host, err := tunnel.StartHost(tunnel.HostConfig{
-		TargetAddr:        m.config.TargetAddr,
-		RemotePort:        m.config.RemotePort,
-		IdentityPath:      filepath.Join(m.config.StateDir, "host.private.json"),
-		AddressPath:       filepath.Join(m.config.StateDir, "host.address"),
-		AllowedClientKeys: append([]string(nil), m.clients...),
-		DERPMapURL:        m.config.DERPMapURL,
-	})
+	host, err := m.startStableHostLocked(m.managedClients)
 	if err != nil {
-		return fmt.Errorf("启动稳定 Tailcat 服务：%w", err)
+		return err
 	}
 	m.host = host
 	return nil
 }
 
-func (m *Manager) closePairLocked() {
+func (m *Manager) startStableHostLocked(managedClients []string) (managedHost, error) {
+	allowedClients := mergeClientKeys(m.clients, managedClients)
+	host, err := m.startHost(tunnel.HostConfig{
+		TargetAddr:        m.config.TargetAddr,
+		RemotePort:        m.config.RemotePort,
+		IdentityPath:      filepath.Join(m.config.StateDir, "host.private.json"),
+		AddressPath:       filepath.Join(m.config.StateDir, "host.address"),
+		AllowedClientKeys: allowedClients,
+		DERPMapURL:        m.config.DERPMapURL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("启动稳定 Tailcat 服务：%w", err)
+	}
+	return host, nil
+}
+
+func (m *Manager) schedulePairExpiryLocked(generation uint64, delay time.Duration) {
+	time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.pairGeneration != generation {
+			return
+		}
+		if err := m.closePairLocked(); err != nil {
+			// 短期配对主机允许任意客户端接入。关闭失败时保留句柄并持续
+			// 重试，不能因为第一次 Close 失败就让临时入口无限期存活。
+			m.schedulePairExpiryLocked(generation, pairCloseRetryDelay)
+		}
+	})
+}
+
+func (m *Manager) closePairLocked() error {
 	if m.pairHost != nil {
-		_ = m.pairHost.Close()
+		if err := m.pairHost.Close(); err != nil {
+			return err
+		}
 		m.pairHost = nil
 	}
 	m.pairExpiresAt = time.Time{}
-	_ = os.Remove(filepath.Join(m.config.StateDir, "pair.private.json"))
-	_ = os.Remove(filepath.Join(m.config.StateDir, "pair.address"))
+	var cleanupErr error
+	for _, name := range []string{"pair.private.json", "pair.address"} {
+		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("删除 Tailcat 配对状态 %s：%w", name, err))
+		}
+	}
+	return cleanupErr
 }
 
 func (m *Manager) statusLocked() Status {
 	status := Status{
 		Version:           Version,
+		InstanceID:        m.instanceID,
 		Running:           m.host != nil,
-		PairedDeviceCount: len(m.clients),
+		PairedDeviceCount: len(mergeClientKeys(m.clients, m.managedClients)),
 	}
 	if m.host != nil {
 		status.Address = m.host.Address()
+		status.PublicKey = m.host.PublicKey()
 	}
 	if m.pairHost != nil && time.Now().Before(m.pairExpiresAt) {
 		status.PairAddress = m.pairHost.Address()
@@ -229,6 +335,7 @@ func (m *Manager) startControl() error {
 	mux.HandleFunc("/status", m.statusHandler)
 	mux.HandleFunc("/pair", m.pairHandler)
 	mux.HandleFunc("/allow", m.allowHandler)
+	mux.HandleFunc("/managed-clients", m.managedClientsHandler)
 	mux.HandleFunc("/reset", m.resetHandler)
 	m.listener = listener
 	m.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -266,6 +373,22 @@ func (m *Manager) allowHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	status, err := m.AllowClient(payload.PublicKey)
+	writeResult(w, status, err)
+}
+
+func (m *Manager) managedClientsHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		PublicKeys []string `json:"public_keys"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		writeResult(w, Status{}, errors.New("托管客户端公钥请求无效"))
+		return
+	}
+	status, err := m.ReplaceManagedClients(payload.PublicKeys)
 	writeResult(w, status, err)
 }
 
@@ -335,6 +458,58 @@ func saveClients(path string, clients []string) error {
 		return err
 	}
 	return os.Rename(temporaryPath, path)
+}
+
+func normalizeClientKeys(rawKeys []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(rawKeys))
+	keys := make([]string, 0, len(rawKeys))
+	for _, rawKey := range rawKeys {
+		key := strings.TrimSpace(rawKey)
+		if _, err := tunnel.ParsePublicKey(key); err != nil {
+			return nil, err
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+func mergeClientKeys(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	var merged []string
+	for _, group := range groups {
+		for _, key := range group {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, key)
+		}
+	}
+	return merged
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func newInstanceID() (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(random), nil
 }
 
 func RunUntilCanceled(ctx context.Context, config Config) error {

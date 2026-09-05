@@ -10,6 +10,26 @@ struct InitialPairingView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
+            Section {
+                NavigationLink {
+                    ManagedConnectionSubscriptionView(
+                        qrScannerPresentation: qrScannerPresentation
+                    )
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.managed_subscription_title"),
+                        value: L10n.text("ui.managed_connection_recommended_value"),
+                        systemImage: "network.badge.shield.half.filled"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.initial.managedConnection")
+            } header: {
+                Text(L10n.text("ui.managed_connection_recommended_title"))
+            } footer: {
+                Text(L10n.text("ui.managed_connection_recommended_summary"))
+            }
+
             InitialConnectionSettingsSections(
                 qrScannerPresentation: qrScannerPresentation,
                 onRequestProfileRename: onRequestProfileRename

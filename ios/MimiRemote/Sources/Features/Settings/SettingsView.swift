@@ -165,6 +165,7 @@ struct SettingsView: View {
         // 顶部再来一个同名大标题只是白占一屏高度。
         .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
         .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
+        .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
             ConnectionManagementView(
                 qrScannerPresentation: qrScannerPresentation,
@@ -296,6 +297,23 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.connectionManagement")
             } header: {
                 sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
+            }
+
+            Section {
+                NavigationLink {
+                    ManagedConnectionSubscriptionView(
+                        qrScannerPresentation: qrScannerPresentation
+                    )
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.managed_subscription_title"),
+                        systemImage: "creditcard"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.managedSubscription")
+            } header: {
+                sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
             }
 
             Section {

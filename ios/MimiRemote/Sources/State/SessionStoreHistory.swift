@@ -714,16 +714,25 @@ extension SessionStore {
         }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
+        // full 页自带 notice 只有一种成因：本页 Turn 需要补 Item，而当前 runtime 没有
+        // thread/items/list。这时快照不完整，既不能标 .full 也不能清掉提示。
+        let pageReportsIncompleteItems = !(result.page.notice ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
         if job.loadMode == .economy {
             historyLoadedQualityBySessionID[sessionID] = .summary
-        } else if result.page.itemContinuations.isEmpty {
-            historyLoadedQualityBySessionID[sessionID] = .full
-        } else {
+        } else if !result.page.itemContinuations.isEmpty {
             historyLoadedQualityBySessionID[sessionID] = .enriching
+        } else if pageReportsIncompleteItems {
+            historyLoadedQualityBySessionID[sessionID] = .summary
+        } else {
+            historyLoadedQualityBySessionID[sessionID] = .full
         }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
-            historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            if !pageReportsIncompleteItems {
+                historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            }
         } else if !effectiveQuiet {
             setHistoryLoadNotice(
                 sessionID: sessionID,
@@ -1256,8 +1265,9 @@ extension SessionStore {
     }
 
     func updateHistorySavingsNotice(sessionID: SessionID, page: HistoryMessagesPage) {
-        guard page.loadMode == .economy,
-              let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
+        // full 页也可能带 notice：runtime 缺少 thread/items/list 时首屏内容确实补不齐。
+        // 是否提示只看 page.notice 本身，不再由 loadMode 反推。
+        guard let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
               !notice.isEmpty
         else {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -1412,21 +1422,44 @@ extension SessionStore {
 
     func sessionLibraryPage(
         workspace: AgentWorkspace,
+        runtimeProvider: String = "codex",
         consistency: SessionListConsistency = .fastIndexed,
         client: (any SessionStoreAPIClient)? = nil,
         hostScope: HostScope? = nil
     ) async -> (workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?) {
         let hostRequestStartedAt = sessionListNow()
         do {
-            let result = try await sessionListFirstPage(
-                workspace: workspace,
-                limit: Self.initialSessionPageLimit,
-                reuseRecent: consistency == .fastIndexed,
-                consistency: consistency,
-                source: .libraryIndex,
-                client: client,
-                hostScope: hostScope
-            )
+            let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
+            let result: SessionListFirstPageResult
+            if normalizedRuntime == "codex" {
+                result = try await sessionListFirstPage(
+                    workspace: workspace,
+                    limit: Self.initialSessionPageLimit,
+                    reuseRecent: consistency == .fastIndexed,
+                    consistency: consistency,
+                    source: .libraryIndex,
+                    client: client,
+                    hostScope: hostScope
+                )
+            } else {
+                let resolvedClient: any SessionStoreAPIClient
+                if let client {
+                    resolvedClient = client
+                } else {
+                    resolvedClient = try clientFactory()
+                }
+                let page = try await sessionListPageFillingPresentationWindow(
+                    client: resolvedClient,
+                    workspace: workspace,
+                    runtimeProvider: normalizedRuntime,
+                    cursor: nil,
+                    limit: Self.initialSessionPageLimit,
+                    consistency: consistency,
+                    source: .libraryIndex,
+                    expectedHostScope: hostScope ?? appStore.activeHostScope
+                )
+                result = SessionListFirstPageResult(page: page, requestedCursor: nil)
+            }
             recordCarStatusHostObservation(at: sessionListNow())
             return (workspace, result.page, result.requestedCursor)
         } catch {
@@ -1445,17 +1478,26 @@ extension SessionStore {
     func mergeSessionLibraryPages(
         _ results: [(workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?)],
         generation: Int,
-        consistency: SessionListConsistency = .fastIndexed
+        consistency: SessionListConsistency = .fastIndexed,
+        runtimeProvider: String = "codex"
     ) {
         guard generation == appStore.connectionGeneration else { return }
+        let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
         for result in results {
             guard let page = result.page,
                   isCurrentWorkspaceIdentity(result.workspace) else { continue }
-            if consistency == .authoritative,
+            if normalizedRuntime == "codex",
+               consistency == .authoritative,
                authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: result.workspace)
                 != result.requestedCursor {
                 continue
             }
+            recordWorkspaceDirectorySessionPage(
+                page.sessions,
+                in: result.workspace,
+                runtimeProvider: runtimeProvider,
+                replacing: consistency == .authoritative && result.requestedCursor == nil
+            )
             let pageSessions = sessions(page.sessions, in: result.workspace)
             if consistency == .fastIndexed {
                 mergeFastIndexedSessionPagePreservingAuthoritativeFields(
@@ -1466,17 +1508,19 @@ extension SessionStore {
                 // 新一轮权威刷新必须能修正旧权威数据；只有弱一致性页需要降级保护。
                 mergeSessionPage(pageSessions)
             }
-            updateWorkspaceSessionFirstPageState(
-                workspace: result.workspace,
-                page: page,
-                consistency: consistency,
-                requestedCursor: result.requestedCursor
-            )
-            recordWorkspaceSessionFirstPageCompletion(
-                workspace: result.workspace,
-                page: page,
-                consistency: consistency
-            )
+            if normalizedRuntime == "codex" {
+                updateWorkspaceSessionFirstPageState(
+                    workspace: result.workspace,
+                    page: page,
+                    consistency: consistency,
+                    requestedCursor: result.requestedCursor
+                )
+                recordWorkspaceSessionFirstPageCompletion(
+                    workspace: result.workspace,
+                    page: page,
+                    consistency: consistency
+                )
+            }
             clearWorkspaceUnavailable(result.workspace.id)
         }
     }
@@ -1716,6 +1760,12 @@ extension SessionStore {
             // 必须丢弃，不能把 completion 或 opaque cursor 倒回上一批。
             return false
         }
+        recordWorkspaceDirectorySessionPage(
+            page.sessions,
+            in: workspace,
+            runtimeProvider: "codex",
+            replacing: consistency == .authoritative && requestedCursor == nil
+        )
         let pageSessions = sessions(page.sessions, in: workspace)
         let presentationWindowComplete = isWorkspaceSessionPresentationWindowComplete(
             workspace: workspace,

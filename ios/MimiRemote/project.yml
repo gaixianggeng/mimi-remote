@@ -20,6 +20,8 @@ packages:
   swift-markdown:
     url: https://github.com/swiftlang/swift-markdown
     from: "0.8.0"
+fileGroups:
+  - Resources/MimiRemote.storekit
 targets:
   MimiRemote:
     type: application
@@ -211,6 +213,8 @@ schemes:
         MimiRemote: all
         MimiRemoteTests:
           - test
+    run:
+      storeKitConfiguration: Resources/MimiRemote.storekit
     test:
       language: zh-Hans
       targets:

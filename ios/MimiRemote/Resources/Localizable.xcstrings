@@ -6418,6 +6418,118 @@
         }
       }
     },
+    "ui.connection_benchmark_clear": {
+      "comment": "Destructive action that clears locally stored connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除样本" } }
+      }
+    },
+    "ui.connection_benchmark_clear_confirmation": {
+      "comment": "Confirmation before clearing all locally stored connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear all comparison samples?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除全部对照样本？" } }
+      }
+    },
+    "ui.connection_benchmark_cold_footer": {
+      "comment": "Measurement instructions for cold connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat is restarted under app control. Tailscale is system-managed, so its sample records the next request after you prepare a cold system state." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 会由 App 控制重启。Tailscale 由系统管理，请先准备冷启动状态，再立即开始测试。" } }
+      }
+    },
+    "ui.connection_benchmark_export": {
+      "comment": "Action that exports privacy-safe connection benchmark samples as JSON.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Export JSON" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导出 JSON" } }
+      }
+    },
+    "ui.connection_benchmark_export_failed": {
+      "comment": "Alert title shown when benchmark JSON export fails.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unable to export comparison results" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法导出对照结果" } }
+      }
+    },
+    "ui.connection_benchmark_latency_value": {
+      "comment": "Median and P95 benchmark latency values. First argument is median, second is P95.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Median %@ · P95 %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "中位数 %@ · P95 %@" } }
+      }
+    },
+    "ui.connection_benchmark_privacy_footer": {
+      "comment": "Privacy explanation for connection benchmark recording.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Off by default. Samples contain route type, coarse path, timings, and result only. Addresses, IPs, access codes, and keys are never recorded." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "默认关闭。样本只包含线路类型、粗粒度路径、耗时和结果，不记录地址、IP、访问码或密钥。" } }
+      }
+    },
+    "ui.connection_benchmark_progress_value": {
+      "comment": "Current benchmark sample count followed by target count.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ of %@ samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ / %@ 个样本" } }
+      }
+    },
+    "ui.connection_benchmark_record_samples": {
+      "comment": "Toggle that records connection tests into a comparison dataset.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Record comparison samples" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "记录对照样本" } }
+      }
+    },
+    "ui.connection_benchmark_recovery_footer": {
+      "comment": "Measurement instructions for network recovery benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switch Wi-Fi or cellular first, then start immediately. Recovery time is measured from the test button, not from the system network-change event." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先切换 Wi-Fi 或蜂窝网络，再立即开始。恢复耗时从点击测试按钮起算，不冒充系统网络切换的完整耗时。" } }
+      }
+    },
+    "ui.connection_benchmark_scenario": {
+      "comment": "Picker title for a benchmark connection lifecycle scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scenario" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "测试场景" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_cold": {
+      "comment": "Cold connection benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cold" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "冷连接" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_recovery": {
+      "comment": "Network recovery benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recovery" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络恢复" } }
+      }
+    },
+    "ui.connection_benchmark_scenario_warm": {
+      "comment": "Warm connection benchmark scenario.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Warm" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "热连接" } }
+      }
+    },
+    "ui.connection_benchmark_title": {
+      "comment": "Title for the optional Tailcat and Tailscale comparison recorder.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Controlled comparison" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "对照记录" } }
+      }
+    },
+    "ui.connection_benchmark_warm_footer": {
+      "comment": "Measurement instructions for warm connection benchmark samples.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Keep the device and network unchanged. Run both routes repeatedly without restarting either client." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保持设备和网络不变，不重启客户端，分别重复测试两条线路。" } }
+      }
+    },
     "ui.connection_status": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -39269,10 +39381,10 @@
       }
     },
     "ui.tailcat_experiment": {
-      "comment": "Name of the opt-in Tailcat transport experiment.",
+      "comment": "Generic Tailcat route name retained for compatibility.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Tailcat experiment" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat 实验" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Tailcat" } }
       }
     },
     "ui.tailcat_experiment_enabled": {
@@ -39306,8 +39418,8 @@
     "ui.tailcat_pairing_help": {
       "comment": "Explains the Tailcat QR pairing flow.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from Mac Connection. A successful scan enables this experiment automatically." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 中生成 Tailcat 二维码，再从“Mac 连接”扫码。配对成功后会自动开启本实验。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Generate a Tailcat QR code in Mimi on your Mac, then scan it from Mac Connection. A successful scan selects this route automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先在 Mac 版 Mimi 中生成 Tailcat 二维码，再从“Mac 连接”扫码。配对成功后会自动选择此线路。" } }
       }
     },
     "ui.tailcat_pairing_address_missing": {
@@ -39554,6 +39666,454 @@
             "value": "第 %1$@ 步：%2$@"
           }
         }
+      }
+    },
+    "ui.managed_devices_added_detail": {
+      "comment": "Managed device registration date and non-secret ID suffix.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Added %1$@ · ID %2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@ 添加 · ID %2$@" } }
+      }
+    },
+    "ui.managed_devices_authorization_expired": {
+      "comment": "Shown when a managed connection device credential expired or was revoked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Device authorization expired. Check the subscription and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备授权已失效，请检查订阅后重试。" } }
+      }
+    },
+    "ui.managed_devices_connect_mac": {
+      "comment": "Action to scan a Mac QR code and create a managed connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan a Mac QR Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描 Mac 二维码" } }
+      }
+    },
+    "ui.managed_devices_connecting": {
+      "comment": "Progress shown while managed pairing is being authorized and completed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Authorizing this Mac…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在授权这台 Mac…" } }
+      }
+    },
+    "ui.managed_devices_connection": {
+      "comment": "Section title for adding a Mac through Mimi Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect a Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接 Mac" } }
+      }
+    },
+    "ui.managed_devices_credential_conflict": {
+      "comment": "Shown when the local managed device credential conflicts with the server record.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This installation already uses another device credential. Remove the old device and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次安装已登记其他设备凭证，请移除旧设备后重试。" } }
+      }
+    },
+    "ui.managed_devices_empty": {
+      "comment": "Empty state for the managed device list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No devices are using this subscription yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅尚未登记设备。" } }
+      }
+    },
+    "ui.managed_devices_limit_reached": {
+      "comment": "Managed device quota error. First value is device type and second is limit.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@ limit reached (%2$@). Remove an old device and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@名额已满（最多 %2$@ 台），请移除旧设备后重试。" } }
+      }
+    },
+    "ui.managed_devices_loading": {
+      "comment": "Progress shown while loading managed devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Loading devices…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在加载设备…" } }
+      }
+    },
+    "ui.managed_devices_mac": {
+      "comment": "Mac device type in managed device quota and list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mac" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mac" } }
+      }
+    },
+    "ui.managed_devices_mobile": {
+      "comment": "iPhone and iPad device type in managed device quota and list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "iPhone & iPad" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "iPhone 与 iPad" } }
+      }
+    },
+    "ui.managed_devices_network_error": {
+      "comment": "Generic network error while managing devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't update devices. Check your connection and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法更新设备，请检查网络后重试。" } }
+      }
+    },
+    "ui.managed_devices_not_found": {
+      "comment": "Shown when a managed device was already removed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This device was already removed. Refresh the list and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此设备已被移除，请刷新列表后重试。" } }
+      }
+    },
+    "ui.managed_devices_pairing_conflict": {
+      "comment": "Shown when the managed pairing request conflicts with an earlier request.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The pairing request conflicts with an earlier request. Scan the Mac code again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "配对请求与之前的请求冲突，请重新扫描 Mac 二维码。" } }
+      }
+    },
+    "ui.managed_devices_privacy_notice": {
+      "comment": "Privacy disclosure below managed devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi stores only random installation identifiers and credential hashes. It doesn't upload device names, Tailcat addresses, agentd tokens, or private keys." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 只保存随机安装标识和凭证哈希，不上传设备名称、Tailcat 地址、agentd Token 或私钥。" } }
+      }
+    },
+    "ui.managed_devices_qr_required": {
+      "comment": "Shown when managed pairing receives a QR code without managed host metadata.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use the current Mimi agentd to generate a Tailcat pairing QR code on your Mac." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请在 Mac 上使用当前版本的 Mimi agentd 生成 Tailcat 配对二维码。" } }
+      }
+    },
+    "ui.managed_devices_remove_action": {
+      "comment": "Action to remove a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove Device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除设备" } }
+      }
+    },
+    "ui.managed_devices_remove_message": {
+      "comment": "Confirmation message before revoking a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The device will immediately lose managed access. To use it again, register it and rescan each Mac." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去托管访问权限。再次使用时，需要重新登记并扫描每台 Mac。" } }
+      }
+    },
+    "ui.managed_devices_remove_title": {
+      "comment": "Confirmation title before revoking a managed device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove this device?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除此设备？" } }
+      }
+    },
+    "ui.managed_devices_rescan_notice": {
+      "comment": "Explains that restored purchases don't copy host credentials.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Restoring a subscription doesn't copy Mac credentials. On a new iPhone or iPad, scan every Mac you want to use." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "恢复订阅不会同步 Mac 凭证。更换 iPhone 或 iPad 后，需要重新扫描每台要访问的 Mac。" } }
+      }
+    },
+    "ui.managed_devices_server_invalid": {
+      "comment": "Shown when the managed device service returns malformed data.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The managed device service returned an invalid response." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备服务返回了无效响应。" } }
+      }
+    },
+    "ui.managed_devices_server_rejected": {
+      "comment": "Generic managed device service rejection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The managed device request was rejected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备请求被拒绝。" } }
+      }
+    },
+    "ui.managed_devices_subscription_required": {
+      "comment": "Shown when managed pairing is attempted without an active verified subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "An active Mimi Managed Connection subscription is required." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要有效的 Mimi 托管连接订阅。" } }
+      }
+    },
+    "ui.managed_devices_this_device": {
+      "comment": "Marks the current iPhone or iPad in the managed device list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本设备" } }
+      }
+    },
+    "ui.managed_devices_title": {
+      "comment": "Managed device quota and list section title.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Device slots" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备名额" } }
+      }
+    },
+    "ui.managed_devices_usage": {
+      "comment": "Managed device quota usage. First value is used count and second is limit.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@ of %2$@ used" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已用 %1$@ / %2$@" } }
+      }
+    },
+    "ui.managed_subscription_active": {
+      "comment": "Active Mimi Managed Connection subscription status.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Subscription active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅生效中" } }
+      }
+    },
+    "ui.managed_subscription_checking": {
+      "comment": "Status shown while StoreKit and the entitlement service are checked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Checking subscription…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在检查订阅…" } }
+      }
+    },
+    "ui.managed_subscription_expired": {
+      "comment": "Error shown when the server says the subscription expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This subscription has expired." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅已过期。" } }
+      }
+    },
+    "ui.managed_subscription_inactive": {
+      "comment": "Error shown when the server returns an inactive entitlement state.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This subscription is not active." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅当前未生效。" } }
+      }
+    },
+    "ui.managed_subscription_grace": {
+      "comment": "Subscription status during App Store billing grace period.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Billing issue — access remains available during the grace period" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扣款出现问题，宽限期内仍可使用" } }
+      }
+    },
+    "ui.managed_subscription_network_error": {
+      "comment": "Generic network error while checking a subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't verify the subscription. Check your connection and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法验证订阅，请检查网络后重试。" } }
+      }
+    },
+    "ui.managed_subscription_not_active": {
+      "comment": "Inactive Mimi Managed Connection subscription status.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not subscribed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未订阅" } }
+      }
+    },
+    "ui.managed_subscription_pending": {
+      "comment": "Status shown for an Ask to Buy or otherwise pending purchase.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Purchase pending approval" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "购买正在等待批准" } }
+      }
+    },
+    "ui.managed_subscription_plans": {
+      "comment": "Subscription plan section title.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose a plan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择订阅方案" } }
+      }
+    },
+    "ui.managed_subscription_price_period": {
+      "comment": "Localized StoreKit price followed by its localized billing period.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@ / %2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@ / %2$@" } }
+      }
+    },
+    "ui.managed_subscription_product_unavailable": {
+      "comment": "Shown when StoreKit cannot load the configured products.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Subscription plans are temporarily unavailable." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅方案暂时不可用。" } }
+      }
+    },
+    "ui.managed_subscription_renews_automatically": {
+      "comment": "Auto-renewal disclosure below the subscription products.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Payment is charged to your Apple Account. The subscription renews automatically unless canceled in App Store settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "费用将从你的 Apple 账户扣除。除非在 App Store 设置中取消，否则订阅会自动续期。" } }
+      }
+    },
+    "ui.managed_subscription_revoked": {
+      "comment": "Error shown when the server says the subscription was refunded or revoked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This subscription was refunded or revoked." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅已退款或撤销。" } }
+      }
+    },
+    "ui.managed_subscription_section": {
+      "comment": "Settings section title for the managed connection subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managed connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管连接" } }
+      }
+    },
+    "ui.managed_subscription_server_invalid": {
+      "comment": "Shown when the entitlement service response cannot be validated.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The subscription service returned an invalid response." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅服务返回了无效响应。" } }
+      }
+    },
+    "ui.managed_subscription_server_rejected": {
+      "comment": "Shown when the entitlement service rejects a transaction.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The subscription could not be verified." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅未能通过验证。" } }
+      }
+    },
+    "ui.managed_subscription_status": {
+      "comment": "Subscription status section title.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Status" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅状态" } }
+      }
+    },
+    "ui.managed_subscription_title": {
+      "comment": "Mimi Managed Connection subscription title.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 托管连接" } }
+      }
+    },
+    "ui.managed_subscription_trial_active": {
+      "comment": "Active free-trial subscription status.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Free trial active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "免费试用中" } }
+      }
+    },
+    "ui.managed_subscription_trial_offer": {
+      "comment": "Free-trial duration returned by StoreKit.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ free trial for eligible subscribers" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "符合资格的订阅者可免费试用 %@" } }
+      }
+    },
+    "ui.managed_subscription_unverified": {
+      "comment": "Shown when StoreKit or the server cannot verify Apple-signed evidence.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Apple couldn't verify this transaction." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Apple 无法验证此交易。" } }
+      }
+    },
+    "ui.managed_subscription_valid_until": {
+      "comment": "Subscription expiration date. The placeholder is a localized date.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Valid until %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "有效期至 %@" } }
+      }
+    },
+    "ui.custom_tailcat": {
+      "comment": "Name of the free user-managed Tailcat connection type.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Self-hosted Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自建 Tailcat" } }
+      }
+    },
+    "ui.enable_custom_tailcat": {
+      "comment": "Toggle label for the free user-managed Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use self-hosted Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用自建 Tailcat" } }
+      }
+    },
+    "ui.custom_tailcat_summary": {
+      "comment": "Explains the self-hosted Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This free option uses the Tailcat address and relay service you manage. Turning it off keeps the saved address and uses the saved direct route." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此免费方式使用你自行管理的 Tailcat 地址和中转服务。关闭后仍保留地址，并改用已保存的直连线路。" } }
+      }
+    },
+    "ui.custom_tailcat_safety_note": {
+      "comment": "Security responsibility notice for self-hosted Tailcat.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You are responsible for relay access control, availability, and updates. The Tailcat private key remains in this device's Keychain." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你需要自行负责中转准入、可用性和升级。Tailcat 私钥只保存在本设备的 Keychain 中。" } }
+      }
+    },
+    "ui.local_network": {
+      "comment": "LAN connection type name.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Local network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "局域网" } }
+      }
+    },
+    "ui.managed_connection_recommended_title": {
+      "comment": "Section title that prioritizes managed connection during first setup.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recommended" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "推荐" } }
+      }
+    },
+    "ui.managed_connection_recommended_value": {
+      "comment": "Short value for the managed connection setup entry.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No relay setup" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "免配置中转" } }
+      }
+    },
+    "ui.managed_connection_recommended_summary": {
+      "comment": "First-setup explanation for the managed connection product.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Subscribe with your Apple Account and scan each Mac. LAN, Tailscale, and self-hosted Tailcat remain free below." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 Apple 账户订阅后扫描每台 Mac。局域网、Tailscale 和自建 Tailcat 仍可在下方免费使用。" } }
+      }
+    },
+    "ui.managed_connection_route_status": {
+      "comment": "Section title for the active managed connection route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connection route" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接线路" } }
+      }
+    },
+    "ui.managed_connection_retry": {
+      "comment": "Action to retry the managed Tailcat route.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Retry Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重试托管连接" } }
+      }
+    },
+    "ui.managed_connection_use_tailscale_once": {
+      "comment": "Action to use a saved Tailscale route without changing the default.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Tailscale This Time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次使用 Tailscale" } }
+      }
+    },
+    "ui.managed_connection_use_lan_once": {
+      "comment": "Action to use a saved LAN route without changing the default.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Local Network This Time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次使用局域网" } }
+      }
+    },
+    "ui.managed_connection_using_temporary_route": {
+      "comment": "Status when the user temporarily selected a free route. Placeholder is the route name.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Using %@ for this session" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次正在使用 %@" } }
+      }
+    },
+    "ui.managed_connection_fallback_notice": {
+      "comment": "Explains that temporary fallback is explicit and only saved routes are available.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Only a route already saved for this Mac can be selected. This choice does not change the default or delete any configuration." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "只能选择这台 Mac 已保存的线路。本次选择不会修改默认线路，也不会删除任何配置。" } }
+      }
+    },
+    "ui.restore_purchases": {
+      "comment": "Explicit action to ask App Store to synchronize purchases.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Restore Purchases" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "恢复购买" } }
+      }
+    },
+    "ui.subscription_information": {
+      "comment": "Section title for subscription disclosures and legal links.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Subscription information" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅信息" } }
       }
     },
     "·": {

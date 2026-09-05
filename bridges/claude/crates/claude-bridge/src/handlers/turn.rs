@@ -1630,6 +1630,7 @@ mod tests {
             metadata: crate::index::ClaudeSessionRef {
                 claude_session_path: "/tmp/a.jsonl".into(),
                 claude_session_id: id.into(),
+                claude_title: None,
             },
         };
         state

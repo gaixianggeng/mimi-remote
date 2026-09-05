@@ -18,6 +18,9 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
 use alleycat_codex_proto as p;
 
 use crate::handlers::model::{normalize_claude_model, normalize_claude_model_id};
@@ -117,6 +120,8 @@ pub async fn handle_thread_start(
         metadata: crate::index::ClaudeSessionRef {
             claude_session_path: claude_session_path_for(&cwd, &thread_id),
             claude_session_id: thread_id.clone(),
+            // transcript 还没写标题；首次历史扫描会补上。
+            claude_title: None,
         },
     };
     state
@@ -325,6 +330,9 @@ pub async fn handle_thread_fork(
         metadata: crate::index::ClaudeSessionRef {
             claude_session_path: new_session_path,
             claude_session_id: new_thread_id.clone(),
+            // 名字是从源线程整行拷来的，来源标记也一起拷，
+            // 否则新线程自己的 transcript 标题会被当成用户命名挡住。
+            claude_title: source.metadata.claude_title.clone(),
         },
     };
     state
@@ -659,11 +667,22 @@ pub async fn handle_thread_list(
         .into_iter()
         .filter(|id| !id.starts_with("utility_"))
         .collect();
+    // git_info 每条要 fork 三个 git 子进程。全局列表一页 50 条会产生 150 个进程、
+    // 实测约 3 秒；同一页里的 thread 通常只落在少数几个 cwd 上，按 cwd 去重后
+    // 降到个位数。
+    let mut git_info_by_cwd: std::collections::HashMap<
+        String,
+        Option<alleycat_codex_proto::GitInfo>,
+    > = std::collections::HashMap::new();
     let data = page
         .data
         .into_iter()
         .map(|entry| {
-            let mut t = thread_from_entry(&entry);
+            let git_info = git_info_by_cwd
+                .entry(entry.cwd.clone())
+                .or_insert_with(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd))
+                .clone();
+            let mut t = crate::index::entry_to_thread_with_git_info(&entry, Some(git_info));
             let is_loaded = loaded.contains(&t.id);
             apply_live_thread_status(&mut t, is_loaded);
             t
@@ -723,35 +742,96 @@ pub async fn handle_thread_read(
 // thread/turns/list
 // ============================================================================
 
+/// Turn 游标：turns 是一次性物化的有序向量，用 turn id 作位置锚点即可，
+/// 不依赖 `started_at`（它允许为 None，用时间戳会在补写的历史上产生歧义）。
+/// 编码方式与 thread 列表游标保持一致：base64url(JSON)。
+fn encode_turn_cursor(turn_id: &str) -> String {
+    let json = serde_json::json!({ "turnId": turn_id }).to_string();
+    URL_SAFE_NO_PAD.encode(json)
+}
+
+fn decode_turn_cursor(raw: &str) -> Option<String> {
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("turnId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
 pub async fn handle_thread_turns_list(
     state: &Arc<ConnectionState>,
     params: p::ThreadTurnsListParams,
 ) -> Result<p::ThreadTurnsListResponse, ThreadError> {
-    if params.cursor.as_deref().is_some_and(|c| !c.is_empty()) {
-        return Ok(p::ThreadTurnsListResponse::default());
-    }
     let entry = state
         .thread_index()
         .lookup(&params.thread_id)
         .await
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
-    let mut turns = cached_thread_turns(state, &entry).await?;
-    if matches!(
-        params.sort_direction.unwrap_or(p::SortDirection::Desc),
-        p::SortDirection::Desc
-    ) {
+    let turns = cached_thread_turns(state, &entry).await?;
+    Ok(paginate_turns(
+        turns,
+        params.cursor.as_deref(),
+        params.limit,
+        matches!(
+            params.sort_direction.unwrap_or(p::SortDirection::Desc),
+            p::SortDirection::Desc
+        ),
+    ))
+}
+
+/// turns 的游标分页。抽成纯函数便于覆盖跨页边界，handler 只负责取数据。
+fn paginate_turns(
+    mut turns: Vec<p::Turn>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+    descending: bool,
+) -> p::ThreadTurnsListResponse {
+    if descending {
         turns.reverse();
     }
-    if let Some(limit) = params.limit
-        && (limit as usize) < turns.len()
-    {
-        turns.truncate(limit as usize);
+
+    // 游标定位到锚点之后一位。锚点不在本次结果里（turn 被截断或 id 变了）时返回
+    // 空页且不再给 next_cursor，让调用方干净收敛，而不是从头重发导致重复。
+    let start = match cursor.filter(|c| !c.is_empty()) {
+        Some(raw) => {
+            let Some(anchor) = decode_turn_cursor(raw) else {
+                return p::ThreadTurnsListResponse::default();
+            };
+            match turns.iter().position(|turn| turn.id == anchor) {
+                Some(index) => index + 1,
+                None => return p::ThreadTurnsListResponse::default(),
+            }
+        }
+        None => 0,
+    };
+    if start >= turns.len() {
+        return p::ThreadTurnsListResponse::default();
     }
-    Ok(p::ThreadTurnsListResponse {
-        data: turns,
-        next_cursor: None,
-        backwards_cursor: None,
-    })
+
+    // limit 只决定单页大小；它过去被当成"只保留最新 N 轮"，早期历史因此永远取不到。
+    let limit = alleycat_bridge_core::resolve_list_limit(limit) as usize;
+    let end = turns.len().min(start + limit);
+    let has_more = end < turns.len();
+    let page: Vec<p::Turn> = turns[start..end].to_vec();
+
+    let next_cursor = if has_more {
+        page.last().map(|turn| encode_turn_cursor(&turn.id))
+    } else {
+        None
+    };
+    // backwards_cursor 指向本页第一条：调用方带着它反向请求可以回到上一页边界。
+    let backwards_cursor = if start > 0 {
+        page.first().map(|turn| encode_turn_cursor(&turn.id))
+    } else {
+        None
+    };
+
+    p::ThreadTurnsListResponse {
+        data: page,
+        next_cursor,
+        backwards_cursor,
+    }
 }
 
 // ============================================================================
@@ -1072,6 +1152,109 @@ fn notification_frame(notif: p::ServerNotification) -> p::JsonRpcMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn turn(id: &str) -> p::Turn {
+        p::Turn {
+            id: id.to_string(),
+            items: Vec::new(),
+            items_view: p::default_items_view(),
+            status: p::TurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }
+    }
+
+    fn turns(count: usize) -> Vec<p::Turn> {
+        (0..count).map(|i| turn(&format!("turn-{i}"))).collect()
+    }
+
+    fn ids(response: &p::ThreadTurnsListResponse) -> Vec<String> {
+        response.data.iter().map(|t| t.id.clone()).collect()
+    }
+
+    /// MIM-251：limit 只是单页大小。回归前它等价于"只保留最新 N 轮"，
+    /// 早期历史因此永远取不到。
+    #[test]
+    fn paginate_turns_walks_every_turn_without_gaps_or_repeats() {
+        let all = turns(23);
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let page = paginate_turns(all.clone(), cursor.as_deref(), Some(5), true);
+            assert!(!page.data.is_empty(), "分页不得在走完之前返回空页");
+            seen.extend(ids(&page));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        // 倒序：最新的 turn-22 在最前，一路翻到最早的 turn-0
+        let expected: Vec<String> = (0..23).rev().map(|i| format!("turn-{i}")).collect();
+        assert_eq!(seen, expected, "必须无重复无跳段地覆盖全部 23 轮");
+    }
+
+    #[test]
+    fn paginate_turns_reports_cursors_at_page_boundaries() {
+        let all = turns(7);
+        let first = paginate_turns(all.clone(), None, Some(3), true);
+        assert_eq!(ids(&first), ["turn-6", "turn-5", "turn-4"]);
+        assert!(first.next_cursor.is_some(), "还有更多时必须给 next_cursor");
+        assert!(
+            first.backwards_cursor.is_none(),
+            "首页没有上一页，不应给 backwards_cursor"
+        );
+
+        let second = paginate_turns(all.clone(), first.next_cursor.as_deref(), Some(3), true);
+        assert_eq!(ids(&second), ["turn-3", "turn-2", "turn-1"]);
+        assert!(
+            second.backwards_cursor.is_some(),
+            "非首页必须给 backwards_cursor 以便回翻"
+        );
+
+        let last = paginate_turns(all, second.next_cursor.as_deref(), Some(3), true);
+        assert_eq!(ids(&last), ["turn-0"]);
+        assert!(
+            last.next_cursor.is_none(),
+            "走到最早一轮后不得再给 next_cursor"
+        );
+    }
+
+    #[test]
+    fn paginate_turns_respects_ascending_order() {
+        let page = paginate_turns(turns(4), None, Some(2), false);
+        assert_eq!(ids(&page), ["turn-0", "turn-1"]);
+    }
+
+    #[test]
+    fn paginate_turns_terminates_on_unknown_or_invalid_cursor() {
+        // 锚点已不在结果里（历史被截断/重写）时必须干净收敛，不能从头重发造成重复。
+        let stale = encode_turn_cursor("turn-does-not-exist");
+        let page = paginate_turns(turns(3), Some(&stale), Some(2), true);
+        assert!(page.data.is_empty());
+        assert!(page.next_cursor.is_none());
+
+        let garbage = paginate_turns(turns(3), Some("!!!not-base64!!!"), Some(2), true);
+        assert!(garbage.data.is_empty());
+        assert!(garbage.next_cursor.is_none());
+    }
+
+    #[test]
+    fn paginate_turns_handles_empty_thread() {
+        let page = paginate_turns(Vec::new(), None, Some(5), true);
+        assert!(page.data.is_empty());
+        assert!(page.next_cursor.is_none());
+        assert!(page.backwards_cursor.is_none());
+    }
+
+    #[test]
+    fn turn_cursor_round_trips() {
+        assert_eq!(
+            decode_turn_cursor(&encode_turn_cursor("turn-42")).as_deref(),
+            Some("turn-42")
+        );
+    }
 
     #[test]
     fn encode_cwd_strips_slashes() {

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,37 @@ func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 	}
 	if query.Get("token") != "" || result.Token != "" || result.ConnectURL != "" {
 		t.Fatalf("Tailcat 配对不能暴露长期凭据：%+v", result)
+	}
+}
+
+func TestTailcatPairIncludesOnlyPublicManagedHostMetadata(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef"
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{
+  "listen": "127.0.0.1:8787",
+  "auth": {"token": "`+token+`"}
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := TailcatPairWithManagedHost(
+		configPath,
+		"tailcat-temporary-address",
+		"20000000-0000-4000-8000-000000000001",
+		"nodekey:mac-public-key",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(result.PairURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	if query.Get("managed_mac_installation_id") != "20000000-0000-4000-8000-000000000001" ||
+		query.Get("managed_mac_tailcat_public_key") != "nodekey:mac-public-key" {
+		t.Fatalf("二维码缺少托管授权所需的公开主机元数据：%s", result.PairURL)
+	}
+	if strings.Contains(result.PairURL, token) || query.Get("managed_pairing_grant") != "" {
+		t.Fatalf("Mac 二维码不能包含长期 Token 或尚未生成的托管 Grant：%s", result.PairURL)
 	}
 }

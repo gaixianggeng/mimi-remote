@@ -129,7 +129,7 @@ flowchart LR
 This repository ships the complete link: the native iPhone/iPad app, the Go `agentd` gateway for macOS, Windows, and Linux, the Mac menu bar app, the Windows tray app, and the Claude Code compatibility bridge. The mobile app connects only to your own host computer, so project files, session history, and runtime credentials stay on that computer.
 
 - **Direct and responsive:** private-network REST and WebSocket connections carry live output, follow-up messages, task controls, and approvals without a Mimi-operated application relay.
-- **Platform-specific Codex transport:** macOS and Linux connect through SSH to a shared Unix App Server. A Windows host owns one Codex App Server on a loopback-only WebSocket. Neither path uses Desktop private IPC.
+- **Platform-specific Codex transport:** Linux and local terminal clients share one resident App Server through Codex's standard Unix control socket. macOS reaches the same socket through SSH, while Windows lets `agentd` own a loopback-only WebSocket App Server. None of these paths uses Desktop private IPC.
 - **Two runtimes, one mobile experience:** Codex is the primary runtime, while the optional Claude Code bridge adapts its sessions and approvals to the same structured interface.
 - **A small, explicit trust boundary:** `agentd` handles authentication, workspace authorization, and runtime routing on the host computer. That computer must remain awake and privately reachable.
 
@@ -158,9 +158,15 @@ Check these before you install:
 
 Windows 10/11 x64 is supported as an `agentd` host. Install and sign in to Codex CLI 0.149.1 or later as the same Windows user, then download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest). Verify the SHA-256 before running the installer. An `unsigned-release` package is expected to report `NotSigned` and can trigger Microsoft Defender SmartScreen.
 
-The per-user installer registers a limited Task Scheduler task and preserves configuration under `%APPDATA%\mimi-remote` during upgrades. `agentd` owns one Codex App Server at `ws://127.0.0.1:4222`, waits for a real protocol initialization, and stops the complete child process tree with the service. This loopback transport is local to Windows and does not use Desktop private IPC.
+The per-user installer registers a limited Task Scheduler task and preserves configuration under `%APPDATA%\mimi-remote` during upgrades. `agentd` owns one Codex App Server at `ws://127.0.0.1:4222`, waits for a real protocol initialization, and stops the complete child process tree with the service. This loopback transport stays on the Windows host and does not use Desktop private IPC.
 
 Private-LAN access is opt-in. Setup only enables it on a Private Windows network profile and limits the firewall rule to `LocalSubnet`; otherwise the host remains loopback-only unless Tailscale is available. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for verification and recovery commands.
+
+### Linux host
+
+Linux uses the release archive and a per-user systemd service. Install and sign in to Codex CLI 0.149.1 or later as the same Linux user, verify the release checksums, extract the archive, and run `bash ./scripts/install-linux.sh install`.
+
+By default, Linux does not require `sshd`, an SSH key, or changes to `authorized_keys`. `agentd` attaches to `~/.codex/app-server-control/app-server-control.sock`; if it is absent, setup starts one resident Codex App Server in an independent user-systemd scope. A local terminal client launched with `codex --remote unix://` and Mimi can therefore open the same Thread through the same backend, and restarting `agentd` does not stop that backend. An explicit `AGENTD_APP_SERVER_SSH_TARGET` remains available for advanced remote-host deployments.
 
 ### macOS host
 
@@ -182,7 +188,7 @@ codex app-server --help
 agentd up
 ```
 
-Before the first start, enable Remote Login and make sure `ssh 127.0.0.1 codex --version` succeeds without a password prompt. `agentd up` creates private local configuration, connects through localhost SSH to the shared Unix App Server, waits for a real protocol initialization, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. See [Shared SSH App Server](docs/shared-ssh-app-server.md) for Desktop setup and runtime boundaries.
+Before the first start, enable Remote Login and make sure `ssh 127.0.0.1 true` succeeds without a password prompt. `agentd` supplies common Homebrew, npm, and mise paths when it checks Codex through a non-interactive SSH session; `agentd doctor` reports any remaining runtime-path problem. `agentd up` creates private local configuration, connects through localhost SSH to the shared Unix App Server, waits for a real protocol initialization, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. See [Shared SSH App Server](docs/shared-ssh-app-server.md) for Desktop setup and runtime boundaries.
 
 Useful commands:
 

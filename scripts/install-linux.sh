@@ -262,7 +262,7 @@ main() {
     return
   fi
 
-  for command_name in cmp grep id install journalctl mkdir mktemp mv rm sleep ssh systemctl uname; do
+  for command_name in cmp grep id install journalctl mkdir mktemp mv rm sleep systemctl uname; do
     require_command "$command_name"
   done
   normalize_arch "$(uname -m)" >/dev/null \
@@ -295,7 +295,12 @@ main() {
   local was_enabled="0"
   local was_active="0"
   local created_config="0"
-  local app_server_ssh_target="${AGENTD_APP_SERVER_SSH_TARGET:-127.0.0.1}"
+  local app_server_ssh_target="${AGENTD_APP_SERVER_SSH_TARGET:-}"
+  local setup_transport_args=()
+  if [[ -n "$app_server_ssh_target" ]]; then
+    require_command ssh
+    setup_transport_args=(--app-server-ssh-target "$app_server_ssh_target")
+  fi
 
   cleanup() {
     rm -rf "$work_dir"
@@ -338,18 +343,24 @@ main() {
   trap cleanup EXIT
   trap rollback_on_error ERR
 
-  # 在替换二进制、unit 或服务状态前，用候选版本完成真实 SSH、Codex 版本和
-  # App Server initialize 预检。临时配置随 work_dir 删除，不接触现有配对信息。
-  local preflight_dir="$work_dir/ssh-preflight"
+  # 在替换二进制、unit 或服务状态前，用候选版本完成本机 Codex App Server
+  # initialize 预检；显式远端 SSH 模式仍检查 SSH。临时配置不接触现有配对信息。
+  local preflight_dir="$work_dir/app-server-preflight"
   mkdir -p "$preflight_dir"
-  if ! "$source_binary" setup \
+  local preflight_output
+  if ! preflight_output="$("$source_binary" setup \
     --config "$preflight_dir/config.json" \
     --scan-root "$HOME" \
     --browse-root "$HOME" \
     --listen 127.0.0.1:8787 \
-    --app-server-ssh-target "$app_server_ssh_target" \
-    >/dev/null 2>&1; then
-    fail "共享 SSH App Server 预检失败；请先确认 ssh ${app_server_ssh_target} codex --version 可无交互执行。"
+    "${setup_transport_args[@]}" \
+    2>&1)"; then
+    echo "Codex App Server 预检诊断：" >&2
+    print_bounded_redacted_lines "$preflight_output" 12 "（agentd setup 没有返回诊断）" >&2
+    if [[ -n "$app_server_ssh_target" ]]; then
+      fail "远端 SSH App Server 预检失败；请先确认 ssh ${app_server_ssh_target} true 可无交互执行，并确认远端 Codex 已安装。"
+    fi
+    fail "Linux 共享本机 App Server 预检失败；请确认 Codex CLI 已安装、已登录，并支持 app-server Unix control socket。"
   fi
 
   mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/code"
@@ -395,10 +406,10 @@ main() {
     "$destination_binary" setup \
       --scan-root "$HOME/code" \
       --browse-root "$HOME" \
-      --app-server-ssh-target "$app_server_ssh_target" \
+      "${setup_transport_args[@]}" \
       >/dev/null
   fi
-  AGENTD_APP_SERVER_SSH_TARGET="$app_server_ssh_target" "$destination_binary" doctor --fix
+  "$destination_binary" doctor --fix
 
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE_NAME"

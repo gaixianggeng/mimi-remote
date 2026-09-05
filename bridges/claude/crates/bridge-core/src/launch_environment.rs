@@ -621,6 +621,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
+        let empty_path = temp.path().join("empty-path");
+        std::fs::create_dir_all(&empty_path).expect("empty path");
         let local_bin = temp.path().join(".local/bin");
         std::fs::create_dir_all(&local_bin).expect("local bin");
         let provider = local_bin.join("mise");
@@ -632,7 +634,10 @@ mod tests {
         std::fs::set_permissions(&provider, perms).expect("chmod");
 
         let mut env = EnvMap::new();
-        env.insert(OsString::from("PATH"), OsString::from("/usr/bin:/bin"));
+        env.insert(
+            OsString::from("PATH"),
+            empty_path.as_os_str().to_os_string(),
+        );
         env.insert(
             OsString::from("HOME"),
             temp.path().as_os_str().to_os_string(),

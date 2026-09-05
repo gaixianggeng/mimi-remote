@@ -520,6 +520,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
+    let controlledGlobalSessionsByRuntimeHandler: ((String, String?, Int?) async throws -> SessionsPage)?
     let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
     /// 需要区分 unsupported / failed 时用这个；它优先于 snapshot 便捷 handler。
     let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
@@ -550,6 +551,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestLogLock.withLock { requestedControlledGlobalCursorsStorage }
     }
     private var requestedControlledGlobalCursorsStorage: [String?] = []
+    var requestedControlledGlobalRuntimes: [String] {
+        requestLogLock.withLock { requestedControlledGlobalRuntimesStorage }
+    }
+    private var requestedControlledGlobalRuntimesStorage: [String] = []
     var requestedCapabilityPaths: [String?] = []
     var requestedCapabilityForceReloads: [Bool] = []
     var requestedResolvePaths: [String] = []
@@ -643,6 +648,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
+        controlledGlobalSessionsByRuntimeHandler: ((String, String?, Int?) async throws -> SessionsPage)? = nil,
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
@@ -703,6 +709,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
         self.controlledGlobalSessionsHandler = controlledGlobalSessionsHandler
+        self.controlledGlobalSessionsByRuntimeHandler = controlledGlobalSessionsByRuntimeHandler
         self.accountTokenUsageHandler = accountTokenUsageHandler
         self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
@@ -1071,10 +1078,27 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await controlledGlobalSessionsPage(runtimeProvider: "codex", cursor: cursor, limit: limit)
+    }
+
+    /// 受控全局发现现在按 runtime 各跑一趟。默认只有 codex 走既有 handler，
+    /// claude 返回空页，这样只关心 Codex 的既有用例语义保持不变；需要断言双
+    /// runtime 行为的用例传 controlledGlobalSessionsByRuntimeHandler。
+    func controlledGlobalSessionsPage(
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
         requestLogLock.withLock {
-            requestedControlledGlobalCursorsStorage.append(cursor)
+            requestedControlledGlobalRuntimesStorage.append(runtimeProvider)
+            if runtimeProvider == "codex" {
+                requestedControlledGlobalCursorsStorage.append(cursor)
+            }
         }
-        guard let controlledGlobalSessionsHandler else {
+        if let controlledGlobalSessionsByRuntimeHandler {
+            return try await controlledGlobalSessionsByRuntimeHandler(runtimeProvider, cursor, limit)
+        }
+        guard runtimeProvider == "codex", let controlledGlobalSessionsHandler else {
             return SessionsPage(sessions: [])
         }
         return try await controlledGlobalSessionsHandler(cursor, limit)

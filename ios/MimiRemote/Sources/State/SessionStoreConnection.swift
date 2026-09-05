@@ -2611,6 +2611,7 @@ extension SessionStore {
         if !workspaceSessionFirstPageCompletionByKey.isEmpty {
             workspaceSessionFirstPageCompletionByKey = [:]
         }
+        workspaceDirectorySessionIDsByKey = [:]
         sessionListCooldownUntilByBudgetKey = [:]
         sessionLibraryIndexRefreshJob?.task.cancel()
         sessionLibraryIndexRefreshJob = nil

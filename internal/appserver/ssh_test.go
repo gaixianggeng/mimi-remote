@@ -44,7 +44,7 @@ func TestSSHHelperProcess(t *testing.T) {
 	appendSSHHelperLog(strings.Join(sshArgs, "\t"))
 	command := sshArgs[len(sshArgs)-1]
 	switch command {
-	case "codex --version":
+	case sshCodexVersionRemoteCommand:
 		if os.Getenv("MIMI_SSH_VERSION_FAIL") == "1" {
 			fmt.Fprint(os.Stderr, "Host key verification failed.\n")
 			os.Exit(255)
@@ -103,6 +103,53 @@ func TestSSHBootstrapAloneDisablesPersistedRemoteControl(t *testing.T) {
 	}
 }
 
+func TestSSHRemoteCodexCommandsUseDeterministicUserPath(t *testing.T) {
+	for name, command := range map[string]string{
+		"version":   sshCodexVersionRemoteCommand,
+		"proxy":     sshProxyRemoteCommand,
+		"bootstrap": sshBootstrapRemoteCommand,
+	} {
+		for _, path := range []string{
+			"$HOME/.local/bin",
+			"$HOME/.npm-global/bin",
+			"$HOME/.local/share/mise/shims",
+			"$HOME/.local/share/mise/installs/codex/latest/bin",
+			"/opt/homebrew/bin",
+		} {
+			if !strings.Contains(command, path) {
+				t.Fatalf("%s 命令缺少常见 Codex 路径 %q：%s", name, path, command)
+			}
+		}
+		if !strings.Contains(command, "export PATH") || strings.Index(command, "export PATH") > strings.LastIndex(command, "codex") {
+			t.Fatalf("%s 命令必须先固定 PATH 再执行 Codex：%s", name, command)
+		}
+	}
+}
+
+func TestSSHRemoteCodexVersionFindsMiseInstallWithoutShellRC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test requires a POSIX shell")
+	}
+	home := t.TempDir()
+	codexBin := filepath.Join(home, ".local", "share", "mise", "shims", "codex")
+	if err := os.MkdirAll(filepath.Dir(codexBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.152.1'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", sshCodexVersionRemoteCommand)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("非交互 shell 未找到 mise Codex：%v，输出：%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "codex-cli 0.152.1" {
+		t.Fatalf("Codex 版本输出不正确：%q", output)
+	}
+}
+
 func TestSSHBootstrapGuaranteesOpenFileCapacityBeforeStartingResident(t *testing.T) {
 	limitCheck := "ulimit -Sn"
 	limitRaise := fmt.Sprintf("ulimit -Sn %d", sshAppServerOpenFileSoftLimit)
@@ -142,12 +189,15 @@ func TestSSHBootstrapResidentInheritsRaisedOpenFileLimit(t *testing.T) {
 
 	directory := t.TempDir()
 	marker := filepath.Join(directory, "resident-limit")
-	fakeCodex := filepath.Join(directory, "codex")
+	fakeCodex := filepath.Join(directory, ".local", "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(fakeCodex), 0o755); err != nil {
+		t.Fatalf("创建 fake Codex 目录：%v", err)
+	}
 	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nulimit -Sn > \"$MIMI_BOOTSTRAP_LIMIT_MARKER\"\n"), 0o755); err != nil {
 		t.Fatalf("创建 fake codex：%v", err)
 	}
 	t.Setenv("MIMI_BOOTSTRAP_LIMIT_MARKER", marker)
-	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", directory)
 	command := exec.Command("/bin/sh", "-c", "ulimit -Sn 256; "+sshBootstrapRemoteCommand)
 	command.Env = os.Environ()
 	if output, err := command.CombinedOutput(); err != nil {
@@ -215,7 +265,7 @@ func TestSSHTransportMissingHostKeyReturnsActionableFailure(t *testing.T) {
 	transport, logPath, _, _ := newSSHHelperTransport(t, true)
 	t.Setenv("MIMI_SSH_VERSION_FAIL", "1")
 	_, err := transport.CheckRemoteCodex(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "SSH host/auth") || !strings.Contains(err.Error(), "ssh 127.0.0.1 codex --version") {
+	if err == nil || !strings.Contains(err.Error(), "SSH host/auth") || !strings.Contains(err.Error(), "ssh 127.0.0.1") || !strings.Contains(err.Error(), sshCodexVersionRemoteCommand) {
 		t.Fatalf("缺少 host key 时应返回可执行检查命令：%v", err)
 	}
 	log := readSSHHelperLog(t, logPath)
