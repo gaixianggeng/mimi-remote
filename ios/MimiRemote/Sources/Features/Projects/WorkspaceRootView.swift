@@ -174,6 +174,14 @@ func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionL
 struct WorkspaceCatalogRefreshScope: Equatable {
     let hostScope: HostScope
     let credentialsSuspended: Bool
+    var manualRequest: WorkspaceCatalogRefreshRequest? = nil
+
+    var forceGitSummary: Bool { manualRequest?.hostScope == hostScope }
+}
+
+struct WorkspaceCatalogRefreshRequest: Equatable {
+    let id = UUID()
+    let hostScope: HostScope
 }
 
 struct WorkspaceSessionRefreshScope: Equatable {
@@ -251,6 +259,7 @@ struct WorkspaceRootView: View {
     @State private var selectedWorkspaceID: String?
     @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
+    @State private var catalogRefreshRequest: WorkspaceCatalogRefreshRequest?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
@@ -296,7 +305,8 @@ struct WorkspaceRootView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let catalogRefreshScope = WorkspaceCatalogRefreshScope(
             hostScope: appStore.activeHostScope,
-            credentialsSuspended: appStore.isCredentialMemorySuspended
+            credentialsSuspended: appStore.isCredentialMemorySuspended,
+            manualRequest: catalogRefreshRequest
         )
         let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
@@ -326,7 +336,7 @@ struct WorkspaceRootView: View {
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
-            await refreshCatalog()
+            await refreshCatalog(forceGitSummary: catalogRefreshScope.forceGitSummary)
             synchronizeSelection()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
@@ -1182,7 +1192,8 @@ struct WorkspaceRootView: View {
         await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
         guard !Task.isCancelled,
               appStore.activeHostScope == presentationKey.hostScope else { return }
-        await refreshCatalog(forceGitSummary: true)
+        // 下拉完成只等待会话；附属数据交给页面的 task，离页或切换主机时由 SwiftUI 取消。
+        catalogRefreshRequest = WorkspaceCatalogRefreshRequest(hostScope: presentationKey.hostScope)
     }
 
     private func refreshWorkspaceSessions(
