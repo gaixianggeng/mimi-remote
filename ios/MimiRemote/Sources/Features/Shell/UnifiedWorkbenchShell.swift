@@ -1296,20 +1296,7 @@ struct UnifiedWorkbenchShell: View {
             if layout.usesCompactNavigation {
                 workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if let session = sessionStore.selectedSession {
-                            SessionActionMenuContent(
-                                session: session,
-                                presentation: $sessionActionPresentation
-                            )
-                            Divider()
-                        }
-
-                        Button {
-                            Task { await sessionStore.refreshCurrentContext() }
-                        } label: {
-                            Label(L10n.text("ui.refresh_current_session"), systemImage: "arrow.clockwise")
-                        }
-                        .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
+                        CurrentSessionRefreshMenuButton()
 
                         Button {
                             toggleInspector(layout: layout)
@@ -1319,11 +1306,20 @@ struct UnifiedWorkbenchShell: View {
                                 systemImage: "sidebar.right"
                             )
                         }
+
+                        if let session = sessionStore.selectedSession {
+                            Divider()
+                            SessionActionMenuContent(
+                                session: session,
+                                presentation: $sessionActionPresentation
+                            )
+                        }
                     } label: {
                         WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.primaryText.opacity(0.72))
                             .workbenchToolbarChromeCircle(tokens: tokens)
                     }
+                    .menuOrder(.fixed)
                     .disabled(!canPresentSessionDetail)
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
@@ -1331,6 +1327,8 @@ struct UnifiedWorkbenchShell: View {
                 if let session = sessionStore.selectedSession {
                     workbenchChromeToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            CurrentSessionRefreshMenuButton()
+                            Divider()
                             SessionActionMenuContent(
                                 session: session,
                                 presentation: $sessionActionPresentation
@@ -1340,6 +1338,7 @@ struct UnifiedWorkbenchShell: View {
                                 .foregroundStyle(tokens.secondaryText)
                                 .workbenchToolbarChromeCircle(tokens: tokens)
                         }
+                        .menuOrder(.fixed)
                         .accessibilityLabel(L10n.text("ui.options"))
                     }
                     if #available(iOS 26.0, *) {
