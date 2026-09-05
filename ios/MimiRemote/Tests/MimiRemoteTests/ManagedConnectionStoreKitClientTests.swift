@@ -5,6 +5,37 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionStoreKitClientTests: XCTestCase {
+    func testProductsUseCompactChineseBillingUnits() async throws {
+        let (session, client) = try makeSessionAndClient()
+        session.locale = Locale(identifier: "zh_CN")
+        session.storefront = "CHN"
+        let products = try await client.products()
+        let monthly = try XCTUnwrap(products.first { $0.id == ManagedConnectionProductID.monthly })
+        let annual = try XCTUnwrap(products.first { $0.id == ManagedConnectionProductID.annual })
+
+        XCTAssertEqual(monthly.displayPeriod, "月")
+        XCTAssertEqual(annual.displayPeriod, "年")
+        let template = L10n.text("ui.managed_subscription_price_period", language: .simplifiedChinese)
+        XCTAssertEqual(L10n.formatTemplate(template, arguments: ["¥9.90", monthly.displayPeriod]), "¥9.90/月")
+        XCTAssertEqual(L10n.formatTemplate(template, arguments: ["¥99.00", annual.displayPeriod]), "¥99.00/年")
+        XCTAssertEqual(monthly.displayTrialPeriod, "一周")
+    }
+
+    func testProductsKeepLocalizedEnglishBillingUnits() async throws {
+        let (session, client) = try makeSessionAndClient()
+        session.locale = Locale(identifier: "en_US")
+        session.storefront = "USA"
+        let products = try await client.products()
+        let monthly = try XCTUnwrap(products.first { $0.id == ManagedConnectionProductID.monthly })
+        let annual = try XCTUnwrap(products.first { $0.id == ManagedConnectionProductID.annual })
+
+        XCTAssertEqual(monthly.displayPeriod, "Month")
+        XCTAssertEqual(annual.displayPeriod, "Year")
+        let template = L10n.text("ui.managed_subscription_price_period", language: .english)
+        XCTAssertEqual(L10n.formatTemplate(template, arguments: ["$1.99", monthly.displayPeriod]), "$1.99/Month")
+        XCTAssertEqual(L10n.formatTemplate(template, arguments: ["$19.99", annual.displayPeriod]), "$19.99/Year")
+    }
+
     func testCurrentEntitlementRejectsRefundedTransaction() async throws {
         let (session, client) = try makeSessionAndClient()
         let revoked = try await session.buyProduct(identifier: ManagedConnectionProductID.monthly)

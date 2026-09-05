@@ -76,7 +76,10 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
                     id: product.id,
                     displayName: product.displayName,
                     displayPrice: product.displayPrice,
-                    displayPeriod: Self.displayPeriod(subscription.subscriptionPeriod, product: product),
+                    // 两个商品均按单月或单年计费；计费行只显示单位，试用期仍保留完整时长。
+                    displayPeriod: subscription.subscriptionPeriod.unit.formatted(
+                        product.subscriptionPeriodUnitFormatStyle
+                    ),
                     isEligibleForTrial: eligible && freeTrialOffer != nil,
                     displayTrialPeriod: trialPeriod
                 )
