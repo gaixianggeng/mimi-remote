@@ -593,6 +593,7 @@ final class TailcatExperimentController: ObservableObject {
             if requiresManagedAuthorization {
                 guard let macInstallationID = link.managedMacInstallationID,
                       let macTailcatPublicKey = link.managedMacTailcatPublicKey,
+                      let pairingMacTailcatPublicKey = link.managedPairTailcatPublicKey,
                       let managedPairingAuthorizer
                 else {
                     throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
@@ -600,6 +601,7 @@ final class TailcatExperimentController: ObservableObject {
                 managedAuthorization = try await managedPairingAuthorizer.authorizeManagedPairing(
                     macInstallationID: macInstallationID,
                     macTailcatPublicKey: macTailcatPublicKey,
+                    pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
                     mobileTailcatPublicKey: clientKey
                 )
             } else {

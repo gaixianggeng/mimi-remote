@@ -41,6 +41,7 @@ type tailcatStatus struct {
 	PublicKey         string `json:"public_key,omitempty"`
 	MacInstallationID string `json:"mac_installation_id,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
+	PairPublicKey     string `json:"pair_public_key,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error,omitempty"`

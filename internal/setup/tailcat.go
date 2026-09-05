@@ -139,16 +139,17 @@ func commitTailcatConfiguration(
 }
 
 func TailcatPair(configPath, pairAddress string) (Result, error) {
-	return TailcatPairWithManagedHost(configPath, pairAddress, "", "")
+	return TailcatPairWithManagedHost(configPath, pairAddress, "", "", "")
 }
 
-// TailcatPairWithManagedHost 只把 Mac 的随机安装 ID 和稳定 Tailcat 公钥加入
-// 二维码。两者都不是凭证；移动端仍需先取得订阅权益和短期配对授权。
+// TailcatPairWithManagedHost 只把 Mac 的随机安装 ID、稳定公钥和当前临时
+// 配对公钥加入二维码。它们都不是凭证；移动端仍需取得订阅权益和短期授权。
 func TailcatPairWithManagedHost(
 	configPath string,
 	pairAddress string,
 	macInstallationID string,
 	macTailcatPublicKey string,
+	pairTailcatPublicKey string,
 ) (Result, error) {
 	pairAddress = strings.TrimSpace(pairAddress)
 	if pairAddress == "" {
@@ -175,12 +176,15 @@ func TailcatPairWithManagedHost(
 	query.Set("tailcat_pair_address", pairAddress)
 	macInstallationID = strings.TrimSpace(macInstallationID)
 	macTailcatPublicKey = strings.TrimSpace(macTailcatPublicKey)
-	if (macInstallationID == "") != (macTailcatPublicKey == "") {
-		return Result{}, fmt.Errorf("托管配对的 Mac 安装身份和 Tailcat 公钥必须同时提供")
+	pairTailcatPublicKey = strings.TrimSpace(pairTailcatPublicKey)
+	if (macInstallationID == "") != (macTailcatPublicKey == "") ||
+		(macInstallationID == "") != (pairTailcatPublicKey == "") {
+		return Result{}, fmt.Errorf("托管配对的 Mac 安装身份、稳定 Tailcat 公钥和临时 Tailcat 公钥必须同时提供")
 	}
 	if macInstallationID != "" {
 		query.Set("managed_mac_installation_id", macInstallationID)
 		query.Set("managed_mac_tailcat_public_key", macTailcatPublicKey)
+		query.Set("managed_pair_tailcat_public_key", pairTailcatPublicKey)
 	}
 	parsed.RawQuery = query.Encode()
 	return Result{

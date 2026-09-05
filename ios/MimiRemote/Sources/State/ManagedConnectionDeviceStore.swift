@@ -10,6 +10,7 @@ protocol ManagedConnectionPairingAuthorizing: AnyObject {
     func authorizeManagedPairing(
         macInstallationID: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization
 
@@ -29,6 +30,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     private struct PendingPairingAuthorization {
         let macInstallationID: String
         let macTailcatPublicKey: String
+        let pairingMacTailcatPublicKey: String
         let mobileTailcatPublicKey: String
         let requestID: String
         let grant: String
@@ -122,12 +124,14 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     func authorizeManagedPairing(
         macInstallationID: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization {
         let identity = try await ensureMobileDeviceRegistered()
         let pending = try reusableOrNewPendingPairing(
             macInstallationID: macInstallationID,
             macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
             mobileTailcatPublicKey: mobileTailcatPublicKey
         )
         if let session = pending.session, session.expiresAt > now() {
@@ -140,6 +144,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
             macInstallationID: macInstallationID,
             mobileTailcatPublicKey: mobileTailcatPublicKey,
             macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
             managedPairingGrant: pending.grant
         )
         pendingPairing?.session = session
@@ -258,11 +263,13 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     private func reusableOrNewPendingPairing(
         macInstallationID: String,
         macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) throws -> PendingPairingAuthorization {
         if let pendingPairing,
            pendingPairing.macInstallationID == macInstallationID,
            pendingPairing.macTailcatPublicKey == macTailcatPublicKey,
+           pendingPairing.pairingMacTailcatPublicKey == pairingMacTailcatPublicKey,
            pendingPairing.mobileTailcatPublicKey == mobileTailcatPublicKey,
            pendingPairing.localExpiresAt > now()
         {
@@ -271,6 +278,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         let pending = PendingPairingAuthorization(
             macInstallationID: macInstallationID,
             macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
             mobileTailcatPublicKey: mobileTailcatPublicKey,
             requestID: makeUUID().uuidString.lowercased(),
             grant: try makeToken(),

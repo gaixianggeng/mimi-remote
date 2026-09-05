@@ -168,6 +168,7 @@ func TestTailcatPairIncludesOnlyPublicManagedHostMetadata(t *testing.T) {
 		"tailcat-temporary-address",
 		"20000000-0000-4000-8000-000000000001",
 		"nodekey:mac-public-key",
+		"nodekey:pair-public-key",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +179,8 @@ func TestTailcatPairIncludesOnlyPublicManagedHostMetadata(t *testing.T) {
 	}
 	query := parsed.Query()
 	if query.Get("managed_mac_installation_id") != "20000000-0000-4000-8000-000000000001" ||
-		query.Get("managed_mac_tailcat_public_key") != "nodekey:mac-public-key" {
+		query.Get("managed_mac_tailcat_public_key") != "nodekey:mac-public-key" ||
+		query.Get("managed_pair_tailcat_public_key") != "nodekey:pair-public-key" {
 		t.Fatalf("二维码缺少托管授权所需的公开主机元数据：%s", result.PairURL)
 	}
 	if strings.Contains(result.PairURL, token) || query.Get("managed_pairing_grant") != "" {
