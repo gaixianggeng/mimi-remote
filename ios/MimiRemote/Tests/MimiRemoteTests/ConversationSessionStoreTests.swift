@@ -3364,7 +3364,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedSession?.status, "running")
         XCTAssertNil(store.selectedSession?.pendingUserInput)
 
-        socket.onUserInputResponseFailure?("input-1", "request expired")
+        socket.onUserInputResponseFailure?("input-1", "request expired", false)
         try await waitForSelectedSessionStatus("waiting_for_input", store: store)
 
         XCTAssertEqual(store.selectedSession?.pendingUserInput, request)

@@ -707,7 +707,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private let bundle: AppServerRuntimeBundle
@@ -792,8 +792,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.onApprovalDecisionFailure = { [weak self] approvalID, message in
             self?.onApprovalDecisionFailure?(approvalID, message)
         }
-        client.onUserInputResponseFailure = { [weak self] requestID, message in
-            self?.onUserInputResponseFailure?(requestID, message)
+        client.onUserInputResponseFailure = { [weak self] requestID, message, expired in
+            self?.onUserInputResponseFailure?(requestID, message, expired)
         }
         client.onControlFailure = { [weak self] message in
             self?.onControlFailure?(message)
@@ -820,7 +820,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
@@ -1152,7 +1152,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool {
         guard let sessionID else {
-            onUserInputResponseFailure?(requestID, L10n.text("ui.direct_websocket_not_connected"))
+            onUserInputResponseFailure?(requestID, L10n.text("ui.direct_websocket_not_connected"), false)
             return false
         }
         let failureHandler = onUserInputResponseFailure
@@ -1160,8 +1160,16 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             do {
                 try await runtime.respondToUserInput(sessionID: sessionID, requestID: requestID, answers: answers)
             } catch {
+                // 挂起表里查不到，说明这条请求在对端已经不存在了：Claude 进程重启会
+                // 把那次工具调用一起带走，而历史里的卡片还在。重试只会一直失败。
+                let expired: Bool
+                if case CodexAppServerSessionRuntimeError.userInputRequestNotFound = error {
+                    expired = true
+                } else {
+                    expired = false
+                }
                 await MainActor.run {
-                    failureHandler?(requestID, error.localizedDescription)
+                    failureHandler?(requestID, error.localizedDescription, expired)
                 }
             }
         }

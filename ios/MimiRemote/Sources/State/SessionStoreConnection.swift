@@ -90,7 +90,7 @@ extension SessionStore {
         socket.onSendFailure = { _, _ in }
         socket.onTurnSendOutcome = { _, _ in }
         socket.onApprovalDecisionFailure = { _, _ in }
-        socket.onUserInputResponseFailure = { _, _ in }
+        socket.onUserInputResponseFailure = { _, _, _ in }
         socket.onControlFailure = { _ in }
         relatedSessionSocket = socket
         relatedSessionSocketID = session.id
@@ -276,7 +276,7 @@ extension SessionStore {
                 self?.setErrorMessage(L10n.format("ui.approval_sending_failed_value", message))
             }
         }
-        socket.onUserInputResponseFailure = { [weak self] requestID, message in
+        socket.onUserInputResponseFailure = { [weak self] requestID, message, expired in
             Task { @MainActor in
                 guard self?.isCurrentWebSocketConnection(
                     sessionID: session.id,
@@ -286,6 +286,13 @@ extension SessionStore {
                     return
                 }
                 let request = self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
+                guard !expired else {
+                    // 请求已经不存在，放回去只会得到一张永远点不动的卡：
+                    // 直接收起卡片并解除「待输入」，让会话能继续用。
+                    self?.discardExpiredUserInputRequest(sessionID: session.id)
+                    self?.setErrorMessage(L10n.text("ui.supplemental_information_request_expired_card_dismissed"))
+                    return
+                }
                 if let request {
                     self?.restoreUserInputRequestAfterFailure(request, sessionID: session.id)
                 }
@@ -2957,6 +2964,25 @@ extension SessionStore {
             fallbackSessionID: sessionID
         )
         conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false)
+    }
+
+    /// 对端已经不认识这条补充信息请求时收起卡片。
+    ///
+    /// 与 `acceptUserInputResponseLocally` 的区别只有一个：答案从没送达 Agent，
+    /// 所以时间线要标成「已失效」，不能让用户以为自己答过了。
+    func discardExpiredUserInputRequest(sessionID: SessionID) {
+        updateSession(sessionID) { item in
+            guard item.status == "waiting_for_input" || item.pendingUserInput != nil else {
+                return
+            }
+            item.status = "running"
+            item.pendingUserInput = nil
+        }
+        contextStore.upsert(
+            SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+            fallbackSessionID: sessionID
+        )
+        conversationStore.markLatestUserInputExpired(sessionID: sessionID)
     }
 
     func restoreUserInputRequestAfterFailure(_ request: AgentUserInputRequest, sessionID: SessionID) {

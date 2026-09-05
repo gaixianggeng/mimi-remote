@@ -498,7 +498,7 @@ extension SessionStore {
             }
         }
         socket.onApprovalDecisionFailure = { _, _ in }
-        socket.onUserInputResponseFailure = { _, _ in }
+        socket.onUserInputResponseFailure = { _, _, _ in }
         socket.onControlFailure = { _ in }
         queuedSessionSockets[sessionID] = socket
         queuedSessionCredentialFingerprintByID[sessionID] = credentialFingerprint

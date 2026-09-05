@@ -1096,3 +1096,85 @@ extension ConversationDataFlowTests {
         }
     }
 }
+
+extension ConversationDataFlowTests {
+    /// MIM-247：请求确实已经失效时，卡片不能再被放回去。
+    ///
+    /// 用户截图里的死循环就是这么来的：提交失败 → 卡片恢复 → 再点还是失败。
+    /// 失效是终态，卡片收起、会话解除「待输入」，用户才能继续用这个会话。
+    func testExpiredUserInputFailureRetiresCardInsteadOfRestoringIt() async throws {
+        let project = makeProject(id: "proj_expired_input")
+        let request = AgentUserInputRequest(
+            id: "input-expired",
+            threadID: "sess_expired_input",
+            turnID: "turn-1",
+            itemID: "input-expired",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "scope",
+                    header: "范围",
+                    question: "先做哪一部分？",
+                    isOther: true,
+                    isSecret: false,
+                    options: [AgentUserInputOption(label: "后端", description: "先落 API")]
+                )
+            ]
+        )
+        let running = AgentSession(
+            id: request.threadID,
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "等待补充信息",
+            status: "waiting_for_input",
+            source: "claude",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingUserInput: request
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        conversationStore.appendSystem("等待补充信息：\(request.title)", sessionID: running.id, kind: .userInput)
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        for _ in 0..<50 where sockets.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.respondToUserInput(request, answers: ["scope": ["后端"]])
+        XCTAssertEqual(socket.sentUserInputResponses.count, 1)
+
+        socket.onUserInputResponseFailure?("input-expired", "补充信息请求已失效：input-expired", true)
+        // 失败回调是异步派发的，而会话在乐观提交时就已经是 running；
+        // 必须等它真正落地，否则断言只是在看提交那一刻的状态。
+        for _ in 0..<80 where conversationStore.messages(for: running.id).last?.content != "补充信息请求已失效，答案没有送达" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.selectedSession?.status, "running", "卡片撤掉后会话不能再卡在待输入")
+        XCTAssertNil(store.selectedSession?.pendingUserInput, "失效的卡片不能再放回去")
+        XCTAssertFalse(store.isUserInputResponsePending(request))
+        XCTAssertEqual(conversationStore.messages(for: running.id).last?.content, "补充信息请求已失效，答案没有送达")
+    }
+}
