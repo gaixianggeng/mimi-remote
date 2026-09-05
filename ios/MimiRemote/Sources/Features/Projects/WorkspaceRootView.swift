@@ -174,14 +174,6 @@ func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionL
 struct WorkspaceCatalogRefreshScope: Equatable {
     let hostScope: HostScope
     let credentialsSuspended: Bool
-    var manualRequest: WorkspaceCatalogRefreshRequest? = nil
-
-    var forceGitSummary: Bool { manualRequest?.hostScope == hostScope }
-}
-
-struct WorkspaceCatalogRefreshRequest: Equatable {
-    let id = UUID()
-    let hostScope: HostScope
 }
 
 struct WorkspaceSessionRefreshScope: Equatable {
@@ -259,7 +251,8 @@ struct WorkspaceRootView: View {
     @State private var selectedWorkspaceID: String?
     @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
-    @State private var catalogRefreshRequest: WorkspaceCatalogRefreshRequest?
+    @State private var manualCatalogRefreshTask: Task<Void, Never>?
+    @State private var manualCatalogRefreshInvocationID: UUID?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
@@ -305,8 +298,7 @@ struct WorkspaceRootView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let catalogRefreshScope = WorkspaceCatalogRefreshScope(
             hostScope: appStore.activeHostScope,
-            credentialsSuspended: appStore.isCredentialMemorySuspended,
-            manualRequest: catalogRefreshRequest
+            credentialsSuspended: appStore.isCredentialMemorySuspended
         )
         let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
@@ -336,8 +328,19 @@ struct WorkspaceRootView: View {
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
-            await refreshCatalog(forceGitSummary: catalogRefreshScope.forceGitSummary)
+            await refreshCatalog()
             synchronizeSelection()
+        }
+        .onChange(of: appStore.activeHostScope) { _, _ in
+            cancelManualCatalogRefresh()
+        }
+        .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
+            if isSuspended {
+                cancelManualCatalogRefresh()
+            }
+        }
+        .onDisappear {
+            cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
             // 这里只重试本地偏好迁移，不重新请求目录。删除或修改重复 endpoint 后，
@@ -1189,16 +1192,21 @@ struct WorkspaceRootView: View {
         }
         let presentationKey = workspaceSessionPresentationKey(for: project)
         // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
-        await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
+        await refreshWorkspaceSessions(
+            project: project,
+            presentationKey: presentationKey,
+            refreshFromStart: true
+        )
         guard !Task.isCancelled,
               appStore.activeHostScope == presentationKey.hostScope else { return }
-        // 下拉完成只等待会话；附属数据交给页面的 task，离页或切换主机时由 SwiftUI 取消。
-        catalogRefreshRequest = WorkspaceCatalogRefreshRequest(hostScope: presentationKey.hostScope)
+        // 下拉完成只等待会话；同一页面尚未完成的目录/Git 请求直接复用。
+        startManualCatalogRefresh(hostScope: presentationKey.hostScope)
     }
 
     private func refreshWorkspaceSessions(
         project: AgentProject,
-        presentationKey: WorkspaceSessionPresentationKey
+        presentationKey: WorkspaceSessionPresentationKey,
+        refreshFromStart: Bool = false
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
@@ -1214,7 +1222,8 @@ struct WorkspaceRootView: View {
                 projectID: project.id,
                 runtimeProvider: presentationKey.runtimeProvider,
                 cursor: nil,
-                limit: SessionStore.initialSessionPageLimit
+                limit: SessionStore.initialSessionPageLimit,
+                refreshFromStart: refreshFromStart
             )
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return
@@ -1247,6 +1256,37 @@ struct WorkspaceRootView: View {
                 sessionLoadStates[presentationKey] = .failed(message)
             }
         }
+    }
+
+    private func startManualCatalogRefresh(hostScope: HostScope) {
+        guard manualCatalogRefreshTask == nil,
+              !appStore.isCredentialMemorySuspended,
+              appStore.activeHostScope == hostScope else {
+            return
+        }
+        let invocationID = UUID()
+        manualCatalogRefreshInvocationID = invocationID
+        manualCatalogRefreshTask = Task { @MainActor in
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == hostScope,
+                  !appStore.isCredentialMemorySuspended else {
+                guard manualCatalogRefreshInvocationID == invocationID else { return }
+                manualCatalogRefreshTask = nil
+                manualCatalogRefreshInvocationID = nil
+                return
+            }
+            await refreshCatalog(forceGitSummary: true)
+            // 被取消的旧任务可能晚于新任务返回，只允许当前 owner 清理句柄。
+            guard manualCatalogRefreshInvocationID == invocationID else { return }
+            manualCatalogRefreshTask = nil
+            manualCatalogRefreshInvocationID = nil
+        }
+    }
+
+    private func cancelManualCatalogRefresh() {
+        manualCatalogRefreshTask?.cancel()
+        manualCatalogRefreshTask = nil
+        manualCatalogRefreshInvocationID = nil
     }
 
     private func sessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {

@@ -881,7 +881,7 @@ extension SessionStore {
     }
 
     @discardableResult
-    func openWorkspaceOutcome(path: String) async -> WorkspaceOpenOutcome {
+    func openWorkspaceOutcome(path: String, loadsSessions: Bool = true) async -> WorkspaceOpenOutcome {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             let message = L10n.text("ui.please_enter_the_directory_path_in_the_development")
@@ -916,11 +916,13 @@ extension SessionStore {
             }
             setErrorMessage(nil)
             disconnectWebSocket()
-            await refreshSessions(
-                forProjectID: workspace.id,
-                activatesProject: false,
-                foregroundLease: selectionLease
-            )
+            if loadsSessions {
+                await refreshSessions(
+                    forProjectID: workspace.id,
+                    activatesProject: false,
+                    foregroundLease: selectionLease
+                )
+            }
             return .opened(workspaceID: workspace.id)
         } catch {
             guard !isCancellationError(error), isSelectionLeaseCurrent(openIntent) else {

@@ -1631,6 +1631,7 @@ extension SessionStore {
 #endif
         guard appStore.activeHostScope == hostScope else { return }
         let generation = appStore.connectionGeneration
+        let archiveReconciliation = authoritativeArchiveReconciliation(authoritative, hostScope: hostScope)
         defer {
             if appStore.activeHostScope == hostScope {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
@@ -1684,6 +1685,13 @@ extension SessionStore {
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
+                        if let archiveReconciliation {
+                            reconcileArchivedSessionsReturnedByAuthoritativeList(
+                                page.sessions,
+                                using: archiveReconciliation,
+                                hostScope: hostScope
+                            )
+                        }
                         // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
                         let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
                         if expandedControlledIDs != controlledGlobalSessionIDs {

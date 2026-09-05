@@ -2043,6 +2043,10 @@ extension SessionStore {
         isRequestCurrent: (() -> Bool)? = nil
     ) async throws -> SessionsPage {
         let targetCount = max(1, limit)
+        let archiveReconciliation = authoritativeArchiveReconciliation(
+            consistency == .authoritative,
+            hostScope: expectedHostScope
+        )
         var requestedCursor = initialCursor
         var seenCursors = Set<String>()
         if let initialCursor {
@@ -2095,6 +2099,15 @@ extension SessionStore {
             }
             pagesScanned += 1
             lastPage = page
+
+            if let archiveReconciliation {
+                // 先恢复远端已取消归档的行，再计算可显示数量，避免为被旧偏好隐藏的行反复补页。
+                reconcileArchivedSessionsReturnedByAuthoritativeList(
+                    page.sessions,
+                    using: archiveReconciliation,
+                    hostScope: expectedHostScope
+                )
+            }
 
             for rawSession in page.sessions {
                 // 稀疏列表可能暂时丢 parent/source；先恢复 Store 已知的 sticky ownership，

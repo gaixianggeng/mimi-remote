@@ -1066,7 +1066,7 @@ struct OpenWorkspaceSheet: View {
         isOpening = true
         localError = nil
         defer { isOpening = false }
-        switch await sessionStore.openWorkspaceOutcome(path: targetPath) {
+        switch await sessionStore.openWorkspaceOutcome(path: targetPath, loadsSessions: false) {
         case .opened(let workspaceID):
             onOpened(workspaceID)
             dismiss()
