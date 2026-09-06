@@ -1570,7 +1570,8 @@ actor CodexAppServerSessionRuntime {
         fallbackProject: AgentProject,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        let canUseIndexedList = consistency == .fastIndexed
+        // Codex 的跨端归档会同步写入服务端索引；主动刷新仍发送新请求，避免每次扫描历史文件。
+        let canUseIndexedList = (consistency == .fastIndexed || runtimeProvider == "codex")
             && cursor == nil
             && !stateDBOnlyListUnavailable
             && !stateDBOnlyScanRequiredCWDs.contains(cwd)
@@ -1592,11 +1593,16 @@ actor CodexAppServerSessionRuntime {
                 timeout: longRunningRequestTimeout
             )
             let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
-            guard canUseIndexedList, indexedThreadListNeedsRepair(page, cwd: cwd) else {
+            // DB 不可用时上游可能返回空页；主动刷新需扫描确认，不能直接把现有列表清空。
+            let needsEmptyPageVerification = consistency == .authoritative && page.sessions.isEmpty
+            let needsKnownSessionRepair = indexedThreadListNeedsRepair(page, cwd: cwd)
+            guard canUseIndexedList, needsEmptyPageVerification || needsKnownSessionRepair else {
                 return page
             }
             // 状态库漏掉本连接已知 thread 时，本连接后续固定走普通扫描，避免每轮都先错一次再回退。
-            stateDBOnlyScanRequiredCWDs.insert(cwd)
+            if needsKnownSessionRepair {
+                stateDBOnlyScanRequiredCWDs.insert(cwd)
+            }
             return try await ordinaryThreadListPage(
                 cwd: cwd,
                 cursor: cursor,

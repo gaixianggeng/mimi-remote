@@ -173,6 +173,69 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(text?.contains("任务已经完成") == true)
     }
 
+    func testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive() async throws {
+        let project = AgentProject(id: "fresh-index", name: "Fresh Index", path: "/tmp/fresh-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let firstTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20, consistency: .authoritative)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let firstList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(firstList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let existing = appServerThreadJSON(id: "existing", cwd: project.path, source: "appServer", updatedAt: 200)
+        transportResponse(transport, id: firstList.id, result: appServerThreadListResult([existing], nextCursor: nil))
+        let firstPage = try await firstTask.value
+        XCTAssertEqual(firstPage.sessions.map(\.id), ["existing"])
+
+        let sentBeforeRefresh = await transport.sentMessages().count
+        let refreshTask = Task {
+            try await runtime.sessionsPage(
+                workspace: AgentWorkspace(project: project), cursor: nil, limit: 20, consistency: .authoritative
+            )
+        }
+        let freshList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: sentBeforeRefresh)
+        XCTAssertEqual(freshList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertEqual(freshList.params?.objectValue?["sortKey"]?.stringValue, "recency_at")
+        XCTAssertNil(freshList.params?.objectValue?["refreshHistory"])
+        let restored = appServerThreadJSON(id: "externally-unarchived", cwd: project.path, source: "appServer", updatedAt: 300)
+        transportResponse(transport, id: freshList.id, result: appServerThreadListResult([restored, existing], nextCursor: nil))
+        let refreshed = try await refreshTask.value
+        XCTAssertEqual(refreshed.sessions.map(\.id), ["externally-unarchived", "existing"])
+    }
+
+    func testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan() async throws {
+        let project = AgentProject(id: "empty-index", name: "Empty Index", path: "/tmp/empty-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20, consistency: .authoritative)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let indexedList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(indexedList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let sentBeforeScan = await transport.sentMessages().count
+        transportResponse(transport, id: indexedList.id, result: appServerThreadListResult([], nextCursor: nil))
+        let scan = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: sentBeforeScan)
+        XCTAssertEqual(scan.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        let recovered = appServerThreadJSON(id: "history-only", cwd: project.path, source: "appServer", updatedAt: 200)
+        transportResponse(transport, id: scan.id, result: appServerThreadListResult([recovered], nextCursor: nil))
+        let page = try await pageTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["history-only"])
+    }
+
     func testClaudeAuthoritativeFirstPageRequestsHistoryRefresh() async throws {
         let project = AgentProject(
             id: "proj_claude_history_refresh",
