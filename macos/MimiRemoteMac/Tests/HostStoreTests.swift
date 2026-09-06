@@ -4,6 +4,138 @@ import XCTest
 
 @MainActor
 final class HostStoreTests: XCTestCase {
+    func testMonitoringUsesLightReadinessEveryMinuteAndFullStatusEveryFiveMinutes() async {
+        let fullCalls = CallCounter()
+        let readinessCalls = CallCounter()
+        let healthCalls = CallCounter()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                _ = fullCalls.increment()
+                return Self.readyStatus
+            },
+            readiness: {
+                _ = readinessCalls.increment()
+                return Self.readyStatus
+            },
+            healthCheck: { _ in
+                _ = healthCalls.increment()
+                return true
+            }
+        )
+        await store.bootstrap()
+        let now = Date()
+
+        await store.performMonitoringTick(5, now: now)
+        XCTAssertEqual(readinessCalls.current, 0)
+        XCTAssertEqual(fullCalls.current, 1)
+
+        await store.performMonitoringTick(6, now: now.addingTimeInterval(60))
+        XCTAssertEqual(readinessCalls.current, 1)
+        XCTAssertEqual(fullCalls.current, 1)
+
+        await store.performMonitoringTick(30, now: now.addingTimeInterval(300))
+        XCTAssertEqual(readinessCalls.current, 1, "完整 status 轮次不得重复轻量 readiness")
+        XCTAssertEqual(fullCalls.current, 2)
+        XCTAssertEqual(healthCalls.current, 3, "每个 10 秒 monitoring tick 都必须先检查 healthz")
+    }
+
+    func testMonitoringDegradesImmediatelyWhenReadinessReportsServiceUnavailable() async {
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            readiness: { Self.stoppedStatus }
+        )
+        await store.bootstrap()
+
+        await store.performMonitoringTick(6, now: Date().addingTimeInterval(60))
+
+        XCTAssertEqual(store.lifecycle, .degraded("readyz 不可用"))
+    }
+
+    func testMonitoringKeepsLiveProcessOutOfStoppedWhileReadinessIsStaleAndRecovers() async {
+        let readinessCalls = CallCounter()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            readiness: {
+                if readinessCalls.increment() == 1 {
+                    throw AgentClientError.commandFailed("temporary failure")
+                }
+                return Self.readyStatus
+            }
+        )
+        await store.bootstrap()
+        let baseline = Date()
+
+        await store.performMonitoringTick(6, now: baseline.addingTimeInterval(89))
+        XCTAssertEqual(store.lifecycle, .ready)
+
+        await store.performMonitoringTick(9, now: baseline.addingTimeInterval(91))
+        XCTAssertEqual(
+            store.lifecycle,
+            .degraded("进程存活，但 Codex 服务状态暂时无法确认")
+        )
+
+        await store.performMonitoringTick(12, now: baseline.addingTimeInterval(120))
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testMonitoringFullStatusKeepsHealthConfirmedProcessDegradedInsteadOfStopped() async {
+        let fullCalls = CallCounter()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                fullCalls.increment() == 1 ? Self.readyStatus : Self.stoppedStatus
+            }
+        )
+        await store.bootstrap()
+
+        await store.performMonitoringTick(30, now: Date().addingTimeInterval(300))
+
+        XCTAssertEqual(store.lifecycle, .degraded("readyz 不可用"))
+    }
+
+    func testOlderReadinessCannotOverwriteNewerFullStatus() async {
+        let readinessGate = SuspendedStatusGate()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            readiness: {
+                await readinessGate.suspendReturning(Self.stoppedStatus)
+            }
+        )
+        await store.bootstrap()
+        let baseline = Date()
+
+        let readinessTask = Task { @MainActor in
+            await store.performMonitoringTick(6, now: baseline.addingTimeInterval(60))
+        }
+        await readinessGate.waitUntilSuspended()
+        await store.performMonitoringTick(30, now: baseline.addingTimeInterval(300))
+        readinessGate.resume()
+        await readinessTask.value
+
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.status?.serviceOK, true)
+    }
+
+    func testReadinessStalenessStartsAtFirstFailureWhenNoSuccessExists() {
+        let store = makeStore(configExists: false)
+        let firstFailure = Date()
+
+        store.applyReadinessStalenessIfNeeded(now: firstFailure)
+        XCTAssertEqual(store.lifecycle, .loading)
+
+        store.applyReadinessStalenessIfNeeded(now: firstFailure.addingTimeInterval(90))
+        XCTAssertEqual(
+            store.lifecycle,
+            .degraded("进程存活，但 Codex 服务状态暂时无法确认")
+        )
+    }
+
     func testBootstrapRegistersBundledAgentWhenServiceRecordIsNotFound() async {
         let events = EventRecorder()
         var registrationState = ServiceRegistrationState.notFound
@@ -1155,6 +1287,7 @@ final class HostStoreTests: XCTestCase {
         status: @escaping @Sendable () async throws -> AgentStatus = {
             HostStoreTests.readyStatus
         },
+        readiness: (@Sendable () async throws -> AgentStatus)? = nil,
         doctor: @escaping @Sendable (Bool) async throws -> DoctorFixResults = { _ in
             DoctorFixResults(fixes: [], results: HostStoreTests.readyStatus.doctor)
         },
@@ -1205,6 +1338,7 @@ final class HostStoreTests: XCTestCase {
             configExists: { configExists },
             setup: { _ in Self.pairing },
             status: status,
+            readiness: readiness ?? status,
             statusAt: { _ in readyStatus },
             doctor: doctor,
             configureClaude: configureClaude,

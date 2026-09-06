@@ -249,8 +249,10 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
-    @State private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
+    @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
+    @State private var manualCatalogRefreshTask: Task<Void, Never>?
+    @State private var manualCatalogRefreshInvocationID: UUID?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
@@ -267,6 +269,7 @@ struct WorkspaceRootView: View {
     @State private var pendingHapticWorkspaceID: String?
     @State private var suppressedHapticWorkspaceID: String?
     init(
+        selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         manageConnections: (() -> Void)? = nil,
@@ -280,6 +283,7 @@ struct WorkspaceRootView: View {
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.currentDate = currentDate
+        _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
         // 正常入口仍由 synchronizeSelection 恢复选择；显式初值只服务于确定性的预览和视觉快照。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
@@ -326,6 +330,17 @@ struct WorkspaceRootView: View {
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
             await refreshCatalog()
             synchronizeSelection()
+        }
+        .onChange(of: appStore.activeHostScope) { _, _ in
+            cancelManualCatalogRefresh()
+        }
+        .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
+            if isSuspended {
+                cancelManualCatalogRefresh()
+            }
+        }
+        .onDisappear {
+            cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
             // 这里只重试本地偏好迁移，不重新请求目录。删除或修改重复 endpoint 后，
@@ -950,11 +965,10 @@ struct WorkspaceRootView: View {
         let cachedPageState = runtimeSessionPagesByKey[presentationKey]
         // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
         // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
-        let storedRuntimeSessions = sessionStore.sessions(forProjectID: project.id).filter { session in
-            sessionStore.isListableSession(session)
-                && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-                    == presentationKey.runtimeProvider
-        }
+        let storedRuntimeSessions = sessionStore.directoryScopedSessions(
+            workspaceID: project.id,
+            runtimeProvider: presentationKey.runtimeProvider
+        )
         let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
         let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
@@ -1136,7 +1150,7 @@ struct WorkspaceRootView: View {
         )
     }
 
-    private func refreshCatalog(forceGitSummary: Bool = false) async {
+    private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
         let invocationID = catalogLoad.begin()
         do {
             try await sessionStore.refreshWorkspaceCatalog()
@@ -1156,9 +1170,14 @@ struct WorkspaceRootView: View {
                 result: .loaded,
                 hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
             )
+            // 下拉只服务会话列表，不碰 Git。每个工作区的摘要都要在 Mac 上启动
+            // 5~6 个 git 子进程，其中 `status --porcelain` 还要遍历整个工作树；
+            // 放进下拉路径就会和用户随后的“加载更多”抢同一个 agentd 与同一条链路。
+            // 变更数由回合结束后的定向刷新负责，工作区页重新出现时仍按 TTL 补齐。
+            guard refreshesGitSummaries else { return }
             await sessionStore.refreshWorkspaceGitSummaries(
                 for: sessionStore.sidebarProjects,
-                force: forceGitSummary
+                force: false
             )
         } catch {
             catalogLoad.complete(
@@ -1170,7 +1189,6 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceContent(projectID: String) async {
-        await refreshCatalog(forceGitSummary: true)
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
@@ -1178,7 +1196,17 @@ struct WorkspaceRootView: View {
             return
         }
         let presentationKey = workspaceSessionPresentationKey(for: project)
-        await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
+        // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
+        await refreshWorkspaceSessions(
+            project: project,
+            presentationKey: presentationKey
+        )
+        // 目录同步要活过这次下拉手势本身，所以不能用 refreshable 任务的取消状态当门槛：
+        // 指示器结束时这个任务就会被取消，拿它当条件会让后台同步永远起不来。
+        // 页面离开和 Host 切换由 onDisappear 与 onChange 取消后台任务，语义不受影响。
+        guard appStore.activeHostScope == presentationKey.hostScope else { return }
+        // 下拉完成只等待会话；目录同步在后台补齐，同一页面尚未完成的请求直接复用。
+        startManualCatalogRefresh(hostScope: presentationKey.hostScope)
     }
 
     private func refreshWorkspaceSessions(
@@ -1188,16 +1216,10 @@ struct WorkspaceRootView: View {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
         let canonicalSessionIDsBeforeLoad = Set<SessionID>(
-            sessionStore.sessions(forProjectID: project.id).compactMap { session in
-                guard sessionStore.isListableSession(session),
-                      CodexAppServerSessionRuntime.normalizedRuntimeProvider(
-                          session.runtimeProvider ?? session.source
-                      ) == presentationKey.runtimeProvider
-                else {
-                    return nil
-                }
-                return session.id
-            }
+            sessionStore.directoryScopedSessions(
+                workspaceID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider
+            ).map(\.id)
         )
         sessionLoadStates[presentationKey] = .loading
         do {
@@ -1238,6 +1260,37 @@ struct WorkspaceRootView: View {
                 sessionLoadStates[presentationKey] = .failed(message)
             }
         }
+    }
+
+    private func startManualCatalogRefresh(hostScope: HostScope) {
+        guard manualCatalogRefreshTask == nil,
+              !appStore.isCredentialMemorySuspended,
+              appStore.activeHostScope == hostScope else {
+            return
+        }
+        let invocationID = UUID()
+        manualCatalogRefreshInvocationID = invocationID
+        manualCatalogRefreshTask = Task { @MainActor in
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == hostScope,
+                  !appStore.isCredentialMemorySuspended else {
+                guard manualCatalogRefreshInvocationID == invocationID else { return }
+                manualCatalogRefreshTask = nil
+                manualCatalogRefreshInvocationID = nil
+                return
+            }
+            await refreshCatalog(refreshesGitSummaries: false)
+            // 被取消的旧任务可能晚于新任务返回，只允许当前 owner 清理句柄。
+            guard manualCatalogRefreshInvocationID == invocationID else { return }
+            manualCatalogRefreshTask = nil
+            manualCatalogRefreshInvocationID = nil
+        }
+    }
+
+    private func cancelManualCatalogRefresh() {
+        manualCatalogRefreshTask?.cancel()
+        manualCatalogRefreshTask = nil
+        manualCatalogRefreshInvocationID = nil
     }
 
     private func sessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {

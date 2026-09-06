@@ -94,11 +94,22 @@ struct CodexAppServerConnectionAttempt {
     let id: UUID
     let connection: CodexAppServerConnection
     let task: Task<CodexAppServerPreparedConnection, Error>
+    var waiterIDs: Set<UUID>
 }
 
 struct CodexAppServerResolvedServerRequests {
     var approvalSessionIDs: [SessionID] = []
     var userInputSessionIDs: [SessionID] = []
+}
+
+struct CodexMimiTaskCallIdentity: Hashable {
+    let threadID: SessionID
+    let turnID: TurnID
+    let callID: String
+}
+
+struct CodexMimiTaskExpectedDelivery {
+    let clientMessageID: ClientMessageID
 }
 
 struct CodexAppServerThreadResumeTask {
@@ -179,8 +190,13 @@ actor CodexAppServerSessionRuntime {
     var config: CodexAppServerConfigResponse?
     var connection: CodexAppServerConnection?
     var connectionAttempt: CodexAppServerConnectionAttempt?
+    var connectionAttemptWaiters: [UUID: CheckedContinuation<CodexAppServerPreparedConnection, Error>] = [:]
     var notificationPumpTask: Task<Void, Never>?
     var serverRequestPumpTask: Task<Void, Never>?
+    var mimiTaskRequests: [CodexMimiTaskCallIdentity: Task<Void, Never>] = [:]
+    var resolvedMimiTaskRequestIDs: Set<CodexMimiTaskCallIdentity> = []
+    var resolvedMimiTaskRequestOrder: [CodexMimiTaskCallIdentity] = []
+    var mimiTaskExpectedDeliveries: [SessionID: CodexMimiTaskExpectedDelivery] = [:]
     var projector = CodexAppServerEventProjector()
     var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
@@ -530,6 +546,40 @@ actor CodexAppServerSessionRuntime {
             )
         }
         return page
+    }
+
+    /// 面向没有 thread/search 的 runtime（Claude）的搜索：走 thread/list + searchTerm。
+    /// 结果按单页返回且不给 nextCursor —— 翻页由 Codex 的 thread/search 驱动。
+    /// bridge 的 thread/list 不返回命中片段，因此用会话 preview 兜底当 snippet；
+    /// 为空时上层会自动不渲染片段行，不会留下空白。
+    func globalThreadListSearchPage(query: String, limit: Int?) async throws -> ThreadSearchPage {
+        let searchTerm = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchTerm.isEmpty else {
+            return ThreadSearchPage(results: [])
+        }
+        let config = try await ensureConfig()
+        guard config.policy.allowedMethods.contains("thread/list") else {
+            throw CodexAppServerSessionRuntimeError.threadSearchUnavailable
+        }
+        let projects = config.projects
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: projects)
+                .searchThreadListGlobally(query: searchTerm, limit: limit),
+            timeout: longRunningRequestTimeout
+        )
+        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return ThreadSearchPage(
+            results: page.sessions.map {
+                ThreadSearchResult(session: $0, snippet: $0.preview ?? "")
+            }
+        )
     }
 
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
@@ -1072,12 +1122,11 @@ actor CodexAppServerSessionRuntime {
         recoveringInterruptedTurnID: TurnID? = nil
     ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
-        let hasTurnsList = config.policy.allowedMethods.contains("thread/turns/list")
-        let hasRequiredItemsList = loadMode == .economy
-            || config.policy.allowedMethods.contains("thread/items/list")
-        guard hasTurnsList, hasRequiredItemsList else {
-            let method = hasTurnsList ? "thread/items/list" : "thread/turns/list"
-            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable(method)
+        // 首屏只依赖 thread/turns/list。能不能逐 Turn 补 Item 由每个 Turn 自己的 itemsView
+        // 决定（见 messagesPageFromTurnPages）：已经带回完整 items 的 runtime 无需补齐，
+        // 不能因为缺少 thread/items/list 就把整个 full 首屏判死。
+        guard config.policy.allowedMethods.contains("thread/turns/list") else {
+            throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
             sessionID: sessionID,
@@ -1085,6 +1134,7 @@ actor CodexAppServerSessionRuntime {
             limit: limit,
             loadMode: loadMode,
             projects: config.projects,
+            canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
             recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
@@ -1093,8 +1143,7 @@ actor CodexAppServerSessionRuntime {
     /// legacy 路径的 limit 是 message 数，不具备“完整一个 turn”的增量合并语义。
     func latestTurnHistoryPage(sessionID: SessionID) async throws -> HistoryMessagesPage? {
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/turns/list"),
-              config.policy.allowedMethods.contains("thread/items/list") else {
+        guard config.policy.allowedMethods.contains("thread/turns/list") else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
@@ -1103,6 +1152,7 @@ actor CodexAppServerSessionRuntime {
             limit: 1,
             loadMode: .full,
             projects: config.projects,
+            canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
             recoveringInterruptedTurnID: nil
         )
     }
@@ -1113,6 +1163,7 @@ actor CodexAppServerSessionRuntime {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject],
+        canHydrateTurnItems: Bool,
         recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
@@ -1190,9 +1241,16 @@ actor CodexAppServerSessionRuntime {
             )
         }
         let nextCursor = reachedInheritedBoundary ? nil : upstreamNextCursor
-        let itemContinuations = loadMode == .full
+        // 只给"确实还缺 Item"的 Turn 排补齐任务。summary 请求下有的 runtime（Claude bridge）
+        // 会忽略 itemsView 直接回完整 items 并标 itemsView=full，这类 Turn 再去发
+        // thread/items/list 只会被 gateway 按 runtime 白名单打回，把一次成功的首屏
+        // 误判成"内容未加载"。runtime 根本不支持 items/list 时同样不排任务。
+        let itemContinuations = loadMode == .full && canHydrateTurnItems
             ? chronologicalTurns.enumerated().compactMap { turnIndex, turn -> HistoryTurnItemsContinuation? in
                 guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty else {
+                    return nil
+                }
+                guard Self.historyTurnNeedsItemHydration(turn) else {
                     return nil
                 }
                 var turnShell = turn
@@ -1211,13 +1269,23 @@ actor CodexAppServerSessionRuntime {
                 )
             }
             : []
+        // full 页需要补齐、但这个 runtime 没有 items/list 可用时内容确实不完整，必须如实提示，
+        // 不能沉默地把半截历史当成完整快照。
+        let hasUnhydratableTurnItems = loadMode == .full
+            && !canHydrateTurnItems
+            && chronologicalTurns.contains(where: Self.historyTurnNeedsItemHydration)
         return HistoryMessagesPage(
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
             hasMoreBefore: nextCursor != nil,
             context: context,
             loadMode: loadMode,
-            notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
+            notice: Self.historyNotice(
+                loadMode: loadMode,
+                hasMoreBefore: nextCursor != nil,
+                turns: chronologicalTurns,
+                hasUnhydratableTurnItems: hasUnhydratableTurnItems
+            ),
             authoritativeCompletedTurnItems: [:],
             itemContinuations: itemContinuations,
             latestForkableTurnID: Self.latestForkableTurnID(fromTurns: chronologicalTurns)
@@ -1229,7 +1297,7 @@ actor CodexAppServerSessionRuntime {
         continuation: HistoryTurnItemsContinuation
     ) async throws -> HistoryTurnItemsPage {
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/items/list") else {
+        guard runtimeSupportsMethod("thread/items/list", in: config) else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/items/list")
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
@@ -1725,22 +1793,34 @@ actor CodexAppServerSessionRuntime {
         }.first
     }
 
+    /// itemsView=full（或 hasFullItems=true）表示该 Turn 的 items 已随本页完整返回，
+    /// 不需要再逐页补齐。字段缺失时按"需要补齐"处理，保持既有 Codex 行为不变。
+    static func historyTurnNeedsItemHydration(_ turn: [String: CodexAppServerJSONValue]) -> Bool {
+        if turn["hasFullItems"]?.boolValue == true || turn["has_full_items"]?.boolValue == true {
+            return false
+        }
+        let itemsView = turn["itemsView"]?.stringValue ?? turn["items_view"]?.stringValue
+        return itemsView != "full"
+    }
+
     static func historyNotice(
         loadMode: HistoryMessagesPage.LoadMode,
         hasMoreBefore: Bool,
-        turns: [[String: CodexAppServerJSONValue]]
+        turns: [[String: CodexAppServerJSONValue]],
+        hasUnhydratableTurnItems: Bool = false
     ) -> String? {
+        // full 页本该补齐 Item，但当前 runtime 没有 thread/items/list 可用：内容确实不完整，
+        // 这是省流提示唯一成立的 full 场景。
+        if hasUnhydratableTurnItems {
+            return economyHistoryNotice
+        }
         guard loadMode == .economy else {
             return nil
         }
-        // 后端 summary 视图表示 item 详情可按需再拉；没有显式字段时，大历史分页也按省流提示处理。
-        let hasLazyContentSignal = turns.contains { turn in
-            turn["itemsView"]?.stringValue == "summary"
-                || turn["items_view"]?.stringValue == "summary"
-                || turn["hasFullItems"]?.boolValue == false
-                || turn["has_full_items"]?.boolValue == false
-        }
-        guard hasMoreBefore || hasLazyContentSignal || !turns.isEmpty else {
+        // 后端 summary 视图表示 item 详情可按需再拉。没有这个信号、也没有更早分页时，
+        // 这一页就是完整的——不能仅仅因为"页面非空"就声称有内容未加载。
+        let hasLazyContentSignal = turns.contains(where: historyTurnNeedsItemHydration)
+        guard hasMoreBefore || hasLazyContentSignal else {
             return nil
         }
         return economyHistoryNotice
@@ -2944,172 +3024,6 @@ actor CodexAppServerSessionRuntime {
         return next
     }
 
-    func ensureConnection() async throws -> CodexAppServerConnection {
-        if let connection {
-            if await connection.isReadyForRequests() {
-                return connection
-            }
-            await retireConnection(connection)
-        }
-        if let connectionAttempt {
-            return try await installPreparedConnectionIfNeeded(from: connectionAttempt)
-        }
-        let config = try await connectionConfig()
-        guard runtimeGatewayAvailable(in: config) else {
-            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-        }
-        let gatewayURL = try gatewayURL(from: config)
-        let next = CodexAppServerConnection(transport: transportFactory(), requestTimeout: requestTimeout)
-        let task = Task { [next, gatewayURL, token] in
-            let notifications = await next.notifications()
-            let serverRequests = await next.serverRequests()
-            try await next.connect(url: gatewayURL, token: token)
-            return CodexAppServerPreparedConnection(
-                connection: next,
-                notifications: notifications,
-                serverRequests: serverRequests
-            )
-        }
-        let attempt = CodexAppServerConnectionAttempt(
-            id: UUID(),
-            connection: next,
-            task: task
-        )
-        connectionAttempt = attempt
-        return try await installPreparedConnectionIfNeeded(from: attempt)
-    }
-
-    func installPreparedConnectionIfNeeded(
-        from attempt: CodexAppServerConnectionAttempt
-    ) async throws -> CodexAppServerConnection {
-        try await withTaskCancellationHandler {
-            let prepared: CodexAppServerPreparedConnection
-            do {
-                prepared = try await attempt.task.value
-                try Task.checkCancellation()
-            } catch {
-                await cancelConnectionAttempt(id: attempt.id)
-                throw error
-            }
-
-            // 相同 single-flight 可能有多个等待者；只有仍持有租约的第一个等待者可以安装连接。
-            // 旧尝试即使迟到成功，也只能复用已经安装的新连接或立即释放，不能覆盖当前代次。
-            guard connectionAttempt?.id == attempt.id else {
-                if let connection, await connection.isReadyForRequests() {
-                    return connection
-                }
-                await prepared.connection.disconnect()
-                throw CancellationError()
-            }
-            connectionAttempt = nil
-            if let connection, await connection.isReadyForRequests() {
-                if connection !== prepared.connection {
-                    await prepared.connection.disconnect()
-                }
-                return connection
-            }
-            try Task.checkCancellation()
-            installConnection(prepared)
-            return prepared.connection
-        } onCancel: {
-            // Task.value 不会把等待者的取消自动传给非结构化 Task。转回 runtime actor 后按租约
-            // 同时取消连接任务和 candidate，disconnect 会恢复 initialize 的挂起 continuation。
-            Task {
-                await self.cancelConnectionAttempt(id: attempt.id)
-            }
-        }
-    }
-
-    func cancelConnectionAttempt(id: UUID? = nil) async {
-        guard let attempt = connectionAttempt,
-              id == nil || attempt.id == id else {
-            return
-        }
-        connectionAttempt = nil
-        attempt.task.cancel()
-        await attempt.connection.disconnect()
-    }
-
-    func connectionConfig() async throws -> CodexAppServerConfigResponse {
-        let cached = try await ensureConfig()
-        if runtimeGatewayAvailable(in: cached) {
-            return cached
-        }
-        // 首次冷启动时 agentd 可能先返回项目列表，但 app-server gateway 仍在启动。
-        // 这种不可用 config 不能长期缓存，否则 bootstrap 重试会一直复用旧状态，直到用户杀掉 APP。
-        let fresh = try await ensureConfig(forceRefresh: true)
-        if runtimeGatewayAvailable(in: fresh) {
-            return fresh
-        }
-        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-    }
-
-    func installConnection(_ prepared: CodexAppServerPreparedConnection) {
-        notificationPumpTask?.cancel()
-        serverRequestPumpTask?.cancel()
-        cancelAllTurnInterruptRecoveryTasks()
-        threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
-        threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
-        // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
-        threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        connection = prepared.connection
-        notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
-            for await notification in notifications {
-                await self?.handle(notification)
-            }
-            guard !Task.isCancelled else {
-                return
-            }
-            await self?.handleNotificationStreamEnded(for: installedConnection)
-        }
-        serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
-            for await request in serverRequests {
-                await self?.handle(request)
-            }
-        }
-    }
-
-    func handleNotificationStreamEnded(for endedConnection: CodexAppServerConnection) async {
-        guard let current = connection, current === endedConnection else {
-            return
-        }
-
-        // 底层 receive 失败会结束 notification stream。这里必须继续结束上层 AgentEvent stream，
-        // 否则 SessionWebSocketClient 的 for-await 永远不退出，UI 会一直误认为连接仍是 connected。
-        notificationPumpTask = nil
-        serverRequestPumpTask?.cancel()
-        serverRequestPumpTask = nil
-        cancelThreadResumeTasks(for: endedConnection)
-        connection = nil
-        threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
-        threadUnsubscribeRetryTasksBySessionID.removeAll(keepingCapacity: true)
-        let affected = clearAllPendingServerRequests()
-        for sessionID in affected.approvalSessionIDs {
-            emitApprovalResolved(sessionID: sessionID)
-        }
-        for sessionID in affected.userInputSessionIDs {
-            emitUserInputResolved(sessionID: sessionID, skipped: false)
-        }
-        finishAttachedEventStreams()
-        await endedConnection.disconnect()
-    }
-
-    func finishAttachedEventStreams() {
-        let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
-        eventMailboxesBySessionID.removeAll(keepingCapacity: true)
-        for mailbox in mailboxes {
-            mailbox.finishFromProducer()
-        }
-    }
-
-    func finishAttachedEventStreams(sessionID: SessionID) {
-        let mailboxes = eventMailboxesBySessionID.removeValue(forKey: sessionID)?.values ?? [:].values
-        for mailbox in mailboxes {
-            mailbox.finishFromProducer()
-        }
-    }
-
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
         timeout: TimeInterval? = nil
@@ -3190,11 +3104,15 @@ actor CodexAppServerSessionRuntime {
             return false
         }
         switch error {
-        case .disconnected, .notInitialized, .transport:
+        case .disconnected, .notInitialized, .transport, .decoding:
             return true
+        case .outcomeUnknown:
+            // 写入后的超时也使用 outcomeUnknown，但连接及事件流仍然健康；真实 transport
+            // 断线会由 connection 自身结束 notification stream 并触发淘汰，不在这里误杀。
+            return false
         case .appServer(let appServerError):
             return isStaleInitializationAppServerError(appServerError)
-        case .timeout, .duplicateRequestID, .decoding:
+        case .timeout, .duplicateRequestID:
             return false
         }
     }
@@ -3263,6 +3181,17 @@ actor CodexAppServerSessionRuntime {
             Self.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtimeProvider ||
                 Self.normalizedRuntimeProvider(channel.provider) == runtimeProvider
         }
+    }
+
+    /// 方法可用性必须按 runtime 判定。顶层 policy.allowed_methods 永远是 Codex 的方法表，
+    /// 各渠道的真实能力只在自己的 channel.methods 里；照着顶层表发请求会被 gateway 的
+    /// 按 runtime 白名单直接打回（例如 Claude 没有 thread/items/list）。老 agentd 不返回
+    /// channels 或 methods 时回落到顶层表，保持既有行为。
+    func runtimeSupportsMethod(_ method: String, in config: CodexAppServerConfigResponse) -> Bool {
+        if let methods = runtimeGatewayChannel(in: config)?.methods {
+            return methods.contains(method)
+        }
+        return config.policy.allowedMethods.contains(method)
     }
 
     /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前
@@ -3434,6 +3363,10 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ request: CodexAppServerServerRequest) {
+        if request.method == "item/tool/call" {
+            handleMimiTaskRequest(request)
+            return
+        }
         if isResolvedServerRequestTombstoned(request) {
             return
         }

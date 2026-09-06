@@ -98,7 +98,8 @@ case "\${1:-}" in
           ;;
       esac
     done
-    if [[ "\${FAKE_SSH_PREFLIGHT_FAIL:-0}" == "1" && "\$config_path" == *'/ssh-preflight/'* ]]; then
+    if [[ "\${FAKE_SSH_PREFLIGHT_FAIL:-0}" == "1" && "\$config_path" == *'/app-server-preflight/'* ]]; then
+      printf 'SSH host/auth 或远端 Codex 不可用：authorization=Bearer %s\n' "\$TEST_SECRET" >&2
       exit 17
     fi
     mkdir -p "\$(dirname "\$config_path")"
@@ -176,12 +177,17 @@ set -e
   echo "SSH 预检失败没有阻止安装。" >&2
   exit 1
 }
-grep -Fq 'ssh linux-share-host codex --version' <<<"$preflight_failure_output"
+grep -Fq 'ssh linux-share-host true' <<<"$preflight_failure_output"
+grep -Fq '远端 Codex 已安装' <<<"$preflight_failure_output"
+if grep -Fq "$TEST_SECRET" <<<"$preflight_failure_output"; then
+  echo "SSH 预检失败诊断泄漏了测试 Token。" >&2
+  exit 1
+fi
 [[ ! -e "$preflight_failure_home/.local/bin/agentd" ]]
 [[ ! -e "$preflight_failure_home/.config/systemd/user/mimi-remote.service" ]]
 [[ ! -s "$preflight_failure_state/systemctl.log" ]]
 
-export AGENTD_APP_SERVER_SSH_TARGET="linux-share-host"
+unset AGENTD_APP_SERVER_SSH_TARGET
 
 install_output="$(bash "$release_123/scripts/install-linux.sh" install 2>&1)"
 grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$install_output"
@@ -193,8 +199,8 @@ if grep -Fq "$TEST_SECRET" <<<"$install_output"; then
   exit 1
 fi
 agentd_commands="$(<"$FAKE_AGENTD_LOG")"
-[[ "$agentd_commands" == *'--app-server-ssh-target linux-share-host'* ]] || {
-  echo "首次安装没有把 SSH target 显式传给 setup：$agentd_commands" >&2
+[[ "$agentd_commands" != *'--app-server-ssh-target'* ]] || {
+  echo "Linux 本机安装不应向 setup 传递 SSH target：$agentd_commands" >&2
   exit 1
 }
 [[ "$agentd_commands" == *$'1.2.3 status --json\n1.2.3 pair --qr-only'* ]] || {

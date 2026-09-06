@@ -56,6 +56,14 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
+	requestedMimiTaskTools := false
+	if method == "initialize" {
+		capabilities, _ := params["capabilities"].(map[string]any)
+		requestedMimiTaskTools = capabilities["mimiDynamicTaskToolsV1"] == true
+	}
+	if method == "thread/start" && !p.allowsMimiTaskTools() {
+		delete(params, "dynamicTools")
+	}
 	validated, err := p.router.validateGatewayPolicyParams(normalizeAppServerRuntimeID(p.runtimeID), method, params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -87,6 +95,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
 	}
+	if method == "initialize" {
+		// 只有完整通过策略校验并即将转发的 initialize 才能更新连接能力。
+		// 失败请求不能给后续 thread/start 留下已启用状态。
+		p.setMimiTaskToolsEnabled(requestedMimiTaskTools)
+	}
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
 }
@@ -108,9 +121,10 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				return err
 			}
 			if !validated.hasCWD {
-				if normalizeAppServerRuntimeID(p.runtimeID) != "codex" {
-					return fmt.Errorf("thread/list.cwd 不能为空")
-				}
+				// 受控全局发现只依赖 cwd → 项目 / browse-root / git common-dir 的映射
+				// （见 sanitizeThreadListResponse），与 runtime 无关：Claude 的 thread
+				// 载荷同样带 cwd 与 gitInfo，裁剪逻辑逐字适用。此前限定 codex 是保守
+				// 起见，代价是 Claude 会话在「会话」tab 完全不可见，只能逐目录去翻。
 				if err := p.resolveGlobalListCursor(params); err != nil {
 					return err
 				}
@@ -396,7 +410,13 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 		return nil, fmt.Errorf("JSON-RPC response id 未由 app-server 发起")
 	}
 	var rewritten []byte
-	if isPermissionsApprovalMethod(request.method) {
+	if request.method == "item/tool/call" {
+		var err error
+		rewritten, err = rewriteMimiTaskDynamicResponse(payload)
+		if err != nil {
+			return nil, err
+		}
+	} else if isPermissionsApprovalMethod(request.method) {
 		var err error
 		rewritten, err = rewriteGatewayPermissionsApprovalResponse(payload, request.requestedPermissions)
 		if err != nil {
@@ -413,6 +433,9 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 	// 坏帧或策略拒绝仍可重试，且断线重放仍对应真实 outstanding request。
 	if _, ok := p.consumePendingServerRequest(frame.ID); !ok {
 		return nil, fmt.Errorf("JSON-RPC response id 已被处理")
+	}
+	if request.method == "item/tool/call" && p.router != nil {
+		p.router.completeMimiTaskDynamicClaim(request.dynamicToolClaimKey, p)
 	}
 	return rewritten, nil
 }
@@ -889,7 +912,9 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 func sanitizedGatewayThreadListParams(runtimeID string, params map[string]any) map[string]any {
 	keys := []string{"cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly"}
 	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
-		keys = append(keys, "refreshHistory")
+		// Claude bridge 没有独立的 thread/search，搜索走 thread/list 的 searchTerm。
+		// Codex 有 thread/search，这里不放行以免同一能力出现两条语义不同的入口。
+		keys = append(keys, "refreshHistory", "searchTerm")
 	}
 	return copyGatewayParams(params, keys...)
 }
@@ -1086,6 +1111,16 @@ func validateGatewayThreadListParams(params map[string]any) error {
 			return fmt.Errorf("thread/list.useStateDbOnly 必须是布尔值")
 		}
 	}
+	if value, ok := params["searchTerm"]; ok && value != nil {
+		// 与 thread/search 共用同一套上限，避免两条搜索入口的边界不一致。
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("thread/list.searchTerm 必须是非空字符串")
+		}
+		if len(strings.TrimSpace(text)) > appServerGatewayThreadSearchTermMaxBytes {
+			return fmt.Errorf("thread/list.searchTerm 不能超过 %d bytes", appServerGatewayThreadSearchTermMaxBytes)
+		}
+	}
 	refreshHistory := false
 	if value, ok := params["refreshHistory"]; ok && value != nil {
 		var valid bool
@@ -1269,6 +1304,11 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	if method == "thread/resume" {
 		if page, ok := params["initialTurnsPage"].(map[string]any); ok {
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
+		}
+	}
+	if method == "thread/start" && runtimeID == "codex" {
+		if dynamicTools, ok := canonicalMimiTaskDynamicTools(params["dynamicTools"]); ok {
+			safe["dynamicTools"] = dynamicTools
 		}
 	}
 	workspaceWrite := false

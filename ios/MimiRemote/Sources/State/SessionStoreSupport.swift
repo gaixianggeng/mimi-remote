@@ -100,6 +100,14 @@ struct WorkspaceSessionFirstPageKey: Hashable {
     let workspacePath: String
 }
 
+/// 只有携带工作区 cwd 的 thread/list 才能建立这个归属；全局发现不能靠路径包含关系冒充。
+struct WorkspaceDirectorySessionScopeKey: Hashable {
+    let hostScope: HostScope
+    let workspaceID: String
+    let workspacePath: String
+    let runtimeProvider: String
+}
+
 struct WorkspaceSessionFirstPageCompletion: Equatable {
     let consistency: SessionListConsistency
     let isPresentationWindowComplete: Bool

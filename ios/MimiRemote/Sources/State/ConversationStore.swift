@@ -24,7 +24,9 @@ struct ConversationHistoryTimelineMutation: Equatable {
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private var activeProfileID = ""
-    @Published private var messagesByScopedSessionID: [ScopedSessionID: [ConversationMessage]] = [:]
+    // 读取放开到模块内，写入仍限本文件：投递对账扩展只读快照，改写一律走
+    // replaceMessagesWithoutEquivalenceCheck，避免绕过索引重建。
+    @Published private(set) var messagesByScopedSessionID: [ScopedSessionID: [ConversationMessage]] = [:]
 
     private var loadedHistorySessionIDs: Set<ScopedSessionID> = []
     private var lastSeenSeqBySessionID: [ScopedSessionID: EventSequence] = [:]
@@ -36,7 +38,7 @@ final class ConversationStore: ObservableObject {
     private var historyProjectionCacheBySessionID: [ScopedSessionID: HistoryProjectionCache] = [:]
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
-    private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
+    private(set) var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
     private var historyTimelineMutationBySessionID: [ScopedSessionID: ConversationHistoryTimelineMutation] = [:]
     private var historyTimelineMutationGeneration: UInt64 = 0
     private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
@@ -211,7 +213,7 @@ final class ConversationStore: ObservableObject {
                 continue
             }
             switch message.sendStatus {
-            case .sending, .sent, .failed:
+            case .sending, .uncertain, .sent, .failed:
                 return true
             case .local, .confirmed:
                 return false
@@ -224,17 +226,11 @@ final class ConversationStore: ObservableObject {
         // authoritative reopen 只有在历史明确带回终态 turn 后才能清理“等待回复”。
         // 空首屏会保留本地消息；本地 waiting/partial assistant 都没有终态 lifecycle，
         // 因而不会被误当成已经对账完成。
-        var sawTerminalAssistant = false
-        for message in messages(for: sessionID).reversed() where message.kind == .message {
-            if message.role == .assistant {
-                sawTerminalAssistant = sawTerminalAssistant || message.turnLifecycle?.isTerminal == true
-                continue
-            }
-            if message.role == .user {
-                return message.turnLifecycle?.isTerminal == true || sawTerminalAssistant
-            }
-        }
-        return false
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        return ConversationMessageDeliveryReconciler.hasTerminalTurnAfterLatestUser(
+            messages(for: sessionID),
+            turnLifecycles: turnLifecycleBySessionID[scopedSessionID] ?? [:]
+        )
     }
 
     func lastSeenSeq(for sessionID: String?) -> EventSequence? {
@@ -535,43 +531,6 @@ final class ConversationStore: ObservableObject {
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
-    func resolveLatestPendingUserInput(sessionID: String, skipped: Bool) {
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
-              let index = list.lastIndex(where: { message in
-                  message.kind == .userInput
-                      && (message.content.hasPrefix(L10n.text("ui.waiting_for_additional_information_3a146c9c")) || message.content.hasPrefix(L10n.text("ui.waiting_for_boot_input")))
-              }) else {
-            if skipped {
-                appendSystem(L10n.text("ui.supplementary_information_skipped_continue_execution"), sessionID: sessionID, kind: .userInput)
-            }
-            return
-        }
-        let title = pendingUserInputTitle(from: list[index].content)
-        let prefix = skipped ? L10n.text("ui.additional_information_skipped") : L10n.text("ui.additional_information_has_been_submitted")
-        list[index].content = title.isEmpty ? prefix : L10n.format("ui.labeled_value", prefix, title)
-        list[index].updatedAt = Date()
-        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-    }
-
-    func restorePendingUserInput(_ request: AgentUserInputRequest, sessionID: String) {
-        let text = L10n.format("ui.waiting_for_additional_information_named", request.title)
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            appendSystem(text, sessionID: sessionID, kind: .userInput)
-            return
-        }
-        // 补充信息提交是乐观收起 UI；如果发送失败，需要把时间线从“已提交”退回“等待补充信息”。
-        if let index = list.lastIndex(where: { message in
-            message.kind == .userInput
-                && (message.content.hasPrefix(L10n.text("ui.additional_information_has_been_submitted")) || message.content.hasPrefix(L10n.text("ui.boot_input_submitted")))
-        }) {
-            list[index].content = text
-            list[index].updatedAt = Date()
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-            return
-        }
-        appendSystem(text, sessionID: sessionID, kind: .userInput)
-    }
-
     func moveLocalEcho(clientMessageID: ClientMessageID, from sourceSessionID: String, to targetSessionID: String) {
         let scopedSourceSessionID = scopedSessionID(for: sourceSessionID)
         let scopedTargetSessionID = scopedSessionID(for: targetSessionID)
@@ -627,54 +586,6 @@ final class ConversationStore: ObservableObject {
         return false
     }
 
-    private func upsertPendingUserInputMessage(
-        _ text: String,
-        sessionID: String,
-        metadata: AgentEventMetadata?
-    ) -> Bool {
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            return false
-        }
-        let requestID = metadata?.itemID
-        let title = pendingUserInputTitle(from: text)
-        guard let index = list.lastIndex(where: { message in
-            guard message.kind == .userInput, isPendingUserInputText(message.content) else {
-                return false
-            }
-            if let requestID, let existingRequestID = message.itemID {
-                return existingRequestID == requestID
-            }
-            // 旧历史可能没有 itemID；仅在标题一致时把它升级为当前仍挂起的同一交互。
-            return message.content == text || pendingUserInputTitle(from: message.content) == title
-        }) else {
-            return false
-        }
-        var didChange = false
-        // 旧历史卡没有 request id 时，在首次实时重放时补齐身份。否则后续同标题的新请求
-        // 仍会被误认为同一张卡，造成新的补充信息交互不可见。
-        if list[index].itemID == nil, let requestID {
-            list[index].itemID = requestID
-            didChange = true
-        }
-        if list[index].turnID == nil, let turnID = metadata?.turnID {
-            list[index].turnID = turnID
-            didChange = true
-        }
-        if list[index].stableID == nil, let messageID = metadata?.messageID {
-            list[index].stableID = messageID
-            didChange = true
-        }
-        if list[index].content != text {
-            list[index].content = text
-            didChange = true
-        }
-        if didChange {
-            // stableID 可能在旧卡升级时首次出现，必须同步重建索引，避免数组与按稳定 ID 查找不一致。
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: true)
-        }
-        return true
-    }
-
     private func pendingApprovalTitle(from text: String) -> String {
         let prefix = L10n.text("ui.awaiting_approval")
         guard text.hasPrefix(prefix) else {
@@ -685,18 +596,6 @@ final class ConversationStore: ObservableObject {
             value = String(value[..<range.lowerBound])
         }
         return value
-    }
-
-    private func pendingUserInputTitle(from text: String) -> String {
-        for prefix in [L10n.text("ui.waiting_for_additional_information_3a146c9c"), L10n.text("ui.waiting_for_boot_input")] where text.hasPrefix(prefix) {
-            return String(text.dropFirst(prefix.count))
-        }
-        return text
-    }
-
-    private func isPendingUserInputText(_ text: String) -> Bool {
-        text.hasPrefix(L10n.text("ui.waiting_for_additional_information_3a146c9c"))
-            || text.hasPrefix(L10n.text("ui.waiting_for_boot_input"))
     }
 
     func resetLiveTranscript(sessionID: String) {
@@ -825,7 +724,25 @@ final class ConversationStore: ObservableObject {
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
         var list = messagesByScopedSessionID[scopedSessionID] ?? []
-        if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
+        let matchingClientIndex = clientMessageID.flatMap { clientMessageID -> Int? in
+            guard let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) else {
+                return nil
+            }
+            let boundTurnID = list[index].turnID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let incomingTurnID = message.turnID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard boundTurnID?.isEmpty != false || boundTurnID == incomingTurnID else {
+                return nil
+            }
+            return index
+        }
+        let matchingStableIndex = messageIndex(stableID: stableID, sessionID: sessionID).flatMap { index -> Int? in
+            guard clientMessageID != nil,
+                  list[index].clientMessageID == clientMessageID,
+                  let boundTurnID = list[index].turnID,
+                  !boundTurnID.isEmpty else { return index }
+            return message.turnID == boundTurnID ? index : nil
+        }
+        if let index = matchingStableIndex ?? matchingClientIndex {
             let previous = list[index]
             list[index].stableID = stableID
             // 服务端 user item 回显可能早于或晚于 turn/start ACK。两条链路都要把
@@ -1038,6 +955,8 @@ final class ConversationStore: ObservableObject {
             return next == .confirmed
         case .failed:
             return next == .sending
+        case .uncertain:
+            return next == .sent || next == .confirmed || next == .failed || next == .sending
         case .sending, .local:
             return true
         }
@@ -1287,7 +1206,7 @@ final class ConversationStore: ObservableObject {
         return true
     }
 
-    private func replaceMessagesWithoutEquivalenceCheck(
+    func replaceMessagesWithoutEquivalenceCheck(
         _ list: [ConversationMessage],
         sessionID: String,
         rebuildIndexes: Bool = true,
@@ -1970,7 +1889,7 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
+    func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
         ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
     }
 

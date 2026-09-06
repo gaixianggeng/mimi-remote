@@ -49,6 +49,10 @@ pub struct ClaudeSessionRef {
     pub claude_session_path: PathBuf,
     /// Claude session id (== `thread_id` in v1).
     pub claude_session_id: String,
+    /// 上一次从 transcript 导入的标题。用来区分「行名来自 transcript」和
+    /// 「用户在 Mimi 里 `thread/name/set` 改过名」：只有前者才允许被后续扫描推进。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_title: Option<String>,
 }
 
 /// Bridge-local alias so handler code reads `IndexEntry` instead of the
@@ -63,7 +67,7 @@ pub fn entry_from_claude(info: &ClaudeSessionInfo) -> IndexEntry {
         created_at: info.created.timestamp_millis(),
         updated_at: info.modified.timestamp_millis(),
         archived: false,
-        name: None,
+        name: info.title.clone(),
         preview: info.first_message.clone(),
         forked_from_id: None,
         model_provider: "anthropic".to_string(),
@@ -71,12 +75,23 @@ pub fn entry_from_claude(info: &ClaudeSessionInfo) -> IndexEntry {
         metadata: ClaudeSessionRef {
             claude_session_path: info.path.clone(),
             claude_session_id: info.session_id.clone(),
+            claude_title: info.title.clone(),
         },
     }
 }
 
 /// Render an index row as a wire `Thread`.
 pub fn entry_to_thread(entry: &IndexEntry) -> Thread {
+    entry_to_thread_with_git_info(entry, None)
+}
+
+/// 列表路径专用：git_info 每次调用会 fork 三个 git 子进程（rev-parse / branch /
+/// config）。一页 50 条会产生 150 个进程、约 3 秒，而同一页里的 thread 往往共享
+/// 少数几个 cwd。调用方按 cwd 去重后把结果传进来，避免重复计算。
+pub fn entry_to_thread_with_git_info(
+    entry: &IndexEntry,
+    git_info: Option<Option<alleycat_codex_proto::GitInfo>>,
+) -> Thread {
     Thread {
         id: entry.thread_id.clone(),
         session_id: entry.metadata.claude_session_id.clone(),
@@ -100,7 +115,7 @@ pub fn entry_to_thread(entry: &IndexEntry) -> Thread {
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
-        git_info: alleycat_bridge_core::git_info_for_cwd(&entry.cwd),
+        git_info: git_info.unwrap_or_else(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd)),
         name: entry.name.clone(),
         turns: Vec::new(),
     }
@@ -265,10 +280,18 @@ async fn reconcile_scanned_entries(
             continue;
         };
         let mut repaired = entry.clone();
+        let title_owns_name = transcript_title_owns_name(&entry);
         repaired.cwd.clone_from(&fresh.cwd);
         repaired.created_at = fresh.created_at;
         repaired.updated_at = fresh.updated_at;
         repaired.metadata.clone_from(&fresh.metadata);
+        // Claude 会在会话进行中改写 transcript 里的标题，已建索引的旧行也要跟上；
+        // 但用户在 Mimi 里手动改的名字优先，扫描结果不能覆盖。
+        if let Some(fresh_title) = fresh.metadata.claude_title.clone()
+            && title_owns_name
+        {
+            repaired.name = Some(fresh_title);
+        }
         if is_legacy_invalid_preview(entry.preview.trim()) {
             repaired.preview.clone_from(&fresh.preview);
         }
@@ -279,6 +302,16 @@ async fn reconcile_scanned_entries(
 
     index.upsert_many(repaired_entries).await?;
     Ok(scanned)
+}
+
+/// 索引行的名字是否仍由 transcript 决定：没有名字，或名字与上次导入的
+/// transcript 标题一致时为真。升级前写入的行没有导入记录，只要它有名字就
+/// 一律当作用户命名保留。
+fn transcript_title_owns_name(entry: &IndexEntry) -> bool {
+    match entry.name.as_deref().map(str::trim) {
+        None | Some("") => true,
+        Some(name) => entry.metadata.claude_title.as_deref().map(str::trim) == Some(name),
+    }
 }
 
 /// 同一 session ID 偶尔会在多个 Claude project 目录短暂共存。当前索引路径仍可见时
@@ -375,6 +408,7 @@ mod tests {
             metadata: ClaudeSessionRef {
                 claude_session_path: PathBuf::from(format!("/sessions/{id}.jsonl")),
                 claude_session_id: id.to_string(),
+                claude_title: None,
             },
         }
     }
@@ -529,6 +563,91 @@ mod tests {
         assert_eq!(row.name.as_deref(), Some("用户命名"));
         assert_eq!(row.forked_from_id.as_deref(), Some("parent"));
         assert!(row.archived);
+    }
+
+    #[tokio::test]
+    async fn refresh_fills_transcript_title_but_keeps_user_rename() {
+        let dir = TempDir::new().unwrap();
+        let projects_dir = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        let write_session = |id: &str, title: &str| {
+            std::fs::write(
+                projects_dir.join(format!("{id}.jsonl")),
+                [
+                    format!(
+                        r#"{{"type":"user","cwd":"/work","message":{{"role":"user","content":"第一句话"}},"timestamp":"2026-09-04T07:00:00Z"}}"#
+                    ),
+                    format!(r#"{{"type":"ai-title","aiTitle":"{title}","sessionId":"{id}"}}"#),
+                ]
+                .join("\n"),
+            )
+            .unwrap();
+        };
+        write_session("fresh", "Claude 的标题");
+        write_session("renamed", "Claude 的标题");
+        write_session("advanced", "新的自动标题");
+
+        let index = CoreThreadIndex::<ClaudeSessionRef>::open_at(dir.path().join("threads.json"))
+            .await
+            .unwrap();
+        index
+            .insert(entry("fresh", "/work", 100, 200, false))
+            .await
+            .unwrap();
+        let mut renamed = entry("renamed", "/work", 100, 200, false);
+        renamed.name = Some("用户命名".into());
+        index.insert(renamed).await.unwrap();
+        // 上一轮扫描导入过标题的行：Claude 改了标题，索引要跟着走。
+        let mut advanced = entry("advanced", "/work", 100, 200, false);
+        advanced.name = Some("旧的自动标题".into());
+        advanced.metadata.claude_title = Some("旧的自动标题".into());
+        index.insert(advanced).await.unwrap();
+
+        let refresher = ClaudeHistoryRefresher::with_interval(
+            Arc::clone(&index),
+            ClaudeHydrator::with_override_dir(projects_dir),
+            Duration::ZERO,
+        );
+        refresher.refresh_if_due().await.unwrap();
+
+        let fresh = index.lookup("fresh").await.unwrap();
+        assert_eq!(fresh.name.as_deref(), Some("Claude 的标题"));
+        assert_eq!(
+            index.lookup("renamed").await.unwrap().name.as_deref(),
+            Some("用户命名")
+        );
+        assert_eq!(
+            index.lookup("advanced").await.unwrap().name.as_deref(),
+            Some("新的自动标题")
+        );
+    }
+
+    #[tokio::test]
+    async fn new_session_enters_index_with_its_transcript_title() {
+        let dir = TempDir::new().unwrap();
+        let projects_dir = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        std::fs::write(
+            projects_dir.join("titled.jsonl"),
+            [
+                r#"{"type":"user","cwd":"/work","message":{"role":"user","content":"第一句话"},"timestamp":"2026-09-04T07:00:00Z"}"#,
+                r#"{"type":"custom-title","customTitle":"会话列表标题","sessionId":"titled"}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let hydrator = ClaudeHydrator::with_override_dir(projects_dir);
+        let index = open_index_and_hydrate(dir.path().join("threads.json"), &hydrator)
+            .await
+            .unwrap();
+
+        let row = index.lookup("titled").await.unwrap();
+        assert_eq!(row.name.as_deref(), Some("会话列表标题"));
+        assert_eq!(row.metadata.claude_title.as_deref(), Some("会话列表标题"));
+        // 标题进 name，首条消息留在 preview 当第二行副标题。
+        assert_eq!(entry_to_thread(&row).name.as_deref(), Some("会话列表标题"));
+        assert_eq!(entry_to_thread(&row).preview, "第一句话");
     }
 
     #[tokio::test]

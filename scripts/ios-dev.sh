@@ -12,8 +12,11 @@ SIMULATOR_ID="${IOS_SIMULATOR_ID:-}"
 DEFAULT_DEVICE_NAME="iPad Pro"
 DEVICE_NAME="${IOS_DEVICE_NAME:-${DEVICE_NAME:-$DEFAULT_DEVICE_NAME}}"
 DEVICE_ID="${IOS_DEVICE_ID:-${DEVICE_ID:-}}"
-SIMULATOR_DERIVED_DATA_ROOT="$ROOT_DIR/ios/MimiRemote/build/dev-simulator-derived"
-DEVICE_DERIVED_DATA_ROOT="$ROOT_DIR/ios/MimiRemote/build/dev-device-derived"
+DEVELOPMENT_CACHE_ROOT="$(
+  bash "$ROOT_DIR/scripts/development-cache-path.sh" "xcode/ios/$CONFIGURATION"
+)"
+SIMULATOR_DERIVED_DATA_ROOT="$DEVELOPMENT_CACHE_ROOT/dev-simulator-derived"
+DEVICE_DERIVED_DATA_ROOT="$DEVELOPMENT_CACHE_ROOT/dev-device-derived"
 BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimi}"
 XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
 XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
@@ -64,6 +67,7 @@ usage() {
   IOS_TEST_DESTINATION    CI 解析一次的测试 destination；设备必须仍是固定 M5 iPad
   IOS_DERIVED_DATA_PATH   覆盖本次 Simulator DerivedData
   IOS_DEVICE_DERIVED_DATA_PATH 覆盖本次真机 DerivedData
+  MIMI_DEVELOPMENT_CACHE_ROOT  覆盖同仓库 Worktree 共用的开发缓存根目录
   IOS_DEVICE_LEASE_WAIT_SECONDS 固定测试设备忙时的等待秒数，默认 0（明确失败）
 
 兼容别名：destination / prepare、derived-data-path 仍分别等同于

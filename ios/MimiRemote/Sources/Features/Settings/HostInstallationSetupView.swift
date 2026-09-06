@@ -61,29 +61,25 @@ enum HostInstallationPlatform: String, CaseIterable, Identifiable {
     }
 }
 
-/// 首次连接只保留两个用户阶段：先在电脑上准备，再在当前设备扫码。
+/// 安装说明放在添加电脑模块中，两处连接页面保持相同的展开方式。
 /// 平台选择只改变远端安装入口；配对和凭据处理继续复用同一条安全链路。
 struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var selectedPlatform: HostInstallationPlatform = .mac
 
-    let connectionFooter: String
-    let isScanDisabled: Bool
-    let onScan: () -> Void
-    let onPasteConnectionInfo: () -> Void
-
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        Group {
-            Section {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 16) {
                 Picker(L10n.text("ui.computer_platform"), selection: $selectedPlatform) {
                     ForEach(HostInstallationPlatform.allCases) { platform in
                         Text(platform.title).tag(platform)
                     }
                 }
                 .pickerStyle(.segmented)
+                .tint(tokens.accent)
                 .accessibilityIdentifier("settings.hostInstaller.platform")
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -131,90 +127,152 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.githubRelease")
 
                 ShareLink(item: selectedPlatform.installerURL) {
-                    GloballyCenteredActionLabel(
+                    ConnectionActionLabel(
                         title: selectedPlatform.shareTitle,
                         systemImage: "square.and.arrow.up"
                     )
                 }
                 .buttonStyle(.bordered)
-                .tint(tokens.primaryAction)
+                .tint(tokens.secondaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
-            } header: {
-                Text(L10n.text("ui.computer_platform"))
-            } footer: {
                 Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Section {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(L10n.text("ui.scan_qr_code_to_connect"))
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Button(action: onScan) {
-                        GloballyCenteredActionLabel(
-                            title: L10n.text("ui.scan_qr_code_on_computer"),
-                            systemImage: "qrcode.viewfinder"
-                        )
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .disabled(isScanDisabled)
-                    .accessibilityIdentifier("settings.hostInstaller.scan")
-
-                    Button(action: onPasteConnectionInfo) {
-                        GloballyCenteredActionLabel(
-                            title: L10n.text("ui.paste_connection_info"),
-                            systemImage: "doc.on.clipboard"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .disabled(isScanDisabled)
-                    .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                    .accessibilityIdentifier("settings.hostInstaller.pasteConnectionInfo")
-                }
-                .padding(.vertical, 4)
-            } header: {
-                Text(L10n.text("ui.connect_on_this_device"))
-            } footer: {
-                Text(connectionFooter)
-            }
+            .padding(.vertical, 12)
+        } label: {
+            ConnectionRowLabel(title: L10n.text("ui.first_time_installation"), systemImage: "arrow.down.app")
         }
+        .accessibilityIdentifier("settings.hostInstaller.disclosure")
         .listRowBackground(tokens.elevatedSurface)
     }
 }
 
-/// 满宽操作按钮的图标不应把标题挤离整条按钮的中心线。
-/// 两侧使用等宽占位，让标题始终相对按钮全局居中，并给大字体留出对称的换行空间。
-private struct GloballyCenteredActionLabel: View {
-    @ScaledMetric(relativeTo: .body) private var accessorySlotWidth = 28.0
-
+/// 图标与文字作为一个整体居中，避免宽窗口中两者分散到按钮两端。
+struct ConnectionActionLabel: View {
     let title: String
     let systemImage: String
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             Image(systemName: systemImage)
-                .frame(width: accessorySlotWidth, alignment: .leading)
                 .accessibilityHidden(true)
 
             Text(title)
                 .multilineTextAlignment(.center)
-                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-
-            Color.clear
-                .frame(width: accessorySlotWidth)
-                .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+    }
+}
+
+/// 按容器宽度分配主辅操作，窄屏优先保证粘贴的触控区域，并让换行后的两个按钮等高。
+struct ConnectionPrimaryActionsLayout: Layout {
+    let layoutDirection: LayoutDirection
+    private let spacing: CGFloat = 8
+
+    private func widths(in width: CGFloat, minimumPasteWidth: CGFloat) -> (scan: CGFloat, paste: CGFloat) {
+        let paste = max(minimumPasteWidth, (width - spacing) * 0.12)
+        return (width - spacing - paste, paste)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let idealWidth = subviews.reduce(spacing) { $0 + $1.sizeThatFits(.unspecified).width }
+        let proposedWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        // 大字体下系统按钮可能比 44pt 更宽，按实际最小宽度留位，避免背景越过卡片内边距。
+        let minimumPasteWidth = max(44, subviews[1].sizeThatFits(.unspecified).width)
+        let width = max(44 + spacing + minimumPasteWidth, proposedWidth ?? idealWidth)
+        let sizes = widths(in: width, minimumPasteWidth: minimumPasteWidth)
+        let scanHeight = subviews[0].sizeThatFits(.init(width: sizes.scan, height: nil)).height
+        let pasteHeight = subviews[1].sizeThatFits(.init(width: sizes.paste, height: nil)).height
+        return CGSize(width: width, height: max(44, scanHeight, pasteHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let minimumPasteWidth = max(44, subviews[1].sizeThatFits(.unspecified).width)
+        let sizes = widths(in: bounds.width, minimumPasteWidth: minimumPasteWidth)
+        let isRightToLeft = layoutDirection == .rightToLeft
+        subviews[0].place(
+            at: CGPoint(x: isRightToLeft ? bounds.maxX - sizes.scan : bounds.minX, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: .init(width: sizes.scan, height: bounds.height)
+        )
+        subviews[1].place(
+            at: CGPoint(x: isRightToLeft ? bounds.minX : bounds.maxX - sizes.paste, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: .init(width: sizes.paste, height: bounds.height)
+        )
+    }
+}
+
+/// 普通连接入口使用固定图标列，让标题与说明共享同一条起始边。
+struct ConnectionRowLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var themeStore: ThemeStore
+    @ScaledMetric(relativeTo: .body) private var titlePointSize = 17.0
+    @ScaledMetric(relativeTo: .subheadline) private var valuePointSize = 15.0
+
+    let title: String
+    var value: String? = nil
+    let systemImage: String
+    var valueTint: Color? = nil
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
+                .accessibilityHidden(true)
+
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    titleText(tokens: tokens)
+                    valueText(tokens: tokens)
+                }
+            } else {
+                titleText(tokens: tokens)
+                if value != nil {
+                    Spacer(minLength: 12)
+                    valueText(tokens: tokens)
+                }
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize
+                ? SettingsLayoutMetrics.accessibilityRowHeight
+                : SettingsLayoutMetrics.standardRowHeight,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func titleText(tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(size: titlePointSize))
+            .foregroundStyle(tokens.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+    }
+
+    @ViewBuilder
+    private func valueText(tokens: ThemeTokens) -> some View {
+        if let value {
+            Text(value)
+                .font(themeStore.uiFont(size: valuePointSize))
+                .foregroundStyle(valueTint ?? tokens.secondaryText)
+                .multilineTextAlignment(dynamicTypeSize.isAccessibilitySize ? .leading : .trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

@@ -129,6 +129,8 @@ struct MessageRow: View, Equatable {
                 .foregroundStyle(.red)
         case .sending:
             deliveryCaption(sendingDeliveryCaption)
+        case .uncertain:
+            deliveryCaption(L10n.text("ui.sending_result_pending_confirmation"))
         case .sent:
             if message.userDelivery == .injected {
                 deliveryCaption(L10n.text("ui.conversation_guided"))

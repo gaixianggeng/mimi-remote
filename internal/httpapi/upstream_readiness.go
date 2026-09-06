@@ -117,7 +117,7 @@ func appServerReadinessCheckFromError(err error) doctor.Check {
 			OK:      false,
 			Level:   "error",
 			Message: "Codex app-server upstream 暂不可用",
-			Fix:     "检查 agentd logs；SSH 模式再运行 ssh 127.0.0.1 codex --version",
+			Fix:     "检查 agentd logs 并运行 agentd doctor；仅 SSH 模式需要另行验证 SSH target",
 		}
 	}
 	return doctor.Check{

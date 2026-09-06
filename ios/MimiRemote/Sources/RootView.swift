@@ -9,6 +9,7 @@ struct RootView: View {
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLogInspector = false
@@ -36,6 +37,20 @@ struct RootView: View {
         }
         .task(id: appStore.activeHostScope) {
             migrateLegacyWorkspaceAppearance()
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            // StoreKit 当前权益是冷启动与回到前台时的本地事实入口。
+            // 只有发现 Apple 已验证的交易后，Store 才会把两份签名 JWS 发给权益服务。
+            await managedConnectionEntitlementStore.refreshEntitlement()
+        }
+        .task {
+            // 从 App 启动开始监听未完成和后续交易；任务随 RootView 生命周期取消。
+            await managedConnectionEntitlementStore.observeTransactionUpdates()
+        }
+        .task(id: managedConnectionEntitlementStore.currentGrant?.tokenExpiresAt) {
+            // App 长时间停留前台时，也要在短期 Token 到期前主动续期。
+            await managedConnectionEntitlementStore.maintainCurrentGrant()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
             // 删除重复 endpoint 后，旧数据可能刚刚变成可唯一归属；此时立即重试，

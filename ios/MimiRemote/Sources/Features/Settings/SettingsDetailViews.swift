@@ -1436,8 +1436,8 @@ struct TailcatExperimentSettingsView: View {
             Section {
                 Toggle(isOn: enabledBinding) {
                     SettingsValueLabel(
-                        title: L10n.text("ui.enable_tailcat_experiment"),
-                        systemImage: "flask"
+                        title: L10n.text("ui.enable_custom_tailcat"),
+                        systemImage: "point.3.connected.trianglepath.dotted"
                     )
                 }
                 // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户关闭该偏好。
@@ -1448,7 +1448,7 @@ struct TailcatExperimentSettingsView: View {
                     .foregroundStyle(statusColor)
                     .accessibilityIdentifier("settings.experimentalFeatures.status")
             } footer: {
-                Text(L10n.text("ui.tailcat_experiment_summary"))
+                Text(L10n.text("ui.custom_tailcat_summary"))
             }
 
             Section {
@@ -1493,12 +1493,12 @@ struct TailcatExperimentSettingsView: View {
             }
 
             Section {
-                Label(L10n.text("ui.tailcat_safety_note"), systemImage: "exclamationmark.shield")
+                Label(L10n.text("ui.custom_tailcat_safety_note"), systemImage: "exclamationmark.shield")
                     .foregroundStyle(tokens.secondaryText)
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .navigationTitle(L10n.text("ui.tailcat_experiment"))
+        .navigationTitle(L10n.text("ui.custom_tailcat"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
     }
@@ -1526,7 +1526,9 @@ struct TailcatExperimentSettingsView: View {
         case .starting:
             return L10n.text("ui.connecting")
         case .connected:
-            return L10n.text("ui.tailcat_experiment_enabled")
+            return L10n.text("ui.connected")
+        case .usingTemporaryRoute(let route):
+            return L10n.format("ui.managed_connection_using_temporary_route", route.title)
         case .failed(let message):
             return L10n.format("ui.tailcat_connection_failed_value", message)
         case .unavailable:
@@ -1536,7 +1538,7 @@ struct TailcatExperimentSettingsView: View {
 
     private var statusSystemImage: String {
         switch controller.state {
-        case .connected:
+        case .connected, .usingTemporaryRoute:
             return "checkmark.circle.fill"
         case .failed, .unavailable:
             return "exclamationmark.triangle.fill"
@@ -1549,7 +1551,7 @@ struct TailcatExperimentSettingsView: View {
 
     private var statusColor: Color {
         switch controller.state {
-        case .connected:
+        case .connected, .usingTemporaryRoute:
             return .green
         case .failed, .unavailable:
             return .orange

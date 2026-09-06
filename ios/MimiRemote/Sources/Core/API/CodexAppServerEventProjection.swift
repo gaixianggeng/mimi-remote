@@ -164,12 +164,19 @@ extension CodexAppServerSessionRuntime {
         threadsResumedOnConnection.insert(session.id)
     }
 
+    /// 写出之后再超时会归类成 outcomeUnknown，而 fork 正是最需要兜底的那类请求：
+    /// 服务端可能已经建好 thread，只是响应没回来，随后的 thread/started 才是唯一
+    /// 能确认结果的信号。两种分类都必须进入事件对账，否则超时即失败。
     func isThreadForkTimeout(_ error: Error) -> Bool {
-        guard let connectionError = error as? CodexAppServerConnectionError,
-              case .timeout(let method, _) = connectionError else {
+        guard let connectionError = error as? CodexAppServerConnectionError else {
             return false
         }
-        return method == "thread/fork"
+        switch connectionError {
+        case .timeout(let method, _), .outcomeUnknown(let method, _, _):
+            return method == "thread/fork"
+        default:
+            return false
+        }
     }
 
     private func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {

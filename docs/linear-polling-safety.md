@@ -1,4 +1,6 @@
-# Linear 自动巡检的有界降级与上游边界
+# 问题自动巡检的有界降级与上游边界
+
+当前问题账本已迁移到 GitHub Issues（`gaixianggeng/mimi-remote`）。下文事故证据中的 Linear 指历史系统；guard 命令、目录和文件名保留，以复用原租约。当前执行以 `config/automations/mimi-linear-issue.prompt.md` 和 AGENTS.md 为准，不再从 Linear 派发。
 
 ## 目标
 
@@ -54,7 +56,7 @@ $HOME/Library/Logs/com.openai.codex/2026/07/31/codex-desktop-<instance-id>.log
 
 ### 1. 删除同源失效依赖
 
-主巡检只使用 Linear、Branch、Worktree、Commit、PR/CI 等持久化证据，不再查询 Codex Desktop 的任务列表或任务历史。阻塞检测器也只读取本地租约，不再用失效工具检查失效工具。
+主巡检只使用 GitHub Issues、Branch、Worktree、Commit、PR/CI 等持久化证据，不再查询 Codex Desktop 的任务列表或任务历史。阻塞检测器也只读取本地租约，不再用失效工具检查失效工具。
 
 代价是无法自动判断 Codex task 的实时 `active/idle`。证据不足时宁可停止补位，也不恢复或创建第二个任务。
 
@@ -78,11 +80,11 @@ $CODEX_HOME/automations/mimi-linear-issue/guard/
 
 ### 3. 持久化 dispatch-intent
 
-在 `create_thread` 或恢复动作之前，主巡检先向目标 Linear Issue 写入带稳定 marker 的 `PENDING` intent。确认成功后更新同一条评论为 `CREATED` / `SENT`；只有确认没有副作用时才改为 `CANCELLED`。
+在 `create_thread` 或恢复动作之前，主巡检先向目标 GitHub Issue 写入带稳定 marker 的 `PENDING` intent。确认成功后更新同一条评论为 `CREATED` / `SENT`；只有确认没有副作用时才改为 `CANCELLED`。
 
-调用结果未知时保留 `PENDING`。后续轮看到未对账 intent 后不得重试，必须先结合 Linear、Branch、Worktree、Commit/PR 或人工检查确认真实结果。
+调用结果未知时保留 `PENDING`。后续轮看到未对账 intent 后不得重试，必须先结合 GitHub、Branch、Worktree、Commit/PR 或人工检查确认真实结果。
 
-本地租约解决并发，Linear intent 解决“副作用可能成功但响应未知”的跨轮幂等问题；两者不能互相替代。
+本地租约解决并发，GitHub intent 解决“副作用可能成功但响应未知”的跨轮幂等问题；两者不能互相替代。
 
 ## 实现
 
@@ -102,7 +104,7 @@ guard="${CODEX_HOME:-$HOME/.codex}/automations/mimi-linear-issue/bin/linear-poll
 
 "$guard" status --hard-limit 8m
 
-# 只有完成 Linear dispatch-intent、Branch、Worktree、Commit/PR 人工对账后才能执行。
+# 只有完成 GitHub dispatch-intent、Branch、Worktree、Commit/PR 人工对账后才能执行。
 "$guard" unlock \
   --run-id "mimi-linear-issue:2026-07-31T02:25:11.409Z" \
   --reason "已核对 pending intent 与 Git/PR，没有不确定副作用"

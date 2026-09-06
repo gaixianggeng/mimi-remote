@@ -935,6 +935,7 @@ extension SessionStore {
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
         sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
+        removeWorkspaceDirectorySessionScopes(workspaceID: project.id)
         let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             $0.key.workspaceID != project.id
         }
@@ -1650,70 +1651,102 @@ extension SessionStore {
             return
         }
 
-        // 先用最多 4 页、每页 50 条的有界全局发现补齐 Codex 外部 Worktree。
+        // 先用最多 4 页、每页 50 条的有界全局发现补齐外部 Worktree。
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
+        //
+        // 两条 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
+        // discoveredSessionIDs 由 canonical sessions 统一归并，因此不需要跨 Runtime
+        // 的排序状态机。撤权只在**两趟都完整走完**时才允许——否则 Codex 那趟会把
+        // Claude 刚发现的会话当成"已不存在"删掉。
         if !controlledGlobalDiscoveryUnavailable {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
-            var cursor: String?
             var discoveredSessionIDs: Set<SessionID> = []
-            var reachedTraversalEnd = false
-            for pageIndex in 0..<4 {
-                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-                let hostRequestStartedAt = sessionListNow()
-                do {
-                    let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
-                    guard appStore.connectionGeneration == generation else { return }
-                    recordCarStatusHostObservation(at: sessionListNow())
-                    let pageSessionIDs = Set(page.sessions.map(\.id))
-                    discoveredSessionIDs.formUnion(pageSessionIDs)
-                    // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
-                    // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
-                    let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
-                    if expandedControlledIDs != controlledGlobalSessionIDs {
-                        controlledGlobalSessionIDs = expandedControlledIDs
-                    }
-                    // 全局发现只携带根项目归属；进入 canonical sessions 前先沿用 Store
-                    // 已知的 workspace identity（已有同 ID 会话或 dir 命中 recent workspace）。
-                    // 否则同一 session.id 的全局响应会把稳定的 workspace projectID 覆盖回
-                    // root projectID，导致侧栏分组和会话头像命名空间在两种身份之间来回跳变。
-                    // 未命中的外部 worktree 仍返回原始 session，保留既有受控发现行为。
-                    mergeSessionPage(page.sessions.map(alignSessionToKnownWorkspace))
-                    guard page.hasMore,
-                          let nextCursor = page.nextCursor,
-                          nextCursor != cursor else {
-                        reachedTraversalEnd = !page.hasMore
+            // 撤权按 runtime 独立结算：Claude bridge 未启用或不健康是常态，
+            // 不能因为它那趟没走完，就让已经完整遍历的 Codex 永远撤不掉
+            // 已删除的会话（反之亦然）。
+            var discoveredByRuntime: [String: Set<SessionID>] = [:]
+            var completedRuntimes: Set<String> = []
+            for runtimeProvider in ["codex", "claude"] {
+                var cursor: String?
+                var runtimeReachedEnd = false
+                for pageIndex in 0..<4 {
+                    guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                    let hostRequestStartedAt = sessionListNow()
+                    do {
+                        let page = try await client.controlledGlobalSessionsPage(
+                            runtimeProvider: runtimeProvider,
+                            cursor: cursor,
+                            limit: 50
+                        )
+                        guard appStore.connectionGeneration == generation else { return }
+                        recordCarStatusHostObservation(at: sessionListNow())
+                        let pageSessionIDs = Set(page.sessions.map(\.id))
+                        discoveredSessionIDs.formUnion(pageSessionIDs)
+                        discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
+                        // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
+                        let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
+                        if expandedControlledIDs != controlledGlobalSessionIDs {
+                            controlledGlobalSessionIDs = expandedControlledIDs
+                        }
+                        // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
+                        // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
+                        mergeSessionPage(page.sessions.map(alignGlobalSessionToKnownDirectoryScope))
+                        guard page.hasMore,
+                              let nextCursor = page.nextCursor,
+                              nextCursor != cursor else {
+                            runtimeReachedEnd = !page.hasMore
+                            break
+                        }
+                        cursor = nextCursor
+                    } catch {
+                        guard appStore.activeHostScope == hostScope,
+                              appStore.connectionGeneration == generation,
+                              !Task.isCancelled else {
+                            // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
+                            return
+                        }
+                        // 只有 Codex 报不可用才整体停掉受控发现：Claude bridge 未启用或
+                        // 不健康是常态，不能因此让 Codex 的外部 Worktree 也发现不到。
+                        if pageIndex == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
+                            controlledGlobalDiscoveryUnavailable = true
+                        }
+                        if !isCancellationError(error) {
+                            if Self.carStatusHostDidRespond(to: error) {
+                                recordCarStatusHostObservation(at: sessionListNow())
+                            } else {
+                                invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                            }
+                        }
                         break
                     }
-                    cursor = nextCursor
-                } catch {
-                    guard appStore.activeHostScope == hostScope,
-                          appStore.connectionGeneration == generation,
-                          !Task.isCancelled else {
-                        // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
-                        return
-                    }
-                    if pageIndex == 0, isControlledGlobalDiscoveryUnavailable(error) {
-                        controlledGlobalDiscoveryUnavailable = true
-                    }
-                    if !isCancellationError(error) {
-                        if Self.carStatusHostDidRespond(to: error) {
-                            recordCarStatusHostObservation(at: sessionListNow())
-                        } else {
-                            invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
-                        }
-                    }
-                    break
+                }
+                if runtimeReachedEnd {
+                    completedRuntimes.insert(runtimeProvider)
                 }
             }
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
-            if reachedTraversalEnd {
+            if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
-                let revokedSessionIDs = controlledIDsBeforeTraversal.subtracting(discoveredSessionIDs)
+                //
+                // 归属未知的旧 ID（会话已不在 store 里，无从判断 runtime）保守保留：
+                // 宁可多留一条，也不要因为归属判断不了而误删别的 runtime 的会话。
+                let runtimeBySessionID = Dictionary(
+                    sessions.map { ($0.id, Self.normalizedRuntimeProvider($0.runtimeProvider)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                let revokedSessionIDs = controlledIDsBeforeTraversal.filter { sessionID in
+                    guard let runtime = runtimeBySessionID[sessionID],
+                          completedRuntimes.contains(runtime) else {
+                        return false
+                    }
+                    return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
+                }
                 if !revokedSessionIDs.isEmpty {
+                    removeWorkspaceDirectorySessionIDs(Set(revokedSessionIDs))
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
                     if retainedSessions != sessions {
                         // 授权撤销与列表删除必须在同一轮完成。不能等待精确 cwd 刷新：
@@ -1732,8 +1765,11 @@ extension SessionStore {
                         remoteSessionSearchSnippetByID.removeValue(forKey: sessionID)
                     }
                 }
-                if controlledGlobalSessionIDs != discoveredSessionIDs {
-                    controlledGlobalSessionIDs = discoveredSessionIDs
+                let retainedFromUnsettledRuntimes = controlledIDsBeforeTraversal
+                    .subtracting(revokedSessionIDs)
+                let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
+                if controlledGlobalSessionIDs != settledIDs {
+                    controlledGlobalSessionIDs = settledIDs
                 }
             } else {
                 let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
@@ -1748,17 +1784,12 @@ extension SessionStore {
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
         for workspace in workspaces {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            let result = await sessionLibraryPage(
+            await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
                 consistency: consistency,
                 client: client,
-                hostScope: hostScope
-            )
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            mergeSessionLibraryPages(
-                [result],
-                generation: generation,
-                consistency: consistency
+                hostScope: hostScope,
+                generation: generation
             )
         }
     }

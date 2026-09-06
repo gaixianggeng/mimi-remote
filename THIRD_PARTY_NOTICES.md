@@ -11,6 +11,7 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | 依赖 | 版本 | 使用范围 |
 | --- | --- | --- |
 | `Go standard library/runtime` | `go1.25.0` | Go 运行时 |
+| `github.com/godbus/dbus/v5` | `v5.2.2` | Linux 托盘 D-Bus 客户端 |
 | `github.com/creack/pty` | `v1.1.24` | Go 运行时 |
 | `github.com/dustin/go-humanize` | `v1.0.1` | Go 间接依赖 |
 | `github.com/google/pprof` | `v0.0.0-20250317173921-a4b03ec1a45e` | Go 间接依赖 |
@@ -2439,3 +2440,33 @@ Tux 原始设计由 Larry Ewing 使用 GIMP 创作。本项目仅将该 Linux �
 ## 更新要求
 
 升级、增加或删除依赖时，必须同步更新本文件；发布前由 CI 校验版本清单与发布归档中是否包含本文件。
+
+### github.com/godbus/dbus/v5 v5.2.2
+
+```text
+Copyright (c) 2013, Georg Reinke (<guelfey at gmail dot com>), Google
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

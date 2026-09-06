@@ -24,7 +24,10 @@ type tailcatCommandStatus struct {
 	Version           string `json:"version,omitempty"`
 	DERPMapURL        string `json:"derp_map_url,omitempty"`
 	Address           string `json:"address,omitempty"`
+	PublicKey         string `json:"public_key,omitempty"`
+	MacInstallationID string `json:"mac_installation_id,omitempty"`
 	PairAddress       string `json:"pair_address,omitempty"`
+	PairPublicKey     string `json:"pair_public_key,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error,omitempty"`
@@ -81,7 +84,13 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 		return err
 	}
 	if action == "pair" {
-		result, err := agentsetup.TailcatPair(*configPath, status.PairAddress)
+		result, err := agentsetup.TailcatPairWithManagedHost(
+			*configPath,
+			status.PairAddress,
+			status.MacInstallationID,
+			status.PublicKey,
+			status.PairPublicKey,
+		)
 		if err != nil {
 			return err
 		}

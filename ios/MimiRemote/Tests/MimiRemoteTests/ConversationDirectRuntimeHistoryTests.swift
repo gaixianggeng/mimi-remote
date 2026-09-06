@@ -1301,7 +1301,7 @@ extension ConversationDataFlowTests {
         do {
             _ = try await timeoutTask.value
             XCTFail("turn/start timeout should fail")
-        } catch CodexAppServerConnectionError.timeout(let method, _) {
+        } catch CodexAppServerConnectionError.outcomeUnknown(let method, _, _) {
             XCTAssertEqual(method, "turn/start")
         } catch {
             XCTFail("Unexpected timeout error: \(error)")

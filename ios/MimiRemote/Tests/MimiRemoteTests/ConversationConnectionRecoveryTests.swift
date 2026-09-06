@@ -1121,7 +1121,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
     }
 
-    func testSessionLibraryGlobalDiscoveryPreservesKnownWorkspaceIdentityWhenSelectedRefreshIsSkipped() async {
+    func testSessionLibraryGlobalDiscoveryRequiresDirectoryQueryBeforeAssigningWorkspace() async {
         let rootProject = AgentProject(
             id: "proj_library_identity_root",
             name: "proj_library_identity_root",
@@ -1203,19 +1203,216 @@ extension ConversationDataFlowTests {
 
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.sessions(forProjectID: workspace.id).map(\.id), [canonical.id])
-        XCTAssertEqual(store.alignSessionToKnownWorkspace(globalPathMatched).projectID, workspace.id)
 
         await store.refreshSessionLibraryIndex()
 
-        // 当前工作区首屏已有结果，因此精确 workspace 请求被跳过；不能依靠后写的精确页
-        // 把全局响应“修正”回来，两个全局结果本身都必须在 merge 前稳定到 workspace.id。
+        // 当前工作区首屏已有结果，因此目录请求被跳过。只有此前真正由目录查询命中的
+        // canonical 会话能保留 workspace identity；新全局结果不能按路径包含关系猜归属。
         XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id])
         XCTAssertEqual(store.recentWorkspaces.map(\.id), [workspace.id])
         XCTAssertEqual(store.sessionsByID[canonical.id]?.projectID, workspace.id)
-        XCTAssertEqual(store.sessionsByID[globalPathMatched.id]?.projectID, workspace.id)
-        // 没有 recent workspace 或 dir 命中的受控外部 worktree 仍保留 root projectID，
-        // 不能因为统一 identity 而误删或伪造工作区归属。
+        XCTAssertEqual(store.sessionsByID[globalPathMatched.id]?.projectID, rootProject.id)
         XCTAssertEqual(store.sessionsByID[globalUnknownExternal.id]?.projectID, rootProject.id)
+        XCTAssertEqual(store.openedWorkspaceSessionLibrarySessions.map(\.id), [canonical.id])
+    }
+
+    func testSessionTabProjectionUsesOnlyOpenedWorkspaceDirectoriesAndRealPathIdentity() {
+        let rootProject = AgentProject(
+            id: "proj_session_tab_root",
+            name: "Root",
+            path: "/Users/test/code/root"
+        )
+        let openedWorktree = AgentWorkspace(
+            id: "ws_session_tab_opened",
+            name: "Opened worktree",
+            path: "/Users/test/worktrees/opened",
+            rootProjectID: rootProject.id,
+            rootProjectName: rootProject.name,
+            rootProjectPath: rootProject.path
+        )
+
+        func makeProjectedSession(
+            id: String,
+            dir: String,
+            source: String,
+            updatedAt: TimeInterval
+        ) -> AgentSession {
+            AgentSession(
+                id: id,
+                projectID: rootProject.id,
+                project: rootProject.name,
+                dir: dir,
+                title: id,
+                status: "history",
+                source: source,
+                runtimeProvider: source,
+                resumeID: id,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: updatedAt)
+            )
+        }
+
+        let rootCodex = makeProjectedSession(
+            id: "root-codex",
+            dir: rootProject.path + "/Sources",
+            source: "codex",
+            updatedAt: 2
+        )
+        let openedClaude = makeProjectedSession(
+            id: "opened-claude",
+            dir: openedWorktree.path,
+            source: "claude",
+            updatedAt: 3
+        )
+        let unopenedCodex = makeProjectedSession(
+            id: "unopened-codex",
+            dir: rootProject.path + "/mimi-remote",
+            source: "codex",
+            updatedAt: 4
+        )
+        let unopenedClaude = makeProjectedSession(
+            id: "unopened-claude",
+            dir: "/Users/test/worktrees/unopened-claude",
+            source: "claude",
+            updatedAt: 5
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [AgentWorkspace(project: rootProject), openedWorktree]
+        store.sessions = [rootCodex, openedClaude, unopenedCodex, unopenedClaude]
+        store.controlledGlobalSessionIDs = Set(store.sessions.map(\.id))
+        store.recordWorkspaceDirectorySessionPage(
+            [rootCodex],
+            in: AgentWorkspace(project: rootProject),
+            runtimeProvider: "codex",
+            replacing: true
+        )
+        store.recordWorkspaceDirectorySessionPage(
+            [openedClaude],
+            in: openedWorktree,
+            runtimeProvider: "claude",
+            replacing: true
+        )
+
+        let visible = store.openedWorkspaceSessionLibrarySessions
+
+        XCTAssertEqual(visible.map(\.id), [openedClaude.id, rootCodex.id])
+        XCTAssertEqual(visible.first(where: { $0.id == openedClaude.id })?.projectID, openedWorktree.id)
+        XCTAssertEqual(visible.first(where: { $0.id == openedClaude.id })?.dir, openedWorktree.path)
+        XCTAssertEqual(
+            Set(store.sessions.map(\.id)),
+            Set([rootCodex.id, openedClaude.id, unopenedCodex.id, unopenedClaude.id])
+        )
+        XCTAssertEqual(
+            store.directoryScopedSessions(workspaceID: rootProject.id, runtimeProvider: "codex").map(\.id),
+            [rootCodex.id],
+            "父工作区不能靠路径包含关系接纳全局发现的子仓库会话"
+        )
+
+        store.recentWorkspaces = []
+        XCTAssertTrue(store.openedWorkspaceSessionLibrarySessions.isEmpty)
+    }
+
+    func testSessionLibraryQueriesOpenedWorkspaceDirectoryForBothRuntimes() async {
+        let project = makeProject(id: "proj_directory_scoped_library")
+        let workspace = AgentWorkspace(project: project)
+        let codexSession = makeSession(
+            id: "directory-codex",
+            projectID: project.id,
+            title: "Codex",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let claudeSession = makeSession(
+            id: "directory-claude",
+            projectID: project.id,
+            title: "Claude",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspaceSessions: [project.id: [codexSession, claudeSession]],
+            runtimeChannelAvailability: ["claude": true],
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, _, _ in
+                SessionsPage(sessions: runtimeProvider == "claude" ? [claudeSession] : [codexSession])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id, workspace.id])
+        XCTAssertEqual(
+            store.openedWorkspaceSessionLibrarySessions.map(\.id),
+            [claudeSession.id, codexSession.id]
+        )
+    }
+
+    func testDirectoryScopedProjectionPreservesSymlinkCWDReturnedForCanonicalWorkspace() async {
+        let rootProject = AgentProject(
+            id: "proj_symlink_scope_root",
+            name: "Root",
+            path: "/Users/test/code/root"
+        )
+        let workspace = AgentWorkspace(
+            id: "ws_symlink_scope",
+            name: "canonical-workspace",
+            path: "/Users/test/real/canonical-workspace",
+            rootProjectID: rootProject.id,
+            rootProjectName: rootProject.name,
+            rootProjectPath: rootProject.path
+        )
+        let symlinkSession = AgentSession(
+            id: "thread-symlink-scope",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: "/Users/test/links/workspace-alias",
+            title: "Symlink cwd",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-symlink-scope",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            workspaceSessions: [workspace.id: [symlinkSession]],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: [symlinkSession])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        let visible = store.openedWorkspaceSessionLibrarySessions
+        XCTAssertEqual(visible.map(\.id), [symlinkSession.id])
+        XCTAssertEqual(visible.first?.projectID, workspace.id)
+        XCTAssertEqual(visible.first?.dir, symlinkSession.dir, "展示归属应使用 canonical workspace，同时保留上游 cwd")
     }
 
     func testSessionLibrarySerializesBackgroundWorkspaceRequests() async throws {

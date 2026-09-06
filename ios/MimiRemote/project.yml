@@ -20,6 +20,8 @@ packages:
   swift-markdown:
     url: https://github.com/swiftlang/swift-markdown
     from: "0.8.0"
+fileGroups:
+  - Resources/MimiRemote.storekit
 targets:
   MimiRemote:
     type: application
@@ -149,6 +151,7 @@ targets:
           - MimiRemoteTests/ConversationSnapshotTests.swift
           - MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
           - MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
+          - MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
           - MimiRemoteTests/SkillModelPickerSnapshotTests.swift
           - MimiRemoteTests/TokenUsageCardSnapshotTests.swift
           - MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
@@ -165,6 +168,9 @@ targets:
       - path: Tests/MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
         destinationFilters:
           - iOS
+      - path: Tests/MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
+        destinationFilters:
+          - iOS
       - path: Tests/MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
         destinationFilters:
           - iOS
@@ -174,6 +180,8 @@ targets:
       - path: Tests/MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
         destinationFilters:
           - iOS
+      - path: Resources/MimiRemote.storekit
+        buildPhase: resources
     dependencies:
       - target: MimiRemote
       - package: SnapshotTesting
@@ -211,6 +219,8 @@ schemes:
         MimiRemote: all
         MimiRemoteTests:
           - test
+    run:
+      storeKitConfiguration: Resources/MimiRemote.storekit
     test:
       language: zh-Hans
       targets:

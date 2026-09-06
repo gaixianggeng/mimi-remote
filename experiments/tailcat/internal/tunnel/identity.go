@@ -42,7 +42,7 @@ func loadOrCreateHostIdentity(path string) (key.NodePrivate, *tailcat.ConnInfo, 
 	if err != nil {
 		return key.NodePrivate{}, nil, err
 	}
-	info, err := tailcat.ParseConnBlob(tailcat.ConnBlob(stored.Address))
+	info, err := tailcat.ParseAddr(tailcat.Addr(stored.Address))
 	if err != nil {
 		return key.NodePrivate{}, nil, fmt.Errorf("解析已保存的 Tailcat 地址：%w", err)
 	}
@@ -55,7 +55,7 @@ func loadOrCreateHostIdentity(path string) (key.NodePrivate, *tailcat.ConnInfo, 
 	return privateKey, &info, nil
 }
 
-func saveHostIdentity(path string, privateKey key.NodePrivate, address tailcat.ConnBlob) error {
+func saveHostIdentity(path string, privateKey key.NodePrivate, address tailcat.Addr) error {
 	privateText, err := privateKey.MarshalText()
 	if err != nil {
 		return fmt.Errorf("序列化服务端私钥：%w", err)

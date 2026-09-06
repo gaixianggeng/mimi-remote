@@ -1267,19 +1267,25 @@ struct PairingClaimRequest: Encodable, Equatable {
     let expiresAt: String
     let pairSignature: String
     let tailcatClientKey: String?
+    let managedPairingSessionID: String?
+    let managedPairingGrant: String?
 
     init(
         endpoint: String,
         issuedAt: String,
         expiresAt: String,
         pairSignature: String,
-        tailcatClientKey: String? = nil
+        tailcatClientKey: String? = nil,
+        managedPairingSessionID: String? = nil,
+        managedPairingGrant: String? = nil
     ) {
         self.endpoint = endpoint
         self.issuedAt = issuedAt
         self.expiresAt = expiresAt
         self.pairSignature = pairSignature
         self.tailcatClientKey = tailcatClientKey
+        self.managedPairingSessionID = managedPairingSessionID
+        self.managedPairingGrant = managedPairingGrant
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1288,6 +1294,8 @@ struct PairingClaimRequest: Encodable, Equatable {
         case expiresAt = "expires_at"
         case pairSignature = "pair_sig"
         case tailcatClientKey = "tailcat_client_key"
+        case managedPairingSessionID = "managed_pairing_session_id"
+        case managedPairingGrant = "managed_pairing_grant"
     }
 }
 

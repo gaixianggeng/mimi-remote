@@ -1760,14 +1760,26 @@ func TestAppServerGatewayRegistersReplayedServerRequests(t *testing.T) {
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "claude",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thr_1": {id: "thr_1", runtimeID: "claude", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	replay := []byte(`{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[` +
 		`{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_1"}},` +
 		`{"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"thr_1"}},` +
 		`{"id":"req-nope","method":"account/chatgptAuthTokens/refresh","params":{}}]}}`)
 	got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, replay)
-	if policyErr != nil || !forward || !bytes.Equal(got, replay) {
-		t.Fatalf("replay 通知应原样转发 forward=%v err=%+v got=%s", forward, policyErr, got)
+	if policyErr != nil || !forward {
+		t.Fatalf("replay 信封必须转发，否则重连恢复不了挂起卡片 forward=%v err=%+v", forward, policyErr)
+	}
+	// 已授权 thread 的条目原样保留。
+	if !bytes.Contains(got, []byte(`"req-abc"`)) || !bytes.Contains(got, []byte(`"item/tool/requestUserInput"`)) {
+		t.Fatalf("已授权 thread 的重放条目不应被剥掉：%s", got)
+	}
+	// 移动端渲染不了、也拿不到 thread 归属的条目不再下发（MIM-248）：
+	// 转发它只会让客户端看到一条永远不会被回答的挂起请求。
+	if bytes.Contains(got, []byte(`"req-nope"`)) {
+		t.Fatalf("未授权条目不应下发给客户端：%s", got)
 	}
 
 	for _, expected := range []struct {
@@ -1795,6 +1807,9 @@ func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *test
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "codex",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-mobile": {id: "thread-mobile", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	allowed := []string{
 		"applyPatchApproval",
@@ -1807,7 +1822,7 @@ func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *test
 	}
 	for index, method := range allowed {
 		id := index + 1
-		payload := []byte(fmt.Sprintf(`{"id":%d,"method":%q,"params":{}}`, id, method))
+		payload := []byte(fmt.Sprintf(`{"id":%d,"method":%q,"params":{"threadId":"thread-mobile"}}`, id, method))
 		got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
 		if policyErr != nil || !forward || !bytes.Equal(got, payload) {
 			t.Fatalf("已支持 server request 应转发 method=%s forward=%v err=%+v got=%s", method, forward, policyErr, got)
@@ -1840,6 +1855,9 @@ func TestAppServerGatewayPassesCodexMCPToolApprovalMetadataAndDecisionUnchanged(
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "codex",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {id: "thread-1", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	request := []byte(`{"id":"mcp-approval-1","method":"mcpServer/elicitation/request","params":{"threadId":"thread-1","serverName":"linear","mode":"form","message":"Allow save_issue?","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call","persist":["session","always"]}}}`)
 	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
@@ -1892,7 +1910,13 @@ func TestAppServerGatewayRejectsUnsupportedServerRequestBackToUpstream(t *testin
 
 func TestAppServerGatewayRewritesPermissionsApprovalResponse(t *testing.T) {
 	var sentApprovalRequest atomic.Bool
+	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) == nil && frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+			return
+		}
 		if sentApprovalRequest.Swap(true) {
 			return
 		}
@@ -1901,12 +1925,14 @@ func TestAppServerGatewayRewritesPermissionsApprovalResponse(t *testing.T) {
 			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
 		}
 	})
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 
 	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
@@ -1940,7 +1966,13 @@ func TestAppServerGatewayRewritesPermissionsApprovalResponse(t *testing.T) {
 func TestAppServerGatewayForwardsOnlyRequestedPermissionSubset(t *testing.T) {
 	requestedPermissions := `{"fileSystem":{"entries":[{"access":"read","path":{"type":"path","path":"/tmp/report.txt"}},{"access":"write","path":{"type":"special","value":{"kind":"project_roots","subpath":"output"}}}]},"network":{"enabled":true}}`
 	var sentApprovalRequest atomic.Bool
+	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) == nil && frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+			return
+		}
 		if sentApprovalRequest.Swap(true) {
 			return
 		}
@@ -1949,12 +1981,14 @@ func TestAppServerGatewayForwardsOnlyRequestedPermissionSubset(t *testing.T) {
 			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
 		}
 	})
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
@@ -1990,7 +2024,13 @@ func TestAppServerGatewayForwardsOnlyRequestedPermissionSubset(t *testing.T) {
 
 func TestAppServerGatewayDropsOverGrantedPermissions(t *testing.T) {
 	var sentApprovalRequest atomic.Bool
+	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) == nil && frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+			return
+		}
 		if sentApprovalRequest.Swap(true) {
 			return
 		}
@@ -1999,12 +2039,14 @@ func TestAppServerGatewayDropsOverGrantedPermissions(t *testing.T) {
 			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
 		}
 	})
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
@@ -2182,7 +2224,10 @@ func TestAppServerGatewayServerRequestPendingUsesLongerTTLThanThreadResponses(t 
 			t.Errorf("fake upstream 写 permissions request 失败：%v", err)
 		}
 	})
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, router, projectDir := buildAppServerGatewayFixture(t, upstreamURL, nil)
+	router.allowGatewayThread(appServerGatewayAllowedThread{
+		id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: "demo",
+	})
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -2211,6 +2256,9 @@ func TestClaudeGatewayPassesThroughServerRequestResolvedAfterDecision(t *testing
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "claude",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {id: "thread-1", runtimeID: "claude", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 	request := []byte(`{"id":"claude-approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","path":"README.md"}}`)
 	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
@@ -2233,6 +2281,10 @@ func TestAppServerGatewayTerminalNotificationsClearPendingServerRequests(t *test
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "codex",
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"thread-1": {id: "thread-1", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+			"thread-2": {id: "thread-2", runtimeID: "codex", cwd: "/repo", scopeID: "repo"},
+		},
 	}
 
 	resolvedRequest := []byte(`{"id":"resolved-1","method":"mcpServer/elicitation/request","params":{"threadId":"thread-1","turnId":"turn-1","mode":"form","message":"Allow?","requestedSchema":{"type":"object","properties":{}}}}`)
@@ -2269,7 +2321,7 @@ func TestAppServerGatewayTerminalNotificationsClearPendingServerRequests(t *test
 	}
 }
 
-func TestClaudeGatewayRejectsUnknownReverseRequest(t *testing.T) {
+func TestClaudeGatewayKeepsUnknownReverseRequestSilent(t *testing.T) {
 	policy := &appServerGatewayPolicy{runtimeID: "claude"}
 	request := []byte(`{"id":"unknown-1","method":"claude/private/request","params":{}}`)
 	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
@@ -2286,7 +2338,13 @@ func TestAppServerGatewayRejectsOverflowServerRequestBeforeForwardingToClient(t 
 	})
 
 	var sentRequests atomic.Bool
+	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if json.Unmarshal(payload, &frame) == nil && frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+			return
+		}
 		if sentRequests.Swap(true) {
 			return
 		}
@@ -2299,12 +2357,14 @@ func TestAppServerGatewayRejectsOverflowServerRequestBeforeForwardingToClient(t 
 			t.Errorf("fake upstream 写第二个 server request 失败：%v", err)
 		}
 	})
-	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 
 	initialize := []byte(`{"id":1,"method":"initialize","params":{}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
@@ -2536,7 +2596,7 @@ func TestAppServerGatewayAllowsExternalSkillPathForTurnSteer(t *testing.T) {
 
 func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 	upstreamResponse := []byte(`{"id":7,"result":{"ok":true}}`)
-	upstreamNotification := []byte(`{"method":"item/agentMessage/delta","params":{"delta":"hello"}}`)
+	upstreamNotification := []byte(`{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"hello"}}`)
 	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
 		var frame appServerGatewayFrame
@@ -2655,13 +2715,17 @@ func TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude(t *tes
 	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0xAB}, 20<<10)...)
 	resultPayload := base64.StdEncoding.EncodeToString(pngBytes)
 	// item/completed 通知帧：有 method、无 id，走 observeUpstreamFrame 的通知分支。
-	notification := []byte(`{"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + resultPayload + `","savedPath":"/tmp/mockup.png"}}}`)
+	notification := []byte(`{"method":"item/completed","params":{"threadId":"thread-media","item":{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + resultPayload + `","savedPath":"/tmp/mockup.png"}}}`)
 
 	// codex 与 claude 两条 runtime 都必须把直播通知里的裸 base64 改写成短 URL。
 	for _, runtimeID := range []string{"codex", "claude"} {
 		t.Run(runtimeID, func(t *testing.T) {
 			router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 			policy := &appServerGatewayPolicy{router: router, runtimeID: runtimeID}
+			// 两条 runtime 现在都受 thread 授权门禁（MIM-248），fixture 必须各自授权。
+			policy.allowedThreads = map[string]appServerGatewayAllowedThread{
+				"thread-media": {id: "thread-media", runtimeID: runtimeID, cwd: "/repo", scopeID: "repo"},
+			}
 			forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, notification)
 			if policyErr != nil || !forward {
 				t.Fatalf("通知帧应转发：forward=%v err=%+v", forward, policyErr)

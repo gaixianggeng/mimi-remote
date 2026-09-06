@@ -54,10 +54,19 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 }
 
 func platformCodexCandidates() []string {
-	if runtime.GOOS != "darwin" {
-		if runtime.GOOS != "windows" {
+	if runtime.GOOS == "linux" {
+		home, err := os.UserHomeDir()
+		if err != nil {
 			return nil
 		}
+		return []string{
+			filepath.Join(home, ".local", "bin", "codex"),
+			filepath.Join(home, ".npm-global", "bin", "codex"),
+			filepath.Join(home, ".local", "share", "mise", "shims", "codex"),
+			filepath.Join(home, ".local", "share", "mise", "installs", "codex", "latest", "bin", "codex"),
+		}
+	}
+	if runtime.GOOS == "windows" {
 		candidates := []string{}
 		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
 			candidates = append(candidates,
@@ -72,6 +81,9 @@ func platformCodexCandidates() []string {
 				filepath.Join(appData, "Codex", "codex.exe"))
 		}
 		return candidates
+	}
+	if runtime.GOOS != "darwin" {
+		return nil
 	}
 	candidates := []string{
 		"/Applications/ChatGPT.app/Contents/Resources/codex",

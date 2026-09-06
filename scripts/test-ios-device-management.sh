@@ -9,6 +9,7 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 export IOS_XCRUN_BIN="$FIXTURE_DIR/fake-xcrun.sh"
 export IOS_XCODEBUILD_BIN="$FIXTURE_DIR/fake-xcodebuild.sh"
 export IOS_DEVICE_LEASE_ROOT="$TEMP_DIR/leases"
+export MIMI_DEVELOPMENT_CACHE_ROOT="$TEMP_DIR/development-cache"
 export IOS_TEST_SIMULATORS_JSON="$FIXTURE_DIR/simulators.json"
 export IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/physical-devices.json"
 export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
@@ -153,6 +154,8 @@ assert_contains "$m5_26_derived" "dev-simulator-derived/M5-26-UDID" \
   "旧 Runtime 的同名 M5 必须使用自己的 DerivedData"
 assert_contains "$m5_27_derived" "dev-simulator-derived/M5-27-UDID" \
   "新 Runtime 的同名 M5 必须使用自己的 DerivedData"
+assert_contains "$m5_27_derived" "$MIMI_DEVELOPMENT_CACHE_ROOT/" \
+  "不同 Worktree 必须使用仓库外的共享 DerivedData 根目录"
 [[ "$m5_26_derived" != "$m5_27_derived" ]] \
   || fail "不同 Runtime 的同名 M5 不得共用 DerivedData"
 

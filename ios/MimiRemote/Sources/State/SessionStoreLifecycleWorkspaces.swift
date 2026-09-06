@@ -168,6 +168,7 @@ extension SessionStore {
         let selectedSessionID = "debug-session-layout"
         let runningSessionID = "debug-session-running"
         let historySessionID = "debug-session-workspace"
+        let claudeSessionID = "debug-session-claude"
         // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
         // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
         let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
@@ -227,6 +228,20 @@ extension SessionStore {
                 createdAt: now.addingTimeInterval(-60 * 180),
                 updatedAt: now.addingTimeInterval(-60 * 28),
                 preview: L10n.text("ui.supplemented_with_executable_commands_configuration_examples_and_troubleshooting")
+            ),
+            AgentSession(
+                id: claudeSessionID,
+                projectID: mimiDemo.id,
+                project: mimiDemo.name,
+                dir: mimiDemo.path,
+                title: L10n.text("ui.organize_open_source_release_notes"),
+                status: SessionStatus.completed.rawValue,
+                source: "debug",
+                runtimeProvider: "claude",
+                resumeID: claudeSessionID,
+                createdAt: now.addingTimeInterval(-60 * 55),
+                updatedAt: now.addingTimeInterval(-60 * 4),
+                preview: L10n.text("ui.review_installation_steps_architecture_diagrams_privacy_boundaries_and")
             )
         ]
 

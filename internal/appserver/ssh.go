@@ -25,14 +25,20 @@ const (
 	CodexAppServerWebSocketURL = "ws://codex-app-server/rpc"
 	MinimumCodexVersion        = "0.149.1"
 
-	sshProxyRemoteCommand = "codex app-server proxy"
+	// SSH 的非交互 shell 通常不会加载用户的 shell rc。显式补齐受支持平台上的
+	// 常见用户级安装目录，让 Homebrew、npm 和 mise 安装的 Codex 在 systemd
+	// 启动的 agentd 中仍可被远端命令稳定发现。
+	sshRemoteCodexPath           = `$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.local/share/mise/shims:$HOME/.local/share/mise/installs/codex/latest/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
+	sshRemotePathSetup           = `PATH="` + sshRemoteCodexPath + `:${PATH:-}"; export PATH; `
+	sshCodexVersionRemoteCommand = sshRemotePathSetup + "codex --version"
+	sshProxyRemoteCommand        = sshRemotePathSetup + "exec codex app-server proxy"
 	// App Server 会为仍处于加载宽限期的 Thread 保留 session 和 MCP 文件描述符。
 	// SSH 登录在 macOS 上默认只有 256，无法承载 Desktop 与 Mimi 的正常并发恢复。
 	// 这里保证新 resident 至少有 8192；客户端仍必须按生命周期取消 Thread 订阅。
 	sshAppServerOpenFileSoftLimit = 8192
 	// SSH resident 只服务 Unix proxy。禁止它继承 Desktop 保存的 Remote Control
 	// 身份，否则移动端请求可能进入第二个 App Server，并与官方进程争用 Thread writer。
-	sshBootstrapRemoteCommand = `/bin/sh -c 'open_file_limit=$(ulimit -Sn); if test "$open_file_limit" != unlimited && test "$open_file_limit" -lt 8192; then ulimit -Sn 8192 || { printf "远端 open-file soft limit 无法提高到 8192\n" >&2; exit 72; }; fi; nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &'`
+	sshBootstrapRemoteCommand = sshRemotePathSetup + `/bin/sh -c 'open_file_limit=$(ulimit -Sn); if test "$open_file_limit" != unlimited && test "$open_file_limit" -lt 8192; then ulimit -Sn 8192 || { printf "远端 open-file soft limit 无法提高到 8192\n" >&2; exit 72; }; fi; nohup env CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 codex -c features.code_mode_host=true app-server --listen unix:// >/dev/null 2>&1 </dev/null &'`
 	sshSocketStateCommand     = `if test -S "$HOME/.codex/app-server-control/app-server-control.sock"; then printf socket-present; else printf socket-missing; fi`
 
 	defaultSSHReadyTimeout     = 12 * time.Second
@@ -52,7 +58,7 @@ type SSHTransportOptions struct {
 }
 
 // SSHTransport 负责把每个本地 WebSocket 连接映射到一个短生命周期 SSH proxy。
-// 它不拥有远端 App Server；Close 只关闭本地 proxy，不会停止 resident Codex。
+// 它不拥有远端 App Server；Shutdown 只结束本地工作，不会停止 resident Codex。
 type SSHTransport struct {
 	target string
 	sshBin string
@@ -62,8 +68,16 @@ type SSHTransport struct {
 	retryInterval    time.Duration
 
 	readyMu       sync.Mutex
-	readyErr      error
-	readyInFlight chan struct{}
+	readyInFlight *sshReadyFlight
+	lifetimeCtx   context.Context
+	lifetimeStop  context.CancelFunc
+	closed        bool
+	proxies       map[*sshProxyConn]struct{}
+}
+
+type sshReadyFlight struct {
+	done chan struct{}
+	err  error
 }
 
 // NewSSHTransport 构造 SSH transport。空 target 不在这里默默替换，调用方应先
@@ -89,12 +103,16 @@ func NewSSHTransport(options SSHTransportOptions) (*SSHTransport, error) {
 	if retryInterval <= 0 {
 		retryInterval = defaultSSHRetryInterval
 	}
+	lifetimeCtx, lifetimeStop := context.WithCancel(context.Background())
 	return &SSHTransport{
 		target:           target,
 		sshBin:           sshBin,
 		readyTimeout:     readyTimeout,
 		bootstrapTimeout: bootstrapTimeout,
 		retryInterval:    retryInterval,
+		lifetimeCtx:      lifetimeCtx,
+		lifetimeStop:     lifetimeStop,
+		proxies:          map[*sshProxyConn]struct{}{},
 	}, nil
 }
 
@@ -134,9 +152,9 @@ func (t *SSHTransport) SSHBinaryAvailable() error {
 // SSHCheckCommand 返回用户可以直接复制执行的 host/auth 检查命令。
 func (t *SSHTransport) SSHCheckCommand() string {
 	if t == nil {
-		return "ssh <target> codex --version"
+		return "ssh <target> '" + sshCodexVersionRemoteCommand + "'"
 	}
-	return "ssh " + t.target + " codex --version"
+	return "ssh " + t.target + " '" + sshCodexVersionRemoteCommand + "'"
 }
 
 // CheckRemoteCodex 检查 SSH host/auth 和远端 Codex 版本。它不会启动 App Server。
@@ -149,7 +167,7 @@ func (t *SSHTransport) CheckRemoteCodex(ctx context.Context) (string, error) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, "codex --version")...)
+	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, sshCodexVersionRemoteCommand)...)
 	cmd.Env = buildManagedEnv(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -172,34 +190,74 @@ func (t *SSHTransport) EnsureReady(ctx context.Context) error {
 	if t == nil {
 		return errors.New("SSH transport 未初始化")
 	}
-	t.readyMu.Lock()
-	if t.readyInFlight != nil {
-		inFlight := t.readyInFlight
-		t.readyMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-inFlight:
-		}
-		t.readyMu.Lock()
-		err := t.readyErr
-		t.readyMu.Unlock()
-		return err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	inFlight := make(chan struct{})
-	t.readyInFlight = inFlight
+	t.readyMu.Lock()
+	if t.closed {
+		t.readyMu.Unlock()
+		return errors.New("SSH transport 已关闭")
+	}
+	flight := t.readyInFlight
+	if flight == nil {
+		flight = &sshReadyFlight{done: make(chan struct{})}
+		t.readyInFlight = flight
+		go t.runReadyFlight(flight)
+	}
 	t.readyMu.Unlock()
 
-	readyCtx, cancel := context.WithTimeout(ctx, t.readyTimeout)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-flight.done:
+		return flight.err
+	}
+}
+
+func (t *SSHTransport) runReadyFlight(flight *sshReadyFlight) {
+	readyCtx, cancel := context.WithTimeout(t.lifetimeCtx, t.readyTimeout)
 	err := t.ensureReadyOnce(readyCtx)
 	cancel()
 
 	t.readyMu.Lock()
-	t.readyErr = err
-	t.readyInFlight = nil
-	close(inFlight)
+	flight.err = err
+	if t.readyInFlight == flight {
+		t.readyInFlight = nil
+	}
+	close(flight.done)
 	t.readyMu.Unlock()
-	return err
+}
+
+// Shutdown 只终止 agentd 自己仍在执行的 readiness/bootstrap。
+// 每条已建立的 proxy 由 Router 持有并关闭；远端常驻 App Server 不属于本 transport。
+func (t *SSHTransport) Shutdown() {
+	if t == nil {
+		return
+	}
+	t.readyMu.Lock()
+	if t.closed {
+		t.readyMu.Unlock()
+		return
+	}
+	t.closed = true
+	stop := t.lifetimeStop
+	proxies := make([]*sshProxyConn, 0, len(t.proxies))
+	for proxy := range t.proxies {
+		proxies = append(proxies, proxy)
+	}
+	t.readyMu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	var closeGroup sync.WaitGroup
+	closeGroup.Add(len(proxies))
+	for _, proxy := range proxies {
+		go func() {
+			defer closeGroup.Done()
+			_ = proxy.Close()
+		}()
+	}
+	closeGroup.Wait()
 }
 
 func (t *SSHTransport) ensureReadyOnce(ctx context.Context) error {
@@ -280,6 +338,12 @@ func (t *SSHTransport) WebSocketDialer(timeout time.Duration) (websocket.Dialer,
 	if err := ValidateSSHTarget(t.target); err != nil {
 		return websocket.Dialer{}, err
 	}
+	t.readyMu.Lock()
+	closed := t.closed
+	t.readyMu.Unlock()
+	if closed {
+		return websocket.Dialer{}, errors.New("SSH transport 已关闭")
+	}
 	if timeout <= 0 {
 		timeout = 4 * time.Second
 	}
@@ -324,6 +388,21 @@ func (t *SSHTransport) probeProxy(ctx context.Context) error {
 
 func (t *SSHTransport) dialWebSocketRaw(ctx context.Context, headers http.Header) (*websocket.Conn, *http.Response, error) {
 	var proxy *sshProxyConn
+	var proxyMu sync.Mutex
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			proxyMu.Lock()
+			activeProxy := proxy
+			proxyMu.Unlock()
+			if activeProxy != nil {
+				_ = activeProxy.Close()
+			}
+		case <-watchDone:
+		}
+	}()
 	dialer, err := t.WebSocketDialer(4 * time.Second)
 	if err != nil {
 		return nil, nil, err
@@ -332,15 +411,24 @@ func (t *SSHTransport) dialWebSocketRaw(ctx context.Context, headers http.Header
 	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
 		conn, err := baseDial(dialCtx, network, address)
 		if typed, ok := conn.(*sshProxyConn); ok {
+			proxyMu.Lock()
 			proxy = typed
+			canceled := ctx.Err() != nil
+			proxyMu.Unlock()
+			if canceled {
+				_ = typed.Close()
+			}
 		}
 		return conn, err
 	}
 	conn, response, err := dialer.DialContext(ctx, CodexAppServerWebSocketURL, headers)
 	if err != nil {
-		if proxy != nil {
-			proxy.Close()
-			return nil, response, proxy.dialError(err)
+		proxyMu.Lock()
+		failedProxy := proxy
+		proxyMu.Unlock()
+		if failedProxy != nil {
+			_ = failedProxy.Close()
+			return nil, response, failedProxy.dialError(err)
 		}
 		return nil, response, err
 	}
@@ -627,6 +715,12 @@ type sshProxyConn struct {
 }
 
 func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
+	t.readyMu.Lock()
+	closed := t.closed
+	t.readyMu.Unlock()
+	if closed {
+		return nil, &SSHProxyError{StartError: errors.New("SSH transport 已关闭"), ExitCode: -1}
+	}
 	if err := t.SSHBinaryAvailable(); err != nil {
 		return nil, &SSHProxyError{StartError: err, ExitCode: -1}
 	}
@@ -661,12 +755,25 @@ func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
 		waitCh: make(chan error, 1),
 		doneCh: make(chan struct{}),
 	}
+	t.readyMu.Lock()
+	registered := !t.closed
+	if registered {
+		t.proxies[proxy] = struct{}{}
+	}
+	t.readyMu.Unlock()
 	go proxy.captureStderr(stderr)
 	go func() {
 		err := cmd.Wait()
+		t.readyMu.Lock()
+		delete(t.proxies, proxy)
+		t.readyMu.Unlock()
 		proxy.waitCh <- err
 		close(proxy.doneCh)
 	}()
+	if !registered {
+		_ = proxy.Close()
+		return nil, &SSHProxyError{StartError: errors.New("SSH transport 已关闭"), ExitCode: -1}
+	}
 	// Gorilla v1.5.3 会在 DialContext 返回时取消它为 HandshakeTimeout
 	// 派生的 context。这里不能把该 context 当作连接生命周期；握手失败时
 	// Gorilla 自己会关闭 net.Conn，握手超时则由它设置在连接上的 deadline 负责。

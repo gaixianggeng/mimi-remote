@@ -32,6 +32,8 @@ import (
 // 正式发布由 GoReleaser 使用 -X 注入版本号；源码构建明确标记为 devel，避免首个正式版本被误判为开发构建。
 var version = "devel"
 
+var runAgentSetup = agentsetup.Run
+
 // managedServicePlatform 默认等于编译目标，只作为平台命令选择的窄测试缝隙；
 // 生产代码不修改它，也不根据配置或环境变量伪装操作系统。
 var managedServicePlatform = runtime.GOOS
@@ -106,7 +108,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标，默认 127.0.0.1")
+	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
@@ -119,7 +121,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
+	result, err := runAgentSetup(context.Background(), agentsetup.Options{
 		ConfigPath:         *configPath,
 		ScanRoot:           *scanRoot,
 		BrowseRoot:         *browseRoot,
@@ -182,7 +184,7 @@ func runUp(args []string) error {
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标，默认 127.0.0.1")
+	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -205,7 +207,7 @@ func runUp(args []string) error {
 	if !*asJSON {
 		fmt.Fprintln(os.Stdout, "正在准备 Mimi Remote 助手...")
 	}
-	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
+	result, err := runAgentSetup(context.Background(), agentsetup.Options{
 		ConfigPath:         *configPath,
 		ScanRoot:           *scanRoot,
 		BrowseRoot:         *browseRoot,
@@ -329,7 +331,7 @@ func runStart(args []string) error {
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
 		return err
 	}
-	if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+	if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 		return err
 	}
 
@@ -377,7 +379,7 @@ func runRestart(args []string) error {
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
 		return err
 	}
-	if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+	if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 		return err
 	}
 
@@ -873,7 +875,7 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		}
 	}
 	if !forDoctor && fileExists(*configPath) {
-		if err := ensureAppServerSSHMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+		if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 			return config.Config{}, nil, nil, err
 		}
 		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
@@ -958,10 +960,10 @@ func runDoctorFix(
 		}
 	}
 	if hasFailedCheck(current, "app-server") && !needsSetup {
-		if err := ensureAppServerSSHMigration(ctx, configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+		if err := ensureAppServerTransportMigration(ctx, configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 			return nil, false, nil, current, err
 		}
-		fixes = append(fixes, "已在 SSH 预检通过后原子迁移旧 App Server 配置")
+		fixes = append(fixes, "已在共享 App Server 预检通过后原子迁移旧配置")
 		restartRequired = true
 	}
 	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
@@ -1035,7 +1037,7 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 		}
 		fixes = append(fixes, "已备份旧配置："+backup)
 	}
-	if _, err := agentsetup.Run(ctx, agentsetup.Options{ConfigPath: configPath, Force: true}); err != nil {
+	if _, err := runAgentSetup(ctx, agentsetup.Options{ConfigPath: configPath, Force: true}); err != nil {
 		return nil, fmt.Errorf("自动生成配置失败：%w", err)
 	}
 	fixes = append(fixes, "已生成可配对的默认配置")

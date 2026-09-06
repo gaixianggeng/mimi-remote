@@ -1036,3 +1036,259 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         )
     }
 }
+
+extension ConversationDataFlowTests {
+    /// MIM-247：Claude 的 item/tool/requestUserInput 从投影到提交必须走通同一套 key。
+    /// 卡片能出现却提交报「请求已失效」，说明注册与查找在某一层错位。
+    func testClaudeToolRequestUserInputRegistersLookupKeysForSubmit() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            runtimeProvider: "claude"
+        )
+        let request = CodexAppServerServerRequest(
+            id: .string("claude-req-1"),
+            method: "item/tool/requestUserInput",
+            params: .object([
+                "threadId": .string("thr_claude_input"),
+                "turnId": .string("turn_claude_input"),
+                "itemId": .string("toolu_014MPNAn1XapgUZpDWR5odD6"),
+                "questions": .array([
+                    .object([
+                        "id": .string("question-0"),
+                        "header": .string("目标平台"),
+                        "question": .string("先做哪个平台？"),
+                        "options": .array([
+                            .object(["label": .string("iOS")]),
+                            .object(["label": .string("Server")])
+                        ])
+                    ])
+                ])
+            ])
+        )
+
+        await runtime.handle(request)
+
+        // 1) 卡片确实产出，且 UI 侧 id 用的是 itemId（截图里的报错就是这个 id）
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_claude_input")
+        let card = pending.compactMap { event -> AgentUserInputRequest? in
+            if case .userInputRequest(let input, _) = event { return input }
+            return nil
+        }.first
+        let unwrapped = try XCTUnwrap(card, "补充信息卡片必须产出")
+        XCTAssertEqual(unwrapped.id, "toolu_014MPNAn1XapgUZpDWR5odD6")
+
+        // 2) 用卡片上的 id 提交，必须能查到请求，不能抛 userInputRequestNotFound
+        do {
+            try await runtime.respondToUserInput(
+                sessionID: "thr_claude_input",
+                requestID: unwrapped.id,
+                answers: ["question-0": ["iOS"]]
+            )
+            XCTFail("未连接时应该因连接不可用失败，而不是静默成功")
+        } catch let error as CodexAppServerSessionRuntimeError {
+            if case .userInputRequestNotFound(let id) = error {
+                XCTFail("请求应已注册，却报已失效：\(id)")
+            }
+            // 其它错误（如连接不可用）是预期的：本用例只验证查找不失败。
+        } catch {
+            // 同上：非 runtime 错误说明已经越过查找这一步。
+        }
+    }
+}
+
+extension ConversationDataFlowTests {
+    /// MIM-247：请求确实已经失效时，卡片不能再被放回去。
+    ///
+    /// 用户截图里的死循环就是这么来的：提交失败 → 卡片恢复 → 再点还是失败。
+    /// 失效是终态，卡片收起、会话解除「待输入」，用户才能继续用这个会话。
+    func testExpiredUserInputFailureRetiresCardInsteadOfRestoringIt() async throws {
+        let project = makeProject(id: "proj_expired_input")
+        let request = AgentUserInputRequest(
+            id: "input-expired",
+            threadID: "sess_expired_input",
+            turnID: "turn-1",
+            itemID: "input-expired",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "scope",
+                    header: "范围",
+                    question: "先做哪一部分？",
+                    isOther: true,
+                    isSecret: false,
+                    options: [AgentUserInputOption(label: "后端", description: "先落 API")]
+                )
+            ]
+        )
+        let running = AgentSession(
+            id: request.threadID,
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "等待补充信息",
+            status: "waiting_for_input",
+            source: "claude",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingUserInput: request
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        conversationStore.appendSystem("等待补充信息：\(request.title)", sessionID: running.id, kind: .userInput)
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        for _ in 0..<50 where sockets.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.respondToUserInput(request, answers: ["scope": ["后端"]])
+        XCTAssertEqual(socket.sentUserInputResponses.count, 1)
+        XCTAssertEqual(conversationStore.messages(for: running.id).last?.itemID, request.itemID)
+
+        socket.onUserInputResponseFailure?("input-expired", "补充信息请求已失效：input-expired", true)
+        // 失败回调是异步派发的，而会话在乐观提交时就已经是 running；
+        // 必须等它真正落地，否则断言只是在看提交那一刻的状态。
+        for _ in 0..<80 where conversationStore.messages(for: running.id).last?.content != "补充信息请求已失效，答案没有送达" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.selectedSession?.status, "running", "卡片撤掉后会话不能再卡在待输入")
+        XCTAssertNil(store.selectedSession?.pendingUserInput, "失效的卡片不能再放回去")
+        XCTAssertFalse(store.isUserInputResponsePending(request))
+        XCTAssertEqual(conversationStore.messages(for: running.id).last?.content, "补充信息请求已失效，答案没有送达")
+    }
+
+    func testExpiredUserInputFailurePreservesNewerRequest() async throws {
+        let (store, socket, request) = try await makeExpiredUserInputFailureFixture()
+        let newer = userInputFailureRequest(id: "input-newer")
+        socket.emitEvent(.userInputRequest(newer, userInputFailureMetadata(newer)))
+        try await waitForSelectedSessionStatus("waiting_for_input", store: store)
+        let context = store.contextStore.context(for: request.threadID)
+
+        socket.onUserInputResponseFailure?(request.id, "expired", true)
+        for _ in 0..<80 where store.isUserInputResponsePending(request) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertFalse(store.isUserInputResponsePending(request))
+        XCTAssertEqual(store.selectedSession?.pendingUserInput, newer)
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_input")
+        XCTAssertEqual(store.contextStore.context(for: request.threadID), context)
+        let messages = store.conversationStore.messages(for: request.threadID)
+        XCTAssertEqual(messages.first(where: { $0.itemID == request.itemID })?.content, "补充信息请求已失效，答案没有送达")
+        XCTAssertEqual(messages.first(where: { $0.itemID == newer.itemID })?.content, "等待补充信息：范围")
+    }
+
+    func testResolvedUserInputIgnoresLateExpiredFailure() async throws {
+        let (store, socket, request) = try await makeExpiredUserInputFailureFixture()
+        socket.emitEvent(.userInputResolved(userInputFailureMetadata(request), skipped: false))
+        for _ in 0..<80 where store.isUserInputResponsePending(request) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(store.isUserInputResponsePending(request))
+        let newer = userInputFailureRequest(id: "input-newer")
+        socket.emitEvent(.userInputRequest(newer, userInputFailureMetadata(newer)))
+        try await waitForSelectedSessionStatus("waiting_for_input", store: store)
+        let messages = store.conversationStore.messages(for: request.threadID)
+        let context = store.contextStore.context(for: request.threadID)
+        let error = store.errorMessage
+
+        socket.onUserInputResponseFailure?(request.id, "expired", true)
+        // 回调异步切到 MainActor；留出执行窗口后检查“无变化”，避免提交后立即断言。
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.selectedSession?.pendingUserInput, newer)
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_input")
+        XCTAssertEqual(store.contextStore.context(for: request.threadID), context)
+        XCTAssertEqual(store.conversationStore.messages(for: request.threadID), messages)
+        XCTAssertEqual(store.errorMessage, error)
+    }
+
+    func testCompletedTurnIgnoresLateExpiredUserInputFailure() async throws {
+        let (store, socket, request) = try await makeExpiredUserInputFailureFixture()
+        socket.emitEvent(.turnCompleted(userInputFailureMetadata(request)))
+        try await waitForSelectedSessionStatus("completed", store: store)
+        XCTAssertFalse(store.isUserInputResponsePending(request))
+        let messages = store.conversationStore.messages(for: request.threadID)
+        let context = store.contextStore.context(for: request.threadID)
+        let error = store.errorMessage
+
+        socket.onUserInputResponseFailure?(request.id, "expired", true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.selectedSession?.status, "completed")
+        XCTAssertNil(store.selectedSession?.pendingUserInput)
+        XCTAssertEqual(store.contextStore.context(for: request.threadID), context)
+        XCTAssertEqual(store.conversationStore.messages(for: request.threadID), messages)
+        XCTAssertEqual(store.errorMessage, error)
+    }
+
+    private func makeExpiredUserInputFailureFixture() async throws -> (SessionStore, MockWebSocketClient, AgentUserInputRequest) {
+        let project = makeProject(id: "proj_input_failure")
+        let request = userInputFailureRequest(id: "input-expired")
+        var session = makeSession(id: request.threadID, projectID: project.id, title: "等待补充信息", status: "waiting_for_input", source: "claude")
+        session.pendingUserInput = request
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        conversationStore.appendSystem("等待补充信息：范围", sessionID: session.id, kind: .userInput, metadata: userInputFailureMetadata(request))
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(session)
+        await store.selectSession(session)
+        for _ in 0..<50 where socket.connectedSessionIDs.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertTrue(store.respondToUserInput(request, answers: ["scope": ["后端"]]))
+        return (store, socket, request)
+    }
+
+    private func userInputFailureRequest(id: String) -> AgentUserInputRequest {
+        AgentUserInputRequest(
+            id: id, threadID: "sess_input_failure", turnID: "turn-1", itemID: id,
+            questions: [AgentUserInputQuestion(
+                id: "scope", header: "范围", question: "先做哪一部分？", isOther: true, isSecret: false,
+                options: [AgentUserInputOption(label: "后端", description: "先落 API")]
+            )]
+        )
+    }
+
+    private func userInputFailureMetadata(_ request: AgentUserInputRequest) -> AgentEventMetadata {
+        AgentEventMetadata(
+            seq: nil, sessionID: request.threadID, turnID: request.turnID, itemID: request.itemID,
+            messageID: nil, clientMessageID: nil, revision: nil, createdAt: Date()
+        )
+    }
+}

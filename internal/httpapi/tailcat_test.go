@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,13 +20,55 @@ type fakeTailcatSidecar struct {
 	status         tailcatStatus
 	allowedKey     string
 	allowCalls     int
+	managedKeys    []string
+	managedCalls   int
+	managedStatus  *tailcatStatus
+	managedCtxErr  error
+	managedCtxErrs []error
 	startCalls     int
 	stopCalls      int
 	pairCalls      int
 	resetCalls     int
+	resetCtxErr    error
 	configureCalls int
 	configuredURL  string
 	operationErr   error
+}
+
+type fakeManagedPairingService struct {
+	status       tailcatStatus
+	sessionID    string
+	grant        string
+	mobileKey    string
+	completeCall int
+	syncCalls    int
+	syncCtxErr   error
+	resetCtxErr  error
+	operationErr error
+}
+
+func (f *fakeManagedPairingService) Start() {}
+func (f *fakeManagedPairingService) Sync(ctx context.Context) error {
+	f.syncCalls++
+	f.syncCtxErr = ctx.Err()
+	return f.operationErr
+}
+func (f *fakeManagedPairingService) Reset(ctx context.Context) error {
+	f.resetCtxErr = ctx.Err()
+	return f.operationErr
+}
+func (f *fakeManagedPairingService) Close() {}
+func (f *fakeManagedPairingService) Complete(
+	_ context.Context,
+	sessionID string,
+	grant string,
+	mobileKey string,
+) (tailcatStatus, error) {
+	f.completeCall++
+	f.sessionID = sessionID
+	f.grant = grant
+	f.mobileKey = mobileKey
+	return f.status, f.operationErr
 }
 
 func (f *fakeTailcatSidecar) Status(context.Context) tailcatStatus { return f.status }
@@ -46,8 +89,20 @@ func (f *fakeTailcatSidecar) AllowClient(_ context.Context, key string) (tailcat
 	f.allowedKey = key
 	return f.status, f.operationErr
 }
-func (f *fakeTailcatSidecar) Reset(context.Context) (tailcatStatus, error) {
+func (f *fakeTailcatSidecar) ReplaceManagedClients(ctx context.Context, keys []string) (tailcatStatus, error) {
+	f.managedCalls++
+	f.managedKeys = append([]string(nil), keys...)
+	f.managedCtxErr = ctx.Err()
+	f.managedCtxErrs = append(f.managedCtxErrs, ctx.Err())
+	if f.managedStatus != nil {
+		f.status = *f.managedStatus
+		f.managedStatus = nil
+	}
+	return f.status, f.operationErr
+}
+func (f *fakeTailcatSidecar) Reset(ctx context.Context) (tailcatStatus, error) {
 	f.resetCalls++
+	f.resetCtxErr = ctx.Err()
 	return f.status, f.operationErr
 }
 func (f *fakeTailcatSidecar) ConfigureDERPMap(_ context.Context, rawURL string) (tailcatStatus, error) {
@@ -141,6 +196,114 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 	}
 }
 
+func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{status: tailcatStatus{
+		Enabled: true, Running: true, Address: "tailcat-managed-address",
+	}}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	payload := pairingClaimRequest{
+		Endpoint:         ticket.Endpoint,
+		IssuedAt:         ticket.IssuedAt,
+		ExpiresAt:        ticket.ExpiresAt,
+		Signature:        ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+		ManagedSessionID: testManagedSessionID,
+		ManagedGrant:     managedToken('g'),
+	}
+
+	response := performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("托管 Tailcat 配对失败：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.completeCall != 1 || fakeManaged.sessionID != payload.ManagedSessionID ||
+		fakeManaged.grant != payload.ManagedGrant || fakeManaged.mobileKey != payload.TailcatClientKey {
+		t.Fatalf("托管配对参数未完整传递：%+v", fakeManaged)
+	}
+	if fakeTailcat.allowCalls != 0 {
+		t.Fatal("托管配对不能写入永久免费的 clients.json 白名单")
+	}
+}
+
+func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	payload := pairingClaimRequest{
+		Endpoint:         ticket.Endpoint,
+		IssuedAt:         ticket.IssuedAt,
+		ExpiresAt:        ticket.ExpiresAt,
+		Signature:        ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+		ManagedSessionID: testManagedSessionID,
+	}
+
+	response := performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("不完整托管授权必须拒绝：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.completeCall != 0 || fakeTailcat.allowCalls != 0 {
+		t.Fatal("不完整托管授权不能修改任何白名单")
+	}
+}
+
+func TestTailcatLocalResetContinuesAfterManagedCleanupFailure(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{operationErr: errors.New("disk full")}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	server.router.tailcatLocalToken = "local-only-token"
+
+	request := authedRequest(t, http.MethodPost, "/api/local/tailcat", tailcatControlRequest{Action: "reset"})
+	request.RemoteAddr = "127.0.0.1:54321"
+	request.Host = "127.0.0.1:8787"
+	request.Header.Set(TailcatLocalControlHeader, "local-only-token")
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "disk full") {
+		t.Fatalf("托管清理失败应返回明确错误：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeTailcat.resetCalls != 1 {
+		t.Fatalf("托管清理失败后仍应重置底层 Tailcat：calls=%d", fakeTailcat.resetCalls)
+	}
+}
+
+func TestTailcatLocalResetUsesLiveCleanupContextsAfterRequestCancellation(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeManaged := &fakeManagedPairingService{}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	server.router.tailcatLocalToken = "local-only-token"
+
+	request := authedRequest(t, http.MethodPost, "/api/local/tailcat", tailcatControlRequest{Action: "reset"})
+	request.RemoteAddr = "127.0.0.1:54321"
+	request.Host = "127.0.0.1:8787"
+	request.Header.Set(TailcatLocalControlHeader, "local-only-token")
+	requestContext, cancel := context.WithCancel(request.Context())
+	cancel()
+	request = request.WithContext(requestContext)
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("取消中的请求仍应完成本地重置：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.resetCtxErr != nil || fakeTailcat.resetCtxErr != nil || fakeTailcat.resetCalls != 1 {
+		t.Fatalf("两个重置步骤必须使用有效清理上下文：managed=%v tailcat=%v calls=%d", fakeManaged.resetCtxErr, fakeTailcat.resetCtxErr, fakeTailcat.resetCalls)
+	}
+}
+
 func TestTailcatLocalConfigurePassesDERPMapToSupervisor(t *testing.T) {
 	server := newTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
@@ -166,6 +329,35 @@ func TestTailcatLocalConfigurePassesDERPMapToSupervisor(t *testing.T) {
 	}
 	if fake.configureCalls != 1 || fake.configuredURL != "https://relay.example/derpmap/default" {
 		t.Fatalf("未传递 DERP Map：calls=%d url=%q", fake.configureCalls, fake.configuredURL)
+	}
+}
+
+func TestTailcatLocalConfigureFailureImmediatelyReappliesManagedPolicy(t *testing.T) {
+	server := newTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{operationErr: errors.New("rollback complete")}
+	fakeManaged := &fakeManagedPairingService{}
+	server.router.tailcat = fakeTailcat
+	server.router.managedPairing = fakeManaged
+	server.router.tailcatLocalToken = "local-only-token"
+
+	request := authedRequest(t, http.MethodPost, "/api/local/tailcat", tailcatControlRequest{
+		Action:     "configure",
+		DERPMapURL: "https://relay.example/derpmap/default",
+	})
+	request.RemoteAddr = "127.0.0.1:54321"
+	request.Host = "127.0.0.1:8787"
+	request.Header.Set(TailcatLocalControlHeader, "local-only-token")
+	requestContext, cancel := context.WithCancel(request.Context())
+	cancel()
+	request = request.WithContext(requestContext)
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "rollback complete") {
+		t.Fatalf("配置失败应保留原错误：status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fakeManaged.syncCalls != 1 || fakeManaged.syncCtxErr != nil {
+		t.Fatalf("回滚重启后必须立即用有效上下文重放托管策略：calls=%d ctx=%v", fakeManaged.syncCalls, fakeManaged.syncCtxErr)
 	}
 }
 

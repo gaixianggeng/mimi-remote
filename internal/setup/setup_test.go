@@ -19,6 +19,7 @@ import (
 
 func TestMain(m *testing.M) {
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
+	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
 	os.Exit(m.Run())
 }
 
@@ -131,9 +132,9 @@ func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
 
 func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if config.SupportsManagedAppServer() || runtime.GOOS == "linux" {
 		if result.AppServerSSHTarget != "" {
-			t.Fatalf("Windows setup 不应持久化 SSH target：%q", result.AppServerSSHTarget)
+			t.Fatalf("本机 App Server setup 不应持久化 SSH target：%q", result.AppServerSSHTarget)
 		}
 		return
 	}
@@ -144,12 +145,18 @@ func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 
 func assertDefaultSetupConfigAppServer(t *testing.T, cfg config.Config) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "linux" {
+		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
+			t.Fatalf("Linux setup 应默认启用共享本机 App Server：%+v", cfg.AppServer)
+		}
+		return
+	}
+	if config.SupportsManagedAppServer() {
 		if cfg.AppServer.Transport != "ws" ||
 			!cfg.AppServer.Managed ||
-			cfg.AppServer.Listen != config.DefaultWindowsAppServerListen() ||
+			cfg.AppServer.Listen != config.DefaultManagedAppServerListen() ||
 			strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
-			t.Fatalf("Windows setup 应启用受管 loopback WebSocket：%+v", cfg.AppServer)
+			t.Fatalf("本机 setup 应启用受管 loopback WebSocket：%+v", cfg.AppServer)
 		}
 		assertPrivateRegularFile(t, cfg.AppServer.WSTokenFile)
 		return

@@ -11,6 +11,10 @@
 //! user message for `first_message`, skipping Claude CLI metadata, local
 //! commands, and tool-result-only records. Files without a real user message,
 //! or that fail to open or parse, are skipped quietly.
+//!
+//! Claude 自己会把会话标题写进同一份 transcript（`custom-title` / `ai-title`
+//! 记录），桌面端列表显示的就是它。扫描时一并读出来当作 `title`，Mimi 不需要
+//! 再生成一次标题。
 
 use std::path::{Path, PathBuf};
 
@@ -33,7 +37,23 @@ pub struct ClaudeSessionInfo {
     pub created: DateTime<Utc>,
     pub modified: DateTime<Utc>,
     pub first_message: String,
+    /// Claude 写在 transcript 里的会话标题；`custom-title` 优先于 `ai-title`。
+    /// 旧会话没有这两种记录时为 `None`，列表继续回退到首条用户消息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
+
+/// 标题记录的两种 `type`。同一文件每次 checkpoint 都会追加当前值，取最后一条。
+const CUSTOM_TITLE_TYPE: &str = "custom-title";
+const AI_TITLE_TYPE: &str = "ai-title";
+
+/// 标题被截断的上限。Claude 写的都是短标题，异常长的值更可能是坏记录，
+/// 不能让它撑坏列表行。
+const MAX_TITLE_CHARS: usize = 120;
+
+/// 一条标题记录的字节上限，用于跳过大行的预筛。真实记录不到 200 字节，
+/// 这里留足余量。
+const MAX_TITLE_RECORD_BYTES: usize = 4096;
 
 /// `~/.claude/projects/`. Honors `CLAUDE_PROJECTS_DIR` for tests.
 pub fn claude_projects_dir() -> Option<PathBuf> {
@@ -131,15 +151,35 @@ async fn build_session_info(path: &Path) -> Option<ClaudeSessionInfo> {
     let mut first_message: Option<String> = None;
     let mut found_real_user_message = false;
     let mut first_message_ts: Option<DateTime<Utc>> = None;
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            continue;
+        }
+        // 头部信息（cwd + 首条消息）通常在前几行就齐了，但标题记录一直追加到
+        // 文件末尾。补齐头部后只对可能是标题的行做 JSON 解析：transcript 动辄
+        // 上万行，逐行解析比子串预筛贵一个量级。
+        let header_done = !cwd.is_empty() && first_message.is_some();
+        let title_candidate = looks_like_title_record(trimmed);
+        if header_done && !title_candidate {
             continue;
         }
         let value: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if title_candidate {
+            match title_record(&value) {
+                Some(TitleRecord::Custom(title)) => custom_title = title,
+                Some(TitleRecord::Ai(title)) => ai_title = title,
+                None => {}
+            }
+        }
+        if header_done {
+            continue;
+        }
         if cwd.is_empty() {
             if let Some(c) = value.get("cwd").and_then(|v| v.as_str()) {
                 cwd = c.to_string();
@@ -162,9 +202,6 @@ async fn build_session_info(path: &Path) -> Option<ClaudeSessionInfo> {
                 }
             }
         }
-        if !cwd.is_empty() && first_message.is_some() {
-            break;
-        }
     }
 
     let created = first_message_ts.unwrap_or(created);
@@ -178,7 +215,53 @@ async fn build_session_info(path: &Path) -> Option<ClaudeSessionInfo> {
         created,
         modified,
         first_message: first_message.unwrap_or_default(),
+        // 用户或桌面端设定的 `custom-title` 压过自动生成的 `ai-title`，
+        // 与 Claude 自己的列表一致。
+        title: custom_title.or(ai_title),
     })
+}
+
+/// 外层 `Option` 区分“不是标题记录”；变体里的 `Option` 区分有效标题和空标题。
+/// 空标题必须保留下来清除同类型的旧值，不能在解析阶段直接丢弃。
+enum TitleRecord {
+    Custom(Option<String>),
+    Ai(Option<String>),
+}
+
+/// 便宜的预筛：只有出现过标题记录类型字面量的行才值得整行 JSON 解析。
+/// 普通消息里恰好出现同样文本时最多多解析一行，`title_record` 会再判一次类型。
+///
+/// 长度先行是因为 transcript 的字节数几乎都集中在少数几行超大的助手输出和附件
+/// 上；标题记录只有几十字节，先按长度筛掉大行，扫描整份历史的成本才不会
+/// 随对话体积增长。
+fn looks_like_title_record(line: &str) -> bool {
+    line.len() <= MAX_TITLE_RECORD_BYTES
+        && (line.contains(CUSTOM_TITLE_TYPE) || line.contains(AI_TITLE_TYPE))
+}
+
+fn title_record(value: &Value) -> Option<TitleRecord> {
+    match value.get("type").and_then(Value::as_str)? {
+        CUSTOM_TITLE_TYPE => Some(TitleRecord::Custom(title_text(
+            value,
+            "customTitle",
+            "custom_title",
+        ))),
+        AI_TITLE_TYPE => Some(TitleRecord::Ai(title_text(value, "aiTitle", "ai_title"))),
+        _ => None,
+    }
+}
+
+/// 标题只取首个非空行并裁到 [`MAX_TITLE_CHARS`]；空标题按“没有标题”处理，
+/// 否则列表会显示一行空白而不是回退到首条用户消息。
+fn title_text(value: &Value, camel_key: &str, snake_key: &str) -> Option<String> {
+    let raw = value
+        .get(camel_key)
+        .or_else(|| value.get(snake_key))
+        .and_then(Value::as_str)?;
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let title: String = line.chars().take(MAX_TITLE_CHARS).collect();
+    let title = title.trim();
+    (!title.is_empty()).then(|| title.to_string())
 }
 
 /// 提取会话标题时只认真实用户文本。Claude 会把 `/model` 等本地命令、
@@ -272,6 +355,96 @@ mod tests {
         assert_eq!(sessions[0].session_id, "abc-123");
         assert_eq!(sessions[0].cwd, "/private/tmp");
         assert_eq!(sessions[0].first_message, "hello world");
+    }
+
+    #[tokio::test]
+    async fn reads_claude_title_written_after_the_first_message() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("titled.jsonl");
+        let records = [
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"帮我看下会话列表"},"timestamp":"2026-09-04T10:00:00Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"好的"}]}}"#,
+            r#"{"type":"ai-title","aiTitle":"旧的自动标题","sessionId":"titled"}"#,
+            r#"{"type":"custom-title","customTitle":"旧的自定义标题","sessionId":"titled"}"#,
+            r#"{"type":"ai-title","aiTitle":"最新自动标题","sessionId":"titled"}"#,
+            r#"{"type":"custom-title","customTitle":"最新自定义标题","sessionId":"titled"}"#,
+        ];
+        std::fs::write(&path, records.join("\n")).unwrap();
+
+        let sessions = list_sessions_from_dir(dir.path()).await;
+
+        assert_eq!(sessions.len(), 1);
+        // 标题记录整份 transcript 一路追加，取最后一条；custom 压过 ai。
+        assert_eq!(sessions[0].title.as_deref(), Some("最新自定义标题"));
+        assert_eq!(sessions[0].first_message, "帮我看下会话列表");
+    }
+
+    #[tokio::test]
+    async fn latest_blank_custom_title_clears_previous_value_and_falls_back_to_ai_title() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ai-only.jsonl");
+        let records = [
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"hello"},"timestamp":"2026-09-04T10:00:00Z"}"#,
+            r#"{"type":"ai-title","aiTitle":"自动标题","sessionId":"ai-only"}"#,
+            r#"{"type":"custom-title","customTitle":"旧的自定义标题","sessionId":"ai-only"}"#,
+            r#"{"type":"custom-title","customTitle":"   ","sessionId":"ai-only"}"#,
+        ];
+        std::fs::write(&path, records.join("\n")).unwrap();
+
+        let sessions = list_sessions_from_dir(dir.path()).await;
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title.as_deref(), Some("自动标题"));
+    }
+
+    #[tokio::test]
+    async fn leaves_title_empty_when_transcript_has_none() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("untitled.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"hello"},"timestamp":"2026-09-04T10:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let sessions = list_sessions_from_dir(dir.path()).await;
+
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn ignores_title_text_inside_ordinary_messages() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mentions-title.jsonl");
+        let records = [
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"custom-title 这个记录该怎么读"},"timestamp":"2026-09-04T10:00:00Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ai-title 是自动生成的"}]}}"#,
+        ];
+        std::fs::write(&path, records.join("\n")).unwrap();
+
+        let sessions = list_sessions_from_dir(dir.path()).await;
+
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn truncates_overlong_title_to_one_line() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("long-title.jsonl");
+        let long = "标".repeat(MAX_TITLE_CHARS + 40);
+        let records = [
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"hello"},"timestamp":"2026-09-04T10:00:00Z"}"#.to_string(),
+            format!(r#"{{"type":"custom-title","customTitle":"{long}\n第二行","sessionId":"long-title"}}"#),
+        ];
+        std::fs::write(&path, records.join("\n")).unwrap();
+
+        let sessions = list_sessions_from_dir(dir.path()).await;
+
+        let title = sessions[0].title.as_deref().unwrap();
+        assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
+        assert!(!title.contains('\n'));
     }
 
     #[tokio::test]

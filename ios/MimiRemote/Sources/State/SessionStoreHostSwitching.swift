@@ -26,6 +26,26 @@ extension SessionStore {
     }
 
     @discardableResult
+    func retryManagedConnection() async -> Bool {
+        guard let tailcatExperimentController else { return false }
+        resetConnectionForSettingsChange()
+        guard await tailcatExperimentController.retryManagedConnection(appStore: appStore) else {
+            return false
+        }
+        return await refreshAfterConnectionCommit(maxWait: 10)
+    }
+
+    @discardableResult
+    func useSavedConnectionRouteOnce(_ route: ConnectionProfileRoute) async -> Bool {
+        guard let tailcatExperimentController else { return false }
+        resetConnectionForSettingsChange()
+        guard await tailcatExperimentController.useSavedRouteOnce(route, appStore: appStore) else {
+            return false
+        }
+        return await refreshAfterConnectionCommit(maxWait: 10)
+    }
+
+    @discardableResult
     func applyConnectionSettings(
         endpoint: String,
         token: String
@@ -59,12 +79,19 @@ extension SessionStore {
         // 快速入口只执行 version + config 和一次可复用 initialize。验证或提交失败时，
         // commitPreparedConnection 不会运行，当前 Mac 的页面和 WebSocket 保持不变。
         return try await performPreparedConnectionChange(switchTargetProfileID: id) {
-            try await self.appStore.prepareConnectionProfileSwitch(id: id)
+            if let controller = self.tailcatExperimentController {
+                return try await controller.prepareConnectionProfileSwitch(
+                    id: id,
+                    appStore: self.appStore
+                )
+            }
+            return try await self.appStore.prepareConnectionProfileSwitch(id: id)
         }
     }
 
     func deleteConnectionProfile(id: String) async throws {
         try await appStore.deleteConnectionProfile(id: id)
+        try? tailcatExperimentController?.deleteProfileRoute(profileID: id)
         purgeConnectionProfileData(profileID: id)
         // 删除重复 endpoint 的非当前 Profile 后，旧版 endpoint 数据可能刚刚变为唯一可归属。
         // 立即重载本地 Store，避免必须切换 Mac 或手动刷新后才恢复最近工作区等偏好。
@@ -76,6 +103,7 @@ extension SessionStore {
     func clearCurrentConnectionProfile() async throws {
         let removedProfileID = appStore.activeHostScope.profileID
         try await appStore.clearPairing()
+        try? tailcatExperimentController?.deleteProfileRoute(profileID: removedProfileID)
         resetConnectionForSettingsChange(clearData: true)
         purgeConnectionProfileData(profileID: removedProfileID)
     }
@@ -121,6 +149,22 @@ extension SessionStore {
     }
 
     @discardableResult
+    func applyManagedPairingURL(_ url: URL) async throws -> Bool {
+        try await performPreparedConnectionChange {
+            guard let controller = self.tailcatExperimentController,
+                  try TailcatPairingLink.parse(url) != nil else {
+                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+            }
+            return try await controller.preparePairingURL(
+                url,
+                appStore: self.appStore,
+                profileTarget: .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true
+            )
+        }
+    }
+
+    @discardableResult
     func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
         try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
@@ -135,6 +179,22 @@ extension SessionStore {
                 )
             }
             return try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
+        }
+    }
+
+    @discardableResult
+    func addManagedConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
+        try await performPreparedConnectionChange {
+            guard let controller = self.tailcatExperimentController,
+                  try TailcatPairingLink.parse(url) != nil else {
+                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+            }
+            return try await controller.preparePairingURL(
+                url,
+                appStore: self.appStore,
+                profileTarget: .newProfile(id: UUID().uuidString, displayName: displayName),
+                requiresManagedAuthorization: true
+            )
         }
     }
 
@@ -177,8 +237,9 @@ extension SessionStore {
                   !isAppInBackground else {
                 throw CancellationError()
             }
+            try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
             let committed = try await commitPreparedConnection(prepared)
-            tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
+            await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
             return committed
         } catch {

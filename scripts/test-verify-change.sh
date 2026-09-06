@@ -68,16 +68,52 @@ assert_not_contains "$nested_docs_output" "ios-dev.sh build-for-testing"
 assert_not_contains "$nested_docs_output" "cargo test"
 
 ios_output="$(assert_plan ios_only ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
-assert_contains "$ios_output" "ios-dev.sh build-for-testing"
+assert_contains "$ios_output" "iOS quick 只编译 App，不编译或运行 XCTest"
+assert_contains "$ios_output" "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
+assert_contains "$ios_output" "当前：quick；只在最后一次代码修改后执行一次"
+assert_contains "$ios_output" "自动高风险信号：未检测到"
 assert_contains "$ios_output" "docs=false"
 assert_contains "$ios_output" "check-source-size.sh"
+assert_not_contains "$ios_output" "ios-dev.sh build-for-testing"
+assert_not_contains "$ios_output" "ios-dev.sh target"
+assert_not_contains "$ios_output" "ios-dev.sh leases"
 assert_not_contains "$ios_output" "go test"
 assert_not_contains "$ios_output" "cargo test"
+
+ios_execution_paths="$test_root/ios-execution.paths"
+ios_execution_xcodebuild_log="$test_root/ios-execution-xcodebuild.log"
+ios_execution_tailcat_log="$test_root/ios-execution-tailcat.log"
+ios_execution_lease_root="$test_root/ios-execution-leases"
+printf '%s\0' ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift \
+  > "$ios_execution_paths"
+: > "$ios_execution_xcodebuild_log"
+: > "$ios_execution_tailcat_log"
+ios_execution_output="$(
+  IOS_XCRUN_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-xcrun.sh" \
+  IOS_XCODEBUILD_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-xcodebuild.sh" \
+  IOS_TAILCAT_BUILD_SCRIPT="$ROOT_DIR/scripts/testdata/ios-device-management/fake-tailcat-mobile-build.sh" \
+  IOS_TEST_SIMULATORS_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/simulators.json" \
+  IOS_TEST_PHYSICAL_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/no-physical-devices.json" \
+  IOS_TEST_XCODEBUILD_LOG="$ios_execution_xcodebuild_log" \
+  IOS_TEST_TAILCAT_BUILD_LOG="$ios_execution_tailcat_log" \
+  IOS_DEVICE_LEASE_ROOT="$ios_execution_lease_root" \
+  bash ./scripts/verify-change.sh --paths-file "$ios_execution_paths"
+)"
+assert_contains "$ios_execution_output" "iOS quick 只编译 App，不编译或运行 XCTest"
+assert_contains "$(<"$ios_execution_xcodebuild_log")" \
+  "-destination platform=iOS Simulator,id=M5-27-UDID"
+assert_contains "$(<"$ios_execution_xcodebuild_log")" \
+  "CODE_SIGNING_ALLOWED=NO build"
+assert_not_contains "$(<"$ios_execution_xcodebuild_log")" "build-for-testing"
+assert_contains "$(<"$ios_execution_tailcat_log")" "build"
+[[ ! -d "$ios_execution_lease_root/M5-27-UDID.lease" ]] \
+  || fail "iOS quick 结束后必须释放固定 Simulator 租约。"
 
 tailcat_output="$(assert_plan tailcat experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go)"
 assert_contains "$tailcat_output" "PR Gate scope：go=false, ios=true"
 assert_contains "$tailcat_output" "(cd experiments/tailcat && go test ./... -count=1)"
-assert_contains "$tailcat_output" "ios-dev.sh build-for-testing"
+assert_contains "$tailcat_output" "iOS quick 只编译 App，不编译或运行 XCTest"
+assert_not_contains "$tailcat_output" "ios-dev.sh build-for-testing"
 assert_not_contains "$tailcat_output" "Go 受影响范围使用完整回归"
 
 go_output="$(assert_plan go_only internal/httpapi/router.go)"
@@ -100,8 +136,11 @@ assert_contains "$rust_shared_output" "-p alleycat-claude-bridge"
 ios_full_output="$(assert_full_plan ios_full ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_full_output" "test-conversation-regressions.sh"
 assert_contains "$ios_full_output" "--ios-only"
+assert_contains "$ios_full_output" "当前：full；交付报告必须说明命中的高风险条件"
 assert_not_contains "$ios_full_output" "test-ios-localization-smoke.sh"
 assert_not_contains "$ios_full_output" "ios-dev.sh build-for-testing"
+assert_not_contains "$ios_full_output" "ios-dev.sh target"
+assert_not_contains "$ios_full_output" "ios-dev.sh leases"
 
 mixed_full_output="$(assert_full_plan mixed_full internal/httpapi/router.go ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$mixed_full_output" "go test ./... -count=1"
@@ -163,7 +202,9 @@ assert_contains "$restart_control_output" "restart-agentd-dev-macos.sh --self-te
 
 contract_output="$(assert_plan contract contracts/mimi-protocol/contract.json)"
 assert_contains "$contract_output" "check-mimi-protocol-contract.sh"
-assert_contains "$contract_output" "ios-dev.sh build-for-testing"
+assert_contains "$contract_output" "iOS quick 只编译 App，不编译或运行 XCTest"
+assert_contains "$contract_output" "自动高风险信号：检测到 Go/iOS 共享协议路径"
+assert_not_contains "$contract_output" "ios-dev.sh build-for-testing"
 assert_not_contains "$contract_output" "go test ./... -count=1"
 
 contract_full_output="$(assert_full_plan contract_full contracts/mimi-protocol/contract.json)"
@@ -230,7 +271,9 @@ assert_contains "$collection_output" "internal/httpapi/committed.go"
 assert_contains "$collection_output" "ios/MimiRemote/Sources/Staged.swift"
 assert_contains "$collection_output" "bridges/claude/untracked.rs"
 assert_contains "$collection_output" "go test ./internal/httpapi -count=1"
-assert_contains "$collection_output" "ios-dev.sh build-for-testing"
+assert_contains "$collection_output" "iOS quick 只编译 App，不编译或运行 XCTest"
+assert_contains "$collection_output" "自动高风险信号：检测到多个产品栈"
+assert_not_contains "$collection_output" "ios-dev.sh build-for-testing"
 assert_contains "$collection_output" "cargo test --locked"
 
 # base 与 HEAD 都存在但没有共同祖先时，git diff 必须显式失败；不能把退出码

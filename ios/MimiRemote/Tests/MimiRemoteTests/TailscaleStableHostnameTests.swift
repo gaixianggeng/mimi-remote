@@ -121,6 +121,7 @@ final class TailscaleStableHostnameTests: XCTestCase {
         let prepared = try await store.prepareRoutedConnectionSettings(
             endpoint: "http://100.64.0.20:8787",
             activeEndpoint: "http://127.0.0.1:28787",
+            tailcatAddress: "tailcat:stable-address",
             token: "tailcat-token",
             profileTarget: .currentOrNew(displayName: nil)
         )
@@ -129,6 +130,7 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(probedEndpoints, ["http://127.0.0.1:28787"])
         XCTAssertEqual(prepared.endpoint, "http://100.64.0.20:8787")
         XCTAssertEqual(prepared.activeEndpoint, "http://127.0.0.1:28787")
+        XCTAssertEqual(prepared.route, .tailcat(address: "tailcat:stable-address"))
     }
 
     func testMetadataRefreshRequiresStableIdentityAndPreservesCustomName() throws {

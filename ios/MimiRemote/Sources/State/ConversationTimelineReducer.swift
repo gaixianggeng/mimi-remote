@@ -93,6 +93,13 @@ struct ConversationTimelineReducer {
             let candidates = current.indices.filter { index in
                 guard !consumedCurrentIndices.contains(index) else { return false }
                 let local = current[index]
+                // 有 client id 的 Guided 消息已经绑定目标 turn。历史必须同时匹配两者；
+                // 相同 client id 出现在其他 turn 时不能走正文/时间兼容路径误确认。
+                if let localTurnID = local.turnID, !localTurnID.isEmpty,
+                   local.clientMessageID != nil {
+                    guard local.clientMessageID == history.clientMessageID,
+                          history.turnID == localTurnID else { return false }
+                }
                 let isUnconfirmedLocalEcho = local.sendStatus != .confirmed
                 let isConfirmedLegacyClaudeEcho = local.sendStatus == .confirmed
                     && local.role == .user
@@ -347,9 +354,12 @@ struct ConversationTimelineReducer {
             switch status {
             case .local: return 0
             case .sending: return 1
-            case .failed: return 2
-            case .sent: return 3
-            case .confirmed: return 4
+            // uncertain 比 sending 多知道"可能已写出"，但仍弱于任何已经定案的结果：
+            // 对账一旦得出 failed/sent/confirmed，就应该覆盖掉待确认态。
+            case .uncertain: return 2
+            case .failed: return 3
+            case .sent: return 4
+            case .confirmed: return 5
             }
         }
         return rank(snapshot) >= rank(existing) ? snapshot : existing
@@ -390,6 +400,9 @@ struct ConversationTimelineReducer {
 
     private func primaryKey(for message: ConversationMessage) -> String? {
         if let clientMessageID = message.clientMessageID {
+            if let turnID = message.turnID, !turnID.isEmpty {
+                return "client:\(clientMessageID):turn:\(turnID)"
+            }
             return "client:\(clientMessageID)"
         }
         if let itemID = message.itemID, !itemID.isEmpty {

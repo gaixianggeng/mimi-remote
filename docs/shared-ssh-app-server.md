@@ -1,22 +1,37 @@
 # 共享 SSH App Server
 
-本文只描述 macOS/Linux 的共享 SSH transport。Windows `agentd` 宿主管理一个 loopback WebSocket App Server，不使用 Unix Socket、SSH proxy 或 Desktop 私有 IPC。
+本文描述 macOS 默认使用的共享 SSH transport、Linux 默认使用的本机 Unix control socket，以及 Linux 显式指定远端 SSH target 时的高级模式。Linux 本机模式不要求 SSH，也不使用 Desktop 私有 IPC。
 
 ## 目标
 
-Mimi、Windows Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
+Mimi、远程 Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
 
 ```text
 Mimi App -> agentd 鉴权 WebSocket -> localhost SSH -> codex app-server proxy --┐
 本机 Desktop -----------------------> localhost SSH -> proxy -----------------+-> ~/.codex/app-server-control/app-server-control.sock
 远程 Desktop -------------------------------> Mac SSH -> proxy ---------------┘
+
+Linux：Mimi App -> agentd -> ~/.codex/app-server-control/app-server-control.sock <- codex --remote unix://
 ```
 
-OpenClaw 和 Desktop 的普通 “This Mac” 模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+
+Linux 默认配置为：
+
+```json
+{
+  "app_server": {
+    "transport": "local",
+    "auto_title": true
+  }
+}
+```
+
+agentd 直接连接标准 control socket。socket 缺失时，它优先通过独立的 user-systemd scope 启动 `codex app-server --listen unix://`；因此 agentd 重启不会终止 resident。没有可用 user-systemd 时会退回同一用户下的 detached 进程。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
 ## 配置
 
-`~/Library/Application Support/mimi-remote/config.json` 的 Codex 部分使用以下配置：
+macOS 的 `~/Library/Application Support/mimi-remote/config.json`（或 Linux 显式远端模式的对应配置文件）使用以下 Codex 配置：
 
 ```json
 {
@@ -40,10 +55,10 @@ AGENTD_APP_SERVER_SSH_TARGET=user@mac-host agentd up
 agentd 不保存 SSH 密码或私钥。启动前必须确保 Remote Login、host key 和非交互密钥认证可用：
 
 ```bash
-ssh 127.0.0.1 codex --version
+ssh 127.0.0.1 true
 ```
 
-首次运行会要求确认本机 SSH host key。命令必须在无需输入登录密码的情况下成功。完成后运行：
+首次运行会要求确认本机 SSH host key。命令必须在无需输入登录密码的情况下成功。agentd 的固定远端命令会显式补齐 `~/.local/bin`、`~/.npm-global/bin`、mise shims / latest Codex、Homebrew 和系统目录，不依赖非交互 SSH 是否加载 shell rc。完成后运行：
 
 ```bash
 agentd doctor

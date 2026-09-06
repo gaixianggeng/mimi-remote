@@ -115,8 +115,8 @@ log "agentd 已内嵌：archs=${architectures[*]}"
 # 开启 toolchain 自动选择，避免改变主 agentd 的 Go 1.25 构建事实。
 tailcat_module="$project_root/experiments/tailcat"
 tailcat_go_version="$(cd "$tailcat_module" && GOTOOLCHAIN=auto "$go_binary" env GOVERSION)"
-if [[ "$tailcat_go_version" != go1.26.* ]]; then
-  echo "Mimi Remote Mac 构建失败：Tailcat v0.3.0 需要 Go 1.26，实际为 ${tailcat_go_version}。" >&2
+if [[ "$tailcat_go_version" != go1.27.* ]]; then
+  echo "Mimi Remote Mac 构建失败：Tailcat v0.5.0 需要 Go 1.27，实际为 ${tailcat_go_version}。" >&2
   exit 1
 fi
 

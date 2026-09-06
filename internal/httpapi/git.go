@@ -438,13 +438,34 @@ func (r *Router) gitStatusWithOptions(ctx context.Context, realPath string, summ
 	}
 	truncated = truncated || cut
 
-	unstagedDiff, cut, err := runGitReadOnly(ctx, realPath, gitStatusOutputLimit, "diff", "--", ".")
+	// 固定 patch 前缀，避免用户级 diff.mnemonicPrefix 或自定义 prefix 改变
+	// i/w/c 等 header，导致移动端回传单 hunk 时被安全校验误判为多个文件。
+	unstagedDiff, cut, err := runGitReadOnly(
+		ctx,
+		realPath,
+		gitStatusOutputLimit,
+		"diff",
+		"--src-prefix=a/",
+		"--dst-prefix=b/",
+		"--",
+		".",
+	)
 	if err != nil {
 		return gitStatusResponse{}, err
 	}
 	truncated = truncated || cut
 
-	stagedDiff, cut, err := runGitReadOnly(ctx, realPath, gitStatusOutputLimit, "diff", "--cached", "--", ".")
+	stagedDiff, cut, err := runGitReadOnly(
+		ctx,
+		realPath,
+		gitStatusOutputLimit,
+		"diff",
+		"--cached",
+		"--src-prefix=a/",
+		"--dst-prefix=b/",
+		"--",
+		".",
+	)
 	if err != nil {
 		return gitStatusResponse{}, err
 	}
@@ -895,8 +916,15 @@ func normalizedGitPatchPath(candidate string) (string, error) {
 		path = path[:index]
 	}
 	path = strings.Trim(path, "\"")
-	path = strings.TrimPrefix(path, "a/")
-	path = strings.TrimPrefix(path, "b/")
+	// Git 的 diff.mnemonicPrefix 会按来源把默认 a/b 前缀替换成
+	// c（commit）、i（index）、w（worktree）或 o（object）。这些前缀
+	// 与 a/b 一样不属于仓库相对路径。
+	for _, prefix := range []string{"a/", "b/", "c/", "i/", "o/", "w/"} {
+		if strings.HasPrefix(path, prefix) {
+			path = strings.TrimPrefix(path, prefix)
+			break
+		}
+	}
 	if path == "" || path == "/dev/null" {
 		return "", nil
 	}

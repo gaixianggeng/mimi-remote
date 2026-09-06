@@ -81,8 +81,13 @@ type Router struct {
 	accountTokenUsageCacheTTL     time.Duration
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
+	mimiTaskClaimsMu              sync.Mutex
+	mimiTaskClaims                map[string]mimiTaskDynamicClaim
 	codexGatewayMu                sync.Mutex
-	activeCodexGateway            int
+	codexGatewayClosing           bool
+	codexGatewayNextID            uint64
+	codexGateways                 map[uint64]*codexGatewayConnection
+	codexGatewayWG                sync.WaitGroup
 	appServerSSH                  appServerSSHTransport
 	gatewayHistoryBudgetMu        sync.Mutex
 	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
@@ -91,6 +96,7 @@ type Router struct {
 	activeClaudeBridge            int
 	claudeBridge                  *claudeBridgeSupervisor
 	tailcat                       tailcatSidecar
+	managedPairing                managedPairingService
 	tailcatLocalToken             string
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
@@ -102,6 +108,7 @@ type Router struct {
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
+	shutdownOnce      sync.Once
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
@@ -111,6 +118,8 @@ type RouterOptions struct {
 	ConfigPath   string
 	AppServerSSH appServerSSHTransport
 	tailcat      tailcatSidecar
+	// managedPairing 只供同包测试注入；生产值使用官方控制面和本机 0600 状态。
+	managedPairing managedPairingService
 	// tailcatLocalToken 只供同包测试注入；生产值来自配置目录中的 0600 文件。
 	tailcatLocalToken string
 }
@@ -166,6 +175,10 @@ func NewRouterWithInstallationIDAndOptions(
 	if tailcat == nil {
 		tailcat = newTailcatSidecarSupervisor(cfg, options.ConfigPath)
 	}
+	managedPairing := options.managedPairing
+	if managedPairing == nil {
+		managedPairing = newDefaultManagedPairingController(options.ConfigPath, installationID, tailcat)
+	}
 	tailcatLocalToken := strings.TrimSpace(options.tailcatLocalToken)
 	if tailcatLocalToken == "" {
 		tailcatLocalToken, _ = ReadTailcatLocalControlToken(options.ConfigPath)
@@ -191,6 +204,7 @@ func NewRouterWithInstallationIDAndOptions(
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
+		codexGateways:               map[uint64]*codexGatewayConnection{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
@@ -198,6 +212,7 @@ func NewRouterWithInstallationIDAndOptions(
 		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
 		tailcat:                     tailcat,
+		managedPairing:              managedPairing,
 		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
 	}
@@ -205,6 +220,10 @@ func NewRouterWithInstallationIDAndOptions(
 		go func() {
 			if err := r.tailcat.Start(context.Background()); err != nil {
 				log.Printf("tailcat sidecar start failed: %v", err)
+				return
+			}
+			if r.managedPairing != nil {
+				r.managedPairing.Start()
 			}
 		}()
 	}
@@ -286,14 +305,24 @@ func (r *Router) Shutdown() {
 	if r == nil {
 		return
 	}
-	if r.autoThreadTitles != nil {
-		r.autoThreadTitles.Close()
-	}
-	r.runtimeStatus.Close()
-	r.claudeBridge.shutdown()
-	if r.tailcat != nil {
-		r.tailcat.Close()
-	}
+	r.shutdownOnce.Do(func() {
+		r.shutdownCodexGateways()
+		if r.autoThreadTitles != nil {
+			r.autoThreadTitles.Close()
+		}
+		if r.runtimeStatus != nil {
+			r.runtimeStatus.Close()
+		}
+		if r.claudeBridge != nil {
+			r.claudeBridge.shutdown()
+		}
+		if r.tailcat != nil {
+			if r.managedPairing != nil {
+				r.managedPairing.Close()
+			}
+			r.tailcat.Close()
+		}
+	})
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {

@@ -77,6 +77,98 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testMimiTaskCreateThreadRegistersToolsAndQueuesInitialPromptOnce() async throws {
+        let project = AgentProject(id: "shared-tools", name: "Shared Tools", path: "/tmp/shared-tools")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeSharedSSHConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        try await initializeFakeTransport(transport)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let caller = sharedIdleThreadJSON(id: "caller-tools", cwd: project.path)
+        let callerObject = try XCTUnwrap(
+            AgentAPIClient.decoder.decode(CodexAppServerJSONValue.self, from: Data(caller.utf8))["thread"]
+        )
+        let listResult = CodexAppServerJSONValue.object([
+            "data": .array([callerObject]),
+            "nextCursor": .null,
+        ])
+        transportResponse(
+            transport,
+            id: list.id,
+            result: String(decoding: try JSONEncoder().encode(listResult), as: UTF8.self)
+        )
+        _ = try await pageTask.value
+
+        transport.enqueue(#"{"id":"tool-create","method":"item/tool/call","params":{"namespace":"mimi_tasks","tool":"create_thread","callId":"call-create","threadId":"caller-tools","turnId":"turn-caller","arguments":{"prompt":"实现任务"}}}"#)
+        let start = try await waitForFakeAppServerRequest(transport, method: "thread/start")
+        XCTAssertNotNil(start.params?.objectValue?["dynamicTools"])
+        transportResponse(transport, id: start.id, result: sharedIdleThreadJSON(id: "child-tools", cwd: project.path))
+        // 当前共享队列必须先确认设置更新；确认前不能派发初始消息。
+        try await respondToSharedSettingsUpdate(transport)
+        let add = try await waitForFakeAppServerRequest(transport, method: "thread/queue/add")
+        XCTAssertEqual(add.params?.objectValue?["clientUserMessageId"]?.stringValue, "mimi-task-call-create")
+        transportResponse(
+            transport,
+            id: add.id,
+            result: #"{"queuedSubmission":{"id":"submission-tools","clientUserMessageId":"mimi-task-call-create"}}"#
+        )
+
+        let response = try await waitForFakeAppServerResponse(transport, id: .string("tool-create"))
+        XCTAssertEqual(response.result?.objectValue?["success"]?.boolValue, true)
+        let requests = await appServerRequests(transport)
+        XCTAssertEqual(requests.filter { $0.method == "thread/queue/add" }.count, 1)
+
+        let pendingTask = Task {
+            try await runtime.mimiTaskQueuedDeliveryTerminal(
+                sessionID: "child-tools",
+                clientMessageID: "mimi-task-call-create"
+            )
+        }
+        let pendingQueue = try await waitForFakeAppServerRequest(transport, method: "thread/queue/list")
+        transportResponse(
+            transport,
+            id: pendingQueue.id,
+            result: #"{"data":[{"id":"submission-tools","clientUserMessageId":"mimi-task-call-create"}],"nextCursor":null}"#
+        )
+        let pending = try await pendingTask.value
+        XCTAssertFalse(pending)
+
+        let terminalCursor = await transport.sentMessages().count
+        let terminalTask = Task {
+            try await runtime.mimiTaskQueuedDeliveryTerminal(
+                sessionID: "child-tools",
+                clientMessageID: "mimi-task-call-create"
+            )
+        }
+        let queueList = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/queue/list",
+            after: terminalCursor
+        )
+        transportResponse(transport, id: queueList.id, result: #"{"data":[],"nextCursor":null}"#)
+        let itemsList = try await waitForFakeAppServerRequest(transport, method: "thread/items/list")
+        transportResponse(
+            transport,
+            id: itemsList.id,
+            result: #"{"data":[{"turnId":"child-turn","item":{"type":"userMessage","clientId":"mimi-task-call-create"}}],"nextCursor":null}"#
+        )
+        let turnsList = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportResponse(
+            transport,
+            id: turnsList.id,
+            result: #"{"data":[{"id":"child-turn","status":"completed","items":[]}],"nextCursor":null}"#
+        )
+        let terminal = try await terminalTask.value
+        XCTAssertTrue(terminal)
+    }
+
     func testSharedSSHOpeningIdleThreadResumesToValidateWriter() async throws {
         let project = AgentProject(id: "shared-open", name: "Shared Open", path: "/tmp/shared-open")
         let transport = FakeCodexAppServerTransport()
@@ -1179,6 +1271,7 @@ private final class SharedQueueTestStore: QueuedTurnPersisting {
 
 private func initializeFakeTransport(_ transport: FakeCodexAppServerTransport) async throws {
     let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+    assertInitializeEnablesExperimentalAPI(initialize)
     transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
 }
 

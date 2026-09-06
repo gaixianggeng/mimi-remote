@@ -74,11 +74,30 @@ struct PairingTicket: Equatable {
             tailcatClientKey: tailcatClientKey
         )
     }
+
+    func managedClaimRequest(
+        tailcatClientKey: String,
+        pairingSessionID: String,
+        managedPairingGrant: String
+    ) -> PairingClaimRequest {
+        PairingClaimRequest(
+            endpoint: endpoint,
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            pairSignature: pairSignature,
+            tailcatClientKey: tailcatClientKey,
+            managedPairingSessionID: pairingSessionID,
+            managedPairingGrant: managedPairingGrant
+        )
+    }
 }
 
 struct TailcatPairingLink: Equatable {
     let ticket: PairingTicket
     let pairAddress: String
+    let managedMacInstallationID: String?
+    let managedMacTailcatPublicKey: String?
+    let managedPairTailcatPublicKey: String?
 
     @MainActor
     static func parse(_ url: URL) throws -> TailcatPairingLink? {
@@ -95,7 +114,29 @@ struct TailcatPairingLink: Equatable {
         guard !pairAddress.isEmpty else {
             throw PairingLinkError.missingTailcatAddress
         }
-        return TailcatPairingLink(ticket: ticket, pairAddress: pairAddress)
+        let managedMacInstallationID = components?.queryItems?
+            .first(where: { $0.name == "managed_mac_installation_id" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let managedMacTailcatPublicKey = components?.queryItems?
+            .first(where: { $0.name == "managed_mac_tailcat_public_key" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let managedPairTailcatPublicKey = components?.queryItems?
+            .first(where: { $0.name == "managed_pair_tailcat_public_key" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasManagedInstallationID = !(managedMacInstallationID ?? "").isEmpty
+        let hasManagedPublicKey = !(managedMacTailcatPublicKey ?? "").isEmpty
+        let hasManagedPairPublicKey = !(managedPairTailcatPublicKey ?? "").isEmpty
+        guard hasManagedInstallationID == hasManagedPublicKey,
+              !hasManagedPairPublicKey || hasManagedInstallationID else {
+            throw PairingLinkError.unsupportedURL
+        }
+        return TailcatPairingLink(
+            ticket: ticket,
+            pairAddress: pairAddress,
+            managedMacInstallationID: hasManagedInstallationID ? managedMacInstallationID : nil,
+            managedMacTailcatPublicKey: hasManagedPublicKey ? managedMacTailcatPublicKey : nil,
+            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil
+        )
     }
 }
 
@@ -154,7 +195,7 @@ struct ConnectionTestStageTiming: Identifiable, Equatable {
     }
 }
 
-enum ConnectionTestRoute: String, CaseIterable, Equatable {
+enum ConnectionTestRoute: String, CaseIterable, Codable, Equatable {
     case tailscale
     case tailcat
 }

@@ -287,17 +287,37 @@ func TestValidateRejectsNonSSHAppServer(t *testing.T) {
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
 	cfg.AppServer.Transport = "ws"
 	cfg.AppServer.Managed = true
-	cfg.AppServer.Listen = DefaultWindowsAppServerListen()
+	cfg.AppServer.Listen = DefaultManagedAppServerListen()
 	cfg.AppServer.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
 
 	err := cfg.Validate()
-	if runtime.GOOS == "windows" {
+	if SupportsManagedAppServer() {
 		if err != nil {
 			t.Fatalf("Windows 应允许受管 loopback WebSocket：%v", err)
 		}
-	} else if err == nil || !strings.Contains(err.Error(), "只支持 Windows") {
+	} else if err == nil || !strings.Contains(err.Error(), "Windows") {
 		t.Fatalf("非 Windows 必须拒绝本机 WebSocket：%v", err)
+	}
+}
+
+func TestValidateSharedLocalAppServerOnlyOnLinux(t *testing.T) {
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.AppServer = DefaultSharedLocalAppServerConfig()
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+
+	err := cfg.Validate()
+	if runtime.GOOS == "linux" {
+		if err != nil {
+			t.Fatalf("Linux 应允许共享本机 control socket：%v", err)
+		}
+		cfg.AppServer.Listen = DefaultManagedAppServerListen()
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "不能混用") {
+			t.Fatalf("local transport 不得混用 WebSocket 字段：%v", err)
+		}
+	} else if err == nil || !strings.Contains(err.Error(), "Linux") {
+		t.Fatalf("非 Linux 必须拒绝 local transport：%v", err)
 	}
 }
 

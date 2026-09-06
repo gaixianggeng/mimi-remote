@@ -96,7 +96,6 @@ struct SettingsView: View {
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     @State private var didApplyDebugLaunchRoute = false
     @State private var showsConnectionManagement = false
 
@@ -115,31 +114,6 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
-        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
-        // 重建，但不会再销毁负责呈现相机的宿主。
-        .fullScreenCover(
-            item: $qrScannerPresentation.intent,
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: {
-                    qrScannerPresentation.chooseManualConnection(for: intent)
-                },
-                onCode: { rawValue in
-                    await qrScannerPresentation.submit(rawValue, intent: intent)
-                }
-            )
-        }
-        // 重命名路由固定由设置根层持有，Form.Section 刷新不会销毁唯一的 sheet presenter。
-        .sheet(
-            item: profileRenameRouteBinding,
-            onDismiss: { profileRenamePresentation.dismiss() }
-        ) { route in
-            ConnectionProfileRenameSheet(route: route) { displayName in
-                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
-            }
-        }
         .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
@@ -150,26 +124,19 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                InitialPairingView(
-                    qrScannerPresentation: qrScannerPresentation,
-                    onRequestProfileRename: { profileRenamePresentation.present($0) }
-                )
+                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
+                    .navigationTitle("")
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
-        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
-        // 顶部再来一个同名大标题只是白占一屏高度。
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
-        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
+        .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionManagementView(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: { profileRenamePresentation.present($0) }
-            )
+            ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
         }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -188,11 +155,6 @@ struct SettingsView: View {
         .environment(\.colorScheme, resolvedColorScheme)
     }
 
-    private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
-        // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
-        horizontalSizeClass == .compact ? .large : .inline
-    }
-
     private func applyDebugLaunchRouteIfNeeded() {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
@@ -204,18 +166,6 @@ struct SettingsView: View {
             showsConnectionManagement = true
         }
 #endif
-    }
-
-    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
-        Binding(
-            get: { profileRenamePresentation.route },
-            set: { route in
-                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
-                if route == nil {
-                    profileRenamePresentation.dismiss()
-                }
-            }
-        )
     }
 
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
@@ -296,6 +246,23 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.connectionManagement")
             } header: {
                 sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
+            }
+
+            Section {
+                NavigationLink {
+                    ManagedConnectionSubscriptionView(
+                        qrScannerPresentation: qrScannerPresentation
+                    )
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.managed_subscription_title"),
+                        systemImage: "creditcard"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.managedSubscription")
+            } header: {
+                sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
             }
 
             Section {
@@ -555,9 +522,7 @@ struct SettingsValueLabel: View {
     var value: String? = nil
     let systemImage: String
     var valueTint: Color? = nil
-    var symbolTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
-    var showsProgress = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -566,7 +531,7 @@ struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(symbolTint ?? tokens.secondaryText)
+                .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
@@ -576,13 +541,13 @@ struct SettingsValueLabel: View {
             if dynamicTypeSize.isAccessibilitySize, let value {
                 VStack(alignment: .leading, spacing: 2) {
                     titleText(tokens: tokens)
-                    valueCluster(value, tokens: tokens)
+                    valueText(value, tokens: tokens)
                 }
             } else if let value {
                 HStack(alignment: .center, spacing: 12) {
                     titleText(tokens: tokens)
                     Spacer(minLength: 12)
-                    valueCluster(value, tokens: tokens)
+                    valueText(value, tokens: tokens)
                 }
             } else {
                 titleText(tokens: tokens)
@@ -616,51 +581,10 @@ struct SettingsValueLabel: View {
             .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
     }
 
-    private func valueCluster(_ value: String, tokens: ThemeTokens) -> some View {
-        HStack(spacing: 6) {
-            if showsProgress {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(valueTint ?? tokens.secondaryText)
-            }
-            valueText(value, tokens: tokens)
-        }
-    }
-
     private var rowHeight: CGFloat {
         dynamicTypeSize.isAccessibilitySize
             ? SettingsLayoutMetrics.accessibilityRowHeight
             : SettingsLayoutMetrics.standardRowHeight
-    }
-}
-
-private struct ConnectionManagementView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
-    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
-    @EnvironmentObject private var themeStore: ThemeStore
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
-
-    var body: some View {
-        Form {
-            InitialConnectionSettingsSections(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
-            )
-        }
-        .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
-        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
-        .contentMargins(
-            .bottom,
-            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
-            for: .scrollContent
-        )
-        .navigationTitle(L10n.text("ui.mac_connection"))
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1074,17 +998,12 @@ struct AccountTokenUsageCard: View {
         )
     }
 
-    /// caption 只在 empty 与 stale 两种状态下有文字。此前无论哪种状态都留着这块
-    /// 空间，代价是常态（loaded）里卡片底部常驻约 20pt 空白——用每次都付的留白，
-    /// 换一次很少发生的跳变。而最频繁的 loading → loaded 两端本就都没有 caption，
-    /// 原本也不会跳；真正会改变高度的只有 empty/stale 之间的切换，那一刻界面本就该变。
-    /// 候选文案的等高测量保留在有 caption 的分支内，两条 caption 互相切换时仍然不跳。
+    // 没有提示文字时不保留空白；loading 与 loaded 仍同高，empty/stale 出现时才增加提示区。
     @ViewBuilder
     private func activityCaptionArea(tokens: ThemeTokens) -> some View {
         if let caption = activityCaptionText {
             ZStack(alignment: .topLeading) {
-                // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
-                // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
+                // 测量候选本地化文案，避免提示切换跳高或大字号被固定高度裁切。
                 ForEach(
                     Array(activityCaptionCandidates.enumerated()),
                     id: \.offset

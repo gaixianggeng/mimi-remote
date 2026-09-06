@@ -1690,6 +1690,7 @@ enum MessageKind: String, Codable, Hashable {
 enum MessageSendStatus: String, Codable, Hashable {
     case local
     case sending
+    case uncertain
     case sent
     case failed
     case confirmed

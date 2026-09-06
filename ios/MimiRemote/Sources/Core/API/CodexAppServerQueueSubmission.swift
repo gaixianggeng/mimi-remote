@@ -158,6 +158,50 @@ extension CodexAppServerSessionRuntime {
         }
         return nil
     }
+
+    func mimiTaskQueuedDeliveryTerminal(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) async throws -> Bool {
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        let config = try await ensureConfig()
+        for method in ["thread/queue/list", "thread/items/list", "thread/turns/list"]
+        where !config.policy.allowedMethods.contains(method) {
+            throw CodexAppServerSessionRuntimeError.serverQueueUnavailable(method)
+        }
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(config.projects, context: context)
+        )
+        let connection = try await ensureConnection()
+        try await ensureThreadResumedOnConnection(
+            sessionID: sessionID,
+            cwd: context.cwd,
+            builder: builder,
+            connection: connection
+        )
+        if try await queuedSubmissionID(
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            builder: builder,
+            connection: connection
+        ) != nil {
+            return false
+        }
+        guard let turnID = try await persistedUserItemTurnID(
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            builder: builder,
+            connection: connection
+        ) else { return false }
+        return try await listedTurnIsTerminal(
+            sessionID: sessionID,
+            turnID: turnID,
+            builder: builder,
+            connection: connection
+        )
+    }
 }
 
 private enum SharedServerQueueReconciliation {
@@ -256,5 +300,31 @@ private extension CodexAppServerSessionRuntime {
             cursor = object["nextCursor"]?.stringValue
         } while cursor?.isEmpty == false
         return nil
+    }
+
+    func listedTurnIsTerminal(
+        sessionID: SessionID,
+        turnID: TurnID,
+        builder: CodexAppServerRequestBuilder,
+        connection: CodexAppServerConnection
+    ) async throws -> Bool {
+        var cursor: String?
+        repeat {
+            let result = try await connection.send(
+                builder.threadTurnsList(threadID: sessionID, cursor: cursor),
+                timeout: longRunningRequestTimeout
+            )
+            let object = result?.objectValue ?? [:]
+            for turn in object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            where turn["id"]?.stringValue == turnID {
+                let status = turn["status"]?.stringValue
+                    ?? turn["status"]?.objectValue?["type"]?.stringValue
+                    ?? ""
+                return ["completed", "failed", "cancelled", "canceled", "interrupted"]
+                    .contains(status.lowercased())
+            }
+            cursor = object["nextCursor"]?.stringValue
+        } while cursor?.isEmpty == false
+        return false
     }
 }

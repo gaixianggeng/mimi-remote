@@ -16,6 +16,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
             app.launchArguments.append("--debug-seed-mcp-approval-ui")
         }
+        if name.contains("InPortrait") {
+            // 用户报告的场景是已经保存过电脑之后再操作；空档案页的入口层级不同。
+            app.launchArguments.append("--debug-seed-store-ui")
+        }
         if name.contains("testWideIPadFloatingSidebarDragDoesNotStealSessionRowGestures") {
             // 13-inch iPad 竖屏仍是 regular width，同时避开横屏自由窗口对屏幕左缘拖动的系统仲裁。
             XCUIDevice.shared.orientation = .portrait
@@ -57,6 +61,60 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         app.descendant(identifier: "qrScanner.close").tap()
     }
 
+    /// 竖屏紧凑布局把连接页放进 Tab 导航栈；这里用真实点按守住扫码主操作，
+    /// 视觉快照只能证明按钮画在哪里，不能证明它还能拉起扫码页（MIM-105）。
+    func testConnectionScanButtonPresentsScannerInPortrait() throws {
+        XCUIDevice.shared.orientation = .portrait
+
+        try openConnectionSettings()
+
+        let scan = app.descendant(identifier: "settings.connection.scanQRCode")
+        XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "连接设置页应提供二维码扫码入口")
+        XCTAssertTrue(scan.isHittable, "竖屏下扫码按钮必须留在可命中的区域内")
+
+        installCameraPermissionMonitor()
+        XCTAssertTrue(scan.isEnabled, "扫码按钮不能停留在禁用态")
+        scan.tap()
+        handleCameraPermissionIfPresented()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "qrScanner.close").waitForExistence(timeout: 15),
+            "竖屏点击扫码后必须展示扫码页"
+        )
+    }
+
+    /// 重命名 sheet 和扫码 Cover 是同一类宿主问题：竖屏把连接页 push 进导航栈后，
+    /// 挂在设置根层的 presenter 不在被呈现的层级里（MIM-105 / MIM-63）。
+    func testSavedComputerRenameSheetPresentsInPortrait() throws {
+        XCUIDevice.shared.orientation = .portrait
+
+        try openConnectionSettings()
+
+        let manageMenu = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "管理", "Management")
+        ).firstMatch
+        XCTAssertTrue(manageMenu.waitForExistence(timeout: 8), "已保存的电脑应提供更多操作菜单")
+        manageMenu.tap()
+
+        let rename = app.descendant(identifier: "settings.profile.rename.debug-store-primary")
+        XCTAssertTrue(rename.waitForExistence(timeout: 8), "更多操作菜单应提供重命名")
+        rename.tap()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.profile.rename.name").waitForExistence(timeout: 10),
+            "竖屏点击重命名后必须展示重命名弹窗"
+        )
+    }
+
+    private func openConnectionSettings() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let connection = app.descendant(identifier: "settings.connectionManagement")
+        XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
+        connection.tap()
+    }
+
     private func openHostInstaller() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
@@ -65,9 +123,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供电脑连接管理入口")
         connection.tap()
 
+        let installerDisclosure = app.descendant(identifier: "settings.hostInstaller.disclosure")
+        XCTAssertTrue(
+            scrollUntilHittable(installerDisclosure),
+            "连接设置页应提供折叠的电脑安装说明"
+        )
+        installerDisclosure.tap()
         XCTAssertTrue(
             app.descendant(identifier: "settings.hostInstaller.platform").waitForExistence(timeout: 8),
-            "未配对时连接管理页应展示电脑平台选择器"
+            "展开安装说明后应展示电脑平台选择器"
         )
     }
 
@@ -832,8 +896,13 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let workspaceBrowser = app.descendant(identifier: "workspace.browser")
         XCTAssertTrue(workspaceBrowser.waitForExistence(timeout: 10), "工作区内容应保持可访问")
 
-        let session = app.descendant(identifier: "workspace.session.debug-session-layout")
-        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Debug 会话入口")
+        let claudeRuntime = app.descendant(identifier: "workspace.sessions.runtime.claude")
+        XCTAssertTrue(claudeRuntime.waitForExistence(timeout: 8), "工作区应提供 Claude Runtime 标签")
+        claudeRuntime.tap()
+        XCTAssertTrue(claudeRuntime.isSelected, "Claude Runtime 标签应进入选中态")
+
+        let session = app.descendant(identifier: "workspace.session.debug-session-claude")
+        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Claude Debug 会话入口")
         session.tap()
 
         let workspaceBack = app.descendant(identifier: "sessionDetail.workspaceBack")
@@ -873,6 +942,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             workspaceBack.waitForNonExistence(timeout: 8),
             "回到工作区后不应残留会话详情返回按钮"
         )
+        XCTAssertTrue(claudeRuntime.isSelected, "返回工作区后应保留进入详情前的 Claude Runtime 标签")
         if showSidebar.exists {
             // 恢复共享的 SceneStorage 状态，避免影响后续 UI 用例。
             showSidebar.tap()
@@ -1123,30 +1193,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 扫码页关闭后会回到连接管理页。优先复用当前页面的入口，避免为了第二次
         // 拉起扫码器又退回工作台并重新进入设置，降低实体机导航差异带来的误报。
         let currentConnectionScan = app.descendant(identifier: "settings.connection.scanQRCode")
-        let firstSetupScan = app.descendant(identifier: "settings.hostInstaller.scan")
         if currentConnectionScan.exists, currentConnectionScan.isHittable {
             currentConnectionScan.tap()
-        } else if firstSetupScan.exists, firstSetupScan.isHittable {
-            firstSetupScan.tap()
         } else {
             try enterWorkbenchIfNeeded()
             try openSettings()
             let connection = app.descendant(identifier: "settings.connectionManagement")
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
-            // 配对完成后扫码入口收在「添加电脑」的折叠区里，要先展开；首次配对则直接铺在页面上。
-            let addMac = app.descendant(identifier: "settings.connection.addMac")
-            if scrollUntilHittable(addMac, maximumSwipes: 4) {
-                addMac.tap()
-            }
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-            let setupScan = app.descendant(identifier: "settings.hostInstaller.scan")
-            if scrollUntilHittable(scan, maximumSwipes: 4) {
-                scan.tap()
-            } else {
-                XCTAssertTrue(scrollUntilHittable(setupScan), "连接管理页应提供二维码扫码入口")
-                setupScan.tap()
-            }
+            XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "连接设置页应提供二维码扫码入口")
+            scan.tap()
         }
 
         handleCameraPermissionIfPresented()

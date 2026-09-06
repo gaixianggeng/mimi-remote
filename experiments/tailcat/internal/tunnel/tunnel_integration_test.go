@@ -31,18 +31,25 @@ func TestTailcatCarriesAgentdHTTPWebSocketAndBinaryTraffic(t *testing.T) {
 
 	derpMap := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
 	temporary := t.TempDir()
-	clientIdentityPath := filepath.Join(temporary, "client.json")
-	clientPrivate, err := LoadOrCreateClientIdentity(clientIdentityPath)
-	if err != nil {
-		t.Fatal(err)
+	clientIdentityPaths := []string{
+		filepath.Join(temporary, "client-1.json"),
+		filepath.Join(temporary, "client-2.json"),
+	}
+	allowedClientKeys := make([]string, 0, len(clientIdentityPaths))
+	for _, identityPath := range clientIdentityPaths {
+		clientPrivate, err := LoadOrCreateClientIdentity(identityPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowedClientKeys = append(allowedClientKeys, clientPrivate.Public().String())
 	}
 	hostConfig := HostConfig{
-		TargetAddr:       backendURL.Host,
-		RemotePort:       8787,
-		IdentityPath:     filepath.Join(temporary, "host.json"),
-		AddressPath:      filepath.Join(temporary, "address"),
-		AllowedClientKey: clientPrivate.Public().String(),
-		Region:           derpMap.Regions[1],
+		TargetAddr:        backendURL.Host,
+		RemotePort:        8787,
+		IdentityPath:      filepath.Join(temporary, "host.json"),
+		AddressPath:       filepath.Join(temporary, "address"),
+		AllowedClientKeys: allowedClientKeys,
+		Region:            derpMap.Regions[1],
 	}
 
 	host, err := StartHost(hostConfig)
@@ -50,10 +57,16 @@ func TestTailcatCarriesAgentdHTTPWebSocketAndBinaryTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := host.Address()
-	forwarder := startTestForwarder(t, address, clientIdentityPath)
-	assertAgentdTraffic(t, forwarder.Endpoint())
-	if err := forwarder.Close(); err != nil {
-		t.Fatal(err)
+	forwarders := make([]*Forwarder, 0, len(clientIdentityPaths))
+	for _, identityPath := range clientIdentityPaths {
+		forwarder := startTestForwarder(t, address, identityPath)
+		forwarders = append(forwarders, forwarder)
+		assertAgentdTraffic(t, forwarder.Endpoint())
+	}
+	for _, forwarder := range forwarders {
+		if err := forwarder.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := host.Close(); err != nil {
 		t.Fatal(err)
@@ -68,11 +81,14 @@ func TestTailcatCarriesAgentdHTTPWebSocketAndBinaryTraffic(t *testing.T) {
 	if restartedHost.Address() != address {
 		t.Fatalf("服务端重启后地址变化：got %q, want %q", restartedHost.Address(), address)
 	}
-	restartedForwarder := startTestForwarder(t, address, clientIdentityPath)
-	defer restartedForwarder.Close()
-	assertAuthorizedRequest(t, restartedForwarder.Endpoint())
+	for _, identityPath := range clientIdentityPaths {
+		restartedForwarder := startTestForwarder(t, address, identityPath)
+		defer restartedForwarder.Close()
+		assertAuthorizedRequest(t, restartedForwarder.Endpoint())
+	}
 
-	for _, path := range []string{hostConfig.IdentityPath, hostConfig.AddressPath, clientIdentityPath} {
+	privatePaths := append([]string{hostConfig.IdentityPath, hostConfig.AddressPath}, clientIdentityPaths...)
+	for _, path := range privatePaths {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
