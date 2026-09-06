@@ -2081,6 +2081,7 @@ extension SessionStore {
                 fillsPresentationWindow: fillsPresentationWindow,
                 allowsAdaptiveOversampling: consistency == .authoritative
             )
+            let archiveSnapshot = archiveReconciliationSnapshot(consistency: consistency)
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
@@ -2093,6 +2094,7 @@ extension SessionStore {
                   isRequestCurrent?() != false else {
                 throw CancellationError()
             }
+            reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
             pagesScanned += 1
             lastPage = page
 

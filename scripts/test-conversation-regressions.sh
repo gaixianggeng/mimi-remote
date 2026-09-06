@@ -105,6 +105,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkbenchRestorationRouteRejectsSnapshotFromDifferentEndpoint \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testColdStartResolvedCandidateCannotCommitAfterUserSelectsAnotherSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState \
+  -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveFailureRollsBackPinnedStateOrderingAndPreservesProjections \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testUnarchiveFailureRollsBackToArchivedVisibility \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivePendingSuppressesDuplicateButAllowsDifferentSessionsConcurrently \
