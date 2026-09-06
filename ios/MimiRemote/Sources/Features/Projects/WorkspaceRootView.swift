@@ -1150,7 +1150,7 @@ struct WorkspaceRootView: View {
         )
     }
 
-    private func refreshCatalog(forceGitSummary: Bool = false) async {
+    private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
         let invocationID = catalogLoad.begin()
         do {
             try await sessionStore.refreshWorkspaceCatalog()
@@ -1170,9 +1170,14 @@ struct WorkspaceRootView: View {
                 result: .loaded,
                 hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
             )
+            // 下拉只服务会话列表，不碰 Git。每个工作区的摘要都要在 Mac 上启动
+            // 5~6 个 git 子进程，其中 `status --porcelain` 还要遍历整个工作树；
+            // 放进下拉路径就会和用户随后的“加载更多”抢同一个 agentd 与同一条链路。
+            // 变更数由回合结束后的定向刷新负责，工作区页重新出现时仍按 TTL 补齐。
+            guard refreshesGitSummaries else { return }
             await sessionStore.refreshWorkspaceGitSummaries(
                 for: sessionStore.sidebarProjects,
-                force: forceGitSummary
+                force: false
             )
         } catch {
             catalogLoad.complete(
@@ -1196,9 +1201,11 @@ struct WorkspaceRootView: View {
             project: project,
             presentationKey: presentationKey
         )
-        guard !Task.isCancelled,
-              appStore.activeHostScope == presentationKey.hostScope else { return }
-        // 下拉完成只等待会话；同一页面尚未完成的目录/Git 请求直接复用。
+        // 目录同步要活过这次下拉手势本身，所以不能用 refreshable 任务的取消状态当门槛：
+        // 指示器结束时这个任务就会被取消，拿它当条件会让后台同步永远起不来。
+        // 页面离开和 Host 切换由 onDisappear 与 onChange 取消后台任务，语义不受影响。
+        guard appStore.activeHostScope == presentationKey.hostScope else { return }
+        // 下拉完成只等待会话；目录同步在后台补齐，同一页面尚未完成的请求直接复用。
         startManualCatalogRefresh(hostScope: presentationKey.hostScope)
     }
 
@@ -1272,7 +1279,7 @@ struct WorkspaceRootView: View {
                 manualCatalogRefreshInvocationID = nil
                 return
             }
-            await refreshCatalog(forceGitSummary: true)
+            await refreshCatalog(refreshesGitSummaries: false)
             // 被取消的旧任务可能晚于新任务返回，只允许当前 owner 清理句柄。
             guard manualCatalogRefreshInvocationID == invocationID else { return }
             manualCatalogRefreshTask = nil
