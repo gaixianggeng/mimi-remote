@@ -39986,8 +39986,8 @@
     "ui.managed_subscription_price_period": {
       "comment": "Localized StoreKit price followed by its localized billing period.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "%1$@ / %2$@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@ / %2$@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "%1$@/%2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$@/%2$@" } }
       }
     },
     "ui.managed_subscription_product_unavailable": {

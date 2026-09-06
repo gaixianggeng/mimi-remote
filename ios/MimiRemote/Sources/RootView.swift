@@ -43,10 +43,14 @@ struct RootView: View {
             // StoreKit 当前权益是冷启动与回到前台时的本地事实入口。
             // 只有发现 Apple 已验证的交易后，Store 才会把两份签名 JWS 发给权益服务。
             await managedConnectionEntitlementStore.refreshEntitlement()
+            await managedConnectionEntitlementStore.refreshProducts()
         }
         .task {
             // 从 App 启动开始监听未完成和后续交易；任务随 RootView 生命周期取消。
             await managedConnectionEntitlementStore.observeTransactionUpdates()
+        }
+        .task {
+            await managedConnectionEntitlementStore.observeStorefrontUpdates()
         }
         .task(id: managedConnectionEntitlementStore.currentGrant?.tokenExpiresAt) {
             // App 长时间停留前台时，也要在短期 Token 到期前主动续期。

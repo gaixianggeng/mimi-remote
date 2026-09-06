@@ -42,6 +42,7 @@ enum ManagedConnectionTransactionUpdate: Equatable, Sendable {
 
 protocol ManagedConnectionStoreKitClient: Sendable {
     func products() async throws -> [ManagedConnectionProduct]
+    func storefrontUpdates() -> AsyncStream<Void>
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome
     func currentEntitlement(productID: String) async -> ManagedConnectionCurrentEntitlementOutcome
     func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate>
@@ -51,12 +52,10 @@ protocol ManagedConnectionStoreKitClient: Sendable {
 }
 
 actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
-    private var productsByID: [String: Product] = [:]
     private var unfinishedTransactions: [UInt64: Transaction] = [:]
 
     func products() async throws -> [ManagedConnectionProduct] {
         let products = try await Product.products(for: ManagedConnectionProductID.all)
-        productsByID = Dictionary(uniqueKeysWithValues: products.map { ($0.id, $0) })
 
         var result: [ManagedConnectionProduct] = []
         for product in products {
@@ -76,7 +75,10 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
                     id: product.id,
                     displayName: product.displayName,
                     displayPrice: product.displayPrice,
-                    displayPeriod: Self.displayPeriod(subscription.subscriptionPeriod, product: product),
+                    // 两个商品均按单月或单年计费；计费行只显示单位，试用期仍保留完整时长。
+                    displayPeriod: subscription.subscriptionPeriod.unit.formatted(
+                        product.subscriptionPeriodUnitFormatStyle
+                    ),
                     isEligibleForTrial: eligible && freeTrialOffer != nil,
                     displayTrialPeriod: trialPeriod
                 )
@@ -88,16 +90,24 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
         }
     }
 
-    func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {
-        let product: Product
-        if let cached = productsByID[productID] {
-            product = cached
-        } else {
-            guard let loaded = try await Product.products(for: [productID]).first else {
-                throw ManagedConnectionStoreKitError.productUnavailable
+    nonisolated func storefrontUpdates() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let listener = Task {
+                for await _ in Storefront.updates {
+                    // StoreKit 商品包含商店地区对应的价格和优惠资格，地区变化后通知上层重新加载。
+                    continuation.yield(())
+                }
+                continuation.finish()
             }
-            productsByID[productID] = loaded
-            product = loaded
+            continuation.onTermination = { _ in
+                listener.cancel()
+            }
+        }
+    }
+
+    func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {
+        guard let product = try await Product.products(for: [productID]).first else {
+            throw ManagedConnectionStoreKitError.productUnavailable
         }
 
         switch try await product.purchase() {

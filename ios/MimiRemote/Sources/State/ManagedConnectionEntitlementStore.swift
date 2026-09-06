@@ -30,6 +30,9 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     private let now: () -> Date
     private let sleepUntil: @Sendable (Date) async throws -> Void
     private var operationGeneration = 0
+    private var productGeneration = 0
+    // 购买等待期间仍须处理撤销事件，因此用计数覆盖这两个操作的重叠区间。
+    @Published private var activeTransactionOperations = 0
 
     init(
         storeKit: any ManagedConnectionStoreKitClient,
@@ -49,25 +52,52 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     func load() async {
-        let generation = beginOperation()
+        let generation = operationGeneration
         let previousGrant = usableCurrentGrant
         let previousStatus = status
-        status = .loading
+        if activeTransactionOperations == 0 { status = .loading }
         do {
-            let loadedProducts = try await storeKit.products()
-            guard isLatest(generation) else { return }
-            products = loadedProducts
-            await refreshEntitlement(generation: generation)
+            try await reloadProducts()
+            guard isLatest(generation), activeTransactionOperations == 0 else { return }
+            await refreshEntitlement()
         } catch is CancellationError {
-            guard isLatest(generation) else { return }
+            guard isLatest(generation), activeTransactionOperations == 0 else { return }
             restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
         } catch {
-            guard isLatest(generation) else { return }
+            guard isLatest(generation), activeTransactionOperations == 0 else { return }
             restore(previousGrant, otherwise: .failed(userFacingMessage(for: error)))
         }
     }
 
+    func refreshProducts() async {
+        guard productGeneration > 0 else { return }
+        // 商品刷新失败保留已显示的价格；它不能清除已确认的订阅权益。
+        try? await reloadProducts()
+    }
+
+    func observeStorefrontUpdates() async {
+        for await _ in storeKit.storefrontUpdates() {
+            guard !Task.isCancelled else { return }
+            await refreshProducts()
+        }
+    }
+
+    private func reloadProducts() async throws {
+        productGeneration &+= 1
+        let generation = productGeneration
+        do {
+            let loadedProducts = try await storeKit.products()
+            guard generation == productGeneration else { return }
+            products = loadedProducts
+        } catch {
+            guard generation == productGeneration else { return }
+            throw error
+        }
+    }
+
     func refreshEntitlement() async {
+        // 系统支付/恢复弹窗也会触发前台刷新；普通读取不能抢占交易处理。
+        guard activeTransactionOperations == 0 else { return }
         let generation = beginOperation()
         await refreshEntitlement(generation: generation)
     }
@@ -80,6 +110,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             switch update {
             case .verified(let evidence):
                 await resolveTransactionUpdate(evidence)
+                await refreshProducts()
             case .unverified:
                 // 未验证事件本身不能改变权益；重新读取 Apple 当前已验证权益。
                 await refreshEntitlement()
@@ -118,6 +149,8 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     private func resolveTransactionUpdate(_ evidence: ManagedConnectionTransactionEvidence) async {
+        activeTransactionOperations += 1
+        defer { activeTransactionOperations -= 1 }
         let generation = beginOperation()
         let previousGrant = usableCurrentGrant
         status = .resolving
@@ -183,7 +216,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     func purchase(productID: String) async {
-        guard ManagedConnectionProductID.all.contains(productID) else { return }
+        guard activeTransactionOperations == 0,
+              ManagedConnectionProductID.all.contains(productID) else { return }
+        await performPurchase(productID: productID)
+        await refreshProducts()
+    }
+
+    private func performPurchase(productID: String) async {
+        activeTransactionOperations += 1
+        defer { activeTransactionOperations -= 1 }
         let generation = beginOperation()
         let previousGrant = usableCurrentGrant
         let previousStatus = status
@@ -228,6 +269,14 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     func restorePurchases() async {
+        guard activeTransactionOperations == 0 else { return }
+        await performRestore()
+        await refreshProducts()
+    }
+
+    private func performRestore() async {
+        activeTransactionOperations += 1
+        defer { activeTransactionOperations -= 1 }
         let generation = beginOperation()
         let previousGrant = usableCurrentGrant
         let previousStatus = status
@@ -247,7 +296,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     var isBusy: Bool {
-        status == .loading || status == .resolving
+        activeTransactionOperations > 0 || status == .loading || status == .resolving
     }
 
     func managementPurchaseEvidence() async throws -> ManagedConnectionPurchaseEvidence {
@@ -339,7 +388,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     private func restore(_ grant: ManagedConnectionEntitlementGrant?, otherwise status: Status) {
-        if let grant {
+        if let grant, grant.entitlement.expiresAt > now(), grant.tokenExpiresAt > now() {
             currentGrant = grant
             self.status = .entitled(grant.entitlement)
         } else {

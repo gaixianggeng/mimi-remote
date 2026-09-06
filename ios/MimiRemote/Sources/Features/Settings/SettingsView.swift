@@ -248,21 +248,23 @@ struct SettingsView: View {
                 sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
-            Section {
-                NavigationLink {
-                    ManagedConnectionSubscriptionView(
-                        qrScannerPresentation: qrScannerPresentation
-                    )
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.managed_subscription_title"),
-                        systemImage: "creditcard"
-                    )
+            if ManagedConnectionSubscriptionView.isEntryVisible {
+                Section {
+                    NavigationLink {
+                        ManagedConnectionSubscriptionView(
+                            qrScannerPresentation: qrScannerPresentation
+                        )
+                    } label: {
+                        SettingsValueLabel(
+                            title: L10n.text("ui.managed_subscription_title"),
+                            systemImage: "creditcard"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.managedSubscription")
+                } header: {
+                    sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
                 }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.managedSubscription")
-            } header: {
-                sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
             }
 
             Section {

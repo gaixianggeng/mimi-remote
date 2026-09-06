@@ -319,19 +319,21 @@ struct InitialConnectionSettingsSections: View {
             }
 
             Section {
-                NavigationLink {
-                    ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
-                } label: {
-                    ConnectionRowLabel(
-                        title: L10n.text("ui.managed_subscription_title"),
-                        value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
-                            ? tailcatController.state.connectionMethodSummary
-                            : L10n.text("ui.managed_connection_recommended_value"),
-                        systemImage: "network"
-                    )
+                if ManagedConnectionSubscriptionView.isEntryVisible {
+                    NavigationLink {
+                        ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+                    } label: {
+                        ConnectionRowLabel(
+                            title: L10n.text("ui.managed_subscription_title"),
+                            value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
+                                ? tailcatController.state.connectionMethodSummary
+                                : L10n.text("ui.managed_connection_recommended_value"),
+                            systemImage: "network"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.connection.managedConnection")
                 }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.connection.managedConnection")
 
                 if appStore.isConfigured && appStore.activeConnectionProfile?.connectionRoute.isManaged != true {
                     NavigationLink {

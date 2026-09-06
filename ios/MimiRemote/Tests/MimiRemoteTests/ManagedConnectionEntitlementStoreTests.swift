@@ -4,6 +4,214 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionEntitlementStoreTests: XCTestCase {
+    func testForegroundRefreshAndPageLoadCannotDiscardPurchaseSuccess() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setPurchase(.success(Self.evidence))
+        await storeKit.pausePurchase()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        let store = ManagedConnectionEntitlementStore(storeKit: storeKit, entitlementAPI: api)
+        let purchase = Task { await store.purchase(productID: ManagedConnectionProductID.monthly) }
+        await waitUntil { await storeKit.isPurchasePaused }
+
+        await store.refreshEntitlement()
+        await store.load()
+        XCTAssertEqual(store.status, .resolving)
+        XCTAssertTrue(store.isBusy)
+        await storeKit.resumePurchase()
+        await purchase.value
+
+        let resolveCount = await api.resolveCount
+        let finished = await storeKit.finishedTransactionIDs
+        XCTAssertEqual(store.currentGrant, Self.grant)
+        XCTAssertEqual(store.status, .entitled(Self.grant.entitlement))
+        XCTAssertEqual(resolveCount, 1)
+        XCTAssertEqual(finished, [42])
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testForegroundRefreshCannotDiscardManualRestore() async {
+        let storeKit = StoreKitFake()
+        await storeKit.pauseSync()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        let store = ManagedConnectionEntitlementStore(storeKit: storeKit, entitlementAPI: api)
+        let restore = Task { await store.restorePurchases() }
+        await waitUntil { await storeKit.isSyncPaused }
+
+        await store.refreshEntitlement()
+        XCTAssertEqual(store.status, .resolving)
+        await storeKit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        await storeKit.resumeSync()
+        await restore.value
+
+        let syncCount = await storeKit.syncCount
+        let resolveCount = await api.resolveCount
+        XCTAssertEqual(syncCount, 1)
+        XCTAssertEqual(resolveCount, 1)
+        XCTAssertEqual(store.currentGrant, Self.grant)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testCancelledPurchaseDoesNotRestoreTokenThatExpiredWhilePaymentWasOpen() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let grant = Self.grant(now: base)
+        var currentTime = base
+        let storeKit = StoreKitFake()
+        await storeKit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(grant)),
+            now: { currentTime }
+        )
+        await store.refreshEntitlement()
+        await storeKit.pausePurchase()
+        let purchase = Task { await store.purchase(productID: ManagedConnectionProductID.annual) }
+        await waitUntil { await storeKit.isPurchasePaused }
+        currentTime = grant.tokenExpiresAt.addingTimeInterval(1)
+        await storeKit.resumePurchase()
+        await purchase.value
+
+        XCTAssertNil(store.currentGrant)
+        XCTAssertEqual(store.status, .available)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testRevocationUpdateStillWinsOverOlderPurchaseResolution() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setPurchase(.success(Self.evidence))
+        let api = DelayedEntitlementAPIFake()
+        let store = ManagedConnectionEntitlementStore(storeKit: storeKit, entitlementAPI: api)
+        let observer = Task { await store.observeTransactionUpdates() }
+        let purchase = Task { await store.purchase(productID: ManagedConnectionProductID.monthly) }
+        await waitUntil { await api.hasStartedFirstRequest }
+
+        await storeKit.sendTransactionUpdate(.verified(Self.evidence))
+        await waitUntil { store.status == .revoked }
+        await store.refreshEntitlement()
+        XCTAssertEqual(store.status, .revoked)
+        await api.completeFirstRequest(with: Self.grant)
+        await purchase.value
+        observer.cancel()
+        await observer.value
+
+        XCTAssertEqual(store.status, .revoked)
+        XCTAssertNil(store.currentGrant)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testPurchaseRestoreAndTransactionUpdateRefreshPricesAndTrialEligibility() async {
+        for operation in ["purchase", "restore", "update"] {
+            let storeKit = StoreKitFake()
+            await storeKit.setProducts([Self.oldProduct])
+            let store = ManagedConnectionEntitlementStore(
+                storeKit: storeKit,
+                entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+            )
+            await store.load()
+            XCTAssertEqual(store.products, [Self.oldProduct])
+            await storeKit.setProducts([Self.updatedProduct])
+
+            switch operation {
+            case "purchase":
+                await storeKit.setPurchase(.success(Self.evidence))
+                await store.purchase(productID: ManagedConnectionProductID.monthly)
+            case "restore":
+                await storeKit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+                await store.restorePurchases()
+            default:
+                let observer = Task { await store.observeTransactionUpdates() }
+                await storeKit.sendTransactionUpdate(.verified(Self.evidence))
+                await waitUntil { store.products == [Self.updatedProduct] }
+                observer.cancel()
+                await observer.value
+            }
+
+            XCTAssertEqual(store.products, [Self.updatedProduct], operation)
+            XCTAssertEqual(store.status, .entitled(Self.grant.entitlement), operation)
+        }
+    }
+
+    func testStorefrontRefreshUpdatesCatalogWithoutInterruptingPurchase() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setProducts([Self.oldProduct])
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await store.load()
+        await storeKit.pausePurchase()
+        let purchase = Task { await store.purchase(productID: ManagedConnectionProductID.monthly) }
+        await waitUntil { await storeKit.isPurchasePaused }
+        let observer = Task { await store.observeStorefrontUpdates() }
+        await storeKit.setProducts([Self.updatedProduct])
+        await storeKit.sendStorefrontUpdate()
+        await waitUntil { store.products == [Self.updatedProduct] }
+
+        XCTAssertEqual(store.status, .resolving)
+        XCTAssertTrue(store.isBusy)
+        await storeKit.resumePurchase()
+        await purchase.value
+        observer.cancel()
+        await observer.value
+        XCTAssertEqual(store.products, [Self.updatedProduct])
+        XCTAssertEqual(store.status, .available)
+    }
+
+    func testLateInitialProductLoadCannotOverwriteNewStorefrontCatalog() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setProducts([Self.oldProduct])
+        await storeKit.pauseNextProductLoad()
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        let initialLoad = Task { await store.load() }
+        await waitUntil { await storeKit.isProductLoadPaused }
+        await storeKit.setProducts([Self.updatedProduct])
+        await store.refreshProducts()
+        await storeKit.resumeProductLoad()
+        await initialLoad.value
+
+        XCTAssertEqual(store.products, [Self.updatedProduct])
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testProductRefreshFailureDoesNotClearEntitlementOrCatalog() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setProducts([Self.oldProduct])
+        await storeKit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await store.load()
+        await storeKit.setProductsError(TestError.serverUnavailable)
+        await store.refreshProducts()
+
+        XCTAssertEqual(store.products, [Self.oldProduct])
+        XCTAssertEqual(store.currentGrant, Self.grant)
+        XCTAssertEqual(store.status, .entitled(Self.grant.entitlement))
+    }
+
+    private static let oldProduct = ManagedConnectionProduct(
+        id: ManagedConnectionProductID.monthly, displayName: "Monthly",
+        displayPrice: "US$1.99", displayPeriod: "Month",
+        isEligibleForTrial: true, displayTrialPeriod: "1 week"
+    )
+    private static let updatedProduct = ManagedConnectionProduct(
+        id: ManagedConnectionProductID.monthly, displayName: "月度订阅",
+        displayPrice: "¥9.90", displayPeriod: "月",
+        isEligibleForTrial: false, displayTrialPeriod: nil
+    )
+
+    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("异步操作没有在时限内到达预期阶段")
+    }
+
     func testVerifiedPurchaseRequiresServerGrantBeforeFinishing() async {
         let storeKit = StoreKitFake()
         let api = EntitlementAPIFake(result: .success(Self.grant))
@@ -585,6 +793,8 @@ final class ManagedConnectionEntitlementAPIClientTests: XCTestCase {
 private actor StoreKitFake: ManagedConnectionStoreKitClient {
     nonisolated private let updates: AsyncStream<ManagedConnectionTransactionUpdate>
     nonisolated private let updatesContinuation: AsyncStream<ManagedConnectionTransactionUpdate>.Continuation
+    nonisolated private let storefrontEvents: AsyncStream<Void>
+    nonisolated private let storefrontContinuation: AsyncStream<Void>.Continuation
     private var purchaseOutcome: ManagedConnectionPurchaseOutcome = .cancelled
     private var currentByProductID: [String: ManagedConnectionCurrentEntitlementOutcome] = [:]
     private(set) var finishedTransactionIDs: [UInt64] = []
@@ -592,12 +802,32 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     private var syncError: Error?
     private var productsError: Error?
     private var purchaseError: Error?
+    private var productValues: [ManagedConnectionProduct] = []
+    private var shouldPausePurchase = false
+    private var purchaseContinuation: CheckedContinuation<Void, Never>?
+    private var shouldPauseSync = false
+    private var syncContinuation: CheckedContinuation<Void, Never>?
+    private var shouldPauseProductLoad = false
+    private var productContinuation: CheckedContinuation<Void, Never>?
+
+    var isPurchasePaused: Bool { purchaseContinuation != nil }
+    var isSyncPaused: Bool { syncContinuation != nil }
+    var isProductLoadPaused: Bool { productContinuation != nil }
 
     init() {
         let (stream, continuation) = AsyncStream<ManagedConnectionTransactionUpdate>.makeStream()
         updates = stream
         updatesContinuation = continuation
+        (storefrontEvents, storefrontContinuation) = AsyncStream<Void>.makeStream()
     }
+
+    func setProducts(_ products: [ManagedConnectionProduct]) { productValues = products }
+    func pausePurchase() { shouldPausePurchase = true }
+    func resumePurchase() { purchaseContinuation?.resume(); purchaseContinuation = nil }
+    func pauseSync() { shouldPauseSync = true }
+    func resumeSync() { syncContinuation?.resume(); syncContinuation = nil }
+    func pauseNextProductLoad() { shouldPauseProductLoad = true }
+    func resumeProductLoad() { productContinuation?.resume(); productContinuation = nil }
 
     func setPurchase(_ outcome: ManagedConnectionPurchaseOutcome) {
         purchaseOutcome = outcome
@@ -621,10 +851,19 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
 
     func products() async throws -> [ManagedConnectionProduct] {
         if let productsError { throw productsError }
-        return []
+        let result = productValues
+        if shouldPauseProductLoad {
+            shouldPauseProductLoad = false
+            await withCheckedContinuation { productContinuation = $0 }
+        }
+        return result
     }
 
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {
+        if shouldPausePurchase {
+            shouldPausePurchase = false
+            await withCheckedContinuation { purchaseContinuation = $0 }
+        }
         if let purchaseError { throw purchaseError }
         return purchaseOutcome
     }
@@ -636,6 +875,9 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     nonisolated func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate> {
         updates
     }
+
+    nonisolated func storefrontUpdates() -> AsyncStream<Void> { storefrontEvents }
+    func sendStorefrontUpdate() { storefrontContinuation.yield(()) }
 
     func sendTransactionUpdate(_ update: ManagedConnectionTransactionUpdate) {
         updatesContinuation.yield(update)
@@ -649,6 +891,10 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
 
     func syncPurchases() async throws {
         syncCount += 1
+        if shouldPauseSync {
+            shouldPauseSync = false
+            await withCheckedContinuation { syncContinuation = $0 }
+        }
         if let syncError { throw syncError }
     }
 }

@@ -132,7 +132,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          destination="$(bash ./scripts/ios-dev.sh test-destination)"
+          # iOS 26.5 的 StoreKitTest 配置同步失效（FB22500243），会误走 Apple 登录。
+          # 使用 runner 已安装的 26.2；保留稳定 Xcode 编译和全部购买/退款断言。
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
+            devices = JSON.parse(STDIN.read).fetch("devices").fetch("com.apple.CoreSimulator.SimRuntime.iOS-26-2", [])
+            device = devices.find { |item| item["isAvailable"] && item["name"] == "iPad Pro 13-inch (M5)" }
+            abort "Missing iPad Pro 13-inch (M5) on iOS 26.2" unless device
+            puts device.fetch("udid")
+          ')"
+          destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
           echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
 
