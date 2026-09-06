@@ -655,6 +655,7 @@ struct InitialConnectionSettingsSections: View {
                     .font(themeStore.uiFont(size: profileDetailPointSize))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -753,9 +754,14 @@ struct InitialConnectionSettingsSections: View {
         if let dnsName = item.profile.tailscaleDNSName {
             details.append("MagicDNS \(dnsName)")
         }
-        let fallbackHost = URLComponents(string: item.profile.endpoint)?.host ?? item.profile.endpoint
-        details.append("IP \(fallbackHost)")
-        if item.isCurrent {
+        let components = URLComponents(string: item.profile.endpoint)
+        let fallbackHost = components?.host ?? item.profile.endpoint
+        // 去掉重复的当前地址后，摘要仍需保留端口，便于区分同一主机上的不同服务。
+        let fallbackAddress = components?.port.map { "\(fallbackHost):\($0)" } ?? fallbackHost
+        details.append("IP \(fallbackAddress)")
+        if item.isCurrent,
+           AgentAPIClient.normalizedEndpoint(appStore.connectionEndpoint)
+               != AgentAPIClient.normalizedEndpoint(item.profile.preferredEndpoint) {
             details.append("\(L10n.text("ui.current_connection")) \(appStore.connectionEndpoint)")
         }
         return details.joined(separator: " · ")

@@ -137,6 +137,10 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
         let themeDefaultsSuite = "TokenUsageCardSnapshotTests.Theme.\(UUID().uuidString)"
         let themeDefaults = UserDefaults(suiteName: themeDefaultsSuite)!
         themeDefaults.removePersistentDomain(forName: themeDefaultsSuite)
+        // 固定 frame 宽度不会改变 iPad 继承的 trait；快照必须显式模拟目标尺寸类别。
+        let horizontalSizeClass: UserInterfaceSizeClass = width == compactCardWidth
+            ? .compact
+            : .regular
 
         let view = AccountTokenUsageCard(
             codexDisplay: Self.codexDisplay,
@@ -149,6 +153,7 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
         )
         .environmentObject(ThemeStore(defaults: themeDefaults))
         .environment(\.colorScheme, colorScheme)
+        .environment(\.horizontalSizeClass, horizontalSizeClass)
         .frame(width: width)
         .fixedSize(horizontal: false, vertical: true)
 
