@@ -194,6 +194,15 @@ struct SettingsView: View {
         horizontalSizeClass == .compact ? .large : .inline
     }
 
+    private var showsManagedConnection: Bool {
+        // 托管连接尚未开放；仅本地 Debug 显式开启入口，不改变已有连接功能。
+#if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--debug-enable-managed-connection")
+#else
+        false
+#endif
+    }
+
     private func applyDebugLaunchRouteIfNeeded() {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
@@ -299,21 +308,23 @@ struct SettingsView: View {
                 sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
-            Section {
-                NavigationLink {
-                    ManagedConnectionSubscriptionView(
-                        qrScannerPresentation: qrScannerPresentation
-                    )
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.managed_subscription_title"),
-                        systemImage: "creditcard"
-                    )
+            if showsManagedConnection {
+                Section {
+                    NavigationLink {
+                        ManagedConnectionSubscriptionView(
+                            qrScannerPresentation: qrScannerPresentation
+                        )
+                    } label: {
+                        SettingsValueLabel(
+                            title: L10n.text("ui.managed_subscription_title"),
+                            systemImage: "creditcard"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.managedSubscription")
+                } header: {
+                    sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
                 }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.managedSubscription")
-            } header: {
-                sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
             }
 
             Section {
