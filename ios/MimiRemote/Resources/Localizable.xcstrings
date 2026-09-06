@@ -7108,6 +7108,24 @@
         }
       }
     },
+    "ui.copy_session_id": {
+      "comment": "Session menu action that copies the complete session identifier.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy session ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制会话 ID"
+          }
+        }
+      }
+    },
     "ui.counts_joined": {
       "comment": "Join two localized count fragments.",
       "localizations": {
@@ -16204,6 +16222,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "更多"
+          }
+        }
+      }
+    },
+    "ui.more_actions": {
+      "comment": "Submenu for session management actions that vary by session state and runtime.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多操作"
           }
         }
       }
