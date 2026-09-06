@@ -96,7 +96,6 @@ struct SettingsView: View {
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     @State private var didApplyDebugLaunchRoute = false
     @State private var showsConnectionManagement = false
 
@@ -115,31 +114,6 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
-        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
-        // 重建，但不会再销毁负责呈现相机的宿主。
-        .fullScreenCover(
-            item: $qrScannerPresentation.intent,
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: {
-                    qrScannerPresentation.chooseManualConnection(for: intent)
-                },
-                onCode: { rawValue in
-                    await qrScannerPresentation.submit(rawValue, intent: intent)
-                }
-            )
-        }
-        // 重命名路由固定由设置根层持有，Form.Section 刷新不会销毁唯一的 sheet presenter。
-        .sheet(
-            item: profileRenameRouteBinding,
-            onDismiss: { profileRenamePresentation.dismiss() }
-        ) { route in
-            ConnectionProfileRenameSheet(route: route) { displayName in
-                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
-            }
-        }
         .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
@@ -150,27 +124,19 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                InitialPairingView(
-                    qrScannerPresentation: qrScannerPresentation,
-                    onRequestProfileRename: { profileRenamePresentation.present($0) }
-                )
+                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
+                    .navigationTitle("")
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
-        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
-        // 顶部再来一个同名大标题只是白占一屏高度。
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
-        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
         .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionManagementView(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: { profileRenamePresentation.present($0) }
-            )
+            ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
         }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -189,11 +155,6 @@ struct SettingsView: View {
         .environment(\.colorScheme, resolvedColorScheme)
     }
 
-    private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
-        // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
-        horizontalSizeClass == .compact ? .large : .inline
-    }
-
     private func applyDebugLaunchRouteIfNeeded() {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
@@ -205,18 +166,6 @@ struct SettingsView: View {
             showsConnectionManagement = true
         }
 #endif
-    }
-
-    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
-        Binding(
-            get: { profileRenamePresentation.route },
-            set: { route in
-                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
-                if route == nil {
-                    profileRenamePresentation.dismiss()
-                }
-            }
-        )
     }
 
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
@@ -636,35 +585,6 @@ struct SettingsValueLabel: View {
         dynamicTypeSize.isAccessibilitySize
             ? SettingsLayoutMetrics.accessibilityRowHeight
             : SettingsLayoutMetrics.standardRowHeight
-    }
-}
-
-private struct ConnectionManagementView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
-    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
-    @EnvironmentObject private var themeStore: ThemeStore
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
-
-    var body: some View {
-        Form {
-            InitialConnectionSettingsSections(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
-            )
-        }
-        .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
-        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
-        .contentMargins(
-            .bottom,
-            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
-            for: .scrollContent
-        )
-        .navigationTitle(L10n.text("ui.mac_connection"))
     }
 }
 
