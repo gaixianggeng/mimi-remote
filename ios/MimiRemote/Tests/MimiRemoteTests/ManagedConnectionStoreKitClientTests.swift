@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class ManagedConnectionStoreKitClientTests: XCTestCase {
     func testProductsUseCompactChineseBillingUnits() async throws {
-        let (session, client) = try makeSessionAndClient()
+        let (session, client) = try await makeSessionAndClient()
         session.locale = Locale(identifier: "zh_CN")
         session.storefront = "CHN"
         let products = try await client.products()
@@ -22,7 +22,7 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
     }
 
     func testProductsKeepLocalizedEnglishBillingUnits() async throws {
-        let (session, client) = try makeSessionAndClient()
+        let (session, client) = try await makeSessionAndClient()
         session.locale = Locale(identifier: "en_US")
         session.storefront = "USA"
         let products = try await client.products()
@@ -36,8 +36,36 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
         XCTAssertEqual(L10n.formatTemplate(template, arguments: ["$19.99", annual.displayPeriod]), "$19.99/Year")
     }
 
+    func testProductsUseStoreKitDisplayPrices() async throws {
+        let (_, client) = try await makeSessionAndClient()
+        let storeKitProducts = try await Product.products(for: ManagedConnectionProductID.all)
+        let expectedPrices = Dictionary(
+            uniqueKeysWithValues: storeKitProducts.map { ($0.id, $0.displayPrice) }
+        )
+
+        let products = try await client.products()
+
+        XCTAssertEqual(products.count, ManagedConnectionProductID.all.count)
+        for product in products {
+            XCTAssertEqual(product.displayPrice, expectedPrices[product.id])
+        }
+    }
+
+    func testProductsRefreshTrialEligibilityAfterPurchaseInSubscriptionGroup() async throws {
+        let (session, client) = try await makeSessionAndClient()
+        let initialProducts = try await client.products()
+        XCTAssertEqual(initialProducts.count, ManagedConnectionProductID.all.count)
+        XCTAssertTrue(initialProducts.allSatisfy(\.isEligibleForTrial))
+
+        _ = try await session.buyProduct(identifier: ManagedConnectionProductID.monthly)
+
+        let refreshedProducts = try await waitUntilTrialIneligible(client)
+        XCTAssertEqual(refreshedProducts.count, ManagedConnectionProductID.all.count)
+        XCTAssertTrue(refreshedProducts.allSatisfy { !$0.isEligibleForTrial })
+    }
+
     func testCurrentEntitlementRejectsRefundedTransaction() async throws {
-        let (session, client) = try makeSessionAndClient()
+        let (session, client) = try await makeSessionAndClient()
         let revoked = try await session.buyProduct(identifier: ManagedConnectionProductID.monthly)
         try session.disableAutoRenewForTransaction(identifier: UInt(revoked.id))
         try await waitUntilVerified(client, transactionID: revoked.id)
@@ -45,7 +73,7 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
         try await waitUntilNotVerified(client, productID: ManagedConnectionProductID.monthly)
     }
 
-    private func makeSessionAndClient() throws -> (
+    private func makeSessionAndClient() async throws -> (
         SKTestSession,
         LiveManagedConnectionStoreKitClient
     ) {
@@ -60,7 +88,9 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
             session.resetToDefaultState()
             session.clearTransactions()
         }
-        return (session, LiveManagedConnectionStoreKitClient())
+        let client = LiveManagedConnectionStoreKitClient()
+        _ = try await waitUntilTrialEligible(client)
+        return (session, client)
     }
 
     private func waitUntilNotVerified(
@@ -93,6 +123,36 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         throw StoreKitTestError.timedOut("新交易没有先成为当前有效权益")
+    }
+
+    private func waitUntilTrialIneligible(
+        _ client: LiveManagedConnectionStoreKitClient
+    ) async throws -> [ManagedConnectionProduct] {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let products = try await client.products()
+            if products.allSatisfy({ !$0.isEligibleForTrial }) {
+                return products
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw StoreKitTestError.timedOut("购买同一订阅组商品后仍显示免费试用资格")
+    }
+
+    private func waitUntilTrialEligible(
+        _ client: LiveManagedConnectionStoreKitClient
+    ) async throws -> [ManagedConnectionProduct] {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let products = try await client.products()
+            if products.count == ManagedConnectionProductID.all.count,
+               products.allSatisfy(\.isEligibleForTrial)
+            {
+                return products
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw StoreKitTestError.timedOut("清理交易后免费试用资格没有恢复")
     }
 }
 

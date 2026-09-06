@@ -20,9 +20,26 @@ map_doc="docs/critical-user-journey-regressions.md"
 [[ -f "$runner" ]] || fail "缺少回归入口 ${runner}。"
 [[ -f "$map_doc" ]] || fail "缺少风险映射 ${map_doc}。"
 
-for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9; do
+for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10; do
   grep -Fq "| ${risk_id} |" "$map_doc" \
     || fail "${map_doc} 缺少 ${risk_id} 的风险映射。"
+done
+
+managed_subscription_test_groups=(
+  "ManagedConnectionEntitlementStoreTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionEntitlementStoreTests.swift"
+  "ManagedConnectionEntitlementAPIClientTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionEntitlementStoreTests.swift"
+  "ManagedConnectionStoreKitClientTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionStoreKitClientTests.swift"
+)
+for test_entry in "${managed_subscription_test_groups[@]}"; do
+  test_group="${test_entry%%|*}"
+  test_file="${test_entry#*|}"
+  [[ -f "$test_file" ]] || fail "测试源码不存在：${test_file}。"
+  grep -Fq "final class ${test_group}" "$test_file" \
+    || fail "${test_file} 缺少 ${test_group}。"
+  grep -Fq -- "-only-testing:MimiRemoteTests/${test_group}" "$runner" \
+    || fail "iOS runner 未选择 ${test_group}。"
+  grep -Fq "$test_group" "$map_doc" \
+    || fail "${map_doc} 未记录 ${test_group}。"
 done
 
 grep -Fq './internal/auth \' "$runner" \
@@ -166,4 +183,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：9 类风险、4 个 Go 包和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：10 类风险、4 个 Go 包、3 组托管订阅测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"

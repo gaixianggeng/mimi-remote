@@ -51,6 +51,7 @@ iOS 的关键测试仍由同一次 `xcodebuild` 执行并复用同一台 Simulat
 | R7 | 会话列表、打开、turn start/stream/completion 的 happy path 在适配层断裂，或滚动中完成导致 row 跳位和重复反馈 | 契约 + 端到端 fake + UI 状态机；direct app-server runtime、`SessionListLifecycleCoordinatorTests` | `testCodexAppServerFakeSmokeCoversThreadTurnAndApproval`、`testSessionStoreReplaysDirectAppServerEventStreamFixture`、`testRunningTurnLifecycleKeepsEchoAndFinalAssistantStable`，以及完整 `SessionListLifecycleCoordinatorTests` | 用户无法进入会话、发消息、看到最终回答，或列表浏览被实时状态更新打断 |
 | R8 | Git/Worktree 接受越界路径、错误清理目标或旧 Host 的迟到结果 | Go 集成 + iOS Host 隔离；`internal/httpapi`、`SessionStore` | `TestGitActionRejectsUnsafeFilePath`、`TestWorktreeDeleteRejectsUnmanagedPath`、`TestWorktreeCleanupRejectsAllBeforeDeletionWhenSelectedStateChanges`、`testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState` | 修改错误仓库、误删工作区或显示错误发布状态 |
 | R9 | 可选能力在依赖失败、本地禁用、旧服务端、未知状态或切换 Host 后仍误走新路径 | 单元 + 契约 + 集成；`internal/config`、`internal/httpapi`、`FileAttachmentModelsTests`、`PairingLinkTests`、`ProtocolContractTests` | `TestFileUploadCapabilityRolloutMatrix`、`testFileUploadCapabilityDecisionMatrixFailsClosed`、`testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease`，以及 `version-unknown-capability.json` 两端兼容验证 | 文件请求错误发往另一台 Mac、禁用失效或依赖异常时继续暴露高风险入口 |
+| R10 | 匿名购买、恢复或续期时错误授予未验证交易，前后台并发丢失购买结果，或过期后继续保留服务端授权 | 状态机 + 契约 + StoreKit 适配；`ManagedConnectionEntitlementStoreTests`、`ManagedConnectionEntitlementAPIClientTests`、`ManagedConnectionStoreKitClientTests` | 三组测试完整覆盖购买结果收敛、`currentEntitlements` 恢复、仅手动 `AppStore.sync()`、JWS 请求与响应解析、过期和撤销处理 | 用户已付款但仍显示未订阅，未完成付款获得服务，或订阅失效后授权未撤销 |
 
 ### 分层执行
 
@@ -69,9 +70,9 @@ go test \
 - `internal/appserver`：JSON-RPC 解析、server request、错误和 fail-closed 适配。
 - `internal/httpapi`：真实 handler、fake upstream、会话授权与恢复、Git/Worktree 临时仓库。
 
-iOS Gate 保留请求/协议/配对整组测试；庞大的 `ConversationDataFlowTests` 只选择映射表
-中的关键方法。测试失败会直接显示 XCTest class/method；Go 失败会显示 package/test，
-静态检查则报告缺失的风险 ID、源码方法、runner selector 或 CI scope。
+iOS Gate 保留请求、协议、配对和托管订阅整组测试；庞大的 `ConversationDataFlowTests`
+只选择映射表中的关键方法。测试失败会直接显示 XCTest class/method；Go 失败会显示
+package/test，静态检查则报告缺失的风险 ID、源码方法、runner selector 或 CI scope。
 
 Rust bridge 只在 Cargo/bridge 路径变化时运行现有完整 suite，其中：
 

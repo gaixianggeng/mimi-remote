@@ -42,6 +42,7 @@ enum ManagedConnectionTransactionUpdate: Equatable, Sendable {
 
 protocol ManagedConnectionStoreKitClient: Sendable {
     func products() async throws -> [ManagedConnectionProduct]
+    func storefrontUpdates() -> AsyncStream<Void>
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome
     func currentEntitlement(productID: String) async -> ManagedConnectionCurrentEntitlementOutcome
     func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate>
@@ -89,6 +90,26 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
             ManagedConnectionProductID.all.firstIndex(of: lhs.id) ?? .max
                 < ManagedConnectionProductID.all.firstIndex(of: rhs.id) ?? .max
         }
+    }
+
+    nonisolated func storefrontUpdates() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let listener = Task {
+                for await _ in Storefront.updates {
+                    // StoreKit 商品包含商店地区对应的价格和优惠资格，地区变化后不能继续购买缓存商品。
+                    await removeCachedProducts()
+                    continuation.yield(())
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                listener.cancel()
+            }
+        }
+    }
+
+    private func removeCachedProducts() {
+        productsByID.removeAll()
     }
 
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {

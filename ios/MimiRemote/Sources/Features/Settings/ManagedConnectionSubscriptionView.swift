@@ -47,7 +47,7 @@ struct ManagedConnectionSubscriptionView: View {
         }
         .onAppear(perform: configureManagedScanner)
         .refreshable {
-            await entitlementStore.refreshEntitlement()
+            await entitlementStore.load()
             if isEntitled {
                 await deviceStore.refreshDevices()
             }
