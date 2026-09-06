@@ -52,12 +52,10 @@ protocol ManagedConnectionStoreKitClient: Sendable {
 }
 
 actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
-    private var productsByID: [String: Product] = [:]
     private var unfinishedTransactions: [UInt64: Transaction] = [:]
 
     func products() async throws -> [ManagedConnectionProduct] {
         let products = try await Product.products(for: ManagedConnectionProductID.all)
-        productsByID = Dictionary(uniqueKeysWithValues: products.map { ($0.id, $0) })
 
         var result: [ManagedConnectionProduct] = []
         for product in products {
@@ -96,8 +94,7 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
         AsyncStream { continuation in
             let listener = Task {
                 for await _ in Storefront.updates {
-                    // StoreKit 商品包含商店地区对应的价格和优惠资格，地区变化后不能继续购买缓存商品。
-                    await removeCachedProducts()
+                    // StoreKit 商品包含商店地区对应的价格和优惠资格，地区变化后通知上层重新加载。
                     continuation.yield(())
                 }
                 continuation.finish()
@@ -108,20 +105,9 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
         }
     }
 
-    private func removeCachedProducts() {
-        productsByID.removeAll()
-    }
-
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {
-        let product: Product
-        if let cached = productsByID[productID] {
-            product = cached
-        } else {
-            guard let loaded = try await Product.products(for: [productID]).first else {
-                throw ManagedConnectionStoreKitError.productUnavailable
-            }
-            productsByID[productID] = loaded
-            product = loaded
+        guard let product = try await Product.products(for: [productID]).first else {
+            throw ManagedConnectionStoreKitError.productUnavailable
         }
 
         switch try await product.purchase() {
