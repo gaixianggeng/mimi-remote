@@ -46,6 +46,21 @@ struct ManagedConnectionSubscriptionView: View {
             await deviceStore.refreshDevices()
         }
         .onAppear(perform: configureManagedScanner)
+        // 托管页请求扫码时它自己是栈顶页面，Cover 必须挂在这里才会真正呈现。
+        .fullScreenCover(
+            item: qrScannerPresentation.presentationBinding(for: .managedConnection),
+            onDismiss: qrScannerPresentation.didDismiss
+        ) { intent in
+            QRCodeScannerSheet(
+                onDismiss: qrScannerPresentation.dismiss,
+                onChooseManualConnection: {
+                    qrScannerPresentation.chooseManualConnection(for: intent)
+                },
+                onCode: { rawValue in
+                    await qrScannerPresentation.submit(rawValue, intent: intent)
+                }
+            )
+        }
         .refreshable {
             await entitlementStore.load()
             if isEntitled {
@@ -162,7 +177,8 @@ struct ManagedConnectionSubscriptionView: View {
                 qrScannerPresentation.request(
                     appStore.activeConnectionProfile == nil
                         ? .initialConnection
-                        : .addConnectionProfile
+                        : .addConnectionProfile,
+                    from: .managedConnection
                 )
             } label: {
                 Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")

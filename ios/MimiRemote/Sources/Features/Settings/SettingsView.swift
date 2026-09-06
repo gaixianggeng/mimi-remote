@@ -96,7 +96,6 @@ struct SettingsView: View {
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     @State private var didApplyDebugLaunchRoute = false
     @State private var showsConnectionManagement = false
 
@@ -115,31 +114,6 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
-        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
-        // 重建，但不会再销毁负责呈现相机的宿主。
-        .fullScreenCover(
-            item: $qrScannerPresentation.intent,
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: {
-                    qrScannerPresentation.chooseManualConnection(for: intent)
-                },
-                onCode: { rawValue in
-                    await qrScannerPresentation.submit(rawValue, intent: intent)
-                }
-            )
-        }
-        // 重命名路由固定由设置根层持有，Form.Section 刷新不会销毁唯一的 sheet presenter。
-        .sheet(
-            item: profileRenameRouteBinding,
-            onDismiss: { profileRenamePresentation.dismiss() }
-        ) { route in
-            ConnectionProfileRenameSheet(route: route) { displayName in
-                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
-            }
-        }
         .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
@@ -150,27 +124,19 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                InitialPairingView(
-                    qrScannerPresentation: qrScannerPresentation,
-                    onRequestProfileRename: { profileRenamePresentation.present($0) }
-                )
+                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
+                    .navigationTitle("")
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
-        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
-        // 顶部再来一个同名大标题只是白占一屏高度。
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
-        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
         .environmentObject(qrScannerPresentation)
         .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionManagementView(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: { profileRenamePresentation.present($0) }
-            )
+            ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
         }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -187,11 +153,6 @@ struct SettingsView: View {
         // 设置页既可作为 sheet 自持 NavigationStack，也可嵌入紧凑 Tab 的 NavigationStack。
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
-    }
-
-    private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
-        // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
-        horizontalSizeClass == .compact ? .large : .inline
     }
 
     private var showsManagedConnection: Bool {
@@ -214,18 +175,6 @@ struct SettingsView: View {
             showsConnectionManagement = true
         }
 #endif
-    }
-
-    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
-        Binding(
-            get: { profileRenamePresentation.route },
-            set: { route in
-                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
-                if route == nil {
-                    profileRenamePresentation.dismiss()
-                }
-            }
-        )
     }
 
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
@@ -650,35 +599,6 @@ struct SettingsValueLabel: View {
     }
 }
 
-private struct ConnectionManagementView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
-    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
-    @EnvironmentObject private var themeStore: ThemeStore
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
-
-    var body: some View {
-        Form {
-            InitialConnectionSettingsSections(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
-            )
-        }
-        .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .settingsCanvasBackground(tokens: themeStore.tokens(for: colorScheme))
-        // 详情页仍在紧凑 Tab Bar 下滚动；保留栏高，最后一行才能完整滚到浮层上方。
-        .contentMargins(
-            .bottom,
-            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
-            for: .scrollContent
-        )
-        .navigationTitle(L10n.text("ui.mac_connection"))
-    }
-}
-
 struct AccountTokenUsageCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -1089,41 +1009,33 @@ struct AccountTokenUsageCard: View {
         )
     }
 
+    // 没有提示文字时不保留空白；loading 与 loaded 仍同高，empty/stale 出现时才增加提示区。
+    @ViewBuilder
     private func activityCaptionArea(tokens: ThemeTokens) -> some View {
-        let caption = activityCaptionText
+        if let caption = activityCaptionText {
+            ZStack(alignment: .topLeading) {
+                // 测量候选本地化文案，避免提示切换跳高或大字号被固定高度裁切。
+                ForEach(
+                    Array(activityCaptionCandidates.enumerated()),
+                    id: \.offset
+                ) { candidate in
+                    Text(candidate.element)
+                        .font(themeStore.uiFont(.caption2))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
 
-        return ZStack(alignment: .topLeading) {
-            // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
-            // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
-            ForEach(
-                Array(activityCaptionCandidates.enumerated()),
-                id: \.offset
-            ) { candidate in
-                Text(candidate.element)
-                    .font(themeStore.uiFont(.caption2))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hidden()
-                    .accessibilityHidden(true)
-            }
-
-            if let caption {
                 Text(caption)
                     .font(themeStore.uiFont(.caption2))
                     .foregroundStyle(activityCaptionTint(tokens: tokens))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier(activityCaptionIdentifier)
-            } else {
-                // loaded/loading/unsupported/failed(nil) 没有 caption，但必须保留相同布局空间；
-                // 透明占位不能进入 VoiceOver，否则会多出一个空的可访问元素。
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .accessibilityHidden(true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityHidden(caption == nil)
     }
 
     private var activityCaptionText: String? {

@@ -373,7 +373,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*)
+    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*)
       has_packaging_control=true
       ;;
   esac

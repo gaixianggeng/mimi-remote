@@ -649,7 +649,7 @@ enum CodexAppServerPersonality: String, Codable, CaseIterable, Hashable, Identif
 
 private enum CodexAppServerDefaults {
     static let model: String? = nil
-    static let reasoningEffort: CodexAppServerReasoningEffort = .xhigh
+    static let reasoningEffort: CodexAppServerReasoningEffort = .medium
 }
 
 enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
@@ -1068,6 +1068,15 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     }
 }
 
+extension CodexAppServerTurnOptions {
+    var registersMimiTaskTools: Bool {
+        let runtime = runtimeProvider?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return runtime == nil || runtime == "" || runtime == "codex" || runtime == "openai"
+    }
+}
+
 struct CodexAppServerTurnPayload: Codable, Hashable {
     static let maximumEncodedInputBytes = 12 << 20
 
@@ -1247,10 +1256,17 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
 
     static let builtInFallback: [CodexAppServerModelOption] = [
         CodexAppServerModelOption(
+            id: "gpt-6-astra",
+            title: "GPT-6 Astra",
+            description: "Our most capable model for complex, demanding work.",
+            isDefault: true,
+            supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            defaultReasoningEffort: "medium"
+        ),
+        CodexAppServerModelOption(
             id: "gpt-5.6-sol",
             title: "GPT-5.6 Sol",
             description: "Detail and polish",
-            isDefault: true,
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
             defaultReasoningEffort: "xhigh"
         ),

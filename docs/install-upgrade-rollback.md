@@ -249,6 +249,8 @@ agentd start
 
 ### Linux user-systemd
 
+Linux 桌面安装同时提供顶栏托盘、自启动入口和本机管理面板，使用方法与 GNOME/KDE/Waybar 支持边界见 [Linux 桌面托盘](linux-tray.md)。
+
 Linux Release 包同时包含二进制、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
 
 ```bash

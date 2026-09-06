@@ -139,7 +139,7 @@ extension ComposerView {
             layout: layout
         )
         return ModelReasoningGridSelection(
-            modelID: option?.model ?? "gpt-5.6-sol",
+            modelID: option?.model ?? "gpt-6-astra",
             effort: effort
         )
     }
@@ -308,7 +308,7 @@ extension ComposerView {
         composerState.updateTurnOptions { options in
             if runtimeChanged || unsupportedModel {
                 // 切换 runtime 或目录刷新淘汰旧模型时，使用设置里的对应默认值；
-                // 没有自定义设置时仍回到 Codex Sol/xhigh、Claude Opus/high。
+                // 没有自定义设置时回到 Codex GPT-6/medium、Claude Opus/high。
                 applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
@@ -323,7 +323,7 @@ extension ComposerView {
         runtimeProvider: String,
         to options: inout CodexAppServerTurnOptions
     ) {
-        // 默认模型统一从本机设置读取；没有保存配置时仍沿用原来的 Sol/xhigh、Opus/high。
+        // 默认模型统一从本机设置读取；没有保存配置时使用 GPT-6/medium、Opus/high。
         DefaultModelPreferences.applyDefault(
             for: runtimeProvider,
             allOptions: modelOptionsForMenu,

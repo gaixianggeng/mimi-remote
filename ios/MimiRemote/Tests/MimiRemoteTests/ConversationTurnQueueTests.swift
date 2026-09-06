@@ -1640,7 +1640,7 @@ extension ConversationDataFlowTests {
 
         let failedMessage = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.clientMessageID == clientMessageID })
         XCTAssertEqual(failedMessage.turnPayload?.input, payload.input)
-        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.6-sol")
+        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-6-astra")
         XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
         XCTAssertTrue(payloadContainsMention(failedMessage.turnPayload, name: "README"))
         let expectedError = "待发送消息结果不确定，请确认后重试：app-server 错误 -32000：no rollout found"

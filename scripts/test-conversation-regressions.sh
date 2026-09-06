@@ -116,9 +116,11 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
+  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
   -only-testing:MimiRemoteTests/SessionListPresentationTests \
+  -only-testing:MimiRemoteTests/TokenUsageCardSnapshotTests \
   -only-testing:MimiRemoteTests/FileAttachmentModelsTests \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testConversationBubbleAlignment \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \

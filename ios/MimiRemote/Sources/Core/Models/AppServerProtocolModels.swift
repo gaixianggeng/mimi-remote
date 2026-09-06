@@ -1,5 +1,106 @@
 import Foundation
 
+enum CodexMimiTasksToolCatalog {
+    static let namespace = "mimi_tasks"
+
+    static let appServerValue: CodexAppServerJSONValue = .array([.object([
+        "type": .string("namespace"),
+        "name": .string(namespace),
+        "description": .string("Manage user-visible, user-owned independent tasks in the current Mimi project. Use subagents for internal parallel work."),
+        "tools": .array([
+        tool(
+            "create_thread",
+            "Create a user-visible, user-owned independent task. Use only when the user explicitly asks for a separate task.",
+            properties: ["prompt": string("The task to run.", maximumLength: 20_000)],
+            required: ["prompt"]
+        ),
+        tool(
+            "list_threads",
+            "List user-visible independent tasks in the current project.",
+            properties: [
+                "limit": integer("Maximum number of threads, from 1 to 50.", minimum: 1, maximum: 50),
+            ]
+        ),
+        tool(
+            "read_thread",
+            "Read one user-visible independent task in the current project.",
+            properties: ["threadId": string("Thread identifier.", maximumLength: 256)],
+            required: ["threadId"]
+        ),
+        tool(
+            "send_message_to_thread",
+            "Continue one user-visible independent task in the current project.",
+            properties: [
+                "threadId": string("Thread identifier.", maximumLength: 256),
+                "prompt": string("Message to send.", maximumLength: 20_000),
+            ],
+            required: ["threadId", "prompt"]
+        ),
+        tool(
+            "wait_threads",
+            "Wait until an independent task completes, fails, needs attention, or the timeout expires.",
+            properties: [
+                "threadIds": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string"), "maxLength": .int(256)]),
+                    "minItems": .int(1),
+                    "maxItems": .int(8),
+                    "uniqueItems": .bool(true),
+                ]),
+                "timeoutMs": integer("Timeout in milliseconds, from 0 to 120000.", minimum: 0, maximum: 120_000),
+            ],
+            required: ["threadIds"]
+        ),
+        ]),
+    ])])
+
+    static func qualifiedName(_ function: String) -> String {
+        "\(namespace).\(function)"
+    }
+
+    private static func tool(
+        _ name: String,
+        _ description: String,
+        properties: [String: CodexAppServerJSONValue],
+        required: [String] = []
+    ) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("function"),
+            "name": .string(name),
+            "description": .string(description),
+            "inputSchema": .object([
+                "type": .string("object"),
+                "properties": .object(properties),
+                "required": .array(required.map(CodexAppServerJSONValue.string)),
+                "additionalProperties": .bool(false),
+            ]),
+        ])
+    }
+
+    private static func string(_ description: String, maximumLength: Int) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("string"),
+            "description": .string(description),
+            "minLength": .int(1),
+            "maxLength": .int(Int64(maximumLength)),
+        ])
+    }
+
+    private static func integer(
+        _ description: String,
+        minimum: Int,
+        maximum: Int
+    ) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("integer"),
+            "description": .string(description),
+            "minimum": .int(Int64(minimum)),
+            "maximum": .int(Int64(maximum)),
+        ])
+    }
+}
+
+
 // Codex app-server JSON-RPC 消息与请求构建器，字段兼容逻辑保持原样。
 // 多个 app-server DTO 需要同一空字符串兼容规则，保持 module-internal。
 extension String {
@@ -530,6 +631,9 @@ struct CodexAppServerRequestBuilder {
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
         }
+        if options.registersMimiTaskTools {
+            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
+        }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
     }
@@ -542,6 +646,9 @@ struct CodexAppServerRequestBuilder {
         var params = safeThreadRuntimeParams(cwd: path)
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
+        }
+        if options.registersMimiTaskTools {
+            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
         }
         params["effort"] = options.reasoningEffort.map { .string($0.rawValue) }
         params["summary"] = options.reasoningSummary.map { .string($0.rawValue) }

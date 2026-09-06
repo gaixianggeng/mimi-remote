@@ -29,6 +29,7 @@ item/reasoning/summaryPartAdded
 item/reasoning/summaryTextDelta
 item/reasoning/textDelta
 item/started
+mcpServer/event/stream/notification
 mcpServer/oauthLogin/completed
 mcpServer/startupStatus/updated
 model/rerouted
@@ -53,6 +54,9 @@ thread/project/updated
 thread/queue/changed
 thread/realtime/closed
 thread/realtime/error
+thread/realtime/item/completed
+thread/realtime/item/started
+thread/realtime/item/transcript/delta
 thread/realtime/itemAdded
 thread/realtime/outputAudio/delta
 thread/realtime/sdp

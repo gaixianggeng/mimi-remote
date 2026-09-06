@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Mimi Remote
+Comment=Manage the local Mimi Remote host and pair mobile devices
+Comment[zh_CN]=查看 Mimi Remote 主机状态并配对移动设备
+Terminal=false
+Categories=Utility;Network;
+StartupNotify=false

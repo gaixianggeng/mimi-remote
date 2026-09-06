@@ -4,6 +4,11 @@ import SwiftUI
 import XCTest
 @testable import MimiRemote
 
+// 固定视觉验收使用的模型组合，避免产品默认模型更新改变布局基线。
+private let codex56SnapshotModels = CodexAppServerModelOption.builtInFallback.filter {
+    $0.model.hasPrefix("gpt-5.6-")
+}
+
 @MainActor
 final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testEffectiveModelUsesExplicitSelectionBeforeServerDefault() {
@@ -115,7 +120,7 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
     }
 
     func testCodexStandardMenuUsesModelSpecificFourthEffortAndInlineLabel() {
-        let options = CodexAppServerModelOption.builtInFallback
+        let options = codex56SnapshotModels
         let sol = options[0]
         let terra = options[1]
         let luna = options[2]
@@ -278,10 +283,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             }
 
             ModelReasoningGridPicker(
-                options: CodexAppServerModelOption.builtInFallback,
+                options: codex56SnapshotModels,
                 layout: ModelReasoningGridCatalog.layout(
                     runtimeProvider: "codex",
-                    options: CodexAppServerModelOption.builtInFallback
+                    options: codex56SnapshotModels
                 ),
                 selection: ModelReasoningGridSelection(modelID: "gpt-5.6-terra", effort: .high),
                 selectedModelID: "gpt-5.6-terra",
@@ -316,10 +321,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         themeStore.mode = .light
 
         let view = ModelReasoningGridPicker(
-            options: CodexAppServerModelOption.builtInFallback,
+            options: codex56SnapshotModels,
             layout: ModelReasoningGridCatalog.layout(
                 runtimeProvider: "codex",
-                options: CodexAppServerModelOption.builtInFallback
+                options: codex56SnapshotModels
             ),
             selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
             selectedModelID: "gpt-5.6-sol",
@@ -349,10 +354,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         themeStore.mode = .dark
 
         let view = ModelReasoningGridPicker(
-            options: CodexAppServerModelOption.builtInFallback,
+            options: codex56SnapshotModels,
             layout: ModelReasoningGridCatalog.layout(
                 runtimeProvider: "codex",
-                options: CodexAppServerModelOption.builtInFallback
+                options: codex56SnapshotModels
             ),
             selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
             selectedModelID: "gpt-5.6-sol",
@@ -568,7 +573,7 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         dynamicTypeSize: DynamicTypeSize = .large,
         horizontalSizeClass: UserInterfaceSizeClass,
         runtimeProvider: String = "codex",
-        options: [CodexAppServerModelOption] = CodexAppServerModelOption.builtInFallback,
+        options: [CodexAppServerModelOption] = codex56SnapshotModels,
         selection: ModelReasoningGridSelection = ModelReasoningGridSelection(
             modelID: "gpt-5.6-sol",
             effort: .xhigh
