@@ -406,7 +406,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         tokens: ThemeTokens
     ) -> some View {
         HStack(spacing: 12) {
-            WorkspaceRuntimeMenuPicker(
+            WorkspaceRuntimePopoverPicker(
                 selection: $selectedRuntime,
                 claudeChannelAvailable: claudeChannelAvailable
             )

@@ -23130,6 +23130,40 @@
         }
       }
     },
+    "ui.runtime_subtitle_claude": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code sessions on this host."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机的 Claude Code 会话。"
+          }
+        }
+      }
+    },
+    "ui.runtime_subtitle_codex": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default runtime on this host."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机默认运行时。"
+          }
+        }
+      }
+    },
     "ui.runtime_summary": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
