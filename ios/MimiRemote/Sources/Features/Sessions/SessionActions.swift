@@ -103,7 +103,7 @@ enum SessionActionPresentation: Identifiable {
 
 /// 列表、项目侧栏和详情工具栏共用同一组会话动作。
 ///
-/// 页面级的“刷新”和“显示详情”不属于会话自身能力，由各页面在此内容之后追加。
+/// 页面级的“刷新”和“显示详情”由各页面放在这组动作之前，避免刷新紧邻归档。
 struct SessionActionMenuContent: View {
     @EnvironmentObject private var sessionStore: SessionStore
 
@@ -116,24 +116,22 @@ struct SessionActionMenuContent: View {
         let fullDirectoryPath = session.dir.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Group {
-            if !fullDirectoryPath.isEmpty {
-                Button {
-                    UIPasteboard.general.string = fullDirectoryPath
-                } label: {
-                    Label(L10n.text("ui.copy_path"), systemImage: "folder")
-                }
-                .accessibilityValue(fullDirectoryPath)
-
-                Divider()
+            Button {
+                UIPasteboard.general.string = fullDirectoryPath
+            } label: {
+                Label(L10n.text("ui.copy_path"), systemImage: "folder")
             }
+            .disabled(fullDirectoryPath.isEmpty)
+            .accessibilityValue(fullDirectoryPath)
 
-            if sessionStore.isSessionObserving(session) {
-                Button {
-                    sessionStore.takeOverSession(session)
-                } label: {
-                    Label(L10n.text("ui.take_over_to_ipad"), systemImage: "hand.raised.fill")
-                }
+            Button {
+                UIPasteboard.general.string = session.id
+            } label: {
+                Label(L10n.text("ui.copy_session_id"), systemImage: "number")
             }
+            .accessibilityValue(session.id)
+
+            Divider()
 
             Button {
                 actions.togglePinned()
@@ -144,6 +142,36 @@ struct SessionActionMenuContent: View {
                 )
             }
             .disabled(!actions.canChangePinState)
+
+            // 条件动作留在子菜单，保持顶层条数稳定，降低按记忆位置点击时误触归档的风险。
+            Menu {
+                managementActions(actions: actions, reminder: reminder)
+            } label: {
+                Label(L10n.text("ui.more_actions"), systemImage: "ellipsis")
+            }
+            .menuOrder(.fixed)
+
+            Divider()
+
+            Button(role: actions.isArchived ? nil : .destructive) {
+                actions.toggleArchived()
+            } label: {
+                Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+            }
+            .disabled(!actions.canChangeArchiveState)
+        }
+    }
+
+    @ViewBuilder
+    private func managementActions(actions: SessionRowActionController, reminder: SessionReminder?) -> some View {
+        Group {
+            if sessionStore.isSessionObserving(session) {
+                Button {
+                    sessionStore.takeOverSession(session)
+                } label: {
+                    Label(L10n.text("ui.take_over_to_ipad"), systemImage: "hand.raised.fill")
+                }
+            }
 
             if actions.canChangeReadState {
                 Button {
@@ -230,14 +258,21 @@ struct SessionActionMenuContent: View {
                     systemImage: reminder == nil ? "bell" : "bell.fill"
                 )
             }
-
-            Button(role: actions.isArchived ? nil : .destructive) {
-                actions.toggleArchived()
-            } label: {
-                Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
-            }
-            .disabled(!actions.canChangeArchiveState)
         }
+    }
+}
+
+/// 两种详情布局共用刷新入口，禁用条件与刷新目标保持一致。
+struct CurrentSessionRefreshMenuButton: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        Button {
+            Task { await sessionStore.refreshCurrentContext() }
+        } label: {
+            Label(L10n.text("ui.refresh_current_session"), systemImage: "arrow.clockwise")
+        }
+        .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
     }
 }
 

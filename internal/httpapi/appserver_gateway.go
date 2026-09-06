@@ -188,6 +188,7 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 	"item/fileRead/requestApproval":         {},
 	"item/permissions/requestApproval":      {},
 	"item/tool/requestUserInput":            {},
+	"item/tool/call":                        {},
 	"mcpServer/elicitation/request":         {},
 }
 
@@ -312,6 +313,7 @@ type appServerGatewayPolicy struct {
 	globalListCursors     map[string]string
 	beforePendingRemember func()
 	beforeManagedComplete func()
+	mimiTaskToolsEnabled  bool
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -337,6 +339,7 @@ type appServerGatewayPendingServerRequest struct {
 	turnID               string
 	itemID               string
 	requestedPermissions map[string]any
+	dynamicToolClaimKey  string
 	createdAt            time.Time
 }
 

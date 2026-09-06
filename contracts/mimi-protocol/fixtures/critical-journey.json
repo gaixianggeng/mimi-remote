@@ -19,6 +19,7 @@
     ],
     "server_request_methods": [
       "item/commandExecution/requestApproval",
+      "item/tool/call",
       "item/tool/requestUserInput"
     ],
     "resolution_notification": "serverRequest/resolved"

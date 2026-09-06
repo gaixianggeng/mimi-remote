@@ -144,6 +144,27 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(frame.Params) {
 			return payload, false, nil
 		}
+		if strings.TrimSpace(frame.Method) == "item/tool/call" {
+			claimKey, err := p.validateAndClaimMimiTaskCall(frame.Params)
+			if err != nil {
+				if err == errMimiTaskDynamicCallAbandoned {
+					return payload, false, &appServerGatewayPolicyError{
+						id:      frame.ID,
+						message: "dynamic task execution was interrupted before a response was available",
+						data:    map[string]any{"reason": "mimi_task_owner_disconnected"},
+					}
+				}
+				return payload, false, nil
+			}
+			if claimKey == "" {
+				return payload, false, nil
+			}
+			if err := p.rememberPendingServerRequestWithClaim(frame.ID, frame.Method, frame.Params, claimKey); err != nil {
+				p.router.releaseMimiTaskDynamicClaim(claimKey, p)
+				return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+			}
+			return payload, true, nil
+		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
@@ -885,8 +906,11 @@ func copyGatewaySearchCursor(dst map[string]any, src map[string]json.RawMessage,
 func appServerServerRequestAllowed(runtimeID string, method string) bool {
 	// Codex 与 Claude 都只开放 iOS 已实现的反向请求。bridge 是外部进程，未知方法同样必须
 	// fail closed，避免移动端无法响应时让 Claude turn 永久等待。
-	_ = runtimeID
-	_, ok := appServerAllowedServerRequestMethods[strings.TrimSpace(method)]
+	method = strings.TrimSpace(method)
+	if method == "item/tool/call" {
+		return normalizeAppServerRuntimeID(runtimeID) == "codex"
+	}
+	_, ok := appServerAllowedServerRequestMethods[method]
 	return ok
 }
 
@@ -1064,6 +1088,10 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 }
 
 func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessage, method string, rawParams json.RawMessage) error {
+	return p.rememberPendingServerRequestWithClaim(id, method, rawParams, "")
+}
+
+func (p *appServerGatewayPolicy) rememberPendingServerRequestWithClaim(id *json.RawMessage, method string, rawParams json.RawMessage, claimKey string) error {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
 		return fmt.Errorf("app-server request 缺少 id")
@@ -1094,6 +1122,7 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		turnID:               turnID,
 		itemID:               itemID,
 		requestedPermissions: requestedPermissions,
+		dynamicToolClaimKey:  claimKey,
 		createdAt:            now,
 	}
 	return nil
@@ -1287,6 +1316,9 @@ func (p *appServerGatewayPolicy) close() {
 	p.mu.Unlock()
 	for _, path := range paths {
 		p.router.releaseManagedWorktreePendingUse(path)
+	}
+	if p.router != nil {
+		p.router.abandonMimiTaskDynamicClaims(p)
 	}
 }
 

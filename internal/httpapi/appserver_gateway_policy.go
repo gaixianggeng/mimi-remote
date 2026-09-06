@@ -56,6 +56,14 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
+	requestedMimiTaskTools := false
+	if method == "initialize" {
+		capabilities, _ := params["capabilities"].(map[string]any)
+		requestedMimiTaskTools = capabilities["mimiDynamicTaskToolsV1"] == true
+	}
+	if method == "thread/start" && !p.allowsMimiTaskTools() {
+		delete(params, "dynamicTools")
+	}
 	validated, err := p.router.validateGatewayPolicyParams(normalizeAppServerRuntimeID(p.runtimeID), method, params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -86,6 +94,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.cancelPendingHistoryRequest(frame.ID)
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
+	}
+	if method == "initialize" {
+		// 只有完整通过策略校验并即将转发的 initialize 才能更新连接能力。
+		// 失败请求不能给后续 thread/start 留下已启用状态。
+		p.setMimiTaskToolsEnabled(requestedMimiTaskTools)
 	}
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
@@ -397,7 +410,13 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 		return nil, fmt.Errorf("JSON-RPC response id 未由 app-server 发起")
 	}
 	var rewritten []byte
-	if isPermissionsApprovalMethod(request.method) {
+	if request.method == "item/tool/call" {
+		var err error
+		rewritten, err = rewriteMimiTaskDynamicResponse(payload)
+		if err != nil {
+			return nil, err
+		}
+	} else if isPermissionsApprovalMethod(request.method) {
 		var err error
 		rewritten, err = rewriteGatewayPermissionsApprovalResponse(payload, request.requestedPermissions)
 		if err != nil {
@@ -414,6 +433,9 @@ func (p *appServerGatewayPolicy) validateClientResponse(payload []byte, frame *a
 	// 坏帧或策略拒绝仍可重试，且断线重放仍对应真实 outstanding request。
 	if _, ok := p.consumePendingServerRequest(frame.ID); !ok {
 		return nil, fmt.Errorf("JSON-RPC response id 已被处理")
+	}
+	if request.method == "item/tool/call" && p.router != nil {
+		p.router.completeMimiTaskDynamicClaim(request.dynamicToolClaimKey, p)
 	}
 	return rewritten, nil
 }
@@ -1282,6 +1304,11 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	if method == "thread/resume" {
 		if page, ok := params["initialTurnsPage"].(map[string]any); ok {
 			safe["initialTurnsPage"] = sanitizedGatewayInitialTurnsPage(page)
+		}
+	}
+	if method == "thread/start" && runtimeID == "codex" {
+		if dynamicTools, ok := canonicalMimiTaskDynamicTools(params["dynamicTools"]); ok {
+			safe["dynamicTools"] = dynamicTools
 		}
 	}
 	workspaceWrite := false
