@@ -1499,25 +1499,32 @@ extension ConversationDataFlowTests {
         let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let listRequest = try decodeAppServerRequest(listMessages[2])
         XCTAssertEqual(listRequest.method, "thread/list")
+        // 主动刷新先查索引；空页还需普通扫描确认，之后才能进入新会话的 model/list 链路。
+        XCTAssertEqual(listRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[],"nextCursor":null,"backwardsCursor":null}}"#)
+        let verifiedListMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let verifiedListRequest = try decodeAppServerRequest(verifiedListMessages[3])
+        XCTAssertEqual(verifiedListRequest.method, "thread/list")
+        XCTAssertEqual(verifiedListRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        transportResponse(transport, id: verifiedListRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         await refreshTask.value
         XCTAssertEqual(store.selectedProjectID, project.id)
 
         let sendTask = Task { await store.sendPrompt("帮我验收 direct Store") }
-        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 4)
-        let modelList = try decodeAppServerRequest(threadMessages[3])
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let modelList = try decodeAppServerRequest(threadMessages[4])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-store-default","name":"Store Default","provider":"openai","isDefault":true}]}}"#)
 
-        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let threadStart = try decodeAppServerRequest(threadStartMessages[4])
+        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let threadStart = try decodeAppServerRequest(threadStartMessages[5])
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertNil(threadStart.params?.objectValue?["model"]?.stringValue)
         XCTAssertNil(threadStart.params?.objectValue?["modelProvider"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let turnStart = try decodeAppServerRequest(turnMessages[5])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7)
+        let turnStart = try decodeAppServerRequest(turnMessages[6])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["model"]?.stringValue, "gpt-store-default")
         let collaborationMode = try XCTUnwrap(turnStart.params?.objectValue?["collaborationMode"]?.objectValue)
@@ -1527,7 +1534,7 @@ extension ConversationDataFlowTests {
         // 新线程首轮由本地回显和 buffered event replay 承接，不能在 rollout 尚未就绪时
         // 追加 thread/read；若未来回归到旧行为，先响应请求让 sendTask 能退出，再给出明确断言。
         for _ in 0..<20 {
-            if (await transport.sentMessages()).count > 6 {
+            if (await transport.sentMessages()).count > 7 {
                 break
             }
             try await Task.sleep(nanoseconds: 10_000_000)
