@@ -1,6 +1,15 @@
 import SwiftUI
 
 struct ManagedConnectionSubscriptionView: View {
+    static var isEntryVisible: Bool {
+        // 托管连接尚未开放；仅本地 Debug 显式开启入口，不改变已有连接功能。
+#if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--debug-enable-managed-connection")
+#else
+        false
+#endif
+    }
+
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore

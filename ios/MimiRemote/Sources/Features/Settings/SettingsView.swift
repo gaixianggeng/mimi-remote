@@ -155,15 +155,6 @@ struct SettingsView: View {
         .environment(\.colorScheme, resolvedColorScheme)
     }
 
-    private var showsManagedConnection: Bool {
-        // 托管连接尚未开放；仅本地 Debug 显式开启入口，不改变已有连接功能。
-#if DEBUG
-        ProcessInfo.processInfo.arguments.contains("--debug-enable-managed-connection")
-#else
-        false
-#endif
-    }
-
     private func applyDebugLaunchRouteIfNeeded() {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
@@ -257,7 +248,7 @@ struct SettingsView: View {
                 sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
-            if showsManagedConnection {
+            if ManagedConnectionSubscriptionView.isEntryVisible {
                 Section {
                     NavigationLink {
                         ManagedConnectionSubscriptionView(
