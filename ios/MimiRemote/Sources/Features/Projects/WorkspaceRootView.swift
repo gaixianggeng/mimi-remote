@@ -1189,6 +1189,12 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceContent(projectID: String) async {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        SessionListDiagnostics.refreshStage("manual_begin", startedAt: startedAt, source: .workspaceForeground)
+        defer {
+            // 取消或失效响应也必须留下总耗时，不能只依赖 Store 成功提交的日志。
+            SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
+        }
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })

@@ -2082,6 +2082,7 @@ extension SessionStore {
                 allowsAdaptiveOversampling: consistency == .authoritative
             )
             let archiveSnapshot = archiveReconciliationSnapshot(consistency: consistency)
+            let pageStartedAt = ProcessInfo.processInfo.systemUptime
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
@@ -2089,6 +2090,7 @@ extension SessionStore {
                 limit: rawPageLimit,
                 consistency: consistency
             )
+            SessionListDiagnostics.refreshStage("page_received", startedAt: pageStartedAt, source: source)
             try Task.checkCancellation()
             guard isCurrentWorkspaceIdentity(workspace, hostScope: expectedHostScope),
                   isRequestCurrent?() != false else {

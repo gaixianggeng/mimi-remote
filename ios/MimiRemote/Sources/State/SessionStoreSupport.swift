@@ -146,6 +146,12 @@ enum SessionListDiagnostics {
         category: "SessionList"
     )
 
+    static func refreshStage(_ stage: String, startedAt: TimeInterval, source: SessionListRequestSource) {
+        // 用单调时钟测等待，不受系统校时影响；阶段名只由代码提供，不记录用户内容。
+        let milliseconds = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000).rounded())
+        logger.info("source=\(source.rawValue, privacy: .public) stage=\(stage, privacy: .public) duration_ms=\(milliseconds) cancelled=\(Task.isCancelled)")
+    }
+
     static func completed(
         source: SessionListRequestSource,
         consistency: SessionListConsistency,
