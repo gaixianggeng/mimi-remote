@@ -350,6 +350,7 @@ actor CodexAppServerConnection {
             // app-server 要求客户端声明能力；这里保持最小能力集，避免移动端误触实验外的鉴权路径。
             "capabilities": .object([
                 "experimentalApi": .bool(true),
+                "mimiDynamicTaskToolsV1": .bool(true),
                 "requestAttestation": .bool(false)
             ])
         ])

@@ -39,6 +39,140 @@ private actor FirstConfigRequestGate {
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testMimiTaskIdentityUsesCallIDInsteadOfJSONRPCIDAndRejectsReplay() async throws {
+        let project = AgentProject(id: "proj_identity", name: "Identity", path: "/tmp/identity")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "identity-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task { try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let initialList = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let caller = #"{"id":"caller-identity","sessionId":"caller-identity","preview":"","ephemeral":false,"createdAt":1,"updatedAt":2,"status":{"type":"idle"},"cwd":"/tmp/identity","source":"appServer","name":"Caller","turns":[]}"#
+        transportResponse(transport, id: initialList.id, result: "{\"data\":[\(caller)],\"nextCursor\":null}")
+        _ = try await pageTask.value
+
+        let requestCursor = await transport.sentMessages().count
+        for callID in ["call-one", "call-two"] {
+            transport.enqueue(#"{"id":"reused-rpc-id","method":"item/tool/call","params":{"namespace":"mimi_tasks","tool":"list_threads","threadId":"caller-identity","turnId":"turn-identity","callId":"\#(callID)","arguments":{}}}"#)
+        }
+        let first = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/list",
+            after: requestCursor
+        )
+        let second = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/list",
+            after: requestCursor + 1
+        )
+        transportResponse(transport, id: first.id, result: #"{"data":[],"nextCursor":null}"#)
+        transportResponse(transport, id: second.id, result: #"{"data":[],"nextCursor":null}"#)
+
+        transport.enqueue(#"{"id":"replay-rpc-id","method":"item/tool/call","params":{"namespace":"mimi_tasks","tool":"list_threads","threadId":"caller-identity","turnId":"turn-identity","callId":"call-one","arguments":{}}}"#)
+        let replay = try await waitForFakeAppServerResponse(transport, id: .string("replay-rpc-id"))
+        let text = replay.result?.objectValue?["contentItems"]?.arrayValue?.first?.objectValue?["text"]?.stringValue
+        XCTAssertEqual(replay.result?.objectValue?["success"]?.boolValue, false)
+        XCTAssertEqual(text, #"{"error":"duplicate_call"}"#)
+    }
+
+    func testMimiTaskDispatcherRejectsWrongNamespaceWithSafeToolResult() async throws {
+        let project = AgentProject(id: "proj_tasks", name: "Tasks", path: "/tmp/tasks")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "tasks-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        transportResponse(transport, id: list.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await pageTask.value
+
+        transport.enqueue(#"{"id":"tool-wrong-namespace","method":"item/tool/call","params":{"namespace":"other","tool":"read_thread","threadId":"caller","turnId":"turn-caller","callId":"call-wrong-namespace","arguments":{"threadId":"target"}}}"#)
+        let response = try await waitForFakeAppServerResponse(transport, id: .string("tool-wrong-namespace"))
+        let result = try XCTUnwrap(response.result?.objectValue)
+        XCTAssertEqual(result["success"]?.boolValue, false)
+        let item = try XCTUnwrap(result["contentItems"]?.arrayValue?.first?.objectValue)
+        XCTAssertEqual(item["type"]?.stringValue, "inputText")
+        XCTAssertEqual(item["text"]?.stringValue, #"{"error":"unsupported_tool"}"#)
+    }
+
+    func testMimiTaskWaitTreatsIdleThreadAsTerminalWithoutWaiting() async throws {
+        let project = AgentProject(id: "proj_wait", name: "Wait", path: "/tmp/wait")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "wait-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let thread = #"{"id":"caller-wait","sessionId":"caller-wait","preview":"","ephemeral":false,"createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"cwd":"/tmp/wait","source":"appServer","name":"Caller","turns":[]}"#
+        transportResponse(transport, id: list.id, result: "{\"data\":[\(thread)],\"nextCursor\":null}")
+        _ = try await pageTask.value
+
+        let readCursor = await transport.sentMessages().count
+        transport.enqueue(#"{"id":"tool-wait","method":"item/tool/call","params":{"namespace":"mimi_tasks","tool":"wait_threads","threadId":"caller-wait","turnId":"turn-wait","callId":"call-wait","arguments":{"threadIds":["caller-wait"],"timeoutMs":120000}}}"#)
+        let read = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/read",
+            after: readCursor
+        )
+        transportResponse(transport, id: read.id, result: "{\"thread\":\(thread)}")
+        let response = try await waitForFakeAppServerResponse(transport, id: .string("tool-wait"))
+        XCTAssertEqual(response.result?.objectValue?["success"]?.boolValue, true)
+        let text = response.result?.objectValue?["contentItems"]?.arrayValue?.first?.objectValue?["text"]?.stringValue
+        XCTAssertTrue(text?.contains(#""timedOut":false"#) == true)
+    }
+
+    func testMimiTaskReadReturnsRecentTaskOutput() async throws {
+        let project = AgentProject(id: "proj_read", name: "Read", path: "/tmp/read")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "read-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let thread = #"{"id":"caller-read","sessionId":"caller-read","preview":"","ephemeral":false,"createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"cwd":"/tmp/read","source":"appServer","name":"Caller","turns":[]}"#
+        transportResponse(transport, id: list.id, result: "{\"data\":[\(thread)],\"nextCursor\":null}")
+        _ = try await pageTask.value
+
+        transport.enqueue(#"{"id":"tool-read","method":"item/tool/call","params":{"namespace":"mimi_tasks","tool":"read_thread","threadId":"caller-read","turnId":"turn-read","callId":"call-read","arguments":{"threadId":"caller-read"}}}"#)
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        transportResponse(transport, id: read.id, result: "{\"thread\":\(thread)}")
+        let turns = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportResponse(
+            transport,
+            id: turns.id,
+            result: #"{"data":[{"id":"turn-read","itemsView":"summary","status":"completed","items":[{"type":"agentMessage","id":"answer-read","text":"任务已经完成","phase":"final_answer"}]}],"nextCursor":null}"#
+        )
+        let response = try await waitForFakeAppServerResponse(transport, id: .string("tool-read"))
+        let text = response.result?.objectValue?["contentItems"]?.arrayValue?.first?.objectValue?["text"]?.stringValue
+        XCTAssertTrue(text?.contains("任务已经完成") == true)
+    }
+
     func testClaudeAuthoritativeFirstPageRequestsHistoryRefresh() async throws {
         let project = AgentProject(
             id: "proj_claude_history_refresh",
