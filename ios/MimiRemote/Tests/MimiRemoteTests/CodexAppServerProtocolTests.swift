@@ -445,7 +445,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(request.method, "turn/start")
         XCTAssertEqual(params["cwd"]?.stringValue, "/Users/me/repo")
         XCTAssertNil(params["model"]?.stringValue)
-        XCTAssertEqual(params["effort"]?.stringValue, "xhigh")
+        XCTAssertEqual(params["effort"]?.stringValue, "medium")
         XCTAssertEqual(params["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client-1")
         XCTAssertEqual(params["collaborationMode"]?.objectValue?["mode"]?.stringValue, "default")
