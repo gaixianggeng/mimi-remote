@@ -55,7 +55,7 @@ func runLinuxTray(agent string, show, quit bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		if quit {
-			return nil
+			return errors.New("无法连接桌面会话 D-Bus，未能确认现有托盘已退出")
 		}
 		return errors.New("无法连接桌面会话 D-Bus，请在登录后的 Linux 桌面启动托盘")
 	}

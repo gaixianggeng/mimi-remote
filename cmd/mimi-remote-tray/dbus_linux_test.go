@@ -116,3 +116,10 @@ printf '%s\n' '{"version":"test","endpoint":"http://127.0.0.1:8787","process_ok"
 		t.Fatal("repeat quit must be harmless", err)
 	}
 }
+
+func TestLinuxTrayQuitFailsWhenSessionBusIsUnavailable(t *testing.T) {
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "missing-bus"))
+	if err := runLinuxTray("", false, true); err == nil {
+		t.Fatal("quit reported success without reaching the desktop session bus")
+	}
+}

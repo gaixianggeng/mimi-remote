@@ -20,7 +20,7 @@ bash ./scripts/install-linux.sh install
 bash ./scripts/install-linux-tray.sh install
 ```
 
-程序安装至 `~/.local/bin/mimi-remote-tray`，应用菜单提供 **Mimi Remote**，XDG 自启动文件位于 `~/.config/autostart/mimi-remote.desktop`。升级保留该文件中的 `Hidden=true` 偏好。无图形会话时仅安装文件；下一次桌面登录再启动。`MIMI_TRAY_NO_START=1` 可在安装时跳过立即启动。
+程序安装至 `~/.local/bin/mimi-remote-tray`，应用菜单提供 **Mimi Remote**，其入口和托盘资源安装至 `${XDG_DATA_HOME:-~/.local/share}`；XDG 自启动文件位于 `${XDG_CONFIG_HOME:-~/.config}/autostart/mimi-remote.desktop`。升级同时保留 `Hidden=true` 和 GNOME 的 `X-GNOME-Autostart-enabled=false` 禁用偏好。无图形会话时仅安装文件；下一次桌面登录再启动。`MIMI_TRAY_NO_START=1` 可在安装时跳过立即启动。
 
 ```bash
 # 手动打开终端界面；重复运行使用已有托盘实例
@@ -29,7 +29,8 @@ bash ./scripts/install-linux-tray.sh install
 # 直接在当前终端中运行；不要求启动托盘或图形会话
 "$HOME/.local/bin/mimi-remote-tray" --terminal status
 
-# 只退出托盘，agentd、Codex App Server 与已打开的终端继续运行
+# 只退出托盘，agentd、Codex App Server 与已打开的终端继续运行；
+# 命令必须能连接桌面会话 D-Bus，否则会报错且不会误报退出成功
 "$HOME/.local/bin/mimi-remote-tray" --quit
 
 # 独立回滚/卸载托盘；主安装器 rollback/uninstall 也会调用它

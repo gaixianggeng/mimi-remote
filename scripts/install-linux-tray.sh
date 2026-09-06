@@ -9,14 +9,15 @@ mode="${1:-install}"
 case "$mode" in install|upgrade|rollback|uninstall) ;; *) echo '用法：install-linux-tray.sh [install|upgrade|rollback|uninstall]' >&2; exit 2 ;; esac
 [[ "$(uname -s)" == Linux && "$(id -u)" != 0 ]] || { echo '请在 Linux 上以普通用户安装托盘，不要使用 sudo。' >&2; exit 1; }
 
-tray_data="$HOME/.local/share/mimi-remote"
+tray_xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+tray_data="$tray_xdg_data/mimi-remote"
 tray_binary="$HOME/.local/bin/mimi-remote-tray"
 tray_config="${XDG_CONFIG_HOME:-$HOME/.config}"
 previous="$tray_data/tray.previous"
-[[ "$HOME$tray_config" != *$'\n'* && "$HOME$tray_config" != *$'\r'* ]] || { echo '桌面入口路径不能包含换行符。' >&2; exit 1; }
+[[ "$HOME$tray_config$tray_xdg_data" != *$'\n'* && "$HOME$tray_config$tray_xdg_data" != *$'\r'* ]] || { echo '桌面入口路径不能包含换行符。' >&2; exit 1; }
 # Snapshot indexes include the helper itself, so upgrades and rollback use
 # matching binaries and desktop metadata, including absent-file markers.
-files=("$tray_binary" "$tray_data/mimi.png" "$HOME/.local/share/applications/mimi-remote.desktop" "$tray_config/autostart/mimi-remote.desktop" "$tray_data/install-linux-tray.sh")
+files=("$tray_binary" "$tray_data/mimi.png" "$tray_xdg_data/applications/mimi-remote.desktop" "$tray_config/autostart/mimi-remote.desktop" "$tray_data/install-linux-tray.sh")
 modes=(755 644 644 644 755)
 for icon in mimi-remote-symbolic mimi-remote-attention-symbolic mimi-remote-offline-symbolic; do
   files+=("$tray_data/icons/$icon.svg")
@@ -116,8 +117,9 @@ else
   {
     cat "$TRAY_ROOT/packaging/linux/mimi-remote.desktop"
     printf 'Exec="%s"\nIcon=%s/mimi.png\n' "$desktop_exec" "$tray_data"
-    if [[ -f "${files[3]}" ]] && grep -Eq '^Hidden=true[[:space:]]*$' "${files[3]}"; then
-      echo 'Hidden=true'
+    if [[ -f "${files[3]}" ]]; then
+      grep -Eq '^Hidden=true[[:space:]]*$' "${files[3]}" && echo 'Hidden=true'
+      grep -Eq '^X-GNOME-Autostart-enabled=false[[:space:]]*$' "${files[3]}" && echo 'X-GNOME-Autostart-enabled=false'
     fi
   } >"$stage/source/3"
 fi

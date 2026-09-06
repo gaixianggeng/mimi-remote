@@ -8,7 +8,8 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     base=pathlib.Path(temporary)
     task_home=base/'home with spaces %'
     task_home.mkdir()
-    env=dict(os.environ, HOME=str(task_home), MIMI_TRAY_NO_START='1')
+    xdg_data=base/'custom data home'
+    env=dict(os.environ, HOME=str(task_home), XDG_DATA_HOME=str(xdg_data), MIMI_TRAY_NO_START='1')
     env.pop('XDG_CONFIG_HOME',None)
     tools_dir=base/'bin';tools_dir.mkdir()
     # Keep the self-test useful in root-owned CI containers without installing
@@ -35,20 +36,26 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
         result=subprocess.run(['bash',str(folder/'scripts/install-linux-tray.sh'),mode],env=env,capture_output=True,text=True)
         assert (result.returncode==0)==ok,(mode,result.stdout,result.stderr)
     binary=task_home/'.local/bin/mimi-remote-tray'
-    desktop=task_home/'.local/share/applications/mimi-remote.desktop'
+    desktop=xdg_data/'applications/mimi-remote.desktop'
     autostart=task_home/'.config/autostart/mimi-remote.desktop'
     def version():return subprocess.check_output([str(binary),'version'],text=True).strip()
     run(one,'install');assert version()=='1.0.0'
     assert ' --show' in desktop.read_text() and ' --show' not in autostart.read_text()
     assert '%%' in desktop.read_text() and 'Exec="' in desktop.read_text()
     assert binary.stat().st_mode&0o777==0o755
-    icons=task_home/'.local/share/mimi-remote/icons'
+    icons=xdg_data/'mimi-remote/icons'
     assert len(list(icons.glob('*-symbolic.svg')))==3
+    binary.write_text('#!/bin/sh\ncase "$1" in version) echo 1.0.0;; --quit) exit 9;; esac\n')
+    binary.chmod(0o755)
+    run(two,'upgrade',False);assert version()=='1.0.0' and desktop.exists() and autostart.exists()
+    shutil.copy2(one/'mimi-remote-tray',binary)
     autostart.write_text(autostart.read_text()+'Hidden=true\n')
     run(two,'upgrade');assert version()=='1.1.0'
     assert 'Hidden=true' in autostart.read_text(),'upgrade re-enabled disabled autostart'
     run(two,'rollback');assert version()=='1.0.0'
-    run(two,'rollback');assert version()=='1.1.0'
+    autostart.write_text(autostart.read_text().replace('Hidden=true\n','')+'X-GNOME-Autostart-enabled=false\n')
+    run(two,'upgrade');assert version()=='1.1.0'
+    assert 'X-GNOME-Autostart-enabled=false' in autostart.read_text(),'upgrade re-enabled GNOME-disabled autostart'
     (one/'mimi-remote-tray').write_text('#!/bin/sh\necho incompatible\n')
     run(one,'upgrade',False);assert version()=='1.1.0'
     # Simulate a partially installed candidate: fail one atomic rename, then
@@ -65,5 +72,6 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     assert not binary.exists() and not desktop.exists() and not autostart.exists()
     assert not list(icons.glob('*-symbolic.svg'))
     assert config.read_text()=='private-config'
-    print('Linux 托盘安装回归通过：安装、空格/百分号路径、禁用自启动保留、升级、回滚、失败恢复、重复卸载。')
+    assert not (task_home/'.local/share/applications/mimi-remote.desktop').exists(),'ignored XDG_DATA_HOME'
+    print('Linux 托盘安装回归通过：安装、XDG 数据目录、空格/百分号路径、两种禁用自启动标记、升级、回滚、失败恢复、重复卸载。')
 PY
