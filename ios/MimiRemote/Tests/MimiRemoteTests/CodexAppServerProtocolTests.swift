@@ -818,7 +818,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(standardMode["mode"]?.stringValue, "default")
         let standardSettings = try XCTUnwrap(standardMode["settings"]?.objectValue)
         XCTAssertNil(standardSettings["model"]?.stringValue)
-        XCTAssertEqual(standardSettings["reasoning_effort"]?.stringValue, "xhigh")
+        XCTAssertEqual(standardSettings["reasoning_effort"]?.stringValue, "medium")
         XCTAssertEqual(standardSettings["developer_instructions"], .null)
     }
 
@@ -827,7 +827,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let decoded = try JSONDecoder().decode(CodexAppServerTurnOptions.self, from: legacy)
 
         XCTAssertNil(decoded.model)
-        XCTAssertEqual(decoded.reasoningEffort, .xhigh)
+        XCTAssertEqual(decoded.reasoningEffort, .medium)
         XCTAssertEqual(decoded.approvalPolicy, .onRequest)
         XCTAssertEqual(decoded.sandboxMode, .dangerFullAccess)
         XCTAssertEqual(decoded.collaborationMode, .default)
@@ -1490,7 +1490,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
     }
 
     func testCodexStandardMenuUsesModelSpecificFourthEffort() {
-        let options = CodexAppServerModelOption.builtInFallback
+        let options = CodexAppServerModelOption.builtInFallback.filter { $0.model.hasPrefix("gpt-5.6-") }
         let sol = options[0]
         let terra = options[1]
         let luna = options[2]
@@ -1528,7 +1528,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             [.medium, .high, .xhigh, .max]
         )
         XCTAssertEqual(sol.defaultReasoningEffort, "xhigh")
-        XCTAssertTrue(sol.isDefault)
+        XCTAssertFalse(sol.isDefault)
         XCTAssertEqual(terra.defaultReasoningEffort, "medium")
         XCTAssertEqual(luna.defaultReasoningEffort, "medium")
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.ultra, option: sol))
@@ -1546,7 +1546,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
     }
 
-    func testPreferredCodexDefaultOverridesServerDefaultWithSolXHigh() throws {
+    func testPreferredCodexDefaultOverridesServerDefaultWithGPT6Medium() throws {
         let options = [
             CodexAppServerModelOption(
                 id: "gpt-5.6-terra",
@@ -1556,12 +1556,12 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 supportedReasoningEfforts: ["medium", "high", "xhigh"]
             ),
             CodexAppServerModelOption(
-                id: "gpt-5.6-sol",
-                title: "GPT-5.6 Sol",
+                id: "gpt-6-astra",
+                title: "GPT-6 Astra",
                 provider: "openai",
                 runtimeProvider: "codex",
                 supportedReasoningEfforts: ["medium", "high", "xhigh", "ultra"],
-                defaultReasoningEffort: "medium"
+                defaultReasoningEffort: "xhigh"
             )
         ]
         let option = try XCTUnwrap(
@@ -1572,14 +1572,14 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
 
-        XCTAssertEqual(option.model, "gpt-5.6-sol")
+        XCTAssertEqual(option.model, "gpt-6-astra")
         XCTAssertEqual(
             ModelReasoningGridCatalog.preferredDefaultEffort(
                 runtimeProvider: "codex",
                 option: option,
                 layout: layout
             ),
-            .xhigh
+            .medium
         )
     }
 
@@ -1672,7 +1672,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 layout: layout
             ),
             .medium,
-            "账号没有 Sol 时必须使用目录内可发送组合，不能硬编码未授权模型"
+            "账号没有 GPT-6 时必须使用目录内可发送组合，不能硬编码未授权模型"
         )
     }
 
@@ -1761,8 +1761,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(options.serviceTier)
     }
 
-    func testLeavingDeveloperMaxFallsBackToStandardCodexEffort() {
-        let sol = CodexAppServerModelOption.builtInFallback[0]
+    func testLeavingDeveloperMaxFallsBackToStandardCodexEffort() throws {
+        let sol = try XCTUnwrap(CodexAppServerModelOption.builtInFallback.first { $0.model == "gpt-5.6-sol" })
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: [sol])
 
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.max, option: sol))

@@ -157,10 +157,10 @@ enum ModelReasoningGridCatalog {
             }) {
                 return opus
             }
-        } else if let sol = candidates.first(where: {
-            $0.model.caseInsensitiveCompare("gpt-5.6-sol") == .orderedSame
+        } else if let astra = candidates.first(where: {
+            $0.model.caseInsensitiveCompare("gpt-6-astra") == .orderedSame
         }) {
-            return sol
+            return astra
         }
 
         // 账号尚未获得目标模型时不能发送目录外 ID；退回该 runtime 的可用默认项。
@@ -173,7 +173,7 @@ enum ModelReasoningGridCatalog {
         layout: ModelReasoningGridLayout
     ) -> CodexAppServerReasoningEffort? {
         let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
-        let preferred: CodexAppServerReasoningEffort = normalizedRuntime == "claude" ? .high : .xhigh
+        let preferred: CodexAppServerReasoningEffort = normalizedRuntime == "claude" ? .high : .medium
         return normalizedVisibleEffort(
             option: option,
             current: preferred,
