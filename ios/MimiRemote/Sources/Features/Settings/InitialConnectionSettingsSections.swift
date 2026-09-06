@@ -263,7 +263,8 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
                 }
                 .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                .buttonBorderShape(.roundedRectangle(radius: WorkbenchPageLayout.controlCornerRadius))
+                // 不覆盖 buttonBorderShape：沿用系统给 bordered 按钮的默认外形，
+                // 和连接测速、手动连接里的按钮保持同一套圆角。
                 // 顶部与左右留白一致；下方普通行自带留白，避免主操作和次级入口过于分离。
                 .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
                 .padding(.bottom, 8)

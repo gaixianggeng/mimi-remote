@@ -133,7 +133,6 @@ struct HostInstallationSetupView: View {
                     )
                 }
                 .buttonStyle(.bordered)
-                .buttonBorderShape(.roundedRectangle(radius: WorkbenchPageLayout.controlCornerRadius))
                 .tint(tokens.secondaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
