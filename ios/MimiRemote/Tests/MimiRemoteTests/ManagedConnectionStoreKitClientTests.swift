@@ -82,15 +82,24 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
         )
         let session = try SKTestSession(contentsOf: configurationURL)
         session.resetToDefaultState()
-        session.clearTransactions()
+        try deleteAllTransactions(in: session)
         session.disableDialogs = true
         addTeardownBlock {
             session.resetToDefaultState()
-            session.clearTransactions()
+            for transaction in session.allTransactions() {
+                try session.deleteTransaction(identifier: transaction.identifier)
+            }
         }
         let client = LiveManagedConnectionStoreKitClient()
         _ = try await waitUntilTrialEligible(client)
         return (session, client)
+    }
+
+    private func deleteAllTransactions(in session: SKTestSession) throws {
+        // 删除消费试用的测试交易，避免后续测试继承同一订阅组的购买记录。
+        for transaction in session.allTransactions() {
+            try session.deleteTransaction(identifier: transaction.identifier)
+        }
     }
 
     private func waitUntilNotVerified(
@@ -142,7 +151,8 @@ final class ManagedConnectionStoreKitClientTests: XCTestCase {
     private func waitUntilTrialEligible(
         _ client: LiveManagedConnectionStoreKitClient
     ) async throws -> [ManagedConnectionProduct] {
-        let deadline = Date().addingTimeInterval(10)
+        // 删除交易后 StoreKit 的资格仍可能保留约 15 秒，等待实际恢复再开始测试。
+        let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             let products = try await client.products()
             if products.count == ManagedConnectionProductID.all.count,
