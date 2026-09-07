@@ -21,7 +21,9 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     @Published private(set) var products: [ManagedConnectionProduct] = []
-    @Published private(set) var status: Status = .loading
+    @Published private(set) var status: Status = .loading {
+        didSet { stateRevision &+= 1 }
+    }
     @Published private(set) var currentGrant: ManagedConnectionEntitlementGrant?
     private(set) var currentEvidence: ManagedConnectionTransactionEvidence?
 
@@ -31,6 +33,10 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     private let sleepUntil: @Sendable (Date) async throws -> Void
     private var operationGeneration = 0
     private var productGeneration = 0
+    // 操作开始序号不能识别同一操作稍后提交的结果；页面回滚还须检查状态版本。
+    private var stateRevision = 0
+    private var authoritativeGeneration: Int?
+    private var needsEntitlementRefresh = false
     // 购买等待期间仍须处理撤销事件，因此用计数覆盖这两个操作的重叠区间。
     @Published private var activeTransactionOperations = 0
 
@@ -56,15 +62,19 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         let previousGrant = usableCurrentGrant
         let previousStatus = status
         if activeTransactionOperations == 0 { status = .loading }
+        let revision = stateRevision
         do {
             try await reloadProducts()
-            guard isLatest(generation), activeTransactionOperations == 0 else { return }
+            guard isLatest(generation), stateRevision == revision,
+                  activeTransactionOperations == 0 else { return }
             await refreshEntitlement()
         } catch is CancellationError {
-            guard isLatest(generation), activeTransactionOperations == 0 else { return }
+            guard isLatest(generation), stateRevision == revision,
+                  activeTransactionOperations == 0 else { return }
             restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
         } catch {
-            guard isLatest(generation), activeTransactionOperations == 0 else { return }
+            guard isLatest(generation), stateRevision == revision,
+                  activeTransactionOperations == 0 else { return }
             restore(previousGrant, otherwise: .failed(userFacingMessage(for: error)))
         }
     }
@@ -87,6 +97,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         let generation = productGeneration
         do {
             let loadedProducts = try await storeKit.products()
+            try Task.checkCancellation()
             guard generation == productGeneration else { return }
             products = loadedProducts
         } catch {
@@ -97,7 +108,10 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
     func refreshEntitlement() async {
         // 系统支付/恢复弹窗也会触发前台刷新；普通读取不能抢占交易处理。
-        guard activeTransactionOperations == 0 else { return }
+        guard activeTransactionOperations == 0 else {
+            needsEntitlementRefresh = true
+            return
+        }
         let generation = beginOperation()
         await refreshEntitlement(generation: generation)
     }
@@ -105,12 +119,25 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     func observeTransactionUpdates() async {
         // Ask to Buy、另一设备购买等交易会在 App 运行期间异步完成。
         // 收到变化后仍走统一的服务端校验路径，监听器本身不直接授予权益。
+        // 单个商品任务合并重复通知，慢商品请求不会挡住撤销事件；监听结束时一起取消。
+        let refreshes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let productRefresh = Task {
+            for await _ in refreshes.stream {
+                guard !Task.isCancelled else { return }
+                await refreshProducts()
+            }
+        }
+        defer {
+            refreshes.continuation.finish()
+            productRefresh.cancel()
+        }
         for await update in storeKit.transactionUpdates() {
             guard !Task.isCancelled else { return }
             switch update {
             case .verified(let evidence):
                 await resolveTransactionUpdate(evidence)
-                await refreshProducts()
+                await refreshDeferredEntitlement()
+                refreshes.continuation.yield(())
             case .unverified:
                 // 未验证事件本身不能改变权益；重新读取 Apple 当前已验证权益。
                 await refreshEntitlement()
@@ -159,6 +186,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             guard isLatest(generation) else { return }
             currentGrant = grant
             currentEvidence = evidence
+            authoritativeGeneration = generation
             status = .entitled(grant.entitlement)
             await storeKit.finish(transactionID: evidence.transactionID)
         } catch is CancellationError {
@@ -187,6 +215,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             case .unverified:
                 currentGrant = nil
                 currentEvidence = nil
+                authoritativeGeneration = generation
                 status = .failed(L10n.text("ui.managed_subscription_unverified"))
                 return
             case .verified(let evidence):
@@ -195,6 +224,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     guard isLatest(generation) else { return }
                     currentGrant = grant
                     currentEvidence = evidence
+                    authoritativeGeneration = generation
                     status = .entitled(grant.entitlement)
                     await storeKit.finish(transactionID: evidence.transactionID)
                     return
@@ -212,6 +242,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
         currentGrant = nil
         currentEvidence = nil
+        authoritativeGeneration = generation
         status = .available
     }
 
@@ -219,6 +250,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         guard activeTransactionOperations == 0,
               ManagedConnectionProductID.all.contains(productID) else { return }
         await performPurchase(productID: productID)
+        await refreshDeferredEntitlement()
         await refreshProducts()
     }
 
@@ -248,6 +280,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     guard isLatest(generation) else { return }
                     currentGrant = grant
                     currentEvidence = evidence
+                    authoritativeGeneration = generation
                     status = .entitled(grant.entitlement)
                     // 服务端是权益事实来源。只有它接受两份 JWS 后，才结束 StoreKit 交易。
                     await storeKit.finish(transactionID: evidence.transactionID)
@@ -271,6 +304,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     func restorePurchases() async {
         guard activeTransactionOperations == 0 else { return }
         await performRestore()
+        await refreshDeferredEntitlement()
         await refreshProducts()
     }
 
@@ -293,6 +327,14 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             guard isLatest(generation) else { return }
             restore(previousGrant, otherwise: .failed(userFacingMessage(for: error)))
         }
+    }
+
+    private func refreshDeferredEntitlement() async {
+        guard activeTransactionOperations == 0, needsEntitlementRefresh else { return }
+        needsEntitlementRefresh = false
+        // 当前操作已提交授权或拒绝时，不用旧的前台通知再次读取并覆盖它。
+        guard authoritativeGeneration != operationGeneration, !Task.isCancelled else { return }
+        await refreshEntitlement()
     }
 
     var isBusy: Bool {
@@ -410,6 +452,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         case .available, .expired, .revoked:
             currentGrant = nil
             currentEvidence = nil
+            authoritativeGeneration = operationGeneration
             status = failureStatus
         case .failed:
             if let apiError = error as? ManagedConnectionEntitlementAPIError,
@@ -418,6 +461,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             {
                 currentGrant = nil
                 currentEvidence = nil
+                authoritativeGeneration = operationGeneration
                 status = failureStatus
             } else {
                 restore(fallbackGrant, otherwise: failureStatus)

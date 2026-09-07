@@ -4,6 +4,140 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionEntitlementStoreTests: XCTestCase {
+    func testDeferredMaintenanceRefreshRenewsAfterPaymentExpiresAndIsCancelled() async {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let initial = Self.grant(now: base)
+        let renewed = ManagedConnectionEntitlementGrant(
+            entitlement: initial.entitlement, token: "renewed-token",
+            tokenExpiresAt: base.addingTimeInterval(1_800)
+        )
+        var currentTime = base
+        let kit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(initial))
+        let sleeper = SleepUntilFake()
+        await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: kit, entitlementAPI: api, now: { currentTime },
+            sleepUntil: { try await sleeper.sleep(until: $0) }
+        )
+        await store.refreshEntitlement()
+        await api.setResult(.success(renewed))
+        await kit.pausePurchase()
+        let purchase = Task { await store.purchase(productID: ManagedConnectionProductID.annual) }
+        await waitUntil { await kit.isPurchasePaused }
+        let maintenance = Task { await store.maintainCurrentGrant() }
+        await waitUntil { await sleeper.hasWaiter }
+        currentTime = initial.tokenExpiresAt.addingTimeInterval(-60)
+        await sleeper.resume()
+        await waitUntil { await sleeper.scheduledDate == initial.tokenExpiresAt }
+        currentTime = initial.tokenExpiresAt.addingTimeInterval(1)
+        await sleeper.resume()
+        await maintenance.value
+        // 支付弹窗关闭的前台通知也可能先于购买回调；重复通知应合并。
+        await store.refreshEntitlement()
+        await kit.resumePurchase()
+        await purchase.value
+
+        let resolveCount = await api.resolveCount
+        let syncCount = await kit.syncCount
+        XCTAssertEqual(store.currentGrant, renewed)
+        XCTAssertEqual(store.status, .entitled(renewed.entitlement))
+        XCTAssertEqual(resolveCount, 2)
+        XCTAssertEqual(syncCount, 0)
+    }
+
+    func testDeferredRefreshRunsAfterCancelledRestore() async {
+        let kit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        await kit.pauseSync()
+        await kit.setSyncError(CancellationError())
+        let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+        let restore = Task { await store.restorePurchases() }
+        await waitUntil { await kit.isSyncPaused }
+        await store.refreshEntitlement()
+        await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        await kit.resumeSync()
+        await restore.value
+
+        let resolveCount = await api.resolveCount
+        XCTAssertEqual(store.currentGrant, Self.grant)
+        XCTAssertEqual(resolveCount, 1)
+    }
+
+    func testProductLoadFailureCannotUndoConcurrentServerDecision() async {
+        for error in [TestError.serverUnavailable as Error, CancellationError()] {
+            let kit = StoreKitFake()
+            let api = EntitlementAPIFake(result: .success(Self.grant))
+            await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+            let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+            await store.refreshEntitlement()
+            await api.pauseNextResolve()
+            await api.setResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "revoked")))
+            let refresh = Task { await store.refreshEntitlement() }
+            await waitUntil { await api.isResolvePaused }
+            await kit.pauseNextProductLoad()
+            let load = Task { await store.load() }
+            await waitUntil { await kit.isProductLoadPaused }
+            await api.resumeResolve()
+            await refresh.value
+            XCTAssertEqual(store.status, .revoked)
+            await kit.setProductsError(error)
+            await kit.resumeProductLoad()
+            await load.value
+
+            XCTAssertEqual(store.status, .revoked)
+            XCTAssertNil(store.currentGrant)
+            XCTAssertNil(store.currentEvidence)
+        }
+    }
+
+    func testSlowProductRefreshDoesNotBlockRevocationAndCoalescesUpdates() async {
+        let kit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+        await store.load()
+        await kit.pauseNextProductLoad()
+        let observer = Task { await store.observeTransactionUpdates() }
+        await kit.sendTransactionUpdate(.verified(Self.evidence))
+        await waitUntil { await kit.isProductLoadPaused }
+        await api.setResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "revoked")))
+        await kit.sendTransactionUpdate(.verified(Self.evidence))
+        await kit.sendTransactionUpdate(.verified(Self.evidence))
+        await waitUntil { await kit.finishedTransactionIDs.count == 3 }
+
+        XCTAssertEqual(store.status, .revoked)
+        XCTAssertNil(store.currentGrant)
+        let pausedCount = await kit.productsCount
+        XCTAssertEqual(pausedCount, 2)
+        await kit.setProducts([Self.updatedProduct])
+        await kit.resumeProductLoad()
+        await waitUntil { store.products == [Self.updatedProduct] }
+        observer.cancel()
+        await observer.value
+        let productsCount = await kit.productsCount
+        XCTAssertEqual(productsCount, 3)
+    }
+
+    func testStoppingTransactionObserverDiscardsPausedProductResult() async {
+        let kit = StoreKitFake()
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: kit, entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await kit.setProducts([Self.oldProduct])
+        await store.load()
+        await kit.setProducts([Self.updatedProduct])
+        await kit.pauseNextProductLoad()
+        let observer = Task { await store.observeTransactionUpdates() }
+        await kit.sendTransactionUpdate(.verified(Self.evidence))
+        await waitUntil { await kit.isProductLoadPaused }
+        observer.cancel()
+        await observer.value
+        await kit.resumeProductLoad()
+        // 刷新任务已取消，即使底层请求稍后返回，也不得提交商品结果。
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(store.products, [Self.oldProduct])
+    }
+
     func testForegroundRefreshAndPageLoadCannotDiscardPurchaseSuccess() async {
         let storeKit = StoreKitFake()
         await storeKit.setPurchase(.success(Self.evidence))
@@ -802,6 +936,7 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     private var syncError: Error?
     private var productsError: Error?
     private var purchaseError: Error?
+    private(set) var productsCount = 0
     private var productValues: [ManagedConnectionProduct] = []
     private var shouldPausePurchase = false
     private var purchaseContinuation: CheckedContinuation<Void, Never>?
@@ -850,12 +985,13 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     }
 
     func products() async throws -> [ManagedConnectionProduct] {
-        if let productsError { throw productsError }
+        productsCount += 1
         let result = productValues
         if shouldPauseProductLoad {
             shouldPauseProductLoad = false
             await withCheckedContinuation { productContinuation = $0 }
         }
+        if let productsError { throw productsError }
         return result
     }
 
@@ -930,6 +1066,11 @@ private actor SleepUntilFake {
 private actor EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
     private var result: Result<ManagedConnectionEntitlementGrant, Error>
     private(set) var resolveCount = 0
+    private var shouldPauseResolve = false
+    private var resolveContinuation: CheckedContinuation<Void, Never>?
+    var isResolvePaused: Bool { resolveContinuation != nil }
+    func pauseNextResolve() { shouldPauseResolve = true }
+    func resumeResolve() { resolveContinuation?.resume(); resolveContinuation = nil }
 
     init(result: Result<ManagedConnectionEntitlementGrant, Error>) {
         self.result = result
@@ -944,6 +1085,10 @@ private actor EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
         signedTransaction: String
     ) async throws -> ManagedConnectionEntitlementGrant {
         resolveCount += 1
+        if shouldPauseResolve {
+            shouldPauseResolve = false
+            await withCheckedContinuation { resolveContinuation = $0 }
+        }
         return try result.get()
     }
 }
