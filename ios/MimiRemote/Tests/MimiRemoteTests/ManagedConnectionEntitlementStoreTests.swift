@@ -64,6 +64,44 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertEqual(resolveCount, 1)
     }
 
+    func testDeferredRefreshSurvivesCancellationOfPurchaseOrRestoreTask() async {
+        for operation in ["purchase", "restore"] {
+            let kit = StoreKitFake()
+            let api = EntitlementAPIFake(result: .success(Self.grant))
+            let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+            await kit.pausePurchase()
+            await kit.setPurchaseError(CancellationError())
+            await kit.pauseSync()
+            await kit.setSyncError(CancellationError())
+            let transaction = Task {
+                if operation == "purchase" {
+                    await store.purchase(productID: ManagedConnectionProductID.monthly)
+                } else {
+                    await store.restorePurchases()
+                }
+            }
+            await waitUntil {
+                if operation == "purchase" { return await kit.isPurchasePaused }
+                return await kit.isSyncPaused
+            }
+            // 另一调用者已请求刷新并返回；取消交易任务不能顺带取消该请求。
+            await store.refreshEntitlement()
+            await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+            transaction.cancel()
+            if operation == "purchase" {
+                await kit.resumePurchase()
+            } else {
+                await kit.resumeSync()
+            }
+            await transaction.value
+
+            let resolveCount = await api.resolveCount
+            XCTAssertEqual(store.currentGrant, Self.grant, operation)
+            XCTAssertEqual(resolveCount, 1, operation)
+            XCTAssertFalse(store.isBusy, operation)
+        }
+    }
+
     func testProductLoadFailureCannotUndoConcurrentServerDecision() async {
         for error in [TestError.serverUnavailable as Error, CancellationError()] {
             let kit = StoreKitFake()
@@ -1084,6 +1122,7 @@ private actor EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionEntitlementGrant {
+        try Task.checkCancellation()
         resolveCount += 1
         if shouldPauseResolve {
             shouldPauseResolve = false

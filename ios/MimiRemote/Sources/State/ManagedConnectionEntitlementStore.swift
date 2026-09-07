@@ -331,10 +331,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
     private func refreshDeferredEntitlement() async {
         guard activeTransactionOperations == 0, needsEntitlementRefresh else { return }
-        needsEntitlementRefresh = false
-        // 当前操作已提交授权或拒绝时，不用旧的前台通知再次读取并覆盖它。
-        guard authoritativeGeneration != operationGeneration, !Task.isCancelled else { return }
-        await refreshEntitlement()
+        // 刷新由另一调用者请求，不能继承已取消的购买或恢复任务的取消状态。
+        await Task { @MainActor in
+            // 排队期间可能有新交易开始或提交结果，必须在实际消费前重新判断。
+            guard activeTransactionOperations == 0, needsEntitlementRefresh else { return }
+            needsEntitlementRefresh = false
+            // 当前操作已提交授权或拒绝时，不用旧的前台通知再次读取并覆盖它。
+            guard authoritativeGeneration != operationGeneration else { return }
+            await refreshEntitlement()
+        }.value
     }
 
     var isBusy: Bool {
