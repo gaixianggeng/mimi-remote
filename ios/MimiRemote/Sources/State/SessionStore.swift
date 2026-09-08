@@ -234,56 +234,14 @@ final class SessionStore: ObservableObject {
     @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
     /// 首次连接这台电脑的预热窗口。冷启动的隧道建立、agentd 网关上游就绪都允许失败重试，
     /// 窗口内的失败是过程而不是结论，界面必须给出连接过渡而不是错误态。
-    @Published private(set) var isConnectionWarmUpActive = false
-    /// 冷启动会有多个嵌套且并发的持有者：RootView 的启动任务、bootstrap、以及一到多个
-    /// 退避重试循环。用集合而不是"最新一个令牌"，任何一个持有者结束都不会提前关掉
-    /// 别人还开着的窗口，窗口只在最后一个持有者退出时关闭。
-    private var liveConnectionWarmUpTokens: Set<Int> = []
-    private var nextConnectionWarmUpToken = 0
+    /// 只由 `SessionStoreConnectionWarmUp` 的 begin/end 维护，别处不要直接写。
+    @Published var isConnectionWarmUpActive = false
+    var liveConnectionWarmUpTokens: Set<Int> = []
+    var nextConnectionWarmUpToken = 0
 
     var isConnectionSwitchInProgress: Bool {
         connectionSwitchTargetProfileID != nil
     }
-
-    /// 界面唯一应当依赖的“正在建立连接”判断。
-    ///
-    /// 终态优先于预热：凭据失效、连接终止和设备本身没有网络都是明确结论，
-    /// 继续播放连接过渡只会把用户困在一个永远不会好的动画里。
-    var isEstablishingConnection: Bool {
-        guard isConnectionWarmUpActive || isConnectionSwitchInProgress else {
-            return false
-        }
-        guard connectionTermination == nil,
-              !appStore.requiresRePairing,
-              !isNetworkUnavailable else {
-            return false
-        }
-        return true
-    }
-
-    /// 取得一份预热窗口持有权，返回用于释放的令牌。未配置连接时不开窗，
-    /// 避免初次配对页出现连接过渡；此时返回的令牌是无效值，释放它同样无副作用。
-    @discardableResult
-    func beginConnectionWarmUp() -> Int {
-        guard appStore.isConfigured else {
-            return Self.invalidConnectionWarmUpToken
-        }
-        nextConnectionWarmUpToken += 1
-        let token = nextConnectionWarmUpToken
-        liveConnectionWarmUpTokens.insert(token)
-        isConnectionWarmUpActive = true
-        return token
-    }
-
-    /// 释放一份持有权。仍有其他持有者时窗口保持打开，重复释放同一令牌无副作用。
-    func endConnectionWarmUp(_ token: Int) {
-        guard liveConnectionWarmUpTokens.remove(token) != nil else {
-            return
-        }
-        isConnectionWarmUpActive = !liveConnectionWarmUpTokens.isEmpty
-    }
-
-    static let invalidConnectionWarmUpToken = 0
 
     func setConnectionSwitchTargetProfileID(_ profileID: String?) {
         guard connectionSwitchTargetProfileID != profileID else {
