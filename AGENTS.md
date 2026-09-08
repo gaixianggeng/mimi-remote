@@ -59,7 +59,7 @@
 
 - 默认行为是“先归档，不修改代码”。仅报告 case、发送截图或描述问题，不等于授权立即实现。
 - 只有用户明确表达“处理”“修复”“开始做”“直接改”“现在解决”等执行意图时，才开始修改代码。
-- 用户在报告问题的同一条消息中已经明确要求处理时，先查重并创建或关联 Issue，设为 `In Progress`，随后直接继续实现，不停下来等待二次确认。
+- 用户在当前或前文已明确要求处理时，先查重并创建或关联 Issue，按下述并行上限进入 `In Progress`。随后持续完成范围内的可逆实现和必要验证，常规技术选择不重复确认。
 - 问题大小用于决定组织方式和给出处理建议，不单独构成开始修改代码的授权：
   - 当前 Issue 内的小修正：更新原 Issue 并在当前 Codex 任务中继续，不新建 Issue 或任务。
   - 可独立验收、需要独立分支或 PR：创建独立 Issue。
@@ -98,16 +98,16 @@
 ## 分层验证执行规范
 
 - 开发过程中只运行与当前行为直接相关的最小检查。Go 优先运行变更 package 的测试；iOS 优先运行精确 XCTest selector、相关快照或静态检查。不要在每次微调后运行 quick、完整 XCTest 或全仓测试。
-- 完成最后一次代码修改后，交付或 push 前只执行一次：
+- 完成最后一次代码修改后，交付或 push 前执行一轮：
   - `bash ./scripts/verify-change.sh --plan`
   - `bash ./scripts/verify-change.sh`
 - quick 是普通 Issue 的默认收尾。iOS quick 只在固定 `iPad Pro 13-inch (M5)` Simulator 上编译 App，不编译或运行整个 XCTest 测试包；需要回归测试时，在开发阶段运行与问题直接相关的 selector。
-- 只有以下任一条件成立时，才允许执行一次 `bash ./scripts/verify-change.sh --full`：
+- 只有以下任一条件成立时，才执行 `bash ./scripts/verify-change.sh --full`：
   - 修改 Go/iOS 共享协议、跨栈接口或同一用户链路的多个产品栈；
   - 修改鉴权、权限、持久化格式或迁移、消息 exactly-once、并发、重连等高风险语义；
   - 大范围重构导致直接影响范围无法可靠界定；
   - 准备正式发布，或用户明确要求完整回归。
-- Issue 已完成、改动文件较多、准备提交和“为了保险”都不是 full 的触发条件。quick 或 CI 失败时先定位并重跑失败项，不自动升级为全量流程。
+- Issue 已完成、改动文件较多、准备提交和“为了保险”都不是 full 的触发条件。quick 或 CI 失败时先定位，修复后只重跑失败项；修复引入新影响时补相应检查，不自动升级为全量流程。
 - 真机验证仍只用于相机、通知、Keychain、Tailscale/弱网、性能、发布前专项或 Issue 明确要求。普通 UI、文案、局部状态和单 package 修复不得默认启动真机。
 - 交付时只报告实际执行的检查，并明确列出延后到 PR Gate、真机或发布阶段的范围。不得把 quick 结果表述为完整回归通过。
 
@@ -115,7 +115,7 @@
 
 ### 默认链路
 
-- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机，其次是 available、paired、本地网络可达且未占用的真机；只有完全没有可达真机时才使用未占用的 `iPad Pro 13-inch (M5)` Simulator。已经检测到真机但全部忙时明确失败，不静默跨设备类型回退。
+- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机，其次是 available、paired、本地网络可达且未占用的真机；只有完全没有可达真机时才使用未占用的 `iPad Pro 13-inch (M5)` Simulator。已经检测到真机但全部忙时明确失败，不静默跨设备类型回退。仅保留历史配对记录、当前不可达的设备不参与选择。
 - 同一连接类型下的多台真机先按名称 `iPad Pro`、再按设备名和 UDID 排序；不得依赖列表顺序或随机选择。
 - `build-for-testing`、`test`、视觉快照和 CI 精确固定 `iPad Pro 13-inch (M5)` Simulator；目标缺失或忙时等待或明确失败，禁止回退 iPad mini、其他 iPad 或 iPhone。
 - 所有入口固定使用 `MimiRemote` Scheme 和 `Debug` 配置。
@@ -127,7 +127,7 @@
   - 运行单测：`bash ./scripts/ios-dev.sh test`
   - 构建、安装并启动：`bash ./scripts/ios-dev.sh run`
 - 日常编译、部署和运行只允许通过 `scripts/ios-dev.sh` 进入。`scripts/deploy-ipad.sh` 是统一入口持有租约后的内部真机执行器，不得直接调用；需要刷新覆盖安装时使用 `REFRESH_INSTALL=1 bash ./scripts/ios-dev.sh run`。
-- 所有 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离；不同 Runtime 下的同名 Simulator 也不得共用构建目录。
+- 所有 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离；不同 Runtime 下的同名 Simulator 不共用构建目录。同一真机的 wired 与 localNetwork 连接共用租约和 DerivedData。
 - 显式设置 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID` 时，显式选择优先于自动规则。
 - 普通 `build` / `run` 必须先获取按 UDID 的跨 Worktree 原子租约；租约记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间，进程退出后释放，死 PID 租约在下次占用时清理。
 
@@ -142,8 +142,6 @@
 
 ### 设备用途
 
-- available、paired、USB 连接的真机是日常 `build` / `run` 第一优先级；没有可用 wired 真机时，可使用 available、paired 且当前本地网络可达的真机。仅保留历史配对记录、当前不可达的设备不参与选择。
-- 完全没有可达 USB 或本地网络真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback；检测到真机但全部被租约或外部 `xcodebuild` 占用时明确失败。同一真机无论通过 wired 还是 localNetwork 连接，均按 UDID 共用租约和 DerivedData。
 - `iPhone 17 Pro` 只用于明确的 iPhone 布局验收，`iPhone 17e` 只用于小屏兼容验收。切换时显式设置 `IOS_SIMULATOR_NAME`，完成后恢复默认 iPad。
 - 相机、通知、Keychain、Tailscale/弱网、性能以及发布前验证仍必须使用真机；自动 fallback 到 Simulator 时不得把这些专项验证标记为完成。
 - Simulator 通过不代表真机专项验收完成，真机结果也不替代日常 Simulator 回归。
