@@ -5,6 +5,78 @@ import XCTest
 @testable import MimiRemote
 
 final class SessionListPresentationTests: XCTestCase {
+    @MainActor
+    func testFirstConnectionWithoutOpenedWorkspaceFinishesLoading() async {
+        let appStore = makeIsolatedAppStore()
+        let candidate = makeProject(id: "unopened-candidate")
+        let client = MockSessionStoreClient(projects: [candidate], sessions: [])
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+        func presentation() -> SessionListPresentationState {
+            SessionListPresentationState.resolve(
+                hasVisibleSessions: !store.sessions.isEmpty,
+                hasOpenedWorkspace: !store.sidebarProjects.isEmpty,
+                isLoading: store.isLoading,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: store.isNetworkUnavailable,
+                errorMessage: store.errorMessage,
+                connectionStatus: appStore.connectionStatus,
+                hasLoadedWorkspaceCatalog: store.loadedWorkspaceCatalogScope == appStore.activeHostScope
+            )
+        }
+
+        XCTAssertEqual(presentation(), .loading)
+        await store.refreshAll(autoAttach: true)
+
+        XCTAssertEqual(appStore.connectionStatus, .idle)
+        XCTAssertFalse(store.isLoading)
+        XCTAssertTrue(store.sidebarProjects.isEmpty, "后端候选目录不应自动成为已打开工作区")
+        XCTAssertEqual(presentation(), .needsWorkspace)
+
+        _ = store.ensureWorkspaceForKnownProjectID(candidate.id)
+        await store.refreshAll(autoAttach: true)
+        XCTAssertFalse(store.sidebarProjects.isEmpty)
+        XCTAssertEqual(presentation(), .noSessions)
+    }
+
+    func testLoadedWorkspaceCatalogPreservesLoadingErrorsAndContent() {
+        func state(
+            loading: Bool = false,
+            connection: ConnectionStatus = .idle,
+            error: String? = nil,
+            offline: Bool = false,
+            visible: Bool = false,
+            catalogLoaded: Bool = true
+        ) -> SessionListPresentationState {
+            SessionListPresentationState.resolve(
+                hasVisibleSessions: visible,
+                hasOpenedWorkspace: false,
+                isLoading: loading,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: offline,
+                errorMessage: error,
+                connectionStatus: connection,
+                hasLoadedWorkspaceCatalog: catalogLoaded
+            )
+        }
+
+        XCTAssertEqual(state(), .needsWorkspace)
+        XCTAssertEqual(state(catalogLoaded: false), .loading)
+        XCTAssertEqual(state(loading: true), .loading)
+        XCTAssertEqual(state(connection: .testing), .loading)
+        XCTAssertEqual(state(connection: .failed("unavailable")), .runtimeUnavailable("unavailable"))
+        XCTAssertEqual(state(error: "load failed"), .loadFailed("load failed"))
+        XCTAssertEqual(state(offline: true), .networkUnavailable)
+        XCTAssertEqual(state(visible: true), .content)
+    }
+
     func testDateBucketsPreferTodayAndYesterdayAtLocalMidnight() {
         let calendar = makeCalendar(timeZone: "Asia/Shanghai")
         let now = makeDate(calendar, year: 2025, month: 6, day: 2, hour: 0, minute: 15)
