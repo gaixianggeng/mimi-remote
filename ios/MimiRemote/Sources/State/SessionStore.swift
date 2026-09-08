@@ -127,6 +127,8 @@ final class SessionStore: ObservableObject {
     @Published var expandedProjectIDs: Set<String> = []
     @Published var showingAllSessionProjectIDs: Set<String> = []
     @Published var isLoading = false
+    // 加载完成只属于当前主机代次，切换主机后不能沿用旧目录的空态判断。
+    @Published var loadedWorkspaceCatalogScope: HostScope?
     @Published var webSocketStatus: WebSocketStatus = .disconnected
     @Published var connectionTermination: ConnectionTerminationStatus? {
         didSet {

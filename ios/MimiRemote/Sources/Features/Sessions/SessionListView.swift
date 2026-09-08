@@ -75,7 +75,8 @@ enum SessionListPresentationState: Equatable {
         isFiltering: Bool,
         isNetworkUnavailable: Bool,
         errorMessage: String?,
-        connectionStatus: ConnectionStatus
+        connectionStatus: ConnectionStatus,
+        hasLoadedWorkspaceCatalog: Bool = false
     ) -> Self {
         guard !hasVisibleSessions else { return .content }
 
@@ -93,7 +94,10 @@ enum SessionListPresentationState: Equatable {
             return .loading
         }
         switch connectionStatus {
-        case .idle, .testing:
+        case .idle:
+            // 未打开目录时不会触发会话连接；目录已加载即可显示空态，不能等待连接检测。
+            if !hasLoadedWorkspaceCatalog { return .loading }
+        case .testing:
             return .loading
         case .connected, .failed:
             break
@@ -593,7 +597,8 @@ struct SessionListView: View {
             isFiltering: sessionStore.isSessionSearchActive || selectedWorkspaceID != "all" || selectedStatus != .all,
             isNetworkUnavailable: sessionStore.isNetworkUnavailable,
             errorMessage: sessionStore.errorMessage,
-            connectionStatus: appStore.connectionStatus
+            connectionStatus: appStore.connectionStatus,
+            hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope
         )
     }
 
