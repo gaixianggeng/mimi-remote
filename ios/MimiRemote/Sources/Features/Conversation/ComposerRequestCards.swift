@@ -12,11 +12,7 @@ private struct AgentRequestRuntimeIcon: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        Image(presentation.brandAssetName)
-            .resizable()
-            .renderingMode(.original)
-            .scaledToFit()
-            .padding(size * 0.22)
+        RuntimeBrandMarkIcon(mark: presentation.brandMark, size: size * 0.56)
             .frame(width: size, height: size)
             .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: size * 0.32, style: .continuous))
             .overlay {

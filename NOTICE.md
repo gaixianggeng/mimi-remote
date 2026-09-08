@@ -57,7 +57,9 @@ Swift Package Manager 依赖：
 
 除上述用于兼容性说明和运行时区分的服务标识外，本项目不会把自己宣传为任何商业产品的免费替代品，也不会以复刻其他产品的 UI、交互、图标、截图或文案为目标。
 
-iOS 工作区中的 Codex 运行时入口使用 OpenAI 官方 macOS 应用资源包中的 `icon-chatgpt.png`，仅按 iOS 显示倍率等比缩小，用于帮助用户识别其使用 ChatGPT 账号连接的 Codex 运行时。该图标及相关商标归 OpenAI 所有，不代表 OpenAI 对本项目的赞助或背书。
+iOS 中的 Codex 运行时标识使用 OpenAI 官方品牌资源包 `OpenAI-Logos-2025.zip`（https://cdn.openai.com/brand/OpenAI-Logos-2025.zip ）中的 `OpenAI-black-monoblossom.svg` 与 `OpenAI-white-monoblossom.svg`。两个文件均为官方原件，未做裁切、改绘或改色，浅色与深色界面分别使用官方黑、白两版；界面中只按显示尺寸等比缩放，标记自带的品牌留白通过外层布局盒保留。该标记用于帮助用户识别其自有的 Codex 运行时。相关标识和商标归 OpenAI 所有，不代表 OpenAI 对本项目的赞助或背书。
+
+iOS 中的 Claude 运行时标识取自 Simple Icons（https://github.com/simple-icons/simple-icons ，仓库按 CC0-1.0 发布）的 `icons/claude.svg`，图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#D97757` 补充填充色并重新换行，未改动图形本身。CC0-1.0 覆盖的是路径数据，`Claude`、`Anthropic` 相关标识和商标仍归 Anthropic 所有，不代表 Anthropic 对本项目的赞助或背书。
 
 iOS 首次连接页使用 GitHub 官方 Brand Toolkit 提供的黑白 Invertocat 标识，仅用于链接本项目的公开 Release 页面。该标识及 GitHub 商标归 GitHub, Inc. 所有，不代表 GitHub 对本项目的赞助或背书。
 

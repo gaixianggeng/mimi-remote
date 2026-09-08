@@ -131,12 +131,12 @@ struct SessionRuntimePresentation: Equatable {
         }
     }
 
-    var brandAssetName: String {
+    var brandMark: RuntimeBrandMark {
         switch kind {
         case .codex:
-            return "ChatGPT"
+            return .openAI
         case .claude:
-            return "Claude"
+            return .claude
         }
     }
 }
@@ -332,11 +332,7 @@ struct SessionRuntimeBadge: View {
         let iconSize: CGFloat = compact ? 10 : 12
 
         HStack(spacing: compact ? 3 : 4) {
-            Image(presentation.brandAssetName)
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                .frame(width: iconSize, height: iconSize)
+            RuntimeBrandMarkIcon(mark: presentation.brandMark, size: iconSize)
 
             Text(presentation.title)
                 .lineLimit(1)

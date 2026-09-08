@@ -99,6 +99,7 @@
 		3F150075A258BDF73AFB8ED6 /* WorktreeManagementViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB7A4F02C5EC7121D1BB6B9 /* WorktreeManagementViews.swift */; };
 		41032E4AF4E356EA802FEBDD /* AppStoreRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DF3FE084B65924E2014463C /* AppStoreRouting.swift */; };
 		410ECA3E93AE577686A636C0 /* MediaWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4E57C95034C12853D10303 /* MediaWorker.swift */; };
+		6387F5691A35703F233B45B7 /* RuntimeBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15E6392C73FA17B7742C7495 /* RuntimeBrandMark.swift */; };
 		4133C316969607C72DFE1168 /* SkillModelPickerSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 476737709E01875A7992BABB /* SkillModelPickerSnapshotTests.swift */; platformFilters = (ios, ); };
 		419537AC5582400C687118ED /* ManagedConnectionDeviceAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72FF3738D9EAED4C04AF0B69 /* ManagedConnectionDeviceAPIClientTests.swift */; };
 		41B2009F6B92E4B407CFDB72 /* ModelReasoningGridPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A4A2B3A4B718F54CB4F8AE /* ModelReasoningGridPicker.swift */; };
@@ -572,6 +573,7 @@
 		776EDC1EF2FA8453E4DF949F /* testSingleImageMediaCardAlignmentAcrossLayouts.ipad-narrow-700.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSingleImageMediaCardAlignmentAcrossLayouts.ipad-narrow-700.png"; sourceTree = "<group>"; };
 		77AF760E4A087828F4ED2A70 /* ConversationStorePendingUserInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStorePendingUserInput.swift; sourceTree = "<group>"; };
 		7A4E57C95034C12853D10303 /* MediaWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaWorker.swift; sourceTree = "<group>"; };
+		15E6392C73FA17B7742C7495 /* RuntimeBrandMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeBrandMark.swift; sourceTree = "<group>"; };
 		7C6A770A18111A38D48BF68F /* testCompactModelGridDarkFastModeOn.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testCompactModelGridDarkFastModeOn.1.png; sourceTree = "<group>"; };
 		7D29856557B35AE9C7C9B5EA /* QRCodeScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeScannerSheet.swift; sourceTree = "<group>"; };
 		7EC08924AD866CA7D83CCD6E /* testSingleImageMediaCardAlignmentAcrossLayouts.ipad-narrow-landscape.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSingleImageMediaCardAlignmentAcrossLayouts.ipad-narrow-landscape.png"; sourceTree = "<group>"; };
@@ -803,6 +805,7 @@
 			isa = PBXGroup;
 			children = (
 				7A4E57C95034C12853D10303 /* MediaWorker.swift */,
+				15E6392C73FA17B7742C7495 /* RuntimeBrandMark.swift */,
 			);
 			path = Media;
 			sourceTree = "<group>";
@@ -1990,6 +1993,7 @@
 				CA5DCE5FDDA7F1DE9C0C64F7 /* MarkdownParser.swift in Sources */,
 				0FCA7C8C42E283AD24681BA0 /* MarkdownStyle.swift in Sources */,
 				410ECA3E93AE577686A636C0 /* MediaWorker.swift in Sources */,
+				6387F5691A35703F233B45B7 /* RuntimeBrandMark.swift in Sources */,
 				3B0E963BB2856F7CDD36EB67 /* MessageStore.swift in Sources */,
 				AADCBC7617C842DC51799171 /* MimiInteractionFeedback.swift in Sources */,
 				E158B34D71964DBF782D1DDF /* MimiRemoteApp.swift in Sources */,
