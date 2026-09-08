@@ -55,7 +55,7 @@ sudo nginx -t
 
 ### 安装服务
 
-将仓库中的 `deploy/push-provider/` 和对应架构的 Provider 二进制上传到目标服务器，
+将仓库中的 `config/push-provider/` 和对应架构的 Provider 二进制上传到目标服务器，
 然后在上传目录执行：
 
 ```bash
