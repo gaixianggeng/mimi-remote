@@ -118,11 +118,15 @@ struct RootView: View {
             await appStore.preflightConnection()
 #endif
         }
-        .task(id: notificationResponseAdapter.approvalInbox.pending) {
-            guard let delivery = notificationResponseAdapter.approvalInbox.pending else { return }
-            // 先消费再做网络操作；新的锁屏动作可独立入队，不会被旧任务结束时误清。
-            notificationResponseAdapter.approvalInbox.consume(delivery)
-            await handleLockScreenApproval(delivery)
+        .task(id: notificationRoutingReady ? notificationResponseAdapter.approvalInbox.pending : nil) {
+            guard notificationRoutingReady else { return }
+            // 通知唤起和前台恢复会同时发生。复用恢复结果后再选路，避免两次
+            // Tailcat 重启互相退役连接，也避免冷启动时还没有可用凭据。
+            await foregroundResumeTask?.value
+            guard !Task.isCancelled else { return }
+            await notificationResponseAdapter.approvalInbox.processPending { delivery in
+                await handleLockScreenApproval(delivery)
+            }
         }
         .task(id: notificationRouteTaskID) {
             guard let route = notificationResponseAdapter.pendingRoute else {
@@ -252,6 +256,10 @@ struct RootView: View {
         )
     }
 
+    private var notificationRoutingReady: Bool {
+        hasCompletedInitialBootstrap && scenePhase == .active && !needsTailcatRecoveryAfterBackground
+    }
+
     private var lockScreenApprovalLifecycleTaskID: String {
         [
             scenePhase == .active ? "active" : "inactive",
@@ -309,7 +317,8 @@ struct RootView: View {
 		guard let source = try? await LockScreenApprovalRouting.sourceClient(
 			for: delivery.notification,
 			appStore: appStore,
-                    sessionStore: sessionStore
+                    sessionStore: sessionStore,
+                    recoverRouteFromBackground: false
 		) else {
 			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
 			return
@@ -332,7 +341,8 @@ struct RootView: View {
 			let source = try await LockScreenApprovalRouting.sourceClient(
 				for: notification,
 				appStore: appStore,
-                    sessionStore: sessionStore
+                    sessionStore: sessionStore,
+                    recoverRouteFromBackground: false
 			)
 			let destination = try await source.client.pushActionRoute(
 				actionID: notification.actionID,
@@ -354,8 +364,11 @@ struct RootView: View {
 				sessionID: destination.threadID
 			)
 			await handleNotificationRoute(route, ifCurrent: sessionStore.currentSelectionLease())
+		} catch is CancellationError {
+            // 新的通知或生命周期已接管；取消不等于 Mac 离线。
 		} catch {
-			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+            guard !Task.isCancelled else { return }
+            notificationRouteAlertMessage = LockScreenApprovalRouting.detailsErrorMessage(error)
 		}
 	}
 

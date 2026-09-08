@@ -94,7 +94,8 @@ agentd 或单条 Mimi WebSocket 退出时只关闭对应 SSH proxy，不停止�
 ## 会话和消息规则
 
 - `thread/start` 创建 Thread，`thread/resume` 订阅和接续现有 Thread。
-- Mimi 在同一个 Thread 的最后一个本地事件观察者离开时发送 `thread/unsubscribe`。同一 Thread 有多个观察者时，只由最后一个离开的观察者退订。物理连接异常结束时不为退订重新建立连接；App Server 会清理断开连接上的订阅。
+- Mimi 在同一个 Thread 的最后一个本地事件观察者离开时发送 `thread/unsubscribe`。启用 `app_server.approval_broker` 后，agentd 为仍在运行、排队或等待审批的任务保留上游订阅，先确认页面退订，任务结束后才向 App Server 退订。重新进入页面会取消尚未执行的退订；已发出的退订须先收到响应，再恢复订阅。空闲任务仍直接释放。
+- App 进入后台会主动断开业务连接，iOS 无需持续运行。agentd 以 `thread/queue/add` 的提交标识和 `thread/resume` 的运行状态补齐保活信息，继续接收任务事件并发送 APNs；客户端回来后读取权威历史。单个 Mac 后台连接最多保留 24 小时，受原有连接数量上限约束，进程重启后不保留这些观察状态。
 - Mimi 的普通消息只使用 `thread/queue/add`。运行中的 Thread 会在 App Server 内排队，空闲后自动开始，不会被误解释成 `turn/steer`。
 - 同一个 Thread 同时最多有一条由 Mimi 提交、尚未开始的服务端队列消息。下一条继续保留在 Mimi 本地，避免后一次线程设置覆盖前一条尚未开始的消息。
 - 发送结果不确定时，Mimi 使用相同的 `clientUserMessageId` 完整分页查询 `thread/queue/list` 和 `thread/items/list`，并在两者切换的竞态窗口再次查询队列。找不到记录时保留待发送状态，由用户确认是否重试。

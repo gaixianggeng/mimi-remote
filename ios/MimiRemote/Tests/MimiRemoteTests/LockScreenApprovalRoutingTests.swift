@@ -3,6 +3,21 @@ import XCTest
 
 @MainActor
 final class LockScreenApprovalRoutingTests: XCTestCase {
+    func testExpiredDetailsDoNotClaimMacIsUnreachable() {
+        XCTAssertEqual(
+            LockScreenApprovalRouting.detailsErrorMessage(AgentAPIError.server(status: 410, message: "gone")),
+            L10n.text("ui.push_approval_expired")
+        )
+        XCTAssertEqual(
+            LockScreenApprovalRouting.detailsErrorMessage(AgentAPIError.server(status: 403, message: "forbidden")),
+            L10n.text("ui.push_approval_device_not_allowed")
+        )
+        XCTAssertEqual(
+            LockScreenApprovalRouting.detailsErrorMessage(URLError(.notConnectedToInternet)),
+            L10n.text("ui.push_approval_result_unknown")
+        )
+    }
+
     func testTailcatApprovalReusesExistingRoute() async throws {
         let (store, _, defaults, suite) = try fixture()
         defer { defaults.removePersistentDomain(forName: suite) }

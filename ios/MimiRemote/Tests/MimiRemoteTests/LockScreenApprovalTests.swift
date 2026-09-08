@@ -230,6 +230,46 @@ final class LockScreenApprovalTests: XCTestCase {
         XCTAssertNotNil(inbox.pending, "过期的消费不能清掉新入队的动作")
     }
 
+    @MainActor
+    func testInboxKeepsTaskIdentityUntilAsynchronousRoutingFinishes() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: LockScreenApprovalCategory.allowActionID)
+        let delivery = try XCTUnwrap(inbox.pending)
+        await inbox.processPending { current in
+            XCTAssertEqual(current, delivery)
+            XCTAssertEqual(inbox.pending, delivery)
+            await Task.yield()
+            XCTAssertEqual(inbox.pending, delivery, "网络等待期间不能改变 SwiftUI task id")
+        }
+        XCTAssertNil(inbox.pending)
+    }
+
+    @MainActor
+    func testInboxCancelledRoutingPreservesPendingNotification() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: UNNotificationDefaultActionIdentifier)
+        let delivery = try XCTUnwrap(inbox.pending)
+        let task = Task { @MainActor in
+            await inbox.processPending { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                await Task.yield()
+            }
+        }
+        await task.value
+        XCTAssertEqual(inbox.pending, delivery, "切回后台后仍须保留通知，供下次恢复继续打开")
+    }
+
+    @MainActor
+    func testInboxRoutingCompletionKeepsNewerNotification() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: LockScreenApprovalCategory.allowActionID)
+        await inbox.processPending { _ in
+            await Task.yield()
+            inbox.receive(userInfo: payload(), actionIdentifier: LockScreenApprovalCategory.denyActionID)
+        }
+        XCTAssertEqual(inbox.pending?.decision, .deny)
+    }
+
     /// 结果必须如实展示。把冲突或超时显示成成功，比不显示更危险。
     @MainActor
     func testDecisionMessagesDistinguishOutcomes() {

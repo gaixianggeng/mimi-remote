@@ -60,6 +60,16 @@ final class LockScreenApprovalInbox: ObservableObject {
         guard pending == delivery else { return }
         pending = nil
     }
+
+    func processPending(_ handler: (LockScreenApprovalDelivery) async -> Void) async {
+        guard let delivery = pending else { return }
+        // SwiftUI 用 pending 作为 task id。网络操作前清空它会取消正在执行的
+        // 通知路由；完成后再消费，同时保留执行期间新收到的通知。
+        await handler(delivery)
+        // 再次进入后台会取消路由，保留通知供下一次前台恢复继续处理。
+        guard !Task.isCancelled else { return }
+        consume(delivery)
+    }
 }
 
 /// Device Token 只在 UIApplicationDelegate 回调里出现，而 SwiftUI App 本身拿不到

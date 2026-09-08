@@ -89,10 +89,16 @@ type codexGatewayBroker struct {
 	// activeTurns 记录仍在跑的 turn。客户端离线且没有活跃 turn、也没有待审批
 	// 请求时，继续持有上游连接没有意义，立即回收。
 	activeTurns map[string]struct{}
-	// startingTurns 覆盖 turn/start 已写入上游、turn/started 尚未返回的窗口。
+	// startingTurns 覆盖 turn/start 或 thread/resume 已写入上游、运行状态尚未返回的窗口。
 	// iPad 可能恰好在这里锁屏；只看 activeTurns 会误判为空闲并中断任务。
 	// value 是请求 id，用于在上游明确拒绝 turn/start 时撤销占位。
 	startingTurns map[string]string
+	// 普通消息走共享队列。每个 thread 最多有一条 Mimi 尚未开始的提交；
+	// 前一轮完成不能清掉后一条仍在排队的消息。
+	queuedTurns map[string]brokerQueuedTurn
+	// 页面退订只释放客户端观察意图；Mac 保留任务所需的上游订阅。
+	deferredUnsubscribes map[string]struct{}
+	subscriptionReleases map[string]*brokerSubscriptionRelease
 	// pending 保存待审批反向请求原帧，pendingOrder 维持到达顺序，重连按序重放。
 	pending      map[string][]byte
 	pendingOrder []string
@@ -281,7 +287,7 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	return true
 }
 
-// interceptClientFrame 在帧到达上游之前处理握手。
+// interceptClientFrame 在帧到达上游之前处理握手和页面订阅的交接。
 //
 // 第一次 initialize 与 initialized 照常放行，完成上游握手；此后每次重连的
 // initialize 都由 broker 用缓存结果本地应答，重复 initialized 才由 broker 吞掉。
@@ -289,6 +295,9 @@ func (b *codexGatewayBroker) interceptClientFrame(payload []byte) (bool, []byte)
 	var frame appServerGatewayFrame
 	if json.Unmarshal(payload, &frame) != nil {
 		return false, nil
+	}
+	if handled, response := b.interceptThreadSubscription(payload, &frame); handled {
+		return true, response
 	}
 	switch strings.TrimSpace(frame.Method) {
 	case "initialize":
@@ -413,7 +422,7 @@ func (b *codexGatewayBroker) detach(sink *codexGatewaySink) {
 	}
 	b.sink = nil
 	b.detachedAt = time.Now()
-	keepAlive := len(b.startingTurns) > 0 || len(b.activeTurns) > 0 || len(b.pendingOrder) > 0
+	keepAlive := len(b.startingTurns) > 0 || len(b.queuedTurns) > 0 || len(b.activeTurns) > 0 || len(b.pendingOrder) > 0
 	b.mu.Unlock()
 
 	if !keepAlive {
@@ -455,13 +464,14 @@ func (b *codexGatewayBroker) notifyPendingApprovalIfDetached(frame appServerGate
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.closed || b.sink != nil {
+	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+	_, pageLeft := b.deferredUnsubscribes[threadID]
+	if b.closed || (b.sink != nil && !pageLeft) {
 		return
 	}
 	if _, ok := b.pending[requestID]; !ok {
 		return
 	}
-	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
 	b.router.notifyPendingApproval(
 		"codex",
 		b.key,
@@ -503,6 +513,10 @@ func (b *codexGatewayBroker) close(reason string) {
 		return
 	}
 	b.closed = true
+	for _, release := range b.subscriptionReleases {
+		close(release.done)
+	}
+	b.subscriptionReleases = nil
 	b.closeReason = reason
 	sink := b.sink
 	b.sink = nil
@@ -538,6 +552,9 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		if err != nil {
 			b.close(gatewayCloseReason("upstream_read", err))
 			return
+		}
+		if b.consumeSubscriptionReleaseResponse(payload) {
+			continue
 		}
 		policyStart := time.Now()
 		forwardPayload, forward, policyErr := b.policy.observeUpstreamFrame(messageType, payload)
@@ -639,7 +656,7 @@ func (b *codexGatewayBroker) sweepCloseReason(now time.Time) string {
 		return "broker_detach_ttl"
 	}
 	b.prunePendingLocked()
-	if len(b.startingTurns) == 0 && len(b.activeTurns) == 0 && len(b.pendingOrder) == 0 {
+	if len(b.startingTurns) == 0 && len(b.queuedTurns) == 0 && len(b.activeTurns) == 0 && len(b.pendingOrder) == 0 {
 		return "broker_idle_expired"
 	}
 	return ""
@@ -655,6 +672,12 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 		return
 	}
 	method := strings.TrimSpace(frame.Method)
+	b.observeQueuedTurn(&frame)
+	resumedThread := b.observeResumedThread(&frame)
+	// 收尾独立于上游 reader。新页面等待退订 ACK 时，reader 仍须能消费该 ACK。
+	if resumedThread || method == "turn/completed" || method == "thread/closed" || method == "error" || len(frame.Error) > 0 {
+		defer func() { go b.releaseIdleThreadSubscriptions() }()
+	}
 	if method == "" && frame.ID != nil {
 		// initialize 结果供重连握手复用；turn/start 明确失败则撤销启动占位。
 		if len(frame.Error) > 0 {
@@ -726,6 +749,15 @@ func (b *codexGatewayBroker) trackClientFrameForward(messageType int, payload []
 		return nil
 	}
 	method := strings.TrimSpace(frame.Method)
+	if method == "thread/resume" {
+		threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+		b.mu.Lock()
+		delete(b.deferredUnsubscribes, threadID)
+		b.mu.Unlock()
+	}
+	if method == "thread/queue/add" {
+		return b.trackQueuedTurn(&frame)
+	}
 	if method == "initialized" {
 		b.mu.Lock()
 		if b.initializeRequestID == "" {
@@ -741,7 +773,7 @@ func (b *codexGatewayBroker) trackClientFrameForward(messageType int, payload []
 			b.mu.Unlock()
 		}
 	}
-	if method != "turn/start" || frame.ID == nil {
+	if (method != "turn/start" && method != "thread/resume") || frame.ID == nil {
 		return nil
 	}
 	params, err := decodeGatewayParams(frame.Params)

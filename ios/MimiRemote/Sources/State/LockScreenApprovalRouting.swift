@@ -38,7 +38,8 @@ enum LockScreenApprovalRouting {
 	static func sourceClient(
 		for notification: LockScreenApprovalNotification,
 		appStore: AppStore,
-        sessionStore: SessionStore
+        sessionStore: SessionStore,
+        recoverRouteFromBackground: Bool = true
 	) async throws -> (profileID: String, client: AgentAPIClient) {
 		guard let profileID = localProfileID(
 			for: notification,
@@ -51,7 +52,7 @@ enum LockScreenApprovalRouting {
             // 现有主机切换与恢复流程，不另建会抢占 DERP 连接的临时代理。
             if appStore.activeConnectionProfileID != profileID {
                 _ = try await sessionStore.switchConnectionProfile(id: profileID)
-            } else {
+            } else if recoverRouteFromBackground {
                 guard let controller = sessionStore.tailcatExperimentController,
                       await controller.recoverRouteFromForeground(
                         appStore: appStore, refreshPathDiagnosticAfterPreparation: false
@@ -62,6 +63,17 @@ enum LockScreenApprovalRouting {
         }
         return (profileID, try await client(profileID: profileID, appStore: appStore))
 	}
+
+    static func detailsErrorMessage(_ error: Error) -> String {
+        if let apiError = error as? AgentAPIError,
+           LockScreenApprovalStore.isDefinitive(apiError) {
+            return LockScreenApprovalStore.message(forServerError: apiError)
+        }
+        if case LockScreenApprovalRoutingError.sourceProfileUnavailable = error {
+            return L10n.text("ui.the_session_corresponding_to_the_notification_is_temporarily")
+        }
+        return L10n.text("ui.push_approval_result_unknown")
+    }
 
     static func client(profileID: String, appStore: AppStore) async throws -> AgentAPIClient {
         let descriptor = try await appStore.hostProbeDescriptor(profileID: profileID)
