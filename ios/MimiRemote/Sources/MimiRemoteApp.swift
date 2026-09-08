@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UIKit
 import UserNotifications
 
@@ -76,8 +77,18 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
     /// 锁屏审批走独立收件箱：它的动作要提交决策，而不是打开某个会话。
 	let approvalInbox = LockScreenApprovalInbox()
 	var handleApprovalAction: ((LockScreenApprovalDelivery) async -> Void)?
+    private var approvalInboxObservation: AnyCancellable?
     private var visibleSessionRoutesByScene: [UUID: SessionNotificationRoute] = [:]
     private var visibleMessageTagsByScene: [UUID: (profile: String, session: String)] = [:]
+
+    override init() {
+        super.init()
+        // RootView 观察的是 adapter；嵌套收件箱不会自动触发它的刷新。
+        // 转发变化后，审批等待期间也能立即执行通知跳转，不依赖其他页面更新。
+        approvalInboxObservation = approvalInbox.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     @discardableResult
     func receive(userInfo: [AnyHashable: Any]) -> Bool {

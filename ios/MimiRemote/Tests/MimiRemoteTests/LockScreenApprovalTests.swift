@@ -1,4 +1,5 @@
 import Security
+import Combine
 import UserNotifications
 import XCTest
 @testable import MimiRemote
@@ -215,6 +216,23 @@ final class LockScreenApprovalTests: XCTestCase {
             ).userInfo,
             actionIdentifier: UNNotificationDefaultActionIdentifier
         ))
+    }
+
+    @MainActor
+    func testApprovalInboxPublishesChangesToNotificationPageObserver() throws {
+        let adapter = SessionNotificationResponseAdapter()
+        var pageRefreshes = 0
+        let observation = adapter.objectWillChange.sink { _ in pageRefreshes += 1 }
+        XCTAssertTrue(adapter.approvalInbox.receive(
+            userInfo: payload(overrides: ["approval_kind": "permission"]),
+            actionIdentifier: UNNotificationDefaultActionIdentifier
+        ))
+        let delivery = try XCTUnwrap(adapter.approvalInbox.pending)
+        XCTAssertNil(delivery.decision, "点击权限通知本身只打开会话，不提交权限决策")
+        XCTAssertEqual(pageRefreshes, 1, "没有其他页面变化时，通知仍须触发 RootView 路由任务")
+        adapter.approvalInbox.consume(delivery)
+        XCTAssertEqual(pageRefreshes, 2)
+        withExtendedLifetime(observation) {}
     }
 
     @MainActor
