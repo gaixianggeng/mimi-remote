@@ -1,18 +1,6 @@
 import CryptoKit
 import Foundation
 
-/// 临时连接只服务于目标 Mac，释放时关闭；不切换用户正在查看的 Profile。
-final class LockScreenApprovalTailcatRoute {
-    let runtime: any TailcatExperimentRuntimeProtocol
-
-    init(runtime: any TailcatExperimentRuntimeProtocol) { self.runtime = runtime }
-
-    deinit {
-        let runtime = runtime
-        Task { try? await runtime.stop() }
-    }
-}
-
 enum LockScreenApprovalRoutingError: Error {
 	case sourceProfileUnavailable
 	case sourceCredentialUnavailable
@@ -43,7 +31,8 @@ enum LockScreenApprovalRouting {
 
 	static func sourceClient(
 		for notification: LockScreenApprovalNotification,
-		appStore: AppStore
+		appStore: AppStore,
+        sessionStore: SessionStore
 	) async throws -> (profileID: String, client: AgentAPIClient) {
 		guard let profileID = localProfileID(
 			for: notification,
@@ -51,37 +40,45 @@ enum LockScreenApprovalRouting {
 		) else {
 			throw LockScreenApprovalRoutingError.sourceProfileUnavailable
 		}
-		return (profileID, try await client(profileID: profileID, appStore: appStore))
+        if appStore.connectionProfiles.first(where: { $0.id == profileID })?.connectionRoute.usesTailcat == true {
+            // 同一设备身份不能同时启动两套 Tailcat 引擎。用户点击通知时复用
+            // 现有主机切换与恢复流程，不另建会抢占 DERP 连接的临时代理。
+            if appStore.activeConnectionProfileID != profileID {
+                _ = try await sessionStore.switchConnectionProfile(id: profileID)
+            } else {
+                guard let controller = sessionStore.tailcatExperimentController,
+                      await controller.recoverRouteFromForeground(
+                        appStore: appStore, refreshPathDiagnosticAfterPreparation: false
+                      ) else {
+                    throw LockScreenApprovalRoutingError.sourceCredentialUnavailable
+                }
+            }
+        }
+        return (profileID, try await client(profileID: profileID, appStore: appStore))
 	}
 
-	static func client(
-        profileID: String,
-        appStore: AppStore,
-        tokenStore: TokenStore = TokenStore(),
-        runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime()
-    ) async throws -> AgentAPIClient {
-		let descriptor = try await appStore.hostProbeDescriptor(profileID: profileID)
-		guard let endpoint = descriptor.endpoints.first,
-			  !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-			throw LockScreenApprovalRoutingError.sourceCredentialUnavailable
-		}
-		guard let profile = appStore.connectionProfiles.first(where: { $0.id == profileID }) else {
+    static func client(profileID: String, appStore: AppStore) async throws -> AgentAPIClient {
+        let descriptor = try await appStore.hostProbeDescriptor(profileID: profileID)
+        guard let profile = appStore.connectionProfiles.first(where: { $0.id == profileID }) else {
             throw LockScreenApprovalRoutingError.sourceProfileUnavailable
         }
-        guard profile.connectionRoute.usesTailcat else {
-            return AgentAPIClient(endpoint: endpoint, token: descriptor.token)
+        let endpoint: String
+        if profile.connectionRoute.usesTailcat {
+            // 自动续期、关闭旧绑定等后台维护不能擅自切换当前 Mac。非当前
+            // Tailcat 档案须先由用户切回该 Mac；不能悄悄走档案中的直连地址。
+            guard appStore.activeConnectionProfileID == profileID else {
+                throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+            }
+            guard appStore.isTailcatExperimentModeEnabled, appStore.tailcatExperimentEndpoint != nil else {
+                throw LockScreenApprovalRoutingError.sourceCredentialUnavailable
+            }
+            endpoint = appStore.connectionEndpoint
+        } else {
+            guard let configured = descriptor.endpoints.first, !configured.isEmpty else {
+                throw LockScreenApprovalRoutingError.sourceCredentialUnavailable
+            }
+            endpoint = configured
         }
-        let address = try tokenStore.loadTailcatAddress(profileID: profileID)
-        let privateKey = try tokenStore.loadTailcatExperimentPrivateKey()
-        guard !address.isEmpty, !privateKey.isEmpty else {
-            throw LockScreenApprovalRoutingError.sourceCredentialUnavailable
-        }
-        let route = LockScreenApprovalTailcatRoute(runtime: runtime)
-        let routedEndpoint = try await runtime.start(address: address, privateKey: privateKey)
-        // 异步建链期间档案可能被编辑或删除，不能把旧凭据提交给变化后的目标。
-        guard appStore.connectionProfiles.first(where: { $0.id == profileID }) == profile else {
-            throw CancellationError()
-        }
-        return AgentAPIClient(endpoint: routedEndpoint, token: descriptor.token, approvalRoute: route)
-	}
+        return AgentAPIClient(endpoint: endpoint, token: descriptor.token)
+    }
 }

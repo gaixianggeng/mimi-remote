@@ -254,12 +254,13 @@ struct MimiRemoteApp: App {
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
 		let lockScreenApprovalStore = LockScreenApprovalStore()
 		_lockScreenApprovalStore = StateObject(wrappedValue: lockScreenApprovalStore)
-		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore] delivery in
-			guard let appStore, let lockScreenApprovalStore, let decision = delivery.decision else { return }
+		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore, weak sessionStore] delivery in
+			guard let appStore, let lockScreenApprovalStore, let sessionStore, let decision = delivery.decision else { return }
 			do {
 				let source = try await LockScreenApprovalRouting.sourceClient(
 					for: delivery.notification,
-					appStore: appStore
+					appStore: appStore,
+                    sessionStore: sessionStore
 				)
 				await lockScreenApprovalStore.submitDecision(
 					decision,

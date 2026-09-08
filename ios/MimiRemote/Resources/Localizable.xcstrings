@@ -21353,6 +21353,23 @@
         }
       }
     },
+    "ui.push_switch_to_registered_mac": {
+      "comment": "Return to the previously bound Mac before enabling approval notifications for a different Mac.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Return to the linked Mac and turn off lock-screen reminders before enabling them for this Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先返回已绑定的电脑关闭锁屏提醒，再为当前电脑开启。"
+          }
+        }
+      }
+    },
     "ui.push_status_unavailable_on_host": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

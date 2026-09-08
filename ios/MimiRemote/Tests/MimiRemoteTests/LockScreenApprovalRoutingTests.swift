@@ -3,33 +3,37 @@ import XCTest
 
 @MainActor
 final class LockScreenApprovalRoutingTests: XCTestCase {
-    func testTailcatApprovalUsesSourceMacWithoutSwitchingActiveProfile() async throws {
-        let (store, tokens, defaults, suite) = try fixture()
+    func testTailcatApprovalReusesExistingRoute() async throws {
+        let (store, _, defaults, suite) = try fixture()
         defer { defaults.removePersistentDomain(forName: suite) }
-        let runtime = ApprovalRoutingRuntime()
-        let client = try await LockScreenApprovalRouting.client(
-            profileID: "mac-b", appStore: store, tokenStore: tokens, runtime: runtime
-        )
+        store.setTailcatExperimentModeEnabled(true)
+        store.setTailcatExperimentEndpoint("http://127.0.0.1:49152")
+        let client = try await LockScreenApprovalRouting.client(profileID: "mac-a", appStore: store)
         XCTAssertEqual(client.endpoint, "http://127.0.0.1:49152")
-        XCTAssertEqual(client.token, "token-b")
+        XCTAssertEqual(client.token, "token-a")
         XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
-        let address = await runtime.startedAddress
-        XCTAssertEqual(address, "tailcat:mac-b")
     }
 
-    func testTailcatFailureDoesNotReturnDirectClient() async throws {
-        let (store, tokens, defaults, suite) = try fixture()
+    func testInactiveTailcatMaintenanceCannotFallBackToDirectAddress() async throws {
+        let (store, _, defaults, suite) = try fixture()
         defer { defaults.removePersistentDomain(forName: suite) }
         do {
-            _ = try await LockScreenApprovalRouting.client(
-                profileID: "mac-b", appStore: store, tokenStore: tokens,
-                runtime: ApprovalRoutingRuntime(fails: true)
-            )
-            XCTFail("Tailcat 不可达时不能绕过用户选定线路")
-        } catch {
-            XCTAssertEqual((error as? URLError)?.code, .cannotConnectToHost)
+            _ = try await LockScreenApprovalRouting.client(profileID: "mac-b", appStore: store)
+            XCTFail("非当前 Tailcat 档案不能绕过用户选定线路")
+        } catch LockScreenApprovalRoutingError.sourceProfileUnavailable {
+            XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
         }
-        XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
+    }
+
+    func testUnavailableTailcatRouteCannotReturnDirectClient() async throws {
+        let (store, _, defaults, suite) = try fixture()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        store.setTailcatExperimentModeEnabled(true)
+        store.setTailcatExperimentEndpoint(nil)
+        do {
+            _ = try await LockScreenApprovalRouting.client(profileID: "mac-a", appStore: store)
+            XCTFail("Tailcat 未就绪时不能回退直连")
+        } catch LockScreenApprovalRoutingError.sourceCredentialUnavailable {}
     }
 
     private func fixture() throws -> (AppStore, TokenStore, UserDefaults, String) {
@@ -51,24 +55,4 @@ final class LockScreenApprovalRoutingTests: XCTestCase {
         try tokens.saveTailcatExperimentPrivateKey("test-private-key")
         return (AppStore(defaults: defaults, tokenStore: tokens, prefersLocalConnection: false), tokens, defaults, suite)
     }
-}
-
-private actor ApprovalRoutingRuntime: TailcatExperimentRuntimeProtocol {
-    private let fails: Bool
-    private(set) var startedAddress: String?
-    init(fails: Bool = false) { self.fails = fails }
-    func start(address: String, privateKey: String) async throws -> String {
-        startedAddress = address
-        if fails { throw URLError(.cannotConnectToHost) }
-        return "http://127.0.0.1:49152"
-    }
-    func prepare(address: String, privateKey: String) async throws -> String {
-        try await start(address: address, privateKey: privateKey)
-    }
-    func activatePrepared(endpoint: String) {}
-    func discardPrepared(endpoint: String) {}
-    func hasPrepared(endpoint: String) -> Bool { false }
-    func discoPing() throws -> TailcatDiscoPingPayload { throw URLError(.unsupportedURL) }
-    func stop() {}
-    func stop(ifCurrentEndpoint endpoint: String) {}
 }

@@ -36,7 +36,9 @@
 
 两个服务保留独立进程、用户、配置和状态目录。DERP 转发 Tailcat 加密流量；
 Provider 只发送固定格式的系统提醒。锁屏允许/拒绝按通知来源选择 Mac，使用该
-Profile 保存的 Tailcat 地址和设备私钥建立临时连接，不切换当前 Profile，不回退直连。
+Profile 复用 App 的 Tailcat 恢复流程；来源是另一台 Mac 时切换到该 Mac，再提交动作，不回退直连。
+同一设备身份不能并存两套 Tailcat 引擎，否则会抢占 DERP 连接。后台自动维护不切换 Mac；
+更换通知绑定前，先回到原 Mac 关闭锁屏提醒，再在目标 Mac 开启。
 APNs 私钥只由 `mimi-push` 读取，不交给 DERP 或客户端。同机故障会同时影响中转和提醒。
 
 ### 安装前确认
@@ -71,7 +73,8 @@ sudo install -o root -g root -m 0644 ./nginx-locations.conf /etc/nginx/snippets/
 `env.example` 仅用于对照字段。已有服务迁移时，保留原 `env`、`apns.p8`、全部版本的
 `ticket.keys` 和 `revocations.db`，不要重新生成密钥或覆盖撤销记录。停写旧 Provider 后
 通过受限 SSH 传输完整快照，再将目标配置文件设为 `0640 root:mimi-push`、撤销表设为
-`0600 mimi-push:mimi-push`。旧服务器保留可回滚副本，验收前不删除。
+`0600 mimi-push:mimi-push`。旧服务器保留可回滚副本，验收前不删除。若更换 Provider URL，换绑期间旧 URL 仍须
+代理到同一份目标 Provider 状态，供客户端撤销旧 Ticket；直接关闭旧 URL 会使换绑回滚。
 
 在目标已有 HTTPS `server` 块中加入：
 

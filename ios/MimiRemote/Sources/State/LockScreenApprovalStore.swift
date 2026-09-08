@@ -35,7 +35,9 @@ final class LockScreenApprovalStore: ObservableObject {
 			switch self {
 			case .providerChanged:
 				return L10n.text("ui.push_consent_required")
-			case .previousClientUnavailable, .previousProviderUnavailable:
+			case .previousClientUnavailable:
+                return L10n.text("ui.push_switch_to_registered_mac")
+            case .previousProviderUnavailable:
 				return L10n.text("ui.push_approval_result_unknown")
 			}
         }

@@ -304,7 +304,8 @@ struct RootView: View {
 		}
 		guard let source = try? await LockScreenApprovalRouting.sourceClient(
 			for: delivery.notification,
-			appStore: appStore
+			appStore: appStore,
+                    sessionStore: sessionStore
 		) else {
 			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
 			return
@@ -326,7 +327,8 @@ struct RootView: View {
 		do {
 			let source = try await LockScreenApprovalRouting.sourceClient(
 				for: notification,
-				appStore: appStore
+				appStore: appStore,
+                    sessionStore: sessionStore
 			)
 			let destination = try await source.client.pushActionRoute(
 				actionID: notification.actionID,
