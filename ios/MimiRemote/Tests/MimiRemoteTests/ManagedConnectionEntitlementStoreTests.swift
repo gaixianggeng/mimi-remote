@@ -4,6 +4,87 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionEntitlementStoreTests: XCTestCase {
+    func testPurchaseFinishesOnlyTerminalServerDecisions() async {
+        for code in ["expired", "revoked", "no_current_entitlement", "unverified_transaction"] {
+            let kit = StoreKitFake()
+            let api = EntitlementAPIFake(result: .failure(
+                ManagedConnectionEntitlementAPIError.rejected(code: code)
+            ))
+            await kit.setPurchase(.success(Self.evidence))
+            let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+
+            await store.purchase(productID: ManagedConnectionProductID.monthly)
+
+            let finished = await kit.finishedTransactionIDs
+            let resolves = await api.resolveCount
+            XCTAssertEqual(resolves, 1)
+            XCTAssertEqual(finished, code == "unverified_transaction" ? [] : [Self.evidence.transactionID], code)
+            XCTAssertNil(store.currentGrant)
+            XCTAssertFalse(store.isBusy)
+        }
+    }
+
+    func testRestoreReportsNoActiveSubscriptionOnlyAfterCompletedVerification() async {
+        for rejection in [nil, "expired", "revoked", "no_current_entitlement"] as [String?] {
+            let kit = StoreKitFake()
+            let api = EntitlementAPIFake(result: .success(Self.grant))
+            if let rejection {
+                await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+                await api.setResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: rejection)))
+            }
+            let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+
+            let result = await store.restorePurchases()
+
+            XCTAssertEqual(result, .noActiveSubscription)
+            XCTAssertNil(store.currentGrant)
+            XCTAssertFalse(store.isBusy)
+            let syncs = await kit.syncCount
+            XCTAssertEqual(syncs, 1)
+        }
+    }
+
+    func testCancelledOrFailedRestoreDoesNotReportSuccessOrEmptyPurchases() async {
+        for phase in ["sync", "resolve"] {
+            for error in [CancellationError(), TestError.serverUnavailable] as [Error] {
+                let kit = StoreKitFake()
+                let api = EntitlementAPIFake(result: .success(Self.grant))
+                await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+                let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+                await store.refreshEntitlement()
+                if phase == "sync" {
+                    await kit.setSyncError(error)
+                } else {
+                    await api.setResult(.failure(error))
+                }
+
+                let result = await store.restorePurchases()
+
+                XCTAssertNil(result, phase)
+                XCTAssertEqual(store.currentGrant, Self.grant)
+                XCTAssertFalse(store.isBusy)
+            }
+        }
+    }
+
+    func testRestoreDoesNotReportOldEmptyResultAfterNewEntitlementArrives() async {
+        let kit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api)
+        await store.load()
+        await kit.pauseNextProductLoad()
+        let restore = Task { await store.restorePurchases() }
+        await waitUntil { await kit.isProductLoadPaused }
+        await kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        await store.refreshEntitlement()
+        await kit.resumeProductLoad()
+
+        let result = await restore.value
+
+        XCTAssertNil(result)
+        XCTAssertEqual(store.currentGrant, Self.grant)
+    }
+
     func testDeferredMaintenanceRefreshRenewsAfterPaymentExpiresAndIsCancelled() async {
         let base = Date(timeIntervalSince1970: 1_800_000_000)
         let initial = Self.grant(now: base)
@@ -468,10 +549,11 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         let syncCountBeforeRestore = await storeKit.syncCount
         XCTAssertEqual(syncCountBeforeRestore, 0)
 
-        await store.restorePurchases()
+        let restoreResult = await store.restorePurchases()
         let syncCountAfterRestore = await storeKit.syncCount
         XCTAssertEqual(syncCountAfterRestore, 1)
         XCTAssertEqual(store.status, .entitled(Self.grant.entitlement))
+        XCTAssertEqual(restoreResult, .restored)
     }
 
     func testCurrentEntitlementFinishesOnlyAfterServerGrant() async {
@@ -806,7 +888,7 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         let finishedTransactionIDs = await storeKit.finishedTransactionIDs
         XCTAssertEqual(store.status, .revoked)
         XCTAssertNil(store.currentGrant)
-        XCTAssertEqual(finishedTransactionIDs, [])
+        XCTAssertEqual(finishedTransactionIDs, [Self.evidence.transactionID])
     }
 
     func testOnlyFreeTrialOfferIsPresentedAsTrial() {

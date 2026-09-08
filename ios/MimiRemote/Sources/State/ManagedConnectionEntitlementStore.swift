@@ -9,6 +9,11 @@ struct ManagedConnectionPurchaseEvidence: Equatable, Sendable {
 
 @MainActor
 final class ManagedConnectionEntitlementStore: ObservableObject {
+    enum RestoreResult: Equatable {
+        case restored
+        case noActiveSubscription
+    }
+
     enum Status: Equatable {
         case loading
         case available
@@ -282,7 +287,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     currentEvidence = evidence
                     authoritativeGeneration = generation
                     status = .entitled(grant.entitlement)
-                    // 服务端是权益事实来源。只有它接受两份 JWS 后，才结束 StoreKit 交易。
+                    // 服务端确认授权后结束交易；明确的失效决定在错误分支处理。
                     await storeKit.finish(transactionID: evidence.transactionID)
                 } catch is CancellationError {
                     guard isLatest(generation) else { return }
@@ -290,6 +295,10 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                 } catch {
                     guard isLatest(generation) else { return }
                     applyFailure(error, fallbackGrant: previousGrant)
+                    if isTerminalServerDecision(error) {
+                        // 旧交易已被服务端确认失效，必须结束，否则后续购买仍可能重放它。
+                        await storeKit.finish(transactionID: evidence.transactionID)
+                    }
                 }
             }
         } catch is CancellationError {
@@ -301,14 +310,20 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         }
     }
 
-    func restorePurchases() async {
-        guard activeTransactionOperations == 0 else { return }
-        await performRestore()
+    @discardableResult
+    func restorePurchases() async -> RestoreResult? {
+        guard activeTransactionOperations == 0 else { return nil }
+        let result = await performRestore()
+        let generation = operationGeneration
+        let revision = stateRevision
         await refreshDeferredEntitlement()
         await refreshProducts()
+        // 等待商品期间的新交易决定优先，不能再弹出旧的恢复结果。
+        guard isLatest(generation), stateRevision == revision, !Task.isCancelled else { return nil }
+        return result
     }
 
-    private func performRestore() async {
+    private func performRestore() async -> RestoreResult? {
         activeTransactionOperations += 1
         defer { activeTransactionOperations -= 1 }
         let generation = beginOperation()
@@ -318,15 +333,27 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         do {
             // AppStore.sync 会弹出系统鉴权，只能由用户明确点击“恢复购买”触发。
             try await storeKit.syncPurchases()
-            guard isLatest(generation) else { return }
+            guard isLatest(generation) else { return nil }
             await refreshEntitlement(generation: generation)
+            // 校验取消或失败时不能把保留的旧状态误当成本次恢复成功。
+            guard isLatest(generation), authoritativeGeneration == generation,
+                  !Task.isCancelled else { return nil }
+            switch status {
+            case .entitled:
+                return .restored
+            case .available, .expired, .revoked:
+                return .noActiveSubscription
+            default:
+                return nil
+            }
         } catch is CancellationError {
-            guard isLatest(generation) else { return }
+            guard isLatest(generation) else { return nil }
             restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
         } catch {
-            guard isLatest(generation) else { return }
+            guard isLatest(generation) else { return nil }
             restore(previousGrant, otherwise: .failed(userFacingMessage(for: error)))
         }
+        return nil
     }
 
     private func refreshDeferredEntitlement() async {
