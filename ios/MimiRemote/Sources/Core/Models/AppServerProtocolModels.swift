@@ -768,10 +768,17 @@ struct CodexAppServerRequestBuilder {
         var params: [String: CodexAppServerJSONValue?] = [
             "threadId": .string(threadID)
         ]
-        // 共享队列不接收 turn 级设置。只把本轮明确支持的运行设置提升为 Thread 设置，
-        // 权限、输出结构和自定义指令仍走各自的受控链路，不能在普通消息里顺带改写。
+        // 共享队列不接收 turn 级设置，必须在入队前提交本轮明确选择的权限。
+        // 沿用线程权限时 turnParams 不含覆盖字段，不能把本地默认值重新写回服务端。
         for key in ["model", "effort", "collaborationMode"] {
             params[key] = turnParams[key] ?? nil
+        }
+        if !options.preservesThreadPermissionSettings {
+            // 网关按 cwd 收窄可写目录；缺少它会丢失工作区沙盒的有效根路径。
+            params["cwd"] = .string(path)
+            for key in ["approvalPolicy", "approvalsReviewer", "sandboxPolicy", "permissions"] {
+                params[key] = turnParams[key] ?? nil
+            }
         }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(

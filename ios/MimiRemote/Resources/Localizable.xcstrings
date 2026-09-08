@@ -39624,11 +39624,11 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先运行 scripts/build-tailcat-mobile.sh，再重新构建 App" } }
       }
     },
-    "ui.current_turn_permission_value": {
-      "comment": "Shows the permission setting that the App Server reports for the current turn.",
+    "ui.session_permission_settings_value": {
+      "comment": "Shows the sticky session permission settings reported by the App Server.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Current turn: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本回合：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Session permission settings: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "会话权限设置：%@" } }
       }
     },
     "ui.follow_the_current_thread_permissions": {
