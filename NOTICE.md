@@ -59,6 +59,8 @@ Swift Package Manager 依赖：
 
 iOS 中的 Codex 运行时标识使用 OpenAI 官方品牌资源包 `OpenAI-Logos-2025.zip`（https://cdn.openai.com/brand/OpenAI-Logos-2025.zip ）中的 `OpenAI-black-monoblossom.svg` 与 `OpenAI-white-monoblossom.svg`。两个文件均为官方原件，未做裁切、改绘或改色，浅色与深色界面分别使用官方黑、白两版；界面中只按显示尺寸等比缩放，标记自带的品牌留白通过外层布局盒保留。该标记用于帮助用户识别其自有的 Codex 运行时。相关标识和商标归 OpenAI 所有，不代表 OpenAI 对本项目的赞助或背书。
 
+iOS 中的 Claude 运行时标识取自 Simple Icons（https://github.com/simple-icons/simple-icons ，仓库按 CC0-1.0 发布）的 `icons/claude.svg`，图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#D97757` 补充填充色并重新换行，未改动图形本身。CC0-1.0 覆盖的是路径数据，`Claude`、`Anthropic` 相关标识和商标仍归 Anthropic 所有，不代表 Anthropic 对本项目的赞助或背书。
+
 iOS 首次连接页使用 GitHub 官方 Brand Toolkit 提供的黑白 Invertocat 标识，仅用于链接本项目的公开 Release 页面。该标识及 GitHub 商标归 GitHub, Inc. 所有，不代表 GitHub 对本项目的赞助或背书。
 
 如果你认为本仓库的代码、文档、视觉设计或宣传文案和你的项目过于相似，欢迎通过 GitHub Issue 说明具体文件、截图或链接。我们会优先处理可以明确定位的归属、许可证和混淆风险。
