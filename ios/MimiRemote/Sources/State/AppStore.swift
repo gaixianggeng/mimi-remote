@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -38,7 +37,7 @@ final class AppStore: ObservableObject {
     private let maxConnectionTestReportHistory = 20
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
-    private let credentialVault: HostCredentialVault
+    let credentialVault: HostCredentialVault
     private let routeProbeTimeout: TimeInterval
     private let prefersLocalConnection: Bool
     private let allowsEphemeralLocalCredentialFallback: Bool
@@ -47,11 +46,13 @@ final class AppStore: ObservableObject {
     private let routeProbe: ConnectionRouteProbe
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let usesDefaultRouteProbe: Bool
-    private var ephemeralLocalProfileID: String?
+    var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
-    private var activeRouteEndpoint: String?
+    var activeRouteEndpoint: String?
+    var isTailcatExperimentModeEnabled = false
+    var tailcatExperimentEndpoint: String?
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
@@ -60,7 +61,7 @@ final class AppStore: ObservableObject {
     var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
-    private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
+    let debugLaunchConfiguration = DebugLaunchConfiguration.current()
 #endif
 
     init(
@@ -227,71 +228,36 @@ final class AppStore: ObservableObject {
         return connectionProfiles.isEmpty || activeConnectionProfile != nil
     }
 
-    /// 认证请求只能在前台凭据完整恢复后创建。后台缩略图虽然仍保留工作台，
-    /// 但不能让任何旧任务拿空 Token 创建 REST 或 WebSocket Runtime。
-    var authenticatedCredentialFingerprint: String? {
-        guard !isCredentialMemorySuspended, isConfigured else {
-            return nil
+    /// 模式开关与代理端点分开保存。代理启动失败时仍保持 Tailcat-only，禁止隐式回退。
+    func setTailcatExperimentModeEnabled(_ enabled: Bool) {
+        guard enabled != isTailcatExperimentModeEnabled else { return }
+        isTailcatExperimentModeEnabled = enabled
+        connectionGeneration &+= 1
+        resetDirectRuntime()
+        if enabled {
+            activeRouteEndpoint = tailcatExperimentEndpoint
+            activeConnectionRoute = .tailcat
+        } else {
+            tailcatExperimentEndpoint = nil
+            activeRouteEndpoint = nil
+            activeConnectionRoute = .configured
         }
-        return connectionCredentialFingerprint(token)
     }
 
-    func acceptsCredentialInvalidation(_ error: Error) -> Bool {
-        guard isCredentialInvalidatingError(error),
-              let currentFingerprint = authenticatedCredentialFingerprint else {
-            return false
+    /// Tailcat 只覆盖本进程的网络路由，不修改当前连接档案及其 Tailscale 地址。
+    func setTailcatExperimentEndpoint(_ nextEndpoint: String?) {
+        let normalized = nextEndpoint.map(AgentAPIClient.normalizedEndpoint)
+        guard normalized != tailcatExperimentEndpoint else { return }
+        tailcatExperimentEndpoint = normalized
+        connectionGeneration &+= 1
+        resetDirectRuntime()
+        if let normalized {
+            activeRouteEndpoint = normalized
+            activeConnectionRoute = .tailcat
+        } else {
+            activeRouteEndpoint = nil
+            activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         }
-        guard let rejectedFingerprint = credentialFingerprintRejectedByError(error) else {
-            // 兼容测试替身和旧的进程内错误；生产 REST/WS 传输都会携带指纹。
-            return true
-        }
-        return rejectedFingerprint == currentFingerprint
-    }
-
-    func isCurrentCredentialFingerprint(_ fingerprint: String?) -> Bool {
-        guard let currentFingerprint = authenticatedCredentialFingerprint else {
-            return false
-        }
-        // nil 仅兼容不携带传输上下文的测试 WebSocket。
-        return fingerprint == nil || fingerprint == currentFingerprint
-    }
-
-    var activeConnectionProfile: ConnectionProfile? {
-        guard let activeConnectionProfileID else { return nil }
-        return connectionProfiles.first { $0.id == activeConnectionProfileID }
-    }
-
-    /// `endpoint` 始终保留档案里的规范地址，用于通知、缓存和跨设备身份；真实网络请求在
-    /// Catalyst 检测到同机 agentd 后临时走 loopback，避免把同一台 Mac 拆成两套本地数据。
-    var connectionEndpoint: String {
-        activeRouteEndpoint ?? activeConnectionProfile?.preferredEndpoint ?? endpoint
-    }
-
-    var isUsingLocalConnection: Bool {
-        activeConnectionRoute == .local
-    }
-
-    /// 通知路由优先使用持久化 profile ID；legacy/debug 单连接才退回规范 endpoint 的 SHA-256。
-    /// 哈希仅用于同机比对，避免把 endpoint 明文写进系统通知数据库。
-    var notificationRoutingProfileID: String {
-        if let activeConnectionProfileID,
-           !activeConnectionProfileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return activeConnectionProfileID
-        }
-        let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
-        let digest = SHA256.hash(data: Data(normalizedEndpoint.utf8))
-        return "endpoint-sha256:" + digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    var connectionProfileSettingsModel: ConnectionProfileSettingsModel {
-        ConnectionProfileSettingsModel(
-            profiles: connectionProfiles,
-            activeProfileID: activeConnectionProfileID
-        )
-    }
-
-    var activeHostScope: HostScope {
-        activeHostState.scope
     }
 
     /// 只为主机选择器生成探活描述；Token 读取在独立 actor 中执行。
@@ -560,23 +526,6 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
-        guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
-            throw ConnectionProfileError.notFound
-        }
-        let profileToken = try await credentialVault.token(for: id)
-        guard !profileToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ConnectionProfileError.missingToken
-        }
-        return try await prepareConnectionSettings(
-            endpoint: profile.endpoint,
-            token: profileToken,
-            profileTarget: .existingProfile(id: id),
-            tailscaleDNSName: profile.tailscaleDNSName,
-            tailscaleDeviceName: profile.tailscaleDeviceName
-        )
-    }
-
     func preparePairingURL(
         _ url: URL,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
@@ -668,6 +617,7 @@ final class AppStore: ObservableObject {
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID ?? current.installationID,
                     hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: current.hostPlatform),
+                    connectionRoute: prepared.route.profileRoute,
                     revision: current.revision &+ 1
                 )
             } else {
@@ -687,7 +637,8 @@ final class AppStore: ObservableObject {
                     isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID,
-                    hostPlatform: prepared.hostPlatform
+                    hostPlatform: prepared.hostPlatform,
+                    connectionRoute: prepared.route.profileRoute
                 )
             }
         case .newProfile(let id, let displayName):
@@ -707,7 +658,8 @@ final class AppStore: ObservableObject {
                 isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID,
-                hostPlatform: prepared.hostPlatform
+                hostPlatform: prepared.hostPlatform,
+                connectionRoute: prepared.route.profileRoute
             )
         case .existingProfile(let id):
             guard let existing = connectionProfiles.first(where: { $0.id == id }) else {
@@ -739,6 +691,7 @@ final class AppStore: ObservableObject {
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID ?? existing.installationID,
                 hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: existing.hostPlatform),
+                connectionRoute: prepared.route.profileRoute,
                 revision: existing.revision &+ 1
             )
         }
@@ -758,7 +711,8 @@ final class AppStore: ObservableObject {
             targetProfile.tailscaleDNSName != activeConnectionProfile?.tailscaleDNSName ||
             targetProfile.tailscaleDeviceName != activeConnectionProfile?.tailscaleDeviceName ||
             targetProfile.displayName != activeConnectionProfile?.displayName ||
-            targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform
+            targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform ||
+            targetProfile.connectionRoute != activeConnectionProfile?.connectionRoute
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
         // 未签入 provisioning profile 的开发包只在受限私网 + -34018 时使用进程内凭据。
@@ -829,8 +783,17 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        activeRouteEndpoint = normalizedActiveEndpoint
-        activeConnectionRoute = .configured
+        if prepared.route.usesTailcat {
+            isTailcatExperimentModeEnabled = true
+            tailcatExperimentEndpoint = normalizedActiveEndpoint
+            activeRouteEndpoint = normalizedActiveEndpoint
+            activeConnectionRoute = .tailcat
+        } else {
+            isTailcatExperimentModeEnabled = false
+            tailcatExperimentEndpoint = nil
+            activeRouteEndpoint = normalizedActiveEndpoint
+            activeConnectionRoute = .configured
+        }
         if let candidateRuntime {
             prepared.hostContext?.markConsumed()
             activeRuntimeIdentity = runtimeIdentity(endpoint: normalizedActiveEndpoint, token: prepared.token)
@@ -1014,15 +977,22 @@ final class AppStore: ObservableObject {
         connectionProfiles = nextProfiles
     }
     @discardableResult
-    func validateConnection(endpoint: String, token: String) async throws -> String {
+    func validateConnection(
+        endpoint: String,
+        token: String,
+        route: ConnectionTestRoute = .tailscale,
+        affectsConnectionStatus: Bool = true
+    ) async throws -> String {
         let startedAt = Date()
         var stages: [ConnectionTestStageTiming] = []
         var gatewayDiagnosticsBaseline: RelayDiagnosticsResponse?
         var gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
         var gatewayDiagnosticsError: String?
         var tailscaleNetworkPath: TailscaleNetworkPathResponse?
-        connectionStatus = .testing
-        lastError = nil
+        if affectsConnectionStatus {
+            connectionStatus = .testing
+            lastError = nil
+        }
         lastConnectionTestDurationMillis = nil
         lastConnectionTestReport = nil
 
@@ -1038,6 +1008,7 @@ final class AppStore: ObservableObject {
             // 诊断快照是为了定位瓶颈，不属于真实业务链路；总耗时只汇总上面几个测试阶段。
             let totalMillis = stages.reduce(0) { $0 + $1.durationMillis }
             let report = ConnectionTestReport(
+                route: route,
                 startedAt: startedAt,
                 totalMillis: totalMillis,
                 stages: stages,
@@ -1115,15 +1086,21 @@ final class AppStore: ObservableObject {
         } catch {
             appendStage(.appServerGateway, since: gatewayStartedAt, status: .failed(error.localizedDescription))
             await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
-            await captureTailscaleNetworkPath(client: client)
+            if route == .tailscale {
+                await captureTailscaleNetworkPath(client: client)
+            }
             publishReport()
             throw error
         }
 
         await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
-        await captureTailscaleNetworkPath(client: client)
+        if route == .tailscale {
+            await captureTailscaleNetworkPath(client: client)
+        }
         publishReport()
-        connectionStatus = .connected(version.version)
+        if affectsConnectionStatus {
+            connectionStatus = .connected(version.version)
+        }
         return normalized
     }
 
@@ -1148,18 +1125,6 @@ final class AppStore: ObservableObject {
         let overflow = recentConnectionTestReports.count - maxConnectionTestReportHistory
         if overflow > 0 {
             recentConnectionTestReports.removeFirst(overflow)
-        }
-    }
-
-    func testConnection(endpoint: String, token: String) async {
-#if DEBUG
-        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return }
-#endif
-        do {
-            _ = try await validateConnection(endpoint: endpoint, token: token)
-        } catch {
-            connectionStatus = .failed(error.localizedDescription)
-            lastError = error.localizedDescription
         }
     }
 
@@ -1203,7 +1168,11 @@ final class AppStore: ObservableObject {
             return false
         }
 
-        await testConnection(endpoint: endpoint, token: token)
+        await testConnection(
+            endpoint: connectionEndpoint,
+            token: token,
+            route: isTailcatExperimentModeEnabled ? .tailcat : .tailscale
+        )
         if Task.isCancelled {
             shouldRetryAfterCancellation = true
         }
@@ -1212,11 +1181,24 @@ final class AppStore: ObservableObject {
 
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
-    func preflightConnection(force: Bool = false) async -> Bool {
+    func preflightConnection(
+        force: Bool = false,
+        preferredProfileRoute: ConnectionProfileRoute? = nil
+    ) async -> Bool {
 #if DEBUG
         if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return true }
 #endif
-        let localAvailable = await detectLocalAgent(force: force)
+        let usesTailcatExperiment = isTailcatExperimentModeEnabled
+        if usesTailcatExperiment, tailcatExperimentEndpoint == nil {
+            let error = URLError(.notConnectedToInternet)
+            connectionStatus = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
+        }
+        let shouldProbeLocal = preferredProfileRoute == nil || preferredProfileRoute == .lan
+        let localAvailable = usesTailcatExperiment || !shouldProbeLocal
+            ? false
+            : await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
             return true
         }
@@ -1254,7 +1236,8 @@ final class AppStore: ObservableObject {
 
         let normalizedEndpoint: String
         do {
-            normalizedEndpoint = try Self.validatedEndpoint(endpoint)
+            // 常规路由仍从档案的规范地址展开 DNS/IP 候选；只有 Tailcat 覆盖该入口。
+            normalizedEndpoint = try Self.validatedEndpoint(tailcatExperimentEndpoint ?? endpoint)
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
@@ -1262,7 +1245,7 @@ final class AppStore: ObservableObject {
         }
 
         var candidates: [(endpoint: String, route: ActiveConnectionRoute, timeout: TimeInterval)] = []
-        if localAvailable,
+        if !usesTailcatExperiment, localAvailable,
            AgentAPIClient.normalizedEndpoint(normalizedEndpoint) != AgentAPIClient.normalizedEndpoint(localAgentEndpoint) {
             candidates.append((
                 endpoint: localAgentEndpoint,
@@ -1271,17 +1254,19 @@ final class AppStore: ObservableObject {
             ))
         }
         let configuredEndpoints: [String]
-        if let profile = activeConnectionProfile,
+        let matchesPreferredRoute = preferredProfileRoute.map(canUseSavedFallback) ?? true
+        if !usesTailcatExperiment, let profile = activeConnectionProfile,
            AgentAPIClient.normalizedEndpoint(profile.endpoint) ==
-            AgentAPIClient.normalizedEndpoint(normalizedEndpoint) {
+            AgentAPIClient.normalizedEndpoint(normalizedEndpoint),
+           matchesPreferredRoute {
             configuredEndpoints = profile.connectionCandidates
         } else {
-            configuredEndpoints = [normalizedEndpoint]
+            configuredEndpoints = preferredProfileRoute == nil ? [normalizedEndpoint] : []
         }
         for configuredEndpoint in configuredEndpoints {
-            let route: ActiveConnectionRoute = HostConnectionEndpointPolicy.isLoopbackEndpoint(configuredEndpoint)
-                ? .local
-                : .configured
+            let route: ActiveConnectionRoute = usesTailcatExperiment
+                ? .tailcat
+                : (HostConnectionEndpointPolicy.isLoopbackEndpoint(configuredEndpoint) ? .local : .configured)
             candidates.append((endpoint: configuredEndpoint, route: route, timeout: routeProbeTimeout))
         }
 
@@ -1289,7 +1274,7 @@ final class AppStore: ObservableObject {
         for candidate in candidates {
             do {
                 try await routeProbe(candidate.endpoint, token, candidate.timeout)
-                if candidate.route == .configured,
+                if candidate.route == .configured || candidate.route == .tailcat,
                    let profile = activeConnectionProfile {
                     try await validateConnectionCandidateIdentityAndRefreshHostMetadata(
                         from: candidate.endpoint,
@@ -1323,7 +1308,7 @@ final class AppStore: ObservableObject {
             }
         }
 
-        if localAvailable {
+        if !usesTailcatExperiment, localAvailable {
             do {
                 try await connectToLocalAgentWithAutomaticPairing()
                 return true
@@ -1337,9 +1322,11 @@ final class AppStore: ObservableObject {
             }
         }
 
-        resetConnectionRoute()
+        if !usesTailcatExperiment {
+            resetConnectionRoute()
+        }
         let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
-        if acceptsCredentialInvalidation(finalError) {
+        if !usesTailcatExperiment, acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
         }
@@ -1559,15 +1546,20 @@ final class AppStore: ObservableObject {
                 lastSuccessfulAt: profile.lastSuccessfulAt,
                 installationID: normalizedInstallationID(profile.installationID),
                 hostPlatform: profile.hostPlatform,
+                connectionRoute: profile.connectionRoute,
                 revision: profile.revision
             )
         }
     }
 
-    private func persistProfiles(_ encodedProfiles: Data) {
+    func persistProfiles(_ encodedProfiles: Data) {
         // V1 镜像保留一个兼容周期，确保旧版本回滚后仍可读取连接档案；Token 仍只在 Keychain。
         defaults.set(encodedProfiles, forKey: Self.profilesKey)
         defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
+    }
+
+    func replaceConnectionProfiles(_ profiles: [ConnectionProfile]) {
+        connectionProfiles = profiles
     }
 
     private static func normalizedProfileDisplayName(_ raw: String, endpoint: String) -> String {
@@ -1784,9 +1776,9 @@ final class AppStore: ObservableObject {
             return false
         }
         switch connectionError {
-        case .disconnected, .notInitialized, .timeout, .transport:
+        case .disconnected, .notInitialized, .timeout, .transport, .outcomeUnknown, .decoding:
             return true
-        case .duplicateRequestID, .appServer, .decoding:
+        case .duplicateRequestID, .appServer:
             return false
         }
     }
@@ -1967,8 +1959,8 @@ final class AppStore: ObservableObject {
     }
 
     private func resetConnectionRoute() {
-        activeRouteEndpoint = nil
-        activeConnectionRoute = .configured
+        activeRouteEndpoint = isTailcatExperimentModeEnabled ? tailcatExperimentEndpoint : nil
+        activeConnectionRoute = isTailcatExperimentModeEnabled ? .tailcat : .configured
         resetDirectRuntime()
     }
 

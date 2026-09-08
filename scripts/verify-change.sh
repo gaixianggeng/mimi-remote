@@ -161,6 +161,11 @@ is_control_path() {
 
 is_go_source_path() {
   case "$1" in
+    experiments/tailcat/*)
+      return 1
+      ;;
+  esac
+  case "$1" in
     *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*)
       return 0
       ;;
@@ -170,7 +175,7 @@ is_go_source_path() {
 
 is_ios_source_path() {
   case "$1" in
-    ios/MimiRemote/*|contracts/mimi-protocol/*|internal/protocolcontract/*)
+    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*)
       return 0
       ;;
   esac
@@ -211,10 +216,12 @@ has_source_size_control=false
 has_repository_security_control=false
 has_ios_privacy_control=false
 has_ios_device_control=false
+has_tailcat_source=false
 has_ios_asc_control=false
 has_critical_mapping_control=false
 has_linear_polling_control=false
 has_agentd_restart_control=false
+has_development_cache_control=false
 unknown_paths=()
 shell_paths=()
 yaml_paths=()
@@ -336,6 +343,11 @@ for path in "${changed_paths[@]:-}"; do
   fi
 
   case "$path" in
+    experiments/tailcat/*)
+      has_tailcat_source=true
+      ;;
+  esac
+  case "$path" in
     contracts/mimi-protocol/*|internal/protocolcontract/*)
       has_contract=true
       ;;
@@ -361,7 +373,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*)
+    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*)
       has_packaging_control=true
       ;;
   esac
@@ -381,7 +393,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/test-ios-device-management.sh|scripts/testdata/ios-device-management/*)
+    scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/tailcat-mobile/*)
       has_ios_device_control=true
       ;;
   esac
@@ -403,6 +415,11 @@ for path in "${changed_paths[@]:-}"; do
   case "$path" in
     scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/sign-agentd-dev-macos.sh)
       has_agentd_restart_control=true
+      ;;
+  esac
+  case "$path" in
+    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/test-macos-local-cache.sh|scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
+      has_development_cache_control=true
       ;;
   esac
 
@@ -527,7 +544,7 @@ if [[ "$has_ios_privacy_control" == true ]]; then
   add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标选择和设备租约变化使用 fake xcrun/xcodebuild 自测" "bash ./scripts/test-ios-device-management.sh"
+  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
@@ -540,6 +557,9 @@ if [[ "$has_linear_polling_control" == true ]]; then
 fi
 if [[ "$has_agentd_restart_control" == true ]]; then
   add_check "agentd 本地重启链路只执行无安装副作用的 self-test" "bash ./scripts/restart-agentd-dev-macos.sh --self-test"
+fi
+if [[ "$has_development_cache_control" == true ]]; then
+  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh"
 fi
 if [[ "$has_contract" == true ]]; then
   add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh"
@@ -567,20 +587,25 @@ if [[ "$direct_go" == true ]]; then
   fi
 fi
 
+if [[ "$has_tailcat_source" == true ]]; then
+  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)"
+fi
+
 if [[ "$direct_ios" == true ]]; then
-  add_check "iOS 验证前只解析一次目标" "bash ./scripts/ios-dev.sh target"
-  add_check "iOS 验证前只查看一次设备占用" "bash ./scripts/ios-dev.sh leases"
   if [[ "$mode" == "full" ]]; then
     # Go 变更由上方独立 Go 计划覆盖；iOS 阶段不在 macOS/Simulator 链路重复执行。
     add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only"
   else
-    add_check "iOS quick 只编译一次可复用测试产物" "bash ./scripts/ios-dev.sh build-for-testing"
+    # quick 只证明生产 App 能在固定 M5 Simulator 上编译。整个 XCTest 测试包会随
+    # 项目增长而持续变慢；问题相关 selector 应在开发阶段单独执行，完整集合交给 full/CI。
+    add_check "iOS quick 只编译 App，不编译或运行 XCTest" \
+      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
   fi
 fi
 
 if [[ "$direct_rust" == true ]]; then
   add_check "Rust 格式检查" "cargo fmt --all -- --check"
-  rust_test_command="cargo test --locked"
+  rust_test_command='CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(bash ./scripts/development-cache-path.sh cargo/target)}" cargo test --locked'
   if [[ "$rust_all" == true || "$mode" == "full" ]]; then
     rust_codex=true
     rust_core=true
@@ -614,6 +639,29 @@ else
 fi
 echo "- 去重后路径：${#changed_paths[@]}"
 echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
+echo
+
+echo "验证阶段："
+if [[ "$mode" == "full" ]]; then
+  echo "- 当前：full；交付报告必须说明命中的高风险条件。"
+else
+  echo "- 当前：quick；只在最后一次代码修改后执行一次，不要在每个微调后重复执行。"
+fi
+echo "- 开发中：只运行问题直接相关的 package、XCTest selector、快照或静态检查。"
+echo "- full 条件：共享协议/跨栈接口，高风险状态语义，影响范围无法界定的大重构，正式发布或用户明确要求。"
+echo "- 非 full 条件：普通 UI、文案、单 package、测试文件、改动文件较多、准备提交或“为了保险”。"
+if [[ "$has_contract" == true ]]; then
+  echo "- 自动高风险信号：检测到 Go/iOS 共享协议路径；建议显式评估 full。"
+elif [[ "$direct_go" == true && "$direct_ios" == true ]] || \
+     [[ "$direct_go" == true && "$direct_rust" == true ]] || \
+     [[ "$direct_go" == true && "$direct_macos" == true ]] || \
+     [[ "$direct_ios" == true && "$direct_rust" == true ]] || \
+     [[ "$direct_ios" == true && "$direct_macos" == true ]] || \
+     [[ "$direct_rust" == true && "$direct_macos" == true ]]; then
+  echo "- 自动高风险信号：检测到多个产品栈；建议确认是否修改同一跨栈接口。"
+else
+  echo "- 自动高风险信号：未检测到；除非存在脚本无法识别的高风险语义，否则保持 quick。"
+fi
 echo
 
 if [[ "${#changed_paths[@]}" -eq 0 ]]; then

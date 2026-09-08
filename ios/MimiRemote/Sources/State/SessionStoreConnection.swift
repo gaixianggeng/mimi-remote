@@ -90,7 +90,7 @@ extension SessionStore {
         socket.onSendFailure = { _, _ in }
         socket.onTurnSendOutcome = { _, _ in }
         socket.onApprovalDecisionFailure = { _, _ in }
-        socket.onUserInputResponseFailure = { _, _ in }
+        socket.onUserInputResponseFailure = { _, _, _ in }
         socket.onControlFailure = { _ in }
         relatedSessionSocket = socket
         relatedSessionSocketID = session.id
@@ -276,7 +276,7 @@ extension SessionStore {
                 self?.setErrorMessage(L10n.format("ui.approval_sending_failed_value", message))
             }
         }
-        socket.onUserInputResponseFailure = { [weak self] requestID, message in
+        socket.onUserInputResponseFailure = { [weak self] requestID, message, expired in
             Task { @MainActor in
                 guard self?.isCurrentWebSocketConnection(
                     sessionID: session.id,
@@ -286,6 +286,13 @@ extension SessionStore {
                     return
                 }
                 let request = self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
+                guard !expired else {
+                    // resolved 或 turn/completed 已结算的请求，其迟到回调不能改写后续状态。
+                    guard let request else { return }
+                    self?.discardExpiredUserInputRequest(request, sessionID: session.id)
+                    self?.setErrorMessage(L10n.text("ui.supplemental_information_request_expired"))
+                    return
+                }
                 if let request {
                     self?.restoreUserInputRequestAfterFailure(request, sessionID: session.id)
                 }
@@ -417,7 +424,7 @@ extension SessionStore {
                 sessionID: sessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: sessionID)
             clearPendingApprovalDecisions(sessionID: sessionID)
             clearPendingUserInputResponses(sessionID: sessionID)
             clearForegroundActivity(sessionID: sessionID)
@@ -467,7 +474,7 @@ extension SessionStore {
                 sessionID: sessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: sessionID)
             clearPendingApprovalDecisions(sessionID: sessionID)
             clearForegroundActivity(sessionID: sessionID)
             if canReconnect {
@@ -570,7 +577,7 @@ extension SessionStore {
                 sessionID: previousSessionID,
                 message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
             )
-            conversationStore.markSendingUserMessagesFailed(sessionID: previousSessionID)
+            conversationStore.markSendingUserMessagesUncertain(sessionID: previousSessionID)
         }
         pendingApprovalDecisionIDsBySessionID.removeAll()
         pendingUserInputResponseIDsBySessionID.removeAll()
@@ -724,6 +731,11 @@ extension SessionStore {
         }
         do {
             let client = try clientFactory()
+            try await authorizeClaudeSessionBeforeReconnect(
+                current,
+                client: client,
+                reconnectGeneration: reconnectGeneration
+            )
             // 以 preflight 开始时刻判断短缓存，不能等 thread/read 返回后再算；弱网下 read
             // 自身可能跨过 4 秒 TTL，导致明明刚加载成功的首屏仍被重复下载。
             let hadRecentAppliedFullAtPreflightStart = hasRecentFullHistoryFirstPage(sessionID: sessionID)
@@ -762,6 +774,48 @@ extension SessionStore {
             }
             setStatusMessage(L10n.format("ui.snapshot_refresh_failed_before_reconnection_value", error.localizedDescription))
             return current
+        }
+    }
+
+    /// agentd 重启后 gateway 的内存授权会清空。Claude 旧会话必须先由当前连接的
+    /// thread/list 返回，之后 thread/read 和 thread/resume 才能通过同一套能力校验。
+    func authorizeClaudeSessionBeforeReconnect(
+        _ session: AgentSession,
+        client: SessionStoreAPIClient,
+        reconnectGeneration: UInt64
+    ) async throws {
+        guard Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude",
+              let workspace = workspaceForSession(session) else {
+            return
+        }
+
+        var cursor: String?
+        var visitedCursors = Set<String>()
+        while true {
+            let page = try await client.sessionsPage(
+                workspace: workspace,
+                runtimeProvider: "claude",
+                cursor: cursor,
+                limit: 50,
+                consistency: cursor == nil ? .authoritative : .fastIndexed
+            )
+            guard !Task.isCancelled,
+                  webSocketReconnectGeneration == reconnectGeneration,
+                  selectedSessionID == session.id else {
+                throw CancellationError()
+            }
+            if page.sessions.contains(where: { $0.id == session.id }) {
+                return
+            }
+            guard page.hasMore else {
+                throw AgentAPIError.invalidResponse
+            }
+            guard let nextCursor = page.nextCursor,
+                  !nextCursor.isEmpty,
+                  visitedCursors.insert(nextCursor).inserted else {
+                throw AgentAPIError.invalidResponse
+            }
+            cursor = nextCursor
         }
     }
 
@@ -813,6 +867,21 @@ extension SessionStore {
             // 也不能清掉或放行绑定到另一 turn 的本地队列。
             return
         }
+        if case .turnCompleted(let metadata) = event {
+            cancelTurnCompletionReconciliation(
+                sessionID: metadata.sessionID ?? sessionID
+            )
+        } else if case .turnStarted(let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let job = turnCompletionReconciliationJobsBySessionID[id],
+               job.expectedTurnID != metadata.turnID {
+                cancelTurnCompletionReconciliation(sessionID: id)
+            }
+        } else if case .error(_, let metadata) = event {
+            cancelTurnCompletionReconciliation(
+                sessionID: metadata.sessionID ?? sessionID
+            )
+        }
         recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
         if case .permissionProfileUpdated(let profile, let metadata) = event {
             let id = metadata.sessionID ?? sessionID
@@ -830,14 +899,20 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
-        if case .messageCompleted(let message, let metadata) = event,
-           message.role == .user,
-           let clientMessageID = metadata.clientMessageID {
-            _ = handleServerQueueTurnStarted(
-                clientMessageID: clientMessageID,
-                sessionID: metadata.sessionID ?? sessionID,
-                turnID: metadata.turnID
+        if case .messageCompleted(let message, let metadata) = event {
+            scheduleTurnCompletionReconciliationIfNeeded(
+                message: message,
+                metadata: metadata,
+                hostScope: lease.hostScope
             )
+            if message.role == .user,
+               let clientMessageID = metadata.clientMessageID {
+                _ = handleServerQueueTurnStarted(
+                    clientMessageID: clientMessageID,
+                    sessionID: metadata.sessionID ?? sessionID,
+                    turnID: metadata.turnID
+                )
+            }
         }
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
@@ -2458,6 +2533,7 @@ extension SessionStore {
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
+        cancelAllTurnCompletionReconciliations()
         queuedRunningTurnsBySessionID.removeAll()
         pendingPermissionTurnBoundariesBySessionID.removeAll()
         permissionTurnRetryRequirementsByClientMessageID.removeAll()
@@ -2539,9 +2615,11 @@ extension SessionStore {
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
+        sessionListRequestLineageByWorkspaceKey = [:]
         if !workspaceSessionFirstPageCompletionByKey.isEmpty {
             workspaceSessionFirstPageCompletionByKey = [:]
         }
+        workspaceDirectorySessionIDsByKey = [:]
         sessionListCooldownUntilByBudgetKey = [:]
         sessionLibraryIndexRefreshJob?.task.cancel()
         sessionLibraryIndexRefreshJob = nil
@@ -2554,6 +2632,7 @@ extension SessionStore {
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
         historySeenPreviousCursorsBySessionID = [:]
+        historySessionsWithAdditionalPages = []
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
@@ -2885,7 +2964,27 @@ extension SessionStore {
             SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
             fallbackSessionID: sessionID
         )
-        conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false)
+        conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false, itemID: request.itemID)
+    }
+
+    /// 对端已经不认识这条补充信息请求时收起卡片。
+    ///
+    /// 与 `acceptUserInputResponseLocally` 的区别只有一个：答案从没送达 Agent，
+    /// 所以时间线要标成「已失效」，不能让用户以为自己答过了。
+    func discardExpiredUserInputRequest(_ request: AgentUserInputRequest, sessionID: SessionID) {
+        conversationStore.markUserInputExpired(itemID: request.itemID, sessionID: sessionID)
+        // 乐观提交已经撤卡。只有同一请求被再次投影时才需要清理状态，不能影响新的阻塞点。
+        guard sessionsByID[sessionID]?.pendingUserInput?.id == request.id else {
+            return
+        }
+        updateSession(sessionID) { item in
+            item.status = "running"
+            item.pendingUserInput = nil
+        }
+        contextStore.upsert(
+            SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+            fallbackSessionID: sessionID
+        )
     }
 
     func restoreUserInputRequestAfterFailure(_ request: AgentUserInputRequest, sessionID: SessionID) {

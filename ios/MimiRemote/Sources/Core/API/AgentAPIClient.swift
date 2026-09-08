@@ -287,11 +287,14 @@ struct AgentAPIClient {
     let endpoint: String
     let token: String
     private let session: URLSession
+    // 锁屏请求完成前保留临时 Tailcat 连接，避免后台动作使用已释放的本机代理。
+    private let approvalRoute: LockScreenApprovalTailcatRoute?
 
-    init(endpoint: String, token: String, session: URLSession = .shared) {
+    init(endpoint: String, token: String, session: URLSession = .shared, approvalRoute: LockScreenApprovalTailcatRoute? = nil) {
         self.endpoint = endpoint
         self.token = token
         self.session = session
+        self.approvalRoute = approvalRoute
     }
 
     func health(timeout: TimeInterval = 20) async throws -> HealthResponse {
@@ -629,6 +632,7 @@ struct AgentAPIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
+        defer { withExtendedLifetime(approvalRoute) {} }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw AgentAPIError.invalidResponse

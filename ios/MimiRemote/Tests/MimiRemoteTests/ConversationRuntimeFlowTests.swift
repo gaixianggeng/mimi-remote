@@ -786,6 +786,128 @@ extension ConversationDataFlowTests {
         try await waitForWebSocketStatus(.connected, store: store)
     }
 
+    func testClaudeReconnectRefreshesThreadListAuthorizationBeforeResuming() async throws {
+        let project = makeProject(id: "proj_claude_restart_reconnect")
+        let running = makeSession(
+            id: "sess_claude_restart_reconnect",
+            projectID: project.id,
+            title: "Claude 运行中",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let authorizationFillers = (1...4).map { index in
+            makeSession(
+                id: "sess_claude_authorization_page_\(index)",
+                projectID: project.id,
+                title: "Claude 历史 \(index)",
+                status: "history",
+                source: "claude",
+                runtimeProvider: "claude"
+            )
+        }
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            workspaceSessions: [project.id: [running]],
+            workspacePages: [
+                project.id: SessionsPage(
+                    sessions: [authorizationFillers[0]],
+                    nextCursor: "claude_page_2",
+                    hasMore: true
+                )
+            ],
+            cursorPages: [
+                "claude_page_2": SessionsPage(sessions: [authorizationFillers[1]], nextCursor: "claude_page_3", hasMore: true),
+                "claude_page_3": SessionsPage(sessions: [authorizationFillers[2]], nextCursor: "claude_page_4", hasMore: true),
+                "claude_page_4": SessionsPage(sessions: [authorizationFillers[3]], nextCursor: "claude_page_5", hasMore: true),
+                "claude_page_5": SessionsPage(sessions: [running])
+            ],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: running, recentOutput: nil, lastSeq: nil)
+            ],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let workspaceRequestCountBeforeReconnect = client.requestedWorkspaceIDs.count
+
+        sockets[0].emitStatus(.failed("agentd restarted"))
+        for _ in 0..<80 where sockets.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertEqual(
+            Array(client.requestedWorkspaceCursors.dropFirst(workspaceRequestCountBeforeReconnect)),
+            [nil, "claude_page_2", "claude_page_3", "claude_page_4", "claude_page_5"]
+        )
+        XCTAssertEqual(
+            Array(client.requestedWorkspaceLimits.dropFirst(workspaceRequestCountBeforeReconnect)),
+            Array(repeating: 50, count: 5)
+        )
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertEqual(sockets[1].connectedSessionIDs, [running.id])
+    }
+
+    func testClaudeReconnectAuthorizationFailsWhenSelectedSessionIsNotListed() async {
+        let project = makeProject(id: "proj_claude_missing_authorization")
+        let missing = makeSession(
+            id: "sess_claude_missing_authorization",
+            projectID: project.id,
+            title: "Claude 已丢失",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspacePages: [project.id: SessionsPage(sessions: [])]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.workspacesByID[project.id] = AgentWorkspace(project: project)
+        store.selectedSessionID = missing.id
+
+        do {
+            try await store.authorizeClaudeSessionBeforeReconnect(
+                missing,
+                client: client,
+                reconnectGeneration: store.webSocketReconnectGeneration
+            )
+            XCTFail("目标会话未进入授权列表时不应静默成功")
+        } catch AgentAPIError.invalidResponse {
+            XCTAssertEqual(client.requestedWorkspaceLimits.last, 50)
+        } catch {
+            XCTFail("应返回 invalidResponse，实际为 \(error)")
+        }
+    }
+
     func testWebSocketAutoReconnectDoesNotGiveUpWhileSessionStaysRunning() async throws {
         let project = makeProject(id: "proj_ws_persistent_reconnect")
         let running = makeSession(id: "sess_ws_persistent_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
@@ -2199,7 +2321,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.model, "gpt-5.6-sol")
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-6-astra")
         XCTAssertNil(createPayload.turnOptions.modelProvider)
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
@@ -2609,12 +2731,12 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(failedMessage.sendStatus, .failed)
         XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
         XCTAssertEqual(failedMessage.turnPayload?.input, payload.input)
-        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.6-sol")
+        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-6-astra")
 
         let retryTask = Task { await store.retryFailedUserMessage(failedMessage) }
         await client.waitForCreateRequestCount(2)
         XCTAssertEqual(client.createPayloads[1].input, payload.input)
-        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-5.6-sol")
+        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-6-astra")
         XCTAssertTrue(client.createPayloads[1].input.contains { item in
             if case .image(let url, _) = item {
                 return url == "data:image/png;base64,AA=="
@@ -2879,7 +3001,7 @@ extension ConversationDataFlowTests {
         let sent = try XCTUnwrap(sockets[0].sentTurns.first)
         XCTAssertEqual(sent.clientMessageID, "client-rich-retry")
         XCTAssertEqual(sent.payload.input, payload.input)
-        XCTAssertEqual(sent.payload.options.model, "gpt-5.6-sol")
+        XCTAssertEqual(sent.payload.options.model, "gpt-6-astra")
     }
 
     func testRunningSendKeepsInlineImagePayloadAfterAcceptedForPreview() async throws {
@@ -2922,7 +3044,7 @@ extension ConversationDataFlowTests {
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertTrue(payloadContainsInlineImage(localEcho.turnPayload))
         XCTAssertEqual(localEcho.turnPayload?.input, payload.input)
-        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-5.6-sol")
+        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-6-astra")
 
         sockets[0].onSendAccepted?(clientMessageID)
         let acceptedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in

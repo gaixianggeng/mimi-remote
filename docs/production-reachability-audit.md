@@ -12,7 +12,7 @@
 
 | 模块 | 入口 | 说明 |
 | --- | --- | --- |
-| HTTP 路由 | `cmd/agentd/main.go` 的 `httpapi.NewRouterWithRuntime(..., nil)` | 生产路由没有注入旧 `SessionRuntime`。 |
+| HTTP 路由 | `cmd/agentd/main.go` 的 `httpapi.NewRouterWithInstallationIDAndOptions(...)` | 生产路由只注入当前 Gateway 所需的配置、安装身份和 SSH transport。 |
 | app-server gateway | `internal/httpapi/appserver_gateway.go` | iPad 的 `/api/app-server/ws` 主链路，负责方法白名单、cwd allowlist、thread 授权和策略校验。 |
 | SSH app-server transport | `internal/appserver/ssh.go` | 每条移动端协议连接拥有一个 SSH proxy；共享 Unix App Server 独立存活。 |
 | 本机自动配对 | `/api/pair/local` + Catalyst `AppStore.preflightConnection` | 仅接受 TCP 来源和 Host 均为 loopback、带原生客户端请求头且无浏览器 `Origin` 的 POST；领取凭据后仍须通过真实 gateway 握手才提交 Keychain。按单用户开发机建模。 |
@@ -29,8 +29,6 @@
 
 | 模块 | 现状 | 后续处理 |
 | --- | --- | --- |
-| `internal/httpapi/appserver_runtime.go` | 旧 REST runtime 适配层，当前生产未注入。 | P2 阶段再决定删除、收缩或保留为测试 fixture。 |
-| `internal/httpapi/runtime.go` | 旧 `SessionRuntime` 接口，生产传 `nil`。 | 和旧 runtime 一起处理。 |
 | `internal/session/session.go` | 旧 PTY session manager，生产只创建 manager 供诊断/兼容，主链路不调用 `Create`。 | 先不删，P2 做可达性复核后清理。 |
 | `internal/appserver/client.go` 的 stdio client | 当前生产使用 SSH proxy 连接共享 Unix App Server。 | P2 阶段清理或降级为测试支持代码。 |
 
@@ -39,14 +37,14 @@
 近期安全修复只改生产可达路径：
 
 1. iOS permission approval：只改 `CodexAppServerSessionRuntime.swift` 的活路径。
-2. 审批 UI 状态：只改 `SessionStore` 与 Composer 审批卡，不改旧 REST runtime。
+2. 审批 UI 状态：只改 `SessionStore`、Composer 审批卡与 Gateway 策略。
 3. Gateway 安全默认值、WebSocket 限制、server request response 校验：只改 `internal/httpapi/appserver_gateway.go`。
 4. agentd 误配防护：改 `internal/config` 与 HTTP 日志。
 5. Catalyst 同机自动配对：只改 `/api/pair/local`、AppStore 冷启动选路和 Keychain 提交，不向 Tailscale/LAN 放宽未鉴权入口。
 
 ## 风险与优化
 
-- 旧 runtime 里有一份安全逻辑副本，短期不要在里面追加新安全修复，避免制造“两套行为”。
-- 删除旧代码仍有价值，但必须放在安全修复之后，并用 `go test ./...` 和 iOS 端数据流测试守住回归。
+- 旧 REST `SessionRuntime` / `CodexAppServerRuntime` 已删除。不要恢复 `/api/sessions*` 或再建立一套会话状态与审批适配层。
+- PTY session manager 与 stdio app-server client 仍有诊断、测试或平台消费者；删除前需要分别完成可达性复核。
 - Debug history 已加默认关闭开关；后续如果做公开发布，还应补充更细的输出脱敏策略。
 - iOS 端仍保留 `100.64/10` Tailscale 裸 IP 的 HTTP 支持，这是当前 README 和配对链接的主路径。2026-07-14 已在 iOS 27 模拟器确认 `NSAllowsLocalNetworking` 会将该地址以 ATS `-1022` 拦截，因此系统层恢复 `NSAllowsArbitraryLoads`；应用层在设置、REST 和 WebSocket 三层统一拒绝公网 HTTP，CI 会同时检查系统可达性与应用层边界。上线前仍必须做真机 ATS/Tailscale 验证，并优先评估 MagicDNS `*.ts.net` + HTTPS。

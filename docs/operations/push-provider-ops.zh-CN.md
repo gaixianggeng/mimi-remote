@@ -14,11 +14,11 @@
 
 它不托管账号、不托管会话、不中继代码、不代理审批动作。用户的「允许 / 拒绝」始终由设备通过私有网络直接提交给自己的 `agentd`，不经过这里。
 
-## 当前部署
+## 历史部署记录（迁移前）
 
 | 项 | 值 |
 | --- | --- |
-| 主机 | `api.code89757.com`（与 `mimi-relay` 同机） |
+| 主机 | `api.code89757.com`（原记录与历史 `mimi-relay` 同机；不代表当前 Tailcat DERP） |
 | 服务单元 | `mimi-push-provider.service` |
 | 运行用户 | `mimi-push`（system 用户，`nologin`） |
 | 监听 | `127.0.0.1:8087`，只经 nginx 对外 |
@@ -28,6 +28,76 @@
 | 撤销表 | `/var/lib/mimi-push-provider/revocations.db` |
 
 `/mimi-push/metrics` 明确 `deny all`，不对外暴露。
+
+## 与 Tailcat DERP 同机部署
+
+#353 的部署要求是：APNs Provider 与当前 Tailcat DERP 使用同一台服务器。
+服务器目标尚待核实，以下为部署步骤，不能作为已完成迁移的证明。
+
+两个服务保留独立进程、用户、配置和状态目录。DERP 转发 Tailcat 加密流量；
+Provider 只发送固定格式的系统提醒。锁屏允许/拒绝按通知来源选择 Mac，使用该
+Profile 保存的 Tailcat 地址和设备私钥建立临时连接，不切换当前 Profile，不回退直连。
+APNs 私钥只由 `mimi-push` 读取，不交给 DERP 或客户端。同机故障会同时影响中转和提醒。
+
+### 安装前确认
+
+在目标服务器执行：
+
+```bash
+sudo systemctl list-units --type=service --all | grep -E 'derp|tailcat|mimi-push'
+sudo ss -lntup
+sudo nginx -t
+```
+
+确认现有 DERP/TLS 入口、UDP STUN 端口和 `127.0.0.1:8087` 占用情况。
+模板只向现有 HTTPS 虚拟主机添加 `/mimi-push/`，不接管 DERP 的端口、域名或准入规则。
+如果当前由 derper 直接监听 443，先确定共用 HTTPS 入口的配置再部署，不能直接让 nginx 抢占端口。
+
+### 安装服务
+
+将仓库中的 `deploy/push-provider/` 和对应架构的 Provider 二进制上传到目标服务器，
+然后在上传目录执行：
+
+```bash
+getent passwd mimi-push >/dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin mimi-push
+sudo install -d -o root -g root -m 0755 /opt/mimi-push-provider
+sudo install -d -o root -g mimi-push -m 0750 /etc/mimi-push-provider
+sudo install -d -o mimi-push -g mimi-push -m 0700 /var/lib/mimi-push-provider
+sudo install -o root -g root -m 0755 ./mimi-push-provider /opt/mimi-push-provider/mimi-push-provider
+sudo install -o root -g root -m 0644 ./mimi-push-provider.service /etc/systemd/system/mimi-push-provider.service
+sudo install -o root -g root -m 0644 ./nginx-locations.conf /etc/nginx/snippets/mimi_push_locations.conf
+```
+
+`env.example` 仅用于对照字段。已有服务迁移时，保留原 `env`、`apns.p8`、全部版本的
+`ticket.keys` 和 `revocations.db`，不要重新生成密钥或覆盖撤销记录。停写旧 Provider 后
+通过受限 SSH 传输完整快照，再将目标配置文件设为 `0640 root:mimi-push`、撤销表设为
+`0600 mimi-push:mimi-push`。旧服务器保留可回滚副本，验收前不删除。
+
+在目标已有 HTTPS `server` 块中加入：
+
+```nginx
+include /etc/nginx/snippets/mimi_push_locations.conf;
+```
+
+然后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mimi-push-provider
+sudo nginx -t && sudo systemctl reload nginx
+curl --fail --silent --show-error http://127.0.0.1:8087/healthz
+```
+
+### 验收与回滚
+
+- 对外检查 `/mimi-push/healthz`，并确认 `/mimi-push/metrics` 返回 403。
+- 用原 Ticket 验证迁移前后的有效性；已撤销 Ticket 仍必须拒绝。
+- 在 iPhone 和 iPad 上分别验证：先锁屏再产生审批、系统身份验证、允许、拒绝、查看详情。
+- 强制经过同机 DERP 验证 Tailcat 连接，并确认未知节点准入策略没有改变。
+- 保持 Provider URL 不变时无需重新同意；URL 变化时先向用户披露新地址并重新开启，不能静默沿用旧同意。
+
+切流失败时恢复旧入口和旧 Provider。目标已经接受新签发或撤销请求后，必须先停写并
+同步最新密钥与撤销表再回滚，不能恢复旧快照使已撤销 Ticket 重新有效。
 
 ## 密钥
 

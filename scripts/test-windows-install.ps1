@@ -18,12 +18,11 @@ $windowsDocs = @(
 )
 foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no', 'function InitializeSetup(): Boolean', 'no longer supports Windows as the agentd host', 'Result := False;')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
-$initializeSource = $source.Substring($source.IndexOf('function InitializeSetup'), $source.IndexOf('procedure RemoveScheduledTask') - $source.IndexOf('function InitializeSetup'))
-if ($initializeSource.IndexOf('Result := False;') -lt 0) {
-    throw 'Windows host compatibility gate must reject Setup before any install mutation.'
+if ($source.Contains('no longer supports Windows as the agentd host') -or $source.Contains('function InitializeSetup(): Boolean')) {
+    throw 'Windows installer must not reject the supported local host path before installation.'
 }
 $prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'), $source.IndexOf('procedure CurStepChanged') - $source.IndexOf('function PrepareToInstall'))
 if ($prepareSource.IndexOf('StopManagedService;') -gt $prepareSource.IndexOf('StopTrayApp;')) {
@@ -111,11 +110,14 @@ if (-not $releaseSource.Contains('must either both be configured or both be abse
 if (-not $releaseSource.Contains('-RequireSignature')) { throw 'Release workflow must still enforce Authenticode when signing credentials exist.' }
 foreach ($path in $windowsDocs) {
     $docSource = Get-Content -LiteralPath $path -Raw
-    if (-not $docSource.Contains('MIM-207') -or -not $docSource.Contains('Windows')) {
-        throw "Windows documentation must record the MIM-207 agentd host compatibility gate: $path"
+    if (-not $docSource.Contains('Windows')) {
+        throw "Windows documentation must describe the supported agentd host path: $path"
     }
-    if ($docSource -notmatch '(paused|暂停)') {
-        throw "Windows documentation must state that installer publishing is paused: $path"
+    if ($docSource -notmatch '(loopback|127\.0\.0\.1)') {
+        throw "Windows documentation must describe the loopback App Server transport: $path"
+    }
+    if ($docSource -match '(installer publishing is paused|安装器发布暂停)') {
+        throw "Windows documentation must not describe installer publishing as paused: $path"
     }
 }
 # Static-only acceptance: do not invoke Setup.exe or schtasks.exe, so no real user task or firewall rule is created.

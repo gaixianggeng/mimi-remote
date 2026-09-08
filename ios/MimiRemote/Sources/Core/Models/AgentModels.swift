@@ -1683,12 +1683,14 @@ enum MessageKind: String, Codable, Hashable {
     case fileChangeSummary = "file_change_summary"
     case approval
     case userInput = "user_input"
+    case warning
     case error
 }
 
 enum MessageSendStatus: String, Codable, Hashable {
     case local
     case sending
+    case uncertain
     case sent
     case failed
     case confirmed

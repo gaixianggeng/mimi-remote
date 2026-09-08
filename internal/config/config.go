@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,7 @@ type Config struct {
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
 	Push          PushConfig       `json:"push"`
+	Tailcat       TailcatConfig    `json:"tailcat"`
 	Session       SessionConfig    `json:"session"`
 	Debug         DebugConfig      `json:"debug"`
 	Projects      []ProjectConfig  `json:"projects"`
@@ -83,12 +85,53 @@ type ClaudeConfig struct {
 	MaxConcurrentBridges int               `json:"max_concurrent_bridges"`
 }
 
+// TailcatConfig 只保存实验开关和安装期覆盖项。连接地址、节点私钥和
+// 已配对客户端都保存在独立的 0600 状态文件中，不能进入主配置或日志。
+type TailcatConfig struct {
+	Enabled    bool   `json:"enabled"`
+	SidecarBin string `json:"sidecar_bin,omitempty"`
+	DERPMapURL string `json:"derp_map_url,omitempty"`
+}
+
+// NormalizeTailcatDERPMapURL 校验用户配置的 DERP Map 地址。空值表示恢复
+// Tailcat 默认中继；自定义地址只允许 HTTPS，避免把连接元数据发往明文端点。
+func NormalizeTailcatDERPMapURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 2048 {
+		return "", fmt.Errorf("tailcat.derp_map_url 最多 2048 个字符")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("tailcat.derp_map_url 必须是完整的 HTTPS URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("tailcat.derp_map_url 只允许 HTTPS")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("tailcat.derp_map_url 不能包含用户名或密码")
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("tailcat.derp_map_url 不能包含片段")
+	}
+	return parsed.String(), nil
+}
+
 type RuntimeConfig struct {
 	Type string `json:"type"`
 }
 
 type AppServerConfig struct {
 	Transport string `json:"transport"`
+	// Windows 使用本机受管 WebSocket，Linux 默认使用共享本机 control socket，
+	// macOS 使用共享 SSH transport；Linux 显式远端 target 时仍可选择 SSH。
+	Managed bool   `json:"managed,omitempty"`
+	Listen  string `json:"listen,omitempty"`
+	// WSTokenFile 只保存本机 App Server capability token 的路径。
+	// 外侧移动端 Token 不能复用到这个上游连接。
+	WSTokenFile string `json:"ws_token_file,omitempty"`
 	// SSHTarget 是 OpenSSH 的目标参数。它只作为 exec 参数传递，不能包含
 	// 空白或以连字符开头，避免把配置误当成 shell/ssh option。
 	SSHTarget string `json:"ssh_target,omitempty"`
@@ -265,6 +308,18 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return Config{}, fmt.Errorf("解析配置文件失败：%w", err)
 		}
+		// defaults() must remain valid when used directly by tests and embedded
+		// callers, so it carries the SSH target. A local transport that omits
+		// ssh_target must not inherit that unrelated default; an explicitly mixed
+		// ssh_target remains present and is rejected by Validate below.
+		var document struct {
+			AppServer map[string]json.RawMessage `json:"app_server"`
+		}
+		if json.Unmarshal(raw, &document) == nil && strings.EqualFold(cfg.AppServer.Transport, "local") {
+			if _, explicitTarget := document.AppServer["ssh_target"]; !explicitTarget {
+				cfg.AppServer.SSHTarget = ""
+			}
+		}
 	}
 	if cfg.Claude.MaxConcurrentBridges == 0 {
 		// Older setup versions serialized the disabled Claude section from a
@@ -281,6 +336,12 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
 	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
 		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
+	}
+	if strings.EqualFold(cfg.AppServer.Transport, "ws") && cfg.AppServer.Listen == "" {
+		cfg.AppServer.Listen = DefaultManagedAppServerListen()
+	}
+	if strings.EqualFold(cfg.AppServer.Transport, "ws") {
+		cfg.AppServer.SSHTarget = ""
 	}
 	return cfg, nil
 }
@@ -333,7 +394,8 @@ func expandPath(path string) string {
 }
 
 const (
-	defaultAppServerSSHTarget = "127.0.0.1"
+	defaultAppServerSSHTarget     = "127.0.0.1"
+	defaultManagedAppServerListen = "ws://127.0.0.1:4222"
 )
 
 func DefaultAppServerTransport() string {
@@ -342,6 +404,39 @@ func DefaultAppServerTransport() string {
 
 func DefaultAppServerSSHTarget() string {
 	return defaultAppServerSSHTarget
+}
+
+func DefaultWindowsAppServerListen() string {
+	return defaultManagedAppServerListen
+}
+
+func DefaultManagedAppServerListen() string {
+	return defaultManagedAppServerListen
+}
+
+func SupportsManagedAppServer() bool {
+	return runtime.GOOS == "windows"
+}
+
+func DefaultManagedAppServerConfig() AppServerConfig {
+	return AppServerConfig{
+		Transport: "ws",
+		Managed:   true,
+		Listen:    DefaultManagedAppServerListen(),
+		AutoTitle: true,
+	}
+}
+
+func DefaultSharedLocalAppServerConfig() AppServerConfig {
+	return AppServerConfig{
+		Transport: "local",
+		AutoTitle: true,
+	}
+}
+
+// DefaultWindowsAppServerConfig 保留旧调用方兼容。
+func DefaultWindowsAppServerConfig() AppServerConfig {
+	return DefaultManagedAppServerConfig()
 }
 
 func DefaultClaudeConfig() ClaudeConfig {
@@ -648,6 +743,9 @@ func (c Config) Validate() error {
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
 	}
+	if _, err := NormalizeTailcatDERPMapURL(c.Tailcat.DERPMapURL); err != nil {
+		return err
+	}
 	switch normalizeRuntimeType(c.Runtime.Type) {
 	case "codex_app_server":
 	default:
@@ -658,8 +756,29 @@ func (c Config) Validate() error {
 		if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
 			return fmt.Errorf("app_server.ssh_target 无效：%w", err)
 		}
+	case "ws":
+		if !SupportsManagedAppServer() {
+			return fmt.Errorf("app_server.transport=ws 只支持 Windows 本机宿主")
+		}
+		if !c.AppServer.Managed {
+			return fmt.Errorf("本机 app_server.transport=ws 必须由 agentd 管理")
+		}
+		if strings.TrimSpace(c.AppServer.WSTokenFile) == "" {
+			return fmt.Errorf("本机 app_server.ws_token_file 不能为空")
+		}
+		if err := validateLoopbackWebSocketListen(c.AppServer.Listen); err != nil {
+			return err
+		}
+	case "local":
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("app_server.transport=local 只支持 Linux 本机宿主")
+		}
+		if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
+			strings.TrimSpace(c.AppServer.WSTokenFile) != "" || strings.TrimSpace(c.AppServer.SSHTarget) != "" {
+			return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
+		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh")
+		return fmt.Errorf("app_server.transport 只支持 ssh；Linux 另支持共享 local，Windows 另支持受管 ws")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
@@ -669,6 +788,23 @@ func (c Config) Validate() error {
 	}
 	if err := validateActions(c.Actions); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateLoopbackWebSocketListen(raw string) error {
+	value := strings.TrimSpace(raw)
+	if !strings.Contains(value, "://") {
+		value = "ws://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "ws") || parsed.Port() == "" {
+		return fmt.Errorf("本机 app_server.listen 必须是有效的 ws:// loopback 地址")
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("本机 app_server.listen 只能使用 loopback 地址")
 	}
 	return nil
 }

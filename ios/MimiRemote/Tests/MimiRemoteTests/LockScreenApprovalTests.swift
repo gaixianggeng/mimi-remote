@@ -1,3 +1,4 @@
+import Security
 import UserNotifications
 import XCTest
 @testable import MimiRemote
@@ -270,7 +271,10 @@ final class LockScreenApprovalTests: XCTestCase {
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
 		defer { defaults.removePersistentDomain(forName: suiteName) }
 		defaults.set(true, forKey: "lockScreenApproval.enabled")
+		defaults.set("dev-legacy-current", forKey: "lockScreenApproval.deviceID")
+		defaults.set("ins-legacy-current", forKey: "lockScreenApproval.installation")
 		defaults.set("profile-current", forKey: "lockScreenApproval.registeredProfileID")
+		defaults.set("https://provider-current.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
 		defaults.set(Date().addingTimeInterval(3600), forKey: "lockScreenApproval.ticketExpiresAt")
 
 		NoLockScreenApprovalRequestURLProtocol.reset()
@@ -281,9 +285,12 @@ final class LockScreenApprovalTests: XCTestCase {
 			token: "test-token",
 			session: URLSession(configuration: configuration)
 		)
+		let keychain = TestKeychainOperations()
+		keychain.setData(Data("ticket-current".utf8), account: "push-ticket")
 		let store = LockScreenApprovalStore(
 			defaults: defaults,
-			ticketStore: PushTicketStore(keychain: TestKeychainOperations())
+			ticketStore: PushTicketStore(keychain: keychain),
+			identityStore: PushInstallationIdentityStore(keychain: keychain)
 		)
 
 		await store.disable(client: client, profileID: "profile-stale")
@@ -306,9 +313,11 @@ final class LockScreenApprovalTests: XCTestCase {
 		let configuration = URLSessionConfiguration.ephemeral
 		configuration.protocolClasses = [ProfilePushStatusURLProtocol.self]
 		let session = URLSession(configuration: configuration)
+		let keychain = TestKeychainOperations()
 		let store = LockScreenApprovalStore(
 			defaults: defaults,
-			ticketStore: PushTicketStore(keychain: TestKeychainOperations())
+			ticketStore: PushTicketStore(keychain: keychain),
+			identityStore: PushInstallationIdentityStore(keychain: keychain)
 		)
 		let clientA = AgentAPIClient(endpoint: "https://profile-a.example", token: "a", session: session)
 		let clientB = AgentAPIClient(endpoint: "https://profile-b.example", token: "b", session: session)
@@ -322,6 +331,38 @@ final class LockScreenApprovalTests: XCTestCase {
 		XCTAssertTrue(store.hostSupportsPush(for: "profile-a"))
 		XCTAssertTrue(store.hostSupportsPush(for: "profile-b"))
 	}
+
+    @MainActor
+    func testProviderPathChangeRequiresFreshConsentAndDoesNotRefreshTicket() async throws {
+        let suite = "LockScreenApprovalTests.ProviderChange.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        ProfilePushStatusURLProtocol.reset()
+        defer { ProfilePushStatusURLProtocol.reset() }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ProfilePushStatusURLProtocol.self]
+        let client = AgentAPIClient(endpoint: "https://profile-a.example", token: "a", session: URLSession(configuration: config))
+        let keychain = TestKeychainOperations()
+        let identityStore = PushInstallationIdentityStore(keychain: keychain)
+        try identityStore.save(.make())
+        let tickets = PushTicketStore(keychain: keychain)
+        try tickets.save("existing-ticket")
+        defaults.set(true, forKey: "lockScreenApproval.enabled")
+        defaults.set("profile-a", forKey: "lockScreenApproval.registeredProfileID")
+        defaults.set("https://provider-a.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
+        defaults.set(Date().addingTimeInterval(86400), forKey: "lockScreenApproval.ticketExpiresAt")
+        let store = LockScreenApprovalStore(defaults: defaults, ticketStore: tickets, identityStore: identityStore)
+        await store.refreshHostSupport(client: client, profileID: "profile-a")
+        store.recordConsent(for: "profile-a")
+        XCTAssertTrue(store.hasConsented(for: "profile-a"))
+        ProfilePushStatusURLProtocol.setProvider("https://provider-a.example/new-provider", for: "profile-a.example")
+        await store.refreshHostSupport(client: client, profileID: "profile-a")
+        XCTAssertFalse(store.hasConsented(for: "profile-a"))
+        await store.refreshTicketIfNeeded(client: client, profileID: "profile-a")
+        XCTAssertEqual(try tickets.loadRequired(), "existing-ticket")
+        XCTAssertEqual(ProfilePushStatusURLProtocol.recordedRequestPaths, ["/api/push/status", "/api/push/status"])
+        guard case .failed = store.status else { return XCTFail("Provider 变更后应等待重新同意") }
+    }
 
     private static func makeProvisioningProfile(apsEnvironment: String) -> Data? {
         let plist: [String: Any] = ["Entitlements": ["aps-environment": apsEnvironment]]
@@ -370,6 +411,35 @@ private final class NoLockScreenApprovalRequestURLProtocol: URLProtocol {
 }
 
 private final class ProfilePushStatusURLProtocol: URLProtocol {
+	private static let lock = NSLock()
+	private static var providerOverrides: [String: String] = [:]
+	private static var requestPaths: [String] = []
+
+	static func setProviderURL(_ providerURL: String?, for sourceHost: String) {
+		lock.lock()
+		defer { lock.unlock() }
+		providerOverrides[sourceHost] = providerURL
+	}
+
+	static func reset() {
+		lock.lock()
+		providerOverrides.removeAll()
+		requestPaths.removeAll()
+		lock.unlock()
+	}
+
+	static func setProvider(_ url: String, for host: String) {
+		lock.lock()
+		providerOverrides[host] = url
+		lock.unlock()
+	}
+
+	static var recordedRequestPaths: [String] {
+		lock.lock()
+		defer { lock.unlock() }
+		return requestPaths
+	}
+
 	override class func canInit(with request: URLRequest) -> Bool { true }
 	override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
@@ -385,11 +455,14 @@ private final class ProfilePushStatusURLProtocol: URLProtocol {
 			client?.urlProtocol(self, didFailWithError: URLError(.badURL))
 			return
 		}
-		let providerHost = sourceHost == "profile-a.example"
-			? "provider-a.example"
-			: "provider-b.example"
+		Self.lock.lock()
+		Self.requestPaths.append(url.path)
+		let providerOverride = Self.providerOverrides[sourceHost]
+		Self.lock.unlock()
+		let providerHost = sourceHost == "profile-a.example" ? "provider-a.example" : "provider-b.example"
+		let providerURL = providerOverride ?? "https://\(providerHost)/mimi-push"
 		let body = """
-		{"enabled":true,"provider_configured":true,"provider_url":"https://\(providerHost)/mimi-push"}
+		{"enabled":true,"provider_configured":true,"provider_url":"\(providerURL)"}
 		"""
 		client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
 		client?.urlProtocol(self, didLoad: Data(body.utf8))

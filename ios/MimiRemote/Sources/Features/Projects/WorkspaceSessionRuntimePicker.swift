@@ -34,12 +34,23 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var brandAssetName: String {
+    var brandMark: RuntimeBrandMark {
         switch self {
         case .codex:
-            return "ChatGPT"
+            return .openAI
         case .claude:
-            return "Claude"
+            return .claude
+        }
+    }
+
+    /// 弹窗形态每行留了副标题位；文案说明这个 Runtime 在本机意味着什么，
+    /// 不可用时由调用方替换成主机未启用的解释。
+    var listSubtitle: String {
+        switch self {
+        case .codex:
+            return L10n.text("ui.runtime_subtitle_codex")
+        case .claude:
+            return L10n.text("ui.runtime_subtitle_claude")
         }
     }
 
@@ -80,13 +91,7 @@ struct WorkspaceRuntimeMenuPicker: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(selection.brandAssetName)
-                    .resizable()
-                    // 品牌资源自带底色，模板着色会把整张画布染成方块。
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 15, height: 15)
-                    .accessibilityHidden(true)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
 
                 Text(selection.listTitle)
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
@@ -140,13 +145,7 @@ struct WorkspaceRuntimePicker: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(choice.brandAssetName)
-                            .resizable()
-                            // 品牌资源是带自身底色的位图，模板着色会把整张画布染成方块。
-                            .renderingMode(.original)
-                            .scaledToFit()
-                            .frame(width: 14, height: 14)
-                            .accessibilityHidden(true)
+                        RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
 
                         Text(choice.listTitle)
                             .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
@@ -229,5 +228,126 @@ struct WorkspaceRuntimePicker: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")
+    }
+}
+
+/// 窄屏弹窗形态：触发行仍是一处品牌标记加 chevron，但展开的是锚定气泡而不是系统菜单。
+/// 相比 Menu，气泡能给每个 Runtime 留出品牌图标和不可用说明，选择这件事有了自己的表面；
+/// iPhone 上显式要求 popover 适配，避免系统把它降级成盖住半屏的 sheet。
+struct WorkspaceRuntimePopoverPicker: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    @Binding var selection: WorkspaceSessionRuntimeChoice
+    let claudeChannelAvailable: Bool
+
+    @State private var isPresented = false
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Button {
+            isPresented = true
+        } label: {
+            HStack(spacing: 6) {
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
+
+                Text(selection.listTitle)
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
+            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L10n.text("ui.runtime_provider"))
+        .accessibilityValue(selection.listTitle)
+        .accessibilityIdentifier("workspace.sessions.runtimePicker")
+        .popover(isPresented: $isPresented, arrowEdge: .top) {
+            popoverContent(tokens: tokens)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func popoverContent(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // 始终列出全部 Runtime；不可用的那个保留为禁用行，
+            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
+            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
+                let isAvailable = choice != .claude || claudeChannelAvailable
+
+                Button {
+                    selection = choice
+                    isPresented = false
+                } label: {
+                    row(choice: choice, isAvailable: isAvailable, tokens: tokens)
+                }
+                .buttonStyle(.plain)
+                .disabled(!isAvailable)
+                .accessibilityLabel(choice.listTitle)
+                .accessibilityAddTraits(choice == selection ? .isSelected : [])
+                .accessibilityHint(
+                    isAvailable
+                        ? L10n.text("ui.show_runtime_sessions_hint")
+                        : L10n.text("ui.runtime_unavailable_hint")
+                )
+                .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
+
+                if choice != WorkspaceSessionRuntimeChoice.allCases.last {
+                    Divider()
+                        .padding(.leading, 42)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        // 副标题是两行里较长的那一处内容，宽度给到 260 才不会在中文文案上折行。
+        .frame(minWidth: 260, alignment: .leading)
+    }
+
+    private func row(
+        choice: WorkspaceSessionRuntimeChoice,
+        isAvailable: Bool,
+        tokens: ThemeTokens
+    ) -> some View {
+        HStack(spacing: 10) {
+            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
+                .opacity(isAvailable ? 1 : 0.4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(choice.listTitle)
+                    .font(themeStore.uiFont(.subheadline, weight: choice == selection ? .semibold : .regular))
+                    .foregroundStyle(isAvailable ? tokens.primaryText : tokens.tertiaryText)
+
+                // 两行都带副标题，行高才是齐的；不可用时这一行改说为什么点不了。
+                Text(
+                    isAvailable
+                        ? choice.listSubtitle
+                        : L10n.text("ui.runtime_unavailable_hint")
+                )
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.tertiaryText)
+                .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            if choice == selection {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.primaryAction)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 14)
+        // 副标题让内容本身超过 44pt；固定 52pt 保证两行等高，勾选切换时不会抖。
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
     }
 }

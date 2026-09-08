@@ -263,6 +263,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
 
         let view = WorkspaceRootView(
+            selectedSessionRuntime: .constant(.codex),
             onStartSession: { _, _ in },
             onOpenSession: { _ in },
             manageConnections: hasBottomTabBar ? {} : nil,

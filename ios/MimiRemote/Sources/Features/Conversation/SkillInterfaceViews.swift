@@ -578,6 +578,9 @@ struct SkillInvocationCard: View {
         case .failed:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.red)
+        case .uncertain:
+            Image(systemName: "questionmark.circle.fill")
+                .foregroundStyle(tint)
         case .sent, .confirmed:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(tint)

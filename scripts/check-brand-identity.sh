@@ -84,7 +84,7 @@ grep -Fqx 'repository = "https://github.com/gaixianggeng/mimi-remote"' Cargo.tom
   || fail "Cargo.toml repository 不是 Mimi Remote 主仓库。"
 grep -Fqx 'homepage = "https://github.com/gaixianggeng/mimi-remote"' Cargo.toml \
   || fail "Cargo.toml homepage 不是 Mimi Remote 主仓库。"
-assert_file_value docs/app-store/zh-Hans/name.txt '咪咪 Remote'
+assert_file_value docs/app-store/zh-Hans/name.txt 'Mimi Remote'
 assert_file_value docs/app-store/en-US/name.txt 'Mimi Remote'
 assert_file_value docs/app-store/en-US/subtitle.txt 'Remote coding workspace'
 assert_file_value docs/app-store/zh-Hans/subtitle.txt 'AI 编程远程工作台'

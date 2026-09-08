@@ -518,17 +518,51 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
-        // 受控全局发现是 Codex App Server 能力；Claude bridge 没有同构的无 cwd 合同。
-        let page = try await codexClient.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
+        try await controlledGlobalSessionsPage(runtimeProvider: "codex", cursor: cursor, limit: limit)
+    }
+
+    /// 受控全局发现按 runtime 分头遍历：两条 opaque cursor 流各自独立推进，
+    /// 从不交织成一条，调用方把两趟结果并进同一份 canonical sessions。
+    /// 这样既让 Claude 会话在「会话」tab 可见，也不引入跨 Runtime 排序状态机。
+    func controlledGlobalSessionsPage(
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
+        let page = try await bundle.runtime(for: runtimeProvider)
+            .controlledGlobalSessionsPage(cursor: cursor, limit: limit)
         bundle.routes.remember(page.sessions)
         return page
     }
 
+    /// 搜索的分页由 Codex 的 thread/search 独占驱动：只有首页会额外查一次 Claude，
+    /// 并把结果拼在后面。Claude 没有 thread/search，它走 thread/list + searchTerm，
+    /// 按单页返回。这样既让 Claude 会话可搜到，也不需要把两条游标流编进一个复合
+    /// cursor（那会重新引入跨 Runtime 的分页状态机）。
+    ///
+    /// 代价说明：Claude 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
+    /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
-        // Codex 的 thread/search 是独立能力；Claude channel 目前没有同构接口，避免为搜索额外发双路请求。
-        let page = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
-        bundle.routes.remember(page.sessions)
-        return page
+        let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
+        bundle.routes.remember(codexPage.sessions)
+        guard cursor == nil else {
+            return codexPage
+        }
+        // Claude 搜索是增强项：bridge 未启用或不健康时不能连带让 Codex 搜索失败。
+        guard let claudePage = try? await bundle.claude.globalThreadListSearchPage(
+            query: query,
+            limit: limit
+        ), !claudePage.results.isEmpty else {
+            return codexPage
+        }
+        bundle.routes.remember(claudePage.sessions)
+        let existingIDs = Set(codexPage.results.map(\.session.id))
+        let merged = codexPage.results + claudePage.results.filter { !existingIDs.contains($0.session.id) }
+        return ThreadSearchPage(
+            results: merged,
+            nextCursor: codexPage.nextCursor,
+            backwardsCursor: codexPage.backwardsCursor
+        )
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
@@ -673,7 +707,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private let bundle: AppServerRuntimeBundle
@@ -758,8 +792,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.onApprovalDecisionFailure = { [weak self] approvalID, message in
             self?.onApprovalDecisionFailure?(approvalID, message)
         }
-        client.onUserInputResponseFailure = { [weak self] requestID, message in
-            self?.onUserInputResponseFailure?(requestID, message)
+        client.onUserInputResponseFailure = { [weak self] requestID, message, expired in
+            self?.onUserInputResponseFailure?(requestID, message, expired)
         }
         client.onControlFailure = { [weak self] message in
             self?.onControlFailure?(message)
@@ -786,7 +820,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
@@ -1118,7 +1152,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool {
         guard let sessionID else {
-            onUserInputResponseFailure?(requestID, L10n.text("ui.direct_websocket_not_connected"))
+            onUserInputResponseFailure?(requestID, L10n.text("ui.direct_websocket_not_connected"), false)
             return false
         }
         let failureHandler = onUserInputResponseFailure
@@ -1126,8 +1160,16 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             do {
                 try await runtime.respondToUserInput(sessionID: sessionID, requestID: requestID, answers: answers)
             } catch {
+                // 挂起表里查不到，说明这条请求在对端已经不存在了：Claude 进程重启会
+                // 把那次工具调用一起带走，而历史里的卡片还在。重试只会一直失败。
+                let expired: Bool
+                if case CodexAppServerSessionRuntimeError.userInputRequestNotFound = error {
+                    expired = true
+                } else {
+                    expired = false
+                }
                 await MainActor.run {
-                    failureHandler?(requestID, error.localizedDescription)
+                    failureHandler?(requestID, error.localizedDescription, expired)
                 }
             }
         }

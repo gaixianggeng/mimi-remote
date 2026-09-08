@@ -25,6 +25,12 @@ struct SessionArchiveMutation: Equatable {
     let target: SessionArchivePreferenceState
 }
 
+struct TurnCompletionReconciliationJob {
+    let generation: UInt64
+    let expectedTurnID: TurnID
+    let task: Task<Void, Never>
+}
+
 /// `applyEventReducerOutput` 内部的会话工作副本。
 ///
 /// 一个 runtime event 可能同时更新 status、active turn、审批卡和列表预览。
@@ -259,6 +265,7 @@ final class SessionStore: ObservableObject {
     }
 
     let appStore: AppStore
+    let tailcatExperimentController: TailcatExperimentController?
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore
@@ -365,6 +372,8 @@ final class SessionStore: ObservableObject {
             rebuildProjectSessionListSnapshots()
         }
     }
+    /// 记录按工作区真实目录查询到的会话 ID。默认列表只用这份证据接纳全局发现结果。
+    @Published var workspaceDirectorySessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -398,6 +407,17 @@ final class SessionStore: ObservableObject {
     var queuedServerSubmissionStartedBeforeOutcomeClientMessageIDs: Set<ClientMessageID> = []
     var queuedTurnBlockedCompletionIDBySessionID: [SessionID: TurnID] = [:]
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
+    var turnCompletionReconciliationGeneration: UInt64 = 0
+    var turnCompletionReconciliationJobsBySessionID: [SessionID: TurnCompletionReconciliationJob] = [:]
+    // 最终回答通常紧跟 turn/completed。仅在通知缺失时按有限退避读取最新完整 Turn，
+    // 避免健康 WebSocket 下等待 60 秒列表轮询仍无法释放本地队列。
+    var turnCompletionReconciliationDelaysNanoseconds: [UInt64] = [
+        2_000_000_000,
+        4_000_000_000,
+        8_000_000_000,
+        16_000_000_000,
+        30_000_000_000,
+    ]
     var currentQueuedTurnProfileID: String?
     var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     var projectsByID: [String: AgentProject] = [:]
@@ -432,6 +452,7 @@ final class SessionStore: ObservableObject {
     var sessionFirstPageWaiterCountByProjectID: [String: Int] = [:]
     var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
     var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
+    var sessionListRequestLineageByWorkspaceKey: [WorkspaceSessionFirstPageKey: UUID] = [:]
     @Published var workspaceSessionFirstPageCompletionByKey: [WorkspaceSessionFirstPageKey: WorkspaceSessionFirstPageCompletion] = [:]
     var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
@@ -449,6 +470,8 @@ final class SessionStore: ObservableObject {
     var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     var historySeenPreviousCursorsBySessionID: [SessionID: Set<String>] = [:]
+    /// 已经加载过旧页的会话必须保留当前深层 cursor 和完整消息窗口。
+    var historySessionsWithAdditionalPages: Set<SessionID> = []
     var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]
@@ -536,6 +559,7 @@ final class SessionStore: ObservableObject {
         sessionReminderNow: @escaping () -> Date = Date.init,
         runtimeCompletionNotificationsEnabled: Bool = false,
         fileUploadStore: FileUploadStore? = nil,
+        tailcatExperimentController: TailcatExperimentController? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -555,6 +579,7 @@ final class SessionStore: ObservableObject {
         }
     ) {
         self.appStore = appStore
+        self.tailcatExperimentController = tailcatExperimentController
         self.conversationStore = conversationStore
         self.logStore = logStore
         self.fileUploadStore = fileUploadStore ?? FileUploadStore()
@@ -713,6 +738,7 @@ final class SessionStore: ObservableObject {
         sessionSearchLoadMoreTask?.cancel()
         missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
         queuedSessionReconnectTasks.values.forEach { $0.cancel() }
+        turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
         networkPathStatusSource.stop()
     }
 
@@ -1052,6 +1078,22 @@ final class SessionStore: ObservableObject {
         return queuedRunningTurnsBySessionID[selectedSessionID] ?? []
     }
 
+    var selectedComposerTrayQueuedTurns: [QueuedTurnEntry] {
+        guard let selectedSessionID else {
+            return []
+        }
+        let timelineClientMessageIDs: Set<ClientMessageID> = Set(
+            conversationStore.messages(for: selectedSessionID).compactMap { message in
+                guard message.role == .user else { return nil }
+                return message.clientMessageID
+            }
+        )
+        // 只有对应用户气泡进入时间线后才隐藏；runtime/assistant 消息可能复用 clientMessageID。
+        return selectedQueuedTurns.filter {
+            $0.dispatchState != .dispatching || !timelineClientMessageIDs.contains($0.clientMessageID)
+        }
+    }
+
     func queuedTurns(sessionID: SessionID) -> [QueuedTurnEntry] {
         queuedRunningTurnsBySessionID[sessionID] ?? []
     }
@@ -1194,6 +1236,11 @@ final class SessionStore: ObservableObject {
             sendStatus: .sending,
             turnPayload: item.payload,
             userDelivery: .guided
+        )
+        conversationStore.bindTurnID(
+            activeTurnID,
+            clientMessageID: item.clientMessageID,
+            sessionID: session.id
         )
         setForegroundActivity(.waitingForAssistant, sessionID: session.id)
         setStatusMessage(L10n.text("ui.directed_current_reply_immediately"))
@@ -1560,6 +1607,15 @@ final class SessionStore: ObservableObject {
         // 规划 Tab 必须直接依赖当前 pinnedSessionIDs 生成顺序，避免只有切换 Tab
         // 触发整页重建后才看到置顶结果；搜索补入的远端会话也使用同一排序口径。
         return sessionsMatchingSearch(sortedSessionsForList(merged))
+    }
+
+    /// 受控全局发现继续保留 canonical 会话；会话 Tab 只消费目录查询确认属于已打开工作区的投影。
+    var openedWorkspaceSessionLibrarySessions: [AgentSession] {
+        sessionLibrarySessions.compactMap(sessionAlignedToOpenedWorkspace)
+    }
+
+    func sessionAlignedToOpenedWorkspace(_ item: AgentSession) -> AgentSession? {
+        workspaceForDirectoryScopedSession(item).map { session(item, in: $0) }
     }
 
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。

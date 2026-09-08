@@ -20,6 +20,8 @@ packages:
   swift-markdown:
     url: https://github.com/swiftlang/swift-markdown
     from: "0.8.0"
+fileGroups:
+  - Resources/MimiRemote.storekit
 targets:
   MimiRemote:
     type: application
@@ -59,6 +61,17 @@ targets:
       - path: ../../THIRD_PARTY_NOTICES.md
         group: Resources
         buildPhase: resources
+    preBuildScripts:
+      - name: Build Tailcat iOS framework
+        script: |
+          case "${PLATFORM_NAME:-}" in
+            iphoneos|iphonesimulator)
+              export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/local/go/bin:$PATH"
+              export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+              bash "$SRCROOT/../../scripts/build-tailcat-mobile.sh"
+              ;;
+          esac
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: swift-markdown
         product: Markdown
@@ -72,6 +85,13 @@ targets:
         PRODUCT_NAME: MimiRemote
         PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/MimiRemote-Bridging-Header.h
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64"
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Generated/TailcatMobile.xcframework/ios-arm64_x86_64-simulator"
+        "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
+        "GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]": "$(inherited) MIMI_REQUIRE_TAILCAT=1"
+        # Tailcat 首次构建会写入源码树下的 Generated 与仓库级工具缓存。
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Resources/MimiRemote.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Resources/MimiRemote.entitlements
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_PROVISIONING_PROFILE_SPECIFIER)"
@@ -88,9 +108,9 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         # UI 文案统一由显式 L10n key 管理，关闭编译器自动提取，避免 Xcode 把技术字符串写回目录。
         SWIFT_EMIT_LOC_STRINGS: "NO"
-        # 1.1 已在 App Store Connect 关闭新构建上传，本次发布切换到 1.2 通道。
-        CURRENT_PROJECT_VERSION: "100070"
-        MARKETING_VERSION: "1.2"
+        # 1.2 已通过审核；本次仅更新商店名称与截图，使用 1.2.1 通道。
+        CURRENT_PROJECT_VERSION: "100098"
+        MARKETING_VERSION: "1.2.1"
   MimiCarStatusWidgetExtension:
     type: app-extension
     platform: iOS
@@ -116,8 +136,8 @@ targets:
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)"
         SKIP_INSTALL: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
-        CURRENT_PROJECT_VERSION: "100070"
-        MARKETING_VERSION: "1.2"
+        CURRENT_PROJECT_VERSION: "100098"
+        MARKETING_VERSION: "1.2.1"
         SWIFT_EMIT_LOC_STRINGS: "NO"
   MimiRemoteTests:
     type: bundle.unit-test
@@ -131,6 +151,7 @@ targets:
           - MimiRemoteTests/ConversationSnapshotTests.swift
           - MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
           - MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
+          - MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
           - MimiRemoteTests/SkillModelPickerSnapshotTests.swift
           - MimiRemoteTests/TokenUsageCardSnapshotTests.swift
           - MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
@@ -147,6 +168,9 @@ targets:
       - path: Tests/MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
         destinationFilters:
           - iOS
+      - path: Tests/MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
+        destinationFilters:
+          - iOS
       - path: Tests/MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
         destinationFilters:
           - iOS
@@ -156,6 +180,8 @@ targets:
       - path: Tests/MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
         destinationFilters:
           - iOS
+      - path: Resources/MimiRemote.storekit
+        buildPhase: resources
     dependencies:
       - target: MimiRemote
       - package: SnapshotTesting
@@ -193,6 +219,8 @@ schemes:
         MimiRemote: all
         MimiRemoteTests:
           - test
+    run:
+      storeKitConfiguration: Resources/MimiRemote.storekit
     test:
       language: zh-Hans
       targets:

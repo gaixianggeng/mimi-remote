@@ -150,6 +150,44 @@ func TestNotifyPendingFansOutToAllDevicesAndBindsThem(t *testing.T) {
 	}
 }
 
+func TestNotifyPendingGivesEachDeviceAnIndependentBudget(t *testing.T) {
+	manager, _ := newTestManager(t, true, "device-a", "device-b")
+	fastDelivered := make(chan struct{}, 1)
+	manager.notifyer = func(ctx context.Context, notification Notification) error {
+		switch notification.DeviceID {
+		case "device-a":
+			// 第一台设备占满调用方预算，模拟 Provider 连接卡住。
+			<-ctx.Done()
+			return ctx.Err()
+		case "device-b":
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			fastDelivered <- struct{}{}
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		manager.NotifyPending(ctx, codexApproval())
+		close(done)
+	}()
+
+	select {
+	case <-fastDelivered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("慢设备不能耗尽其它设备的投递预算")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("fanout 应在各设备预算结束后返回")
+	}
+}
+
 // 同一个 runtime 请求重复触发时不能签发第二个句柄，否则锁屏会出现两张卡片。
 func TestNotifyPendingIsIdempotentPerRequest(t *testing.T) {
 	manager, provider := newTestManager(t, true, "device-a")

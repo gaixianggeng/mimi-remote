@@ -6,10 +6,13 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
+
+var migrateAppServerToSharedLocal = agentsetup.MigrateAppServerToSharedLocal
 
 // ServiceManagement 注册的 BundleProgram 不保证带 HOME。没有 HOME 时，
 // os.UserConfigDir 会退化失败，agentd 会误读当前目录下的 config.json；Codex
@@ -41,11 +44,21 @@ func ensureProcessUserEnvironment() error {
 	return nil
 }
 
-// ensureAppServerSSHMigration 在正式 Load 前原子迁移旧 managed WS 配置。
-// SSH 预检失败时原文件保持不变，避免升级留下两套都不可用的配置。
-func ensureAppServerSSHMigration(ctx context.Context, configPath string, target string) error {
-	if err := agentsetup.MigrateAppServerToSSH(ctx, configPath, target); err != nil {
-		return fmt.Errorf("迁移共享 SSH App Server 配置失败：%w", err)
+// ensureAppServerTransportMigration upgrades the platform's former managed WS
+// configuration before normal validation. macOS uses SSH; Linux uses Codex's
+// standard local control socket. Windows keeps its managed WebSocket process.
+func ensureAppServerTransportMigration(ctx context.Context, configPath string, target string) error {
+	var err error
+	switch runtime.GOOS {
+	case "darwin":
+		err = agentsetup.MigrateAppServerToSSH(ctx, configPath, target)
+	case "linux":
+		err = migrateAppServerToSharedLocal(ctx, configPath)
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("迁移共享 App Server 配置失败：%w", err)
 	}
 	return nil
 }

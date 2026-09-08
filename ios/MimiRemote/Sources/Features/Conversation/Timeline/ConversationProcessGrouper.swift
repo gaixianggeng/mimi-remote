@@ -96,7 +96,7 @@ struct ConversationProcessGrouper {
         case .userInput:
             return content.hasPrefix(L10n.text("ui.additional_information_has_been_submitted")) || content.hasPrefix(L10n.text("ui.boot_input_submitted")) ||
                 content.hasPrefix(L10n.text("ui.additional_information_skipped")) || content.hasPrefix(L10n.text("ui.boot_input_skipped"))
-        case .message, .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .error:
+        case .message, .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .warning, .error:
             return false
         }
     }

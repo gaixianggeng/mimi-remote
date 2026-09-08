@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,6 +32,11 @@ type Options struct {
 	Listen             string
 	AppServerSSHTarget string
 	Force              bool
+	// CodexBin overrides CLI discovery for embedding integrations and tests.
+	CodexBin string
+	// LocalAppServerPreflight is an integration seam for command-level tests.
+	// Production callers leave it nil and use the real control-socket handshake.
+	LocalAppServerPreflight func(context.Context, string, map[string]string) error
 }
 
 type Result struct {
@@ -56,6 +62,10 @@ func Run(ctx context.Context, options Options) (Result, error) {
 }
 
 func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTransactionOps) (Result, error) {
+	sharedLocalPreflight := localAppServerPreflight
+	if options.LocalAppServerPreflight != nil {
+		sharedLocalPreflight = options.LocalAppServerPreflight
+	}
 	cfgPath, err := resolveConfigPath(options.ConfigPath)
 	if err != nil {
 		return Result{}, err
@@ -68,8 +78,14 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		// 已有配置时默认只读取配对信息，避免误覆盖用户已经绑定到 iPad 的 token。
 		// 旧版 managed WS 配置必须先完成 SSH 预检和原子迁移，不能让 Pair
 		// 继续把失效 transport 当成当前配置。
-		if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
-			return Result{}, err
+		if runtime.GOOS == "darwin" {
+			if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
+				return Result{}, err
+			}
+		} else if runtime.GOOS == "linux" {
+			if err := MigrateAppServerToSharedLocalWithPreflight(ctx, cfgPath, sharedLocalPreflight); err != nil {
+				return Result{}, err
+			}
 		}
 		result, err := Pair(ctx, cfgPath)
 		if err != nil {
@@ -85,18 +101,49 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
 		}
 	}
-	appServerSSHTarget, err := normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
-	if err != nil {
-		return Result{}, err
+	requestedSSHTarget := strings.TrimSpace(options.AppServerSSHTarget)
+	if requestedSSHTarget == "" {
+		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
 	}
-	sshTransport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: appServerSSHTarget})
-	if err != nil {
-		return Result{}, fmt.Errorf("准备 SSH App Server 失败：%w", err)
+	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
+	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
+	codexBin := strings.TrimSpace(options.CodexBin)
+	if codexBin == "" {
+		codexBin = defaultCodexBin()
 	}
-	// 首次安装和 --force 都先验证真实 SSH + initialize，再写配置。失败时既不
-	// 生成半套配置，也不会让后台服务进入反复重启但永远不可用的状态。
-	if err := sshPreflight(ctx, sshTransport); err != nil {
-		return Result{}, fmt.Errorf("SSH 预检失败，配置未修改：%w", err)
+	appServerConfig := config.DefaultManagedAppServerConfig()
+	if useSharedLocalAppServer {
+		appServerConfig = config.DefaultSharedLocalAppServerConfig()
+	}
+	appServerSSHTarget := ""
+	if runtime.GOOS == "windows" && strings.TrimSpace(options.AppServerSSHTarget) != "" {
+		if err := appserver.ValidateSSHTarget(options.AppServerSSHTarget); err != nil {
+			return Result{}, fmt.Errorf("app_server.ssh_target 无效：%w", err)
+		}
+	}
+	if !useManagedLocalAppServer && !useSharedLocalAppServer {
+		appServerSSHTarget, err = normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
+		if err != nil {
+			return Result{}, err
+		}
+		sshTransport, transportErr := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: appServerSSHTarget})
+		if transportErr != nil {
+			return Result{}, fmt.Errorf("准备 SSH App Server 失败：%w", transportErr)
+		}
+		// macOS 与 Linux 显式远端模式必须先验证真实 SSH + initialize。
+		if err := sshPreflight(ctx, sshTransport); err != nil {
+			return Result{}, fmt.Errorf("SSH 预检失败，配置未修改：%w", err)
+		}
+		appServerConfig = config.AppServerConfig{
+			Transport: config.DefaultAppServerTransport(),
+			SSHTarget: appServerSSHTarget,
+			AutoTitle: true,
+		}
+	} else if useSharedLocalAppServer {
+		codexEnv := map[string]string{"TERM": "xterm-256color"}
+		if err := sharedLocalPreflight(ctx, codexBin, codexEnv); err != nil {
+			return Result{}, fmt.Errorf("Linux 本机 App Server 预检失败，配置未修改：%w", err)
+		}
 	}
 
 	cfgDir := filepath.Dir(cfgPath)
@@ -122,6 +169,16 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	token, err := randomHex(32)
 	if err != nil {
 		return Result{}, err
+	}
+	appServerToken := ""
+	appServerTokenFile := ""
+	if useManagedLocalAppServer {
+		appServerToken, err = randomHex(32)
+		if err != nil {
+			return Result{}, err
+		}
+		appServerTokenFile = filepath.Join(cfgDir, "app-server-ws-token")
+		appServerConfig.WSTokenFile = appServerTokenFile
 	}
 	scanRoot, err := defaultScanRoot(options.ScanRoot)
 	if err != nil {
@@ -155,13 +212,9 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		Runtime: config.RuntimeConfig{
 			Type: "codex_app_server",
 		},
-		AppServer: config.AppServerConfig{
-			Transport: config.DefaultAppServerTransport(),
-			SSHTarget: appServerSSHTarget,
-			AutoTitle: true,
-		},
+		AppServer: appServerConfig,
 		Codex: config.CodexConfig{
-			Bin:         defaultCodexBin(),
+			Bin:         codexBin,
 			DefaultArgs: []string{"--no-alt-screen"},
 			Env: map[string]string{
 				"TERM": "xterm-256color",
@@ -188,11 +241,16 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			if err := validateOriginal(); err != nil {
 				return err
 			}
-			return writeConfigAtomically(
-				cfgPath,
-				append(raw, '\n'),
-				fileOps,
-			)
+			if useManagedLocalAppServer {
+				return writeSetupFilesAtomically(
+					cfgPath,
+					appServerTokenFile,
+					append(raw, '\n'),
+					[]byte(appServerToken+"\n"),
+					fileOps,
+				)
+			}
+			return writeConfigAtomically(cfgPath, append(raw, '\n'), fileOps)
 		})
 	}
 	if err := commitFiles(); err != nil {

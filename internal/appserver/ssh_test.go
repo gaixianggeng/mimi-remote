@@ -10,15 +10,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-const sshHelperEnv = "MIMI_SSH_HELPER"
+const (
+	sshHelperEnv           = "MIMI_SSH_HELPER"
+	sshHelperProxyDelayEnv = "MIMI_SSH_PROXY_DELAY"
+)
 
 func TestSSHHelperProcess(t *testing.T) {
 	if os.Getenv(sshHelperEnv) != "1" {
@@ -39,7 +44,7 @@ func TestSSHHelperProcess(t *testing.T) {
 	appendSSHHelperLog(strings.Join(sshArgs, "\t"))
 	command := sshArgs[len(sshArgs)-1]
 	switch command {
-	case "codex --version":
+	case sshCodexVersionRemoteCommand:
 		if os.Getenv("MIMI_SSH_VERSION_FAIL") == "1" {
 			fmt.Fprint(os.Stderr, "Host key verification failed.\n")
 			os.Exit(255)
@@ -58,6 +63,9 @@ func TestSSHHelperProcess(t *testing.T) {
 	case sshProxyRemoteCommand:
 		if !helperFileExists(os.Getenv("MIMI_SSH_SERVER_MARKER")) || helperFileExists(os.Getenv("MIMI_SSH_FAIL_MARKER")) {
 			os.Exit(92)
+		}
+		if delay, err := time.ParseDuration(os.Getenv(sshHelperProxyDelayEnv)); err == nil && delay > 0 {
+			time.Sleep(delay)
 		}
 		serveSSHHelperWebSocket()
 		if exitMarker := os.Getenv("MIMI_SSH_PROXY_EXIT_MARKER"); exitMarker != "" {
@@ -92,6 +100,127 @@ func TestSSHBootstrapAloneDisablesPersistedRemoteControl(t *testing.T) {
 	}
 	if strings.Contains(sshProxyRemoteCommand, remoteControlEnv) {
 		t.Fatalf("SSH proxy 不应覆盖官方 environment identity：%s", sshProxyRemoteCommand)
+	}
+}
+
+func TestSSHRemoteCodexCommandsUseDeterministicUserPath(t *testing.T) {
+	for name, command := range map[string]string{
+		"version":   sshCodexVersionRemoteCommand,
+		"proxy":     sshProxyRemoteCommand,
+		"bootstrap": sshBootstrapRemoteCommand,
+	} {
+		for _, path := range []string{
+			"$HOME/.local/bin",
+			"$HOME/.npm-global/bin",
+			"$HOME/.local/share/mise/shims",
+			"$HOME/.local/share/mise/installs/codex/latest/bin",
+			"/opt/homebrew/bin",
+		} {
+			if !strings.Contains(command, path) {
+				t.Fatalf("%s 命令缺少常见 Codex 路径 %q：%s", name, path, command)
+			}
+		}
+		if !strings.Contains(command, "export PATH") || strings.Index(command, "export PATH") > strings.LastIndex(command, "codex") {
+			t.Fatalf("%s 命令必须先固定 PATH 再执行 Codex：%s", name, command)
+		}
+	}
+}
+
+func TestSSHRemoteCodexVersionFindsMiseInstallWithoutShellRC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test requires a POSIX shell")
+	}
+	home := t.TempDir()
+	codexBin := filepath.Join(home, ".local", "share", "mise", "shims", "codex")
+	if err := os.MkdirAll(filepath.Dir(codexBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.152.1'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", sshCodexVersionRemoteCommand)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("非交互 shell 未找到 mise Codex：%v，输出：%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "codex-cli 0.152.1" {
+		t.Fatalf("Codex 版本输出不正确：%q", output)
+	}
+}
+
+func TestSSHBootstrapGuaranteesOpenFileCapacityBeforeStartingResident(t *testing.T) {
+	limitCheck := "ulimit -Sn"
+	limitRaise := fmt.Sprintf("ulimit -Sn %d", sshAppServerOpenFileSoftLimit)
+	residentStart := "nohup env"
+	for _, required := range []string{limitCheck, limitRaise, residentStart} {
+		if !strings.Contains(sshBootstrapRemoteCommand, required) {
+			t.Fatalf("bootstrap 缺少 %q：%s", required, sshBootstrapRemoteCommand)
+		}
+	}
+	if strings.Index(sshBootstrapRemoteCommand, limitCheck) > strings.Index(sshBootstrapRemoteCommand, residentStart) ||
+		strings.Index(sshBootstrapRemoteCommand, limitRaise) > strings.Index(sshBootstrapRemoteCommand, residentStart) {
+		t.Fatalf("必须在启动 resident 前确认 open-file soft limit：%s", sshBootstrapRemoteCommand)
+	}
+	if strings.Contains(sshBootstrapRemoteCommand, limitRaise+" || true") {
+		t.Fatalf("无法提高 open-file soft limit 时必须阻止低上限 resident 启动：%s", sshBootstrapRemoteCommand)
+	}
+}
+
+func TestSSHBootstrapResidentInheritsRaisedOpenFileLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SSH Unix resident 只在 Unix 主机启动")
+	}
+	hardOutput, err := exec.Command("/bin/sh", "-c", "ulimit -Hn").Output()
+	if err != nil {
+		t.Fatalf("读取测试 shell hard limit：%v", err)
+	}
+	hardLimit := strings.TrimSpace(string(hardOutput))
+	if hardLimit != "unlimited" {
+		value, parseErr := strconv.Atoi(hardLimit)
+		if parseErr != nil {
+			t.Fatalf("解析测试 shell hard limit %q：%v", hardLimit, parseErr)
+		}
+		if value < sshAppServerOpenFileSoftLimit {
+			t.Skipf("测试环境 hard limit %d 低于 resident 要求 %d", value, sshAppServerOpenFileSoftLimit)
+		}
+	}
+
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "resident-limit")
+	fakeCodex := filepath.Join(directory, ".local", "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(fakeCodex), 0o755); err != nil {
+		t.Fatalf("创建 fake Codex 目录：%v", err)
+	}
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nulimit -Sn > \"$MIMI_BOOTSTRAP_LIMIT_MARKER\"\n"), 0o755); err != nil {
+		t.Fatalf("创建 fake codex：%v", err)
+	}
+	t.Setenv("MIMI_BOOTSTRAP_LIMIT_MARKER", marker)
+	t.Setenv("HOME", directory)
+	command := exec.Command("/bin/sh", "-c", "ulimit -Sn 256; "+sshBootstrapRemoteCommand)
+	command.Env = os.Environ()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("执行 bootstrap shell：%v，output=%s", err, strings.TrimSpace(string(output)))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		output, readErr := os.ReadFile(marker)
+		if readErr == nil {
+			limit, parseErr := strconv.Atoi(strings.TrimSpace(string(output)))
+			if parseErr != nil || limit < sshAppServerOpenFileSoftLimit {
+				t.Fatalf("resident 继承的 open-file soft limit=%q，至少应为 %d", strings.TrimSpace(string(output)), sshAppServerOpenFileSoftLimit)
+			}
+			break
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("读取 resident limit marker：%v", readErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake resident 未写入 open-file soft limit")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -136,7 +265,7 @@ func TestSSHTransportMissingHostKeyReturnsActionableFailure(t *testing.T) {
 	transport, logPath, _, _ := newSSHHelperTransport(t, true)
 	t.Setenv("MIMI_SSH_VERSION_FAIL", "1")
 	_, err := transport.CheckRemoteCodex(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "SSH host/auth") || !strings.Contains(err.Error(), "ssh 127.0.0.1 codex --version") {
+	if err == nil || !strings.Contains(err.Error(), "SSH host/auth") || !strings.Contains(err.Error(), "ssh 127.0.0.1") || !strings.Contains(err.Error(), sshCodexVersionRemoteCommand) {
 		t.Fatalf("缺少 host key 时应返回可执行检查命令：%v", err)
 	}
 	log := readSSHHelperLog(t, logPath)

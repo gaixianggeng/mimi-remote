@@ -1,0 +1,113 @@
+{
+  "identifier" : "B4D1E32B-2DB4-4F5D-8656-5AF0FA2B96CB",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6778076511",
+    "_developerTeamID" : "9HZ89R58PZ",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "zh_CN",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "CHN",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
+      "localizations" : [
+        {
+          "description" : "Mimi 托管连接订阅",
+          "displayName" : "Mimi 托管连接",
+          "locale" : "zh_CN"
+        },
+        {
+          "description" : "Mimi Managed Connection subscription",
+          "displayName" : "Mimi Managed Connection",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Mimi Managed Connection",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "9.9",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "5B2DF4E7-41D9-45F6-BEB9-86BA345C268D",
+          "introductoryOffer" : {
+            "internalID" : "397BE225-F5EB-45D4-B24B-B8E3971103CE",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
+          "localizations" : [
+            {
+              "description" : "按月使用 Mimi 托管连接",
+              "displayName" : "月度订阅",
+              "locale" : "zh_CN"
+            },
+            {
+              "description" : "Monthly access to Mimi Managed Connection",
+              "displayName" : "Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.gaixianggeng.mimi.managed.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Mimi Managed Monthly",
+          "subscriptionGroupID" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "85FC2726-7535-483C-A80B-7CB043D3FE34",
+          "introductoryOffer" : {
+            "internalID" : "2CE58A47-825D-431D-A03D-36528CD57FDB",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
+          "localizations" : [
+            {
+              "description" : "按年使用 Mimi 托管连接",
+              "displayName" : "年度订阅",
+              "locale" : "zh_CN"
+            },
+            {
+              "description" : "Annual access to Mimi Managed Connection",
+              "displayName" : "Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.gaixianggeng.mimi.managed.annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Mimi Managed Annual",
+          "subscriptionGroupID" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

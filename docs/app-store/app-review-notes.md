@@ -1,6 +1,8 @@
-# App Review Notes — Mimi Remote 1.1
+# App Review Notes — Mimi Remote 1.2.1
 
 Mimi Remote is a native developer-tool client for a computer owned by, or explicitly authorized for use by, the user.
+
+Version 1.2.1 updates the Simplified Chinese App Store name to Mimi Remote and replaces the Simplified Chinese screenshots. This metadata update does not add feature code; the selected build is built from the current main branch.
 
 The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, relay traffic, or host project data. Code execution occurs only on the configured host. The developer does not operate a service that receives prompts, source code, credentials, or model-provider traffic.
 

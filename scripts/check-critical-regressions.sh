@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in bash grep; do
+for command_name in bash grep sed; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "缺少命令 ${command_name}。"
 done
@@ -20,9 +20,26 @@ map_doc="docs/critical-user-journey-regressions.md"
 [[ -f "$runner" ]] || fail "缺少回归入口 ${runner}。"
 [[ -f "$map_doc" ]] || fail "缺少风险映射 ${map_doc}。"
 
-for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9; do
+for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10; do
   grep -Fq "| ${risk_id} |" "$map_doc" \
     || fail "${map_doc} 缺少 ${risk_id} 的风险映射。"
+done
+
+managed_subscription_test_groups=(
+  "ManagedConnectionEntitlementStoreTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionEntitlementStoreTests.swift"
+  "ManagedConnectionEntitlementAPIClientTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionEntitlementStoreTests.swift"
+  "ManagedConnectionStoreKitClientTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionStoreKitClientTests.swift"
+)
+for test_entry in "${managed_subscription_test_groups[@]}"; do
+  test_group="${test_entry%%|*}"
+  test_file="${test_entry#*|}"
+  [[ -f "$test_file" ]] || fail "测试源码不存在：${test_file}。"
+  grep -Fq "final class ${test_group}" "$test_file" \
+    || fail "${test_file} 缺少 ${test_group}。"
+  grep -Fq -- "-only-testing:MimiRemoteTests/${test_group}" "$runner" \
+    || fail "iOS runner 未选择 ${test_group}。"
+  grep -Fq "$test_group" "$map_doc" \
+    || fail "${map_doc} 未记录 ${test_group}。"
 done
 
 grep -Fq './internal/auth \' "$runner" \
@@ -43,9 +60,28 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' .github/workflows/ios-ci.
   || fail "iOS CI 没有显式使用 --ios-only。"
 grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh \
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
-if grep -Fq 'actions/setup-go@' .github/workflows/ios-ci.yml; then
-  fail "iOS CI 仍在重复初始化 Go 工具链。"
-fi
+conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
+release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
+[[ "$(grep -Fc 'actions/setup-go@' <<<"$conversation_job")" == "1" ]] \
+  || fail "iOS 回归 job 必须且只能初始化一次 Tailcat Go 工具链。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有使用 Tailcat go.mod 固定 Go 版本。"
+grep -Fq "cd experiments/tailcat && go test ./... -run '^$' -count=1" <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有编译 Tailcat Go module 测试。"
+grep -Fq 'bash ./scripts/test-tailcat-mobile-build.sh' <<<"$conversation_job" \
+  || fail "iOS 回归 job 没有验证 Tailcat XCFramework 缓存链路。"
+grep -Fq 'Build Tailcat iOS framework' ios/MimiRemote/project.yml \
+  || fail "MimiRemote project.yml 没有接入 Tailcat iOS 构建阶段。"
+grep -Fq 'bash "$SRCROOT/../../scripts/build-tailcat-mobile.sh"' ios/MimiRemote/project.yml \
+  || fail "MimiRemote project.yml 的 Tailcat 构建阶段没有调用统一 builder。"
+grep -Fq 'ENABLE_USER_SCRIPT_SANDBOXING: "NO"' ios/MimiRemote/project.yml \
+  || fail "MimiRemote 没有允许 Tailcat 构建阶段写入 Generated 缓存。"
+grep -Fq 'Build Tailcat iOS framework' ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj \
+  || fail "已提交的 Xcode 工程没有 Tailcat iOS 构建阶段。"
+[[ "$(grep -Fc 'actions/setup-go@' <<<"$release_job")" == "1" ]] \
+  || fail "iOS 发布 job 必须且只能初始化一次 Tailcat Go 工具链。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$release_job" \
+  || fail "iOS 发布 job 没有使用 Tailcat go.mod 固定 Go 版本。"
 if grep -Fq 'bash ./scripts/check-mimi-protocol-contract.sh' .github/workflows/ios-ci.yml; then
   fail "iOS CI 仍在重复执行 Go 协议门禁。"
 fi
@@ -147,4 +183,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：9 类风险、4 个 Go 包和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：10 类风险、4 个 Go 包、3 组托管订阅测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"

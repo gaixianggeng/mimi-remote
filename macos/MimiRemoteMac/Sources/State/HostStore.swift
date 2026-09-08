@@ -21,7 +21,12 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
+    private(set) var tailcatStatus: TailcatStatus?
+    private(set) var isUpdatingTailcat = false
+    private(set) var tailcatError: String?
+    private(set) var tailcatNotice: String?
     var lastError: String?
+    @ObservationIgnored private var pairingRefreshGeneration = 0
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
@@ -35,10 +40,43 @@ final class HostStore {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
 
+    var tailcatEnabled: Bool {
+        tailcatStatus?.enabled ?? false
+    }
+
+    var canChangeTailcat: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var tailcatDERPMapURL: String {
+        tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var tailcatStatusTitle: String {
+        if isUpdatingTailcat { return "正在更新" }
+        guard let tailcatStatus else { return "尚未检查" }
+        if !tailcatStatus.enabled { return "已关闭" }
+        return tailcatStatus.running ? "运行中" : "需要处理"
+    }
+
+    var tailcatStatusDetail: String {
+        if owner == .homebrew {
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 实验。"
+        }
+        if let tailcatError { return tailcatError }
+        if let tailcatNotice { return tailcatNotice }
+        if let error = tailcatStatus?.error, !error.isEmpty { return error }
+        guard let tailcatStatus, tailcatStatus.enabled else {
+            return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
+        }
+        return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
+    }
+
     var experimentMenuStatusText: String? {
         guard owner == .macApp else { return "不可管理" }
-        if isUpdatingClaude { return "正在更新" }
-        return claudeEnabled ? "Claude 已启用" : nil
+        if isUpdatingClaude || isUpdatingTailcat { return "正在更新" }
+        let enabled = [claudeEnabled ? "Claude" : nil, tailcatEnabled ? "Tailcat" : nil].compactMap { $0 }
+        return enabled.isEmpty ? nil : enabled.joined(separator: "、") + " 已启用"
     }
 
     var experimentMenuAccessibilityLabel: String {
@@ -103,6 +141,8 @@ final class HostStore {
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
     private var lastStatusRefreshAt: Date?
+    private var lastReadinessCommandSuccessAt: Date?
+    private var readinessFailureStartedAt: Date?
     // 每次开始 agent.status() 都先分配单调序号，只允许最新请求落地。
     private var statusRequestSequence: UInt64 = 0
 
@@ -320,13 +360,18 @@ final class HostStore {
 
     func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        pairingRefreshGeneration &+= 1
+        let refreshGeneration = pairingRefreshGeneration
         lastError = nil
         do {
             let nextPairing = try await resolvedPairing(for: network)
+            // 较早的请求不能覆盖用户刚选择的网络和二维码。
+            guard refreshGeneration == pairingRefreshGeneration else { return }
             pairing = nextPairing
             pairingNetwork = nextPairing.network
             lastError = nil
         } catch {
+            guard refreshGeneration == pairingRefreshGeneration else { return }
             lastError = error.localizedDescription
         }
     }
@@ -353,6 +398,8 @@ final class HostStore {
             return try await agent.pair(.tailscale)
         case .localNetwork:
             return try await localNetworkPairing()
+        case .tailcat:
+            return try await agent.pair(.tailcat)
         }
     }
 
@@ -522,6 +569,91 @@ final class HostStore {
             }
         } catch {
             claudeError = error.localizedDescription
+        }
+    }
+
+    func refreshTailcatStatus() async {
+        guard owner == .macApp else { return }
+        do {
+            tailcatStatus = try await agent.tailcatStatus()
+            tailcatError = nil
+            tailcatNotice = nil
+        } catch {
+            tailcatError = error.localizedDescription
+        }
+    }
+
+    func setTailcatEnabled(_ enabled: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        tailcatNotice = nil
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.setTailcatEnabled(enabled)
+            if !enabled, pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+        } catch {
+            let updateError = error.localizedDescription
+            await refreshTailcatStatus()
+            tailcatError = updateError
+        }
+    }
+
+    func configureTailcatDERPMap(_ derpMapURL: String) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        tailcatNotice = nil
+        let wasEnabled = tailcatEnabled
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.configureTailcatDERPMap(derpMapURL)
+            if pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+            tailcatNotice = wasEnabled
+                ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
+                : "中继配置已保存，将在启用 Tailcat 后生效。"
+        } catch {
+            tailcatError = error.localizedDescription
+        }
+    }
+
+    func resetTailcat() async {
+        guard !isBusy, owner == .macApp, tailcatEnabled else { return }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatError = nil
+        tailcatNotice = nil
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.resetTailcat()
+            if pairingNetwork == .tailcat {
+                pairing = nil
+            }
+        } catch {
+            tailcatError = error.localizedDescription
         }
     }
 
@@ -937,7 +1069,7 @@ final class HostStore {
         )
     }
 
-    private func refreshMacAgentStatus() async {
+    private func refreshMacAgentStatus(preserveStateOnCommandFailure: Bool = false, now: Date = Date()) async {
         switch services.agentStatus() {
         case .enabled:
             do {
@@ -945,7 +1077,11 @@ final class HostStore {
             } catch is CancellationError {
                 return
             } catch {
-                fail(error)
+                if preserveStateOnCommandFailure {
+                    applyReadinessStalenessIfNeeded(now: now)
+                } else {
+                    fail(error)
+                }
             }
         case .requiresApproval:
             lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
@@ -1017,6 +1153,8 @@ final class HostStore {
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
+        lastReadinessCommandSuccessAt = Date()
+        readinessFailureStartedAt = nil
         if resolved.serviceOK {
             lifecycle = .ready
         } else if resolved.processOK {
@@ -1107,18 +1245,70 @@ final class HostStore {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled else { return }
                 tick += 1
-                if let endpoint = self.status?.endpoint,
-                   (self.lifecycle == .ready || self.lifecycle == .migrationRequired),
-                   !(await self.health.check(endpoint))
-                {
-                    await self.refresh()
-                } else if tick.isMultiple(of: 30) {
-                    // 常驻监控每 10 秒只做 loopback healthz；完整 status 会执行带鉴权的
-                    // upstream WebSocket readiness，降到 5 分钟一次，避免控制面持续干扰数据面。
-                    await self.refresh()
-                }
+                await self.performMonitoringTick(tick, now: Date())
             }
         }
+    }
+
+    /// 常驻监控始终以 healthz 作为进程探针；readiness 和完整 runtime 状态按不同频率读取。
+    /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
+    func performMonitoringTick(_ tick: Int, now: Date) async {
+        guard owner != .none, let endpoint = status?.endpoint else { return }
+        guard await health.check(endpoint) else {
+            await refresh()
+            return
+        }
+        if owner == .homebrew {
+            if tick.isMultiple(of: 30) {
+                await refresh()
+            }
+            return
+        }
+        if tick.isMultiple(of: 30) {
+            // 完整 status 已包含 readyz，本轮不再重复执行轻量 readiness。
+            await refreshMacAgentStatus(preserveStateOnCommandFailure: true, now: now)
+            // healthz 已在本轮确认进程存活；status 中的 process_ok 即使瞬时为 false，
+            // 也不能把一个明确的 readiness 故障误报为进程停止。
+            if let current = status, !current.serviceOK {
+                lifecycle = .degraded(current.serviceError ?? "Codex 服务尚未就绪。")
+            }
+        } else if tick.isMultiple(of: 6) {
+            await refreshReadinessStatus(now: now)
+        } else {
+            applyReadinessStalenessIfNeeded(now: now)
+        }
+    }
+
+    private func refreshReadinessStatus(now: Date) async {
+        // 轻量 readiness 与完整 status 写入同一份状态。二者必须共享请求序号，
+        // 否则先发出的慢 readiness 会在较新的完整状态之后回写旧结果。
+        let sequence = nextStatusRequestSequence()
+        do {
+            let current = try await agent.readiness()
+            guard sequence == statusRequestSequence else { return }
+            lastReadinessCommandSuccessAt = now
+            readinessFailureStartedAt = nil
+            let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+            status = resolved
+            doctor = resolved.doctor
+            lastStatusRefreshAt = now
+            lifecycle = current.serviceOK
+                ? .ready
+                : .degraded(current.serviceError ?? "Codex 服务尚未就绪。")
+        } catch is CancellationError {
+            return
+        } catch {
+            applyReadinessStalenessIfNeeded(now: now)
+        }
+    }
+
+    func applyReadinessStalenessIfNeeded(now: Date) {
+        if readinessFailureStartedAt == nil {
+            readinessFailureStartedAt = now
+        }
+        guard let baseline = lastReadinessCommandSuccessAt ?? readinessFailureStartedAt,
+              now.timeIntervalSince(baseline) >= 90 else { return }
+        lifecycle = .degraded("进程存活，但 Codex 服务状态暂时无法确认")
     }
 
     private func scheduleRuntimeStatusFollowUp() {
@@ -1293,6 +1483,7 @@ final class HostStore {
             configExists: { lifecycle != .notConfigured },
             setup: { _ in PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
             status: { status },
+            readiness: { status },
             statusAt: { _ in status },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
             configureClaude: { preference, restoreEnabled in

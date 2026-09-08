@@ -112,7 +112,7 @@ func (r *Router) installClaudeApprovalObserver(observer *claudeApprovalObserver,
 	}
 	r.claudeObserverMu.Lock()
 	defer r.claudeObserverMu.Unlock()
-	if r.claudeObserverEpochs == nil || r.claudeObserverEpochs[observer.sessionKey] != expectedEpoch {
+	if r.claudeObserversClosing || r.claudeObserverEpochs == nil || r.claudeObserverEpochs[observer.sessionKey] != expectedEpoch {
 		return nil, false
 	}
 	if r.claudeObservers == nil {

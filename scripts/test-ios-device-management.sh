@@ -9,9 +9,20 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 export IOS_XCRUN_BIN="$FIXTURE_DIR/fake-xcrun.sh"
 export IOS_XCODEBUILD_BIN="$FIXTURE_DIR/fake-xcodebuild.sh"
 export IOS_DEVICE_LEASE_ROOT="$TEMP_DIR/leases"
+export MIMI_DEVELOPMENT_CACHE_ROOT="$TEMP_DIR/development-cache"
 export IOS_TEST_SIMULATORS_JSON="$FIXTURE_DIR/simulators.json"
 export IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/physical-devices.json"
 export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
+export IOS_TEST_GUI_HANDOFF_LOG="$TEMP_DIR/gui-handoff.log"
+export IOS_DEVICE_GUI_HANDOFF_BIN="$FIXTURE_DIR/fake-gui-handoff.sh"
+export IOS_TAILCAT_BUILD_SCRIPT="$FIXTURE_DIR/fake-tailcat-mobile-build.sh"
+export IOS_TEST_TAILCAT_BUILD_LOG="$TEMP_DIR/tailcat-mobile-build.log"
+: > "$IOS_TEST_TAILCAT_BUILD_LOG"
+: > "$IOS_TEST_GUI_HANDOFF_LOG"
+expected_device_handoff_count="0"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  expected_device_handoff_count="1"
+fi
 unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS_DEVICE_NAME IOS_TARGET_MODE
 unset DEVELOPER_DIR IOS_OPEN_BIN IOS_TEST_OPEN_LOG IOS_TEST_OPEN_FAIL
 
@@ -49,6 +60,8 @@ run_simulator_ui_case() {
   local xcodebuild_log="$TEMP_DIR/${case_name}-xcodebuild.log"
   local xcrun_log="$TEMP_DIR/${case_name}-xcrun.log"
   local output_log="$TEMP_DIR/${case_name}-run.log"
+  local handoff_count_before
+  handoff_count_before="$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")"
   : > "$open_log"
   : > "$xcodebuild_log"
   : > "$xcrun_log"
@@ -77,6 +90,9 @@ run_simulator_ui_case() {
   assert_contains "$(cat "$xcrun_log")" \
     "simctl launch --terminate-running-process M5-27-UDID com.gaixianggeng.mimi" \
     "Simulator run（${case_name}）必须继续启动 App"
+  assert_equal "$handoff_count_before" \
+    "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+    "Simulator run（${case_name}）不得进入真机 GUI runner"
   SIMULATOR_UI_OPEN_LOG="$open_log"
   SIMULATOR_UI_OUTPUT_LOG="$output_log"
 }
@@ -138,6 +154,8 @@ assert_contains "$m5_26_derived" "dev-simulator-derived/M5-26-UDID" \
   "旧 Runtime 的同名 M5 必须使用自己的 DerivedData"
 assert_contains "$m5_27_derived" "dev-simulator-derived/M5-27-UDID" \
   "新 Runtime 的同名 M5 必须使用自己的 DerivedData"
+assert_contains "$m5_27_derived" "$MIMI_DEVELOPMENT_CACHE_ROOT/" \
+  "不同 Worktree 必须使用仓库外的共享 DerivedData 根目录"
 [[ "$m5_26_derived" != "$m5_27_derived" ]] \
   || fail "不同 Runtime 的同名 M5 不得共用 DerivedData"
 
@@ -205,26 +223,121 @@ assert_contains "$lease_inventory" "Network iPhone (NETWORK-ONLY-UDID)" \
   "leases 必须展示可达的无线真机"
 assert_contains "$lease_inventory" "connection:  localNetwork" \
   "leases 必须标记无线真机连接方式"
+assert_equal "" "$(cat "$IOS_TEST_TAILCAT_BUILD_LOG")" \
+  "只读 target/destination/leases 不得触发 Tailcat 构建"
 
 : > "$TEMP_DIR/wireless-build-xcodebuild.log"
+: > "$IOS_TEST_GUI_HANDOFF_LOG"
 wireless_build_output="$(
   IOS_TARGET_MODE=device \
   IOS_DEVICE_ID="NETWORK-PRO-UDID" \
   IOS_DEVICE_DERIVED_DATA_PATH="$TEMP_DIR/wireless-derived" \
   IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/wireless-build-xcodebuild.log" \
   IOS_TEST_CREATE_APP=1 \
-  bash "$ROOT_DIR/scripts/ios-dev.sh" build
+  bash "$ROOT_DIR/scripts/ios-dev.sh" build "CUSTOM_FLAG=value with space"
 )"
 assert_contains "$wireless_build_output" "使用已租用本地网络真机：iPad Pro (NETWORK-PRO-UDID)" \
   "显式无线 build 必须进入真机部署链路"
+assert_contains "$(cat "$IOS_TEST_TAILCAT_BUILD_LOG")" "build" \
+  "统一 build 必须先准备 Tailcat iOS 框架"
 assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
   "-destination platform=iOS,id=NETWORK-PRO-UDID" \
   "无线 build 必须把选中 UDID 传入 xcodebuild"
 assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
   "-derivedDataPath $TEMP_DIR/wireless-derived" \
   "无线 build 必须使用该 UDID 的独立 DerivedData"
+assert_equal "$expected_device_handoff_count" \
+  "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "真机 build 必须按当前平台选择 GUI runner 或直接执行"
+if [[ "$expected_device_handoff_count" == "1" ]]; then
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=1" \
+    "真机 build 的 GUI runner 必须保留仅构建语义"
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" $'arg\tCUSTOM_FLAG=value with space' \
+    "GUI runner 必须保留含空格的额外 xcodebuild argv"
+fi
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease" ]] \
   || fail "无线 build 结束后必须释放按 UDID 建立的租约"
+
+: > "$IOS_TEST_GUI_HANDOFF_LOG"
+: > "$TEMP_DIR/device-run-xcodebuild.log"
+: > "$TEMP_DIR/device-run-xcrun.log"
+device_run_output="$(
+  IOS_TARGET_MODE=device \
+  IOS_DEVICE_ID="NETWORK-PRO-UDID" \
+  IOS_DEVICE_DERIVED_DATA_PATH="$TEMP_DIR/device-run-derived" \
+  IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/device-run-xcodebuild.log" \
+  IOS_TEST_XCRUN_LOG="$TEMP_DIR/device-run-xcrun.log" \
+  IOS_TEST_CREATE_APP=1 \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" run
+)"
+assert_contains "$device_run_output" "完成：已构建、安装并启动 com.gaixianggeng.mimi" \
+  "真机 run 必须在 GUI runner 中完成构建、安装和启动"
+assert_contains "$(cat "$IOS_TEST_TAILCAT_BUILD_LOG")" "run" \
+  "统一 run 必须先准备 Tailcat iOS 框架"
+assert_equal "$expected_device_handoff_count" \
+  "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "真机 run 必须按当前平台选择 GUI runner 或直接执行"
+if [[ "$expected_device_handoff_count" == "1" ]]; then
+  assert_contains "$(cat "$IOS_TEST_GUI_HANDOFF_LOG")" "SKIP_INSTALL=0" \
+    "真机 run 不得丢失安装语义"
+fi
+assert_contains "$(cat "$TEMP_DIR/device-run-xcrun.log")" \
+  "devicectl device install app --device NETWORK-PRO-UDID" \
+  "真机 run 必须安装到选中的同一 UDID"
+assert_contains "$(cat "$TEMP_DIR/device-run-xcrun.log")" \
+  "devicectl device process launch --device NETWORK-PRO-UDID" \
+  "真机 run 必须启动选中设备上的 App"
+
+: > "$IOS_TEST_GUI_HANDOFF_LOG"
+device_failure_output="$TEMP_DIR/device-build-failure.log"
+set +e
+IOS_TARGET_MODE=device \
+IOS_DEVICE_ID="NETWORK-PRO-UDID" \
+IOS_DEVICE_DERIVED_DATA_PATH="$TEMP_DIR/device-failure-derived" \
+IOS_TEST_XCODEBUILD_EXIT_CODE=65 \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$device_failure_output" 2>&1
+device_failure_status=$?
+set -e
+assert_equal "65" "$device_failure_status" \
+  "GUI runner 必须原样返回真机 xcodebuild 失败码"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease" ]] \
+  || fail "GUI runner 失败后必须释放真机租约"
+
+: > "$IOS_TEST_GUI_HANDOFF_LOG"
+IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/no-physical-devices.json" \
+IOS_TARGET_MODE=simulator \
+IOS_SIMULATOR_ID="M5-27-UDID" \
+IOS_DERIVED_DATA_PATH="$TEMP_DIR/simulator-no-handoff-derived" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build >/dev/null
+assert_equal "0" "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "Simulator build 不得进入真机 GUI runner"
+
+bash "$ROOT_DIR/scripts/ios-dev.sh" build-for-testing >/dev/null
+assert_equal "0" "$(awk '$0 == "handoff" { count += 1 } END { print count + 0 }' "$IOS_TEST_GUI_HANDOFF_LOG")" \
+  "build-for-testing 不得进入真机 GUI runner"
+bash "$ROOT_DIR/scripts/ios-dev.sh" test -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests >/dev/null
+for tailcat_action in build-for-testing test; do
+  assert_contains "$(cat "$IOS_TEST_TAILCAT_BUILD_LOG")" "$tailcat_action" \
+    "统一 ${tailcat_action} 必须先准备 Tailcat iOS 框架"
+done
+
+: > "$TEMP_DIR/tailcat-failure-xcodebuild.log"
+tailcat_failure_output="$TEMP_DIR/tailcat-failure.log"
+set +e
+IOS_TEST_TAILCAT_BUILD_EXIT_CODE=86 \
+IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/tailcat-failure-xcodebuild.log" \
+IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/no-physical-devices.json" \
+IOS_TARGET_MODE=simulator \
+IOS_SIMULATOR_ID="M5-27-UDID" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$tailcat_failure_output" 2>&1
+tailcat_failure_status=$?
+set -e
+assert_equal "86" "$tailcat_failure_status" \
+  "Tailcat iOS 框架准备失败时必须原样终止统一构建"
+assert_equal "" "$(cat "$TEMP_DIR/tailcat-failure-xcodebuild.log")" \
+  "Tailcat 准备失败后不得继续调用 xcodebuild"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] \
+  || fail "Tailcat 准备失败后必须释放设备租约"
 
 duplicate_target="$(
   IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/duplicate-device-transports.json" \

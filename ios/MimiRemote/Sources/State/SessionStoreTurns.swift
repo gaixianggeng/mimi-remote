@@ -370,6 +370,11 @@ extension SessionStore {
                 authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems,
                 timelineMutationKind: .prepend
             )
+            conversationStore.reconcileUncertainGuidedMessages(
+                sessionID: session.id,
+                authoritativeHistory: page.messages,
+                historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
+            )
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(
                 sessionID: session.id,
@@ -377,6 +382,7 @@ extension SessionStore {
                 requestedCursor: cursor,
                 preserveExistingCursorOnEmptyPage: false
             )
+            historySessionsWithAdditionalPages.insert(session.id)
             appendHistoryItemEnrichment(page: page, sessionID: session.id)
             setErrorMessage(nil)
         } catch {
@@ -933,6 +939,11 @@ extension SessionStore {
                 setErrorMessage(L10n.text("ui.failed_to_guide_conversation_there_is_no_active"))
                 return false
             }
+            conversationStore.bindTurnID(
+                activeTurnID,
+                clientMessageID: clientMessageID,
+                sessionID: session.id
+            )
             let didAcceptLocally = socket.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: activeTurnID)
             guard didAcceptLocally else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
@@ -1332,6 +1343,7 @@ extension SessionStore {
         }
 #endif
         invalidatePreparedConnectionChange()
+        cancelAllTurnCompletionReconciliations()
         isAppInBackground = true
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
@@ -1380,6 +1392,7 @@ extension SessionStore {
             return
         }
 #endif
+        guard !Task.isCancelled else { return }
         isAppInBackground = false
         // 不用常驻 timer：App 每次回前台同步清理已触发提醒，离线或未配置时也能保持本地状态准确。
         reloadSessionReminders()
@@ -1403,9 +1416,18 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
             return
         }
+        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
+            // 后台挂起前收到最终回答时，turn/completed 可能落在断线窗口。先重启轻量
+            // 最新 Turn 对账，与前台刷新并行；精确终态会保护后续陈旧 running 列表。
+            resumeTurnCompletionReconciliationIfNeeded(
+                sessionID: reconnectSessionID,
+                hostScope: foregroundSelectionLease.hostScope
+            )
+        }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: false)
+        guard !Task.isCancelled, !isAppInBackground else { return }
         var didReconcileFullHistory = false
         if let reconnectSessionID, selectedSessionID == reconnectSessionID {
             didReconcileFullHistory = await reconcileHistoryForRecovery(
@@ -1413,6 +1435,7 @@ extension SessionStore {
                 generation: recoveryGeneration
             )
         }
+        guard !Task.isCancelled, !isAppInBackground else { return }
         ensureAllQueuedSessionMonitoring()
 
         guard connectionTermination == nil,

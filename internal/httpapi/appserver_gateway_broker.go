@@ -30,9 +30,7 @@ const (
 	// 同时常驻的 broker 上限。每个 broker 占一条上游连接，必须小于网关连接上限。
 	codexGatewayBrokerMax = 4
 	// 重连时重放的待审批请求条数上限。审批帧本身很小，这里限制的是异常上游的洪水。
-	codexGatewayBrokerReplayMax = 32
-	// 单条待重放帧的大小上限。超过它的审批请求不缓存，重连后由权威历史补齐。
-	codexGatewayBrokerFrameMaxBytes = 128 * 1024
+	codexGatewayBrokerReplayMax     = 32
 	codexGatewayBrokerSweepInterval = 30 * time.Second
 )
 
@@ -98,6 +96,9 @@ type codexGatewayBroker struct {
 	// pending 保存待审批反向请求原帧，pendingOrder 维持到达顺序，重连按序重放。
 	pending      map[string][]byte
 	pendingOrder []string
+	// pendingBytes 与 gateway 的单帧读取上限共享一份总预算。这样任意一条合法
+	// 审批帧都能重放，同时多条大请求不会把缓存放大到 ReplayMax 倍。
+	pendingBytes int64
 	// pendingDelivered 记录某条待审批最后送达的 sink。attach 重放与实时泵送共享
 	// 这份状态，保证换连接窗口内既不漏帧，也不把同一帧重复交给新 sink。
 	pendingDelivered map[string]*codexGatewaySink
@@ -184,6 +185,10 @@ func (r *Router) registerCodexGatewayBroker(
 		r.codexBrokerMu.Unlock()
 		evicted.close("broker_evicted")
 		r.codexBrokerMu.Lock()
+	}
+	if r.codexBrokersClosing {
+		r.codexBrokerMu.Unlock()
+		return nil
 	}
 	brokerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	broker := &codexGatewayBroker{
@@ -384,8 +389,7 @@ func (b *codexGatewayBroker) replayFramesLocked(sink *codexGatewaySink) [][]byte
 		}
 		id := json.RawMessage(key)
 		if _, stillPending := b.policy.pendingServerRequest(&id); !stillPending {
-			delete(b.pending, key)
-			delete(b.pendingDelivered, key)
+			b.removePendingLocked(key)
 			continue
 		}
 		kept = append(kept, key)
@@ -504,6 +508,7 @@ func (b *codexGatewayBroker) close(reason string) {
 	b.sink = nil
 	b.pending = map[string][]byte{}
 	b.pendingOrder = nil
+	b.pendingBytes = 0
 	b.pendingDelivered = map[string]*codexGatewaySink{}
 	b.mu.Unlock()
 
@@ -781,7 +786,9 @@ func (b *codexGatewayBroker) forgetStartingTurnByRequest(id *json.RawMessage) {
 // 返回 true 表示这是一条新的待审批请求，值得提醒用户。
 func (b *codexGatewayBroker) rememberServerRequestFrame(id *json.RawMessage, payload []byte) bool {
 	key := gatewayRequestIDKey(id)
-	if key == "" || len(payload) > codexGatewayBrokerFrameMaxBytes {
+	// configureGatewayReadConn 已经用同一上限约束上游。这里再次检查，避免直接
+	// 调用或未来改动绕过有界缓存。
+	if key == "" || int64(len(payload)) > appServerGatewayReadLimit {
 		return false
 	}
 	frame := make([]byte, len(payload))
@@ -791,19 +798,45 @@ func (b *codexGatewayBroker) rememberServerRequestFrame(id *json.RawMessage, pay
 	if b.closed {
 		return false
 	}
-	_, exists := b.pending[key]
+	previous, exists := b.pending[key]
+	previousBytes := int64(len(previous))
+	for b.pendingBytes-previousBytes+int64(len(frame)) > appServerGatewayReadLimit {
+		oldestIndex := 0
+		if exists && len(b.pendingOrder) > 0 && b.pendingOrder[0] == key {
+			oldestIndex = 1
+		}
+		if oldestIndex >= len(b.pendingOrder) {
+			// payload 自身不超过上限；只有损坏的内部计数才可能走到这里。
+			return false
+		}
+		oldest := b.pendingOrder[oldestIndex]
+		b.pendingOrder = append(b.pendingOrder[:oldestIndex], b.pendingOrder[oldestIndex+1:]...)
+		b.removePendingLocked(oldest)
+	}
 	if !exists {
 		if len(b.pendingOrder) >= codexGatewayBrokerReplayMax {
 			// 丢最旧的一条而不是拒绝新的：最近的审批请求才是用户要处理的那条。
 			oldest := b.pendingOrder[0]
 			b.pendingOrder = b.pendingOrder[1:]
-			delete(b.pending, oldest)
-			delete(b.pendingDelivered, oldest)
+			b.removePendingLocked(oldest)
 		}
 		b.pendingOrder = append(b.pendingOrder, key)
 	}
 	b.pending[key] = frame
+	b.pendingBytes += int64(len(frame)) - previousBytes
 	return !exists
+}
+
+// removePendingLocked 统一维护 map 与字节计数。调用方负责从 pendingOrder 移除 key。
+func (b *codexGatewayBroker) removePendingLocked(key string) {
+	if frame, ok := b.pending[key]; ok {
+		b.pendingBytes -= int64(len(frame))
+		if b.pendingBytes < 0 {
+			b.pendingBytes = 0
+		}
+	}
+	delete(b.pending, key)
+	delete(b.pendingDelivered, key)
 }
 
 func serverRequestFrameKey(payload []byte) string {
@@ -823,8 +856,7 @@ func (b *codexGatewayBroker) prunePendingLocked() {
 	for _, key := range b.pendingOrder {
 		id := json.RawMessage(key)
 		if _, stillPending := b.policy.pendingServerRequest(&id); !stillPending {
-			delete(b.pending, key)
-			delete(b.pendingDelivered, key)
+			b.removePendingLocked(key)
 			continue
 		}
 		kept = append(kept, key)

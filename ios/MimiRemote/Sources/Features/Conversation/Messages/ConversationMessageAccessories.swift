@@ -338,6 +338,8 @@ struct RuntimeSummaryCard: View {
             return L10n.text("ui.waiting_for_additional_information")
         case .error:
             return L10n.text("ui.abnormal_operation")
+        case .warning:
+            return L10n.text("ui.run_warning")
         case .message:
             return L10n.text("ui.status")
         }
@@ -370,6 +372,8 @@ struct RuntimeSummaryCard: View {
             return "questionmark.bubble"
         case .error:
             return "exclamationmark.triangle"
+        case .warning:
+            return "exclamationmark.triangle"
         case .message:
             return "info.circle"
         }
@@ -401,6 +405,8 @@ struct RuntimeSummaryCard: View {
             return tokens.accent
         case .error:
             return .red
+        case .warning:
+            return tokens.warning
         case .fileChangeSummary:
             return tokens.accent
         default:
@@ -434,6 +440,8 @@ struct RuntimeSummaryCard: View {
             return tokens.warning.opacity(0.12)
         case .error:
             return Color.red.opacity(0.10)
+        case .warning:
+            return tokens.warning.opacity(0.12)
         case .fileChangeSummary:
             return tokens.accent.opacity(0.10)
         default:

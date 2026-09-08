@@ -700,22 +700,39 @@ extension SessionStore {
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.parse_historical_messages"), fraction: 0.74)
         }
+        if !conversationStore.hasLoadedHistory(sessionID: sessionID) {
+            // ConversationStore 会独立按 LRU 淘汰正文。正文不存在时，SessionStore 中残留的
+            // 深层 cursor 或 exhausted 状态已经失去对应时间线，必须让新首屏重建分页基线。
+            historySessionsWithAdditionalPages.remove(sessionID)
+            historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
+            historyHasMoreBeforeBySessionID.removeValue(forKey: sessionID)
+            historySeenPreviousCursorsBySessionID.removeValue(forKey: sessionID)
+        }
         applyHistoryFirstPage(result.page, sessionID: sessionID)
         if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.update_interface"), fraction: 0.94)
         }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
+        // full 页自带 notice 只有一种成因：本页 Turn 需要补 Item，而当前 runtime 没有
+        // thread/items/list。这时快照不完整，既不能标 .full 也不能清掉提示。
+        let pageReportsIncompleteItems = !(result.page.notice ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
         if job.loadMode == .economy {
             historyLoadedQualityBySessionID[sessionID] = .summary
-        } else if result.page.itemContinuations.isEmpty {
-            historyLoadedQualityBySessionID[sessionID] = .full
-        } else {
+        } else if !result.page.itemContinuations.isEmpty {
             historyLoadedQualityBySessionID[sessionID] = .enriching
+        } else if pageReportsIncompleteItems {
+            historyLoadedQualityBySessionID[sessionID] = .summary
+        } else {
+            historyLoadedQualityBySessionID[sessionID] = .full
         }
         if job.loadMode == .full {
             deferredFullHistorySessionIDs.remove(sessionID)
-            historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            if !pageReportsIncompleteItems {
+                historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            }
         } else if !effectiveQuiet {
             setHistoryLoadNotice(
                 sessionID: sessionID,
@@ -1234,6 +1251,11 @@ extension SessionStore {
             sessionID: sessionID,
             authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
         )
+        conversationStore.reconcileUncertainGuidedMessages(
+            sessionID: sessionID,
+            authoritativeHistory: page.messages,
+            historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
+        )
         reconcilePendingPermissionTurnBoundaries(
             sessionID: sessionID,
             historyMessages: page.messages
@@ -1243,8 +1265,9 @@ extension SessionStore {
     }
 
     func updateHistorySavingsNotice(sessionID: SessionID, page: HistoryMessagesPage) {
-        guard page.loadMode == .economy,
-              let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
+        // full 页也可能带 notice：runtime 缺少 thread/items/list 时首屏内容确实补不齐。
+        // 是否提示只看 page.notice 本身，不再由 loadMode 反推。
+        guard let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
               !notice.isEmpty
         else {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
@@ -1366,7 +1389,8 @@ extension SessionStore {
                 workspace: workspace,
                 page: page,
                 consistency: consistency,
-                requestedCursor: result.requestedCursor
+                requestedCursor: result.requestedCursor,
+                requestLineage: result.requestLineage
             )
             if updateStatusMessage, canReportForeground() {
                 setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
@@ -1399,23 +1423,57 @@ extension SessionStore {
 
     func sessionLibraryPage(
         workspace: AgentWorkspace,
+        runtimeProvider: String = "codex",
         consistency: SessionListConsistency = .fastIndexed,
+        restartFromFirst: Bool = false,
         client: (any SessionStoreAPIClient)? = nil,
         hostScope: HostScope? = nil
-    ) async -> (workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?) {
+    ) async -> (
+        workspace: AgentWorkspace,
+        page: SessionsPage?,
+        requestedCursor: String?,
+        requestLineage: UUID?
+    ) {
         let hostRequestStartedAt = sessionListNow()
         do {
-            let result = try await sessionListFirstPage(
-                workspace: workspace,
-                limit: Self.initialSessionPageLimit,
-                reuseRecent: consistency == .fastIndexed,
-                consistency: consistency,
-                source: .libraryIndex,
-                client: client,
-                hostScope: hostScope
-            )
+            let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
+            let result: SessionListFirstPageResult
+            if normalizedRuntime == "codex" {
+                result = try await sessionListFirstPage(
+                    workspace: workspace,
+                    limit: Self.initialSessionPageLimit,
+                    reuseRecent: consistency == .fastIndexed,
+                    consistency: consistency,
+                    source: .libraryIndex,
+                    restartFromFirst: restartFromFirst,
+                    client: client,
+                    hostScope: hostScope
+                )
+            } else {
+                let resolvedClient: any SessionStoreAPIClient
+                if let client {
+                    resolvedClient = client
+                } else {
+                    resolvedClient = try clientFactory()
+                }
+                let page = try await sessionListPageFillingPresentationWindow(
+                    client: resolvedClient,
+                    workspace: workspace,
+                    runtimeProvider: normalizedRuntime,
+                    cursor: nil,
+                    limit: Self.initialSessionPageLimit,
+                    consistency: consistency,
+                    source: .libraryIndex,
+                    expectedHostScope: hostScope ?? appStore.activeHostScope
+                )
+                result = SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: nil,
+                    requestLineage: nil
+                )
+            }
             recordCarStatusHostObservation(at: sessionListNow())
-            return (workspace, result.page, result.requestedCursor)
+            return (workspace, result.page, result.requestedCursor, result.requestLineage)
         } catch {
             if !isCancellationError(error) {
                 if Self.carStatusHostDidRespond(to: error) {
@@ -1425,24 +1483,47 @@ extension SessionStore {
                 }
             }
             // 某个最近工作区失效不能阻断整个会话库；该项目仍可在工作区页单独重试。
-            return (workspace, nil, nil)
+            return (workspace, nil, nil, nil)
         }
     }
 
     func mergeSessionLibraryPages(
-        _ results: [(workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?)],
+        _ results: [(
+            workspace: AgentWorkspace,
+            page: SessionsPage?,
+            requestedCursor: String?,
+            requestLineage: UUID?
+        )],
         generation: Int,
-        consistency: SessionListConsistency = .fastIndexed
+        consistency: SessionListConsistency = .fastIndexed,
+        runtimeProvider: String = "codex",
+        restartsFromFirst: Bool = false
     ) {
         guard generation == appStore.connectionGeneration else { return }
+        let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
         for result in results {
             guard let page = result.page,
                   isCurrentWorkspaceIdentity(result.workspace) else { continue }
-            if consistency == .authoritative,
+            if let requestLineage = result.requestLineage,
+               !isCurrentSessionListRequestLineage(
+                   requestLineage,
+                   workspace: result.workspace
+               ) {
+                continue
+            }
+            if normalizedRuntime == "codex",
+               consistency == .authoritative,
+               !restartsFromFirst,
                authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: result.workspace)
                 != result.requestedCursor {
                 continue
             }
+            recordWorkspaceDirectorySessionPage(
+                page.sessions,
+                in: result.workspace,
+                runtimeProvider: runtimeProvider,
+                replacing: consistency == .authoritative && result.requestedCursor == nil
+            )
             let pageSessions = sessions(page.sessions, in: result.workspace)
             if consistency == .fastIndexed {
                 mergeFastIndexedSessionPagePreservingAuthoritativeFields(
@@ -1453,17 +1534,19 @@ extension SessionStore {
                 // 新一轮权威刷新必须能修正旧权威数据；只有弱一致性页需要降级保护。
                 mergeSessionPage(pageSessions)
             }
-            updateWorkspaceSessionFirstPageState(
-                workspace: result.workspace,
-                page: page,
-                consistency: consistency,
-                requestedCursor: result.requestedCursor
-            )
-            recordWorkspaceSessionFirstPageCompletion(
-                workspace: result.workspace,
-                page: page,
-                consistency: consistency
-            )
+            if normalizedRuntime == "codex" {
+                updateWorkspaceSessionFirstPageState(
+                    workspace: result.workspace,
+                    page: page,
+                    consistency: consistency,
+                    requestedCursor: result.requestedCursor
+                )
+                recordWorkspaceSessionFirstPageCompletion(
+                    workspace: result.workspace,
+                    page: page,
+                    consistency: consistency
+                )
+            }
             clearWorkspaceUnavailable(result.workspace.id)
         }
     }
@@ -1477,6 +1560,27 @@ extension SessionStore {
             workspaceID: workspace.id,
             workspacePath: standardizedSessionListPath(workspace.path)
         )
+    }
+
+    func currentSessionListRequestLineage(
+        workspace: AgentWorkspace,
+        hostScope: HostScope
+    ) -> UUID {
+        let key = workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        if sessionListRequestLineageByWorkspaceKey[key] == nil {
+            sessionListRequestLineageByWorkspaceKey[key] = UUID()
+        }
+        return sessionListRequestLineageByWorkspaceKey[key]!
+    }
+
+    func isCurrentSessionListRequestLineage(
+        _ lineage: UUID,
+        workspace: AgentWorkspace,
+        hostScope: HostScope? = nil
+    ) -> Bool {
+        sessionListRequestLineageByWorkspaceKey[
+            workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        ] == lineage
     }
 
     /// 任何跨 await 的工作区列表结果在提交前都要重新确认身份。
@@ -1693,16 +1797,30 @@ extension SessionStore {
         page: SessionsPage,
         consistency: SessionListConsistency,
         requestedCursor: String? = nil,
-        preserveAllLoaded: Bool = false
+        preserveAllLoaded: Bool = false,
+        restartsFromFirst: Bool = false,
+        requestLineage: UUID? = nil
     ) -> Bool {
         guard isCurrentWorkspaceIdentity(workspace) else { return false }
+        // 新首屏开始后，旧后台快速页也不能复活已从目录移除的成员。
+        if let requestLineage,
+           !isCurrentSessionListRequestLineage(requestLineage, workspace: workspace) {
+            return false
+        }
         if consistency == .authoritative,
+           !restartsFromFirst,
            authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: workspace)
             != requestedCursor {
             // 同 cursor waiter 的旧结果允许首个提交者推进；其余 waiter 若观察到进度已改变，
             // 必须丢弃，不能把 completion 或 opaque cursor 倒回上一批。
             return false
         }
+        recordWorkspaceDirectorySessionPage(
+            page.sessions,
+            in: workspace,
+            runtimeProvider: "codex",
+            replacing: consistency == .authoritative && requestedCursor == nil
+        )
         let pageSessions = sessions(page.sessions, in: workspace)
         let presentationWindowComplete = isWorkspaceSessionPresentationWindowComplete(
             workspace: workspace,
@@ -1754,6 +1872,7 @@ extension SessionStore {
         reuseRecent: Bool,
         consistency: SessionListConsistency = .fastIndexed,
         source: SessionListRequestSource,
+        restartFromFirst: Bool = false,
         client fixedClient: (any SessionStoreAPIClient)? = nil,
         hostScope expectedHostScope: HostScope? = nil
     ) async throws -> SessionListFirstPageResult {
@@ -1762,7 +1881,11 @@ extension SessionStore {
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
             throw CancellationError()
         }
-        let authoritativeProgress = consistency == .authoritative
+        var requestLineage = currentSessionListRequestLineage(
+            workspace: workspace,
+            hostScope: hostScope
+        )
+        let authoritativeProgress = consistency == .authoritative && !restartFromFirst
             ? authoritativeWorkspaceSessionFirstPageProgress(
                 workspace: workspace,
                 hostScope: hostScope
@@ -1789,7 +1912,11 @@ extension SessionStore {
                     count: page.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: key.cursor,
+                    requestLineage: inFlight.requestLineage
+                )
             }
 
             let matchesCurrentWorkspace: (SessionListFirstPageRequestKey) -> Bool = { candidate in
@@ -1812,6 +1939,28 @@ extension SessionStore {
                 retireSessionListFirstPageInFlight(
                     key: weakerInFlight.key,
                     id: weakerInFlight.value.id
+                )
+                guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                      !Task.isCancelled else {
+                    throw CancellationError()
+                }
+                continue
+            }
+
+            if consistency == .authoritative,
+               restartFromFirst,
+               let continuationInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
+                   matchesCurrentWorkspace(entry.key)
+                       && entry.key.consistency == .authoritative
+                       && entry.key.cursor != nil
+               }) {
+                // 用户主动刷新必须从 nil 首屏开始，但仍要先排空正在执行的 continuation，
+                // 避免同一工作区并发两条 thread/list cursor 链。
+                continuationInFlight.value.traversalControl.stopAfterCurrentPage()
+                _ = try? await continuationInFlight.value.task.value
+                retireSessionListFirstPageInFlight(
+                    key: continuationInFlight.key,
+                    id: continuationInFlight.value.id
                 )
                 guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
                       !Task.isCancelled else {
@@ -1859,7 +2008,11 @@ extension SessionStore {
                     count: page.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: key.cursor,
+                    requestLineage: largerInFlight.requestLineage
+                )
             }
             break
         }
@@ -1876,7 +2029,11 @@ extension SessionStore {
                 count: cached.page.sessions.count,
                 duration: sessionListNow().timeIntervalSince(requestStartedAt)
             )
-            return SessionListFirstPageResult(page: cached.page, requestedCursor: key.cursor)
+            return SessionListFirstPageResult(
+                page: cached.page,
+                requestedCursor: key.cursor,
+                requestLineage: requestLineage
+            )
         }
 
         if let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
@@ -1891,7 +2048,11 @@ extension SessionStore {
                     count: stale.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: stale, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: stale,
+                    requestedCursor: key.cursor,
+                    requestLineage: requestLineage
+                )
             }
             // 冷启动或精确刷新等待窗口并继续请求，保证首屏最终自动恢复。
             await sessionListSleep(cooldownDelay)
@@ -1908,6 +2069,15 @@ extension SessionStore {
             sessionsByID[$0]
         } ?? []
         let requestID = UUID()
+        if restartFromFirst {
+            // 只有真正创建新的 nil 首屏任务时才换代；并发手动刷新若加入同一任务，
+            // 会在上面的 exact in-flight 分支复用同一 lineage，不会让 owner 失效。
+            requestLineage = UUID()
+            sessionListRequestLineageByWorkspaceKey[
+                workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+            ] = requestLineage
+        }
+        let traversalControl = SessionListFirstPageTraversalControl()
         let task = Task {
             try await sessionListPageFillingPresentationWindow(
                 client: client,
@@ -1919,12 +2089,15 @@ extension SessionStore {
                 source: source,
                 expectedHostScope: hostScope,
                 initialSessions: presentationSeedSessions,
-                fillsPresentationWindow: consistency == .authoritative
+                fillsPresentationWindow: consistency == .authoritative,
+                isRequestCurrent: { traversalControl.shouldContinue }
             )
         }
         sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(
             id: requestID,
-            task: task
+            task: task,
+            traversalControl: traversalControl,
+            requestLineage: requestLineage
         )
         do {
             let page = try await task.value
@@ -1953,7 +2126,11 @@ extension SessionStore {
                 count: page.sessions.count,
                 duration: sessionListNow().timeIntervalSince(requestStartedAt)
             )
-            return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+            return SessionListFirstPageResult(
+                page: page,
+                requestedCursor: key.cursor,
+                requestLineage: requestLineage
+            )
         } catch {
             retireSessionListFirstPageInFlight(key: key, id: requestID)
             if let policyFailure = sessionListPolicyFailure(from: error) {
@@ -2018,6 +2195,8 @@ extension SessionStore {
                 fillsPresentationWindow: fillsPresentationWindow,
                 allowsAdaptiveOversampling: consistency == .authoritative
             )
+            let archiveSnapshot = archiveReconciliationSnapshot(consistency: consistency)
+            let pageStartedAt = ProcessInfo.processInfo.systemUptime
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
@@ -2025,11 +2204,13 @@ extension SessionStore {
                 limit: rawPageLimit,
                 consistency: consistency
             )
+            SessionListDiagnostics.refreshStage("page_received", startedAt: pageStartedAt, source: source)
             try Task.checkCancellation()
             guard isCurrentWorkspaceIdentity(workspace, hostScope: expectedHostScope),
                   isRequestCurrent?() != false else {
                 throw CancellationError()
             }
+            reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
             pagesScanned += 1
             lastPage = page
 
@@ -2650,6 +2831,12 @@ extension SessionStore {
     ) {
         recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
         if requestedCursor == nil {
+            if historySessionsWithAdditionalPages.contains(sessionID),
+               historyHasMoreBeforeBySessionID[sessionID] != nil {
+                // 用户已经翻到更深窗口后，首屏刷新只合并最新内容。不能让滑出首屏的
+                // 有效历史消失，也不能用首屏 cursor 覆盖深层或已耗尽的分页状态。
+                return
+            }
             if let cursor = page.previousCursor, page.hasMoreBefore {
                 historyPreviousCursorBySessionID[sessionID] = cursor
                 historyHasMoreBeforeBySessionID[sessionID] = true
@@ -3395,6 +3582,7 @@ extension SessionStore {
         historyPreviousCursorBySessionID = historyPreviousCursorBySessionID.filter { validSessionIDs.contains($0.key) }
         historyHasMoreBeforeBySessionID = historyHasMoreBeforeBySessionID.filter { validSessionIDs.contains($0.key) }
         historySeenPreviousCursorsBySessionID = historySeenPreviousCursorsBySessionID.filter { validSessionIDs.contains($0.key) }
+        historySessionsWithAdditionalPages.formIntersection(validSessionIDs)
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }
@@ -3423,6 +3611,12 @@ extension SessionStore {
         initialHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
         missingRunningSessionStateByID = missingRunningSessionStateByID.filter { sessionID, _ in
             validSessionIDs.contains(sessionID) || missingRunningSessionReconciliationTasksByID[sessionID] != nil
+        }
+        let staleTurnCompletionReconciliationIDs = turnCompletionReconciliationJobsBySessionID.keys.filter {
+            !validSessionIDs.contains($0)
+        }
+        for sessionID in staleTurnCompletionReconciliationIDs {
+            cancelTurnCompletionReconciliation(sessionID: sessionID)
         }
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)

@@ -245,6 +245,7 @@ final class ProtocolContractTests: XCTestCase {
             Set(fixture.webSocket.serverRequestMethods),
             [
                 "item/commandExecution/requestApproval",
+                "item/tool/call",
                 "item/tool/requestUserInput",
             ]
         )
@@ -256,6 +257,34 @@ final class ProtocolContractTests: XCTestCase {
 
     private func decodeVersionFixture(_ name: String) throws -> VersionResponse {
         try AgentAPIClient.decoder.decode(VersionResponse.self, from: fixtureData(name))
+    }
+
+    func testMimiTaskDynamicToolsUseCanonicalNamespaceShapeOnlyOnCodexThreadStart() throws {
+        let project = AgentProject(id: "project", name: "Project", path: "/tmp/project")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let start = try builder.threadStart(projectID: project.id)
+        let namespaces = try XCTUnwrap(start.params?.objectValue?["dynamicTools"]?.arrayValue)
+        XCTAssertEqual(namespaces.count, 1)
+        let namespace = try XCTUnwrap(namespaces.first?.objectValue)
+        XCTAssertEqual(namespace["type"]?.stringValue, "namespace")
+        XCTAssertEqual(namespace["name"]?.stringValue, "mimi_tasks")
+        let tools = try XCTUnwrap(namespace["tools"]?.arrayValue)
+        XCTAssertEqual(
+            tools.compactMap { $0.objectValue?["name"]?.stringValue },
+            ["create_thread", "list_threads", "read_thread", "send_message_to_thread", "wait_threads"]
+        )
+        XCTAssertTrue(tools.allSatisfy {
+            $0.objectValue?["type"]?.stringValue == "function"
+                && $0.objectValue?["inputSchema"]?.objectValue?["additionalProperties"]?.boolValue == false
+        })
+
+        let resume = try builder.threadResume(threadID: "thread", projectID: project.id)
+        XCTAssertNil(resume.params?.objectValue?["dynamicTools"])
+        var claude = CodexAppServerTurnOptions.default
+        claude.runtimeProvider = "claude"
+        let claudeStart = try builder.threadStart(projectID: project.id, options: claude)
+        XCTAssertNil(claudeStart.params?.objectValue?["dynamicTools"])
     }
 
     private func fixtureData(_ name: String) throws -> Data {

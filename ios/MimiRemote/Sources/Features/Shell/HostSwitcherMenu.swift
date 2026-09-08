@@ -388,18 +388,29 @@ struct HostSwitcherMenu: View {
 }
 
 /// 三个平台图标保持相同的视觉盒，连接状态由调用方独立表达。
-/// 品牌平台使用自己的固定色，只有未知平台继续继承调用方的前景色。
+/// 默认使用品牌色；设置行可切成单色并继承调用方前景色，但继续复用相同轮廓和比例。
 struct HostPlatformGlyph: View {
     let kind: HostPlatformIconKind
     let size: CGFloat
+    let monochrome: Bool
 
-    init(kind: HostPlatformIconKind, size: CGFloat = 18) {
+    init(kind: HostPlatformIconKind, size: CGFloat = 18, monochrome: Bool = false) {
         self.kind = kind
         self.size = size
+        self.monochrome = monochrome
     }
 
     @ViewBuilder
     private var glyph: some View {
+        if monochrome {
+            monochromeGlyph
+        } else {
+            brandedGlyph
+        }
+    }
+
+    @ViewBuilder
+    private var brandedGlyph: some View {
         switch kind {
         case .apple:
             AppleRainbowMark(size: size * 8 / 9)
@@ -412,6 +423,33 @@ struct HostPlatformGlyph: View {
             Image(systemName: "desktopcomputer")
                 .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
                 .symbolRenderingMode(.hierarchical)
+        }
+    }
+
+    @ViewBuilder
+    private var monochromeGlyph: some View {
+        switch kind {
+        case .apple:
+            Image(systemName: "apple.logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: size * 8 / 9, height: size * 8 / 9)
+        case .windows11:
+            Rectangle()
+                .mask {
+                    Windows11Mark(spacing: size / 12)
+                }
+                .frame(width: size * 5 / 6, height: size * 5 / 6)
+        case .linuxTux:
+            Image("LinuxTux")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .frame(width: size * 17 / 18, height: size)
+        case .genericComputer:
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
+                .symbolRenderingMode(.monochrome)
         }
     }
 

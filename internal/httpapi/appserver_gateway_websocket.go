@@ -133,6 +133,7 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 	policyStart := time.Now()
 	forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
 	policyDuration := time.Since(policyStart)
+	monitor.logSessionListStage(payload, "request_policy", policyDuration)
 	if policyErr != nil {
 		monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
 		if policyErr.historyBudgetRejected {
@@ -167,7 +168,9 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 		monitor.cancelRPCRequest(requestID)
 		return gatewayCloseReason("upstream_write", err), true
 	}
-	monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
+	writeDuration := time.Since(writeStart)
+	monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, writeDuration, forwardPayload)
+	monitor.logSessionListStage(forwardPayload, "upstream_written", writeDuration)
 	r.scheduleAutoThreadTitleFromMessage(forwardPayload, policy, func(threadID string, title string) {
 		// thread/name/set 由独立 loopback 连接执行，它产生的 notification 只回到
 		// 那条连接；这里给发起会话的移动端补发同形通知，让 UI 无需轮询即可更新。
@@ -197,9 +200,11 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		if err != nil {
 			return gatewayCloseReason("upstream_read", err)
 		}
+		monitor.logSessionListStage(payload, "upstream_received", 0)
 		policyStart := time.Now()
 		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
 		policyDuration := time.Since(policyStart)
+		monitor.logSessionListStage(payload, "response_policy", policyDuration)
 		if policyErr != nil {
 			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
 			if policyErr.historyResponseBlocked {
@@ -222,7 +227,9 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		if err := writeWebSocketFrame(to, toWriteMu, messageType, forwardPayload); err != nil {
 			return gatewayCloseReason("client_write", err)
 		}
-		monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
+		writeDuration := time.Since(writeStart)
+		monitor.logSessionListStage(payload, "client_written", writeDuration)
+		monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, writeDuration, forwardPayload)
 	}
 }
 

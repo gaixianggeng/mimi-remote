@@ -418,7 +418,10 @@ extension ConversationDataFlowTests {
         )
         XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
 
-        try await store.refreshWorkspaceSessions(projectID: project.id)
+        try await store.refreshWorkspaceSessions(
+            projectID: project.id,
+            restartFromFirst: false
+        )
 
         XCTAssertEqual(client.requestedSessionCursors.count, SessionStore.maximumSessionPresentationFillPageCount)
         XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
@@ -463,7 +466,10 @@ extension ConversationDataFlowTests {
             nextCursor: "fresh-authoritative-cursor",
             hasMore: true
         )
-        try await store.refreshWorkspaceSessions(projectID: project.id)
+        try await store.refreshWorkspaceSessions(
+            projectID: project.id,
+            restartFromFirst: false
+        )
 
         XCTAssertEqual(client.requestedSessionCursors.last, "budget-12", "权威重试必须续跑已保存游标")
         XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "fresh-authoritative-cursor")
@@ -1044,7 +1050,12 @@ extension ConversationDataFlowTests {
 
         store.forgetWorkspace(project)
         store.mergeSessionLibraryPages(
-            [(workspace: workspace, page: SessionsPage(sessions: [lateSession]), requestedCursor: nil)],
+            [(
+                workspace: workspace,
+                page: SessionsPage(sessions: [lateSession]),
+                requestedCursor: nil,
+                requestLineage: nil
+            )],
             generation: store.appStore.connectionGeneration,
             consistency: .authoritative
         )
@@ -1116,7 +1127,8 @@ extension ConversationDataFlowTests {
                     nextCursor: "stale-library-cursor",
                     hasMore: true
                 ),
-                requestedCursor: nil
+                requestedCursor: nil,
+                requestLineage: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .fastIndexed
@@ -1180,7 +1192,8 @@ extension ConversationDataFlowTests {
                     nextCursor: "partial-stale-library-cursor",
                     hasMore: true
                 ),
-                requestedCursor: nil
+                requestedCursor: nil,
+                requestLineage: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .fastIndexed
@@ -1246,7 +1259,8 @@ extension ConversationDataFlowTests {
             [(
                 workspace: workspace,
                 page: SessionsPage(sessions: [newAuthoritative]),
-                requestedCursor: nil
+                requestedCursor: nil,
+                requestLineage: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .authoritative
@@ -1597,7 +1611,10 @@ extension ConversationDataFlowTests {
         )
 
         let authoritative = Task { @MainActor in
-            try await store.refreshWorkspaceSessions(projectID: project.id)
+            try await store.refreshWorkspaceSessions(
+                projectID: project.id,
+                restartFromFirst: false
+            )
         }
         await client.waitForBlockedSessionListRefresh()
         let fastIndexed = Task { @MainActor in

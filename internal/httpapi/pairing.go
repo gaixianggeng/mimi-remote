@@ -16,10 +16,13 @@ const (
 )
 
 type pairingClaimRequest struct {
-	Endpoint  string `json:"endpoint"`
-	IssuedAt  string `json:"issued_at"`
-	ExpiresAt string `json:"expires_at"`
-	Signature string `json:"pair_sig"`
+	Endpoint         string `json:"endpoint"`
+	IssuedAt         string `json:"issued_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Signature        string `json:"pair_sig"`
+	TailcatClientKey string `json:"tailcat_client_key,omitempty"`
+	ManagedSessionID string `json:"managed_pairing_session_id,omitempty"`
+	ManagedGrant     string `json:"managed_pairing_grant,omitempty"`
 }
 
 type pairingClaimResponse struct {
@@ -27,6 +30,7 @@ type pairingClaimResponse struct {
 	Token               string `json:"token"`
 	TailscaleDNSName    string `json:"tailscale_dns_name,omitempty"`
 	TailscaleDeviceName string `json:"tailscale_device_name,omitempty"`
+	TailcatAddress      string `json:"tailcat_address,omitempty"`
 }
 
 func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Request) {
@@ -104,6 +108,46 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	response := pairingClaimResponse{
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
+	}
+	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
+		if r.tailcat == nil {
+			writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
+			return
+		}
+		managedSessionID := strings.TrimSpace(payload.ManagedSessionID)
+		managedGrant := strings.TrimSpace(payload.ManagedGrant)
+		if (managedSessionID == "") != (managedGrant == "") {
+			writeError(w, http.StatusBadRequest, "托管配对会话和授权必须同时提供")
+			return
+		}
+		var status tailcatStatus
+		var err error
+		if managedSessionID != "" {
+			if r.managedPairing == nil {
+				writeError(w, http.StatusServiceUnavailable, "Mimi 托管连接尚未初始化")
+				return
+			}
+			status, err = r.managedPairing.Complete(
+				req.Context(),
+				managedSessionID,
+				managedGrant,
+				publicKey,
+			)
+		} else {
+			status, err = r.tailcat.AllowClient(req.Context(), publicKey)
+		}
+		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "Tailcat 稳定连接尚未就绪")
+			}
+			return
+		}
+		response.TailcatAddress = status.Address
+	} else if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
+		writeError(w, http.StatusBadRequest, "托管配对必须提供 Tailcat 客户端公钥")
+		return
 	}
 	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
 	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。

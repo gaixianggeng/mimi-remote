@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type setupFileTransactionOps struct {
@@ -14,6 +15,78 @@ type setupFileTransactionOps struct {
 	link    func(oldPath string, newPath string) error
 	remove  func(path string) error
 	syncDir func(dir string) error
+}
+
+func writeSetupFilesAtomically(
+	configPath string,
+	tokenPath string,
+	configRaw []byte,
+	tokenRaw []byte,
+	ops setupFileTransactionOps,
+) error {
+	configPath = filepath.Clean(configPath)
+	tokenPath = filepath.Clean(tokenPath)
+	if configPath == tokenPath || (runtime.GOOS == "windows" && strings.EqualFold(configPath, tokenPath)) {
+		return fmt.Errorf("配置文件与 app-server token file 不能使用同一路径")
+	}
+	configExisted, err := regularFileOrMissing(configPath, "配置文件")
+	if err != nil {
+		return err
+	}
+	tokenExisted, err := regularFileOrMissing(tokenPath, "app-server token file")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(configPath)
+	if filepath.Dir(tokenPath) != dir {
+		return fmt.Errorf("app-server token file 必须与配置文件位于同一目录")
+	}
+
+	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw)
+	if err != nil {
+		return fmt.Errorf("暂存 app-server token file 失败：%w", err)
+	}
+	defer ops.remove(stagedToken)
+	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
+	if err != nil {
+		return fmt.Errorf("暂存配置文件失败：%w", err)
+	}
+	defer ops.remove(stagedConfig)
+
+	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
+	if err != nil {
+		return fmt.Errorf("创建 app-server token file 恢复点失败：%w", err)
+	}
+	if tokenBackup != "" {
+		defer ops.remove(tokenBackup)
+	}
+	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
+	if err != nil {
+		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
+	}
+	if configBackup != "" {
+		defer ops.remove(configBackup)
+	}
+
+	// 先提交上游 token，再提交引用它的配置。第二步失败时恢复旧 token，
+	// 防止运行中的服务看到未配套提交的新凭证。
+	if err := ops.rename(stagedToken, tokenPath); err != nil {
+		return fmt.Errorf("提交 app-server token file 失败：%w", err)
+	}
+	if err := ops.rename(stagedConfig, configPath); err != nil {
+		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
+		syncErr := ops.syncDir(dir)
+		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))
+	}
+	if err := ops.syncDir(dir); err != nil {
+		rollbackErr := errors.Join(
+			restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops),
+			restoreSetupTarget(configPath, configBackup, configExisted, ops),
+		)
+		rollbackSyncErr := ops.syncDir(dir)
+		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
+	}
+	return nil
 }
 
 // writeConfigAtomically 只提交 SSH 配置文件，不创建、轮换或删除旧 app-server token file。

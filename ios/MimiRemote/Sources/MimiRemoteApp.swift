@@ -182,6 +182,9 @@ struct MimiRemoteApp: App {
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
     @StateObject private var lockScreenApprovalStore: LockScreenApprovalStore
+    @StateObject private var tailcatExperimentController: TailcatExperimentController
+    @StateObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+    @StateObject private var managedConnectionDeviceStore: ManagedConnectionDeviceStore
 
     /// 紧凑布局的会话搜索走系统 `.searchable`，而系统在 iOS 26 上给它铺的是
     /// Liquid Glass——一屏里其它 chrome 全是扁平磨砂，只有它一块玻璃。
@@ -214,6 +217,23 @@ struct MimiRemoteApp: App {
             profiles: appStore.connectionProfiles
         )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
+        let managedConnectionEntitlementStore = ManagedConnectionEntitlementStore(
+            storeKit: LiveManagedConnectionStoreKitClient(),
+            entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
+        )
+        let managedConnectionIdentityStore = ManagedConnectionMobileIdentityStore()
+        let managedConnectionDeviceStore = ManagedConnectionDeviceStore(
+            entitlementStore: managedConnectionEntitlementStore,
+            identityStore: managedConnectionIdentityStore
+        )
+        let managedConnectionEventReporter = ManagedConnectionEventReporter(
+            identityStore: managedConnectionIdentityStore
+        )
+        let tailcatExperimentController = TailcatExperimentController(
+            appStore: appStore,
+            managedPairingAuthorizer: managedConnectionDeviceStore,
+            managedConnectionEventReporter: managedConnectionEventReporter
+        )
         // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
         // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。
         let sessionStore = SessionStore(
@@ -221,7 +241,8 @@ struct MimiRemoteApp: App {
             conversationStore: conversationStore,
             logStore: logStore,
             contextStore: contextStore,
-            workspaceAppearanceStore: workspaceAppearanceStore
+            workspaceAppearanceStore: workspaceAppearanceStore,
+            tailcatExperimentController: tailcatExperimentController
         )
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
@@ -250,6 +271,13 @@ struct MimiRemoteApp: App {
 				lockScreenApprovalStore.markDecisionUnknown()
 			}
 		}
+        _tailcatExperimentController = StateObject(wrappedValue: tailcatExperimentController)
+        _managedConnectionEntitlementStore = StateObject(
+            wrappedValue: managedConnectionEntitlementStore
+        )
+        _managedConnectionDeviceStore = StateObject(
+            wrappedValue: managedConnectionDeviceStore
+        )
         _sessionStore = StateObject(wrappedValue: sessionStore)
         // 桥接必须在 delegate 可能回调之前装好，否则冷启动拿到的 Token 会被丢弃。
 		PushDeviceTokenBridge.onToken = { [weak appStore, weak lockScreenApprovalStore] token in
@@ -300,6 +328,9 @@ struct MimiRemoteApp: App {
                 .environmentObject(workspaceAppearanceStore)
                 .environmentObject(notificationResponseAdapter)
                 .environmentObject(hostStatusStore)
+                .environmentObject(tailcatExperimentController)
+                .environmentObject(managedConnectionEntitlementStore)
+                .environmentObject(managedConnectionDeviceStore)
                 .onOpenURL { url in
                     Task { @MainActor in
                         do {

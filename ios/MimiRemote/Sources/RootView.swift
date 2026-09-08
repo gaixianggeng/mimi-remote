@@ -9,6 +9,8 @@ struct RootView: View {
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var hostStatusStore: HostStatusStore
+    @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLogInspector = false
@@ -20,6 +22,8 @@ struct RootView: View {
     @State private var workbenchRouteRevision: UInt64 = 0
     @State private var pendingNotificationRouteRevision: UInt64?
     @State private var activeRestorationProfileID: String?
+    @State private var needsTailcatRecoveryAfterBackground = false
+    @State private var foregroundResumeTask: Task<Void, Never>?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -35,6 +39,24 @@ struct RootView: View {
         .task(id: appStore.activeHostScope) {
             migrateLegacyWorkspaceAppearance()
         }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            // StoreKit 当前权益是冷启动与回到前台时的本地事实入口。
+            // 只有发现 Apple 已验证的交易后，Store 才会把两份签名 JWS 发给权益服务。
+            await managedConnectionEntitlementStore.refreshEntitlement()
+            await managedConnectionEntitlementStore.refreshProducts()
+        }
+        .task {
+            // 从 App 启动开始监听未完成和后续交易；任务随 RootView 生命周期取消。
+            await managedConnectionEntitlementStore.observeTransactionUpdates()
+        }
+        .task {
+            await managedConnectionEntitlementStore.observeStorefrontUpdates()
+        }
+        .task(id: managedConnectionEntitlementStore.currentGrant?.tokenExpiresAt) {
+            // App 长时间停留前台时，也要在短期 Token 到期前主动续期。
+            await managedConnectionEntitlementStore.maintainCurrentGrant()
+        }
         .onChange(of: appStore.connectionProfiles) { _, _ in
             // 删除重复 endpoint 后，旧数据可能刚刚变成可唯一归属；此时立即重试，
             // 不要求用户先进入工作区页面才能恢复原来的图标偏好。
@@ -43,6 +65,9 @@ struct RootView: View {
         .task {
             restoreActiveHostNavigationIfNeeded()
             defer { hasCompletedInitialBootstrap = true }
+            // Tailcat 本地转发必须先于首批 REST/WebSocket client 建立；关闭实验时此调用立即返回。
+            let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
+            guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
 #if targetEnvironment(macCatalyst)
             // Catalyst 先完成本机选路，再创建首批 REST/WebSocket client；否则并行 bootstrap
             // 可能已经拿 Tailscale 地址建好 runtime，导致本次启动无法真正切到 loopback。
@@ -84,6 +109,8 @@ struct RootView: View {
             )
         }
         .task {
+            let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
+            guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
 #if targetEnvironment(macCatalyst)
             // 已在上面的有序启动任务中完成。
 #else
@@ -133,7 +160,10 @@ struct RootView: View {
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
         }
         .onChange(of: scenePhase) { _, phase in
+            foregroundResumeTask?.cancel()
+            foregroundResumeTask = nil
             if phase == .background {
+                needsTailcatRecoveryAfterBackground = true
                 persistActiveHostRestoration()
                 hostStatusStore.cancel()
                 sessionStore.suspendForBackground()
@@ -143,12 +173,20 @@ struct RootView: View {
             guard phase == .active else {
                 return
             }
-            Task {
-			// 恢复凭据后由生命周期协调器用绑定 Profile 查询 agentd；这里先做
-			// 不依赖网络的过期清理，避免前台恢复期间继续展示已过期卡片。
+            let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
+            foregroundResumeTask = Task {
 			await lockScreenApprovalStore.reconcileDeliveredNotifications()
                 do {
                     try await appStore.restoreCredentialsForForeground()
+                    try Task.checkCancellation()
+                    if shouldRecoverTailcat {
+                        let tailcatReady = await tailcatExperimentController
+                            .recoverRouteFromForeground(appStore: appStore)
+                        guard tailcatReady else { return }
+                        try Task.checkCancellation()
+                        needsTailcatRecoveryAfterBackground = false
+                    }
+                    try Task.checkCancellation()
                     await sessionStore.resumeFromForeground()
                     await refreshLockScreenApprovalLifecycle(markFailure: true)
                 } catch is CancellationError {

@@ -99,9 +99,15 @@ func (u *brokerUpstream) emit(t *testing.T, conn *websocket.Conn, frame string) 
 
 func brokerTestServer(t *testing.T, upstreamURL string, enabled bool) (*httptest.Server, *Router) {
 	t.Helper()
-	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+	handler, router, projectDir := buildAppServerGatewayFixture(t, upstreamURL, func(cfg *config.Config) {
 		cfg.AppServer.ApprovalBroker = enabled
 	})
+	// 模拟此设备已通过 thread/read 或 thread/start 取得线程授权。
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return server, router
@@ -173,6 +179,35 @@ func waitForPendingCount(t *testing.T, broker *codexGatewayBroker, want int, mes
 			t.Fatalf("%s（当前 pending=%d，期望 %d）", message, broker.pendingCount(), want)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCodexGatewayBrokerBoundsReplayByGatewayFrameBudget(t *testing.T) {
+	previousLimit := appServerGatewayReadLimit
+	appServerGatewayReadLimit = 512
+	t.Cleanup(func() { appServerGatewayReadLimit = previousLimit })
+
+	broker := &codexGatewayBroker{
+		pending:          map[string][]byte{},
+		pendingDelivered: map[string]*codexGatewaySink{},
+	}
+	firstID := json.RawMessage(`"first"`)
+	secondID := json.RawMessage(`"second"`)
+	if !broker.rememberServerRequestFrame(&firstID, bytes.Repeat([]byte("a"), 300)) {
+		t.Fatal("第一条合法帧应进入重放缓存")
+	}
+	if !broker.rememberServerRequestFrame(&secondID, bytes.Repeat([]byte("b"), 300)) {
+		t.Fatal("第二条合法帧应进入重放缓存")
+	}
+
+	if broker.pendingBytes != 300 || broker.pendingBytes > appServerGatewayReadLimit {
+		t.Fatalf("重放缓存必须受单帧上限约束：bytes=%d limit=%d", broker.pendingBytes, appServerGatewayReadLimit)
+	}
+	if _, ok := broker.pending[`"first"`]; ok {
+		t.Fatal("总字节预算不足时应淘汰最旧请求")
+	}
+	if _, ok := broker.pending[`"second"`]; !ok {
+		t.Fatal("最近的合法请求必须保留")
 	}
 }
 
@@ -644,5 +679,35 @@ func TestCodexGatewayBrokerRewritesInitializeResponseForReplacementSink(t *testi
 	}
 	if frame.ID != "init-2" || !bytes.Contains(frame.Result, []byte("broker-test")) {
 		t.Fatalf("首次响应必须改写给替换后的 sink：%s", rewritten)
+	}
+}
+
+func TestRouterShutdownClosesDetachedApprovalBroker(t *testing.T) {
+	up := newBrokerUpstream(t)
+	server, router := brokerTestServer(t, up.url, true)
+	client := brokerDial(t, server, brokerTestSession)
+	upstream := up.accept(t)
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, client, "turn/started", 3*time.Second)
+	_ = client.Close()
+	broker := waitForBroker(t, router, brokerTestSession, true)
+	deadline := time.Now().Add(time.Second)
+	for broker.currentSink() != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if broker.currentSink() != nil {
+		t.Fatal("客户端应先离线")
+	}
+	router.Shutdown()
+	broker.mu.Lock()
+	closed := broker.closed
+	broker.mu.Unlock()
+	if !closed {
+		t.Fatal("Router 关闭后，后台审批 broker 必须关闭")
+	}
+	select {
+	case <-up.closed:
+	case <-time.After(time.Second):
+		t.Fatal("Router 关闭后，后台审批的上游连接必须释放")
 	}
 }

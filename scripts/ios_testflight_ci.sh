@@ -82,7 +82,7 @@ run_asc_build_number_shadow() {
   echo "ios-testflight-ci: warning: asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested; keep Ruby preflight result" >&2
 }
 
-for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
+for command in git ruby bash go xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER; do
@@ -136,6 +136,10 @@ git -C "$ROOT_DIR" diff --quiet
 git -C "$ROOT_DIR" diff --cached --quiet
 bash "$ROOT_DIR/scripts/check-ios-privacy-manifest.sh"
 
+# Tailcat XCFramework 是本地生成产物，不进入 Git。发布时必须从仓库固定的
+# Tailcat 版本重新生成；否则 App 虽能安装，但实验开关会因缺少桥接库而不可用。
+GOTOOLCHAIN=auto bash "$ROOT_DIR/scripts/build-tailcat-mobile.sh"
+
 settings="$(
   xcodebuild \
     -project "$PROJECT" \
@@ -143,8 +147,10 @@ settings="$(
     -configuration Release \
     -showBuildSettings
 )"
-marketing_version="$(printf '%s\n' "$settings" | awk -F= '/^[[:space:]]*MARKETING_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-current_build="$(printf '%s\n' "$settings" | awk -F= '/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+# 不能在首个匹配后退出 awk。settings 较大且 pipefail 开启时，提前关闭管道会让
+# printf 收到 SIGPIPE，使发布在归档前误判失败。
+marketing_version="$(printf '%s\n' "$settings" | awk -F= '!found && /^[[:space:]]*MARKETING_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; found=1}')"
+current_build="$(printf '%s\n' "$settings" | awk -F= '!found && /^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; found=1}')"
 [[ -n "$marketing_version" ]] || fail "MARKETING_VERSION not found"
 [[ "$current_build" =~ ^[0-9]+$ ]] || fail "CURRENT_PROJECT_VERSION must be an integer"
 

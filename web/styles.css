@@ -356,6 +356,14 @@ a   { color: inherit; }
 
 /* device stage */
 .stage { position: relative; margin: 0; padding-bottom: 7%; isolation: isolate; }
+.stage--promo { padding-bottom: 0; }
+.stage__promo {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: clamp(18px, 2.2vw, 30px);
+  box-shadow: var(--shot-shadow);
+}
 .stage__glow {
   position: absolute;
   inset: -14% -10% -6%;

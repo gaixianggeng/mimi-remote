@@ -511,7 +511,7 @@ extension ConversationDataFlowTests {
         await connection.disconnect()
     }
 
-    func testCodexAppServerConnectionSkipsMalformedFrameWithoutFailingPendingRequests() async throws {
+    func testCodexAppServerConnectionRetiresMalformedFrameAndFailsPendingRequests() async throws {
         let transport = FakeCodexAppServerTransport()
         let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
         try await connectFakeAppServer(connection, transport: transport)
@@ -528,10 +528,16 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(request.method, "thread/list")
 
         transport.enqueue(#"{"id": "#)
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: request.id)),"result":{"name":"still-ok"}}"#)
-
-        let result = try await requestTask.value?.objectValue
-        XCTAssertEqual(result?["name"]?.stringValue, "still-ok")
+        do {
+            _ = try await requestTask.value
+            XCTFail("Expected malformed frame to retire the connection")
+        } catch CodexAppServerConnectionError.outcomeUnknown(let method, _, _) {
+            XCTAssertEqual(method, "thread/list")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let isReady = await connection.isReadyForRequests()
+        XCTAssertFalse(isReady)
 
         await connection.disconnect()
     }
@@ -1294,6 +1300,59 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(goal.threadID, "thr_stale_goal")
         XCTAssertEqual(goal.objective, "恢复目标")
         XCTAssertEqual(goal.status, .active)
+    }
+
+    func testConnectionDeprecationNoticeLogsOnceWithoutBroadcastingIntoKnownSession() async throws {
+        let project = AgentProject(id: "proj_deprecation", name: "Deprecation", path: "/tmp/deprecation")
+        let pool = FakeCodexAppServerTransportPool()
+        var diagnostics: [CodexAppServerDeprecationDiagnostic] = []
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            deprecationDiagnosticSink: { diagnostics.append($0) },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "",
+                input: [],
+                resumeID: "",
+                clientMessageID: nil
+            ))
+        }
+        let transport = try await waitForFakeAppServerTransport(in: pool, index: 0)
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        transportResponse(transport, id: threadStart.id, result: #"{"thread":{"id":"thr_deprecation","sessionId":"thr_deprecation","preview":"","ephemeral":false,"modelProvider":"openai","createdAt":1780490820,"updatedAt":1780490821,"status":{"type":"idle"},"path":null,"cwd":"/tmp/deprecation","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"弃用提示","turns":[]}}"#)
+        _ = try await createTask.value
+
+        let stream = await runtime.attachEvents(sessionID: "thr_deprecation")
+        let unexpectedEvent = expectation(description: "connection deprecation is not broadcast")
+        unexpectedEvent.isInverted = true
+        let observer = Task {
+            for await _ in stream {
+                unexpectedEvent.fulfill()
+                return
+            }
+        }
+        defer { observer.cancel() }
+
+        let notification = try decodeAppServerNotification(
+            #"{"method":"deprecationNotice","params":{"summary":"deprecated","details":"use pagination"}}"#
+        )
+        await runtime.handle(notification)
+        await runtime.handle(notification)
+        await fulfillment(of: [unexpectedEvent], timeout: 0.1)
+        XCTAssertEqual(diagnostics, [CodexAppServerDeprecationDiagnostic(
+            summary: "deprecated",
+            details: "use pagination"
+        )])
     }
 
     func testDirectRuntimeFansOutEventsToMultipleSubscribersForSameThread() async throws {
@@ -2484,4 +2543,130 @@ extension ConversationDataFlowTests {
         XCTAssertLessThan(try XCTUnwrap(firstUser.timelineOrdinal), try XCTUnwrap(middleUser.timelineOrdinal))
     }
 
+}
+
+// MARK: - MIM-246 全局搜索按 runtime 分头请求
+
+extension ConversationDataFlowTests {
+    private func makeSearchRoutingClient() -> (
+        client: CodexAppServerRuntimeRoutingSessionAPIClient,
+        codexTransport: FakeCodexAppServerTransport,
+        claudeTransport: FakeCodexAppServerTransport
+    ) {
+        let project = AgentProject(id: "proj_search", name: "Search", path: "/tmp/search")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: ["initialize", "initialized", "thread/list", "thread/search"],
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "t",
+            runtimeProvider: "codex",
+            transportFactory: { codexTransport },
+            configProvider: { config }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "t",
+            runtimeProvider: "claude",
+            transportFactory: { claudeTransport },
+            configProvider: { config }
+        )
+        return (
+            CodexAppServerRuntimeRoutingSessionAPIClient(codexRuntime: codex, claudeRuntime: claude),
+            codexTransport,
+            claudeTransport
+        )
+    }
+
+    private func completeInitialize(_ transport: FakeCodexAppServerTransport) async throws {
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake","platformFamily":"macos"}"#
+        )
+    }
+
+    /// 首页搜索必须同时命中两条 runtime：Claude 没有 thread/search，走 thread/list
+    /// + searchTerm。回归前 searchSessions 硬编码只查 Codex，Claude 会话搜不到。
+    func testGlobalSearchFirstPageMergesClaudeResultsBehindCodex() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: nil, limit: 50) }
+
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(
+            codexTransport,
+            id: search.id,
+            result: #"{"data":[{"thread":{"id":"codex-hit","cwd":"/tmp/search"},"snippet":"codex 片段"}],"nextCursor":"codex_more"}"#
+        )
+
+        try await completeInitialize(claudeTransport)
+        let list = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
+        XCTAssertEqual(
+            list.params?.objectValue?["searchTerm"]?.stringValue,
+            "游标",
+            "Claude 搜索必须把关键词放进 thread/list 的 searchTerm"
+        )
+        XCTAssertNil(
+            list.params?.objectValue?["cwd"],
+            "全局搜索不带 cwd，否则又退回逐目录检索"
+        )
+        transportResponse(
+            claudeTransport,
+            id: list.id,
+            result: #"{"data":[{"id":"claude-hit","cwd":"/tmp/search","preview":"claude 预览"}]}"#
+        )
+
+        let page = try await searchTask.value
+        XCTAssertEqual(
+            page.results.map(\.session.id),
+            ["codex-hit", "claude-hit"],
+            "Codex 结果在前，Claude 结果拼在后面"
+        )
+        XCTAssertEqual(page.results.last?.snippet, "claude 预览", "无命中片段时用会话 preview 兜底")
+        XCTAssertEqual(
+            page.nextCursor,
+            "codex_more",
+            "翻页游标只来自 Codex，不引入跨 Runtime 的复合游标"
+        )
+    }
+
+    /// 翻页只推进 Codex：带 cursor 时不得再打扰 Claude。
+    func testGlobalSearchPaginationDoesNotQueryClaude() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: "codex_more", limit: 50) }
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(codexTransport, id: search.id, result: #"{"data":[]}"#)
+
+        _ = try await searchTask.value
+        let claudeMessages = await claudeTransport.sentMessages()
+        XCTAssertTrue(claudeMessages.isEmpty, "翻页阶段不应向 Claude 发任何请求")
+    }
+
+    /// Claude 搜索是增强项：bridge 不可用时不能连带让 Codex 搜索失败。
+    func testGlobalSearchKeepsCodexResultsWhenClaudeFails() async throws {
+        let (client, codexTransport, claudeTransport) = makeSearchRoutingClient()
+
+        let searchTask = Task { try await client.searchSessions(query: "游标", cursor: nil, limit: 50) }
+        try await completeInitialize(codexTransport)
+        let search = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search", after: 1)
+        transportResponse(
+            codexTransport,
+            id: search.id,
+            result: #"{"data":[{"thread":{"id":"codex-hit","cwd":"/tmp/search"},"snippet":"codex 片段"}]}"#
+        )
+
+        try await completeInitialize(claudeTransport)
+        let list = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
+        transportErrorResponse(claudeTransport, id: list.id, code: -32000, message: "claude bridge unavailable")
+
+        let page = try await searchTask.value
+        XCTAssertEqual(page.results.map(\.session.id), ["codex-hit"], "Claude 失败不得清空 Codex 结果")
+    }
 }

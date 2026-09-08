@@ -2,28 +2,53 @@
 
 ## 目标
 
-让个人开发者在 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
+让个人开发者在 macOS、Windows 或 Linux 电脑上启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
 
 ## 方案
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
-- Windows 只作为 Codex Desktop SSH 客户端使用。MIM-207 暂停 Windows agentd 安装包发布。
+- Windows 普通用户使用按用户 EXE 安装器；后台由当前用户计划任务托管，Codex App Server 只监听本机 loopback WebSocket。
+- Linux 使用发布包中的 user-systemd 模板；`agentd` 默认连接 Codex 标准 Unix control socket，与本机终端共享 resident，不要求 SSH。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
-- Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和移动端配对 Token 都留在系统用户配置目录，升级二进制不会删除它们。
 - 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
 
 ## 实现
 
-### Windows Desktop 接入
+### Windows 首次安装、升级与回滚
 
-MIM-207 的共享运行时依赖 POSIX 远端命令、Unix Socket 和 Mac 工作区路径，因此 Windows 不能作为 `agentd` 宿主。正式 Release 暂停发布 Windows 安装包；仓库中保留的安装器源码会在停服、替换文件或修改计划任务前明确拒绝安装。
+前置条件：Windows 10/11 x64，并且当前 Windows 用户已安装、登录 Codex CLI 0.149.1 或更高版本。Windows 宿主不依赖 POSIX SSH 或 Unix Socket。`agentd` 启动并管理一个只监听 `ws://127.0.0.1:4222` 的 Codex App Server；它不连接 Codex Desktop 私有 IPC，也不向局域网暴露该端口。
 
-Windows 只运行 Codex Desktop。把共享 App Server 所在的 Mac 添加为 SSH 主机，以同一个 macOS 用户登录并打开共享工作区。移动端继续连接 Mac 上的 `agentd`。Windows agentd 若要恢复，需要单独设计兼容的共享 transport，不能回退到实验 WebSocket 或 Desktop 私有 IPC。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`。在 PowerShell 中验证摘要和签名状态：
+
+```powershell
+$setup = Get-Item .\Mimi-Remote-Setup-*.exe
+(Get-FileHash $setup -Algorithm SHA256).Hash
+(Get-AuthenticodeSignature $setup).Status
+```
+
+摘要必须与 `.sha256` 一致。元数据为 `authenticode-pfx` 时，签名状态必须为 `Valid`；元数据为 `unsigned-release` 时，状态应为 `NotSigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。
+
+安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它注册名为 `Mimi Remote agentd` 的 limited 当前用户任务，并在完成前等待 `/api/readyz` 和真实 App Server `initialize`。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。配置与配对 Token 保留在 `%APPDATA%\mimi-remote`，日志保留在 `%LOCALAPPDATA%\Mimi Remote\logs`。覆盖安装不会轮换现有 Token。
+
+Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
+
+常用命令：
+
+```powershell
+$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
+& $agentd status
+& $agentd pair --qr-only
+& $agentd doctor --fix
+& $agentd logs -n 200
+& $agentd restart --no-pair --wait 30s
+```
+
+升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件和由安装器创建的可选防火墙规则，但保留配置、Token 与日志。
 
 ### macOS 首次安装（推荐）
 
-前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。启用“远程登录”，并先确认 `ssh 127.0.0.1 codex --version` 无需输入登录密码即可成功。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。启用“远程登录”，并先确认 `ssh 127.0.0.1 true` 无需输入登录密码即可成功。agentd 会为非交互 SSH 补齐 Homebrew、npm 和 mise 的常见 Codex 安装路径。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
 从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
 
@@ -41,7 +66,7 @@ agentd up
 agentd status
 ```
 
-`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、SSH、Codex 版本和真实 App Server `initialize` 均已通过。安装与升级只能以后者为成功条件。
+`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、当前平台的 App Server transport、Codex 版本和真实 `initialize` 均已通过。安装与升级只能以后者为成功条件。
 
 `agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json`，以 `0600` 保存，并通过 localhost SSH 连接共享 Unix App Server，然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置和移动端 Token，不会停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。
 
@@ -172,7 +197,7 @@ brew services stop mimi-remote
 systemctl --user stop mimi-remote.service
 ```
 
-收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源和每条连接对应的 SSH proxy；排空超时会强制关闭连接。共享 Unix App Server 不属于 `agentd`，因此不会随 `agentd` 停止。共享 App Server 或 SSH 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
+收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS 和 Linux 显式远端模式会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server；Windows 与 Linux 默认模式会停止自己管理的 loopback App Server 子进程。App Server 或 transport 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
 
 ### macOS Homebrew 应急回滚
 
@@ -224,6 +249,8 @@ agentd start
 
 ### Linux user-systemd
 
+Linux 桌面安装同时提供顶栏托盘、自启动入口和本机管理面板，使用方法与 GNOME/KDE/Waybar 支持边界见 [Linux 桌面托盘](linux-tray.md)。
+
 Linux Release 包同时包含二进制、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
 
 ```bash
@@ -248,15 +275,17 @@ curl --fail --location --remote-name \
 
 awk -v archive="$archive" '$2 == archive { print }' checksums.txt | sha256sum -c -
 tar -xzf "$archive"
-ssh 127.0.0.1 codex --version
-AGENTD_APP_SERVER_SSH_TARGET=127.0.0.1 bash ./scripts/install-linux.sh install
+bash ./scripts/install-linux.sh install
 ```
 
-先配置本机 sshd、host key 和非交互密钥认证。安装脚本会在替换二进制或 unit 前，用候选版本完成 SSH、Codex 版本和真实 `initialize` 预检。首次 setup 会把环境变量中的目标持久化到配置；systemd unit 不需要继承该环境变量。
+默认模式直接使用当前 Linux 用户的 Codex CLI，不需要安装或配置 `sshd`，也不会读取或修改 `authorized_keys`。安装脚本会在替换二进制或 unit 前连接或启动 `~/.codex/app-server-control/app-server-control.sock` 并完成真实 `initialize` 预检；正式服务继续连接这个 resident，本机终端可通过 `codex --remote unix://` 打开同一个后端和 Thread。resident 优先运行在独立 user-systemd scope 中，不随 agentd 重启而停止。
+
+若确实要把 Codex 放到另一台 SSH 主机，可显式执行 `AGENTD_APP_SERVER_SSH_TARGET=user@host bash ./scripts/install-linux.sh install`。该高级模式才要求预先配置 host key 和非交互密钥认证；安装器仍不会修改 `authorized_keys` 或放宽 sshd。首次 setup 会把目标持久化到配置，systemd unit 不需要继承该环境变量。
 
 脚本只接受正式版本号，拒绝 `devel`、错误架构、root、非默认 `AGENTD_CONFIG` 和不一致的 `XDG_CONFIG_HOME`。它会：
 
 - 原子安装 `~/.local/bin/agentd` 和 user-systemd unit；
+- 默认生成本机受管 WebSocket 配置和权限为 `0600` 的独立 App Server token 文件；
 - 首次安装时静默创建默认配置，已有配置和 Token 不会被覆盖；服务真正就绪且安装事务提交后，才输出不含长期 Token/connect link 的短期配对二维码；
 - 升级前保存 `agentd.previous` 和上一版 unit；
 - 显式重启已经运行的旧进程，并等待服务健康；
@@ -344,7 +373,7 @@ Windows 安装器可选配置以下 Authenticode Secrets：
 | `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
 | `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
 
-Windows verify job 只构建并检查带兼容性 gate 的安装器，确保它在任何停服或文件修改前拒绝安装。该 artifact 只保留在 Actions，不上传 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时仍验证 Authenticode；两个都缺失时构建内部 `unsigned-release` 验证件。恢复 Windows host 发布前，必须先设计兼容共享 transport，并恢复独立发布 job。
+Windows verify job 会构建 release 二进制、编译 Inno Setup，并验证 SHA-256、内嵌文件和签名模式。验证通过后，独立的 `publish-windows` job 把安装器、摘要和元数据上传到同一个 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制验证 Authenticode；两个都缺失时构建明确标记的 `unsigned-release`。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 

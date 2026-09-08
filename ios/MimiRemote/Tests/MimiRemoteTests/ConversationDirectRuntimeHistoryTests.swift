@@ -148,6 +148,7 @@ extension ConversationDataFlowTests {
 
         let firstPage = try await firstPageTask.value
         XCTAssertEqual(firstPage.messages.map(\.content), ["summary question", "summary answer"])
+        XCTAssertTrue(firstPage.messages.allSatisfy { $0.timelineOrdinal == nil })
         XCTAssertTrue(firstPage.hasMoreBefore)
         XCTAssertEqual(firstPage.itemContinuations.map(\.turnID), ["turn_large"])
         var requests = await transport.sentMessages()
@@ -195,6 +196,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             (firstItemsPage.messages + secondItemsPage.messages).map(\.content),
             ["m1", "m2", "m3", "m4"]
+        )
+        XCTAssertEqual(
+            (firstItemsPage.messages + secondItemsPage.messages).compactMap(\.timelineOrdinal),
+            [0, 1, 2, 3]
         )
         XCTAssertEqual(try XCTUnwrap(secondItemsPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
         XCTAssertTrue(try XCTUnwrap(firstItemsPage.messages.first { $0.content == "m1" }).isTimestampFallback)
@@ -971,7 +976,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(secondRequests.filter { $0.method == "turn/start" }.count, 1)
     }
 
-    func testDirectRuntimeRecoversPendingUserInputAfterForegroundReconnectWithoutColdStart() async throws {
+    func testDirectRuntimeReplaysPendingUserInputToAdditionalObserverWithoutColdStart() async throws {
         let project = AgentProject(id: "proj_pending_input_recovery", name: "Pending Input Recovery", path: "/tmp/pending-input-recovery")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -1022,21 +1027,8 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(statuses.filter { $0 == .connected }.count, 1)
 
-        // 模拟 App 进后台后页面订阅被取消，底层 runtime/gateway 连接仍在。
-        // 此时重连必须再发 thread/resume，不能被“已 resume”的本地标记短路。
-        socket.disconnect()
-        let beforeRecoveryConnect = await transport.sentMessages().count
-        socket.connect(sessionID: "thr_pending_input_recovery", replayBufferedEvents: false)
-        let recoveryResume = try await waitForFakeAppServerRequest(
-            transport,
-            method: "thread/resume",
-            after: beforeRecoveryConnect
-        )
-        transportResponse(
-            transport,
-            id: recoveryResume.id,
-            result: #"{"thread":{"id":"thr_pending_input_recovery","sessionId":"thr_pending_input_recovery","preview":"等待补充信息","ephemeral":false,"modelProvider":"openai","createdAt":1780491200,"updatedAt":1780491203,"status":{"type":"active","activeFlags":["waitingOnUserInput"]},"path":null,"cwd":"/tmp/pending-input-recovery","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待补充信息","turns":[{"id":"turn_pending_input_recovery","status":"inProgress","items":[]}]}}"#
-        )
+        // runtime 已收到 server request 后，新页面观察者应直接补放完整问题，
+        // 无需冷启动或重复 thread/resume。
         transport.enqueue(#"{"id":701,"method":"item/tool/requestUserInput","params":{"threadId":"thr_pending_input_recovery","turnId":"turn_pending_input_recovery","itemId":"input_pending_recovery","questions":[{"id":"strategy","header":"策略","question":"期望怎么处理？","isOther":true,"isSecret":false,"options":[{"label":"确认并发送","description":"保留当前文本"}]}]}}"#)
         for _ in 0..<200 where !events.contains(where: {
             if case .userInputRequest(let request, _) = $0 {
@@ -1054,41 +1046,50 @@ extension ConversationDataFlowTests {
             return false
         })
 
-        // 再次切换会话时，runtime 已保有未处理请求；新页面应直接补放该请求，
-        // 无需冷启动，也无需第三次 thread/resume。
-        let userInputEventCount = events.filter {
-            if case .userInputRequest(let request, _) = $0 {
-                return request.id == "input_pending_recovery"
-            }
-            return false
-        }.count
-        socket.disconnect()
-        let beforeKnownRequestReconnect = await transport.sentMessages().count
-        socket.connect(sessionID: "thr_pending_input_recovery", replayBufferedEvents: false)
-        for _ in 0..<200 where events.filter({
-            if case .userInputRequest(let request, _) = $0 {
-                return request.id == "input_pending_recovery"
-            }
-            return false
-        }).count <= userInputEventCount {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(
-            events.filter {
-                if case .userInputRequest(let request, _) = $0 {
-                    return request.id == "input_pending_recovery"
-                }
-                return false
-            }.count,
-            userInputEventCount
+        // runtime 已保有未处理请求时，新前台页面可与后台观察者并存，并直接补放请求。
+        // 第二个观察者不能重复 resume，也不能触发冷启动。
+        let replayEvents = await runtime.attachEvents(
+            sessionID: "thr_pending_input_recovery",
+            replayPolicy: .stateOnly
         )
+        let beforeKnownRequestReconnect = await transport.sentMessages().count
+        try await runtime.connectForEvents(sessionID: "thr_pending_input_recovery")
+        var replayIterator = replayEvents.makeAsyncIterator()
+        let replayedEvent = await replayIterator.next()
+        guard case .some(.userInputRequest(let replayedRequest, let replayedMetadata)) = replayedEvent else {
+            return XCTFail("第二 observer 应直接重放 pending user input")
+        }
+        XCTAssertEqual(replayedRequest.id, "input_pending_recovery")
+        XCTAssertEqual(replayedMetadata.sessionID, "thr_pending_input_recovery")
         let messagesAfterKnownRequestReconnect = await transport.sentMessages()
         let reconnectRequests = messagesAfterKnownRequestReconnect
             .dropFirst(beforeKnownRequestReconnect)
             .compactMap { try? decodeAppServerRequest($0) }
-        XCTAssertFalse(reconnectRequests.contains { $0.method == "thread/resume" })
+        XCTAssertEqual(reconnectRequests.filter { $0.method == "thread/resume" }.count, 0)
+        XCTAssertEqual(reconnectRequests.filter { $0.method == "initialize" }.count, 0)
 
+        let beforeReplayDisconnect = await transport.sentMessages().count
+        replayEvents.cancel()
+        for _ in 0..<200 {
+            if await runtime.eventMailboxesBySessionID["thr_pending_input_recovery"]?.count == 1 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let messagesAfterReplayDisconnect = await transport.sentMessages()
+        let replayDisconnectRequests = messagesAfterReplayDisconnect
+            .dropFirst(beforeReplayDisconnect)
+            .compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(replayDisconnectRequests.filter { $0.method == "thread/unsubscribe" }.count, 0)
+
+        let beforeFinalDisconnect = await transport.sentMessages().count
         socket.disconnect()
+        let finalUnsubscribe = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/unsubscribe",
+            after: beforeFinalDisconnect
+        )
+        transportResponse(transport, id: finalUnsubscribe.id, result: #"{"status":"unsubscribed"}"#)
     }
 
     func testCodexAppServerSessionWebSocketReportsDisconnectedAfterTransportReceiveFailure() async throws {
@@ -1300,7 +1301,7 @@ extension ConversationDataFlowTests {
         do {
             _ = try await timeoutTask.value
             XCTFail("turn/start timeout should fail")
-        } catch CodexAppServerConnectionError.timeout(let method, _) {
+        } catch CodexAppServerConnectionError.outcomeUnknown(let method, _, _) {
             XCTAssertEqual(method, "turn/start")
         } catch {
             XCTFail("Unexpected timeout error: \(error)")
@@ -1498,25 +1499,32 @@ extension ConversationDataFlowTests {
         let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let listRequest = try decodeAppServerRequest(listMessages[2])
         XCTAssertEqual(listRequest.method, "thread/list")
+        // 主动刷新先查索引；空页还需普通扫描确认，之后才能进入新会话的 model/list 链路。
+        XCTAssertEqual(listRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[],"nextCursor":null,"backwardsCursor":null}}"#)
+        let verifiedListMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let verifiedListRequest = try decodeAppServerRequest(verifiedListMessages[3])
+        XCTAssertEqual(verifiedListRequest.method, "thread/list")
+        XCTAssertEqual(verifiedListRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        transportResponse(transport, id: verifiedListRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         await refreshTask.value
         XCTAssertEqual(store.selectedProjectID, project.id)
 
         let sendTask = Task { await store.sendPrompt("帮我验收 direct Store") }
-        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 4)
-        let modelList = try decodeAppServerRequest(threadMessages[3])
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let modelList = try decodeAppServerRequest(threadMessages[4])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-store-default","name":"Store Default","provider":"openai","isDefault":true}]}}"#)
 
-        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let threadStart = try decodeAppServerRequest(threadStartMessages[4])
+        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let threadStart = try decodeAppServerRequest(threadStartMessages[5])
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertNil(threadStart.params?.objectValue?["model"]?.stringValue)
         XCTAssertNil(threadStart.params?.objectValue?["modelProvider"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let turnStart = try decodeAppServerRequest(turnMessages[5])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7)
+        let turnStart = try decodeAppServerRequest(turnMessages[6])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["model"]?.stringValue, "gpt-store-default")
         let collaborationMode = try XCTUnwrap(turnStart.params?.objectValue?["collaborationMode"]?.objectValue)
@@ -1526,7 +1534,7 @@ extension ConversationDataFlowTests {
         // 新线程首轮由本地回显和 buffered event replay 承接，不能在 rollout 尚未就绪时
         // 追加 thread/read；若未来回归到旧行为，先响应请求让 sendTask 能退出，再给出明确断言。
         for _ in 0..<20 {
-            if (await transport.sentMessages()).count > 6 {
+            if (await transport.sentMessages()).count > 7 {
                 break
             }
             try await Task.sleep(nanoseconds: 10_000_000)

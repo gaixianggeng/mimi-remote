@@ -106,11 +106,12 @@ APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
+TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
-if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude bridge 或 LaunchAgent。" >&2
+if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude bridge、Tailcat 或 LaunchAgent。" >&2
   exit 1
 fi
 if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
@@ -179,6 +180,7 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
+codesign --verify --strict --verbose=2 "$TAILCAT_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 
 if plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" >/dev/null 2>&1; then
@@ -214,6 +216,7 @@ run_native_version_probe() {
 }
 
 run_native_version_probe "$AGENT_PATH" version >/dev/null
+run_native_version_probe "$TAILCAT_PATH" version >/dev/null
 bridge_version_output="$(run_native_version_probe "$BRIDGE_PATH" --version)"
 if [[ "$bridge_version_output" =~ ^alleycat-claude-bridge[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
   bridge_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
@@ -246,6 +249,9 @@ while IFS= read -r -d '' candidate_path; do
   fi
 
   macho_count=$((macho_count + 1))
+  # codesign --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O。逐个校验，避免未签名
+  # sidecar 一直拖到 Apple 公证阶段才暴露。
+  codesign --verify --strict --verbose=2 "$candidate_path"
   binary_archs="$(lipo -archs "$candidate_path")"
   if [[ " $binary_archs " != *" arm64 "* ]]; then
     echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 是 x86-only Mach-O，缺少 arm64。" >&2
@@ -279,7 +285,7 @@ if [[ "$macho_count" -eq 0 ]]; then
   exit 1
 fi
 
-for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH"; do
+for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"; do
   binary_archs="$(lipo -archs "$binary_path")"
   for required_arch in arm64 x86_64; do
     if [[ " $binary_archs " != *" $required_arch "* ]]; then
@@ -292,25 +298,30 @@ done
 app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
 agent_signing_details="$(codesign -d --verbose=4 "$AGENT_PATH" 2>&1)"
 bridge_signing_details="$(codesign -d --verbose=4 "$BRIDGE_PATH" 2>&1)"
+tailcat_signing_details="$(codesign -d --verbose=4 "$TAILCAT_PATH" 2>&1)"
 # 先完整读取 codesign 输出，避免 pipefail 将 awk 提前退出造成的 SIGPIPE 误判为签名失败。
 app_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$app_signing_details")"
 agent_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$bridge_signing_details")"
+tailcat_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$app_identifier" != "com.gaixianggeng.mimi.mac" \
   || "$agent_identifier" != "com.gaixianggeng.mimi.mac.agentd" \
-  || "$bridge_identifier" != "com.gaixianggeng.mimi.mac.claude-bridge" ]]; then
-  echo "Mac 安装包校验失败：App、agentd 或 Claude bridge 签名 identifier 不稳定。" >&2
+  || "$bridge_identifier" != "com.gaixianggeng.mimi.mac.claude-bridge" \
+  || "$tailcat_identifier" != "com.gaixianggeng.mimi.mac.tailcat" ]]; then
+  echo "Mac 安装包校验失败：App、agentd、Claude bridge 或 Tailcat 签名 identifier 不稳定。" >&2
   exit 1
 fi
 
 app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_signing_details")"
 agent_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$bridge_signing_details")"
+tailcat_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   if [[ ! "$app_team_identifier" =~ ^[A-Z0-9]+$ \
     || "$agent_team_identifier" != "$app_team_identifier" \
-    || "$bridge_team_identifier" != "$app_team_identifier" ]]; then
-    echo "Mac 安装包校验失败：App、agentd 与 Claude bridge 必须使用同一非空 Team ID 签名。" >&2
+    || "$bridge_team_identifier" != "$app_team_identifier" \
+    || "$tailcat_team_identifier" != "$app_team_identifier" ]]; then
+    echo "Mac 安装包校验失败：App、agentd、Claude bridge 与 Tailcat 必须使用同一非空 Team ID 签名。" >&2
     exit 1
   fi
 fi
@@ -319,8 +330,9 @@ if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   codesign --verify --strict --verbose=2 "$DMG_PATH"
   if ! grep -Fq 'Authority=Developer ID Application:' <<<"$app_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$agent_signing_details" \
-    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details"; then
-    echo "Mac 安装包校验失败：App、agentd 或 Claude bridge 不是有效的 Developer ID Application 签名。" >&2
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details" \
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$tailcat_signing_details"; then
+    echo "Mac 安装包校验失败：App、agentd、Claude bridge 或 Tailcat 不是有效的 Developer ID Application 签名。" >&2
     exit 1
   fi
   xcrun stapler validate "$DMG_PATH"
@@ -332,4 +344,4 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent、拖放入口和签名结构完整${team_summary}。"

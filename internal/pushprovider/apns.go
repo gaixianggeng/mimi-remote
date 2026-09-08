@@ -92,10 +92,12 @@ type APNsResult struct {
 	APNsID     string
 }
 
-// Unregistered 表示设备 Token 已失效，调用方应当撤销对应 Ticket 而不是重试。
+// Unregistered 表示这张 Device Token 已不能用于当前 App，调用方应撤销对应
+// Ticket。只列出设备级永久错误；Topic、Provider Token 等配置/鉴权错误不能误删设备。
 func (r APNsResult) Unregistered() bool {
-	return r.StatusCode == http.StatusGone ||
-		r.Reason == "Unregistered"
+	return r.Reason == "Unregistered" ||
+		r.Reason == "BadDeviceToken" ||
+		r.Reason == "DeviceTokenNotForTopic"
 }
 
 func (r APNsResult) OK() bool { return r.StatusCode == http.StatusOK }

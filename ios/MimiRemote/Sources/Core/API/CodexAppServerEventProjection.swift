@@ -68,6 +68,117 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
+    func beginForkReconciliation(
+        sourceThreadID: SessionID,
+        expectedThreadSource: String
+    ) -> UUID {
+        let token = UUID()
+        pendingForkReconciliationsByToken[token] = CodexAppServerPendingForkReconciliation(
+            sourceThreadID: sourceThreadID,
+            expectedThreadSource: expectedThreadSource,
+            startedAt: Date()
+        )
+        return token
+    }
+
+    func waitForForkReconciliation(
+        _ token: UUID,
+        timeout: TimeInterval
+    ) async -> AgentSession? {
+        guard let pending = pendingForkReconciliationsByToken[token] else {
+            return nil
+        }
+        if let session = pending.session {
+            pendingForkReconciliationsByToken.removeValue(forKey: token)
+            return session
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard var current = pendingForkReconciliationsByToken[token] else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                current.continuation = continuation
+                let timeoutNanoseconds = UInt64(max(0.1, timeout) * 1_000_000_000)
+                current.timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await self?.cancelForkReconciliation(token)
+                }
+                pendingForkReconciliationsByToken[token] = current
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelForkReconciliation(token)
+            }
+        }
+    }
+
+    func cancelForkReconciliation(_ token: UUID) {
+        guard let pending = pendingForkReconciliationsByToken.removeValue(forKey: token) else {
+            return
+        }
+        pending.timeoutTask?.cancel()
+        pending.continuation?.resume(returning: nil)
+    }
+
+    func reconcileForkStarted(
+        thread: [String: CodexAppServerJSONValue],
+        session: AgentSession
+    ) {
+        guard let sourceThreadID = nonEmpty(
+            thread["forkedFromId"]?.stringValue,
+            thread["forked_from_id"]?.stringValue
+        ),
+        let threadSource = nonEmpty(
+            thread["threadSource"]?.stringValue,
+            thread["thread_source"]?.stringValue
+        ) else {
+            return
+        }
+        let createdAt = firstDate(in: thread, keys: ["createdAt", "created_at"])
+        guard let token = pendingForkReconciliationsByToken.first(where: { _, pending in
+            pending.sourceThreadID == sourceThreadID
+                && pending.expectedThreadSource == threadSource
+                && (createdAt.map { $0 >= pending.startedAt.addingTimeInterval(-5) } ?? true)
+        })?.key,
+        var pending = pendingForkReconciliationsByToken[token] else {
+            return
+        }
+        if let continuation = pending.continuation {
+            pendingForkReconciliationsByToken.removeValue(forKey: token)
+            pending.timeoutTask?.cancel()
+            continuation.resume(returning: session)
+        } else {
+            pending.session = session
+            pendingForkReconciliationsByToken[token] = pending
+        }
+    }
+
+    func rememberForkedSession(_ session: AgentSession) {
+        contextsBySessionID[session.id] = CodexAppServerSessionContext(
+            session: session,
+            cwd: session.dir,
+            activeTurnID: session.activeTurnID
+        )
+        threadsResumedOnConnection.insert(session.id)
+    }
+
+    /// 写出之后再超时会归类成 outcomeUnknown，而 fork 正是最需要兜底的那类请求：
+    /// 服务端可能已经建好 thread，只是响应没回来，随后的 thread/started 才是唯一
+    /// 能确认结果的信号。两种分类都必须进入事件对账，否则超时即失败。
+    func isThreadForkTimeout(_ error: Error) -> Bool {
+        guard let connectionError = error as? CodexAppServerConnectionError else {
+            return false
+        }
+        switch connectionError {
+        case .timeout(let method, _), .outcomeUnknown(let method, _, _):
+            return method == "thread/fork"
+        default:
+            return false
+        }
+    }
+
     private func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
         while events.count >= 2 {
             let previousIndex = events.index(events.endIndex, offsetBy: -2)
@@ -130,10 +241,19 @@ extension CodexAppServerSessionRuntime {
             applyAccountRateLimit(summary)
         case "thread/started":
             guard let thread = params["thread"]?.objectValue,
-                  let session = try? agentSession(from: thread, projects: (try? projectsFromCache()) ?? [], fallbackProject: nil, forceRunning: true) else {
+                  let session = try? agentSession(
+                    from: thread,
+                    projects: (try? projectsFromCache()) ?? [],
+                    fallbackProject: nil,
+                    forceRunning: nonEmpty(
+                        thread["forkedFromId"]?.stringValue,
+                        thread["forked_from_id"]?.stringValue
+                    ) == nil
+                  ) else {
                 return
             }
             contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: session.dir, activeTurnID: session.activeTurnID)
+            reconcileForkStarted(thread: thread, session: session)
             emit(.session(session))
         case "thread/settings/updated":
             guard let threadID = params["threadId"]?.stringValue else {
@@ -1224,6 +1344,7 @@ extension CodexAppServerSessionRuntime {
         threadCreatedAt: Date? = nil,
         threadUpdatedAt: Date? = nil,
         threadIsActive: Bool = false,
+        timelineOrdinalsAreCanonical: Bool = true,
         snapshotReadAt: Date
     ) -> [CodexHistoryMessage] {
         var messages: [CodexHistoryMessage] = []
@@ -1250,11 +1371,16 @@ extension CodexAppServerSessionRuntime {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             var hasVisibleUserMessageInTurn = false
             for (itemIndex, item) in items.enumerated() {
+                // summary 只保留展示摘要，其数组下标不是 Item 在完整 rollout 中的位置。
+                // 完整 Item 分页到达前不能用这个占位序号约束时间线。
+                let timelineOrdinal = timelineOrdinalsAreCanonical
+                    ? historyTimelineOrdinal(turnIndex: turnIndex, itemIndex: itemIndex)
+                    : nil
                 guard var message = historyMessage(
                     from: item,
                     sessionID: sessionID,
                     turnID: turnID,
-                    timelineOrdinal: historyTimelineOrdinal(turnIndex: turnIndex, itemIndex: itemIndex),
+                    timelineOrdinal: timelineOrdinal,
                     isInjectedUserMessage: hasVisibleUserMessageInTurn,
                     startedAt: startedAt,
                     completedAt: completedAt,
@@ -1287,7 +1413,7 @@ extension CodexAppServerSessionRuntime {
         from item: [String: CodexAppServerJSONValue],
         sessionID: SessionID,
         turnID: TurnID?,
-        timelineOrdinal: Int64,
+        timelineOrdinal: Int64?,
         isInjectedUserMessage: Bool,
         startedAt: Date?,
         completedAt: Date?,

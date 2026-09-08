@@ -70,7 +70,7 @@ func (p *fakePushProvider) count() int {
 
 func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*httptest.Server, *Router) {
 	t.Helper()
-	cfg, registry, manager, checker, _ := appServerGatewayBaseFixture(t)
+	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
 		Transport:      "ssh",
 		SSHTarget:      upstreamURL,
@@ -82,14 +82,19 @@ func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*htt
 		Environment: "sandbox",
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	handler, router := NewRouterWithRuntimeInstallationIDAndOptions(
-		cfg, registry, manager, checker, "test", "install-push-test", nil,
+	handler, router := NewRouterWithInstallationIDAndOptions(
+		cfg, registry, manager, checker, "test", "install-push-test",
 		RouterOptions{
 			ConfigPath:   configPath,
 			AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 		},
 	)
-	t.Cleanup(router.claudeBridge.shutdown)
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id})
+	t.Cleanup(router.Shutdown)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return server, router
@@ -229,6 +234,50 @@ func TestApprovalArrivingWhileClientOfflineNotifiesAndCanBeDecided(t *testing.T)
 	}, 3*time.Second)
 	if !strings.Contains(string(response), `"decision":"accept"`) {
 		t.Fatalf("上游收到的决策不正确：%s", response)
+	}
+}
+
+// 合法审批帧可以远大于 128 KiB，例如命令参数或 diff 较长。客户端离线时仍必须
+// 同时触发提醒并保留原帧，不能只在 policy 里登记 id 后静默丢掉正文。
+func TestLargeApprovalArrivingWhileOfflineNotifiesAndReplays(t *testing.T) {
+	up := newBrokerUpstream(t)
+	provider := newFakePushProvider(t)
+	server, router := pushTestFixture(t, up.url, provider.server.URL)
+	registerPushDevice(t, server, "device-a")
+
+	client := brokerDial(t, server, pushTestSession)
+	upstream := up.accept(t)
+	up.emit(t, upstream, brokerTurnStartedFrame)
+	readFrameWithMethod(t, client, "turn/started", 3*time.Second)
+	_ = client.Close()
+	broker := waitForBroker(t, router, pushTestSession, true)
+
+	largeApproval, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "approval-large",
+		"method":  "execCommandApproval",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"callId":   "call-large",
+			"command":  strings.Repeat("x", (128<<10)+1),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(largeApproval) <= 128<<10 || int64(len(largeApproval)) > appServerGatewayReadLimit {
+		t.Fatalf("测试帧必须超过旧上限且仍是合法 gateway 帧：bytes=%d limit=%d", len(largeApproval), appServerGatewayReadLimit)
+	}
+
+	up.emit(t, upstream, string(largeApproval))
+	provider.waitFor(t, "approval.pending")
+	waitForPendingCount(t, broker, 1, "大审批帧没有进入重放缓存")
+
+	reconnected := brokerDial(t, server, pushTestSession)
+	replayed := readFrameWithMethod(t, reconnected, "execCommandApproval", 3*time.Second)
+	if !bytes.Equal(replayed, largeApproval) {
+		t.Fatalf("大审批帧重放内容不完整：got=%d want=%d", len(replayed), len(largeApproval))
 	}
 }
 
@@ -378,7 +427,12 @@ func TestApprovalResponseFrameMatchesClientShape(t *testing.T) {
 }
 
 func TestPushApprovalValidationCanRestorePendingAfterWriteFailure(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id})
 	router.cfg.AppServer.Transport = "ws"
 	policy := &appServerGatewayPolicy{
 		router:                router,
@@ -406,7 +460,12 @@ func TestPushApprovalValidationCanRestorePendingAfterWriteFailure(t *testing.T) 
 }
 
 func TestApprovalObservationSnapshotKeepsActiveTurnAndPendingRequest(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "claude", cwd: projectDir, scopeID: scope.id})
 	policy := &appServerGatewayPolicy{
 		router:                router,
 		runtimeID:             "claude",

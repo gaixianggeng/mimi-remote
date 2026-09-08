@@ -71,6 +71,12 @@ func (p *appServerGatewayPolicy) prunePendingThreadsLocked(now time.Time) {
 			// 才能证明该 cwd 不再处于未完成使用窗口。
 			continue
 		}
+		if pending.method == "thread/fork" {
+			// fork 是非幂等写请求，且旧 App Server 可能在任意时长后返回完整历史。
+			// 固定 TTL 会让迟到响应绕过裁剪和新线程授权；只允许明确响应、失败
+			// 或连接关闭释放。pending 总量上限继续约束异常连接的内存占用。
+			continue
+		}
 		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingThreadTTL {
 			delete(p.pendingThreads, id)
 		}
@@ -135,17 +141,48 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
 			return payload, false, nil
 		}
+		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(frame.Params) {
+			return payload, false, nil
+		}
+		if strings.TrimSpace(frame.Method) == "item/tool/call" {
+			claimKey, err := p.validateAndClaimMimiTaskCall(frame.Params)
+			if err != nil {
+				if err == errMimiTaskDynamicCallAbandoned {
+					return payload, false, &appServerGatewayPolicyError{
+						id:      frame.ID,
+						message: "dynamic task execution was interrupted before a response was available",
+						data:    map[string]any{"reason": "mimi_task_owner_disconnected"},
+					}
+				}
+				return payload, false, nil
+			}
+			if claimKey == "" {
+				return payload, false, nil
+			}
+			if err := p.rememberPendingServerRequestWithClaim(frame.ID, frame.Method, frame.Params, claimKey); err != nil {
+				p.router.releaseMimiTaskDynamicClaim(claimKey, p)
+				return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+			}
+			return payload, true, nil
+		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
 		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
-		p.trackUpstreamTurnLifecycle(&frame)
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
 			return payload, false, nil
 		}
+		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
+			return payload, false, nil
+		}
+		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
+		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
+			payload = filtered
+			_ = json.Unmarshal(payload, &frame)
+		}
 		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -244,6 +281,17 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))
 		return payload, true, nil
 	}
+	if pending.method == "thread/fork" {
+		rewritten, result, err := sanitizeThreadForkResponse(payload)
+		if err != nil {
+			p.forgetPending(frame.ID)
+			return payload, false, &appServerGatewayPolicyError{
+				id: frame.ID, message: err.Error(), target: "client",
+			}
+		}
+		p.completePendingThreadResponse(key, pending, p.threadsFromResult(result, pending))
+		return rewritten, true, nil
+	}
 	if pending.method == "thread/read" {
 		if err := p.validateReadOnlyThreadResponse(frame.Result, pending); err != nil {
 			p.forgetPending(frame.ID)
@@ -307,6 +355,179 @@ func (p *appServerGatewayPolicy) approvalObservationSnapshot() (
 		pending[requestID] = request
 	}
 	return active, pending
+}
+
+func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error) {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response 无效")
+	}
+	var result map[string]json.RawMessage
+	if raw := response["result"]; len(raw) == 0 || json.Unmarshal(raw, &result) != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.result 必须是对象")
+	}
+	var thread map[string]json.RawMessage
+	if raw := result["thread"]; len(raw) == 0 || json.Unmarshal(raw, &thread) != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.thread 必须是对象")
+	}
+	// excludeTurns 是主路径；这里再做响应侧兜底，避免旧 App Server
+	// 忽略该字段时把完整历史写向移动端并阻塞同连接上的后续小 RPC。
+	thread["turns"] = json.RawMessage(`[]`)
+	threadRaw, err := json.Marshal(thread)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.thread 无法裁剪")
+	}
+	result["thread"] = threadRaw
+	resultRaw, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response.result 无法裁剪")
+	}
+	response["result"] = resultRaw
+	rewritten, err := json.Marshal(response)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread/fork response 无法裁剪")
+	}
+	return rewritten, resultRaw, nil
+}
+
+// 下行门禁适用于我们自己拥有的两条 runtime。未知 runtime 保持既有透传语义
+// （见 TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude 的
+// unknown-runtime-passthrough 子用例）：那是一个独立的产品决定，新接入 runtime 时
+// 应当显式纳入这里，而不是靠这个函数悄悄改变语义。
+func (p *appServerGatewayPolicy) enforcesInboundThreadAuthorization() bool {
+	switch normalizeAppServerRuntimeID(p.runtimeID) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+// 无 thread 归属、因而无法按 thread 授权的全局通知。Codex 与 Claude 共用这一份：
+// Claude bridge 目前只发其中的 account/rateLimits/updated，多出的两条它不会发，
+// 放在这里不扩大暴露面。新增任何全局通知都必须显式登记，否则会被静默丢弃。
+var inboundGlobalNotificationMethods = map[string]struct{}{
+	"account/rateLimits/updated":      {},
+	"mcpServer/startupStatus/updated": {},
+	"deprecationNotice":               {},
+}
+
+func (p *appServerGatewayPolicy) inboundServerRequestAllowed(rawParams json.RawMessage) bool {
+	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
+	_, ok := p.allowedThread(threadID)
+	return ok
+}
+
+func (p *appServerGatewayPolicy) inboundNotificationAllowed(frame *appServerGatewayFrame) bool {
+	method := strings.TrimSpace(frame.Method)
+	if _, ok := inboundGlobalNotificationMethods[method]; ok {
+		return true
+	}
+	// serverRequest/replay 是 Claude 重连时的挂起请求信封，顶层没有 threadId：
+	// 授权必须按 outstanding 条目逐个判定（见 sanitizeReplayedServerRequests）。
+	// 整帧丢弃会打断重连恢复，整帧放行又会泄露未授权 thread 的挂起请求。
+	if method == claudeBridgeServerRequestReplayMethod {
+		return true
+	}
+	if method == "serverRequest/resolved" {
+		return p.inboundResolvedNotificationAllowed(frame.Params)
+	}
+	threadID := appServerGatewayThreadIDFromParams(frame.Params)
+	if method == "thread/started" {
+		return p.allowInboundStartedThread(frame.Params, threadID)
+	}
+	_, ok := p.allowedThread(threadID)
+	return ok
+}
+
+func appServerGatewayThreadIDFromParams(rawParams json.RawMessage) string {
+	params, err := decodeGatewayParams(rawParams)
+	if err != nil {
+		return ""
+	}
+	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
+		if threadID, _ := gatewayStringParam(params, key); threadID != "" {
+			return threadID
+		}
+	}
+	if thread, ok := params["thread"].(map[string]any); ok {
+		for _, key := range []string{"id", "threadId", "thread_id", "sessionId", "session_id"} {
+			if threadID, _ := gatewayStringParam(thread, key); threadID != "" {
+				return threadID
+			}
+		}
+	}
+	return ""
+}
+
+func (p *appServerGatewayPolicy) allowInboundStartedThread(rawParams json.RawMessage, threadID string) bool {
+	params, err := decodeGatewayParams(rawParams)
+	if err != nil || threadID == "" || p.router == nil {
+		return false
+	}
+	// 共享 App Server 会把其他本地客户端创建的 thread 广播到所有连接。
+	// cwd 白名单只能证明目录可访问，不能证明这个 thread 属于当前 Bearer
+	// Token。新 thread 必须先通过本连接请求的响应进入授权表；这里仅校验并
+	// 转发已经授权的 thread/started，避免跨客户端把广播误登记为本连接会话。
+	allowed, ok := p.allowedThread(threadID)
+	if !ok {
+		return false
+	}
+	thread, _ := params["thread"].(map[string]any)
+	cwd, _ := gatewayStringParam(thread, "cwd")
+	if cwd == "" {
+		cwd, _ = gatewayStringParam(thread, "path")
+	}
+	if cwd == "" {
+		cwd, _ = gatewayStringParam(params, "cwd")
+	}
+	if cwd == "" || cwd != strings.TrimSpace(cwd) || !filepath.IsAbs(cwd) {
+		return false
+	}
+	scope, ok := p.router.gatewayScopeForPath(cwd)
+	if !ok || scope.id != allowed.scopeID {
+		return false
+	}
+	return true
+}
+
+func (p *appServerGatewayPolicy) inboundResolvedNotificationAllowed(rawParams json.RawMessage) bool {
+	threadID, _, _ := appServerGatewayServerRequestScope(rawParams)
+	if _, ok := p.allowedThread(threadID); ok {
+		return true
+	}
+	for _, key := range gatewayResolutionRequestKeys(rawParams) {
+		p.mu.Lock()
+		pending, ok := p.pendingServerRequests[key]
+		p.mu.Unlock()
+		if ok {
+			if _, allowed := p.allowedThread(pending.threadID); allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gatewayResolutionRequestKeys(rawParams json.RawMessage) []string {
+	var params struct {
+		RequestID  json.RawMessage `json:"requestId"`
+		RequestID2 json.RawMessage `json:"request_id"`
+		ID         json.RawMessage `json:"id"`
+		ApprovalID json.RawMessage `json:"approvalId"`
+		ItemID     json.RawMessage `json:"itemId"`
+		ItemID2    json.RawMessage `json:"item_id"`
+	}
+	if json.Unmarshal(rawParams, &params) != nil {
+		return nil
+	}
+	keys := make([]string, 0, 6)
+	for _, id := range []json.RawMessage{params.RequestID, params.RequestID2, params.ID, params.ApprovalID, params.ItemID, params.ItemID2} {
+		if key := gatewayRequestIDKey(rawMessagePointer(id)); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func (p *appServerGatewayPolicy) resolveGlobalListCursor(params map[string]any) error {
@@ -731,8 +952,11 @@ func copyGatewaySearchCursor(dst map[string]any, src map[string]json.RawMessage,
 func appServerServerRequestAllowed(runtimeID string, method string) bool {
 	// Codex 与 Claude 都只开放 iOS 已实现的反向请求。bridge 是外部进程，未知方法同样必须
 	// fail closed，避免移动端无法响应时让 Claude turn 永久等待。
-	_ = runtimeID
-	_, ok := appServerAllowedServerRequestMethods[strings.TrimSpace(method)]
+	method = strings.TrimSpace(method)
+	if method == "item/tool/call" {
+		return normalizeAppServerRuntimeID(runtimeID) == "codex"
+	}
+	_, ok := appServerAllowedServerRequestMethods[method]
 	return ok
 }
 
@@ -817,6 +1041,64 @@ func (p *appServerGatewayPolicy) prunePendingClientRequestsLocked(now time.Time)
 // registered and `validateClientResponse` rejected the user's answer as "not
 // issued by app-server" — the prompt would come back after a reconnect and
 // then refuse to be answered.
+// sanitizeReplayedServerRequests 把 serverRequest/replay 的 outstanding 裁剪到
+// 当前连接已授权的 thread。信封本身要保留：它是 Claude 重连恢复挂起审批与补充
+// 信息卡的唯一通道，整帧丢掉会让用户重连后永远等不到那张卡。
+func (p *appServerGatewayPolicy) sanitizeReplayedServerRequests(payload []byte, frame *appServerGatewayFrame) ([]byte, bool) {
+	if !p.enforcesInboundThreadAuthorization() ||
+		strings.TrimSpace(frame.Method) != claudeBridgeServerRequestReplayMethod ||
+		len(frame.Params) == 0 {
+		return payload, false
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(frame.Params, &params) != nil {
+		return payload, false
+	}
+	rawOutstanding, ok := params["outstanding"]
+	if !ok {
+		return payload, false
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(rawOutstanding, &entries) != nil {
+		return payload, false
+	}
+	kept := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		var scoped struct {
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(entry, &scoped) != nil {
+			continue
+		}
+		if !p.inboundServerRequestAllowed(scoped.Params) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if len(kept) == len(entries) {
+		return payload, false
+	}
+	rewrittenOutstanding, err := json.Marshal(kept)
+	if err != nil {
+		return payload, false
+	}
+	params["outstanding"] = rewrittenOutstanding
+	rewrittenParams, err := json.Marshal(params)
+	if err != nil {
+		return payload, false
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(payload, &envelope) != nil {
+		return payload, false
+	}
+	envelope["params"] = rewrittenParams
+	rewritten, err := json.Marshal(envelope)
+	if err != nil {
+		return payload, false
+	}
+	return rewritten, true
+}
+
 func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServerGatewayFrame) {
 	if strings.TrimSpace(frame.Method) != claudeBridgeServerRequestReplayMethod || len(frame.Params) == 0 {
 		return
@@ -841,6 +1123,9 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 			// it unregistered keeps the pending table honest.
 			continue
 		}
+		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(entry.Params) {
+			continue
+		}
 		if err := p.rememberPendingServerRequest(entry.ID, entry.Method, entry.Params); err != nil {
 			log.Printf("claude bridge 重放 server request 登记失败 method=%s err=%v",
 				sanitizeGatewayDiagnostic(entry.Method), err)
@@ -849,6 +1134,10 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 }
 
 func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessage, method string, rawParams json.RawMessage) error {
+	return p.rememberPendingServerRequestWithClaim(id, method, rawParams, "")
+}
+
+func (p *appServerGatewayPolicy) rememberPendingServerRequestWithClaim(id *json.RawMessage, method string, rawParams json.RawMessage, claimKey string) error {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
 		return fmt.Errorf("app-server request 缺少 id")
@@ -879,6 +1168,7 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 		turnID:               turnID,
 		itemID:               itemID,
 		requestedPermissions: requestedPermissions,
+		dynamicToolClaimKey:  claimKey,
 		createdAt:            now,
 	}
 	return nil
@@ -893,6 +1183,15 @@ func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, stri
 	for _, key := range []string{"threadId", "thread_id", "sessionId", "session_id", "conversationId", "conversation_id"} {
 		if threadID, _ = gatewayStringParam(params, key); threadID != "" {
 			break
+		}
+	}
+	if threadID == "" {
+		if thread, ok := params["thread"].(map[string]any); ok {
+			for _, key := range []string{"id", "threadId", "thread_id", "sessionId", "session_id"} {
+				if threadID, _ = gatewayStringParam(thread, key); threadID != "" {
+					break
+				}
+			}
 		}
 	}
 	turnID, _ := gatewayStringParam(params, "turnId")
@@ -1101,6 +1400,9 @@ func (p *appServerGatewayPolicy) close() {
 	p.mu.Unlock()
 	for _, path := range paths {
 		p.router.releaseManagedWorktreePendingUse(path)
+	}
+	if p.router != nil {
+		p.router.abandonMimiTaskDynamicClaims(p)
 	}
 }
 

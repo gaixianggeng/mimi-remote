@@ -54,6 +54,12 @@ struct TokenStore {
     private let service = "com.gaixianggeng.mimiremote"
     private let legacyAccount = "agentd-token"
     private let profileAccountPrefix = "agentd-profile."
+    private let tailcatExperimentAccount = "tailcat-experiment-client-key.v1"
+    private let tailcatExperimentAddressAccount = "tailcat-experiment-address.v1"
+    private let tailcatProfileAddressAccountPrefix = "tailcat-profile-address.v1."
+    private let managedMobileInstallationIDAccount = "managed-mobile-installation-id.v1"
+    private let managedMobileRegisteredDeviceIDAccount = "managed-mobile-registered-device-id.v1"
+    private let managedMobileDeviceTokenAccountPrefix = "managed-mobile-device-token.v1."
     private let keychain: any KeychainOperating
 
     init(keychain: any KeychainOperating = SystemKeychainOperations()) {
@@ -66,6 +72,30 @@ struct TokenStore {
 
     func load(profileID: String) throws -> String {
         try load(account: profileAccount(for: profileID))
+    }
+
+    func loadTailcatExperimentPrivateKey() throws -> String {
+        try load(account: tailcatExperimentAccount)
+    }
+
+    func loadTailcatExperimentAddress() throws -> String {
+        try load(account: tailcatExperimentAddressAccount)
+    }
+
+    func loadTailcatAddress(profileID: String) throws -> String {
+        try load(account: tailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func loadManagedMobileDeviceToken(installationID: String) throws -> String {
+        try load(account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased())
+    }
+
+    func loadManagedMobileInstallationID() throws -> String {
+        try load(account: managedMobileInstallationIDAccount)
+    }
+
+    func loadManagedMobileRegisteredDeviceID() throws -> String {
+        try load(account: managedMobileRegisteredDeviceIDAccount)
     }
 
     private func load(account: String) throws -> String {
@@ -93,6 +123,49 @@ struct TokenStore {
 
     func save(_ token: String, profileID: String) throws {
         try save(token, account: profileAccount(for: profileID))
+    }
+
+    func saveTailcatExperimentPrivateKey(_ privateKey: String) throws {
+        try save(privateKey, account: tailcatExperimentAccount)
+    }
+
+    func saveTailcatExperimentAddress(_ address: String) throws {
+        try save(address, account: tailcatExperimentAddressAccount)
+    }
+
+    func saveTailcatAddress(_ address: String, profileID: String) throws {
+        try save(address, account: tailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func saveManagedMobileDeviceToken(_ token: String, installationID: String) throws {
+        try save(token, account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased())
+    }
+
+    func saveManagedMobileInstallationID(_ installationID: String) throws {
+        try save(installationID.lowercased(), account: managedMobileInstallationIDAccount)
+    }
+
+    func saveManagedMobileRegisteredDeviceID(_ deviceID: String) throws {
+        try save(deviceID, account: managedMobileRegisteredDeviceIDAccount)
+    }
+
+    func deleteTailcatExperimentAddress(allowMissing: Bool = true) throws {
+        try delete(account: tailcatExperimentAddressAccount, allowMissing: allowMissing)
+    }
+
+    func deleteTailcatAddress(profileID: String, allowMissing: Bool = true) throws {
+        try delete(account: tailcatProfileAddressAccountPrefix + profileID, allowMissing: allowMissing)
+    }
+
+    func deleteManagedMobileDeviceToken(installationID: String, allowMissing: Bool = true) throws {
+        try delete(
+            account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased(),
+            allowMissing: allowMissing
+        )
+    }
+
+    func deleteManagedMobileRegisteredDeviceID(allowMissing: Bool = true) throws {
+        try delete(account: managedMobileRegisteredDeviceIDAccount, allowMissing: allowMissing)
     }
 
     private func save(_ token: String, account: String) throws {

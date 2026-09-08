@@ -29,9 +29,15 @@ final class LockScreenApprovalStore: ObservableObject {
     private enum BindingError: LocalizedError {
         case previousClientUnavailable
         case previousProviderUnavailable
+		case providerChanged
 
         var errorDescription: String? {
-            L10n.text("ui.push_approval_result_unknown")
+			switch self {
+			case .providerChanged:
+				return L10n.text("ui.push_consent_required")
+			case .previousClientUnavailable, .previousProviderUnavailable:
+				return L10n.text("ui.push_approval_result_unknown")
+			}
         }
     }
 
@@ -40,6 +46,7 @@ final class LockScreenApprovalStore: ObservableObject {
         static let deviceID = "lockScreenApproval.deviceID"
         static let installation = "lockScreenApproval.installation"
         static let consentedHost = "lockScreenApproval.consentedHost"
+		static let consentedProviderURL = "lockScreenApproval.consentedProviderURL"
 		static let ticketExpiresAt = "lockScreenApproval.ticketExpiresAt"
 		static let registeredProfileID = "lockScreenApproval.registeredProfileID"
 		static let registeredProviderURL = "lockScreenApproval.registeredProviderURL"
@@ -53,6 +60,11 @@ final class LockScreenApprovalStore: ObservableObject {
 		let providerIsOfficial: Bool
 	}
 
+	private struct IdentityResolution {
+		let identity: PushInstallationIdentity
+		let resetCopiedBinding: Bool
+	}
+
     @Published private(set) var status: Status = .off
 	@Published private var hostSupportByProfileID: [String: HostSupport] = [:]
     /// 最近一次锁屏决策的结果。UI 必须如实展示冲突、过期与未知，
@@ -63,6 +75,7 @@ final class LockScreenApprovalStore: ObservableObject {
     private let center: UNUserNotificationCenter
     private let ticketStore: PushTicketStore
     private let environment: PushEnvironment
+	private let identity: PushInstallationIdentity?
 	private var deviceTokenContinuations: [CheckedContinuation<String, Error>] = []
 	private var cachedDeviceToken: String?
 	// MainActor 会在 await 期间重入。注册、Profile 切换和关闭必须经过同一条队列，
@@ -74,13 +87,37 @@ final class LockScreenApprovalStore: ObservableObject {
         defaults: UserDefaults = .standard,
         center: UNUserNotificationCenter = .current(),
         ticketStore: PushTicketStore = PushTicketStore(),
+		identityStore: PushInstallationIdentityStore = PushInstallationIdentityStore(),
         environment: PushEnvironment = .current()
     ) {
         self.defaults = defaults
         self.center = center
         self.ticketStore = ticketStore
         self.environment = environment
-        if isEnabled, let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date, expiry > Date() {
+		do {
+			let resolution = try Self.resolveIdentity(
+				defaults: defaults,
+				ticketStore: ticketStore,
+				identityStore: identityStore
+			)
+			identity = resolution.identity
+			if resolution.resetCopiedBinding {
+				Self.resetCopiedBinding(in: defaults)
+			}
+			defaults.removeObject(forKey: Key.deviceID)
+			defaults.removeObject(forKey: Key.installation)
+			if ticketStore.load() != nil {
+				Self.migrateLegacyConsentForCurrentBinding(in: defaults)
+			}
+		} catch {
+			// Keychain 读取失败时保持旧状态，且绝不生成临时身份去覆盖远端注册。
+			identity = nil
+			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
+		}
+        if identity != nil,
+		   isEnabled,
+		   let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
+		   expiry > Date() {
             status = .active(expiresAt: expiry)
         }
     }
@@ -89,13 +126,15 @@ final class LockScreenApprovalStore: ObservableObject {
 
     func isEnabled(for profileID: String?) -> Bool {
         guard isEnabled, let profileID else { return false }
-        return registeredProfileID == profileID
+		guard registeredProfileID == profileID else { return false }
+		guard hostSupport(for: profileID) != nil else { return true }
+		return registeredProviderMatchesCurrentProvider(for: profileID)
     }
 
-    /// 同意是给具体主机的。中转地址变化后必须重新征得同意，不能沿用旧的。
+	/// 同意绑定规范化后的完整 Provider URL。即使 host 相同，端口或路径改变也要重来。
 	func hasConsented(for profileID: String?) -> Bool {
-		guard let host = providerHost(for: profileID), !host.isEmpty else { return false }
-		return defaults.string(forKey: Key.consentedHost) == host
+		guard let providerURL = hostSupport(for: profileID)?.providerBaseURL else { return false }
+		return defaults.string(forKey: Key.consentedProviderURL) == providerURL
 	}
 
 	func hostSupportsPush(for profileID: String?) -> Bool {
@@ -110,10 +149,12 @@ final class LockScreenApprovalStore: ObservableObject {
 		hostSupport(for: profileID)?.providerIsOfficial == true
 	}
 
-    var deviceID: String { stableIdentifier(forKey: Key.deviceID, prefix: "dev") }
-	var installationID: String { stableIdentifier(forKey: Key.installation, prefix: "ins") }
+	var deviceID: String { identity?.deviceID ?? "" }
+	var installationID: String { identity?.installationID ?? "" }
 	var registeredProfileID: String? { defaults.string(forKey: Key.registeredProfileID) }
-	var registeredProviderURL: String? { defaults.string(forKey: Key.registeredProviderURL) }
+	var registeredProviderURL: String? {
+		Self.normalizedProviderURL(defaults.string(forKey: Key.registeredProviderURL))
+	}
 
     // MARK: - 状态刷新
 
@@ -121,19 +162,27 @@ final class LockScreenApprovalStore: ObservableObject {
 	func refreshHostSupport(client: AgentAPIClient, profileID: String) async {
 		do {
 			let response = try await client.pushStatus()
-			let providerBaseURL = response.providerURL?.isEmpty == false
+			let advertisedProviderURL = response.providerURL?.isEmpty == false
 				? response.providerURL
 				: PushProviderClient.defaultBaseURL
-			let provider = PushProviderClient(baseURL: providerBaseURL ?? "")
+			let providerBaseURL = Self.normalizedProviderURL(advertisedProviderURL)
+			let providerHost = providerBaseURL.flatMap { URL(string: $0)?.host }
 			let support = HostSupport(
-				enabled: response.enabled && response.providerConfigured,
+				enabled: response.enabled && response.providerConfigured && providerBaseURL != nil,
 				providerBaseURL: providerBaseURL,
-				providerHost: provider.host,
-				providerIsOfficial: provider.isOfficialService
+				providerHost: providerHost,
+				providerIsOfficial: providerBaseURL == Self.normalizedProviderURL(
+					PushProviderClient.defaultBaseURL
+				)
 			)
 			hostSupportByProfileID[profileID] = support
 			if !support.enabled, !isEnabled || registeredProfileID == profileID {
 				status = .unavailableOnHost
+			} else if isEnabled,
+					  registeredProfileID == profileID,
+					  !registeredProviderMatchesCurrentProvider(for: profileID) {
+				// 保留旧绑定以便显式换绑时回滚；这里只把开关呈现为需要重新同意。
+				status = .failed(message: L10n.text("ui.push_consent_required"))
 			} else if !isEnabled {
 				status = .off
 			} else if registeredProfileID == profileID,
@@ -156,10 +205,11 @@ final class LockScreenApprovalStore: ObservableObject {
 
     // MARK: - 开关
 
-    /// 记录用户对当前收件主机的同意。没有这一步不会注册任何东西。
+	/// 记录用户对当前完整 Provider URL 的同意。没有这一步不会注册任何东西。
 	func recordConsent(for profileID: String?) {
-		guard let host = providerHost(for: profileID) else { return }
-		defaults.set(host, forKey: Key.consentedHost)
+		guard let providerURL = hostSupport(for: profileID)?.providerBaseURL else { return }
+		defaults.set(providerURL, forKey: Key.consentedProviderURL)
+		defaults.removeObject(forKey: Key.consentedHost)
 	}
 
 	func enable(
@@ -220,33 +270,47 @@ final class LockScreenApprovalStore: ObservableObject {
 		previousClient: AgentAPIClient?,
 		previousClientProfileID: String?
 	) async {
+		guard let identity else {
+			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
+			return
+		}
 		let wasEnabled = isEnabled
 		let previousProfileID = registeredProfileID
 		let previousTicket = ticketStore.load()
-		let previousProviderURL = defaults.string(forKey: Key.registeredProviderURL)
+		let previousProviderURL = registeredProviderURL
 		let previousExpiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date
 		let needsProfileSwitch = previousProfileID != nil && previousProfileID != profileID
 		let support = hostSupportByProfileID[profileID]
-		guard let baseURL = providerURL ?? support?.providerBaseURL,
-			  support?.enabled == true || providerURL != nil else {
+		guard support?.enabled == true,
+			  let currentProviderURL = support?.providerBaseURL else {
 			status = .unavailableOnHost
 			return
 		}
-		let provider = PushProviderClient(baseURL: baseURL)
-		guard defaults.string(forKey: Key.consentedHost) == provider.host else {
+		guard let baseURL = Self.normalizedProviderURL(providerURL ?? currentProviderURL),
+			  baseURL == currentProviderURL else {
 			status = .failed(message: L10n.text("ui.push_consent_required"))
 			return
 		}
-		if needsProfileSwitch {
-			guard previousClient != nil,
-			      previousClientProfileID == previousProfileID,
-			      previousTicket != nil,
+		let needsProviderSwitch = previousProviderURL != nil && previousProviderURL != baseURL
+		let needsBindingSwitch = needsProfileSwitch || needsProviderSwitch
+		let provider = PushProviderClient(baseURL: baseURL)
+		guard defaults.string(forKey: Key.consentedProviderURL) == baseURL else {
+			status = .failed(message: L10n.text("ui.push_consent_required"))
+			return
+		}
+		if needsBindingSwitch {
+			guard previousTicket != nil,
 			      previousExpiry != nil else {
-				status = .failed(message: BindingError.previousClientUnavailable.localizedDescription)
+				status = .failed(message: BindingError.previousProviderUnavailable.localizedDescription)
 				return
 			}
 			if previousProviderURL == nil {
 				status = .failed(message: BindingError.previousProviderUnavailable.localizedDescription)
+				return
+			}
+			if needsProfileSwitch,
+			   previousClient == nil || previousClientProfileID != previousProfileID {
+				status = .failed(message: BindingError.previousClientUnavailable.localizedDescription)
 				return
 			}
 		}
@@ -265,12 +329,20 @@ final class LockScreenApprovalStore: ObservableObject {
 			}
 			registerNotificationInfrastructure()
 			let token = try await obtainDeviceToken()
+			guard providerIsAuthorized(baseURL, for: profileID) else {
+				defaults.set(wasEnabled, forKey: Key.enabled)
+				status = .failed(message: L10n.text("ui.push_consent_required"))
+				return
+			}
 			let ticket = try await provider.issueTicket(
 				deviceToken: token,
-				installation: installationID,
+				installation: identity.installationID,
 				environment: environment
 			)
 			issuedTicket = ticket.value
+			guard providerIsAuthorized(baseURL, for: profileID) else {
+				throw BindingError.providerChanged
+			}
 
 			if needsProfileSwitch {
 				guard let previousClient else {
@@ -278,22 +350,26 @@ final class LockScreenApprovalStore: ObservableObject {
 				}
 				// 同一安装只允许一个绑定。先撤销旧 agentd 注册，再提交新 Profile。
 				previousUnregistrationAttempted = true
-				try await previousClient.unregisterPushDevice(deviceID: deviceID)
+				try await previousClient.unregisterPushDevice(deviceID: identity.deviceID)
 			}
 
 			try ticketStore.save(ticket.value)
 			persistedNewTicket = true
 			newRegistrationAttempted = true
 			_ = try await client.registerPushDevice(
-				deviceID: deviceID,
+				deviceID: identity.deviceID,
 				ticket: ticket.value,
 				expiresAt: ticket.expiresAt,
 				platform: Self.currentPlatform
 			)
+			guard providerIsAuthorized(baseURL, for: profileID) else {
+				throw BindingError.providerChanged
+			}
 
-			if needsProfileSwitch,
+			if needsBindingSwitch,
 			   let previousTicket,
 			   let previousProviderURL {
+				// 新注册确认后再撤销旧 Ticket；撤销失败会进入下方回滚，避免静默双活。
 				try await PushProviderClient(baseURL: previousProviderURL).revokeTicket(previousTicket)
 			}
 
@@ -302,8 +378,10 @@ final class LockScreenApprovalStore: ObservableObject {
 			defaults.set(profileID, forKey: Key.registeredProfileID)
 			defaults.set(baseURL, forKey: Key.registeredProviderURL)
 			defaults.set(Self.deviceTokenFingerprint(token), forKey: Key.deviceTokenFingerprint)
-			status = .active(expiresAt: ticket.expiresAt)
-			if !needsProfileSwitch,
+			status = providerIsAuthorized(baseURL, for: profileID)
+				? .active(expiresAt: ticket.expiresAt)
+				: .failed(message: L10n.text("ui.push_consent_required"))
+			if !needsBindingSwitch,
 			   let previousTicket,
 			   previousTicket != ticket.value {
 				try? await PushProviderClient(baseURL: previousProviderURL ?? baseURL)
@@ -312,14 +390,14 @@ final class LockScreenApprovalStore: ObservableObject {
 		} catch {
 			// 远端响应丢失时也按“可能已经成功”处理，尽力撤销新绑定并恢复旧绑定。
 			if newRegistrationAttempted, needsProfileSwitch || previousTicket == nil {
-				try? await client.unregisterPushDevice(deviceID: deviceID)
+				try? await client.unregisterPushDevice(deviceID: identity.deviceID)
 			}
 			if newRegistrationAttempted,
 			   !needsProfileSwitch,
 			   let previousTicket,
 			   let previousExpiry {
 				_ = try? await client.registerPushDevice(
-					deviceID: deviceID,
+					deviceID: identity.deviceID,
 					ticket: previousTicket,
 					expiresAt: previousExpiry,
 					platform: Self.currentPlatform
@@ -330,7 +408,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			   let previousExpiry,
 			   let previousClient {
 				_ = try? await previousClient.registerPushDevice(
-					deviceID: deviceID,
+					deviceID: identity.deviceID,
 					ticket: previousTicket,
 					expiresAt: previousExpiry,
 					platform: Self.currentPlatform
@@ -360,6 +438,10 @@ final class LockScreenApprovalStore: ObservableObject {
 	}
 
 	private func performDisable(client: AgentAPIClient?, profileID: String?) async {
+		guard let identity else {
+			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
+			return
+		}
 		guard let profileID, registeredProfileID == profileID else {
 			// client 在入队前按 Profile 构造；等待期间绑定可能已切换，旧 client
 			// 不能注销当前绑定或清理它的本地状态。
@@ -373,13 +455,13 @@ final class LockScreenApprovalStore: ObservableObject {
 			return
 		}
 		let ticket = ticketStore.load()
-		let registeredProviderURL = defaults.string(forKey: Key.registeredProviderURL)
+		let registeredProviderURL = self.registeredProviderURL
 		if ticket != nil && registeredProviderURL == nil {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
 		}
 		do {
-			try await client.unregisterPushDevice(deviceID: deviceID)
+			try await client.unregisterPushDevice(deviceID: identity.deviceID)
 			if let ticket, let registeredProviderURL {
 				try await PushProviderClient(baseURL: registeredProviderURL).revokeTicket(ticket)
 			}
@@ -405,8 +487,11 @@ final class LockScreenApprovalStore: ObservableObject {
 		await withBindingOperation {
 			// 等待队列期间用户可能已经关闭功能或切换绑定，执行前必须重新确认。
 			guard isEnabled, registeredProfileID == profileID else { return }
-			let canRefreshRegisteredHost = registeredProviderURL != nil
-			guard hostSupportsPush(for: profileID) || canRefreshRegisteredHost else { return }
+			guard registeredProviderMatchesCurrentProvider(for: profileID),
+			      hasConsented(for: profileID) else {
+				status = .failed(message: L10n.text("ui.push_consent_required"))
+				return
+			}
 			if case .failed = status {
 				// 失败状态必须保持可重试，即使旧 Ticket 仍有较长的剩余时间。
 			} else if let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
@@ -432,6 +517,8 @@ final class LockScreenApprovalStore: ObservableObject {
 		await withBindingOperation {
 			guard isEnabled,
 			      registeredProfileID == profileID,
+			      registeredProviderMatchesCurrentProvider(for: profileID),
+			      hasConsented(for: profileID),
 			      let token = cachedDeviceToken,
 			      defaults.string(forKey: Key.deviceTokenFingerprint) != Self.deviceTokenFingerprint(token)
 			else {
@@ -672,6 +759,22 @@ final class LockScreenApprovalStore: ObservableObject {
 		return hostSupportByProfileID[profileID]
 	}
 
+	private func registeredProviderMatchesCurrentProvider(for profileID: String) -> Bool {
+		guard let support = hostSupport(for: profileID),
+		      support.enabled,
+		      let currentProviderURL = support.providerBaseURL,
+		      let registeredProviderURL else {
+			return false
+		}
+		return registeredProviderURL == currentProviderURL
+	}
+
+	private func providerIsAuthorized(_ providerURL: String, for profileID: String) -> Bool {
+		hostSupport(for: profileID)?.enabled == true
+			&& hostSupport(for: profileID)?.providerBaseURL == providerURL
+			&& defaults.string(forKey: Key.consentedProviderURL) == providerURL
+	}
+
 	private func acquireBindingOperation() async {
 		if !bindingOperationInFlight {
 			bindingOperationInFlight = true
@@ -690,13 +793,105 @@ final class LockScreenApprovalStore: ObservableObject {
 		bindingOperationWaiters.removeFirst().resume()
 	}
 
-	private func stableIdentifier(forKey key: String, prefix: String) -> String {
-        if let stored = defaults.string(forKey: key), !stored.isEmpty {
-            return stored
-        }
-        let minted = prefix + "-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        defaults.set(minted, forKey: key)
-		return minted
+	private static func resolveIdentity(
+		defaults: UserDefaults,
+		ticketStore: PushTicketStore,
+		identityStore: PushInstallationIdentityStore
+	) throws -> IdentityResolution {
+		if let stored = try identityStore.load() {
+			return IdentityResolution(identity: stored, resetCopiedBinding: false)
+		}
+		let localTicket = try ticketStore.loadRequired()
+		let hasBinding = hasStoredBinding(in: defaults)
+		if localTicket != nil,
+		   hasBinding,
+		   let legacy = PushInstallationIdentity.validated(
+			deviceID: defaults.string(forKey: Key.deviceID),
+			installationID: defaults.string(forKey: Key.installation)
+		   ) {
+			// ThisDeviceOnly Ticket 证明这是原设备上的版本升级，旧身份可以一次性迁入。
+			try identityStore.save(legacy)
+			return IdentityResolution(identity: legacy, resetCopiedBinding: false)
+		}
+		if localTicket != nil {
+			// 卸载后 Keychain 可能留下 Ticket，但 UserDefaults 已清空；身份损坏也会形成
+			// 同样的不可验证组合。删除的只是本地孤儿，绝不用复制来的 ID 操作远端。
+			try ticketStore.delete()
+		}
+		let fresh = PushInstallationIdentity.make()
+		try identityStore.save(fresh)
+		return IdentityResolution(
+			identity: fresh,
+			resetCopiedBinding: hasBinding
+		)
+	}
+
+	private static func hasStoredBinding(in defaults: UserDefaults) -> Bool {
+		defaults.bool(forKey: Key.enabled)
+			|| defaults.object(forKey: Key.ticketExpiresAt) != nil
+			|| defaults.string(forKey: Key.registeredProfileID) != nil
+			|| defaults.string(forKey: Key.registeredProviderURL) != nil
+			|| defaults.string(forKey: Key.deviceTokenFingerprint) != nil
+	}
+
+	private static func resetCopiedBinding(in defaults: UserDefaults) {
+		// 没有本机 Ticket 说明这是恢复副本或已丢失的绑定。只清本地副本，绝不拿
+		// 复制来的 deviceID 去注销或覆盖原设备。
+		defaults.set(false, forKey: Key.enabled)
+		for key in [
+			Key.ticketExpiresAt,
+			Key.registeredProfileID,
+			Key.registeredProviderURL,
+			Key.deviceTokenFingerprint,
+			Key.consentedHost,
+			Key.consentedProviderURL,
+		] {
+			defaults.removeObject(forKey: key)
+		}
+	}
+
+	private static func migrateLegacyConsentForCurrentBinding(in defaults: UserDefaults) {
+		defer { defaults.removeObject(forKey: Key.consentedHost) }
+		guard defaults.string(forKey: Key.consentedProviderURL) == nil,
+		      let legacyHost = defaults.string(forKey: Key.consentedHost)?.lowercased(),
+		      let registeredProviderURL = normalizedProviderURL(
+				defaults.string(forKey: Key.registeredProviderURL)
+		      ),
+		      URL(string: registeredProviderURL)?.host?.lowercased() == legacyHost else {
+			return
+		}
+		// 旧同意只升级为这台设备已经在用的确切 URL，绝不扩展到同 host 的新路径。
+		defaults.set(registeredProviderURL, forKey: Key.consentedProviderURL)
+	}
+
+	static func normalizedProviderURL(_ rawValue: String?) -> String? {
+		guard let rawValue else { return nil }
+		let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty,
+		      var components = URLComponents(string: trimmed),
+		      components.scheme?.lowercased() == "https",
+		      let host = components.host?.lowercased(),
+		      !host.isEmpty,
+		      components.user == nil,
+		      components.password == nil,
+		      components.query == nil,
+		      components.fragment == nil else {
+			return nil
+		}
+		components.scheme = "https"
+		components.host = host
+		if components.port == 443 {
+			components.port = nil
+		}
+		var path = components.percentEncodedPath
+		while path.count > 1, path.hasSuffix("/") {
+			path.removeLast()
+		}
+		if path == "/" {
+			path = ""
+		}
+		components.percentEncodedPath = path
+		return components.url?.standardized.absoluteString
 	}
 
 	private static func deviceTokenFingerprint(_ token: String) -> String {

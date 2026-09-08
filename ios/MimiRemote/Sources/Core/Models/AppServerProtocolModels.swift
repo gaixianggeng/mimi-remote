@@ -1,5 +1,106 @@
 import Foundation
 
+enum CodexMimiTasksToolCatalog {
+    static let namespace = "mimi_tasks"
+
+    static let appServerValue: CodexAppServerJSONValue = .array([.object([
+        "type": .string("namespace"),
+        "name": .string(namespace),
+        "description": .string("Manage user-visible, user-owned independent tasks in the current Mimi project. Use subagents for internal parallel work."),
+        "tools": .array([
+        tool(
+            "create_thread",
+            "Create a user-visible, user-owned independent task. Use only when the user explicitly asks for a separate task.",
+            properties: ["prompt": string("The task to run.", maximumLength: 20_000)],
+            required: ["prompt"]
+        ),
+        tool(
+            "list_threads",
+            "List user-visible independent tasks in the current project.",
+            properties: [
+                "limit": integer("Maximum number of threads, from 1 to 50.", minimum: 1, maximum: 50),
+            ]
+        ),
+        tool(
+            "read_thread",
+            "Read one user-visible independent task in the current project.",
+            properties: ["threadId": string("Thread identifier.", maximumLength: 256)],
+            required: ["threadId"]
+        ),
+        tool(
+            "send_message_to_thread",
+            "Continue one user-visible independent task in the current project.",
+            properties: [
+                "threadId": string("Thread identifier.", maximumLength: 256),
+                "prompt": string("Message to send.", maximumLength: 20_000),
+            ],
+            required: ["threadId", "prompt"]
+        ),
+        tool(
+            "wait_threads",
+            "Wait until an independent task completes, fails, needs attention, or the timeout expires.",
+            properties: [
+                "threadIds": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string"), "maxLength": .int(256)]),
+                    "minItems": .int(1),
+                    "maxItems": .int(8),
+                    "uniqueItems": .bool(true),
+                ]),
+                "timeoutMs": integer("Timeout in milliseconds, from 0 to 120000.", minimum: 0, maximum: 120_000),
+            ],
+            required: ["threadIds"]
+        ),
+        ]),
+    ])])
+
+    static func qualifiedName(_ function: String) -> String {
+        "\(namespace).\(function)"
+    }
+
+    private static func tool(
+        _ name: String,
+        _ description: String,
+        properties: [String: CodexAppServerJSONValue],
+        required: [String] = []
+    ) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("function"),
+            "name": .string(name),
+            "description": .string(description),
+            "inputSchema": .object([
+                "type": .string("object"),
+                "properties": .object(properties),
+                "required": .array(required.map(CodexAppServerJSONValue.string)),
+                "additionalProperties": .bool(false),
+            ]),
+        ])
+    }
+
+    private static func string(_ description: String, maximumLength: Int) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("string"),
+            "description": .string(description),
+            "minLength": .int(1),
+            "maxLength": .int(Int64(maximumLength)),
+        ])
+    }
+
+    private static func integer(
+        _ description: String,
+        minimum: Int,
+        maximum: Int
+    ) -> CodexAppServerJSONValue {
+        .object([
+            "type": .string("integer"),
+            "description": .string(description),
+            "minimum": .int(Int64(minimum)),
+            "maximum": .int(Int64(maximum)),
+        ])
+    }
+}
+
+
 // Codex app-server JSON-RPC 消息与请求构建器，字段兼容逻辑保持原样。
 // 多个 app-server DTO 需要同一空字符串兼容规则，保持 module-internal。
 extension String {
@@ -407,9 +508,27 @@ struct CodexAppServerRequestBuilder {
 
     /// 无 cwd 列表只用于 agentd 的受控全局发现。客户端不携带项目过滤器，也不
     /// 依赖 experimental parent/ancestor API；路径与仓库身份裁剪完全由 gateway 完成。
+    /// Claude bridge 没有 thread/search，搜索走 thread/list 的 searchTerm
+    /// （bridge 早已支持，gateway 也已放行）。这里不带 cursor：搜索按单页返回，
+    /// 翻页仍由 Codex 的 thread/search 驱动，避免引入跨 Runtime 的分页状态机。
+    func searchThreadListGlobally(
+        query: String,
+        limit: Int? = 50
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
+            "limit": limit.map { .int(Int64($0)) },
+            "searchTerm": .string(query),
+            "sortKey": .string("updated_at"),
+            "sortDirection": .string("desc"),
+            "archived": .bool(false),
+            "useStateDbOnly": .bool(false)
+        ]))
+    }
+
     func controlledGlobalThreadList(
         limit: Int? = 50,
-        cursor: String? = nil
+        cursor: String? = nil,
+        useStateDBOnly: Bool = false
     ) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
             "limit": limit.map { .int(Int64($0)) },
@@ -426,7 +545,7 @@ struct CodexAppServerRequestBuilder {
                 .string("subAgent"),
             ]),
             "archived": .bool(false),
-            "useStateDbOnly": .bool(false)
+            "useStateDbOnly": .bool(useStateDBOnly)
         ]))
     }
 
@@ -513,6 +632,9 @@ struct CodexAppServerRequestBuilder {
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
         }
+        if options.registersMimiTaskTools {
+            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
+        }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
     }
@@ -525,6 +647,9 @@ struct CodexAppServerRequestBuilder {
         var params = safeThreadRuntimeParams(cwd: path)
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
+        }
+        if options.registersMimiTaskTools {
+            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
         }
         params["effort"] = options.reasoningEffort.map { .string($0.rawValue) }
         params["summary"] = options.reasoningSummary.map { .string($0.rawValue) }
@@ -613,6 +738,7 @@ struct CodexAppServerRequestBuilder {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
         params["threadId"] = .string(threadID)
+        params["excludeTurns"] = .bool(true)
         params["lastTurnId"] = lastTurnID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .appServerNilIfEmpty
@@ -630,6 +756,28 @@ struct CodexAppServerRequestBuilder {
             "threadId": .string(threadID),
             "includeTurns": .bool(includeTurns)
         ]))
+    }
+
+    func threadSettingsUpdate(
+        threadID: String,
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let turnParams = options.turnParams(projectPath: path)
+        var params: [String: CodexAppServerJSONValue?] = [
+            "threadId": .string(threadID)
+        ]
+        // 共享队列不接收 turn 级设置。只把本轮明确支持的运行设置提升为 Thread 设置，
+        // 权限、输出结构和自定义指令仍走各自的受控链路，不能在普通消息里顺带改写。
+        for key in ["model", "effort", "collaborationMode"] {
+            params[key] = turnParams[key] ?? nil
+        }
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(
+            method: "thread/settings/update",
+            params: .object(params.compactMapValues { $0 })
+        )
     }
 
     func threadQueueAdd(

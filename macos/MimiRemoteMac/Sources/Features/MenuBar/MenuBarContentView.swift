@@ -78,7 +78,6 @@ struct MenuBarContentView: View {
                     isEnabled: store.status != nil
                 ) {
                     presentWindow(.pairing)
-                    Task { await store.refreshPairing() }
                 }
 
                 Divider()

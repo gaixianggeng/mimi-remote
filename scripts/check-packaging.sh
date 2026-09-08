@@ -41,6 +41,8 @@ for required_file in \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
   scripts/install-linux.sh \
+  scripts/install-linux-tray.sh \
+  scripts/test-install-linux-tray.sh \
   scripts/ios-dev.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
@@ -70,6 +72,8 @@ bash -n \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/install-linux.sh \
+  scripts/install-linux-tray.sh \
+  scripts/test-install-linux-tray.sh \
   scripts/test-install-linux.sh \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
@@ -78,6 +82,7 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
 bash ./scripts/test-install-linux.sh >/dev/null
+bash ./scripts/test-install-linux-tray.sh >/dev/null
 
 if [[ -f SKILL.md ]] && ! cmp -s SKILL.md packaging/skill/install-mimi-remote/SKILL.md; then
   fail "根 SKILL.md 与独立 Skill 包内容不一致。"
@@ -104,10 +109,16 @@ bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
 rm -rf "$skill_dist"
 trap - EXIT
 
+for tray_file in scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
+  [[ -f "$tray_file" ]] || fail "缺少 Linux 托盘文件 $tray_file。"
+  grep -Fq "$tray_file" .goreleaser.yml || fail "Linux 归档没有包含 $tray_file。"
+done
+grep -Fq 'binary: mimi-remote-tray' .goreleaser.yml || fail "Linux 发布缺少托盘二进制。"
+
 service_file="packaging/systemd/mimi-remote.service"
 grep -Fqx 'ExecStart=%h/.local/bin/agentd serve --config %h/.config/mimi-remote/config.json' "$service_file" \
   || fail "systemd ExecStart 没有固定使用用户安装目录和 mimi-remote 默认配置。"
-grep -Fqx 'Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin' "$service_file" \
+grep -Fqx 'Environment=PATH=%h/.local/bin:%h/.npm-global/bin:%h/.local/share/mise/shims:%h/.local/share/mise/installs/codex/latest/bin:/usr/local/bin:/usr/bin:/bin' "$service_file" \
   || fail "systemd PATH 缺少用户二进制目录或系统目录。"
 grep -Fqx 'UMask=0077' "$service_file" \
   || fail "systemd service 没有使用私有文件 umask。"
@@ -178,6 +189,10 @@ grep -Fq -- '--require-team-signing' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有提供 App/agentd/bridge Team ID 一致性校验。"
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
+grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
+grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
 ! grep -Fq 'com.apple.security.personal-information.photos-library' \
   macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
   || fail "Mac App 仍声明已移除的照片图库 entitlement。"
@@ -193,6 +208,10 @@ grep -Fq 'main_executable_count' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Contents/MacOS 主可执行文件唯一性。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
+grep -Fq 'TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Tailcat。"
+grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有逐个校验 App 内 Mach-O 签名。"
 grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有读取 agentd 的 Claude bridge 最低版本。"
 grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/check-macos-installer.sh \
@@ -218,9 +237,11 @@ grep -Fq 'scripts/check-windows-installer.ps1' .github/workflows/release.yml \
 grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
   || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
 grep -Fq 'Upload verified Windows installer' .github/workflows/release.yml \
-  || fail "Release workflow 没有保留 Windows 兼容性验证 artifact。"
-! grep -Fq 'publish-windows:' .github/workflows/release.yml \
-  || fail "MIM-207 期间不得公开发布 Windows agentd 安装包。"
+  || fail "Release workflow 没有保留已验证的 Windows artifact。"
+grep -Fq 'publish-windows:' .github/workflows/release.yml \
+  || fail "Release workflow 没有公开发布 Windows 安装包。"
+grep -Fq 'gh release upload $env:RELEASE_TAG $files.FullName --clobber' .github/workflows/release.yml \
+  || fail "Windows 发布 job 没有上传已验证安装包、摘要和元数据。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

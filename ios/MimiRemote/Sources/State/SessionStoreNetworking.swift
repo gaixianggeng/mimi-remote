@@ -139,6 +139,7 @@ protocol SessionStoreAPIClient {
     func sessionsPage(projectID: String?, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func sessionsPage(workspace: AgentWorkspace, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage
+    func controlledGlobalSessionsPage(runtimeProvider: String, cursor: String?, limit: Int?) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
     func threadGoal(threadID: String) async throws -> ThreadGoal?
@@ -211,6 +212,16 @@ extension SessionStoreAPIClient {
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
         SessionsPage(sessions: [])
+    }
+
+    /// 默认忽略 runtime 维度，回落到单一 runtime 的实现：既有 mock 与只服务 Codex
+    /// 的客户端无需改动。真正按 runtime 分头请求的是路由 facade。
+    func controlledGlobalSessionsPage(
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
+        try await controlledGlobalSessionsPage(cursor: cursor, limit: limit)
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {

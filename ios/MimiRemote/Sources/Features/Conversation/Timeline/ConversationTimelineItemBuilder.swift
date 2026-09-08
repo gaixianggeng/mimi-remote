@@ -305,7 +305,7 @@ struct ConversationTimelineItemBuilder {
             return true
         case .approval, .userInput:
             return isResolvedInteractionMessage(message)
-        case .commentary, .plan, .error, .message:
+        case .commentary, .plan, .warning, .error, .message:
             return false
         }
     }
@@ -319,7 +319,7 @@ struct ConversationTimelineItemBuilder {
         case .userInput:
             return content.hasPrefix(L10n.text("ui.additional_information_has_been_submitted")) || content.hasPrefix(L10n.text("ui.boot_input_submitted")) ||
                 content.hasPrefix(L10n.text("ui.additional_information_skipped")) || content.hasPrefix(L10n.text("ui.boot_input_skipped"))
-        case .message, .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .error:
+        case .message, .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .warning, .error:
             return false
         }
     }

@@ -82,6 +82,90 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
         )
     }
 
+    func testConnectionDiagnosticsNetworkPathKeepsIntrinsicHeightInsideExpandedForm() throws {
+        let previousLanguage = UserDefaults.standard.string(forKey: AppLanguage.preferenceKey)
+        UserDefaults.standard.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
+        defer {
+            if let previousLanguage {
+                UserDefaults.standard.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+
+        let networkPath = try AgentAPIClient.decoder.decode(
+            TailscaleNetworkPathResponse.self,
+            from: Data(
+                #"{"kind":"derp","observed_at":"2026-08-30T10:00:00Z","relay_region":"NUE"}"#.utf8
+            )
+        )
+
+        let view = Form {
+            Section {
+                DisclosureGroup(isExpanded: .constant(true)) {
+                    LabeledContent("测试耗时", value: "17 秒")
+                    ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
+                    HStack {
+                        Text("最慢环节")
+                        Spacer()
+                        Text("基础连通 · 11 秒")
+                            .foregroundStyle(.orange)
+                    }
+                    HStack {
+                        Text("最近波动")
+                        Spacer()
+                        Text("基础连通 · 7 次采样")
+                    }
+                } label: {
+                    Text("连接诊断")
+                }
+            }
+        }
+        .frame(width: 393, height: 852)
+        .environment(\.dynamicTypeSize, .large)
+
+        assertFixed(view, named: "diagnostics-network-path-intrinsic-height", width: 393, height: 852)
+
+        let compactView = Form {
+            Section {
+                ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
+            }
+        }
+        .frame(width: 393, height: 180)
+        .environment(\.dynamicTypeSize, .large)
+
+        assertFixed(compactView, named: "diagnostics-network-path-single-line", width: 393, height: 180)
+    }
+
+    func testConnectionDiagnosticsNetworkPathWrapsLongEnglishDirectSummary() throws {
+        let previousLanguage = UserDefaults.standard.string(forKey: AppLanguage.preferenceKey)
+        UserDefaults.standard.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
+        defer {
+            if let previousLanguage {
+                UserDefaults.standard.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+
+        let networkPath = try AgentAPIClient.decoder.decode(
+            TailscaleNetworkPathResponse.self,
+            from: Data(
+                #"{"kind":"direct","observed_at":"2026-08-30T10:00:00Z","relay_region":null}"#.utf8
+            )
+        )
+
+        let view = Form {
+            Section {
+                ConnectionDiagnosticsNetworkPathRow(networkPath: networkPath)
+            }
+        }
+        .frame(width: 393, height: 180)
+        .environment(\.dynamicTypeSize, .large)
+
+        assertFixed(view, named: "diagnostics-network-path-english-direct-wrap", width: 393, height: 180)
+    }
+
     private func makeThemeStore() -> ThemeStore {
         let suite = "SettingsConnectionCardSnapshotTests.Theme.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -105,6 +189,32 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
                     precision: 0.98,
                     layout: .sizeThatFits
                 )
+            ),
+            named: name,
+            snapshotDirectory: referenceSnapshotDirectory,
+            file: file,
+            testName: testName,
+            line: line
+        ) {
+            XCTFail(failure, file: file, line: line)
+        }
+    }
+
+    private func assertFixed<V: View>(
+        _ view: V,
+        named name: String,
+        width: CGFloat,
+        height: CGFloat,
+        file: StaticString = #file,
+        testName: String = #function,
+        line: UInt = #line
+    ) {
+        if let failure = verifySnapshot(
+            of: view,
+            as: .image(
+                drawHierarchyInKeyWindow: true,
+                precision: 0.99,
+                layout: .fixed(width: width, height: height)
             ),
             named: name,
             snapshotDirectory: referenceSnapshotDirectory,

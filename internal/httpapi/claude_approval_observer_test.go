@@ -205,7 +205,12 @@ func TestClaudeApprovalObserverCloseCannotLeaveLatePendingAction(t *testing.T) {
 }
 
 func TestClaudeApprovalObserverRejectsSubmitAfterReplacementAndRestoresPending(t *testing.T) {
-	_, router, _ := buildAppServerGatewayFixture(t, "", nil)
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "claude", cwd: projectDir, scopeID: scope.id})
 	router.cfg.AppServer.Transport = "ws"
 	epoch := router.stopClaudeApprovalObserver("session-submit")
 	oldObserver := testClaudeApprovalObserver(t, router, "session-submit")

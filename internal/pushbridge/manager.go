@@ -240,37 +240,46 @@ func (m *Manager) fanoutResolved(ctx context.Context, action Action, excludeDevi
 	m.fanout(ctx, action, EventApprovalResolved, filtered)
 }
 
-// fanout 逐台设备投递。单台失败不影响其它设备；Provider 报告设备失效时直接
-// 删除本地注册，避免继续对死 Token 投递。
+// fanout 并行投递最多 8 台已注册设备。每台设备从同一时刻取得独立超时预算，
+// 单台慢请求不会耗尽后续设备的时间；Provider 报告设备失效时删除本地注册。
 func (m *Manager) fanout(ctx context.Context, action Action, event string, devices []Device) {
 	if len(devices) == 0 {
 		return
 	}
 	expiresAt := action.ExpiresAt.UTC().Format(time.RFC3339)
+	var deliveries sync.WaitGroup
 	for _, device := range devices {
-		notification := Notification{
-			Event:        event,
-			Ticket:       device.Ticket,
-			ActionID:     action.ID,
-			DeviceID:     device.ID,
-			ProfileID:    m.profile,
-			Runtime:      action.Runtime,
-			ApprovalKind: action.Kind,
-			HostTag:      m.hostTag,
-			SessionTag:   SessionTag(action.ThreadID),
-			ExpiresAt:    expiresAt,
-		}
-		if err := m.notifyer(ctx, notification); err != nil {
-			if errors.Is(err, ErrDeviceUnregistered) {
-				if _, removed, removeErr := m.devices.Remove(device.ID); removeErr != nil {
-					log.Printf("push bridge 删除失效设备失败 err=%v", removeErr)
-				} else if removed {
-					m.actions.RevokeDevice(device.ID)
-				}
-				continue
+		device := device
+		deliveries.Add(1)
+		go func() {
+			defer deliveries.Done()
+			deviceCtx, cancel := context.WithTimeout(ctx, providerTimeout)
+			defer cancel()
+			notification := Notification{
+				Event:        event,
+				Ticket:       device.Ticket,
+				ActionID:     action.ID,
+				DeviceID:     device.ID,
+				ProfileID:    m.profile,
+				Runtime:      action.Runtime,
+				ApprovalKind: action.Kind,
+				HostTag:      m.hostTag,
+				SessionTag:   SessionTag(action.ThreadID),
+				ExpiresAt:    expiresAt,
 			}
-			// 推送失败绝不阻塞 runtime，也不重试：前台链路仍然可用。
-			log.Printf("push bridge 投递失败 event=%s err=%v", event, err)
-		}
+			if err := m.notifyer(deviceCtx, notification); err != nil {
+				if errors.Is(err, ErrDeviceUnregistered) {
+					if _, removed, removeErr := m.devices.Remove(device.ID); removeErr != nil {
+						log.Printf("push bridge 删除失效设备失败 err=%v", removeErr)
+					} else if removed {
+						m.actions.RevokeDevice(device.ID)
+					}
+					return
+				}
+				// 推送失败绝不阻塞 runtime，也不重试：前台链路仍然可用。
+				log.Printf("push bridge 投递失败 event=%s err=%v", event, err)
+			}
+		}()
 	}
+	deliveries.Wait()
 }

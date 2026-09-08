@@ -334,50 +334,81 @@ func TestProviderRejectsTamperedAndRevokedTickets(t *testing.T) {
 	}
 }
 
-// APNs 报告 Token 失效时必须自动撤销，避免继续对死 Token 投递。
-func TestProviderAutoRevokesUnregisteredToken(t *testing.T) {
-	fake := newFakeAPNs(t)
-	_, httpServer := newTestServer(t, fake)
-	ticket := issueTestTicket(t, httpServer.URL)
-
-	fake.setResponse(http.StatusGone, "Unregistered")
-	status, _ := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
-	if status != http.StatusGone {
-		t.Fatalf("Unregistered 应回 410，got=%d", status)
-	}
-	fake.setResponse(http.StatusOK, "")
-	status, _ = postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
-	if status != http.StatusForbidden {
-		t.Fatalf("Unregistered 之后 Ticket 应已被撤销，got=%d", status)
-	}
-}
-
-func TestProviderKeepsTicketForRecoverableAPNsRejection(t *testing.T) {
+// APNs 明确报告 Device Token 永久不可用时，Provider 必须统一回 410 并撤销
+// Ticket。agentd 会把 410 映射为 ErrDeviceUnregistered，随后删除本地设备。
+func TestProviderAutoRevokesPermanentlyInvalidDeviceTokens(t *testing.T) {
 	for _, test := range []struct {
 		name   string
+		status int
 		reason string
 	}{
-		{name: "BadDeviceToken", reason: "BadDeviceToken"},
-		{name: "DeviceTokenNotForTopic", reason: "DeviceTokenNotForTopic"},
+		{name: "Unregistered", status: http.StatusGone, reason: "Unregistered"},
+		{name: "BadDeviceToken", status: http.StatusBadRequest, reason: "BadDeviceToken"},
+		{name: "DeviceTokenNotForTopic", status: http.StatusBadRequest, reason: "DeviceTokenNotForTopic"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fake := newFakeAPNs(t)
 			_, httpServer := newTestServer(t, fake)
 			ticket := issueTestTicket(t, httpServer.URL)
 
-			fake.setResponse(http.StatusBadRequest, test.reason)
+			fake.setResponse(test.status, test.reason)
+			status, _ := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+			if status != http.StatusGone {
+				t.Fatalf("永久失效 Token 应回 410，got=%d", status)
+			}
+
+			fake.setResponse(http.StatusOK, "")
+			status, _ = postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
+			if status != http.StatusForbidden {
+				t.Fatalf("永久失效 Token 之后 Ticket 应已撤销，got=%d", status)
+			}
+		})
+	}
+}
+
+func TestAPNsResultDoesNotClassifyConfigurationOrAuthErrorsAsDeviceFailure(t *testing.T) {
+	for _, reason := range []string{
+		"BadTopic",
+		"TopicDisallowed",
+		"ExpiredProviderToken",
+		"InvalidProviderToken",
+	} {
+		result := APNsResult{StatusCode: http.StatusGone, Reason: reason}
+		if result.Unregistered() {
+			t.Fatalf("配置或鉴权错误不能让 agentd 删除设备：reason=%s", reason)
+		}
+	}
+}
+
+func TestProviderKeepsTicketForConfigurationAndAuthRejections(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		reason string
+	}{
+		{name: "BadTopic", status: http.StatusBadRequest, reason: "BadTopic"},
+		{name: "TopicDisallowed", status: http.StatusForbidden, reason: "TopicDisallowed"},
+		{name: "ExpiredProviderToken", status: http.StatusForbidden, reason: "ExpiredProviderToken"},
+		{name: "InvalidProviderToken", status: http.StatusForbidden, reason: "InvalidProviderToken"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeAPNs(t)
+			_, httpServer := newTestServer(t, fake)
+			ticket := issueTestTicket(t, httpServer.URL)
+
+			fake.setResponse(test.status, test.reason)
 			status, body := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
 			if status != http.StatusOK || body["delivered"] != false {
-				t.Fatalf("APNs 400 应返回 delivered:false，status=%d body=%v", status, body)
+				t.Fatalf("配置或鉴权错误应返回 delivered:false，status=%d body=%v", status, body)
 			}
-			if body["reason"] != test.reason || body["apns_status"] != float64(http.StatusBadRequest) {
+			if body["reason"] != test.reason || body["apns_status"] != float64(test.status) {
 				t.Fatalf("必须保留 APNs 拒绝原因：%v", body)
 			}
 
 			fake.setResponse(http.StatusOK, "")
 			status, body = postJSON(t, httpServer.URL+"/v1/notify", approvalBody(ticket, nil))
 			if status != http.StatusOK || body["delivered"] != true {
-				t.Fatalf("400 拒绝不能永久撤销 Ticket，status=%d body=%v", status, body)
+				t.Fatalf("配置或鉴权错误不能撤销 Ticket，status=%d body=%v", status, body)
 			}
 		})
 	}

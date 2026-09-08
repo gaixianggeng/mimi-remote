@@ -71,7 +71,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
-    var onUserInputResponseFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private(set) var connectedSessionIDs: [SessionID] = []
@@ -466,6 +466,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private let requestLogLock = NSLock()
     private var requestedProjectIDsStorage: [String?] = []
     private var requestedWorkspaceIDsStorage: [String] = []
+    private var requestedWorkspaceCursorsStorage: [String?] = []
+    private var requestedWorkspaceLimitsStorage: [Int?] = []
 
     let projectsResult: [AgentProject]
     let projectsHandler: (() async throws -> [AgentProject])?
@@ -518,16 +520,24 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
+    let controlledGlobalSessionsByRuntimeHandler: ((String, String?, Int?) async throws -> SessionsPage)?
     let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
     /// 需要区分 unsupported / failed 时用这个；它优先于 snapshot 便捷 handler。
     let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let supportsLatestTurnHistoryPage: Bool
+    let latestTurnHistoryHandler: ((String) async throws -> HistoryMessagesPage?)?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
     var requestedWorkspaceIDs: [String] {
         requestLogLock.withLock { requestedWorkspaceIDsStorage }
+    }
+    var requestedWorkspaceCursors: [String?] {
+        requestLogLock.withLock { requestedWorkspaceCursorsStorage }
+    }
+    var requestedWorkspaceLimits: [Int?] {
+        requestLogLock.withLock { requestedWorkspaceLimitsStorage }
     }
     var requestedThreadSearchQueries: [String] {
         requestLogLock.withLock { requestedThreadSearchQueriesStorage }
@@ -541,6 +551,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestLogLock.withLock { requestedControlledGlobalCursorsStorage }
     }
     private var requestedControlledGlobalCursorsStorage: [String?] = []
+    var requestedControlledGlobalRuntimes: [String] {
+        requestLogLock.withLock { requestedControlledGlobalRuntimesStorage }
+    }
+    private var requestedControlledGlobalRuntimesStorage: [String] = []
     var requestedCapabilityPaths: [String?] = []
     var requestedCapabilityForceReloads: [Bool] = []
     var requestedResolvePaths: [String] = []
@@ -634,10 +648,12 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
+        controlledGlobalSessionsByRuntimeHandler: ((String, String?, Int?) async throws -> SessionsPage)? = nil,
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
-        supportsLatestTurnHistoryPage: Bool = true
+        supportsLatestTurnHistoryPage: Bool = true,
+        latestTurnHistoryHandler: ((String) async throws -> HistoryMessagesPage?)? = nil
     ) {
         self.projectsResult = projects
         self.projectsHandler = projectsHandler
@@ -693,10 +709,12 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
         self.controlledGlobalSessionsHandler = controlledGlobalSessionsHandler
+        self.controlledGlobalSessionsByRuntimeHandler = controlledGlobalSessionsByRuntimeHandler
         self.accountTokenUsageHandler = accountTokenUsageHandler
         self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
         self.supportsLatestTurnHistoryPage = supportsLatestTurnHistoryPage
+        self.latestTurnHistoryHandler = latestTurnHistoryHandler
     }
 
     func projects() async throws -> [AgentProject] {
@@ -1014,9 +1032,14 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         // 否则并发 append 会让 Array 内存损坏并掩盖真实业务结果。
         requestLogLock.withLock {
             requestedWorkspaceIDsStorage.append(workspace.id)
+            requestedWorkspaceCursorsStorage.append(cursor)
+            requestedWorkspaceLimitsStorage.append(limit)
         }
         if let error = workspaceSessionsError[workspace.id] {
             throw error
+        }
+        if let cursor, let page = cursorPages[cursor] {
+            return page
         }
         if let page = workspacePages[workspace.id] {
             return page
@@ -1055,10 +1078,27 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await controlledGlobalSessionsPage(runtimeProvider: "codex", cursor: cursor, limit: limit)
+    }
+
+    /// 受控全局发现现在按 runtime 各跑一趟。默认只有 codex 走既有 handler，
+    /// claude 返回空页，这样只关心 Codex 的既有用例语义保持不变；需要断言双
+    /// runtime 行为的用例传 controlledGlobalSessionsByRuntimeHandler。
+    func controlledGlobalSessionsPage(
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
         requestLogLock.withLock {
-            requestedControlledGlobalCursorsStorage.append(cursor)
+            requestedControlledGlobalRuntimesStorage.append(runtimeProvider)
+            if runtimeProvider == "codex" {
+                requestedControlledGlobalCursorsStorage.append(cursor)
+            }
         }
-        guard let controlledGlobalSessionsHandler else {
+        if let controlledGlobalSessionsByRuntimeHandler {
+            return try await controlledGlobalSessionsByRuntimeHandler(runtimeProvider, cursor, limit)
+        }
+        guard runtimeProvider == "codex", let controlledGlobalSessionsHandler else {
             return SessionsPage(sessions: [])
         }
         return try await controlledGlobalSessionsHandler(cursor, limit)
@@ -1227,6 +1267,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestedMessageSessionIDs.append(sessionID)
         requestedMessageCursors.append(nil)
         requestedMessageLimits.append(1)
+        if let latestTurnHistoryHandler {
+            return try await latestTurnHistoryHandler(sessionID)
+        }
         if let page = historyPages[sessionID] {
             return page
         }
@@ -1249,6 +1292,7 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var requestedSessionLimits: [Int?] = []
     var requestedSessionListConsistencies: [SessionListConsistency] = []
     var onSessionPageRequest: ((String?) -> Void)?
+    var sessionPageHandler: ((String?) async throws -> SessionsPage)?
 
     init(
         projects: [AgentProject],
@@ -1281,6 +1325,9 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
         requestedSessionCursors.append(cursor)
         requestedSessionLimits.append(limit)
         onSessionPageRequest?(cursor)
+        if let sessionPageHandler {
+            return try await sessionPageHandler(cursor)
+        }
         if let cursor, let page = cursorPages[cursor] {
             return page
         }

@@ -1,0 +1,71 @@
+{
+  "issue": "MIM-227",
+  "locale": "zh-Hans",
+  "appStoreUploadPerformed": false,
+  "files": [
+    {
+      "path": "imagegen-v2/upload/zh-Hans/iphone-6.5/01-conversation.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 3200102,
+      "sha256": "5004371e037b26c712c006de525596767a9c3c9d79993dd00ca8f55aa89a1d76"
+    },
+    {
+      "path": "imagegen-v2/upload/zh-Hans/iphone-6.5/02-sessions.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 2509360,
+      "sha256": "58b6cf3d65eca74106a63e7f37c557016faebbe80de876db8d706e5652ac2123"
+    },
+    {
+      "path": "imagegen-v2/upload/zh-Hans/iphone-6.5/03-workspace.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 2469609,
+      "sha256": "551bc90da308de90808e41e7c4aa691972c3c0b2368f5f272e53b5dc9e4fcf01"
+    },
+    {
+      "path": "imagegen-v2/upload/zh-Hans/iphone-6.5/04-connection.png",
+      "width": 1242,
+      "height": 2688,
+      "mode": "RGB",
+      "bytes": 2962444,
+      "sha256": "7e730e584cf2187f50a34d337baf38891b69bbb5885a55fd9c71e2d9fa71fdc4"
+    },
+    {
+      "path": "imagegen/upload/zh-Hans/ipad-13/01-conversation.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 3410020,
+      "sha256": "00ff6a1a5f00b6a35b553c59b1532863fde1c1797283ea19c54e9ecad0edbfc2"
+    },
+    {
+      "path": "imagegen/upload/zh-Hans/ipad-13/02-sessions.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 3203800,
+      "sha256": "a4835b390f3ea93164a70dd83e4171f891cffd5eaf77e7d54d9cda91c8160469"
+    },
+    {
+      "path": "imagegen/upload/zh-Hans/ipad-13/03-workspace.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 3263305,
+      "sha256": "3ecca78d8965d2eb927c2d66e1f466083240e61a4738bbd7c8f94b1acb5db6cf"
+    },
+    {
+      "path": "imagegen/upload/zh-Hans/ipad-13/04-connection.png",
+      "width": 2064,
+      "height": 2752,
+      "mode": "RGB",
+      "bytes": 3933835,
+      "sha256": "90fe942faaa9baad19eed64def6e02762bbf601e6e1eae79568ac49397df3e6f"
+    }
+  ]
+}

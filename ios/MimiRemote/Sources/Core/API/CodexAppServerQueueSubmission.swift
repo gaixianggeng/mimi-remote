@@ -54,6 +54,7 @@ extension CodexAppServerSessionRuntime {
 
         let config = try await ensureConfig()
         let requiredMethods = [
+            "thread/settings/update",
             "thread/queue/add",
             "thread/queue/list",
             "thread/items/list"
@@ -74,6 +75,28 @@ extension CodexAppServerSessionRuntime {
         )
 
         do {
+            _ = try await connection.send(
+                try builder.threadSettingsUpdate(
+                    threadID: sessionID,
+                    cwd: context.cwd,
+                    options: payload.options
+                ),
+                timeout: longRunningRequestTimeout
+            )
+        } catch {
+            // 设置是幂等赋值，但 ACK 丢失时不能猜测结果后继续入队。终止本次发送，
+            // 用户重试会再次写入同一设置，同时保证消息没有被重复提交。
+            await retireCurrentConnectionAfterRecoverableError(connection, error: error)
+            if let method = serverQueueUnavailableMethod(
+                from: error,
+                attemptedMethod: "thread/settings/update"
+            ) {
+                throw CodexAppServerSessionRuntimeError.serverQueueUnavailable(method)
+            }
+            throw error
+        }
+
+        do {
             let result = try await connection.send(
                 try builder.threadQueueAdd(
                     threadID: sessionID,
@@ -91,7 +114,10 @@ extension CodexAppServerSessionRuntime {
             }
             return (submissionID, nil)
         } catch {
-            if let method = serverQueueUnavailableMethod(from: error) {
+            if let method = serverQueueUnavailableMethod(
+                from: error,
+                attemptedMethod: "thread/queue/add"
+            ) {
                 throw CodexAppServerSessionRuntimeError.serverQueueUnavailable(method)
             }
             // queue/add 是写请求，任何错误都不能直接重发。只允许以同一 client id 做只读三段核对。
@@ -115,7 +141,7 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
-    func serverQueueUnavailableMethod(from error: Error) -> String? {
+    func serverQueueUnavailableMethod(from error: Error, attemptedMethod: String) -> String? {
         guard case CodexAppServerConnectionError.appServer(let appError) = error else {
             return nil
         }
@@ -123,14 +149,58 @@ extension CodexAppServerSessionRuntime {
         if appError.code == -32601
             || message.contains("experimentalapi")
             || message.contains("experimental api")
-            || (message.contains("thread/queue/add")
+            || (message.contains(attemptedMethod)
                 && (message.contains("unsupported")
                     || message.contains("not supported")
                     || message.contains("not found")
                     || message.contains("not allowed"))) {
-            return "thread/queue/add"
+            return attemptedMethod
         }
         return nil
+    }
+
+    func mimiTaskQueuedDeliveryTerminal(
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID
+    ) async throws -> Bool {
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        let config = try await ensureConfig()
+        for method in ["thread/queue/list", "thread/items/list", "thread/turns/list"]
+        where !config.policy.allowedMethods.contains(method) {
+            throw CodexAppServerSessionRuntimeError.serverQueueUnavailable(method)
+        }
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(config.projects, context: context)
+        )
+        let connection = try await ensureConnection()
+        try await ensureThreadResumedOnConnection(
+            sessionID: sessionID,
+            cwd: context.cwd,
+            builder: builder,
+            connection: connection
+        )
+        if try await queuedSubmissionID(
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            builder: builder,
+            connection: connection
+        ) != nil {
+            return false
+        }
+        guard let turnID = try await persistedUserItemTurnID(
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            builder: builder,
+            connection: connection
+        ) else { return false }
+        return try await listedTurnIsTerminal(
+            sessionID: sessionID,
+            turnID: turnID,
+            builder: builder,
+            connection: connection
+        )
     }
 }
 
@@ -230,5 +300,31 @@ private extension CodexAppServerSessionRuntime {
             cursor = object["nextCursor"]?.stringValue
         } while cursor?.isEmpty == false
         return nil
+    }
+
+    func listedTurnIsTerminal(
+        sessionID: SessionID,
+        turnID: TurnID,
+        builder: CodexAppServerRequestBuilder,
+        connection: CodexAppServerConnection
+    ) async throws -> Bool {
+        var cursor: String?
+        repeat {
+            let result = try await connection.send(
+                builder.threadTurnsList(threadID: sessionID, cursor: cursor),
+                timeout: longRunningRequestTimeout
+            )
+            let object = result?.objectValue ?? [:]
+            for turn in object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            where turn["id"]?.stringValue == turnID {
+                let status = turn["status"]?.stringValue
+                    ?? turn["status"]?.objectValue?["type"]?.stringValue
+                    ?? ""
+                return ["completed", "failed", "cancelled", "canceled", "interrupted"]
+                    .contains(status.lowercased())
+            }
+            cursor = object["nextCursor"]?.stringValue
+        } while cursor?.isEmpty == false
+        return false
     }
 }
