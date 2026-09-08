@@ -17,6 +17,7 @@ private enum MenuBarLayout {
 
 struct MenuBarContentView: View {
     let store: HostStore
+    let updates: AppUpdateStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
@@ -28,6 +29,8 @@ struct MenuBarContentView: View {
                 isRefreshing: store.isRefreshingStatus || store.isBusy,
                 refresh: refreshStatus
             )
+
+            AppUpdateNotice(updates: updates)
 
             if let status = store.status {
                 Divider()
@@ -104,6 +107,21 @@ struct MenuBarContentView: View {
                     // 菜单首层只导航，不直接切换实验开关：配置执行需要保留
                     // HostStore 的单 writer、确认和重启语义，避免误触改变服务状态。
                     presentWindow(.experiments)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
+                MenuActionRow(
+                    title: updates.isChecking ? "正在检查更新…" : "检查更新…",
+                    systemImage: "arrow.down.circle",
+                    isEnabled: !updates.isChecking,
+                    isWorking: updates.isChecking
+                ) {
+                    openSettings()
+                    activateApplication()
+                    Task { await updates.check(manual: true) }
                 }
 
                 Divider()
@@ -1124,10 +1142,10 @@ private final class MenuBarWindowProbeView: NSView {
 
 #if DEBUG
     #Preview("菜单栏 · 等待迁移") {
-        MenuBarContentView(store: .preview(.migrationRequired))
+        MenuBarContentView(store: .preview(.migrationRequired), updates: AppUpdateStore())
     }
 
     #Preview("菜单栏 · 服务可用") {
-        MenuBarContentView(store: .preview(.ready))
+        MenuBarContentView(store: .preview(.ready), updates: AppUpdateStore())
     }
 #endif

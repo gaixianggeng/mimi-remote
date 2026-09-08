@@ -2,11 +2,16 @@ import SwiftUI
 
 struct MacSettingsView: View {
     let store: HostStore
+    let updates: AppUpdateStore
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
     var body: some View {
         Form {
+            Section("软件更新") {
+                AppUpdateView(updates: updates)
+            }
+
             Section("启动") {
                 Toggle("登录 Mac 时启动菜单栏和服务", isOn: Binding(
                     get: { store.launchesAtLogin },

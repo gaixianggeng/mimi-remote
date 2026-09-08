@@ -15,6 +15,7 @@ enum MimiRemoteMacMain {
 
 struct MimiRemoteMacApp: App {
     @State private var store: HostStore
+    @State private var updates: AppUpdateStore
 
     init() {
 #if DEBUG
@@ -25,21 +26,31 @@ struct MimiRemoteMacApp: App {
         let store = HostStore.live()
 #endif
         _store = State(initialValue: store)
+        let updates = AppUpdateStore()
+        _updates = State(initialValue: updates)
 #if DEBUG
         guard !usesSeedUI else { return }
 #endif
         Task { @MainActor in
             await store.bootstrap()
         }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            Task { await updates.runAutomaticChecks() }
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContentView(store: store)
+            MenuBarContentView(store: store, updates: updates)
         } label: {
             // 菜单栏使用稳定的品牌标记，服务状态交由弹窗内的语义图标表达。
-            MimiMenuBarMark()
-                .accessibilityLabel("Mimi Remote Mac：\(store.lifecycle.title)")
+            HStack(spacing: 2) {
+                MimiMenuBarMark()
+                if updates.showsUpdateNotice {
+                    Image(systemName: "arrow.down.circle")
+                }
+            }
+            .accessibilityLabel("Mimi Remote Mac：\(store.lifecycle.title)\(updates.showsUpdateNotice ? "，有新版本可更新" : "")")
         }
         .menuBarExtraStyle(.window)
 
@@ -64,7 +75,7 @@ struct MimiRemoteMacApp: App {
         .defaultSize(width: 500, height: 680)
 
         Settings {
-            MacSettingsView(store: store)
+            MacSettingsView(store: store, updates: updates)
         }
     }
 }

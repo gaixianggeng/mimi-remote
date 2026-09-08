@@ -4,7 +4,7 @@
 
 把原本隐藏在终端和 Homebrew service 后面的 Mac 端能力，收敛为一个轻量菜单栏 App。App 负责状态、设置、配对、诊断与系统服务生命周期；Go `agentd` 继续负责协议、安全边界和 Codex / Claude Runtime，不重复实现后端。
 
-源码开发需要 macOS 26、Xcode 27、XcodeGen 和 Go 1.25。正式 Release 通过 GitHub Actions 生成 universal DMG，对 App、内嵌 `agentd` 和磁盘镜像使用 Developer ID 签名，并完成 Apple Notarization；自动更新暂不进入首个安装包闭环。
+源码开发需要 macOS 26、Xcode 27、XcodeGen 和 Go 1.25。正式 Release 通过 GitHub Actions 生成 universal DMG，对 App、内嵌 `agentd` 和磁盘镜像使用 Developer ID 签名，并完成 Apple Notarization；App 提供新版本检查与下载入口，安装仍由用户通过 DMG 完成。
 
 ## 方案
 
@@ -114,4 +114,9 @@ bash scripts/check-macos-installer.sh \
 - 文件浏览范围默认覆盖当前用户 Home，配对 Token 是远程读取文件的安全边界；项目扫描仍只遍历用户选择的代码目录。
 - `SMAppService` 的 `.requiresApproval` 不能由 App 绕过；界面会引导用户打开“系统设置 → 通用 → 登录项与扩展”。
 - App 被移走或删除前，应先在 App 内恢复 Homebrew 或停止服务，避免系统仍保留指向旧 bundle 的注册记录。
-- 首个 DMG 不带自动更新；升级时下载新 DMG 覆盖 App，`agentd` 配置和配对数据保存在用户 Application Support 中，不随 App 覆盖。
+- 菜单栏的“检查更新…”会打开设置并查询 GitHub 最新正式 Release。设置页显示当前 App 版本、检查结果、新版 DMG 下载和更新说明。
+- App 启动时自动检查，持续运行期间每 24 小时检查一次。只认可已上传完成的 `Mimi-Remote-Mac.dmg`；检查失败不会弹窗。
+- 发现新版后显示菜单栏更新标记和菜单内提示。“稍后”会记住该版本并隐藏自动提示，仍可从设置中下载；发布更高版本后重新提示。
+- 下载后退出 Mimi Remote Mac，用 DMG 中的 App 覆盖原 App，再重新打开。退出期间移动端连接会中断；`agentd` 配置和配对数据保存在用户 Application Support 中，不随 App 覆盖。不会静默安装或强制重启。
+- 检查更新会向 GitHub 发起公开版本查询，不发送配置、配对数据或日志。无法联网时可手动重试或打开发布页面。
+- 0.3.13 等尚未包含此功能的安装包仍需手动下载升级，无法追溯增加提示入口。
