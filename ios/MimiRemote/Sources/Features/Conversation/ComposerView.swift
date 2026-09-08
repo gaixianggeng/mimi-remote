@@ -61,7 +61,7 @@ struct ComposerView: View {
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
     @State var guidedFollowUpEnabled = false
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false

@@ -37,10 +37,9 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         rawValue: String?,
         supportsAppleSpeech: Bool? = nil
     ) -> Self {
-        guard let provider = rawValue.flatMap(Self.init(rawValue:)) else {
-            return .codex
-        }
         let supportsAppleSpeech = supportsAppleSpeech ?? Self.supportsAppleRealtimeTranscription
+        // 未选择提供方时优先设备端；旧系统仍使用可用的 Codex 转写。
+        let provider = rawValue.flatMap(Self.init(rawValue:)) ?? .apple
         guard provider != .apple || supportsAppleSpeech else {
             return .codex
         }
@@ -81,7 +80,7 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         in defaults: UserDefaults = .standard,
         supportsAppleSpeech: Bool? = nil
     ) -> VoiceInputProvider {
-        // 新安装默认复用主机已有的 Codex 登录态；用户主动选择设备端后仍保留该偏好。
+        // 新安装默认使用设备端转写；用户已保存的选择继续生效。
         resolved(
             rawValue: defaults.string(forKey: storageKey),
             supportsAppleSpeech: supportsAppleSpeech
