@@ -14,11 +14,11 @@
 
 它不托管账号、不托管会话、不中继代码、不代理审批动作。用户的「允许 / 拒绝」始终由设备通过私有网络直接提交给自己的 `agentd`，不经过这里。
 
-## 历史部署记录（迁移前）
+## 当前部署记录（2026-09-08 核实）
 
 | 项 | 值 |
 | --- | --- |
-| 主机 | `api.code89757.com`（原记录与历史 `mimi-relay` 同机；不代表当前 Tailcat DERP） |
+| 主机 | `api.code89757.com`（已核实与 `tailcat-derper.service` 同机） |
 | 服务单元 | `mimi-push-provider.service` |
 | 运行用户 | `mimi-push`（system 用户，`nologin`） |
 | 监听 | `127.0.0.1:8087`，只经 nginx 对外 |
@@ -32,7 +32,11 @@
 ## 与 Tailcat DERP 同机部署
 
 #353 的部署要求是：APNs Provider 与当前 Tailcat DERP 使用同一台服务器。
-服务器目标尚待核实，以下为部署步骤，不能作为已完成迁移的证明。
+2026-09-08 已通过 SSH 核实两个服务同机运行，并更新 Provider 二进制。
+沿用现有 URL、systemd/nginx 配置、APNs 密钥、Ticket 密钥和撤销表；DERP 进程未重启。
+升级前 Ticket 可解密，已撤销 Ticket 仍被拒绝；沙盒和正式 APNs 接口均返回测试 Token 无效。
+公网健康检查返回 200，指标入口返回 403。真机锁屏操作和实际通知投递尚未验收。
+以下步骤用于后续部署或迁移。
 
 两个服务保留独立进程、用户、配置和状态目录。DERP 转发 Tailcat 加密流量；
 Provider 只发送固定格式的系统提醒。锁屏允许/拒绝按通知来源选择 Mac，使用该
@@ -161,7 +165,7 @@ Apple 每个团队最多只能同时存在 2 把 APNs Auth Key，目前已用 1 
 用一个**伪造的** device token 打一次真实 APNs，看 `/metrics` 里的 `apns_statuses`：
 
 - `403` → `InvalidProviderToken`，key 或 Key ID 不对，**鉴权没过**；
-- `400` → `BadDeviceToken`，**鉴权已通过**，只是 token 是假的。这就是 key 正常的标志。
+- APNs 指标为 `400` 且 Provider 返回 `410 + reason: unregistered` → 测试 Token 被判为永久无效，Provider 已自动撤销 Ticket。这可验证接口调用，但不代表真机投递成功。
 
 要看到 `delivered:true` 必须用真机拿到的真实 device token。
 
@@ -205,7 +209,7 @@ curl -s http://127.0.0.1:8087/metrics
 
 ## 一个已经踩过的坑
 
-APNs 的**协议级拒绝**必须以 `200 + delivered:false + reason` 回报，不能用 5xx。托管 CDN 会把 5xx 的响应体替换成自己的错误页，`reason` 就此丢失，线上只剩一个无从下手的状态码。传输层故障仍然回 502——那种情况本来也没有 reason 可言。改动它之前请先想清楚这一点。
+除设备永久失效错误返回 `410 + reason: unregistered` 外，APNs 的**协议级拒绝**以 `200 + delivered:false + reason` 回报，不能用 5xx。托管 CDN 会把 5xx 的响应体替换成自己的错误页，`reason` 就此丢失，线上只剩一个无从下手的状态码。传输层故障仍然回 502——那种情况本来也没有 reason 可言。改动它之前请先想清楚这一点。
 
 ## 保留策略
 
