@@ -996,7 +996,11 @@ struct WorkspaceRootView: View {
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {
-                    await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
+                    await refreshWorkspaceSessions(
+                        project: project,
+                        presentationKey: presentationKey,
+                        restartFromFirst: true
+                    )
                 }
             },
             onLoadMoreSessions: {
@@ -1205,7 +1209,8 @@ struct WorkspaceRootView: View {
         // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
         await refreshWorkspaceSessions(
             project: project,
-            presentationKey: presentationKey
+            presentationKey: presentationKey,
+            restartFromFirst: true
         )
         // 目录同步要活过这次下拉手势本身，所以不能用 refreshable 任务的取消状态当门槛：
         // 指示器结束时这个任务就会被取消，拿它当条件会让后台同步永远起不来。
@@ -1217,7 +1222,8 @@ struct WorkspaceRootView: View {
 
     private func refreshWorkspaceSessions(
         project: AgentProject,
-        presentationKey: WorkspaceSessionPresentationKey
+        presentationKey: WorkspaceSessionPresentationKey,
+        restartFromFirst: Bool = false
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
@@ -1233,7 +1239,8 @@ struct WorkspaceRootView: View {
                 projectID: project.id,
                 runtimeProvider: presentationKey.runtimeProvider,
                 cursor: nil,
-                limit: SessionStore.initialSessionPageLimit
+                limit: SessionStore.initialSessionPageLimit,
+                restartFromFirst: restartFromFirst
             )
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return

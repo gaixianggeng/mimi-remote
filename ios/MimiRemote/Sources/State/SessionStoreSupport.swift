@@ -121,6 +121,7 @@ struct WorkspaceSessionFirstPageCompletion: Equatable {
 struct SessionListFirstPageResult {
     let page: SessionsPage
     let requestedCursor: String?
+    let requestLineage: UUID?
 }
 
 enum SessionListRequestSource: String {
@@ -192,6 +193,17 @@ struct SessionListBudgetKey: Hashable {
 struct SessionListFirstPageInFlight {
     let id: UUID
     let task: Task<SessionsPage, Error>
+    let traversalControl: SessionListFirstPageTraversalControl
+    let requestLineage: UUID
+}
+
+@MainActor
+final class SessionListFirstPageTraversalControl {
+    private(set) var shouldContinue = true
+
+    func stopAfterCurrentPage() {
+        shouldContinue = false
+    }
 }
 
 struct SessionListFirstPageCacheEntry {

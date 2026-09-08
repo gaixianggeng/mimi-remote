@@ -2615,6 +2615,7 @@ extension SessionStore {
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
+        sessionListRequestLineageByWorkspaceKey = [:]
         if !workspaceSessionFirstPageCompletionByKey.isEmpty {
             workspaceSessionFirstPageCompletionByKey = [:]
         }

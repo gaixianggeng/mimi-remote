@@ -1292,6 +1292,7 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var requestedSessionLimits: [Int?] = []
     var requestedSessionListConsistencies: [SessionListConsistency] = []
     var onSessionPageRequest: ((String?) -> Void)?
+    var sessionPageHandler: ((String?) async throws -> SessionsPage)?
 
     init(
         projects: [AgentProject],
@@ -1324,6 +1325,9 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
         requestedSessionCursors.append(cursor)
         requestedSessionLimits.append(limit)
         onSessionPageRequest?(cursor)
+        if let sessionPageHandler {
+            return try await sessionPageHandler(cursor)
+        }
         if let cursor, let page = cursorPages[cursor] {
             return page
         }

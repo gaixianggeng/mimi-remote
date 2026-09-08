@@ -527,7 +527,8 @@ struct CodexAppServerRequestBuilder {
 
     func controlledGlobalThreadList(
         limit: Int? = 50,
-        cursor: String? = nil
+        cursor: String? = nil,
+        useStateDBOnly: Bool = false
     ) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
             "limit": limit.map { .int(Int64($0)) },
@@ -544,7 +545,7 @@ struct CodexAppServerRequestBuilder {
                 .string("subAgent"),
             ]),
             "archived": .bool(false),
-            "useStateDbOnly": .bool(false)
+            "useStateDbOnly": .bool(useStateDBOnly)
         ]))
     }
 

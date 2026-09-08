@@ -83,6 +83,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testExternalArchiveDoesNotPermanentlyDisableDirectoryIndex \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexContinuationUsesIndexWithoutRepairingFirstPageRows \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryUsesIndexAcrossPages \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryFallsBackWhenIndexUnsupported \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testScanFallbackContinuationKeepsItsQueryModeForDirectoryAndGlobalLists \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalIndexRepairsKnownMissingSessionsAcrossFilteredAndCompletePages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
@@ -108,6 +114,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testColdStartResolvedCandidateCannotCommitAfterUserSelectsAnotherSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState \
   -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualWorkspaceRefreshRestartsFromFirstCursor \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualSessionLibraryRefreshRestartsDirectoryPageFromFirstCursor \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkspacePageDropsLocallyArchivedCacheWhileKeepingProtectedRows \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualRestartStopsContinuationAfterCurrentNetworkPage \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConcurrentManualRestartsShareFirstPageAndLineage \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRestartedFirstPageRejectsOldLineageEvenWhenCursorMatches \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveFailureRollsBackPinnedStateOrderingAndPreservesProjections \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testUnarchiveFailureRollsBackToArchivedVisibility \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivePendingSuppressesDuplicateButAllowsDifferentSessionsConcurrently \

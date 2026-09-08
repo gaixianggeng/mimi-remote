@@ -942,6 +942,9 @@ extension SessionStore {
         if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
             workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
+        sessionListRequestLineageByWorkspaceKey = sessionListRequestLineageByWorkspaceKey.filter {
+            $0.key.workspaceID != project.id
+        }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
@@ -1789,6 +1792,7 @@ extension SessionStore {
             await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
                 consistency: consistency,
+                restartFromFirst: authoritative,
                 client: client,
                 hostScope: hostScope,
                 generation: generation

@@ -671,7 +671,8 @@ extension SessionStore {
                 workspace: workspace,
                 page: page,
                 consistency: consistency,
-                requestedCursor: result.requestedCursor
+                requestedCursor: result.requestedCursor,
+                requestLineage: result.requestLineage
             )
 
             if isSelectionLeaseCurrent(foregroundLease),
@@ -808,7 +809,7 @@ extension SessionStore {
                 throw AgentAPIError.invalidResponse
             }
 
-            try await refreshWorkspaceSessions(projectID: projectID)
+            try await refreshWorkspaceSessions(projectID: projectID, restartFromFirst: false)
             guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
                 return
             }
@@ -831,7 +832,10 @@ extension SessionStore {
 
     /// 刷新工作区页正在浏览的会话，但不改变全局会话选择或 WebSocket。
     /// 工作区页有自己的本地浏览选择，不能复用 selectProject，否则刷新另一个目录会打断当前任务。
-    func refreshWorkspaceSessions(projectID: String) async throws {
+    func refreshWorkspaceSessions(
+        projectID: String,
+        restartFromFirst: Bool = true
+    ) async throws {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
@@ -857,9 +861,10 @@ extension SessionStore {
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: false,
-                // 用户明确点刷新时绕过可能滞后的 State DB 索引；后台轮询仍保留快速路径。
+                // 用户刷新读取最新首屏并校正归档状态；索引与扫描策略由 Runtime 决定。
                 consistency: .authoritative,
-                source: .workspaceForeground
+                source: .workspaceForeground,
+                restartFromFirst: restartFromFirst
             )
             let page = result.page
             guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
@@ -872,7 +877,9 @@ extension SessionStore {
                 consistency: .authoritative,
                 requestedCursor: result.requestedCursor,
                 // 工作区页下拉刷新首屏时，保留用户已经翻到的旧页，避免列表突然收缩回 20 条。
-                preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id)
+                preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id),
+                restartsFromFirst: restartFromFirst,
+                requestLineage: result.requestLineage
             )
         } catch {
             _ = terminateConnectionIfCredentialsInvalid(error)
