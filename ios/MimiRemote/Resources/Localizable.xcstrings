@@ -195,6 +195,23 @@
         }
       }
     },
+    "ui.a_secure_channel_is_being_established_content_appears": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Establishing a secure channel. Content appears as soon as the Mac responds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在建立安全通道，电脑响应后内容会自动出现。"
+          }
+        }
+      }
+    },
     "ui.ability": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -4996,6 +5013,40 @@
         }
       }
     },
+    "ui.connecting_to_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecting to %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接 %@"
+          }
+        }
+      }
+    },
+    "ui.connecting_to_your_mac": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecting to your Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接你的电脑"
+          }
+        }
+      }
+    },
     "ui.retry_writer_access": {
       "comment": "Accessibility label for reloading the latest messages and retrying writer access from the active-writer conflict card.",
       "localizations": {
@@ -5009,6 +5060,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新加载消息并重试写入权限"
+          }
+        }
+      }
+    },
+    "ui.workspaces_on_this_mac_appear_as_soon_as": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workspaces on this Mac appear as soon as the connection is ready."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接就绪后，这台电脑上的工作区会自动出现。"
           }
         }
       }

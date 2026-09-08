@@ -64,6 +64,11 @@ struct RootView: View {
         .task {
             restoreActiveHostNavigationIfNeeded()
             defer { hasCompletedInitialBootstrap = true }
+            // 预热窗口必须早于 Tailcat 选路和第一次 preflight：冷启动的首个探测在隧道
+            // 建好之前几乎必然失败，而那只是过程，不能让首屏先渲染成运行时不可用。
+            // bootstrap 和它内部的退避重试各自再持有一份，窗口一直开到这条启动链路走完。
+            let warmUpToken = sessionStore.beginConnectionWarmUp()
+            defer { sessionStore.endConnectionWarmUp(warmUpToken) }
             // Tailcat 本地转发必须先于首批 REST/WebSocket client 建立；关闭实验时此调用立即返回。
             let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
             guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
