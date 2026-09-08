@@ -366,18 +366,20 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguage.stored(in: defaults), .system)
     }
 
-    func testVoiceInputProviderDefaultsToCodexAndPreservesKnownSelection() {
+    func testVoiceInputProviderDefaultsToAppleAndPreservesKnownSelection() {
         let suiteName = "VoiceInputProviderTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true), .apple)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: false), .codex)
         defaults.set(VoiceInputProvider.apple.rawValue, forKey: VoiceInputProvider.storageKey)
-        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .apple)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true), .apple)
         defaults.set(VoiceInputProvider.codex.rawValue, forKey: VoiceInputProvider.storageKey)
-        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true), .codex)
         defaults.set("future-provider", forKey: VoiceInputProvider.storageKey)
-        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true), .apple)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: false), .codex)
     }
 
     func testVoiceInputProviderAvailabilityFiltersAppleOnUnsupportedSystems() {
