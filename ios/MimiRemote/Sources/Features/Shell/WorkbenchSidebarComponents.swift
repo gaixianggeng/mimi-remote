@@ -260,10 +260,24 @@ enum WorkbenchNavigationIcon {
         }
     }
 
-    /// 工作区的直角田字格共用模板资源，避免把电脑平台图标或目录图标一起替换。
+    private var assetName: String {
+        switch self {
+        case .sessions: return "SessionsNavigation"
+        case .workspaces: return "WorkspaceNavigation"
+        case .devices: return "DevicesNavigation"
+        case .me: return "MeNavigation"
+        }
+    }
+
+    /// 原生 Tab 会按图片固有尺寸排版；共用 24pt 矢量画布，避免系统符号与资源图视觉大小不同。
+    func tabImage() -> Image {
+        Image(assetName).renderingMode(.template)
+    }
+
+    /// 顶层入口共用图形，电脑平台与目录图标仍保持各自语义。
     func image(isSelected: Bool = false) -> Image {
-        if self == .workspaces {
-            return Image("WorkspaceNavigation").renderingMode(.template)
+        if self == .workspaces || self == .devices {
+            return tabImage()
         }
         return Image(systemName: systemName(isSelected: isSelected))
     }
@@ -287,6 +301,9 @@ struct WorkbenchSidebarDestinationButton: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 icon.image(isSelected: isSelected)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)

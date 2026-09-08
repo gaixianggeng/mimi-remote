@@ -128,7 +128,7 @@ extension UnifiedWorkbenchShell {
                 sessionList(layout: layout, bottomContentMargin: bottomContentMargin)
             }
             .tabItem {
-                Label { Text(CompactWorkbenchTab.sessions.title) } icon: { CompactWorkbenchTab.sessions.navigationIcon.image() }
+                Label { Text(CompactWorkbenchTab.sessions.title) } icon: { CompactWorkbenchTab.sessions.navigationIcon.tabImage() }
                     .accessibilityIdentifier("compactTab.sessions")
             }
             .tag(CompactWorkbenchTab.sessions)
@@ -142,21 +142,21 @@ extension UnifiedWorkbenchShell {
                 workspaces(layout: layout)
             }
             .tabItem {
-                Label { Text(CompactWorkbenchTab.workspaces.title) } icon: { CompactWorkbenchTab.workspaces.navigationIcon.image() }
+                Label { Text(CompactWorkbenchTab.workspaces.title) } icon: { CompactWorkbenchTab.workspaces.navigationIcon.tabImage() }
                     .accessibilityIdentifier("compactTab.workspaces")
             }
             .tag(CompactWorkbenchTab.workspaces)
 
             settingsPage(tab: .devices, layout: layout)
             .tabItem {
-                Label { Text(CompactWorkbenchTab.devices.title) } icon: { CompactWorkbenchTab.devices.navigationIcon.image() }
+                Label { Text(CompactWorkbenchTab.devices.title) } icon: { CompactWorkbenchTab.devices.navigationIcon.tabImage() }
                     .accessibilityIdentifier("compactTab.devices")
             }
             .tag(CompactWorkbenchTab.devices)
 
             settingsPage(tab: .me, layout: layout)
             .tabItem {
-                Label { Text(CompactWorkbenchTab.me.title) } icon: { CompactWorkbenchTab.me.navigationIcon.image() }
+                Label { Text(CompactWorkbenchTab.me.title) } icon: { CompactWorkbenchTab.me.navigationIcon.tabImage() }
                     .accessibilityIdentifier("compactTab.me")
             }
             .tag(CompactWorkbenchTab.me)
