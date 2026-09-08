@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
     @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
@@ -117,6 +118,16 @@ struct RootView: View {
             await appStore.preflightConnection()
 #endif
         }
+        .task(id: notificationRoutingReady ? notificationResponseAdapter.approvalInbox.pending : nil) {
+            guard notificationRoutingReady else { return }
+            // 通知唤起和前台恢复会同时发生。复用恢复结果后再选路，避免两次
+            // Tailcat 重启互相退役连接，也避免冷启动时还没有可用凭据。
+            await foregroundResumeTask?.value
+            guard !Task.isCancelled else { return }
+            await notificationResponseAdapter.approvalInbox.processPending { delivery in
+                await handleLockScreenApproval(delivery)
+            }
+        }
         .task(id: notificationRouteTaskID) {
             guard let route = notificationResponseAdapter.pendingRoute else {
                 pendingNotificationRouteRevision = nil
@@ -140,6 +151,12 @@ struct RootView: View {
             let expectedSelectionLease = sessionStore.currentSelectionLease()
             await handleNotificationRoute(route, ifCurrent: expectedSelectionLease)
         }
+        .task(id: lockScreenApprovalLifecycleTaskID) {
+            guard scenePhase == .active else { return }
+            // 冷启动不要求用户先打开设置页；失败只保留为可重试状态，
+            // 下一次前台恢复仍会再次尝试。
+            await refreshLockScreenApprovalLifecycle(markFailure: true)
+        }
         .task(id: scenePhase == .active ? sessionStore.selectedProjectID : nil) {
             guard scenePhase == .active else {
                 return
@@ -162,6 +179,7 @@ struct RootView: View {
             }
             let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
             foregroundResumeTask = Task {
+			await lockScreenApprovalStore.reconcileDeliveredNotifications()
                 do {
                     try await appStore.restoreCredentialsForForeground()
                     try Task.checkCancellation()
@@ -174,6 +192,7 @@ struct RootView: View {
                     }
                     try Task.checkCancellation()
                     await sessionStore.resumeFromForeground()
+                    await refreshLockScreenApprovalLifecycle(markFailure: true)
                 } catch is CancellationError {
                     // 后台/前台快速抖动或同时切换主机时由最新生命周期操作接管。
                 } catch {
@@ -236,6 +255,122 @@ struct RootView: View {
             hasCompletedInitialBootstrap: hasCompletedInitialBootstrap
         )
     }
+
+    private var notificationRoutingReady: Bool {
+        hasCompletedInitialBootstrap && scenePhase == .active && !needsTailcatRecoveryAfterBackground
+    }
+
+    private var lockScreenApprovalLifecycleTaskID: String {
+        [
+            scenePhase == .active ? "active" : "inactive",
+            appStore.activeConnectionProfileID ?? "",
+            lockScreenApprovalStore.registeredProfileID ?? "",
+        ].joined(separator: "|")
+    }
+
+    private func refreshLockScreenApprovalLifecycle(markFailure: Bool) async {
+        guard lockScreenApprovalStore.isEnabled,
+              let profileID = lockScreenApprovalStore.registeredProfileID else {
+            return
+        }
+        do {
+            let client: AgentAPIClient
+            if profileID == appStore.activeConnectionProfileID {
+                client = try appStore.client()
+            } else {
+                client = try await LockScreenApprovalRouting.client(
+                    profileID: profileID,
+                    appStore: appStore
+                )
+            }
+            lockScreenApprovalStore.registerNotificationInfrastructure()
+			await lockScreenApprovalStore.refreshHostSupport(client: client, profileID: profileID)
+            await lockScreenApprovalStore.refreshTicketIfNeeded(
+                client: client,
+                profileID: profileID
+            )
+			let installationID = appStore.connectionProfiles.first { $0.id == profileID }?.installationID
+            await lockScreenApprovalStore.reconcileDeliveredNotifications(
+                client: client,
+                sourceProfileTag: installationID.map { LockScreenApprovalRouting.profileTag(installationID: $0) }
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            if markFailure {
+                lockScreenApprovalStore.markRegistrationFailed()
+            }
+        }
+    }
+
+    /// 锁屏动作只做两件事：把决策交给自己的 agentd，或者打开 App 看详情。
+    /// 结果未知时如实展示未知——把超时当成已允许是这条链路上最危险的错误。
+	private func handleLockScreenApproval(_ delivery: LockScreenApprovalDelivery) async {
+		guard let decision = delivery.decision else {
+			if delivery.notification.event == .resolved {
+				await lockScreenApprovalStore.handleResolved(delivery.notification)
+			} else {
+				await openLockScreenApprovalDetails(delivery.notification)
+			}
+			return
+		}
+		guard let source = try? await LockScreenApprovalRouting.sourceClient(
+			for: delivery.notification,
+			appStore: appStore,
+                    sessionStore: sessionStore,
+                    recoverRouteFromBackground: false
+		) else {
+			notificationRouteAlertMessage = L10n.text("ui.push_approval_result_unknown")
+			return
+		}
+        await lockScreenApprovalStore.submitDecision(
+            decision,
+            for: delivery.notification,
+			client: source.client,
+			notificationRequestIdentifier: delivery.requestIdentifier
+        )
+		if let message = lockScreenApprovalStore.lastDecisionMessage {
+			notificationRouteAlertMessage = message
+		}
+	}
+
+	private func openLockScreenApprovalDetails(
+		_ notification: LockScreenApprovalNotification
+	) async {
+		do {
+			let source = try await LockScreenApprovalRouting.sourceClient(
+				for: notification,
+				appStore: appStore,
+                    sessionStore: sessionStore,
+                    recoverRouteFromBackground: false
+			)
+			let destination = try await source.client.pushActionRoute(
+				actionID: notification.actionID,
+				deviceID: notification.deviceID
+			)
+			if appStore.activeConnectionProfileID != source.profileID {
+				_ = try await sessionStore.switchConnectionProfile(id: source.profileID)
+				await sessionStore.bootstrap()
+			}
+			let projectID = destination.projectID.isEmpty
+				? sessionStore.sessions.first(where: { $0.id == destination.threadID })?.projectID
+				: destination.projectID
+			guard let projectID else {
+				throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+			}
+			let route = SessionNotificationRoute.current(
+				profileID: appStore.notificationRoutingProfileID,
+				projectID: projectID,
+				sessionID: destination.threadID
+			)
+			await handleNotificationRoute(route, ifCurrent: sessionStore.currentSelectionLease())
+		} catch is CancellationError {
+            // 新的通知或生命周期已接管；取消不等于 Mac 离线。
+		} catch {
+            guard !Task.isCancelled else { return }
+            notificationRouteAlertMessage = LockScreenApprovalRouting.detailsErrorMessage(error)
+		}
+	}
 
     private func handleNotificationRoute(
         _ route: SessionNotificationRoute,

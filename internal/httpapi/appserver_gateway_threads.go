@@ -177,6 +177,8 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
+		p.notifyTurnMessage(&frame)
+		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
 			payload = filtered
@@ -309,6 +311,51 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
 	// pending-use。转换期间至少有一种保护存在，cleanup 看不到可删除窗口。
 	return payload, true, nil
+}
+
+func (p *appServerGatewayPolicy) trackUpstreamTurnLifecycle(frame *appServerGatewayFrame) {
+	if p == nil || frame == nil || gatewayErrorWillRetry(frame) {
+		return
+	}
+	method := strings.TrimSpace(frame.Method)
+	if method != "turn/started" && method != "turn/completed" && method != "thread/closed" && method != "error" {
+		return
+	}
+	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+	if threadID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.activeServerTurns == nil {
+		p.activeServerTurns = map[string]struct{}{}
+	}
+	if method == "turn/started" {
+		p.activeServerTurns[threadID] = struct{}{}
+	} else {
+		delete(p.activeServerTurns, threadID)
+	}
+}
+
+func (p *appServerGatewayPolicy) approvalObservationSnapshot() (
+	map[string]struct{},
+	map[string]appServerGatewayPendingServerRequest,
+) {
+	active := map[string]struct{}{}
+	pending := map[string]appServerGatewayPendingServerRequest{}
+	if p == nil {
+		return active, pending
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prunePendingServerRequestsLocked(time.Now())
+	for threadID := range p.activeServerTurns {
+		active[threadID] = struct{}{}
+	}
+	for requestID, request := range p.pendingServerRequests {
+		pending[requestID] = request
+	}
+	return active, pending
 }
 
 func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error) {
@@ -1209,6 +1256,9 @@ func (p *appServerGatewayPolicy) clearPendingServerRequestsForNotification(frame
 		}
 		p.mu.Unlock()
 	case "turn/completed", "thread/closed", "error":
+		if gatewayErrorWillRetry(frame) {
+			return
+		}
 		threadID, turnID, _ := appServerGatewayServerRequestScope(frame.Params)
 		if threadID == "" {
 			return
@@ -1249,6 +1299,27 @@ func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage
 	return request, ok
 }
 
+func (p *appServerGatewayPolicy) restorePendingServerRequest(
+	id *json.RawMessage,
+	request appServerGatewayPendingServerRequest,
+) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	if p.pendingServerRequests == nil {
+		p.pendingServerRequests = map[string]appServerGatewayPendingServerRequest{}
+	}
+	if _, exists := p.pendingServerRequests[key]; !exists {
+		p.pendingServerRequests[key] = request
+	}
+}
+
 func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
@@ -1259,6 +1330,23 @@ func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appS
 	p.prunePendingServerRequestsLocked(time.Now())
 	request, ok := p.pendingServerRequests[key]
 	return request, ok
+}
+
+func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
+	if p == nil || p.router == nil || strings.TrimSpace(threadID) == "" {
+		return ""
+	}
+	p.mu.Lock()
+	thread, ok := p.allowedThreads[threadID]
+	p.mu.Unlock()
+	if !ok {
+		return ""
+	}
+	project, ok := p.router.projectForGatewayPath(thread.cwd)
+	if !ok {
+		return ""
+	}
+	return project.ID
 }
 
 func (p *appServerGatewayPolicy) prunePendingServerRequestsLocked(now time.Time) {
