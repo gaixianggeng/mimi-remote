@@ -34,12 +34,12 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var brandAssetName: String {
+    var brandMark: RuntimeBrandMark {
         switch self {
         case .codex:
-            return "ChatGPT"
+            return .openAI
         case .claude:
-            return "Claude"
+            return .claude
         }
     }
 
@@ -91,13 +91,7 @@ struct WorkspaceRuntimeMenuPicker: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(selection.brandAssetName)
-                    .resizable()
-                    // 品牌资源自带底色，模板着色会把整张画布染成方块。
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 15, height: 15)
-                    .accessibilityHidden(true)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
 
                 Text(selection.listTitle)
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
@@ -151,13 +145,7 @@ struct WorkspaceRuntimePicker: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(choice.brandAssetName)
-                            .resizable()
-                            // 品牌资源是带自身底色的位图，模板着色会把整张画布染成方块。
-                            .renderingMode(.original)
-                            .scaledToFit()
-                            .frame(width: 14, height: 14)
-                            .accessibilityHidden(true)
+                        RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
 
                         Text(choice.listTitle)
                             .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
@@ -262,13 +250,7 @@ struct WorkspaceRuntimePopoverPicker: View {
             isPresented = true
         } label: {
             HStack(spacing: 6) {
-                Image(selection.brandAssetName)
-                    .resizable()
-                    // 品牌资源自带底色，模板着色会把整张画布染成方块。
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 15, height: 15)
-                    .accessibilityHidden(true)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
 
                 Text(selection.listTitle)
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
@@ -335,13 +317,8 @@ struct WorkspaceRuntimePopoverPicker: View {
         tokens: ThemeTokens
     ) -> some View {
         HStack(spacing: 10) {
-            Image(choice.brandAssetName)
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                .frame(width: 20, height: 20)
+            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
                 .opacity(isAvailable ? 1 : 0.4)
-                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(choice.listTitle)

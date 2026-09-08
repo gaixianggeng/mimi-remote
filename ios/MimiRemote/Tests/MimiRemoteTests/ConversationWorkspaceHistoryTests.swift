@@ -2183,8 +2183,8 @@ extension ConversationDataFlowTests {
         )
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.runtimeProvider, "codex")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "ChatGPT")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandAssetName, "Claude")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandMark.assetName, "OpenAIMonoblossom")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandMark.assetName, "Claude")
     }
 
     func testSessionRuntimePresentationNormalizesKnownRuntimeAliases() {
@@ -2197,7 +2197,7 @@ extension ConversationDataFlowTests {
             .claude
         )
         XCTAssertEqual(
-            SessionRuntimePresentation(runtimeProvider: "claude-code", source: "local").brandAssetName,
+            SessionRuntimePresentation(runtimeProvider: "claude-code", source: "local").brandMark.assetName,
             "Claude"
         )
     }
