@@ -650,6 +650,8 @@ final class LockScreenApprovalStore: ObservableObject {
 
 	/// 收到「已处理」静默推送后清掉对应卡片；前台恢复时再整体对账一次。
 	func handleResolved(_ notification: LockScreenApprovalNotification) async {
+        // 系统也可能把可见消息交给远程通知回调；只有已处理事件才能撤下通知。
+        guard notification.event == .resolved else { return }
 		await removeNotification(for: notification)
     }
 
