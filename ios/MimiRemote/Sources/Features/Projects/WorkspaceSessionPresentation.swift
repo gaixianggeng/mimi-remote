@@ -36,7 +36,9 @@ struct WorkspaceRuntimeSessionPageState: Equatable {
     func reconciledSessions(with canonicalSessions: [AgentSession]) -> [AgentSession] {
         let canonicalByID = Dictionary(uniqueKeysWithValues: canonicalSessions.map { ($0.id, $0) })
         let cachedSessionIDs = Set(sessions.map(\.id))
-        let refreshedPageMembers = sessions.map { canonicalByID[$0.id] ?? $0 }
+        // canonical 投影已经应用本地归档可见性；缺失成员不能继续由页面缓存复活。
+        // 当前选中或仍在运行的归档会话会由 Store 保留，因此仍能通过这里的过滤。
+        let refreshedPageMembers = sessions.compactMap { canonicalByID[$0.id] }
         let newlyObserved = canonicalSessions.filter { session in
             !canonicalSessionIDsBeforeFirstPage.contains(session.id)
                 && !cachedSessionIDs.contains(session.id)

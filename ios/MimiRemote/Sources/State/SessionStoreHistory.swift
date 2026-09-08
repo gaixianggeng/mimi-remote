@@ -1389,7 +1389,8 @@ extension SessionStore {
                 workspace: workspace,
                 page: page,
                 consistency: consistency,
-                requestedCursor: result.requestedCursor
+                requestedCursor: result.requestedCursor,
+                requestLineage: result.requestLineage
             )
             if updateStatusMessage, canReportForeground() {
                 setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
@@ -1424,9 +1425,15 @@ extension SessionStore {
         workspace: AgentWorkspace,
         runtimeProvider: String = "codex",
         consistency: SessionListConsistency = .fastIndexed,
+        restartFromFirst: Bool = false,
         client: (any SessionStoreAPIClient)? = nil,
         hostScope: HostScope? = nil
-    ) async -> (workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?) {
+    ) async -> (
+        workspace: AgentWorkspace,
+        page: SessionsPage?,
+        requestedCursor: String?,
+        requestLineage: UUID?
+    ) {
         let hostRequestStartedAt = sessionListNow()
         do {
             let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
@@ -1438,6 +1445,7 @@ extension SessionStore {
                     reuseRecent: consistency == .fastIndexed,
                     consistency: consistency,
                     source: .libraryIndex,
+                    restartFromFirst: restartFromFirst,
                     client: client,
                     hostScope: hostScope
                 )
@@ -1458,10 +1466,14 @@ extension SessionStore {
                     source: .libraryIndex,
                     expectedHostScope: hostScope ?? appStore.activeHostScope
                 )
-                result = SessionListFirstPageResult(page: page, requestedCursor: nil)
+                result = SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: nil,
+                    requestLineage: nil
+                )
             }
             recordCarStatusHostObservation(at: sessionListNow())
-            return (workspace, result.page, result.requestedCursor)
+            return (workspace, result.page, result.requestedCursor, result.requestLineage)
         } catch {
             if !isCancellationError(error) {
                 if Self.carStatusHostDidRespond(to: error) {
@@ -1471,23 +1483,37 @@ extension SessionStore {
                 }
             }
             // 某个最近工作区失效不能阻断整个会话库；该项目仍可在工作区页单独重试。
-            return (workspace, nil, nil)
+            return (workspace, nil, nil, nil)
         }
     }
 
     func mergeSessionLibraryPages(
-        _ results: [(workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?)],
+        _ results: [(
+            workspace: AgentWorkspace,
+            page: SessionsPage?,
+            requestedCursor: String?,
+            requestLineage: UUID?
+        )],
         generation: Int,
         consistency: SessionListConsistency = .fastIndexed,
-        runtimeProvider: String = "codex"
+        runtimeProvider: String = "codex",
+        restartsFromFirst: Bool = false
     ) {
         guard generation == appStore.connectionGeneration else { return }
         let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
         for result in results {
             guard let page = result.page,
                   isCurrentWorkspaceIdentity(result.workspace) else { continue }
+            if let requestLineage = result.requestLineage,
+               !isCurrentSessionListRequestLineage(
+                   requestLineage,
+                   workspace: result.workspace
+               ) {
+                continue
+            }
             if normalizedRuntime == "codex",
                consistency == .authoritative,
+               !restartsFromFirst,
                authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: result.workspace)
                 != result.requestedCursor {
                 continue
@@ -1534,6 +1560,27 @@ extension SessionStore {
             workspaceID: workspace.id,
             workspacePath: standardizedSessionListPath(workspace.path)
         )
+    }
+
+    func currentSessionListRequestLineage(
+        workspace: AgentWorkspace,
+        hostScope: HostScope
+    ) -> UUID {
+        let key = workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        if sessionListRequestLineageByWorkspaceKey[key] == nil {
+            sessionListRequestLineageByWorkspaceKey[key] = UUID()
+        }
+        return sessionListRequestLineageByWorkspaceKey[key]!
+    }
+
+    func isCurrentSessionListRequestLineage(
+        _ lineage: UUID,
+        workspace: AgentWorkspace,
+        hostScope: HostScope? = nil
+    ) -> Bool {
+        sessionListRequestLineageByWorkspaceKey[
+            workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        ] == lineage
     }
 
     /// 任何跨 await 的工作区列表结果在提交前都要重新确认身份。
@@ -1750,10 +1797,18 @@ extension SessionStore {
         page: SessionsPage,
         consistency: SessionListConsistency,
         requestedCursor: String? = nil,
-        preserveAllLoaded: Bool = false
+        preserveAllLoaded: Bool = false,
+        restartsFromFirst: Bool = false,
+        requestLineage: UUID? = nil
     ) -> Bool {
         guard isCurrentWorkspaceIdentity(workspace) else { return false }
+        // 新首屏开始后，旧后台快速页也不能复活已从目录移除的成员。
+        if let requestLineage,
+           !isCurrentSessionListRequestLineage(requestLineage, workspace: workspace) {
+            return false
+        }
         if consistency == .authoritative,
+           !restartsFromFirst,
            authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: workspace)
             != requestedCursor {
             // 同 cursor waiter 的旧结果允许首个提交者推进；其余 waiter 若观察到进度已改变，
@@ -1817,6 +1872,7 @@ extension SessionStore {
         reuseRecent: Bool,
         consistency: SessionListConsistency = .fastIndexed,
         source: SessionListRequestSource,
+        restartFromFirst: Bool = false,
         client fixedClient: (any SessionStoreAPIClient)? = nil,
         hostScope expectedHostScope: HostScope? = nil
     ) async throws -> SessionListFirstPageResult {
@@ -1825,7 +1881,11 @@ extension SessionStore {
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
             throw CancellationError()
         }
-        let authoritativeProgress = consistency == .authoritative
+        var requestLineage = currentSessionListRequestLineage(
+            workspace: workspace,
+            hostScope: hostScope
+        )
+        let authoritativeProgress = consistency == .authoritative && !restartFromFirst
             ? authoritativeWorkspaceSessionFirstPageProgress(
                 workspace: workspace,
                 hostScope: hostScope
@@ -1852,7 +1912,11 @@ extension SessionStore {
                     count: page.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: key.cursor,
+                    requestLineage: inFlight.requestLineage
+                )
             }
 
             let matchesCurrentWorkspace: (SessionListFirstPageRequestKey) -> Bool = { candidate in
@@ -1875,6 +1939,28 @@ extension SessionStore {
                 retireSessionListFirstPageInFlight(
                     key: weakerInFlight.key,
                     id: weakerInFlight.value.id
+                )
+                guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                      !Task.isCancelled else {
+                    throw CancellationError()
+                }
+                continue
+            }
+
+            if consistency == .authoritative,
+               restartFromFirst,
+               let continuationInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
+                   matchesCurrentWorkspace(entry.key)
+                       && entry.key.consistency == .authoritative
+                       && entry.key.cursor != nil
+               }) {
+                // 用户主动刷新必须从 nil 首屏开始，但仍要先排空正在执行的 continuation，
+                // 避免同一工作区并发两条 thread/list cursor 链。
+                continuationInFlight.value.traversalControl.stopAfterCurrentPage()
+                _ = try? await continuationInFlight.value.task.value
+                retireSessionListFirstPageInFlight(
+                    key: continuationInFlight.key,
+                    id: continuationInFlight.value.id
                 )
                 guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
                       !Task.isCancelled else {
@@ -1922,7 +2008,11 @@ extension SessionStore {
                     count: page.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: page,
+                    requestedCursor: key.cursor,
+                    requestLineage: largerInFlight.requestLineage
+                )
             }
             break
         }
@@ -1939,7 +2029,11 @@ extension SessionStore {
                 count: cached.page.sessions.count,
                 duration: sessionListNow().timeIntervalSince(requestStartedAt)
             )
-            return SessionListFirstPageResult(page: cached.page, requestedCursor: key.cursor)
+            return SessionListFirstPageResult(
+                page: cached.page,
+                requestedCursor: key.cursor,
+                requestLineage: requestLineage
+            )
         }
 
         if let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
@@ -1954,7 +2048,11 @@ extension SessionStore {
                     count: stale.sessions.count,
                     duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                return SessionListFirstPageResult(page: stale, requestedCursor: key.cursor)
+                return SessionListFirstPageResult(
+                    page: stale,
+                    requestedCursor: key.cursor,
+                    requestLineage: requestLineage
+                )
             }
             // 冷启动或精确刷新等待窗口并继续请求，保证首屏最终自动恢复。
             await sessionListSleep(cooldownDelay)
@@ -1971,6 +2069,15 @@ extension SessionStore {
             sessionsByID[$0]
         } ?? []
         let requestID = UUID()
+        if restartFromFirst {
+            // 只有真正创建新的 nil 首屏任务时才换代；并发手动刷新若加入同一任务，
+            // 会在上面的 exact in-flight 分支复用同一 lineage，不会让 owner 失效。
+            requestLineage = UUID()
+            sessionListRequestLineageByWorkspaceKey[
+                workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+            ] = requestLineage
+        }
+        let traversalControl = SessionListFirstPageTraversalControl()
         let task = Task {
             try await sessionListPageFillingPresentationWindow(
                 client: client,
@@ -1982,12 +2089,15 @@ extension SessionStore {
                 source: source,
                 expectedHostScope: hostScope,
                 initialSessions: presentationSeedSessions,
-                fillsPresentationWindow: consistency == .authoritative
+                fillsPresentationWindow: consistency == .authoritative,
+                isRequestCurrent: { traversalControl.shouldContinue }
             )
         }
         sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(
             id: requestID,
-            task: task
+            task: task,
+            traversalControl: traversalControl,
+            requestLineage: requestLineage
         )
         do {
             let page = try await task.value
@@ -2016,7 +2126,11 @@ extension SessionStore {
                 count: page.sessions.count,
                 duration: sessionListNow().timeIntervalSince(requestStartedAt)
             )
-            return SessionListFirstPageResult(page: page, requestedCursor: key.cursor)
+            return SessionListFirstPageResult(
+                page: page,
+                requestedCursor: key.cursor,
+                requestLineage: requestLineage
+            )
         } catch {
             retireSessionListFirstPageInFlight(key: key, id: requestID)
             if let policyFailure = sessionListPolicyFailure(from: error) {
@@ -2081,6 +2195,8 @@ extension SessionStore {
                 fillsPresentationWindow: fillsPresentationWindow,
                 allowsAdaptiveOversampling: consistency == .authoritative
             )
+            let archiveSnapshot = archiveReconciliationSnapshot(consistency: consistency)
+            let pageStartedAt = ProcessInfo.processInfo.systemUptime
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
@@ -2088,11 +2204,13 @@ extension SessionStore {
                 limit: rawPageLimit,
                 consistency: consistency
             )
+            SessionListDiagnostics.refreshStage("page_received", startedAt: pageStartedAt, source: source)
             try Task.checkCancellation()
             guard isCurrentWorkspaceIdentity(workspace, hostScope: expectedHostScope),
                   isRequestCurrent?() != false else {
                 throw CancellationError()
             }
+            reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
             pagesScanned += 1
             lastPage = page
 

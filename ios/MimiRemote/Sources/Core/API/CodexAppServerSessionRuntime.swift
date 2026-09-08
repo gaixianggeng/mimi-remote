@@ -78,6 +78,11 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     }
 }
 
+struct CodexAppServerScanCursor: Hashable {
+    let cwd: String?
+    let cursor: String?
+}
+
 struct CodexAppServerSessionContext {
     var session: AgentSession
     var cwd: String
@@ -242,7 +247,10 @@ actor CodexAppServerSessionRuntime {
     var turnsStartedByThisRuntime: Set<TurnID> = []
     // 历史只读取 thread 元数据，并通过 turns/items 游标分页；这里不保留整段 thread 历史缓存。
     var stateDBOnlyListUnavailable = false
-    var stateDBOnlyScanRequiredCWDs: Set<String> = []
+    var stateDBOnlyVerifiedMissingSessionIDs: Set<SessionID> = []
+    var globalListVerifiedMissingSessionIDs: Set<SessionID> = []
+    // 游标属于生成它的查询模式；扫描回退后沿原链继续，不能把 opaque cursor 交给索引查询。
+    var threadListScanCursors: Set<CodexAppServerScanCursor> = []
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
@@ -503,12 +511,48 @@ actor CodexAppServerSessionRuntime {
         limit: Int?
     ) async throws -> SessionsPage {
         let projects = try await projects()
-        let result = try await sendRecoveringFromStaleInitialization(
-            CodexAppServerRequestBuilder(allowlistedProjects: projects)
-                .controlledGlobalThreadList(limit: limit, cursor: cursor),
-            timeout: longRunningRequestTimeout
-        )
-        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        let useIndex = runtimeProvider == "codex" && !stateDBOnlyListUnavailable
+            && !threadListScanCursors.contains(.init(cwd: nil, cursor: cursor))
+        var page: SessionsPage
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                builder.controlledGlobalThreadList(limit: limit, cursor: cursor, useStateDBOnly: useIndex),
+                timeout: longRunningRequestTimeout
+            )
+            page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+            if !useIndex { rememberThreadListScanCursor(page, cwd: nil) }
+            globalListVerifiedMissingSessionIDs.subtract(page.sessions.map(\.id))
+            // 全局遍历完成后 Store 会移除消失的受控会话；首屏必须先确认所有已知缺口，
+            // 包括授权裁剪后的空页，不能等后续索引页耗尽再把漏行当成撤权依据。
+            let repairCandidates = cursor == nil
+                ? Set(contextsBySessionID.keys).subtracting(page.sessions.map(\.id))
+                    .subtracting(globalListVerifiedMissingSessionIDs)
+                : []
+            // 没有已知缺口的带游标空页直接续读；完整空首屏或已知缺口才确认历史。
+            let needsEmptyPageVerification = cursor == nil && page.sessions.isEmpty && !page.hasMore
+            if useIndex, needsEmptyPageVerification || !repairCandidates.isEmpty {
+                let scanned = try await sendRecoveringFromStaleInitialization(
+                    builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
+                    timeout: longRunningRequestTimeout
+                )
+                page = threadListPage(from: scanned, projects: projects, fallbackProject: nil)
+                rememberThreadListScanCursor(page, cwd: nil)
+                globalListVerifiedMissingSessionIDs.formUnion(repairCandidates.intersection(
+                    indexedThreadListMissingKnownSessionIDs(page, cwd: nil, sortKey: "updated_at")
+                ))
+            }
+        } catch {
+            guard useIndex, shouldFallbackFromStateDBOnlyList(error) else { throw error }
+            stateDBOnlyListUnavailable = true
+            let result = try await sendRecoveringFromStaleInitialization(
+                builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
+                timeout: longRunningRequestTimeout
+            )
+            page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+            rememberThreadListScanCursor(page, cwd: nil)
+        }
+        globalListVerifiedMissingSessionIDs.subtract(page.sessions.map(\.id))
         for session in page.sessions {
             contextsBySessionID[session.id] = CodexAppServerSessionContext(
                 session: session,
@@ -928,6 +972,8 @@ actor CodexAppServerSessionRuntime {
             ? builder.threadArchive(threadID: id)
             : builder.threadUnarchive(threadID: id)
         _ = try await sendRecoveringFromStaleInitialization(spec)
+        stateDBOnlyVerifiedMissingSessionIDs.remove(id)
+        globalListVerifiedMissingSessionIDs.remove(id)
         if archived {
             contextsBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
@@ -1570,10 +1616,11 @@ actor CodexAppServerSessionRuntime {
         fallbackProject: AgentProject,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        let canUseIndexedList = consistency == .fastIndexed
-            && cursor == nil
+        // Codex 首屏和补页都读取最新索引；不能因为带游标就重扫整个历史目录。
+        let canUseIndexedList = (consistency == .fastIndexed || runtimeProvider == "codex")
+            && (cursor == nil || runtimeProvider == "codex")
             && !stateDBOnlyListUnavailable
-            && !stateDBOnlyScanRequiredCWDs.contains(cwd)
+            && !threadListScanCursors.contains(.init(cwd: cwd, cursor: cursor))
         let sortKey = preferredThreadListSortKey
         do {
             let result = try await sendRecoveringFromStaleInitialization(
@@ -1592,12 +1639,19 @@ actor CodexAppServerSessionRuntime {
                 timeout: longRunningRequestTimeout
             )
             let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
-            guard canUseIndexedList, indexedThreadListNeedsRepair(page, cwd: cwd) else {
+            if !canUseIndexedList { rememberThreadListScanCursor(page, cwd: cwd) }
+            // DB 不可用时上游可能返回空页；主动刷新需扫描确认，不能直接把现有列表清空。
+            stateDBOnlyVerifiedMissingSessionIDs.subtract(page.sessions.map(\.id))
+            let needsEmptyPageVerification = cursor == nil && consistency == .authoritative && page.sessions.isEmpty
+            // 已知会话只与首屏比较；补页缺少较新的会话本来就是正常分页。
+            let repairCandidates = cursor == nil
+                ? indexedThreadListMissingKnownSessionIDs(page, cwd: cwd, sortKey: sortKey)
+                    .subtracting(stateDBOnlyVerifiedMissingSessionIDs)
+                : []
+            guard canUseIndexedList, needsEmptyPageVerification || !repairCandidates.isEmpty else {
                 return page
             }
-            // 状态库漏掉本连接已知 thread 时，本连接后续固定走普通扫描，避免每轮都先错一次再回退。
-            stateDBOnlyScanRequiredCWDs.insert(cwd)
-            return try await ordinaryThreadListPage(
+            let scannedPage = try await ordinaryThreadListPage(
                 cwd: cwd,
                 cursor: cursor,
                 limit: limit,
@@ -1605,6 +1659,12 @@ actor CodexAppServerSessionRuntime {
                 projects: projects,
                 fallbackProject: fallbackProject
             )
+            // 普通扫描也确认缺失时，可能只是外部归档。只记住这些 ID，不能永久降级整个目录。
+            // 会话重新出现在索引后会移除记录；真正被扫描找回的遗漏仍保留修复能力。
+            stateDBOnlyVerifiedMissingSessionIDs.formUnion(
+                repairCandidates.intersection(indexedThreadListMissingKnownSessionIDs(scannedPage, cwd: cwd, sortKey: sortKey))
+            )
+            return scannedPage
         } catch {
             if sortKey == "recency_at", shouldFallbackFromRecencySort(error) {
                 // 旧 agentd/Codex 不认识 recency_at 时，本连接只探测一次，之后稳定退回 updated_at。
@@ -1652,7 +1712,14 @@ actor CodexAppServerSessionRuntime {
             ),
             timeout: longRunningRequestTimeout
         )
-        return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
+        let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
+        rememberThreadListScanCursor(page, cwd: cwd)
+        return page
+    }
+
+    func rememberThreadListScanCursor(_ page: SessionsPage, cwd: String?) {
+        guard let cursor = page.nextCursor else { return }
+        threadListScanCursors.insert(.init(cwd: cwd, cursor: cursor))
     }
 
     /// Claude 的目录扫描只能由用户主动发起的权威首屏触发；其余请求保持索引/分页语义，
@@ -1667,27 +1734,30 @@ actor CodexAppServerSessionRuntime {
             && cursor == nil
     }
 
-    func indexedThreadListNeedsRepair(_ page: SessionsPage, cwd: String) -> Bool {
-        let knownSessions = contextsBySessionID.values.compactMap { context in
-            context.cwd == cwd ? context.session : nil
-        }
-        guard !knownSessions.isEmpty else {
-            return false
-        }
+    func indexedThreadListMissingKnownSessionIDs(
+        _ page: SessionsPage,
+        cwd: String?,
+        sortKey: String
+    ) -> Set<SessionID> {
         let pageIDs = Set(page.sessions.map(\.id))
-        let missing = knownSessions.filter { !pageIDs.contains($0.id) }
-        guard !missing.isEmpty else {
-            return false
+        let missing = contextsBySessionID.values.compactMap { context -> AgentSession? in
+            guard (cwd == nil || context.cwd == cwd), !pageIDs.contains(context.session.id) else { return nil }
+            return context.session
         }
-        guard page.hasMore, let tail = page.sessions.last else {
-            return true
+        guard page.hasMore else { return Set(missing.map(\.id)) }
+        // 全局授权裁剪可产生非末页空结果，此时没有排序边界，不能把旧会话全部判为漏行。
+        guard let tail = page.sessions.last else { return [] }
+        let orderingDate: (AgentSession) -> Date = { session in
+            sortKey == "updated_at"
+                ? (session.updatedAt ?? session.createdAt ?? .distantPast)
+                : SessionIndexStore.orderingDate(for: session)
         }
-        let tailDate = SessionIndexStore.orderingDate(for: tail)
-        // 满页时只修复“按最近活动本应位于本页”的缺口；更老的已知会话留在后续分页，避免无谓扫描。
-        return missing.contains { known in
-            let knownDate = SessionIndexStore.orderingDate(for: known)
+        let tailDate = orderingDate(tail)
+        // 满页时只修复“按当前查询排序本应位于本页”的缺口，更老的已知会话留在后续分页。
+        return Set(missing.filter { known in
+            let knownDate = orderingDate(known)
             return knownDate > tailDate || (knownDate == tailDate && known.id > tail.id)
-        }
+        }.map(\.id))
     }
 
     var preferredThreadListSortKey: String {

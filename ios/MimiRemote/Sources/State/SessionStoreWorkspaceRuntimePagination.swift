@@ -96,6 +96,7 @@ extension SessionStore {
     func refreshDirectoryScopedSessionLibrary(
         workspace: AgentWorkspace,
         consistency: SessionListConsistency,
+        restartFromFirst: Bool = false,
         client: any SessionStoreAPIClient,
         hostScope: HostScope,
         generation: Int
@@ -107,6 +108,7 @@ extension SessionStore {
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
                 consistency: consistency,
+                restartFromFirst: restartFromFirst,
                 client: client,
                 hostScope: hostScope
             )
@@ -115,7 +117,8 @@ extension SessionStore {
                 [result],
                 generation: generation,
                 consistency: consistency,
-                runtimeProvider: runtimeProvider
+                runtimeProvider: runtimeProvider,
+                restartsFromFirst: restartFromFirst
             )
         }
     }
@@ -127,7 +130,8 @@ extension SessionStore {
         runtimeProvider: String,
         cursor: String?,
         limit: Int,
-        excludingListableSessionIDs: Set<SessionID> = []
+        excludingListableSessionIDs: Set<SessionID> = [],
+        restartFromFirst: Bool = false
     ) async throws -> SessionsPage {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             throw CancellationError()
@@ -148,6 +152,7 @@ extension SessionStore {
                 reuseRecent: false,
                 consistency: .authoritative,
                 source: .workspaceForeground,
+                restartFromFirst: restartFromFirst,
                 client: lease.client,
                 hostScope: lease.scope
             )
@@ -167,6 +172,16 @@ extension SessionStore {
             )
         }
         try requireCurrentProjectsGitHost(lease)
+        if let canonicalFirstPageResult,
+           let requestLineage = canonicalFirstPageResult.requestLineage,
+           !isCurrentSessionListRequestLineage(
+               requestLineage,
+               workspace: workspace,
+               hostScope: lease.scope
+           ) {
+            // 旧首屏即使稍后在 apply 阶段会被拒绝，也不能先覆盖目录成员集合。
+            throw CancellationError()
+        }
 
         let prepared = sessions(page.sessions, in: workspace).map(sessionPreparedForStorage)
         recordWorkspaceDirectorySessionPage(
@@ -185,7 +200,9 @@ extension SessionStore {
                 requestedCursor: canonicalFirstPageResult.requestedCursor,
                 // Runtime 页面只拿到 Codex rows，不能整页替换并误删同工作区已缓存的
                 // Claude 会话或旧分页；沿用该入口原先的 merge-only 展示语义。
-                preserveAllLoaded: true
+                preserveAllLoaded: true,
+                restartsFromFirst: restartFromFirst,
+                requestLineage: canonicalFirstPageResult.requestLineage
             )
         } else {
             mergeSessionPage(prepared)

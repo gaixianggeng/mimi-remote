@@ -942,6 +942,9 @@ extension SessionStore {
         if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
             workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
+        sessionListRequestLineageByWorkspaceKey = sessionListRequestLineageByWorkspaceKey.filter {
+            $0.key.workspaceID != project.id
+        }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
@@ -1674,12 +1677,14 @@ extension SessionStore {
                     guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
                     let hostRequestStartedAt = sessionListNow()
                     do {
+                        let archiveSnapshot = archiveReconciliationSnapshot(consistency: consistency)
                         let page = try await client.controlledGlobalSessionsPage(
                             runtimeProvider: runtimeProvider,
                             cursor: cursor,
                             limit: 50
                         )
                         guard appStore.connectionGeneration == generation else { return }
+                        reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
                         recordCarStatusHostObservation(at: sessionListNow())
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
@@ -1787,6 +1792,7 @@ extension SessionStore {
             await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
                 consistency: consistency,
+                restartFromFirst: authoritative,
                 client: client,
                 hostScope: hostScope,
                 generation: generation

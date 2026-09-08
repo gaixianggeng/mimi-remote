@@ -173,6 +173,69 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(text?.contains("任务已经完成") == true)
     }
 
+    func testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive() async throws {
+        let project = AgentProject(id: "fresh-index", name: "Fresh Index", path: "/tmp/fresh-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let firstTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20, consistency: .authoritative)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let firstList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(firstList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let existing = appServerThreadJSON(id: "existing", cwd: project.path, source: "appServer", updatedAt: 200)
+        transportResponse(transport, id: firstList.id, result: appServerThreadListResult([existing], nextCursor: nil))
+        let firstPage = try await firstTask.value
+        XCTAssertEqual(firstPage.sessions.map(\.id), ["existing"])
+
+        let sentBeforeRefresh = await transport.sentMessages().count
+        let refreshTask = Task {
+            try await runtime.sessionsPage(
+                workspace: AgentWorkspace(project: project), cursor: nil, limit: 20, consistency: .authoritative
+            )
+        }
+        let freshList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: sentBeforeRefresh)
+        XCTAssertEqual(freshList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertEqual(freshList.params?.objectValue?["sortKey"]?.stringValue, "recency_at")
+        XCTAssertNil(freshList.params?.objectValue?["refreshHistory"])
+        let restored = appServerThreadJSON(id: "externally-unarchived", cwd: project.path, source: "appServer", updatedAt: 300)
+        transportResponse(transport, id: freshList.id, result: appServerThreadListResult([restored, existing], nextCursor: nil))
+        let refreshed = try await refreshTask.value
+        XCTAssertEqual(refreshed.sessions.map(\.id), ["externally-unarchived", "existing"])
+    }
+
+    func testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan() async throws {
+        let project = AgentProject(id: "empty-index", name: "Empty Index", path: "/tmp/empty-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20, consistency: .authoritative)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let indexedList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(indexedList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let sentBeforeScan = await transport.sentMessages().count
+        transportResponse(transport, id: indexedList.id, result: appServerThreadListResult([], nextCursor: nil))
+        let scan = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: sentBeforeScan)
+        XCTAssertEqual(scan.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        let recovered = appServerThreadJSON(id: "history-only", cwd: project.path, source: "appServer", updatedAt: 200)
+        transportResponse(transport, id: scan.id, result: appServerThreadListResult([recovered], nextCursor: nil))
+        let page = try await pageTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["history-only"])
+    }
+
     func testClaudeAuthoritativeFirstPageRequestsHistoryRefresh() async throws {
         let project = AgentProject(
             id: "proj_claude_history_refresh",
@@ -808,5 +871,218 @@ extension ConversationDataFlowTests {
         try await reopen.value
         let resumedAfterUnarchive = await runtime.threadsResumedOnConnection.contains(threadID)
         XCTAssertTrue(resumedAfterUnarchive)
+    }
+}
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testExternalArchiveDoesNotPermanentlyDisableDirectoryIndex() async throws {
+        let project = AgentProject(id: "archive-index", name: "Archive Index", path: "/tmp/archive-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let archived = appServerThreadJSON(id: "external-archive", cwd: project.path, source: "appServer", updatedAt: 300)
+        let remaining = appServerThreadJSON(id: "remaining", cwd: project.path, source: "appServer", updatedAt: 200)
+        let initial = Task { try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let first = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: first.id, result: appServerThreadListResult([archived, remaining], nextCursor: nil))
+        _ = try await initial.value
+
+        // 首次缺失由扫描确认；之后仍访问新索引，不能把一次正常归档变成目录永久扫描。
+        for round in 0..<3 {
+            let sentBefore = await transport.sentMessages().count
+            let refresh = Task {
+                try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20, consistency: .authoritative)
+            }
+            let indexed = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: sentBefore)
+            XCTAssertEqual(indexed.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+            let rows = round == 2 ? [archived, remaining] : [remaining]
+            let beforeResponse = await transport.sentMessages().count
+            transportResponse(transport, id: indexed.id, result: appServerThreadListResult(rows, nextCursor: nil))
+            if round == 0 {
+                let scan = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeResponse)
+                XCTAssertEqual(scan.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+                transportResponse(transport, id: scan.id, result: appServerThreadListResult([remaining], nextCursor: nil))
+            }
+            let page = try await refresh.value
+            XCTAssertEqual(page.sessions.map(\.id), round == 2 ? ["external-archive", "remaining"] : ["remaining"])
+        }
+        let verifiedMissing = await runtime.stateDBOnlyVerifiedMissingSessionIDs
+        XCTAssertTrue(verifiedMissing.isEmpty, "取消归档重新返回后，不保留过期缺失记录")
+    }
+
+    func testCodexContinuationUsesIndexWithoutRepairingFirstPageRows() async throws {
+        let project = AgentProject(id: "page-index", name: "Page Index", path: "/tmp/page-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let firstTask = Task { try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 1, consistency: .authoritative) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let first = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        let recent = appServerThreadJSON(id: "recent", cwd: project.path, source: "appServer", updatedAt: 300)
+        transportResponse(transport, id: first.id, result: appServerThreadListResult([recent], nextCursor: "older"))
+        _ = try await firstTask.value
+        let beforePage = await transport.sentMessages().count
+        let nextTask = Task { try await runtime.sessionsPage(projectID: project.id, cursor: "older", limit: 1, consistency: .authoritative) }
+        let next = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforePage)
+        XCTAssertEqual(next.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertEqual(next.params?.objectValue?["cursor"]?.stringValue, "older")
+        let old = appServerThreadJSON(id: "old", cwd: project.path, source: "appServer", updatedAt: 100)
+        transportResponse(transport, id: next.id, result: appServerThreadListResult([old], nextCursor: nil))
+        let page = try await nextTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["old"])
+    }
+
+    func testCodexGlobalDiscoveryUsesIndexAcrossPages() async throws {
+        let project = AgentProject(id: "global-index", name: "Global Index", path: "/tmp/global-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let firstTask = Task { try await runtime.controlledGlobalSessionsPage(cursor: nil, limit: 50) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let first = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(first.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertNil(first.params?.objectValue?["cwd"])
+        // 授权裁剪后的空页还有下一页时不能额外扫描历史。
+        transportResponse(transport, id: first.id, result: appServerThreadListResult([], nextCursor: "opaque-next"))
+        _ = try await firstTask.value
+        let beforePage = await transport.sentMessages().count
+        let nextTask = Task { try await runtime.controlledGlobalSessionsPage(cursor: "opaque-next", limit: 50) }
+        let next = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforePage)
+        XCTAssertEqual(next.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertEqual(next.params?.objectValue?["cursor"]?.stringValue, "opaque-next")
+        let row = appServerThreadJSON(id: "visible", cwd: project.path, source: "appServer", updatedAt: 100)
+        transportResponse(transport, id: next.id, result: appServerThreadListResult([row], nextCursor: nil))
+        let page = try await nextTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["visible"])
+    }
+
+    func testCodexGlobalDiscoveryFallsBackWhenIndexUnsupported() async throws {
+        let project = AgentProject(id: "legacy-index", name: "Legacy Index", path: "/tmp/legacy-index")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let task = Task { try await runtime.controlledGlobalSessionsPage(cursor: nil, limit: 50) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let indexed = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        let beforeError = await transport.sentMessages().count
+        transportErrorResponse(transport, id: indexed.id, code: -32602, message: "useStateDbOnly unsupported")
+        let scan = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeError)
+        XCTAssertEqual(scan.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        let row = appServerThreadJSON(id: "visible", cwd: project.path, source: "appServer", updatedAt: 100)
+        transportResponse(transport, id: scan.id, result: appServerThreadListResult([row], nextCursor: nil))
+        let page = try await task.value
+        XCTAssertEqual(page.sessions.map(\.id), ["visible"])
+        let beforeNext = await transport.sentMessages().count
+        let nextTask = Task { try await runtime.controlledGlobalSessionsPage(cursor: nil, limit: 50) }
+        let next = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeNext)
+        XCTAssertEqual(next.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        transportResponse(transport, id: next.id, result: appServerThreadListResult([row], nextCursor: nil))
+        _ = try await nextTask.value
+    }
+}
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testScanFallbackContinuationKeepsItsQueryModeForDirectoryAndGlobalLists() async throws {
+        let project = AgentProject(id: "scan-cursor", name: "Scan Cursor", path: "/tmp/scan-cursor")
+        for global in [false, true] {
+            let transport = FakeCodexAppServerTransport()
+            let runtime = CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "test",
+                transportFactory: { transport },
+                configProvider: { makeDirectAppServerConfig(project: project) }
+            )
+            func page(_ cursor: String?) async throws -> SessionsPage {
+                if global { return try await runtime.controlledGlobalSessionsPage(cursor: cursor, limit: 20) }
+                return try await runtime.sessionsPage(projectID: project.id, cursor: cursor, limit: 20, consistency: .authoritative)
+            }
+            let initial = Task { try await page(nil) }
+            let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+            transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+            let indexed = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+            XCTAssertEqual(indexed.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+            let beforeFallback = await transport.sentMessages().count
+            transportResponse(transport, id: indexed.id, result: appServerThreadListResult([], nextCursor: nil))
+            let scanned = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeFallback)
+            XCTAssertEqual(scanned.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+            let first = appServerThreadJSON(id: "history", cwd: project.path, source: "appServer", updatedAt: 200)
+            transportResponse(transport, id: scanned.id, result: appServerThreadListResult([first], nextCursor: "scan-only-cursor"))
+            let firstPage = try await initial.value
+            XCTAssertEqual(firstPage.nextCursor, "scan-only-cursor")
+
+            let beforeNext = await transport.sentMessages().count
+            let nextTask = Task { try await page(firstPage.nextCursor) }
+            let next = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeNext)
+            XCTAssertEqual(next.params?.objectValue?["cursor"]?.stringValue, "scan-only-cursor")
+            XCTAssertEqual(next.params?.objectValue?["useStateDbOnly"]?.boolValue, false, "扫描生成的游标不能交给索引查询")
+            let second = appServerThreadJSON(id: "older-history", cwd: project.path, source: "appServer", updatedAt: 100)
+            transportResponse(transport, id: next.id, result: appServerThreadListResult([second], nextCursor: nil))
+            _ = try await nextTask.value
+
+            let beforeRefresh = await transport.sentMessages().count
+            let refresh = Task { try await page(nil) }
+            let fresh = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeRefresh)
+            XCTAssertEqual(fresh.params?.objectValue?["useStateDbOnly"]?.boolValue, true, "扫描游标不能降级下一次新首屏")
+            transportResponse(transport, id: fresh.id, result: appServerThreadListResult([first, second], nextCursor: nil))
+            _ = try await refresh.value
+        }
+    }
+}
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testGlobalIndexRepairsKnownMissingSessionsAcrossFilteredAndCompletePages() async throws {
+        let project = AgentProject(id: "global-repair", name: "Global Repair", path: "/tmp/global-repair")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let known = appServerThreadJSON(id: "known", cwd: project.path, source: "appServer", updatedAt: 300)
+        let remaining = appServerThreadJSON(id: "remaining", cwd: project.path, source: "appServer", updatedAt: 200)
+        let firstTask = Task { try await runtime.controlledGlobalSessionsPage(cursor: nil, limit: 50) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+        let first = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: first.id, result: appServerThreadListResult([known, remaining], nextCursor: nil))
+        _ = try await firstTask.value
+
+        for round in 0..<4 {
+            let beforeRefresh = await transport.sentMessages().count
+            let refresh = Task { try await runtime.controlledGlobalSessionsPage(cursor: nil, limit: 50) }
+            let indexed = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeRefresh)
+            XCTAssertEqual(indexed.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+            let beforeScan = await transport.sentMessages().count
+            transportResponse(transport, id: indexed.id, result: appServerThreadListResult(
+                round == 0 ? [] : [remaining], nextCursor: round == 0 ? "filtered-next" : nil
+            ))
+            if round < 3 {
+                let scan = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: beforeScan)
+                XCTAssertEqual(scan.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+                // 前两次覆盖授权裁剪空页和非空索引漏行，第三次正常归档才允许免除重复扫描。
+                transportResponse(transport, id: scan.id, result: appServerThreadListResult(round < 2 ? [known, remaining] : [remaining], nextCursor: nil))
+            }
+            let result = try await refresh.value
+            XCTAssertEqual(result.sessions.map(\.id), round < 2 ? ["known", "remaining"] : ["remaining"])
+        }
     }
 }

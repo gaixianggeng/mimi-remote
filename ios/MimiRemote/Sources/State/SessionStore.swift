@@ -452,6 +452,7 @@ final class SessionStore: ObservableObject {
     var sessionFirstPageWaiterCountByProjectID: [String: Int] = [:]
     var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
     var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
+    var sessionListRequestLineageByWorkspaceKey: [WorkspaceSessionFirstPageKey: UUID] = [:]
     @Published var workspaceSessionFirstPageCompletionByKey: [WorkspaceSessionFirstPageKey: WorkspaceSessionFirstPageCompletion] = [:]
     var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
