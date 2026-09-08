@@ -81,6 +81,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
+  -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testExternalArchiveDoesNotPermanentlyDisableDirectoryIndex \

@@ -555,7 +555,8 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	projectByCommonDir := p.authorizedProjectsByGitCommonDir(ctx)
+	var projectByCommonDir map[string]projects.Project
+	projectByPath := map[string]projects.Project{}
 	safeItems := make([]map[string]any, 0, min(len(rawItems), int(limit)))
 	allowedThreads := make([]appServerGatewayAllowedThread, 0, cap(safeItems))
 	for _, rawItem := range rawItems {
@@ -582,8 +583,23 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		project, ok := projectForGlobalThread(ctx, scope, projectByCommonDir)
-		if !ok {
+		project := scope.project
+		if strings.TrimSpace(project.ID) == "" && scope.browse {
+			// 列表和正文共用接收通道。只在外部目录需要归属时扫描项目，
+			// 同一响应内的重复目录（含未匹配目录）只查询一次，避免逐条启动 Git 阻塞正文。
+			var resolved bool
+			project, resolved = projectByPath[scope.realPath]
+			if !resolved {
+				if commonDir, ok := gitCommonDirectory(ctx, scope.realPath); ok {
+					if projectByCommonDir == nil {
+						projectByCommonDir = p.authorizedProjectsByGitCommonDir(ctx)
+					}
+					project = projectByCommonDir[commonDir]
+				}
+				projectByPath[scope.realPath] = project
+			}
+		}
+		if strings.TrimSpace(project.ID) == "" {
 			continue
 		}
 
@@ -773,25 +789,6 @@ func selectAuthorizedProjectForGitCommonDir(commonDir string, candidates []proje
 		return projects.Project{}, false
 	}
 	return primary, true
-}
-
-func projectForGlobalThread(
-	ctx context.Context,
-	scope gatewayScope,
-	projectByCommonDir map[string]projects.Project,
-) (projects.Project, bool) {
-	if strings.TrimSpace(scope.project.ID) != "" {
-		return scope.project, true
-	}
-	if !scope.browse {
-		return projects.Project{}, false
-	}
-	commonDir, ok := gitCommonDirectory(ctx, scope.realPath)
-	if !ok {
-		return projects.Project{}, false
-	}
-	project, ok := projectByCommonDir[commonDir]
-	return project, ok
 }
 
 func copyGatewayRawFields(src map[string]json.RawMessage, keys ...string) map[string]any {
