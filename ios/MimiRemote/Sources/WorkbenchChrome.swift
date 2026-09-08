@@ -3,6 +3,7 @@ import SwiftUI
 enum AppDestination: Hashable {
     case sessions
     case workspaces
+    case devices
     case me
     case session(SessionID)
     case subagent(parentID: SessionID, childID: SessionID)
@@ -56,12 +57,25 @@ final class WorkbenchNavigationBindingScheduler {
 enum CompactWorkbenchTab: Hashable {
     case sessions
     case workspaces
+    case devices
     case me
+
+    var isGlobalSettings: Bool { self == .me || self == .devices }
+
+    var destination: AppDestination {
+        switch self {
+        case .sessions: .sessions
+        case .workspaces: .workspaces
+        case .devices: .devices
+        case .me: .me
+        }
+    }
 
     var title: String {
         switch self {
         case .sessions: return L10n.text("ui.session")
         case .workspaces: return L10n.text("ui.workspace")
+        case .devices: return L10n.text("ui.devices")
         case .me: return L10n.text("ui.me")
         }
     }
@@ -74,6 +88,7 @@ enum CompactWorkbenchTab: Hashable {
         switch self {
         case .sessions: return .sessions
         case .workspaces: return .workspaces
+        case .devices: return .devices
         case .me: return .me
         }
     }
@@ -136,7 +151,7 @@ struct WorkbenchNavigationState: Equatable {
 
     /// selectedSessionID 可能在“我的”或列表页继续保留，不能据此判断会话是否真的可见。
     func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
-        if usesCompactNavigation, compactSelectedTab == .me {
+        if usesCompactNavigation, compactSelectedTab.isGlobalSettings {
             return nil
         }
         if usesCompactNavigation {
@@ -162,7 +177,7 @@ struct WorkbenchNavigationState: Equatable {
     /// 宽屏详情不是一次 push，系统不会自动提供返回工作区的按钮；紧凑布局由外层
     /// `NavigationStack` 管理 path，保留系统返回即可，避免顶栏出现两个返回控件。
     func showsWorkspaceBackButton(usesCompactNavigation: Bool) -> Bool {
-        guard !usesCompactNavigation, route.detailSessionID != nil else {
+        guard !usesCompactNavigation, case .session = selection else {
             return false
         }
         return route.rootPage == .workspaces
@@ -184,7 +199,7 @@ struct WorkbenchNavigationState: Equatable {
             )
 
         case .synchronize(let restoredRoute):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
+            let preservedGlobalTab = globalSettingsTab(usesCompactNavigation: usesCompactNavigation)
             let preservedPendingSessionID = restoredRoute.detailSessionID == pendingSessionSelectionID
                 ? pendingSessionSelectionID
                 : nil
@@ -192,27 +207,27 @@ struct WorkbenchNavigationState: Equatable {
             selection = Self.destination(for: restoredRoute)
             pendingSessionSelectionID = preservedPendingSessionID
             guard usesCompactNavigation else {
-                if preservesMe {
-                    selection = .me
+                if let preservedGlobalTab {
+                    selection = preservedGlobalTab.destination
                 }
                 return nil
             }
             restoreCompactPath(for: restoredRoute)
-            if preservesMe {
-                compactSelectedTab = .me
-                selection = .me
+            if let preservedGlobalTab {
+                compactSelectedTab = preservedGlobalTab
+                selection = preservedGlobalTab.destination
             }
             return nil
 
         case .selectionCommitted(let commit):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
+            let preservedGlobalTab = globalSettingsTab(usesCompactNavigation: usesCompactNavigation)
             pendingSessionSelectionID = nil
             switch commit.reason {
             case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
                 applyRoot(route.rootPage)
-                restoreMeIfNeeded(
-                    preservesMe,
+                restoreGlobalSettingsIfNeeded(
+                    preservedGlobalTab,
                     usesCompactNavigation: usesCompactNavigation
                 )
 
@@ -225,8 +240,8 @@ struct WorkbenchNavigationState: Equatable {
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
                 )
-                restoreMeIfNeeded(
-                    preservesMe,
+                restoreGlobalSettingsIfNeeded(
+                    preservedGlobalTab,
                     usesCompactNavigation: usesCompactNavigation
                 )
 
@@ -241,8 +256,8 @@ struct WorkbenchNavigationState: Equatable {
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
                 )
-                restoreMeIfNeeded(
-                    preservesMe,
+                restoreGlobalSettingsIfNeeded(
+                    preservedGlobalTab,
                     usesCompactNavigation: usesCompactNavigation
                 )
 
@@ -270,14 +285,14 @@ struct WorkbenchNavigationState: Equatable {
             return nil
 
         case .compactPathChanged(let tab, let path):
-            guard tab != .me else { return nil }
+            guard !tab.isGlobalSettings else { return nil }
             compactSelectedTab = tab
             switch tab {
             case .sessions:
                 compactSessionPath = path
             case .workspaces:
                 compactWorkspacePath = path
-            case .me:
+            case .me, .devices:
                 break
             }
 
@@ -290,7 +305,7 @@ struct WorkbenchNavigationState: Equatable {
             case .workspaces:
                 route = .workspaces
                 pendingSessionSelectionID = nil
-            case .me:
+            case .me, .devices:
                 break
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
@@ -302,9 +317,9 @@ struct WorkbenchNavigationState: Equatable {
 
         case .compactTabChanged(let tab):
             compactSelectedTab = tab
-            guard tab != .me else {
-                // “我的”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
-                selection = .me
+            guard !tab.isGlobalSettings else {
+                // “我的”和“设备”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
+                selection = tab.destination
                 return nil
             }
             let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
@@ -317,7 +332,7 @@ struct WorkbenchNavigationState: Equatable {
             case .workspaces:
                 route = .workspaces
                 pendingSessionSelectionID = nil
-            case .me:
+            case .me, .devices:
                 break
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
@@ -335,17 +350,15 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
-    /// “我的”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
+    /// “我的”和“设备”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
     /// 可以更新隐藏路由，但不能在没有用户导航意图时把当前页面抢走。
-    private mutating func restoreMeIfNeeded(
-        _ shouldRestore: Bool,
+    private mutating func restoreGlobalSettingsIfNeeded(
+        _ tab: CompactWorkbenchTab?,
         usesCompactNavigation: Bool
     ) {
-        guard shouldRestore else { return }
-        selection = .me
-        if usesCompactNavigation {
-            compactSelectedTab = .me
-        }
+        guard let tab else { return }
+        selection = tab.destination
+        compactSelectedTab = tab
     }
 
     private mutating func open(
@@ -359,11 +372,9 @@ struct WorkbenchNavigationState: Equatable {
             applyRoot(.sessions)
         case .workspaces:
             applyRoot(.workspaces)
-        case .me:
-            selection = .me
-            if usesCompactNavigation {
-                compactSelectedTab = .me
-            }
+        case .me, .devices:
+            selection = destination
+            compactSelectedTab = destination == .devices ? .devices : .me
             return nil
         case .session(let sessionID):
             applySession(
@@ -476,7 +487,7 @@ struct WorkbenchNavigationState: Equatable {
             // 返回列表本身就是显式用户意图；即使当前 ID 已为空也要推进选择代次，
             // 让仍在等待的恢复、通知和创建任务立即失效。
             return .returnToSessionList
-        case .me:
+        case .me, .devices:
             return nil
         case .session(let sessionID):
             guard selectedSessionID != sessionID,
@@ -498,13 +509,20 @@ struct WorkbenchNavigationState: Equatable {
             return .sessions
         case .workspaces:
             return .workspaces
-        case .me:
+        case .me, .devices:
             return route.rootPage
         }
     }
 
-    private func isShowingMe(usesCompactNavigation: Bool) -> Bool {
-        usesCompactNavigation ? compactSelectedTab == .me : selection == .me
+    private func globalSettingsTab(usesCompactNavigation: Bool) -> CompactWorkbenchTab? {
+        if usesCompactNavigation {
+            return compactSelectedTab.isGlobalSettings ? compactSelectedTab : nil
+        }
+        switch selection {
+        case .me: return .me
+        case .devices: return .devices
+        default: return nil
+        }
     }
 
     private static func destination(for route: WorkbenchRestorationRoute) -> AppDestination {
@@ -547,7 +565,7 @@ struct WorkbenchNavigationState: Equatable {
         switch destination {
         case .session, .subagent:
             return true
-        case .sessions, .workspaces, .me:
+        case .sessions, .workspaces, .me, .devices:
             return false
         }
     }
@@ -625,14 +643,18 @@ struct WorkbenchLayout: Equatable {
         containerWidth: CGFloat,
         horizontalSizeClass: UserInterfaceSizeClass?,
         isPad: Bool,
-        isPhone: Bool = false
+        isPhone: Bool = false,
+        keepsCompactNavigation: Bool? = nil
     ) {
         self.isPhone = isPhone
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
         // 这类宽度也必须使用真正的 push 导航，否则系统不会提供返回按钮和左缘返回手势。
-        let needsCompactNavigation = horizontalSizeClass == .compact
-            || containerWidth < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        // 按可用宽度切换，不按横竖屏切换；大屏 iPad 竖屏仍有空间保留侧栏。
+        let needsCompactNavigation = keepsCompactNavigation ?? (
+            isPhone || horizontalSizeClass == .compact
+                || containerWidth < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        )
         let isTightPadWidth = containerWidth < 980
 
         if usesCompactMetrics {
@@ -652,14 +674,12 @@ struct WorkbenchLayout: Equatable {
             : ColumnWidth(min: 300, ideal: 340, max: 380)
 
         // 三栏只在真正宽的横向空间里附着；窄窗口改用 sheet，保住会话阅读/输入区域。
-        usesAttachedInspector = horizontalSizeClass != .compact && containerWidth >= 1180
+        usesAttachedInspector = !needsCompactNavigation && horizontalSizeClass != .compact && containerWidth >= 1180
         usesCompactNavigation = needsCompactNavigation
         prefersDetailOnly = needsCompactNavigation
         // 只在 iPad 的真实双栏宽度启用浮动表面。设备类型与实际容器宽度共同判定，
         // 避免 iPhone 横屏、Stage Manager 紧凑窗口和 Mac Catalyst 被外观误伤。
-        usesFloatingSidebarSurface = isPad
-            && horizontalSizeClass == .regular
-            && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        usesFloatingSidebarSurface = isPad && !needsCompactNavigation
         // 会话行只按可用宽度选密度，不按设备类型。阈值必须复用 SessionIndexRowDensity 持有的
         // 那一个：这里只是会话页测量到自身宽度之前的种子值，和工作区各写一个字面量时，
         // 同一台设备会先按一档渲染再翻成另一档。

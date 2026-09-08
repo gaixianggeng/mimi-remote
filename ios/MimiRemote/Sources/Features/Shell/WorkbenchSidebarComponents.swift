@@ -239,12 +239,14 @@ struct AIUsageRingsControl: View {
 enum WorkbenchNavigationIcon {
     case sessions
     case workspaces
+    case devices
     case me
 
     var normalSystemName: String {
         switch self {
         case .sessions: return "bubble.left.and.bubble.right"
-        case .workspaces: return "folder"
+        case .workspaces: return "square.grid.2x2"
+        case .devices: return "desktopcomputer"
         case .me: return "person.crop.circle"
         }
     }
@@ -252,9 +254,18 @@ enum WorkbenchNavigationIcon {
     var selectedSystemName: String {
         switch self {
         case .sessions: return "bubble.left.and.bubble.right.fill"
-        case .workspaces: return "folder.fill"
+        case .workspaces: return "square.grid.2x2.fill"
+        case .devices: return "desktopcomputer"
         case .me: return "person.crop.circle.fill"
         }
+    }
+
+    /// 工作区的直角田字格共用模板资源，避免把电脑平台图标或目录图标一起替换。
+    func image(isSelected: Bool = false) -> Image {
+        if self == .workspaces {
+            return Image("WorkspaceNavigation").renderingMode(.template)
+        }
+        return Image(systemName: systemName(isSelected: isSelected))
     }
 
     func systemName(isSelected: Bool) -> String {
@@ -275,7 +286,7 @@ struct WorkbenchSidebarDestinationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon.systemName(isSelected: isSelected))
+                icon.image(isSelected: isSelected)
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)

@@ -11,7 +11,18 @@ struct ConnectionSettingsView: View {
     // 重命名 sheet 与扫码 Cover 同样必须由当前显示的连接页持有：紧凑布局把这一页
     // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
     // 这里是整页而不是 Form.Section，Section 刷新不会销毁它（MIM-63）。
-    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
+    @StateObject private var navigation: SettingsNavigationState
+    var isDevicesTab = false
+
+    init(
+        qrScannerPresentation: ConnectionQRCodeScannerPresentation,
+        navigation: SettingsNavigationState? = nil,
+        isDevicesTab: Bool = false
+    ) {
+        self.qrScannerPresentation = qrScannerPresentation
+        _navigation = StateObject(wrappedValue: navigation ?? SettingsNavigationState())
+        self.isDevicesTab = isDevicesTab
+    }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -19,14 +30,17 @@ struct ConnectionSettingsView: View {
         Form {
             InitialConnectionSettingsSections(
                 qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: { profileRenamePresentation.present($0) }
+                draft: navigation.connectionDraft,
+                transientPreferences: navigation.transientPreferences,
+                prioritizesConnectionStatus: isDevicesTab,
+                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) }
             )
         }
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
-        .frame(maxWidth: 720)
+        .frame(maxWidth: isDevicesTab ? 920 : 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)
         .contentMargins(
@@ -34,7 +48,8 @@ struct ConnectionSettingsView: View {
             hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
             for: .scrollContent
         )
-        .navigationTitle(L10n.text("ui.mac_connection"))
+        .navigationTitle(L10n.text(isDevicesTab ? "ui.devices" : "ui.mac_connection"))
+        .accessibilityIdentifier("settings.devices.page")
         .navigationBarTitleDisplayMode(.inline)
         // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
         // 紧凑布局把连接页 push 进导航栈后，根层已不在被呈现的层级里，点击扫码不会有任何反应。
@@ -55,7 +70,7 @@ struct ConnectionSettingsView: View {
         }
         .sheet(
             item: profileRenameRouteBinding,
-            onDismiss: { profileRenamePresentation.dismiss() }
+            onDismiss: { navigation.profileRenamePresentation.dismiss() }
         ) { route in
             ConnectionProfileRenameSheet(route: route) { displayName in
                 try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
@@ -65,11 +80,11 @@ struct ConnectionSettingsView: View {
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
         Binding(
-            get: { profileRenamePresentation.route },
+            get: { navigation.profileRenamePresentation.route },
             set: { route in
                 // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
                 if route == nil {
-                    profileRenamePresentation.dismiss()
+                    navigation.profileRenamePresentation.dismiss()
                 }
             }
         )

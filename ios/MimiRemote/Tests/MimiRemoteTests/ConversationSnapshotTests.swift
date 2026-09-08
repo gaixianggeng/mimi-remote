@@ -1950,11 +1950,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
         XCTAssertEqual(
             WorkbenchNavigationIcon.workspaces.systemName(isSelected: false),
-            "folder"
+            "square.grid.2x2"
         )
         XCTAssertEqual(
             WorkbenchNavigationIcon.workspaces.systemName(isSelected: true),
-            "folder.fill"
+            "square.grid.2x2.fill"
         )
         XCTAssertEqual(
             WorkbenchNavigationIcon.me.systemName(isSelected: false),

@@ -108,6 +108,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
     private func openConnectionSettings() throws {
         try enterWorkbenchIfNeeded()
+        let devices = app.descendant(identifier: "compactTab.devices")
+        if devices.exists {
+            devices.tap()
+            XCTAssertTrue(app.descendant(identifier: "settings.connection.scanQRCode").waitForExistence(timeout: 10))
+            return
+        }
         try openSettings()
 
         let connection = app.descendant(identifier: "settings.connectionManagement")
@@ -116,12 +122,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private func openHostInstaller() throws {
-        try enterWorkbenchIfNeeded()
-        try openSettings()
-
-        let connection = app.descendant(identifier: "settings.connectionManagement")
-        XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供电脑连接管理入口")
-        connection.tap()
+        try openConnectionSettings()
 
         let installerDisclosure = app.descendant(identifier: "settings.hostInstaller.disclosure")
         XCTAssertTrue(
@@ -506,14 +507,20 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 || activityUnavailable.waitForExistence(timeout: 1),
             "Token 模块应展示真实点格数据或诚实的不可用状态"
         )
-        XCTAssertTrue(macDevices.waitForExistence(timeout: 4), "设置页应展示 Mac 多设备入口")
+        if app.descendant(identifier: "compactTab.devices").exists {
+            XCTAssertFalse(macDevices.exists, "四 Tab 中设备管理已独立")
+        } else {
+            XCTAssertTrue(macDevices.waitForExistence(timeout: 4), "横屏我的保留设备入口")
+        }
         XCTAssertTrue(appearance.waitForExistence(timeout: 4), "设置页应展示偏好设置")
 
         XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
         XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
         XCTAssertLessThan(tokenQuota.frame.midX, tokenActivity.frame.midX, "当前剩余应稳定位于活动列左侧")
         XCTAssertLessThan(tokenQuota.frame.minX, tokenActivity.frame.minX, "Token 两个主模块不得回退为上下堆叠")
-        XCTAssertEqual(macDevices.frame.height, 52, accuracy: 1, "Mac 与设备应保持标准行高")
+        if macDevices.exists {
+            XCTAssertGreaterThanOrEqual(macDevices.frame.height, 52, "设备摘要按内容自然增高")
+        }
         XCTAssertEqual(appearance.frame.height, 52, accuracy: 1, "偏好项应保持标准行高")
 
         let screenshot = XCTAttachment(screenshot: app.screenshot())
@@ -1368,7 +1375,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private func openSettings() throws {
-        if app.descendant(identifier: "settings.connectionManagement").exists {
+        if app.descendant(identifier: "settings.tokenUsage").exists {
             return
         }
         if !workbenchSettingsEntry.exists,
@@ -1386,7 +1393,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
         settings.tap()
         XCTAssertTrue(
-            app.descendant(identifier: "settings.connectionManagement").waitForExistence(timeout: 12),
+            app.descendant(identifier: "settings.tokenUsage").waitForExistence(timeout: 12),
             "设置页应正常打开"
         )
     }

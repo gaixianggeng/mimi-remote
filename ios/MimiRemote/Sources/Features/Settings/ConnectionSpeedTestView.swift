@@ -7,23 +7,29 @@ struct ConnectionSpeedTestView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
-    @State private var selectedRoute: ConnectionTestRoute = .tailscale
+    @StateObject private var transientPreferences: SettingsTransientPreferences
     @State private var isRunningTest = false
-    @State private var didSelectInitialRoute = false
-    @State private var recordsBenchmarkSamples = false
-    @State private var benchmarkScenario: ConnectionBenchmarkScenario = .warm
     @State private var benchmarkDataset = ConnectionBenchmarkDataset.load()
     @State private var benchmarkExportDocument: ConnectionBenchmarkExportDocument?
     @State private var isPresentingBenchmarkExporter = false
     @State private var benchmarkExportError: String?
     @State private var confirmsBenchmarkReset = false
 
+    init(transientPreferences: SettingsTransientPreferences? = nil) {
+        _transientPreferences = StateObject(
+            wrappedValue: transientPreferences ?? SettingsTransientPreferences()
+        )
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
             Section(L10n.text("ui.connection_method")) {
-                Picker(L10n.text("ui.connection_method"), selection: $selectedRoute) {
+                Picker(
+                    L10n.text("ui.connection_method"),
+                    selection: $transientPreferences.speedTestRoute
+                ) {
                     Text(ConnectionTestRoute.tailscale.title).tag(ConnectionTestRoute.tailscale)
                     Text(ConnectionTestRoute.tailcat.title).tag(ConnectionTestRoute.tailcat)
                 }
@@ -52,7 +58,7 @@ struct ConnectionSpeedTestView: View {
                         Text(selectedEndpoint ?? L10n.text("ui.tailcat_needs_address"))
                             .font(themeStore.uiFont(.caption))
                             .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                             .truncationMode(.middle)
                     }
 
@@ -63,9 +69,10 @@ struct ConnectionSpeedTestView: View {
                             .font(themeStore.uiFont(.callout, weight: .semibold))
                             .monospacedDigit()
                             .foregroundStyle(resultTone(tokens: tokens))
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .settingsRow(.descriptive)
 
                 Button {
                     Task { await runSelectedTest() }
@@ -83,10 +90,11 @@ struct ConnectionSpeedTestView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .settingsRow()
                 .disabled(!canRunTest)
                 .accessibilityIdentifier("settings.connectionSpeedTest.run")
             } header: {
-                Text(selectedRoute.title)
+                Text(transientPreferences.speedTestRoute.title)
             } footer: {
                 Text(testFooter)
             }
@@ -132,15 +140,16 @@ struct ConnectionSpeedTestView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
+        .settingsDetailPage()
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.connection_speed_test"))
         .tint(tokens.accent)
         .onAppear {
-            guard !didSelectInitialRoute else { return }
-            didSelectInitialRoute = true
-            selectedRoute = appStore.activeConnectionRoute == .tailcat ? .tailcat : .tailscale
+            guard !transientPreferences.didSelectInitialSpeedTestRoute else { return }
+            transientPreferences.didSelectInitialSpeedTestRoute = true
+            transientPreferences.speedTestRoute = appStore.activeConnectionRoute == .tailcat
+                ? .tailcat
+                : .tailscale
         }
         .fileExporter(
             isPresented: $isPresentingBenchmarkExporter,
@@ -172,12 +181,19 @@ struct ConnectionSpeedTestView: View {
     @ViewBuilder
     private func benchmarkRecordingSection(tokens: ThemeTokens) -> some View {
         Section {
-            Toggle(L10n.text("ui.connection_benchmark_record_samples"), isOn: $recordsBenchmarkSamples)
+            Toggle(
+                L10n.text("ui.connection_benchmark_record_samples"),
+                isOn: $transientPreferences.recordsBenchmarkSamples
+            )
+                .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.benchmark.enabled")
                 .disabled(isTesting)
 
-            if recordsBenchmarkSamples {
-                Picker(L10n.text("ui.connection_benchmark_scenario"), selection: $benchmarkScenario) {
+            if transientPreferences.recordsBenchmarkSamples {
+                Picker(
+                    L10n.text("ui.connection_benchmark_scenario"),
+                    selection: $transientPreferences.benchmarkScenario
+                ) {
                     ForEach(ConnectionBenchmarkScenario.allCases) { scenario in
                         Text(scenario.title).tag(scenario)
                     }
@@ -213,8 +229,8 @@ struct ConnectionSpeedTestView: View {
         } header: {
             Text(L10n.text("ui.connection_benchmark_title"))
         } footer: {
-            if recordsBenchmarkSamples {
-                Text(benchmarkScenario.footer)
+            if transientPreferences.recordsBenchmarkSamples {
+                Text(transientPreferences.benchmarkScenario.footer)
             } else {
                 Text(L10n.text("ui.connection_benchmark_privacy_footer"))
             }
@@ -225,7 +241,10 @@ struct ConnectionSpeedTestView: View {
         route: ConnectionTestRoute,
         tokens: ThemeTokens
     ) -> some View {
-        let statistics = benchmarkDataset.statistics(route: route, scenario: benchmarkScenario)
+        let statistics = benchmarkDataset.statistics(
+            route: route,
+            scenario: transientPreferences.benchmarkScenario
+        )
         return HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(route.title)
@@ -380,19 +399,19 @@ struct ConnectionSpeedTestView: View {
             Label(title, systemImage: systemImage)
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(value)
                 .font(themeStore.uiFont(.title3, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(tone)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let detail {
                 Text(detail)
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -409,15 +428,13 @@ struct ConnectionSpeedTestView: View {
                 Text(title)
                     .font(themeStore.uiFont(.callout))
                     .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 12)
 
                 value()
                     .font(themeStore.uiFont(.callout))
                     .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: true, vertical: false)
             }
 
             // 窄屏或大字号时让右侧状态整体换到下一行，避免状态文字被挤成逐字换行。
@@ -449,8 +466,7 @@ struct ConnectionSpeedTestView: View {
 
             Text(networkPath.localizedSummary)
                 .font(themeStore.uiFont(.footnote, weight: .medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(tone)
         .padding(.horizontal, 9)
@@ -474,7 +490,7 @@ struct ConnectionSpeedTestView: View {
 
     private var selectedEndpoint: String? {
         let value: String?
-        switch selectedRoute {
+        switch transientPreferences.speedTestRoute {
         case .tailscale:
             value = appStore.endpoint
         case .tailcat:
@@ -486,12 +502,14 @@ struct ConnectionSpeedTestView: View {
     }
 
     private var currentReport: ConnectionTestReport? {
-        guard appStore.lastConnectionTestReport?.route == selectedRoute else { return nil }
+        guard appStore.lastConnectionTestReport?.route == transientPreferences.speedTestRoute else {
+            return nil
+        }
         return appStore.lastConnectionTestReport
     }
 
     private var testFooter: String {
-        if selectedRoute == .tailcat, selectedEndpoint == nil {
+        if transientPreferences.speedTestRoute == .tailcat, selectedEndpoint == nil {
             return tailcatController.isEnabled
                 ? L10n.text("ui.tailcat_needs_address")
                 : L10n.text("ui.tailcat_experiment_disabled")
@@ -502,9 +520,9 @@ struct ConnectionSpeedTestView: View {
     }
 
     private func runSelectedTest() async {
-        let route = selectedRoute
-        let scenario = benchmarkScenario
-        let shouldRecordBenchmark = recordsBenchmarkSamples
+        let route = transientPreferences.speedTestRoute
+        let scenario = transientPreferences.benchmarkScenario
+        let shouldRecordBenchmark = transientPreferences.recordsBenchmarkSamples
         guard var endpoint = selectedEndpoint else { return }
         isRunningTest = true
         defer { isRunningTest = false }
@@ -786,7 +804,9 @@ private struct ConnectionSpeedTestStageRow: View {
 
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: stage.status.isFailed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(stage.status.isFailed ? tokens.warning : tokens.success)
+                .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(stage.kind.title)
@@ -794,7 +814,7 @@ private struct ConnectionSpeedTestStageRow: View {
                 Text(stage.kind.detail)
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 8)
@@ -803,8 +823,9 @@ private struct ConnectionSpeedTestStageRow: View {
                 .font(themeStore.uiFont(.callout, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(stage.status.isFailed ? tokens.warning : tokens.secondaryText)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .settingsRow(.descriptive)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(L10n.format("ui.connection_test_stage_accessibility", stage.kind.title, stage.status.isFailed ? L10n.text("ui.failed_status") : L10n.text("ui.success")))
         .accessibilityValue(AppStore.connectionTestDurationText(milliseconds: stage.durationMillis))
@@ -820,6 +841,7 @@ private struct ConnectionSpeedMetricRow: View {
             Text(value)
                 .monospacedDigit()
         }
+        .settingsRow()
     }
 }
 
