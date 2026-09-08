@@ -20,6 +20,7 @@ struct ManagedConnectionSubscriptionView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
+    @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isConnectingMac = false
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
@@ -55,6 +56,22 @@ struct ManagedConnectionSubscriptionView: View {
             await deviceStore.refreshDevices()
         }
         .onAppear(perform: configureManagedScanner)
+        .alert(
+            L10n.text("ui.restore_purchases"),
+            isPresented: Binding(
+                get: { restoreResult != nil },
+                set: { if !$0 { restoreResult = nil } }
+            ),
+            presenting: restoreResult
+        ) { _ in
+            Button(L10n.text("ui.got_it"), role: .cancel) {}
+        } message: { result in
+            Text(L10n.text(
+                result == .restored
+                    ? "ui.managed_subscription_restored"
+                    : "ui.managed_subscription_restore_empty"
+            ))
+        }
         // 托管页请求扫码时它自己是栈顶页面，Cover 必须挂在这里才会真正呈现。
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .managedConnection),
@@ -580,7 +597,7 @@ struct ManagedConnectionSubscriptionView: View {
     private var subscriptionInformationSection: some View {
         Section {
             Button(L10n.text("ui.restore_purchases")) {
-                Task { await entitlementStore.restorePurchases() }
+                Task { restoreResult = await entitlementStore.restorePurchases() }
             }
             .frame(minHeight: 44)
             .disabled(entitlementStore.isBusy)

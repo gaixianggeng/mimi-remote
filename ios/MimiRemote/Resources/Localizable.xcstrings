@@ -41509,8 +41509,22 @@
     "ui.managed_subscription_expired": {
       "comment": "Error shown when the server says the subscription expired.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "This subscription has expired." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅已过期。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This subscription has expired. Select a plan to subscribe again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅已过期，请重新选择方案订阅。" } }
+      }
+    },
+    "ui.managed_subscription_restored": {
+      "comment": "Confirmation after a manual restore receives an active server entitlement.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your subscription has been restored." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅已恢复。" } }
+      }
+    },
+    "ui.managed_subscription_restore_empty": {
+      "comment": "A manual restore completed without finding an active subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No active subscription was found. If your subscription has expired, select a plan to subscribe again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未找到有效订阅。若订阅已过期，请重新选择方案订阅。" } }
       }
     },
     "ui.managed_subscription_inactive": {
