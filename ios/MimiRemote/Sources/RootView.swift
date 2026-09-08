@@ -281,7 +281,11 @@ struct RootView: View {
                 client: client,
                 profileID: profileID
             )
-			await lockScreenApprovalStore.reconcileDeliveredNotifications(client: client)
+			let installationID = appStore.connectionProfiles.first { $0.id == profileID }?.installationID
+            await lockScreenApprovalStore.reconcileDeliveredNotifications(
+                client: client,
+                sourceProfileTag: installationID.map { LockScreenApprovalRouting.profileTag(installationID: $0) }
+            )
         } catch is CancellationError {
             return
         } catch {

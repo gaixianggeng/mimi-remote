@@ -54,3 +54,12 @@ func ProfileTag(installationID string) string {
 	digest := sha256.Sum256([]byte("mimi-profile:" + strings.TrimSpace(installationID)))
 	return hex.EncodeToString(digest[:])[:16]
 }
+
+// 消息使用较长的标签供 App 精确匹配当前任务；它只用于路由，不显示在通知正文里。
+func notificationSessionTag(event, threadID string) string {
+	if event == EventApprovalPending || event == EventApprovalResolved {
+		return SessionTag(threadID)
+	}
+	digest := sha256.Sum256([]byte("mimi-tag:session:" + strings.TrimSpace(threadID)))
+	return strings.ToUpper(hex.EncodeToString(digest[:]))[:16]
+}

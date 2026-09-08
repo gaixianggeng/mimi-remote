@@ -24,9 +24,9 @@ import (
 // 边界：有界（数量、TTL、重放条数、单帧大小），且不持久化。agentd 重启后 broker
 // 全部消失，上游 runtime 请求继续 fail closed。
 const (
-	// 后台存活窗口。一次真实工具调用从发起到进入待审批可能要几十秒到几分钟，
-	// 窗口必须覆盖它；但被系统永久挂起的客户端不能长期占住 app-server 连接。
-	codexGatewayBrokerDetachTTL = 10 * time.Minute
+	// 长任务在锁屏后仍需送达最终回复。活跃任务最多保留一天；完成且没有
+	// 待审批时仍立即回收，并继续使用下方的连接数量上限。
+	codexGatewayBrokerDetachTTL = 24 * time.Hour
 	// 同时常驻的 broker 上限。每个 broker 占一条上游连接，必须小于网关连接上限。
 	codexGatewayBrokerMax = 4
 	// 重连时重放的待审批请求条数上限。审批帧本身很小，这里限制的是异常上游的洪水。
@@ -684,6 +684,9 @@ func (b *codexGatewayBroker) observeLifecycle(messageType int, payload []byte) {
 			b.mu.Unlock()
 		}
 	case "turn/completed", "thread/closed", "error":
+		if gatewayErrorWillRetry(&frame) {
+			return
+		}
 		// turn 结束后该 thread 的旧审批不可能再被应答，锁屏卡片必须撤掉。
 		// 只按 thread 作废：同一个 gateway 会话下还有别的 thread 在跑。
 		b.mu.Lock()

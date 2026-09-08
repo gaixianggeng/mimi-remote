@@ -16,6 +16,7 @@ import (
 // 今天逐字一致，不会产生任何对外请求。
 type Manager struct {
 	mu       sync.RWMutex
+	messages map[string]messageRoute
 	enabled  bool
 	client   *Client
 	devices  *DeviceStore
@@ -264,7 +265,7 @@ func (m *Manager) fanout(ctx context.Context, action Action, event string, devic
 				Runtime:      action.Runtime,
 				ApprovalKind: action.Kind,
 				HostTag:      m.hostTag,
-				SessionTag:   SessionTag(action.ThreadID),
+				SessionTag:   notificationSessionTag(event, action.ThreadID),
 				ExpiresAt:    expiresAt,
 			}
 			if err := m.notifyer(deviceCtx, notification); err != nil {

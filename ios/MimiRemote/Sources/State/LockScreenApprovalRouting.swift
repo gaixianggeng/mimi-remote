@@ -19,6 +19,12 @@ enum LockScreenApprovalRouting {
 			.lowercased()
 	}
 
+    static func messageSessionTag(threadID: String) -> String {
+        let value = "mimi-tag:session:" + threadID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02X", $0) }.joined().prefix(16).description
+    }
+
 	static func localProfileID(
 		for notification: LockScreenApprovalNotification,
 		profiles: [ConnectionProfile]

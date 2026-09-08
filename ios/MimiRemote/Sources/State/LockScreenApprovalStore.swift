@@ -656,6 +656,7 @@ final class LockScreenApprovalStore: ObservableObject {
     /// 前台恢复后的权威对账：过期的审批卡片一律清掉，不留下点了没反应的通知。
 	func reconcileDeliveredNotifications(
 		client: AgentAPIClient? = nil,
+        sourceProfileTag: String? = nil,
 		now: Date = Date()
 	) async {
         let delivered = await center.deliveredNotifications()
@@ -668,13 +669,15 @@ final class LockScreenApprovalStore: ObservableObject {
 			return payload.isExpired(at: now) ? item.request.identifier : nil
 		}
 		var identifiers = stale
-		if let client {
+		if let client, let sourceProfileTag {
 			for item in delivered where !identifiers.contains(item.request.identifier) {
 				guard let payload = LockScreenApprovalNotification(
 					userInfo: item.request.content.userInfo
 				) else {
 					continue
 				}
+                // 其他 Mac 的通知不能拿当前 Mac 的“找不到”结果来删除。
+                guard payload.profileID == sourceProfileTag else { continue }
 				do {
 					_ = try await client.pushActionRoute(
 						actionID: payload.actionID,

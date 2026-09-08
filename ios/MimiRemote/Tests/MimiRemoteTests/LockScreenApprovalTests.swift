@@ -27,6 +27,46 @@ final class LockScreenApprovalTests: XCTestCase {
         return ["mimi": mimi]
     }
 
+    func testMessageNotificationsOnlyOpenDetails() throws {
+        for event in ["turn.completed", "turn.failed", "turn.interrupted"] {
+            let userInfo = payload(overrides: ["event": event, "approval_kind": ""])
+            let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: userInfo))
+            XCTAssertTrue(notification.event.isMessage)
+            XCTAssertFalse(notification.kind.isActionableFromLockScreen)
+            let delivery = try XCTUnwrap(LockScreenApprovalDelivery(
+                userInfo: userInfo, actionIdentifier: LockScreenApprovalCategory.allowActionID
+            ))
+            XCTAssertNil(delivery.decision)
+            XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["event": event])))
+        }
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["approval_kind": "message"])))
+    }
+
+    @MainActor
+    func testVisibleMessageIsQuietOnlyForMatchingMacAndTask() {
+        XCTAssertEqual(LockScreenApprovalRouting.messageSessionTag(threadID: "thread-1"), "9E61BAD1E6C4DDAF")
+        let adapter = SessionNotificationResponseAdapter()
+        let scene = UUID()
+        let route = SessionNotificationRoute.current(profileID: "local-profile", projectID: "project", sessionID: "thread-1")
+        adapter.setVisibleSessionRoute(route, for: scene, installationID: "installation-1")
+        let userInfo = payload(overrides: [
+            "event": "turn.completed", "approval_kind": "",
+            "profile_id": LockScreenApprovalRouting.profileTag(installationID: "installation-1"),
+            "session_tag": LockScreenApprovalRouting.messageSessionTag(threadID: "thread-1"),
+        ])
+        XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: userInfo), [])
+        let otherTask = payload(overrides: [
+            "event": "turn.completed", "approval_kind": "",
+            "profile_id": LockScreenApprovalRouting.profileTag(installationID: "installation-1"),
+            "session_tag": LockScreenApprovalRouting.messageSessionTag(threadID: "thread-2"),
+        ])
+        XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: otherTask), [.banner, .sound])
+        adapter.setVisibleSessionRoute(route, for: scene, installationID: "other-mac")
+        XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: userInfo), [.banner, .sound])
+        adapter.setVisibleSessionRoute(nil, for: scene)
+        XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: userInfo), [.banner, .sound])
+    }
+
     func testDecodesWellFormedApproval() throws {
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: payload()))
         XCTAssertEqual(notification.event, .pending)
@@ -246,6 +286,11 @@ final class LockScreenApprovalTests: XCTestCase {
     /// Provider 的可见提醒只发本地化 key。App 里少一条，锁屏上就会出现裸 key。
     func testPushNotificationLocalizationKeysExist() {
         let keys = [
+            "push.message.title.codex",
+            "push.message.title.claude",
+            "push.message.body.completed",
+            "push.message.body.failed",
+            "push.message.body.interrupted",
             "push.approval.title.codex",
             "push.approval.title.claude",
             "push.approval.body.command",
@@ -258,7 +303,11 @@ final class LockScreenApprovalTests: XCTestCase {
             for language in [AppLanguage.simplifiedChinese, .english] {
                 let value = L10n.text(key, language: language)
                 XCTAssertNotEqual(value, key, "缺少文案：\(key) (\(language.rawValue))")
-                XCTAssertTrue(value.contains("%@"), "\(key) 必须保留匿名标签占位符")
+                if key.hasPrefix("push.approval.") {
+                    XCTAssertTrue(value.contains("%@"), "\(key) 必须保留匿名标签占位符")
+                } else {
+                    XCTAssertFalse(value.contains("%@"), "回复通知没有正文或标签参数")
+                }
             }
         }
     }

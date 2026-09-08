@@ -1,6 +1,86 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "push.message.body.interrupted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task has stopped. Tap to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已停止，点按查看。"
+          }
+        }
+      }
+    },
+    "push.message.body.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task could not finish. Tap to see why."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务未能完成，点按查看原因。"
+          }
+        }
+      }
+    },
+    "push.message.body.completed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your AI reply is ready. Tap to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 已回复，点按查看。"
+          }
+        }
+      }
+    },
+    "push.message.title.claude": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude 消息"
+          }
+        }
+      }
+    },
+    "push.message.title.codex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 消息"
+          }
+        }
+      }
+    },
     "$%@": {
       "shouldTranslate": false
     },
@@ -20832,13 +20912,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This Mac points to a service other than the default one. Confirm you trust the host name above before continuing."
+            "value": "Your computer uses a custom notification service. Make sure you trust the service address shown above."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这台电脑指向的不是默认服务。继续之前请确认你信任上面这个主机名。"
+            "value": "当前使用的是电脑指定的自建提醒服务。请确认你信任上面显示的服务地址。"
           }
         }
       }
@@ -20849,13 +20929,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turning this on registers this device with %@ so it can forward approval reminders through Apple Push Notification service. Your approve and deny actions still go straight to your own Mac over your private network."
+            "value": "Once enabled, the notification service (%@) sends reminders to this device through Apple. Your allow or deny decision goes directly to your computer, without passing through the notification service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开启后，这台设备会在 %@ 注册，由它经 Apple 推送服务转发审批提醒。你的允许与拒绝仍然通过私有网络直接提交给你自己的电脑。"
+            "value": "开启后，提醒服务（%@）会通过 Apple 向这台设备发送通知。你选择的允许或拒绝会直接发回自己的电脑，不经过提醒服务。"
           }
         }
       }
@@ -20866,13 +20946,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This is the service run by the developer of this app. It changes the previous promise that no relay service is operated at all."
+            "value": "This notification service is run by the Mimi developer. It sends reminders without processing your task contents."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这是本 App 开发者运营的服务。它改变了此前「不运营任何中转服务」的承诺。"
+            "value": "这项提醒服务由 Mimi 开发者运营。它只负责发送提醒，不处理你的任务内容。"
           }
         }
       }
@@ -20883,13 +20963,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn this on from the disclosure screen so the agreement is recorded first."
+            "value": "Read the setup explanation, then choose “Agree and enable”."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请从披露页开启，以便先记录你的同意。"
+            "value": "请先阅读开启说明，再选择“同意并开启”。"
           }
         }
       }
@@ -20900,13 +20980,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The service does not store the device token or the notification payload. It keeps only revoked ticket identifiers until they expire, at most 30 days. Turning the switch off revokes the registration."
+            "value": "The service does not store notification addresses or notification contents. Turning this off revokes notification access. The service retains identifiers for revoked access to prevent reuse, for up to 30 days."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该服务不保存设备 Token，也不保存通知内容；只保留已撤销的 Ticket 标识到其自然到期为止，最长 30 天。关闭开关即撤销注册。"
+            "value": "提醒服务不保存通知地址或通知内容。关闭后，通知授权会被撤销；服务会保留失效授权的编号，防止它再次被使用，最长 30 天。"
           }
         }
       }
@@ -20917,13 +20997,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Before you turn this on"
+            "value": "Enable message notifications"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开启前请确认"
+            "value": "开启消息提醒"
           }
         }
       }
@@ -20951,13 +21031,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only command and file-change approvals can be answered from the Lock Screen. Permission, input, and elicitation requests only offer View Details, because answering them safely needs the content that is deliberately kept out of notifications."
+            "value": "For new replies and task failures, tap the notification to open the task. For commands and file changes, verify your identity to allow or deny them. Handle other requests in the app."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "只有命令与文件改动这两类审批可以在锁屏直接处理。权限、补充输入与 elicitation 只提供「查看详情」——安全地回答它们需要内容，而内容正是刻意不放进通知的东西。"
+            "value": "新回复和任务失败：点按通知查看任务。命令执行和文件修改：验证身份后可允许或拒绝。其他请求请打开 App 处理。"
           }
         }
       }
@@ -20968,13 +21048,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The APNs device token for this install"
+            "value": "Notification address: assigned by Apple to deliver reminders to this device."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本次安装的 APNs 设备 Token"
+            "value": "通知地址：由 Apple 分配，用来把提醒送到这台设备。"
           }
         }
       }
@@ -20985,13 +21065,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When the request expires"
+            "value": "The reminder’s expiry time. Expired approvals cannot be approved; reply notifications only open the task."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该请求的过期时间"
+            "value": "提醒的有效期。审批过期后不能再批准；回复通知仅用于打开任务。"
           }
         }
       }
@@ -21002,13 +21082,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Which kind of approval it is, as a fixed enum"
+            "value": "The message type, such as approval needed, a new reply, or a failed task."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "审批类型（固定枚举）"
+            "value": "消息类型，例如需要确认、有新回复或任务失败。"
           }
         }
       }
@@ -21019,13 +21099,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Full commands, file paths, and diffs"
+            "value": "Full commands, file paths, and details of file changes"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完整命令、文件路径与 diff"
+            "value": "完整命令、文件路径和具体修改内容"
           }
         }
       }
@@ -21036,13 +21116,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Source code, file contents, and session history"
+            "value": "Code and file contents"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "源码、文件内容与会话历史"
+            "value": "代码和文件内容"
           }
         }
       }
@@ -21053,13 +21133,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Prompts, replies, and model output"
+            "value": "Your conversations with AI"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示词、回复与模型输出"
+            "value": "你与 AI 的对话内容"
           }
         }
       }
@@ -21070,13 +21150,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your agentd access token"
+            "value": "The credentials used to connect to your computer"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "你的 agentd 访问 Token"
+            "value": "连接你的电脑所需的访问凭据"
           }
         }
       }
@@ -21087,13 +21167,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anonymous short tags for the Mac and the session"
+            "value": "Anonymous identifiers for the device, computer, task, and approval: used to distinguish reminders, without computer names or task titles."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "电脑与会话的匿名短标签"
+            "value": "设备、电脑、任务和审批的匿名编号：用来区分提醒，不包含电脑名或任务标题。"
           }
         }
       }
@@ -21104,13 +21184,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "What leaves this device"
+            "value": "Information needed to send reminders"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会离开这台设备的"
+            "value": "发送提醒需要的信息"
           }
         }
       }
@@ -21121,13 +21201,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "What never leaves"
+            "value": "Not sent to the notification service"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "不会离开的"
+            "value": "不会发送给提醒服务的内容"
           }
         }
       }
@@ -21138,13 +21218,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This Mac has not enabled the reminder service, so the switch stays unavailable. Enable push in agentd configuration first."
+            "value": "Update Mimi on your Mac and enable its notification service, then reconnect to this computer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这台电脑没有启用提醒服务，开关暂不可用。请先在 agentd 配置中开启推送。"
+            "value": "请先更新 Mac 上的 Mimi，并启用消息提醒服务。完成后重新连接这台电脑。"
           }
         }
       }
@@ -21155,13 +21235,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lock Screen Approvals"
+            "value": "Message notifications"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "锁屏审批提醒"
+            "value": "消息提醒"
           }
         }
       }
@@ -21172,13 +21252,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When the app is in the background or your device is locked, get a notification for pending approvals and answer it without unlocking into the app first. Off by default; nothing leaves this device until you turn it on."
+            "value": "Get notified about approvals, requests for your input, completed AI replies, and task failures, even when the app is in the background or your device is locked."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "App 在后台或设备锁屏时，待审批请求会以通知送达，无需先打开 App 就能处理。默认关闭，开启前不会有任何数据离开这台设备。"
+            "value": "审批、需要你补充信息、AI 回复完成或任务失败时发送提醒。App 在后台或设备锁屏时也能收到。"
           }
         }
       }
@@ -21240,13 +21320,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Received by %@, a service this Mac points to rather than the default one. Turn this on only if you trust that host."
+            "value": "This information goes to the notification service selected by your computer (%@), which sends notifications through Apple. Enable this only if you trust that service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "由 %@ 接收——这台电脑指向的是自建服务而不是默认服务。只有在你信任该主机时才开启。"
+            "value": "这些信息会发送给当前电脑指定的提醒服务（%@），再通过 Apple 发送通知。请确认你信任这项服务。"
           }
         }
       }
@@ -21257,13 +21337,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Received by %@, the service run by the developer of this app."
+            "value": "This information goes to the notification service run by the Mimi developer (%@), which sends notifications through Apple."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "由本 App 开发者运营的 %@ 接收。"
+            "value": "这些信息由 Mimi 开发者运营的提醒服务接收（%@），再通过 Apple 发送通知。"
           }
         }
       }
@@ -21274,13 +21354,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The receiving service is unknown, so nothing is registered."
+            "value": "The connected computer has not provided a notification service address. Reminders cannot be enabled yet."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "收件服务未知，因此不会注册任何内容。"
+            "value": "连接的电脑尚未提供提醒服务地址，暂时无法开启。"
           }
         }
       }
@@ -21359,13 +21439,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Return to the linked Mac and turn off lock-screen reminders before enabling them for this Mac."
+            "value": "Return to the linked computer and turn off message notifications before enabling them for this computer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请先返回已绑定的电脑关闭锁屏提醒，再为当前电脑开启。"
+            "value": "请先返回已绑定的电脑关闭消息提醒，再为当前电脑开启。"
           }
         }
       }
@@ -21376,13 +21456,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Unavailable on this Mac"
+            "value": "Your Mac is not ready yet"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这台电脑不支持"
+            "value": "Mac 端尚未准备好"
           }
         }
       }

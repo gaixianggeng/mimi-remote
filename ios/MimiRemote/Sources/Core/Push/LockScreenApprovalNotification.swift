@@ -8,6 +8,16 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
     enum Event: String, Sendable {
         case pending = "approval.pending"
         case resolved = "approval.resolved"
+        case completed = "turn.completed"
+        case failed = "turn.failed"
+        case interrupted = "turn.interrupted"
+
+        var isMessage: Bool {
+            switch self {
+            case .completed, .failed, .interrupted: return true
+            case .pending, .resolved: return false
+            }
+        }
     }
 
     enum Runtime: String, Sendable {
@@ -21,6 +31,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
         case permission
         case userInput = "user_input"
         case elicitation
+        case message
 
         /// 只有响应形状无歧义的两类才提供锁屏「允许 / 拒绝」。
         ///
@@ -31,7 +42,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
             switch self {
             case .command, .patch:
                 return true
-            case .permission, .userInput, .elicitation:
+            case .permission, .userInput, .elicitation, .message:
                 return false
             }
         }
@@ -56,7 +67,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
               version == Self.currentVersion,
               let event = (payload["event"] as? String).flatMap(Event.init(rawValue:)),
               let runtime = (payload["runtime"] as? String).flatMap(Runtime.init(rawValue:)),
-              let kind = (payload["approval_kind"] as? String).flatMap(Kind.init(rawValue:)),
+              let kind = Self.notificationKind(payload["approval_kind"], event: event),
               let actionID = Self.opaqueIdentifier(payload["action_id"]),
               let deviceID = Self.opaqueIdentifier(payload["device_id"]),
               let profileID = Self.opaqueIdentifier(payload["profile_id"]),
@@ -92,6 +103,16 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
     }
 
     func isExpired(at moment: Date = Date()) -> Bool { expiresAt <= moment }
+
+    private static func notificationKind(_ value: Any?, event: Event) -> Kind? {
+        if event.isMessage {
+            // 回复通知只负责打开任务，不能借用审批类型获得允许/拒绝动作。
+            guard value == nil || (value as? String) == "" else { return nil }
+            return .message
+        }
+        guard let raw = value as? String, let kind = Kind(rawValue: raw), kind != .message else { return nil }
+        return kind
+    }
 
     private static func opaqueIdentifier(_ value: Any?) -> String? {
         guard let raw = value as? String else { return nil }

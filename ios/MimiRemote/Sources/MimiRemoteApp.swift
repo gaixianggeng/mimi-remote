@@ -77,6 +77,7 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 	let approvalInbox = LockScreenApprovalInbox()
 	var handleApprovalAction: ((LockScreenApprovalDelivery) async -> Void)?
     private var visibleSessionRoutesByScene: [UUID: SessionNotificationRoute] = [:]
+    private var visibleMessageTagsByScene: [UUID: (profile: String, session: String)] = [:]
 
     @discardableResult
     func receive(userInfo: [AnyHashable: Any]) -> Bool {
@@ -94,7 +95,15 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 
     /// 每个 Scene 独立登记当前真正可见的会话；任一窗口正在展示目标会话时，
     /// 对应运行态通知都不应再用横幅和声音重复打断用户。
-    func setVisibleSessionRoute(_ route: SessionNotificationRoute?, for sceneID: UUID) {
+    func setVisibleSessionRoute(_ route: SessionNotificationRoute?, for sceneID: UUID, installationID: String? = nil) {
+        if let route, let installationID {
+            visibleMessageTagsByScene[sceneID] = (
+                LockScreenApprovalRouting.profileTag(installationID: installationID),
+                LockScreenApprovalRouting.messageSessionTag(threadID: route.sessionID)
+            )
+        } else {
+            visibleMessageTagsByScene.removeValue(forKey: sceneID)
+        }
         if let route {
             visibleSessionRoutesByScene[sceneID] = route
         } else {
@@ -106,6 +115,12 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         forNotificationIdentifier identifier: String,
         userInfo: [AnyHashable: Any]
     ) -> UNNotificationPresentationOptions {
+        if let message = LockScreenApprovalNotification(userInfo: userInfo), message.event.isMessage,
+           visibleMessageTagsByScene.values.contains(where: {
+               $0.profile == message.profileID && $0.session == message.sessionTag
+           }) {
+            return []
+        }
         guard UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier),
               let route = SessionNotificationRoute(userInfo: userInfo),
               visibleSessionRoutesByScene.values.contains(route)

@@ -177,6 +177,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
+		p.notifyTurnMessage(&frame)
 		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
@@ -313,7 +314,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 }
 
 func (p *appServerGatewayPolicy) trackUpstreamTurnLifecycle(frame *appServerGatewayFrame) {
-	if p == nil || frame == nil {
+	if p == nil || frame == nil || gatewayErrorWillRetry(frame) {
 		return
 	}
 	method := strings.TrimSpace(frame.Method)
@@ -1255,6 +1256,9 @@ func (p *appServerGatewayPolicy) clearPendingServerRequestsForNotification(frame
 		}
 		p.mu.Unlock()
 	case "turn/completed", "thread/closed", "error":
+		if gatewayErrorWillRetry(frame) {
+			return
+		}
 		threadID, turnID, _ := appServerGatewayServerRequestScope(frame.Params)
 		if threadID == "" {
 			return

@@ -27,7 +27,8 @@ import (
 // 有界且不持久化：没有待审批请求也没有活跃 turn 时立刻释放；TTL 到期强制释放；
 // 新客户端接入同名会话时立刻让位；agentd 重启后全部消失。
 const (
-	claudeObserverTTL           = 10 * time.Minute
+	// 与 Codex 一样覆盖长任务，空闲时仍在下一次 sweep 回收。
+	claudeObserverTTL           = 24 * time.Hour
 	claudeObserverSweepInterval = 30 * time.Second
 	claudeObserverMax           = 4
 )
@@ -238,6 +239,9 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 	case "serverRequest/resolved":
 		o.forgetResolved(frame.Params)
 	case "turn/completed", "thread/closed", "error":
+		if gatewayErrorWillRetry(&frame) {
+			return
+		}
 		if threadID == "" {
 			return
 		}

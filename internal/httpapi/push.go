@@ -221,6 +221,10 @@ func (r *Router) pushActionRouteHandler(w http.ResponseWriter, req *http.Request
 	}
 	actionID := strings.TrimSpace(req.URL.Query().Get("action_id"))
 	deviceID := strings.TrimSpace(req.URL.Query().Get("device_id"))
+	if message, ok := r.push.MessageRoute(actionID, deviceID); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"runtime": message.Runtime, "thread_id": message.ThreadID, "project_id": message.ProjectID})
+		return
+	}
 	action, ok := r.push.Actions().Get(actionID)
 	if !ok || action.Terminal() {
 		writeError(w, http.StatusGone, "审批已结束或已过期")

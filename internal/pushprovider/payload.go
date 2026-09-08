@@ -21,6 +21,9 @@ const (
 	approvalBodyKey         = "push.approval.body"
 	approvalPushEvent       = "approval.pending"
 	resolvedPushEvent       = "approval.resolved"
+	completedPushEvent      = "turn.completed"
+	failedPushEvent         = "turn.failed"
+	interruptedPushEvent    = "turn.interrupted"
 )
 
 // Runtime 与 ApprovalKind 是 Codex 与 Claude Code 两条链路共用的枚举。任何一端
@@ -38,8 +41,11 @@ var (
 		"elicitation": {},
 	}
 	allowedEvents = map[string]struct{}{
-		approvalPushEvent: {},
-		resolvedPushEvent: {},
+		approvalPushEvent:    {},
+		resolvedPushEvent:    {},
+		completedPushEvent:   {},
+		failedPushEvent:      {},
+		interruptedPushEvent: {},
 	}
 )
 
@@ -67,6 +73,9 @@ const (
 )
 
 func (n ApprovalNotification) Validate(now time.Time) error {
+	if n.isTurnMessage() && n.ApprovalKind != "" {
+		return errors.New("消息通知不能包含审批类型")
+	}
 	if n.Version != 1 {
 		return errors.New("不支持的 version")
 	}
@@ -76,8 +85,10 @@ func (n ApprovalNotification) Validate(now time.Time) error {
 	if _, ok := allowedRuntimes[n.Runtime]; !ok {
 		return errors.New("不支持的 runtime")
 	}
-	if _, ok := allowedApprovalKinds[n.ApprovalKind]; !ok {
-		return errors.New("不支持的 approval_kind")
+	if !n.isTurnMessage() {
+		if _, ok := allowedApprovalKinds[n.ApprovalKind]; !ok {
+			return errors.New("不支持的 approval_kind")
+		}
 	}
 	if err := validateOpaque("action_id", n.ActionID, maxIdentifierLen); err != nil {
 		return err
@@ -101,8 +112,12 @@ func (n ApprovalNotification) Validate(now time.Time) error {
 	if !expiry.After(now) {
 		return errors.New("expires_at 已过期")
 	}
-	if expiry.Sub(now) > approvalMaxExpiry {
-		return fmt.Errorf("expires_at 超过上限 %s", approvalMaxExpiry)
+	maxExpiry := approvalMaxExpiry
+	if n.isTurnMessage() {
+		maxExpiry = 24 * time.Hour
+	}
+	if expiry.Sub(now) > maxExpiry {
+		return fmt.Errorf("expires_at 超过上限 %s", maxExpiry)
 	}
 	return nil
 }
@@ -150,6 +165,7 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 	aps := map[string]any{}
 	switch n.Event {
 	case approvalPushEvent:
+		aps["sound"] = "default"
 		aps["thread-id"] = n.SessionTag
 		aps["interruption-level"] = "time-sensitive"
 		aps["category"] = approvalCategoryForKind(n.ApprovalKind)
@@ -160,6 +176,14 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 			"loc-args":       []string{n.SessionTag},
 		}
 		aps["mutable-content"] = 1
+	case completedPushEvent, failedPushEvent, interruptedPushEvent:
+		aps["thread-id"] = n.SessionTag
+		aps["category"] = ApprovalDetailsCategory
+		aps["sound"] = "default"
+		aps["alert"] = map[string]any{
+			"title-loc-key": "push.message.title." + n.Runtime,
+			"loc-key":       "push.message.body." + strings.TrimPrefix(n.Event, "turn."),
+		}
 	case resolvedPushEvent:
 		// 其它设备已经处理完毕：只唤醒 App 清理旧通知，不再打扰用户。
 		aps["content-available"] = 1
@@ -205,4 +229,8 @@ func normalizeEnvironmentHost(environment string) string {
 		return APNsSandboxHost
 	}
 	return APNsProductionHost
+}
+
+func (n ApprovalNotification) isTurnMessage() bool {
+	return n.Event == completedPushEvent || n.Event == failedPushEvent || n.Event == interruptedPushEvent
 }
