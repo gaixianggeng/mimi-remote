@@ -11,7 +11,7 @@ struct AppUpdateView: View {
                 Link("下载 Mac 更新", destination: release.downloadURL)
                 Link("查看更新说明", destination: release.releaseURL)
             }
-            Text("下载后退出 Mimi Remote Mac，用 DMG 中的 App 替换原 App，再重新打开。配置和配对数据会保留。")
+            Text("下载后退出 Mimi Remote Mac，在 Finder 中把 DMG 里的 App 拖入「应用程序」并替换，再从「应用程序」打开。配置和配对数据会保留。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -46,7 +46,7 @@ struct AppUpdateNotice: View {
                     Spacer()
                     Button("稍后") { updates.deferUpdate() }
                 }
-                Text("下载后退出 App 并覆盖安装，配置和配对数据会保留。")
+                Text("下载后退出 App，在 Finder 中拖入「应用程序」并替换，再从「应用程序」打开。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

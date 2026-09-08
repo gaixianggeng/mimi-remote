@@ -86,6 +86,15 @@ extension ServiceManagementClient {
 
     private static let agentPlistName = "com.gaixianggeng.mimi.mac.agentd.plist"
 
+    static func installationLocationError(bundleURL: URL = Bundle.main.bundleURL) -> String? {
+        let location = bundleURL.resolvingSymlinksInPath()
+        let isReadOnly = (try? location.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly == true
+        // 隔离副本或 DMG 内的 App 不能作为持久后台服务的所有者。签名有效也不代表
+        // 该位置可登记；先阻止接管，避免注销正在工作的服务后留下无效的启动约束。
+        guard location.pathComponents.contains("AppTranslocation") || isReadOnly else { return nil }
+        return "请退出此副本，在 Finder 中把 DMG 里的 Mimi Remote Mac 拖入「应用程序」并替换原 App，再从「应用程序」打开。"
+    }
+
     /// `.notFound` 只表示 ServiceManagement 没找到服务记录，不能据此判断安装包漏文件。
     /// 这里直接核对包内 plist 与 BundleProgram，只有资源真的损坏时才要求重新安装。
     static func validateAgentConfiguration(
@@ -93,6 +102,7 @@ extension ServiceManagementClient {
         fileManager: FileManager = .default,
         signingIdentityProvider: ((URL) -> CodeSigningIdentity?)? = nil
     ) -> String? {
+        if let error = installationLocationError(bundleURL: bundleURL) { return error }
         let plistURL = bundleURL
             .appending(path: "Contents/Library/LaunchAgents", directoryHint: .isDirectory)
             .appending(path: agentPlistName, directoryHint: .notDirectory)

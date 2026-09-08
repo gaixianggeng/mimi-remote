@@ -117,6 +117,7 @@ bash scripts/check-macos-installer.sh \
 - 菜单栏的“检查更新…”会打开设置并查询 GitHub 最新正式 Release。设置页显示当前 App 版本、检查结果、新版 DMG 下载和更新说明。
 - App 启动时自动检查，持续运行期间每 24 小时检查一次。只认可已上传完成的 `Mimi-Remote-Mac.dmg`；检查失败不会弹窗。
 - 发现新版后显示菜单栏更新标记和菜单内提示。“稍后”会记住该版本并隐藏自动提示，仍可从设置中下载；发布更高版本后重新提示。
-- 下载后退出 Mimi Remote Mac，用 DMG 中的 App 覆盖原 App，再重新打开。退出期间移动端连接会中断；`agentd` 配置和配对数据保存在用户 Application Support 中，不随 App 覆盖。不会静默安装或强制重启。
+- 下载后退出 Mimi Remote Mac，在 Finder 中把 DMG 里的 App 拖入「应用程序」并替换，再从「应用程序」打开。不要直接运行 DMG 中的副本；命令行复制不能替代 Finder 的安装验收。退出期间移动端连接会中断；`agentd` 配置和配对数据保存在用户 Application Support 中，不随 App 覆盖。不会静默安装或强制重启。
+- 从 macOS 临时隔离路径或只读磁盘映像启动时，App 只显示安装指引并退出，不登记登录项、不注销或接管已有服务。正式升级验收需检查实际进程位于安装目录，且 `agentd status --json` 中 `service_ok=true`、`version` 与 `server_version` 一致。
 - 检查更新会向 GitHub 发起公开版本查询，不发送配置、配对数据或日志。无法联网时可手动重试或打开发布页面。
 - 0.3.13 等尚未包含此功能的安装包仍需手动下载升级，无法追溯增加提示入口。

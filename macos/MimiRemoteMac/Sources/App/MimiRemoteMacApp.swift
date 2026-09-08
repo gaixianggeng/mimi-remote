@@ -1,12 +1,26 @@
+import AppKit
 import SwiftUI
 
 /// Mimi Remote Mac 只运行菜单栏 App；后台 Codex App Server 由 agentd 托管。
 @main
 enum MimiRemoteMacMain {
+    @MainActor
     static func main() {
         // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
         // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
         if CommandLine.arguments.contains("--codex-daemon-supervisor") {
+            return
+        }
+        if let error = ServiceManagementClient.installationLocationError() {
+            // 必须先于 Store/bootstrap：隔离副本连登录项和已有服务的注销都不能执行。
+            let app = NSApplication.shared
+            app.setActivationPolicy(.accessory)
+            let alert = NSAlert()
+            alert.messageText = "请先安装 Mimi Remote Mac"
+            alert.informativeText = error
+            alert.addButton(withTitle: "退出")
+            app.activate(ignoringOtherApps: true)
+            alert.runModal()
             return
         }
         MimiRemoteMacApp.main()

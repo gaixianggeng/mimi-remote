@@ -1574,3 +1574,24 @@ private final class SuspendedStatusGate: @unchecked Sendable {
         condition.unlock()
     }
 }
+
+final class MacInstallationLocationTests: XCTestCase {
+    func testTranslocatedCopyIsRejectedBeforeSigningOrServiceWork() {
+        let bundle = URL(filePath: "/private/var/folders/test/T/AppTranslocation/test-id/d/Mimi Remote Mac.app")
+        let message = ServiceManagementClient.installationLocationError(bundleURL: bundle)
+        XCTAssertTrue(message?.contains("Finder") == true)
+        XCTAssertEqual(ServiceManagementClient.validateAgentConfiguration(
+            bundleURL: bundle,
+            signingIdentityProvider: { _ in
+                XCTFail("临时副本不应继续签名和服务检查")
+                return nil
+            }
+        ), message)
+    }
+
+    func testWritableDevelopmentAndApplicationsLocationsRemainAllowed() {
+        for path in ["/Applications/Mimi Remote Mac.app", "/tmp/DerivedData/Build/Products/Release/Mimi Remote Mac.app", "/tmp/AppTranslocationNotes/Mimi Remote Mac.app"] {
+            XCTAssertNil(ServiceManagementClient.installationLocationError(bundleURL: URL(filePath: path)))
+        }
+    }
+}
