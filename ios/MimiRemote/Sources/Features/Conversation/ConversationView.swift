@@ -29,7 +29,14 @@ struct ConversationView: View {
             quotaNotice: sessionStore.selectedQuotaNotice,
             webSocketStatus: sessionStore.webSocketStatus,
             // writer 冲突在输入区提供唯一恢复入口；顶部不再重复一条泛化错误。
-            errorMessage: sessionStore.selectedSessionHasActiveWriterConflict ? nil : sessionStore.errorMessage
+            // 预热窗口只压住连接探测的失败：那一轮还会自动重试，冷启动直接恢复到会话页时
+            // 不该先弹一条随后自己消失的错误条。用户主动发送、审批、重试的失败走同一个
+            // errorMessage 通道，必须照常展示，否则点了发送却什么都不显示。
+            errorMessage: sessionStore.selectedSessionHasActiveWriterConflict
+                || (sessionStore.isEstablishingConnection
+                    && sessionStore.errorMessageOrigin == .connectionProbe)
+                ? nil
+                : sessionStore.errorMessage
         )
 
         GeometryReader { proxy in

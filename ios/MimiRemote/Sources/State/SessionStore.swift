@@ -147,6 +147,9 @@ final class SessionStore: ObservableObject {
     var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+    /// `errorMessage` 当前这条的来源，由 `setErrorMessage` 维护。预热窗口只压探测失败，
+    /// 用户主动操作的失败任何时候都要照常展示。
+    @Published var errorMessageOrigin: SessionErrorOrigin = .userAction
     @Published var isRefreshingSelectedSession = false
     @Published var isUpdatingThreadGoal = false
     @Published var threadGoalErrorMessage: String?
@@ -232,6 +235,12 @@ final class SessionStore: ObservableObject {
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
     @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
+    /// 首次连接这台电脑的预热窗口。冷启动的隧道建立、agentd 网关上游就绪都允许失败重试，
+    /// 窗口内的失败是过程而不是结论，界面必须给出连接过渡而不是错误态。
+    /// 只由 `SessionStoreConnectionWarmUp` 的 begin/end 维护，别处不要直接写。
+    @Published var isConnectionWarmUpActive = false
+    var liveConnectionWarmUpTokens: Set<Int> = []
+    var nextConnectionWarmUpToken = 0
 
     var isConnectionSwitchInProgress: Bool {
         connectionSwitchTargetProfileID != nil

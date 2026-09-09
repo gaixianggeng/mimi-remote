@@ -77,6 +77,206 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(state(visible: true), .content)
     }
 
+    func testConnectionWarmUpOutranksTransientFailuresButNotDefiniteStates() {
+        func state(
+            connection: ConnectionStatus = .idle,
+            error: String? = nil,
+            offline: Bool = false,
+            visible: Bool = false,
+            establishing: Bool
+        ) -> SessionListPresentationState {
+            SessionListPresentationState.resolve(
+                hasVisibleSessions: visible,
+                hasOpenedWorkspace: false,
+                isLoading: false,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: offline,
+                errorMessage: error,
+                connectionStatus: connection,
+                hasLoadedWorkspaceCatalog: true,
+                isEstablishingConnection: establishing
+            )
+        }
+
+        // 预热窗口内的 preflight 与列表失败都还会自动重试，不能先渲染成结论。
+        XCTAssertEqual(state(connection: .failed("tunnel not ready"), establishing: true), .connecting)
+        XCTAssertEqual(state(error: "load failed", establishing: true), .connecting)
+        XCTAssertEqual(state(establishing: true), .connecting)
+
+        // 已经有内容时不退回过渡；设备本身离线是明确结论，必须压过预热。
+        XCTAssertEqual(state(visible: true, establishing: true), .content)
+        XCTAssertEqual(state(offline: true, establishing: true), .networkUnavailable)
+
+        // 窗口结束后原有错误态与重试入口原样接管。
+        XCTAssertEqual(
+            state(connection: .failed("tunnel not ready"), establishing: false),
+            .runtimeUnavailable("tunnel not ready")
+        )
+        XCTAssertEqual(state(error: "load failed", establishing: false), .loadFailed("load failed"))
+    }
+
+    @MainActor
+    func testBootstrapKeepsConnectionWarmUpActiveAcrossTransientFailures() async {
+        let project = makeProject(id: "proj_warm_up")
+        let client = FlakyBootstrapClient(failuresBeforeSuccess: 2, projects: [project], sessions: [])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "warm-up-token"
+        var observedDuringBackoff: [Bool] = []
+        var observedPresentationDuringBackoff: [SessionListPresentationState] = []
+        var store: SessionStore? = nil
+        let created = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListSleep: { _ in
+                // 退避间隙就是用户真正看到的那一帧：此时必须仍在连接过渡，而不是错误态。
+                guard let store else { return }
+                observedDuringBackoff.append(store.isEstablishingConnection)
+                observedPresentationDuringBackoff.append(
+                    SessionListPresentationState.resolve(
+                        hasVisibleSessions: false,
+                        hasOpenedWorkspace: false,
+                        isLoading: store.isLoading,
+                        isSearching: false,
+                        isFiltering: false,
+                        isNetworkUnavailable: store.isNetworkUnavailable,
+                        errorMessage: store.errorMessage,
+                        connectionStatus: appStore.connectionStatus,
+                        hasLoadedWorkspaceCatalog: store.loadedWorkspaceCatalogScope == appStore.activeHostScope,
+                        isEstablishingConnection: store.isEstablishingConnection
+                    )
+                )
+            }
+        )
+        store = created
+
+        await created.bootstrap()
+
+        XCTAssertGreaterThanOrEqual(observedDuringBackoff.count, 2, "应至少经历两次退避重试")
+        XCTAssertTrue(observedDuringBackoff.allSatisfy { $0 }, "每一次退避重试期间都应停留在连接过渡")
+        XCTAssertTrue(
+            observedPresentationDuringBackoff.allSatisfy { $0 == .connecting },
+            "退避期间首屏不能渲染成运行时不可用或加载失败"
+        )
+        XCTAssertNil(created.errorMessage, "重试成功后不应留下错误")
+        XCTAssertFalse(created.isEstablishingConnection, "首屏数据到手后必须退出连接过渡")
+        XCTAssertFalse(created.isConnectionWarmUpActive)
+    }
+
+    @MainActor
+    func testConnectionWarmUpYieldsToDefiniteConnectionOutcomes() {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "warm-up-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+
+        let token = store.beginConnectionWarmUp()
+        XCTAssertTrue(store.isEstablishingConnection)
+
+        // 访问码失效是终态，继续播放连接过渡只会把用户困在不会好的动画里。
+        store.connectionTermination = .credentialsInvalid
+        XCTAssertFalse(store.isEstablishingConnection)
+        store.connectionTermination = nil
+        XCTAssertTrue(store.isEstablishingConnection)
+
+        store.endConnectionWarmUp(token)
+        XCTAssertFalse(store.isEstablishingConnection)
+
+        // 已经归还过的令牌再释放一次不得影响新一轮预热。
+        let newerToken = store.beginConnectionWarmUp()
+        store.endConnectionWarmUp(token)
+        XCTAssertTrue(store.isEstablishingConnection)
+        store.endConnectionWarmUp(newerToken)
+        XCTAssertFalse(store.isEstablishingConnection)
+    }
+
+    /// 共享的 errorMessage 同时承载探测失败和用户操作失败。预热窗口只能压住前者：
+    /// 把用户刚点的发送/审批失败一起吞掉，会变成"点了没反应"，比一闪而过的错误更糟。
+    @MainActor
+    func testConnectionWarmUpOnlySuppressesConnectionProbeErrors() {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "warm-up-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        let warmUp = store.beginConnectionWarmUp()
+        XCTAssertTrue(store.isEstablishingConnection)
+
+        func conversationShowsError() -> Bool {
+            // 与 ConversationView 顶部错误条同一判定。
+            !(store.isEstablishingConnection && store.errorMessageOrigin == .connectionProbe)
+        }
+
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertEqual(store.errorMessageOrigin, .connectionProbe)
+        XCTAssertFalse(conversationShowsError(), "探测失败在预热窗口内仍会自动重试，不该弹错误条")
+
+        store.setErrorMessage("发送失败：WebSocket 未连接")
+        XCTAssertEqual(store.errorMessageOrigin, .userAction)
+        XCTAssertTrue(conversationShowsError(), "用户主动发送的失败必须照常展示")
+
+        // 同一条文案先由探测写入、随后被用户操作再次触发时，也要回到可见。
+        store.setErrorMessage(nil)
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertFalse(conversationShowsError())
+        store.setErrorMessage("无法连接服务器。")
+        XCTAssertTrue(conversationShowsError())
+
+        store.endConnectionWarmUp(warmUp)
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertTrue(conversationShowsError(), "窗口结束后探测失败也要如实展示")
+    }
+
+    /// 冷启动会有 RootView 启动任务、bootstrap 和一到多个退避循环同时持有窗口。
+    /// 先结束的持有者不得替仍在重试的那个下结论。
+    @MainActor
+    func testConnectionWarmUpStaysOpenUntilTheLastHolderFinishes() {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "warm-up-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+
+        let outer = store.beginConnectionWarmUp()
+        let inner = store.beginConnectionWarmUp()
+        let concurrentRetryLoop = store.beginConnectionWarmUp()
+
+        store.endConnectionWarmUp(concurrentRetryLoop)
+        XCTAssertTrue(store.isEstablishingConnection)
+        store.endConnectionWarmUp(inner)
+        XCTAssertTrue(store.isEstablishingConnection)
+        store.endConnectionWarmUp(outer)
+        XCTAssertFalse(store.isEstablishingConnection)
+    }
+
+    @MainActor
+    func testConnectionWarmUpStaysClosedWithoutConfiguredConnection() {
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+
+        XCTAssertFalse(appStore.isConfigured)
+        store.beginConnectionWarmUp()
+        XCTAssertFalse(store.isConnectionWarmUpActive, "初次配对页不应出现连接过渡")
+        XCTAssertFalse(store.isEstablishingConnection)
+    }
+
     func testDateBucketsPreferTodayAndYesterdayAtLocalMidnight() {
         let calendar = makeCalendar(timeZone: "Asia/Shanghai")
         let now = makeDate(calendar, year: 2025, month: 6, day: 2, hour: 0, minute: 15)
