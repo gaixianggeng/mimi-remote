@@ -107,6 +107,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFailedRunningMessageRetryReusesClientMessageID \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \
+  -only-testing:MimiRemoteTests/LockScreenApprovalTests \
+  -only-testing:MimiRemoteTests/LockScreenApprovalRoutingTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreReplaysDirectAppServerEventStreamFixture \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreSendsUserInputAnswersThroughExistingSocket \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningTurnLifecycleKeepsEchoAndFinalAssistantStable \

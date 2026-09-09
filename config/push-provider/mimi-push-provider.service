@@ -1,0 +1,24 @@
+[Unit]
+Description=Mimi approval APNs provider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mimi-push
+Group=mimi-push
+EnvironmentFile=/etc/mimi-push-provider/env
+ExecStart=/opt/mimi-push-provider/mimi-push-provider
+Restart=on-failure
+RestartSec=5
+StateDirectory=mimi-push-provider
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/mimi-push-provider
+
+[Install]
+WantedBy=multi-user.target
