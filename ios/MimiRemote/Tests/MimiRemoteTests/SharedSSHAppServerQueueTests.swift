@@ -3,6 +3,114 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testClaudeDirectTurnUsesRuntimePolicyWhenDraftHasNoProvider() async throws {
+        let project = AgentProject(id: "claude", name: "Claude", path: "/tmp/claude")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: "claude",
+            transportFactory: { pool.make() },
+            configProvider: { makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()]) }
+        )
+        let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+        let send = Task {
+            try await runtime.startTurnOutcome(sessionID: "thread-reconcile",
+                                              payload: CodexAppServerTurnPayload(prompt: "Claude"),
+                                              clientMessageID: "claude-message")
+        }
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+        transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+        let turn = try await waitForFakeAppServerRequest(transport, method: "turn/start")
+        XCTAssertEqual(turn.params?["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(turn.params?["sandboxPolicy"]?["type"]?.stringValue, "workspaceWrite")
+        transportResponse(transport, id: turn.id, result: #"{"turn":{"id":"claude-turn","status":"inProgress","items":[]}}"#)
+        _ = try await send.value
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testSSHComposerUsesDesktopTurnStartWithPermissionsAfterSettingsACK() async throws {
+        for mode in ComposerPermissionMode.allCases {
+            let project = AgentProject(id: "desktop", name: "Desktop", path: "/tmp/desktop")
+            let pool = FakeCodexAppServerTransportPool()
+            let runtime = CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "test",
+                transportFactory: { pool.make() }, configProvider: { makeSharedSSHConfig(project: project) }
+            )
+            let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+            let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+            let connected = expectation(description: "composer connected")
+            socket.onStatus = { if $0 == .connected { connected.fulfill() } }
+            socket.connect(sessionID: "thread-reconcile")
+            let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+            transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+            await fulfillment(of: [connected], timeout: 2)
+            XCTAssertEqual(socket.turnDeliveryMode, .direct)
+
+            var options = CodexAppServerTurnOptions.default
+            mode.apply(to: &options)
+            // 现场旧草稿曾保存这个组合；最终请求必须和 Desktop 一样是 never。
+            if mode == .fullAccess { options.approvalPolicy = .onRequest }
+            let update = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: options) }
+            let settings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+            XCTAssertNil(settings.params?["model"])
+            XCTAssertNil(settings.params?["collaborationMode"])
+            XCTAssertEqual(settings.params?["approvalPolicy"]?.stringValue, mode.approvalPolicy.rawValue)
+
+            let accepted = expectation(description: "composer turn accepted")
+            socket.onTurnSendOutcome = { _, outcome in
+                XCTAssertEqual(outcome, .accepted(turnID: "desktop-turn"))
+                accepted.fulfill()
+            }
+            XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "next", options: options), clientMessageID: "desktop-message"))
+            try await Task.sleep(nanoseconds: 30_000_000)
+            let beforeACK = await appServerRequests(transport)
+            XCTAssertFalse(beforeACK.contains { $0.method == "turn/start" || $0.method == "thread/queue/add" })
+            // 故意不发送 settings/updated；Desktop 的发送路径只等 ACK。
+            transportResponse(transport, id: settings.id, result: #"{}"#)
+            try await update.value
+            let turn = try await waitForFakeAppServerRequest(transport, method: "turn/start")
+            XCTAssertEqual(turn.params?["approvalPolicy"]?.stringValue, mode.approvalPolicy.rawValue)
+            XCTAssertEqual(turn.params?["approvalsReviewer"]?.stringValue, mode.approvalsReviewer)
+            XCTAssertEqual(turn.params?["sandboxPolicy"]?["type"]?.stringValue, mode.sandboxMode.rawValue)
+            XCTAssertEqual(turn.params?["clientUserMessageId"]?.stringValue, "desktop-message")
+            transportResponse(transport, id: turn.id, result: #"{"turn":{"id":"desktop-turn","status":"inProgress","items":[]}}"#)
+            await fulfillment(of: [accepted], timeout: 2)
+            let requests = await appServerRequests(transport)
+            XCTAssertFalse(requests.contains { $0.method == "thread/queue/add" })
+            socket.disconnect()
+            await runtime.shutdownForHostSwitch()
+        }
+    }
+
+    func testDesktopPermissionChangesAreSerializedWithoutWaitingForNotifications() async throws {
+        let project = AgentProject(id: "desktop", name: "Desktop", path: "/tmp/desktop")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { pool.make() }, configProvider: { makeSharedSSHConfig(project: project) }
+        )
+        let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+        var firstOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.fullAccess.apply(to: &firstOptions)
+        let first = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: firstOptions) }
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+        transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+        let firstRequest = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+        let nextIndex = await transport.sentMessages().count
+        var nextOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.requestApproval.apply(to: &nextOptions)
+        let next = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: nextOptions) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let beforeACK = await appServerRequests(transport)
+        XCTAssertEqual(beforeACK.filter { $0.method == "thread/settings/update" }.count, 1)
+        transportResponse(transport, id: firstRequest.id, result: #"{}"#)
+        try await first.value
+        let nextRequest = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update", after: nextIndex)
+        XCTAssertEqual(nextRequest.params?["approvalPolicy"]?.stringValue, "on-request")
+        transportResponse(transport, id: nextRequest.id, result: #"{}"#)
+        try await next.value
+        await runtime.shutdownForHostSwitch()
+    }
+
     func testComposerQueueTrayHidesDispatchingTurnButKeepsRecoverableEntries() {
         let sessionID = "composer-queue-tray"
         let conversationStore = ConversationStore()

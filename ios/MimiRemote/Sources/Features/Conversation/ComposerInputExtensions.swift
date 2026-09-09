@@ -40,6 +40,7 @@ extension ComposerView {
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
         )
+        sessionStore.updateSelectedThreadPermissionsForNextTurn(composerState.turnOptions)
     }
 
     func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
@@ -60,6 +61,7 @@ extension ComposerView {
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
         )
+        sessionStore.updateSelectedThreadPermissionsForNextTurn(composerState.turnOptions)
     }
 
     var permissionProfileCWD: String? {

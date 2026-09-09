@@ -764,7 +764,7 @@ struct CodexAppServerRequestBuilder {
         options: CodexAppServerTurnOptions
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
-        let turnParams = options.turnParams(projectPath: path)
+        let turnParams = options.sanitizedForRuntimePolicy().turnParams(projectPath: path)
         var params: [String: CodexAppServerJSONValue?] = [
             "threadId": .string(threadID)
         ]
@@ -785,6 +785,19 @@ struct CodexAppServerRequestBuilder {
             method: "thread/settings/update",
             params: .object(params.compactMapValues { $0 })
         )
+    }
+
+    func threadPermissionsUpdate(
+        threadID: String,
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let update = try threadSettingsUpdate(threadID: threadID, cwd: cwd, options: options)
+        // 权限菜单只修改权限，不把 Composer 里可能已过期的模型选择写回共享会话。
+        let params = (update.params?.objectValue ?? [:]).filter {
+            !["model", "effort", "collaborationMode"].contains($0.key)
+        }
+        return CodexAppServerRequestSpec(method: update.method, params: .object(params))
     }
 
     func threadQueueAdd(
@@ -983,7 +996,7 @@ struct CodexAppServerRequestBuilder {
             "input": payload.appServerInput,
             "clientUserMessageId": clientMessageID.map { .string($0) }
         ]
-        payload.options.turnParams(projectPath: path).forEach { key, value in
+        payload.options.sanitizedForRuntimePolicy().turnParams(projectPath: path).forEach { key, value in
             params[key] = value
         }
         try validateRemoteSafeParams(params, projectPath: path)
