@@ -80,8 +80,14 @@ enum CompactWorkbenchTab: Hashable {
         }
     }
 
-    var systemImage: String {
-        navigationIcon.normalSystemName
+    /// UI 测试按此定位底部 Tab；标题会随语言变化，标识不会。
+    var accessibilityIdentifier: String {
+        switch self {
+        case .sessions: return "compactTab.sessions"
+        case .workspaces: return "compactTab.workspaces"
+        case .devices: return "compactTab.devices"
+        case .me: return "compactTab.me"
+        }
     }
 
     var navigationIcon: WorkbenchNavigationIcon {
@@ -854,12 +860,14 @@ extension View {
         }
     }
 
-    /// 非会话列表只需要底部浮动 Chrome 的柔和过渡；保留独立入口，避免普通列表
-    /// 因会话页的 top underlap 策略改变自身安全区布局。
+    /// 浮动 Tab 栏自己就是一块玻璃，只该虚化它自己盖住的那一块。再叠一层 bottom
+    /// scroll edge effect，铺出来的是一条横贯全宽的雾带：胶囊两侧和上方被糊住，
+    /// 胶囊里反而因为静止时内容够不到而是一片实色——正好和「只有 Tab 区域是玻璃」相反。
+    /// 这里显式关掉，让内容一路清晰地滑到胶囊旁边，只有经过胶囊时被它自己的玻璃虚化。
     @ViewBuilder
-    func workbenchSoftBottomScrollEdge() -> some View {
+    func workbenchClearBottomScrollEdge() -> some View {
         if #available(iOS 26.0, *) {
-            scrollEdgeEffectStyle(.soft, for: .bottom)
+            scrollEdgeEffectHidden(true, for: .bottom)
         } else {
             self
         }

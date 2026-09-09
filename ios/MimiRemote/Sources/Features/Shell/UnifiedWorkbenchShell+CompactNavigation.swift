@@ -127,10 +127,7 @@ extension UnifiedWorkbenchShell {
             ) {
                 sessionList(layout: layout, bottomContentMargin: bottomContentMargin)
             }
-            .tabItem {
-                Label { Text(CompactWorkbenchTab.sessions.title) } icon: { CompactWorkbenchTab.sessions.navigationIcon.tabImage() }
-                    .accessibilityIdentifier("compactTab.sessions")
-            }
+            .tabItem { compactTabItem(.sessions) }
             .tag(CompactWorkbenchTab.sessions)
 
             compactTabRoot(
@@ -141,26 +138,24 @@ extension UnifiedWorkbenchShell {
             ) {
                 workspaces(layout: layout)
             }
-            .tabItem {
-                Label { Text(CompactWorkbenchTab.workspaces.title) } icon: { CompactWorkbenchTab.workspaces.navigationIcon.tabImage() }
-                    .accessibilityIdentifier("compactTab.workspaces")
-            }
+            .tabItem { compactTabItem(.workspaces) }
             .tag(CompactWorkbenchTab.workspaces)
 
             settingsPage(tab: .devices, layout: layout)
-            .tabItem {
-                Label { Text(CompactWorkbenchTab.devices.title) } icon: { CompactWorkbenchTab.devices.navigationIcon.tabImage() }
-                    .accessibilityIdentifier("compactTab.devices")
-            }
+            .tabItem { compactTabItem(.devices) }
             .tag(CompactWorkbenchTab.devices)
 
             settingsPage(tab: .me, layout: layout)
-            .tabItem {
-                Label { Text(CompactWorkbenchTab.me.title) } icon: { CompactWorkbenchTab.me.navigationIcon.tabImage() }
-                    .accessibilityIdentifier("compactTab.me")
-            }
+            .tabItem { compactTabItem(.me) }
             .tag(CompactWorkbenchTab.me)
         }
+    }
+
+    /// 四个入口共用一处组装：图标是放大后的 24pt 模板图，标题保留，
+    /// 命中区域和选中反馈仍由系统 Tab 提供。
+    func compactTabItem(_ tab: CompactWorkbenchTab) -> some View {
+        Label { Text(tab.title) } icon: { tab.navigationIcon.navigationImage() }
+            .accessibilityIdentifier(tab.accessibilityIdentifier)
     }
 
     @ViewBuilder

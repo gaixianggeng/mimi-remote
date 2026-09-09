@@ -239,7 +239,7 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-        .workbenchSoftBottomScrollEdge()
+        .workbenchClearBottomScrollEdge()
         // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
         // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
         .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)

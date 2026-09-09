@@ -1939,33 +1939,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testWorkbenchNavigationIconPairs() {
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.sessions.systemName(isSelected: false),
-            "bubble.left.and.bubble.right"
-        )
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.sessions.systemName(isSelected: true),
-            "bubble.left.and.bubble.right.fill"
-        )
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.workspaces.systemName(isSelected: false),
-            "square.grid.2x2"
-        )
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.workspaces.systemName(isSelected: true),
-            "square.grid.2x2.fill"
-        )
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.me.systemName(isSelected: false),
-            "person.crop.circle"
-        )
-        XCTAssertEqual(
-            WorkbenchNavigationIcon.me.systemName(isSelected: true),
-            "person.crop.circle.fill"
-        )
-    }
-
     func testAppearancePreview() {
         let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)

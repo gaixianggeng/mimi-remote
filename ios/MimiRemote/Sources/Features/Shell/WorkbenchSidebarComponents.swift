@@ -242,24 +242,6 @@ enum WorkbenchNavigationIcon {
     case devices
     case me
 
-    var normalSystemName: String {
-        switch self {
-        case .sessions: return "bubble.left.and.bubble.right"
-        case .workspaces: return "square.grid.2x2"
-        case .devices: return "desktopcomputer"
-        case .me: return "person.crop.circle"
-        }
-    }
-
-    var selectedSystemName: String {
-        switch self {
-        case .sessions: return "bubble.left.and.bubble.right.fill"
-        case .workspaces: return "square.grid.2x2.fill"
-        case .devices: return "desktopcomputer"
-        case .me: return "person.crop.circle.fill"
-        }
-    }
-
     private var assetName: String {
         switch self {
         case .sessions: return "SessionsNavigation"
@@ -269,21 +251,12 @@ enum WorkbenchNavigationIcon {
         }
     }
 
-    /// 原生 Tab 会按图片固有尺寸排版；共用 24pt 矢量画布，避免系统符号与资源图视觉大小不同。
-    func tabImage() -> Image {
+    /// 底部 Tab、侧栏导航行和侧栏「我的」共用这一张模板图，避免同一个入口在三处
+    /// 长得不一样。原生 Tab 按图片固有尺寸排版，所以四个资源共用 24pt 矢量画布。
+    /// 选中态由各自的容器表达（系统 Tab 胶囊、侧栏自绘背景与色条），不再依赖
+    /// SF Symbol 的 outline/fill 变体。
+    func navigationImage() -> Image {
         Image(assetName).renderingMode(.template)
-    }
-
-    /// 顶层入口共用图形，电脑平台与目录图标仍保持各自语义。
-    func image(isSelected: Bool = false) -> Image {
-        if self == .workspaces || self == .devices {
-            return tabImage()
-        }
-        return Image(systemName: systemName(isSelected: isSelected))
-    }
-
-    func systemName(isSelected: Bool) -> String {
-        isSelected ? selectedSystemName : normalSystemName
     }
 }
 
@@ -300,7 +273,7 @@ struct WorkbenchSidebarDestinationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                icon.image(isSelected: isSelected)
+                icon.navigationImage()
                     .resizable()
                     .scaledToFit()
                     .frame(width: 20, height: 20)
@@ -491,11 +464,15 @@ struct WorkbenchSidebarFooter: View {
             Text(L10n.text("ui.me"))
                 .font(themeStore.uiFont(.subheadline, weight: .medium))
         } icon: {
-            WorkbenchChromeIcon(
-                systemName: WorkbenchNavigationIcon.me.systemName(
-                    isSelected: isMeSelected
+            // 与侧栏导航行、底部 Tab 用同一张图；尺寸对齐 WorkbenchChromeIcon 的符号框，
+            // 免得同一列里资源图比 SF Symbol 大一圈。
+            WorkbenchNavigationIcon.me.navigationImage()
+                .resizable()
+                .scaledToFit()
+                .frame(
+                    width: WorkbenchChromeIconMetrics.symbolFrame,
+                    height: WorkbenchChromeIconMetrics.symbolFrame
                 )
-            )
         }
     }
 
