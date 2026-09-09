@@ -256,6 +256,7 @@ actor CodexAppServerSessionRuntime {
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
     ] = [:]
     var serverQueueSubmissionSessionIDs: Set<SessionID> = []
+    var threadPermissionUpdateTasks: [SessionID: (token: UUID, task: Task<Void, Error>)] = [:]
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
@@ -307,6 +308,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     deinit {
+        threadPermissionUpdateTasks.values.forEach { $0.task.cancel() }
         connectionAttempt?.task.cancel()
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
@@ -409,6 +411,8 @@ actor CodexAppServerSessionRuntime {
     /// 主机切换结束或候选验证失败时显式释放连接和 pump。
     /// 不能只依赖 deinit，否则短时间内可能同时残留多条业务 WebSocket。
     func shutdownForHostSwitch() async {
+        threadPermissionUpdateTasks.values.forEach { $0.task.cancel() }
+        threadPermissionUpdateTasks.removeAll()
         await cancelConnectionAttempt()
         rateLimitRefreshTask?.cancel()
         rateLimitRefreshTask = nil
@@ -2292,6 +2296,7 @@ actor CodexAppServerSessionRuntime {
             if let previous {
                 _ = try? await previous.value
             }
+            try await waitForPendingThreadPermissionUpdate(sessionID: sessionID)
             return try await performStartTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
         }
         turnStartTasksBySessionID[sessionID] = (token, task)
@@ -2311,6 +2316,10 @@ actor CodexAppServerSessionRuntime {
         payload: CodexAppServerTurnPayload,
         clientMessageID: ClientMessageID?
     ) async throws -> CodexAppServerTurnStartOutcome {
+        var payload = payload
+        // 与 thread/start 一样，以当前通道为准，避免旧草稿缺少 provider 时
+        // 把 Codex 完全访问预设带进 Claude 的 turn/start。
+        payload.options = runtimeScopedThreadOptions(payload.options)
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }

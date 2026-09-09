@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UIKit
 import UserNotifications
 
@@ -73,7 +74,21 @@ struct SessionNotificationRoute: Equatable, Hashable {
 @MainActor
 final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var pendingRoute: SessionNotificationRoute?
+    /// 锁屏审批走独立收件箱：它的动作要提交决策，而不是打开某个会话。
+	let approvalInbox = LockScreenApprovalInbox()
+	var handleApprovalAction: ((LockScreenApprovalDelivery) async -> Void)?
+    private var approvalInboxObservation: AnyCancellable?
     private var visibleSessionRoutesByScene: [UUID: SessionNotificationRoute] = [:]
+    private var visibleMessageTagsByScene: [UUID: (profile: String, session: String)] = [:]
+
+    override init() {
+        super.init()
+        // RootView 观察的是 adapter；嵌套收件箱不会自动触发它的刷新。
+        // 转发变化后，审批等待期间也能立即执行通知跳转，不依赖其他页面更新。
+        approvalInboxObservation = approvalInbox.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     @discardableResult
     func receive(userInfo: [AnyHashable: Any]) -> Bool {
@@ -91,7 +106,15 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 
     /// 每个 Scene 独立登记当前真正可见的会话；任一窗口正在展示目标会话时，
     /// 对应运行态通知都不应再用横幅和声音重复打断用户。
-    func setVisibleSessionRoute(_ route: SessionNotificationRoute?, for sceneID: UUID) {
+    func setVisibleSessionRoute(_ route: SessionNotificationRoute?, for sceneID: UUID, installationID: String? = nil) {
+        if let route, let installationID {
+            visibleMessageTagsByScene[sceneID] = (
+                LockScreenApprovalRouting.profileTag(installationID: installationID),
+                LockScreenApprovalRouting.messageSessionTag(threadID: route.sessionID)
+            )
+        } else {
+            visibleMessageTagsByScene.removeValue(forKey: sceneID)
+        }
         if let route {
             visibleSessionRoutesByScene[sceneID] = route
         } else {
@@ -103,6 +126,12 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         forNotificationIdentifier identifier: String,
         userInfo: [AnyHashable: Any]
     ) -> UNNotificationPresentationOptions {
+        if let message = LockScreenApprovalNotification(userInfo: userInfo), message.event.isMessage,
+           visibleMessageTagsByScene.values.contains(where: {
+               $0.profile == message.profileID && $0.session == message.sessionTag
+           }) {
+            return []
+        }
         guard UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier),
               let route = SessionNotificationRoute(userInfo: userInfo),
               visibleSessionRoutesByScene.values.contains(route)
@@ -119,11 +148,31 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        Task { @MainActor [weak self] in
-            _ = self?.receive(userInfo: userInfo)
-        }
-        // 系统回调不等待网络或会话加载，避免通知点击处理超时。
-        completionHandler()
+        let actionIdentifier = response.actionIdentifier
+		Task { @MainActor [weak self] in
+				defer { completionHandler() }
+				guard let self else { return }
+				let requestIdentifier = response.notification.request.identifier
+				// 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
+			// 在 agentd 返回后才调用，App 即使没有进入前台也能提交决策。
+				if let delivery = LockScreenApprovalDelivery(
+					userInfo: userInfo,
+					actionIdentifier: actionIdentifier,
+					requestIdentifier: requestIdentifier
+				) {
+				if delivery.decision != nil, let handleApprovalAction {
+					await handleApprovalAction(delivery)
+				} else {
+						_ = self.approvalInbox.receive(
+							userInfo: userInfo,
+							actionIdentifier: actionIdentifier,
+							requestIdentifier: requestIdentifier
+					)
+				}
+				return
+			}
+			_ = self.receive(userInfo: userInfo)
+		}
     }
 
     nonisolated func userNotificationCenter(
@@ -144,6 +193,10 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 
 @main
 struct MimiRemoteApp: App {
+#if canImport(UIKit)
+    // Device Token 只在 UIApplicationDelegate 回调里出现，SwiftUI App 拿不到它。
+    @UIApplicationDelegateAdaptor(PushApplicationDelegate.self) private var pushDelegate
+#endif
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @StateObject private var appStore: AppStore
     @StateObject private var conversationStore: ConversationStore
@@ -154,6 +207,7 @@ struct MimiRemoteApp: App {
     @StateObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
+    @StateObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @StateObject private var tailcatExperimentController: TailcatExperimentController
     @StateObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @StateObject private var managedConnectionDeviceStore: ManagedConnectionDeviceStore
@@ -224,6 +278,26 @@ struct MimiRemoteApp: App {
         _workspaceAppearanceStore = StateObject(wrappedValue: workspaceAppearanceStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
+		let lockScreenApprovalStore = LockScreenApprovalStore()
+		_lockScreenApprovalStore = StateObject(wrappedValue: lockScreenApprovalStore)
+		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore, weak sessionStore] delivery in
+			guard let appStore, let lockScreenApprovalStore, let sessionStore, let decision = delivery.decision else { return }
+			do {
+				let source = try await LockScreenApprovalRouting.sourceClient(
+					for: delivery.notification,
+					appStore: appStore,
+                    sessionStore: sessionStore
+				)
+				await lockScreenApprovalStore.submitDecision(
+					decision,
+					for: delivery.notification,
+					client: source.client,
+					notificationRequestIdentifier: delivery.requestIdentifier
+				)
+			} catch {
+				lockScreenApprovalStore.markDecisionUnknown()
+			}
+		}
         _tailcatExperimentController = StateObject(wrappedValue: tailcatExperimentController)
         _managedConnectionEntitlementStore = StateObject(
             wrappedValue: managedConnectionEntitlementStore
@@ -232,6 +306,36 @@ struct MimiRemoteApp: App {
             wrappedValue: managedConnectionDeviceStore
         )
         _sessionStore = StateObject(wrappedValue: sessionStore)
+        // 桥接必须在 delegate 可能回调之前装好，否则冷启动拿到的 Token 会被丢弃。
+		PushDeviceTokenBridge.onToken = { [weak appStore, weak lockScreenApprovalStore] token in
+			guard let appStore, let lockScreenApprovalStore,
+				  lockScreenApprovalStore.handleDeviceToken(token),
+				  let profileID = lockScreenApprovalStore.registeredProfileID else { return }
+			Task { @MainActor in
+				guard let client = try? await LockScreenApprovalRouting.client(
+					profileID: profileID,
+					appStore: appStore
+				) else {
+					lockScreenApprovalStore.markRegistrationFailed()
+					return
+				}
+				await lockScreenApprovalStore.refreshRegistrationAfterDeviceTokenChange(
+					client: client,
+					profileID: profileID
+				)
+			}
+		}
+        PushDeviceTokenBridge.onFailure = { [weak lockScreenApprovalStore] error in
+            lockScreenApprovalStore?.handleDeviceTokenFailure(error)
+        }
+        PushDeviceTokenBridge.onSilentPayload = { [weak lockScreenApprovalStore] userInfo in
+            guard let payload = LockScreenApprovalNotification(userInfo: userInfo) else { return }
+            await lockScreenApprovalStore?.handleResolved(payload)
+        }
+		// 先安装桥接回调，再触发 APNs 注册，避免冷启动立即返回的 Token 丢失。
+		if lockScreenApprovalStore.isEnabled {
+			lockScreenApprovalStore.registerNotificationInfrastructure()
+		}
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
     }
@@ -242,6 +346,7 @@ struct MimiRemoteApp: App {
                 // locale 变化会让整个 SwiftUI 视图树重新求值，现有 L10n 调用即可即时换语言。
                 .environment(\.locale, selectedAppLanguage.locale)
                 .environmentObject(appStore)
+                .environmentObject(lockScreenApprovalStore)
                 .environmentObject(sessionStore)
                 .environmentObject(conversationStore)
                 .environmentObject(logStore)

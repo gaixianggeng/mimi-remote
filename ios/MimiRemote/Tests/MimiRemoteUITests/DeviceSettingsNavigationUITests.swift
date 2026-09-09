@@ -90,6 +90,26 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         }
     }
 
+    func testLockScreenApprovalSettingsRemainReachableAcrossRotation() throws {
+        openMe()
+        let entry = element("settings.lockScreenApproval")
+        scrollTo(entry)
+        entry.tap()
+        let detail = element("settings.lockScreenApproval.detail")
+        XCTAssertTrue(detail.waitForExistence(timeout: 10))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(detail.waitForExistence(timeout: 10))
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(detail.waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+        let diagnostics = element("settings.diagnostics")
+        scrollTo(diagnostics)
+        diagnostics.tap()
+        XCTAssertTrue(app.navigationBars.buttons.firstMatch.waitForExistence(timeout: 8))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+    }
+
     func testUnavailableDeviceKeepsCurrentDeviceAndDeviceTab() throws {
         // 演示电脑不连接真实服务；这里验证切换失败时的旧设备和全局页面保护。
         element("settings.profile.switch.debug-store-secondary").tap()

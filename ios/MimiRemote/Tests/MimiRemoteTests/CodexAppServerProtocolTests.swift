@@ -446,7 +446,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["cwd"]?.stringValue, "/Users/me/repo")
         XCTAssertNil(params["model"]?.stringValue)
         XCTAssertEqual(params["effort"]?.stringValue, "medium")
-        XCTAssertEqual(params["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(params["approvalPolicy"]?.stringValue, "never")
         XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client-1")
         XCTAssertEqual(params["collaborationMode"]?.objectValue?["mode"]?.stringValue, "default")
 
@@ -1203,7 +1203,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
         let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
-        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        // 旧草稿的完全访问在发送新回合时统一为 Desktop 的 never 策略。
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "never")
         XCTAssertEqual(sandbox["type"]?.stringValue, "dangerFullAccess")
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }

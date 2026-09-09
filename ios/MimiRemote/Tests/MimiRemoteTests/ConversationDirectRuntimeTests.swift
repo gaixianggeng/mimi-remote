@@ -555,8 +555,11 @@ extension ConversationDataFlowTests {
 
         let project = AgentProject(id: "proj_smoke", name: "Smoke", path: "/tmp/smoke")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        // 审批 smoke 明确使用工作区权限，避免依赖完全访问的旧默认组合。
+        var options = CodexAppServerTurnOptions.default
+        options.sandboxMode = .workspaceWrite
         let threadTask = Task {
-            try await connection.send(builder.threadStart(projectID: project.id))
+            try await connection.send(builder.threadStart(projectID: project.id, options: options))
         }
 
         let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
@@ -574,7 +577,7 @@ extension ConversationDataFlowTests {
             try await connection.send(builder.turnStart(
                 threadID: "thread-smoke",
                 projectID: project.id,
-                prompt: "帮我验收",
+                payload: CodexAppServerTurnPayload(prompt: "帮我验收", options: options),
                 clientMessageID: "client-smoke"
             ))
         }

@@ -8,6 +8,7 @@ enum SettingsDestination: Hashable {
     case language
     case defaultModels
     case defaultPermissions
+    case lockScreenApproval
     case diagnostics
     case doctor
     case support
@@ -111,6 +112,8 @@ struct SettingsDestinationView: View {
                     set: { defaultPermissionModeID = $0.rawValue }
                 )
             )
+        case .lockScreenApproval:
+            LockScreenApprovalSettingsView()
         case .diagnostics:
             DiagnosticsAndSupportSettingsView(showsHistoryDiagnostics: developerModeEnabled)
         case .doctor:

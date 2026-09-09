@@ -218,7 +218,8 @@ struct UnifiedWorkbenchShell: View {
     private func updateVisibleSessionNotificationRoute(_ route: SessionNotificationRoute?) {
         notificationResponseAdapter.setVisibleSessionRoute(
             route,
-            for: notificationVisibilitySceneID
+            for: notificationVisibilitySceneID,
+            installationID: appStore.connectionProfiles.first { $0.id == route?.profileID }?.installationID
         )
     }
 

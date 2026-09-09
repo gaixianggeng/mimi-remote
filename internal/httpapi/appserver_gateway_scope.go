@@ -664,7 +664,7 @@ func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]
 	case "thread/start", "thread/resume", "thread/fork":
 		sandbox, ok := gatewayStringParam(params, "sandbox")
 		return ok && normalizePolicyValue(sandbox) == "dangerfullaccess"
-	case "turn/start":
+	case "turn/start", "thread/settings/update":
 		sandbox, _ := params["sandboxPolicy"].(map[string]any)
 		sandboxType, ok := gatewayStringParam(sandbox, "type")
 		return ok && normalizePolicyValue(sandboxType) == "dangerfullaccess"
