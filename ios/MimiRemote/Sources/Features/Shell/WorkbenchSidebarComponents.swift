@@ -239,26 +239,24 @@ struct AIUsageRingsControl: View {
 enum WorkbenchNavigationIcon {
     case sessions
     case workspaces
+    case devices
     case me
 
-    var normalSystemName: String {
+    private var assetName: String {
         switch self {
-        case .sessions: return "bubble.left.and.bubble.right"
-        case .workspaces: return "folder"
-        case .me: return "person.crop.circle"
+        case .sessions: return "SessionsNavigation"
+        case .workspaces: return "WorkspaceNavigation"
+        case .devices: return "DevicesNavigation"
+        case .me: return "MeNavigation"
         }
     }
 
-    var selectedSystemName: String {
-        switch self {
-        case .sessions: return "bubble.left.and.bubble.right.fill"
-        case .workspaces: return "folder.fill"
-        case .me: return "person.crop.circle.fill"
-        }
-    }
-
-    func systemName(isSelected: Bool) -> String {
-        isSelected ? selectedSystemName : normalSystemName
+    /// 底部 Tab、侧栏导航行和侧栏「我的」共用这一张模板图，避免同一个入口在三处
+    /// 长得不一样。原生 Tab 按图片固有尺寸排版，所以四个资源共用 24pt 矢量画布。
+    /// 选中态由各自的容器表达（系统 Tab 胶囊、侧栏自绘背景与色条），不再依赖
+    /// SF Symbol 的 outline/fill 变体。
+    func navigationImage() -> Image {
+        Image(assetName).renderingMode(.template)
     }
 }
 
@@ -275,7 +273,10 @@ struct WorkbenchSidebarDestinationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon.systemName(isSelected: isSelected))
+                icon.navigationImage()
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)
@@ -463,11 +464,15 @@ struct WorkbenchSidebarFooter: View {
             Text(L10n.text("ui.me"))
                 .font(themeStore.uiFont(.subheadline, weight: .medium))
         } icon: {
-            WorkbenchChromeIcon(
-                systemName: WorkbenchNavigationIcon.me.systemName(
-                    isSelected: isMeSelected
+            // 与侧栏导航行、底部 Tab 用同一张图；尺寸对齐 WorkbenchChromeIcon 的符号框，
+            // 免得同一列里资源图比 SF Symbol 大一圈。
+            WorkbenchNavigationIcon.me.navigationImage()
+                .resizable()
+                .scaledToFit()
+                .frame(
+                    width: WorkbenchChromeIconMetrics.symbolFrame,
+                    height: WorkbenchChromeIconMetrics.symbolFrame
                 )
-            )
         }
     }
 

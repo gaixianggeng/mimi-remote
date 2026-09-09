@@ -107,14 +107,18 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
             }
         }
         .padding(.vertical, 10)
+        .frame(
+            minHeight: dynamicTypeSize.isAccessibilitySize
+                ? SettingsLayoutMetrics.accessibilityRowHeight
+                : SettingsLayoutMetrics.standardRowHeight
+        )
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
 
-    /// 图标、标题和当前项说明是同一簇信息。说明放标题右边而不是另起一行，
-    /// 省下的那一行让整块从三行降到两行。
+    /// 说明紧贴标题下方。长翻译和大字号沿同一文字起点换行。
     private func titleCluster(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: systemImage)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
@@ -125,19 +129,17 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
                 .accessibilityHidden(true)
 
-            Text(title)
-                .font(themeStore.uiFont(.body))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                .fixedSize(horizontal: true, vertical: false)
-
-            if let subtitle = selection.choiceSubtitle {
-                Text(subtitle)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
-                    .minimumScaleFactor(0.85)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .settingsTitleFont()
+                    .foregroundStyle(tokens.primaryText)
+                if let subtitle = selection.choiceSubtitle {
+                    Text(subtitle)
+                        .settingsDetailFont()
+                        .foregroundStyle(tokens.secondaryText)
+                }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -176,13 +178,13 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
             selection = option
         } label: {
             Text(option.choiceTitle)
-                .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .settingsDetailFont(weight: isSelected ? .semibold : .regular)
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
                 .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
                 .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
-                .frame(height: 32)
+                .padding(.vertical, 6)
+                .frame(minHeight: 32)
                 // 未选中不画容器，和工作区页的筛选器保持同一套写法。
                 .background(isSelected ? tokens.selectionFill : Color.clear, in: Capsule())
                 // 视觉高度 32，触达高度补到 44。
@@ -218,12 +220,12 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
                         optionRow(option, tokens: tokens)
                     }
                     .buttonStyle(.plain)
+                    .settingsRow(option.choiceSubtitle == nil ? .standard : .descriptive)
                 }
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
+        .settingsDetailPage()
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -247,13 +249,13 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(option.choiceTitle)
-                    .font(themeStore.uiFont(.body))
+                    .settingsTitleFont()
                     .foregroundStyle(tokens.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let subtitle = option.choiceSubtitle {
                     Text(subtitle)
-                        .font(themeStore.uiFont(.footnote))
+                        .settingsDetailFont()
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -268,7 +270,6 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
                 .accessibilityHidden(true)
         }
         .padding(.vertical, 6)
-        .frame(minHeight: 44)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -295,7 +296,7 @@ struct LanguageSettingsView: View {
                     options: AppLanguage.allCases,
                     selection: appLanguageSelection
                 )
-                .detailListRow()
+                .settingsRow()
                 .accessibilityIdentifier("settings.language.detail.language")
             } header: {
                 Text(L10n.text("ui.language"))
@@ -308,13 +309,12 @@ struct LanguageSettingsView: View {
                     options: VoiceInputProvider.availableProviders(),
                     selection: voiceInputProviderSelection
                 )
-                .detailListRow()
+                .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.language.detail.voiceInput")
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
+        .settingsDetailPage()
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.language"))
         .navigationBarTitleDisplayMode(.inline)
@@ -331,19 +331,6 @@ struct LanguageSettingsView: View {
         Binding(
             get: { VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue) },
             set: { voiceInputProviderRawValue = $0.rawValue }
-        )
-    }
-}
-
-private extension View {
-    func detailListRow() -> some View {
-        listRowInsets(
-            EdgeInsets(
-                top: 0,
-                leading: SettingsLayoutMetrics.rowHorizontalInset,
-                bottom: 0,
-                trailing: SettingsLayoutMetrics.rowHorizontalInset
-            )
         )
     }
 }

@@ -4,20 +4,23 @@ import SwiftUI
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject var sessionStore: SessionStore
+    @EnvironmentObject var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) var colorScheme
+    @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @Namespace private var presentationNamespace
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
-    @State private var navigationState = WorkbenchNavigationState()
+    @State var navigationState = WorkbenchNavigationState()
+    @StateObject var settingsNavigation = SettingsNavigationState()
+    @StateObject var settingsQRCodeScanner = ConnectionQRCodeScannerPresentation()
+    @State private var lastCompactNavigation: Bool?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @SceneStorage("workbench.floatingSidebarVisible") private var storedFloatingSidebarVisible = true
     @State private var floatingSidebarPresentation = FloatingSidebarPresentationState()
@@ -45,7 +48,10 @@ struct UnifiedWorkbenchShell: View {
                 containerWidth: proxy.size.width,
                 horizontalSizeClass: horizontalSizeClass,
                 isPad: interfaceIdiom == .pad,
-                isPhone: interfaceIdiom == .phone
+                isPhone: interfaceIdiom == .phone,
+                // 相机权限、扫码和重命名期间保留呈现宿主；关闭后再切换导航容器，
+                // 防止系统把仍在编辑的 sheet 当作旧视图的一部分销毁。
+                keepsCompactNavigation: settingsModalIsPresented ? lastCompactNavigation : nil
             )
 
             Group {
@@ -84,6 +90,7 @@ struct UnifiedWorkbenchShell: View {
                 }
             }
             .onAppear {
+                lastCompactNavigation = layout.usesCompactNavigation
                 restoreFloatingSidebarVisibilityIfNeeded()
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
@@ -97,6 +104,7 @@ struct UnifiedWorkbenchShell: View {
                 workspaceRuntimeSelection.resetForHostChange()
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
+                lastCompactNavigation = usesCompactNavigation
                 handleLayoutModeChange(
                     usesCompactNavigation: usesCompactNavigation,
                     layout: layout
@@ -212,222 +220,6 @@ struct UnifiedWorkbenchShell: View {
             route,
             for: notificationVisibilitySceneID,
             installationID: appStore.connectionProfiles.first { $0.id == route?.profileID }?.installationID
-        )
-    }
-
-    private func compactLayout(
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens,
-        bottomSafeAreaInset: CGFloat
-    ) -> some View {
-        let isIOS26OrLater: Bool
-        if #available(iOS 26.0, *) {
-            isIOS26OrLater = true
-        } else {
-            isIOS26OrLater = false
-        }
-        let hasBottomTabBar = WorkbenchPageLayout.hasBottomTabBar(
-            isPhone: layout.isPhone,
-            isHorizontallyCompact: horizontalSizeClass == .compact,
-            isIOS26OrLater: isIOS26OrLater
-        )
-        // iPadOS 18 起 regular-width iPad 已把 Tab 栏放在顶部；18–25 只有 compact-width
-        // iPad 仍回到底部，26 起两种 iPad 宽度都在顶部。iPhone 始终保留底部 Tab 栏。
-        // 仍按底部 Tab 栏预留 118pt，会在列表底部留下一整块空气，
-        // 也会把右下角浮起的新建按钮顶离屏幕边缘、看起来既不贴边又压住内容。
-        let bottomChromeClearance = hasBottomTabBar
-            ? WorkbenchPageLayout.compactBottomChromeClearance(
-                bottomSafeAreaInset: bottomSafeAreaInset
-            )
-            : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
-        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
-        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
-        let showsTabletHostSwitcher = !layout.isPhone
-            && !sessionStore.isSessionSearchPresented
-            && (
-                navigationState.compactSelectedTab == .sessions
-                    ? navigationState.compactSessionPath.isEmpty
-                    : navigationState.compactSelectedTab == .workspaces
-                        && navigationState.compactWorkspacePath.isEmpty
-            )
-
-        return compactNavigationRoot(
-            layout: layout,
-            tokens: tokens,
-            bottomContentMargin: bottomChromeClearance,
-            hasBottomTabBar: hasBottomTabBar
-        )
-        .overlay(alignment: .topLeading) {
-            if showsTabletHostSwitcher {
-                compactTabletHostSwitcher(layout: layout, tokens: tokens)
-                    .padding(.leading, 10)
-                    // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
-                    // TabView overlay 的原点比那条线高，这里补回来；数值随
-                    // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
-                    .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
-            }
-        }
-        // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
-        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
-        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
-        .environment(\.workbenchHasCompactTabBar, true)
-        // 页面按系统 Tab 栏的实际位置决定右下角能不能放浮起按钮。
-        .environment(\.workbenchHasBottomTabBar, hasBottomTabBar)
-        .themedWorkbenchNavigationChrome(
-            tokens: tokens,
-            colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
-        )
-    }
-
-    @ViewBuilder
-    private func compactNavigationRoot(
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens,
-        bottomContentMargin: CGFloat,
-        hasBottomTabBar: Bool
-    ) -> some View {
-        let usesIndependentStacks = WorkbenchPageLayout.usesIndependentCompactNavigationStacks(
-            hasBottomTabBar: hasBottomTabBar
-        )
-        if usesIndependentStacks {
-            compactTabs(
-                layout: layout,
-                tokens: tokens,
-                bottomContentMargin: bottomContentMargin,
-                usesIndependentStacks: true
-            )
-        } else {
-            // 顶部 Tab 的详情必须位于 TabView 之外。这样 push/pop 只切换一个导航容器，
-            // 系统不会在同一转场里再独立改变顶部 Tab 的安全区和导航标题位置。
-            NavigationStack(
-                path: compactPathBinding(
-                    for: navigationState.compactSelectedTab,
-                    layout: layout
-                )
-            ) {
-                compactTabs(
-                    layout: layout,
-                    tokens: tokens,
-                    bottomContentMargin: bottomContentMargin,
-                    usesIndependentStacks: false
-                )
-                .navigationDestination(for: AppDestination.self) { destination in
-                    compactDestination(
-                        destination,
-                        layout: layout,
-                        tokens: tokens,
-                        shouldHideTabBar: false
-                    )
-                }
-            }
-        }
-    }
-
-    private func compactTabs(
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens,
-        bottomContentMargin: CGFloat,
-        usesIndependentStacks: Bool
-    ) -> some View {
-        TabView(selection: compactTabBinding(layout: layout)) {
-            compactTabRoot(
-                for: .sessions,
-                usesIndependentStack: usesIndependentStacks,
-                layout: layout,
-                tokens: tokens
-            ) {
-                sessionList(layout: layout, bottomContentMargin: bottomContentMargin)
-            }
-            .tabItem {
-                Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
-                    .accessibilityIdentifier("compactTab.sessions")
-            }
-            .tag(CompactWorkbenchTab.sessions)
-
-            compactTabRoot(
-                for: .workspaces,
-                usesIndependentStack: usesIndependentStacks,
-                layout: layout,
-                tokens: tokens
-            ) {
-                workspaces(layout: layout)
-            }
-            .tabItem {
-                Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
-                    .accessibilityIdentifier("compactTab.workspaces")
-            }
-            .tag(CompactWorkbenchTab.workspaces)
-
-            NavigationStack {
-                SettingsView(
-                    isInitialSetup: false,
-                    showsDoneButton: false,
-                    embedsNavigationStack: false
-                )
-            }
-            .tabItem {
-                Label(CompactWorkbenchTab.me.title, systemImage: CompactWorkbenchTab.me.systemImage)
-                    .accessibilityIdentifier("compactTab.me")
-            }
-            .tag(CompactWorkbenchTab.me)
-        }
-    }
-
-    @ViewBuilder
-    private func compactTabRoot<Content: View>(
-        for tab: CompactWorkbenchTab,
-        usesIndependentStack: Bool,
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        if usesIndependentStack {
-            NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
-                content()
-                    .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(
-                            destination,
-                            layout: layout,
-                            tokens: tokens,
-                            shouldHideTabBar: true
-                        )
-                    }
-            }
-        } else {
-            content()
-        }
-    }
-
-    /// TabView 上的自由浮层。命中区域保持 44pt，但磨砂圆按顶栏那档画成 40pt——
-    /// 它和导航栏里的「···」「+」在同一条视线上，直径不一致会立刻被看出来。
-    private func compactTabletHostSwitcher(
-        layout: WorkbenchLayout,
-        tokens: ThemeTokens
-    ) -> some View {
-        HostSwitcherMenu(
-            presentation: .toolbar,
-            manageConnections: { openConnectionSettings(layout: layout) }
-        )
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                // 设备入口移到 Shell 后仍需保持会话页原有的收键盘行为。
-                dismissSessionSearchKeyboard()
-            }
-        )
-        .frame(
-            width: WorkbenchChromeIconMetrics.minimumHitTarget,
-            height: WorkbenchChromeIconMetrics.minimumHitTarget
-        )
-        .contentShape(Circle())
-        .workbenchToolbarChromeCircle(tokens: tokens)
-    }
-
-    private func dismissSessionSearchKeyboard() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil,
-            from: nil,
-            for: nil
         )
     }
 
@@ -692,8 +484,25 @@ struct UnifiedWorkbenchShell: View {
         floatingSidebarRenderedProgress.record(visibility.progress)
     }
 
-    private func openConnectionSettings(layout: WorkbenchLayout) {
-        open(.me, layout: layout)
+    func openConnectionSettings(layout: WorkbenchLayout) {
+        open(layout.usesCompactNavigation ? .devices : .me, layout: layout)
+    }
+
+    private var settingsModalIsPresented: Bool {
+        settingsQRCodeScanner.intent != nil
+            || settingsQRCodeScanner.isRequestingCameraAuthorization
+            || settingsNavigation.profileRenamePresentation.route != nil
+    }
+
+    func settingsPage(tab: CompactWorkbenchTab, layout: WorkbenchLayout) -> some View {
+        WorkbenchSettingsPage(
+            navigation: settingsNavigation,
+            qrScannerPresentation: settingsQRCodeScanner,
+            tab: tab,
+            usesCompactNavigation: layout.usesCompactNavigation,
+            onOpenDevices: { open(.devices, layout: layout) },
+            onReturnToMe: { open(.me, layout: layout) }
+        )
     }
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
@@ -1060,7 +869,7 @@ struct UnifiedWorkbenchShell: View {
             tokens: tokens,
             usesFloatingSurface: layout.usesFloatingSidebarSurface,
             bottomSafeAreaInset: bottomSafeAreaInset,
-            isMeSelected: navigationState.selection == .me,
+            isMeSelected: navigationState.selection == .me || navigationState.selection == .devices,
             onOpenSettings: {
                 // “我的”是一级入口，但不覆盖后台保留的会话/工作区恢复路由。
                 open(.me, layout: layout)
@@ -1097,7 +906,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     @ViewBuilder
-    private func compactDestination(
+    func compactDestination(
         _ destination: AppDestination,
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
@@ -1108,12 +917,8 @@ struct UnifiedWorkbenchShell: View {
             sessionList(layout: layout)
         case .workspaces:
             workspaces(layout: layout)
-        case .me:
-            SettingsView(
-                isInitialSetup: false,
-                showsDoneButton: false,
-                embedsNavigationStack: false
-            )
+        case .me, .devices:
+            settingsPage(tab: destination == .devices ? .devices : .me, layout: layout)
         case .session(let sessionID):
             sessionDetail(
                 destinationSessionID: sessionID,
@@ -1151,14 +956,8 @@ struct UnifiedWorkbenchShell: View {
             }
         case .workspaces:
             workspaces(layout: layout)
-        case .me:
-            NavigationStack {
-                SettingsView(
-                    isInitialSetup: false,
-                    showsDoneButton: false,
-                    embedsNavigationStack: false
-                )
-            }
+        case .me, .devices:
+            settingsPage(tab: navigationState.selection == .devices ? .devices : .me, layout: layout)
         case .session, .subagent:
             if layout.usesFloatingSidebarSurface {
                 // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
@@ -1171,7 +970,7 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sessionList(
+    func sessionList(
         layout: WorkbenchLayout,
         bottomContentMargin: CGFloat? = nil
     ) -> some View {
@@ -1201,7 +1000,7 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func workspaces(layout: WorkbenchLayout) -> some View {
+    func workspaces(layout: WorkbenchLayout) -> some View {
         WorkspaceWorkbenchRootView(
             usesCompactNavigation: layout.usesCompactNavigation,
             isPhone: layout.isPhone,
@@ -1424,7 +1223,7 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func compactPathBinding(
+    func compactPathBinding(
         for tab: CompactWorkbenchTab,
         layout: WorkbenchLayout
     ) -> Binding<[AppDestination]> {
@@ -1433,7 +1232,7 @@ struct UnifiedWorkbenchShell: View {
                 compactPath(for: tab)
             },
             set: { path in
-                guard tab != .me,
+                guard !tab.isGlobalSettings,
                       tab == navigationState.compactSelectedTab else { return }
                 let expectedPath = compactPath(for: tab)
                 guard path != expectedPath else { return }
@@ -1456,7 +1255,7 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func compactTabBinding(layout: WorkbenchLayout) -> Binding<CompactWorkbenchTab> {
+    func compactTabBinding(layout: WorkbenchLayout) -> Binding<CompactWorkbenchTab> {
         Binding(
             get: { navigationState.compactSelectedTab },
             set: { tab in
@@ -1477,7 +1276,7 @@ struct UnifiedWorkbenchShell: View {
             return navigationState.compactSessionPath
         case .workspaces:
             return navigationState.compactWorkspacePath
-        case .me:
+        case .me, .devices:
             return []
         }
     }
@@ -1517,7 +1316,13 @@ struct UnifiedWorkbenchShell: View {
         let arguments = ProcessInfo.processInfo.arguments
         // App Store 截图需要在 Simulator 与真机上得到完全相同的页面状态。
         // 这些入口只存在于 Debug 构建，不改变正常启动、恢复或 Release 路由。
-        if arguments.contains("--debug-open-conversation") {
+        if arguments.contains("--debug-open-devices") {
+            didApplyDebugLaunchRoute = true
+            open(.devices, layout: layout)
+        } else if arguments.contains("--debug-open-me") {
+            didApplyDebugLaunchRoute = true
+            open(.me, layout: layout)
+        } else if arguments.contains("--debug-open-conversation") {
             didApplyDebugLaunchRoute = true
             open(.session("debug-session-layout"), source: .sessions, layout: layout)
         } else if arguments.contains("--debug-open-sessions") {
@@ -1554,8 +1359,9 @@ struct UnifiedWorkbenchShell: View {
                 )
                 return
             }
-            if navigationState.selection == .me {
-                applyNavigation(.compactTabChanged(.me), layout: layout)
+            if navigationState.selection == .me || navigationState.selection == .devices {
+                let tab: CompactWorkbenchTab = navigationState.selection == .devices ? .devices : .me
+                applyNavigation(.compactTabChanged(tab), layout: layout)
             } else {
                 synchronizeNavigation(for: layout)
             }
@@ -1567,8 +1373,8 @@ struct UnifiedWorkbenchShell: View {
             showingInspector = true
         }
 
-        if navigationState.compactSelectedTab == .me {
-            open(.me, layout: layout)
+        if navigationState.compactSelectedTab.isGlobalSettings {
+            open(navigationState.compactSelectedTab.destination, layout: layout)
         } else {
             synchronizeNavigation(for: layout)
         }

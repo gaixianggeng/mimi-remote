@@ -15371,6 +15371,13 @@
         }
       }
     },
+    "ui.devices": {
+      "comment": "Top-level device management tab.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备" } }
+      }
+    },
     "ui.mac_connection": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
