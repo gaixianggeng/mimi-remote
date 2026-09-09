@@ -737,7 +737,7 @@ extension SessionStore {
                     reportForeground: isSelectionLeaseCurrent(foregroundLease)
                 )
             } else if isSelectionLeaseCurrent(foregroundLease) {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(error.localizedDescription, origin: .connectionProbe)
             }
         }
     }

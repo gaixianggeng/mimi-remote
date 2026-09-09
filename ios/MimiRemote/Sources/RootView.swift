@@ -114,6 +114,11 @@ struct RootView: View {
             )
         }
         .task {
+            // SwiftUI 不保证兄弟 .task 的执行顺序，所以这条 preflight 必须自己持有一份预热窗口，
+            // 不能依赖上面的启动任务先抢到令牌；否则它的首次失败仍会抢先发布 .failed。
+            // 预热是引用计数的，两条链路各持有一份不会互相提前关窗。
+            let warmUpToken = sessionStore.beginConnectionWarmUp()
+            defer { sessionStore.endConnectionWarmUp(warmUpToken) }
             let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
             guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
 #if targetEnvironment(macCatalyst)

@@ -147,6 +147,9 @@ final class SessionStore: ObservableObject {
     var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+    /// `errorMessage` 当前这条的来源，由 `setErrorMessage` 维护。预热窗口只压探测失败，
+    /// 用户主动操作的失败任何时候都要照常展示。
+    @Published var errorMessageOrigin: SessionErrorOrigin = .userAction
     @Published var isRefreshingSelectedSession = false
     @Published var isUpdatingThreadGoal = false
     @Published var threadGoalErrorMessage: String?

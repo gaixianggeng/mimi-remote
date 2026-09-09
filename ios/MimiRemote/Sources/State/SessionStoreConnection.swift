@@ -2250,7 +2250,7 @@ extension SessionStore {
             if sessions(forProjectID: workspace.id).isEmpty {
                 // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
                 setStatusMessage(message)
-                setErrorMessage(message)
+                setErrorMessage(message, origin: .connectionProbe)
             } else {
                 // 已有列表时继续展示旧数据，同时给出准确等待时间；不能让旧缓存看起来像已刷新成功。
                 setStatusMessage(message)
@@ -2269,7 +2269,7 @@ extension SessionStore {
         case .available, .indeterminate:
             clearWorkspaceUnavailable(workspace.id)
             if reportForeground {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(error.localizedDescription, origin: .connectionProbe)
             }
         }
     }
@@ -2468,7 +2468,18 @@ extension SessionStore {
         statusMessage = value
     }
 
-    func setErrorMessage(_ value: String?) {
+    /// 谁写入了共享的 `errorMessage`。
+    ///
+    /// 这个通道同时承载「连接探测失败」和「用户刚点的发送/审批失败」两类结果。预热窗口
+    /// 只能压住前者：把后者一起吞掉，用户会看到点了发送却什么都没发生，比一闪而过的错误更糟。
+    enum SessionErrorOrigin: Equatable {
+        /// 用户主动操作的结果，任何时候都必须让用户看见。
+        case userAction
+        /// 连接/列表探测的失败，预热窗口内仍会自动重试，还不是给用户的结论。
+        case connectionProbe
+    }
+
+    func setErrorMessage(_ value: String?, origin: SessionErrorOrigin = .userAction) {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
@@ -2482,6 +2493,9 @@ extension SessionStore {
         } else {
             userFacingValue = value
         }
+        // 来源要先于去重更新：同一条文案可能先由探测写入、随后由用户操作再次触发，
+        // 此时它已经是用户在等的结果，不能继续按探测失败静默处理。
+        errorMessageOrigin = userFacingValue == nil ? .userAction : origin
         guard errorMessage != userFacingValue else {
             return
         }

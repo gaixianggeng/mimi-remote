@@ -196,6 +196,46 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertFalse(store.isEstablishingConnection)
     }
 
+    /// 共享的 errorMessage 同时承载探测失败和用户操作失败。预热窗口只能压住前者：
+    /// 把用户刚点的发送/审批失败一起吞掉，会变成"点了没反应"，比一闪而过的错误更糟。
+    @MainActor
+    func testConnectionWarmUpOnlySuppressesConnectionProbeErrors() {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "warm-up-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        let warmUp = store.beginConnectionWarmUp()
+        XCTAssertTrue(store.isEstablishingConnection)
+
+        func conversationShowsError() -> Bool {
+            // 与 ConversationView 顶部错误条同一判定。
+            !(store.isEstablishingConnection && store.errorMessageOrigin == .connectionProbe)
+        }
+
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertEqual(store.errorMessageOrigin, .connectionProbe)
+        XCTAssertFalse(conversationShowsError(), "探测失败在预热窗口内仍会自动重试，不该弹错误条")
+
+        store.setErrorMessage("发送失败：WebSocket 未连接")
+        XCTAssertEqual(store.errorMessageOrigin, .userAction)
+        XCTAssertTrue(conversationShowsError(), "用户主动发送的失败必须照常展示")
+
+        // 同一条文案先由探测写入、随后被用户操作再次触发时，也要回到可见。
+        store.setErrorMessage(nil)
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertFalse(conversationShowsError())
+        store.setErrorMessage("无法连接服务器。")
+        XCTAssertTrue(conversationShowsError())
+
+        store.endConnectionWarmUp(warmUp)
+        store.setErrorMessage("无法连接服务器。", origin: .connectionProbe)
+        XCTAssertTrue(conversationShowsError(), "窗口结束后探测失败也要如实展示")
+    }
+
     /// 冷启动会有 RootView 启动任务、bootstrap 和一到多个退避循环同时持有窗口。
     /// 先结束的持有者不得替仍在重试的那个下结论。
     @MainActor
