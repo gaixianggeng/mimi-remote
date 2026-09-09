@@ -6,7 +6,7 @@
 
 MVP 只覆盖通过 Mimi Remote 新建的 Codex 会话：
 
-- `thread/start` 新建后，首个成功转发的 `thread/queue/add` 触发一次；非 SSH 旧客户端的 `turn/start` 仍兼容；
+- `thread/start` 新建后，首个成功转发的 `turn/start` 或任务 `thread/queue/add` 触发一次；
 - `thread/resume`、历史线程、Claude 实验通道不触发；
 - 用户或其他客户端已经设置名称时不覆盖；
 - 失败时保留移动端现有的首条消息预览，不影响 Turn 生命周期。
@@ -24,7 +24,7 @@ sequenceDiagram
     Gateway->>Codex: 安全改写后转发
     Codex-->>Gateway: 新 thread
     Gateway-->>iOS: 新 thread
-    iOS->>Gateway: 首个 thread/queue/add
+    iOS->>Gateway: 首个 turn/start 或 thread/queue/add
     Gateway->>Codex: 先转发正常队列消息
     Gateway-->>Title: 异步提交 threadId + cwd + 首条请求摘要
     Title->>Codex: 独立 SSH proxy WebSocket + initialize
@@ -50,7 +50,7 @@ app-server 会让其他已初始化连接监听新建 thread。`agentd` 因此�
 
 Gateway 在处理 `thread/start` 成功响应时，只给当前连接内的 thread 标记一次性资格。资格不会写入用于断线恢复的全局授权缓存，因此重连后的 `thread/resume` 不会误触发。
 
-正常 `thread/queue/add` 通过安全校验并成功写给 app-server 后，Gateway 才原子消费资格并提交标题任务。任务按 `threadId` 去重，全局只运行一个模型生成，最多保留 32 个待处理任务；每个任务超时 30 秒。进程关闭时统一取消并等待任务退出。
+正常 `turn/start` 或 `thread/queue/add` 通过安全校验并成功写给 app-server 后，Gateway 才原子消费资格并提交标题任务。任务按 `threadId` 去重，全局只运行一个模型生成，最多保留 32 个待处理任务；每个任务超时 30 秒。进程关闭时统一取消并等待任务退出。
 
 ### Tool、权限与上下文
 
