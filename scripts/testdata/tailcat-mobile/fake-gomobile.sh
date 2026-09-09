@@ -11,6 +11,23 @@ case "$command_name" in
     exit 66
     ;;
   bind)
+    if [[ -n "${TAILCAT_TEST_BIND_STARTED:-}" ]]; then
+      touch "$TAILCAT_TEST_BIND_STARTED"
+      for attempt in {1..400}; do
+        [[ -f "$TAILCAT_TEST_BIND_RELEASE" ]] && break
+        sleep 0.05
+      done
+      [[ -f "$TAILCAT_TEST_BIND_RELEASE" ]] || exit 67
+    fi
+    if [[ -n "${TAILCAT_TEST_EXPECTED_VERSION:-}" ]]; then
+      tool_bin="$(dirname "$0")"
+      for tool in gomobile gobind; do
+        [[ "$(cat "$tool_bin/$tool.version")" == "$TAILCAT_TEST_EXPECTED_VERSION" ]] || {
+          echo "bind 使用了其他 Worktree 的 $tool 版本" >&2
+          exit 68
+        }
+      done
+    fi
     command -v gobind >/dev/null 2>&1 || {
       echo "gobind was not found" >&2
       exit 65

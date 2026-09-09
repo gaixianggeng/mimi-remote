@@ -4,7 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE_DIR="$ROOT_DIR/scripts/testdata/tailcat-mobile"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-tailcat-mobile-build.XXXXXX")"
-trap 'rm -rf "$TEMP_DIR"' EXIT
+build_pid=""
+cleanup() {
+  if [[ -n "$build_pid" ]]; then
+    touch "$TEMP_DIR/bind-release"
+    wait "$build_pid" || true
+  fi
+  rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
 
 fail() {
   echo "Tailcat iOS 构建缓存测试失败：$1" >&2
@@ -155,5 +163,41 @@ assert_equal "$((before + 1))" "$(bind_count)" "amd64 模拟器专用生产输�
 printf '\n' > "$module_dir/go.sum"
 run_builder >/dev/null
 assert_equal "$((before + 2))" "$(bind_count)" "go.sum 输入变化必须重建"
+
+# 两个 Worktree 使用不同工具版本和不同产物目录，但必须共用整段 bind 的工具锁。
+version_a="$(cat "$tool_dir/bin/gomobile.version")"
+version_b="v0.0.0-20260909000000-test-version"
+output_dir="$TEMP_DIR/concurrent-a"
+TAILCAT_TEST_BIND_STARTED="$TEMP_DIR/bind-started" \
+TAILCAT_TEST_BIND_RELEASE="$TEMP_DIR/bind-release" \
+TAILCAT_TEST_EXPECTED_VERSION="$version_a" \
+  run_builder >"$TEMP_DIR/concurrent-a.log" 2>&1 &
+build_pid=$!
+for attempt in {1..400}; do
+  [[ -f "$TEMP_DIR/bind-started" ]] && break
+  sleep 0.05
+done
+[[ -f "$TEMP_DIR/bind-started" ]] || fail "第一个构建未进入 bind"
+
+sed "s/^GOMOBILE_VERSION=.*/GOMOBILE_VERSION=\"$version_b\"/" "$builder_script" \
+  > "$TEMP_DIR/relocated repo/scripts/build-version-b.sh"
+builder_script="$TEMP_DIR/relocated repo/scripts/build-version-b.sh"
+output_dir="$TEMP_DIR/concurrent-b"
+installs_before="$(install_count)"
+set +e
+MIMI_DEVELOPMENT_CACHE_LOCK_WAIT_SECONDS=0 TAILCAT_TEST_EXPECTED_VERSION="$version_b" \
+  run_builder >"$TEMP_DIR/concurrent-b-busy.log" 2>&1
+busy_status=$?
+set -e
+assert_equal "75" "$busy_status" "另一个版本的构建必须等待正在 bind 的工具锁"
+assert_equal "$installs_before" "$(install_count)" "bind 期间不能安装其他版本工具"
+
+touch "$TEMP_DIR/bind-release"
+wait "$build_pid" || fail "第一个构建未能始终使用自己的工具版本"
+build_pid=""
+TAILCAT_TEST_EXPECTED_VERSION="$version_b" run_builder >/dev/null
+assert_equal "$((installs_before + 2))" "$(install_count)" "锁释放后才能安装另一个版本并构建"
+[[ -f "$TEMP_DIR/concurrent-a/.tailcat-mobile-fingerprint" ]] || fail "第一个构建缺少有效指纹"
+[[ -f "$TEMP_DIR/concurrent-b/.tailcat-mobile-fingerprint" ]] || fail "第二个构建缺少有效指纹"
 
 echo "Tailcat iOS 框架生成、缓存失效和失败保留检查通过。"

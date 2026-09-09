@@ -107,10 +107,10 @@ source_fingerprint() (
   } | shasum -a 256 | awk '{ print $1 }'
 )
 
-prepare_tools() {
-  # 不同 Worktree 共用工具目录；安装与版本复查必须在同一把锁内完成。
+build_framework() {
+  # 不同 Worktree 可能要求不同工具版本；直到 bind 完成前都不能让另一构建替换工具。
   bash "$SCRIPT_DIR/development-cache-lock.sh" "$TOOL_DIR/install.lock" -- \
-    bash -euo pipefail -s -- "$GO_BIN" "$TOOL_DIR/bin" "$GOMOBILE_VERSION" <<'TOOLS'
+    bash -euo pipefail -s -- "$GO_BIN" "$TOOL_DIR/bin" "$GOMOBILE_VERSION" "$MODULE_DIR" "$1" <<'TOOLS'
 go_bin="$1"
 tool_bin="$2"
 expected_version="$3"
@@ -127,6 +127,11 @@ for tool in gomobile gobind; do
     tool_matches "$tool" || { echo "Tailcat 工具版本不匹配：$tool" >&2; exit 1; }
   fi
 done
+cd "$4"
+"$tool_bin/gomobile" bind \
+  -target=ios,iossimulator \
+  -o "$5" \
+  ./mobile/tailcatmobile
 TOOLS
 }
 
@@ -173,16 +178,10 @@ fi
 
 mkdir -p "$TOOL_DIR/bin" "$OUTPUT_DIR"
 export PATH="$TOOL_DIR/bin:$PATH"
-# Apple 环境由 bind 自行准备；init 还会清理全局 gomobile 目录并安装 gobind@latest。
-prepare_tools
-
 TEMPORARY_DIR="$(mktemp -d "$OUTPUT_DIR/.tailcat-mobile.XXXXXX")"
 TEMPORARY_OUTPUT="$TEMPORARY_DIR/TailcatMobile.xcframework"
-cd "$MODULE_DIR"
-"$TOOL_DIR/bin/gomobile" bind \
-  -target=ios,iossimulator \
-  -o "$TEMPORARY_OUTPUT" \
-  ./mobile/tailcatmobile
+# Apple 环境由 bind 自行准备；init 还会清理全局 gomobile 目录并安装 gobind@latest。
+build_framework "$TEMPORARY_OUTPUT"
 
 framework_is_complete "$TEMPORARY_OUTPUT" \
   || fail "生成的 XCFramework 缺少必要 slice、header 或原生符号"
