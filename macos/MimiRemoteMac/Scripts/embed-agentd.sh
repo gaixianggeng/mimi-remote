@@ -82,16 +82,15 @@ for architecture in "${architectures[@]}"; do
       exit 1
       ;;
   esac
-  # 每个架构使用独立 Go 编译缓存和输出，既可复用又不会把交叉编译结果混在一起。
-  go_cache_root="$cache_root/go/$architecture"
-  mkdir -p "$go_cache_root/gocache"
-  output="$go_cache_root/agentd"
+  # 只隔离最终产物；Go 编译缓存沿用调用者环境或 Go 的全局默认值。
+  go_output_root="$cache_root/go/$architecture"
+  mkdir -p "$go_output_root"
+  output="$go_output_root/agentd"
   go_started_at=$SECONDS
-  log "构建 agentd：arch=${architecture} goarch=${go_arch} cache=${go_cache_root}"
+  log "构建 agentd：arch=${architecture} goarch=${go_arch} output=${output}"
   (
     cd "$project_root"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" GOTOOLCHAIN=local \
-      GOCACHE="$go_cache_root/gocache" \
       "$go_binary" build -trimpath \
       -ldflags "-s -w -X main.version=${agent_version}" \
       -o "$output" ./cmd/agentd
@@ -126,15 +125,14 @@ for architecture in "${architectures[@]}"; do
     arm64) go_arch=arm64 ;;
     x86_64) go_arch=amd64 ;;
   esac
-  tailcat_cache_root="$cache_root/tailcat-go/$architecture"
-  mkdir -p "$tailcat_cache_root/gocache"
-  output="$tailcat_cache_root/mimi-tailcat-experiment"
+  tailcat_output_root="$cache_root/tailcat-go/$architecture"
+  mkdir -p "$tailcat_output_root"
+  output="$tailcat_output_root/mimi-tailcat-experiment"
   tailcat_started_at=$SECONDS
   log "构建 Tailcat sidecar：arch=${architecture} goarch=${go_arch} go=${tailcat_go_version}"
   (
     cd "$tailcat_module"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" GOTOOLCHAIN=auto \
-      GOCACHE="$tailcat_cache_root/gocache" \
       "$go_binary" build -trimpath \
       -ldflags "-s -w -X main.version=${agent_version}" \
       -o "$output" ./cmd/mimi-tailcat-experiment

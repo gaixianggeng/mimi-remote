@@ -7,7 +7,8 @@ command_name="${1:-}"
 
 case "$command_name" in
   init)
-    exit 0
+    echo "iOS bind 不应执行会安装 latest 的 gomobile init" >&2
+    exit 66
     ;;
   bind)
     command -v gobind >/dev/null 2>&1 || {

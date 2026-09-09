@@ -5,10 +5,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-macos-local-cache.XXXXXX")"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 fixture="$TEMP_DIR/repo"
-mkdir -p "$fixture/scripts" "$fixture/macos/MimiRemoteMac/Scripts" "$TEMP_DIR/bin"
+mkdir -p \
+  "$fixture/scripts" \
+  "$fixture/experiments/tailcat" \
+  "$fixture/macos/MimiRemoteMac/Scripts" \
+  "$fixture/macos/MimiRemoteMac/Resources/LaunchAgents" \
+  "$TEMP_DIR/bin" \
+  "$TEMP_DIR/go-root/bin"
 cp "$ROOT_DIR/scripts/development-cache-"*.sh "$fixture/scripts/"
-cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/"{build-local,install-local}.sh \
+cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/"{build-local,embed-agentd,install-local}.sh \
   "$fixture/macos/MimiRemoteMac/Scripts/"
+cp "$ROOT_DIR/macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist" \
+  "$fixture/macos/MimiRemoteMac/Resources/LaunchAgents/"
 
 export PATH="$TEMP_DIR/bin:$PATH"
 export MIMI_DEVELOPMENT_CACHE_REPO_ROOT="$ROOT_DIR"
@@ -19,6 +27,8 @@ export MACOS_DEVELOPMENT_CACHE_LOCK="$TEMP_DIR/build.lock"
 export FIXTURE_LOCK_SCRIPT="$ROOT_DIR/scripts/development-cache-lock.sh"
 export FIXTURE_BUILD_LOG="$TEMP_DIR/build.log"
 export FIXTURE_REVISION="current-worktree"
+export FIXTURE_GO_BUILD_LOG="$TEMP_DIR/go-build.log"
+export FIXTURE_GO_ROOT="$TEMP_DIR/go-root"
 
 # 仅替换外部构建工具，不启动真实 App，也不改动用户已安装的 App。
 cat > "$TEMP_DIR/bin/xcodegen" <<'STUB'
@@ -53,7 +63,72 @@ cat > "$TEMP_DIR/bin/pgrep" <<'STUB'
 #!/usr/bin/env bash
 exit 1
 STUB
-chmod +x "$TEMP_DIR/bin/"*
+cat > "$TEMP_DIR/bin/go" <<'STUB'
+#!/usr/bin/env bash
+exec "$FIXTURE_GO_ROOT/bin/go" "$@"
+STUB
+cat > "$TEMP_DIR/go-root/bin/go" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == env && "${2:-}" == GOROOT ]]; then
+  printf '%s\n' "$FIXTURE_GO_ROOT"
+  exit 0
+fi
+if [[ "${1:-}" == env && "${2:-}" == GOVERSION ]]; then
+  if [[ "$PWD" == */experiments/tailcat ]]; then
+    printf 'go1.27.0\n'
+  else
+    printf 'go1.25.0\n'
+  fi
+  exit 0
+fi
+[[ "${1:-}" == build ]] || { echo "未预期的 go 调用：$*" >&2; exit 1; }
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$output" ]] || { echo "go build 缺少 -o" >&2; exit 1; }
+printf '%s\t%s\n' "${GOCACHE-<unset>}" "$output" >> "$FIXTURE_GO_BUILD_LOG"
+mkdir -p "$(dirname "$output")"
+cp /usr/bin/true "$output"
+chmod +x "$output"
+STUB
+cat > "$TEMP_DIR/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+target=""
+target_dir=""
+profile="debug"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      target="$2"
+      shift 2
+      ;;
+    --target-dir)
+      target_dir="$2"
+      shift 2
+      ;;
+    --release)
+      profile="release"
+      shift
+      ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$target" && -n "$target_dir" ]] || { echo "cargo 缺少目标目录" >&2; exit 1; }
+output="$target_dir/$target/$profile/alleycat-claude-bridge"
+mkdir -p "$(dirname "$output")"
+cp /usr/bin/true "$output"
+chmod +x "$output"
+STUB
+chmod +x "$TEMP_DIR/bin/"* "$TEMP_DIR/go-root/bin/go"
 
 old_app="$MACOS_DERIVED_DATA_PATH/Build/Products/Release/Mimi Remote Mac.app"
 mkdir -p "$old_app"
@@ -68,4 +143,32 @@ bash "$fixture/macos/MimiRemoteMac/Scripts/install-local.sh" "$destination"
 [[ "$(cat "$destination/revision")" == updated-worktree ]]
 [[ "$(wc -l < "$FIXTURE_BUILD_LOG" | tr -d ' ')" == 2 ]]
 [[ "$(cat "$TEMP_DIR/installed/"Mimi\ Remote\ Mac.backup-*.app/revision)" == current-worktree ]]
-echo "Mac 安装使用当前 Worktree 增量构建，并在共享缓存锁内暂存的自测通过。"
+
+embed_env=(
+  "SRCROOT=$fixture/macos/MimiRemoteMac"
+  "TARGET_BUILD_DIR=$TEMP_DIR/embed-build"
+  "CONTENTS_FOLDER_PATH=Mimi Remote Mac.app/Contents"
+  "ARCHS=arm64"
+  "CONFIGURATION=Debug"
+  "MACOS_EMBED_CACHE_DIR=$TEMP_DIR/embed"
+  "CODE_SIGNING_ALLOWED=NO"
+)
+embed_script="$fixture/macos/MimiRemoteMac/Scripts/embed-agentd.sh"
+env -u GOCACHE "${embed_env[@]}" bash "$embed_script" >/dev/null
+
+agentd_intermediate="$TEMP_DIR/embed/Debug/go/arm64/agentd"
+tailcat_intermediate="$TEMP_DIR/embed/Debug/tailcat-go/arm64/mimi-tailcat-experiment"
+[[ "$(sed -n '1p' "$FIXTURE_GO_BUILD_LOG")" == $'<unset>\t'"$agentd_intermediate" ]]
+[[ "$(sed -n '2p' "$FIXTURE_GO_BUILD_LOG")" == $'<unset>\t'"$tailcat_intermediate" ]]
+[[ ! -e "$TEMP_DIR/embed/Debug/go/arm64/gocache" ]]
+[[ ! -e "$TEMP_DIR/embed/Debug/tailcat-go/arm64/gocache" ]]
+[[ -x "$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/agentd" ]]
+[[ -x "$TEMP_DIR/embed/Debug/rust/debug/aarch64-apple-darwin/aarch64-apple-darwin/debug/alleycat-claude-bridge" ]]
+
+caller_go_cache="$TEMP_DIR/caller-gocache"
+: > "$FIXTURE_GO_BUILD_LOG"
+env "GOCACHE=$caller_go_cache" "${embed_env[@]}" bash "$embed_script" >/dev/null
+[[ "$(sed -n '1p' "$FIXTURE_GO_BUILD_LOG")" == "$caller_go_cache"$'\t'"$agentd_intermediate" ]]
+[[ "$(sed -n '2p' "$FIXTURE_GO_BUILD_LOG")" == "$caller_go_cache"$'\t'"$tailcat_intermediate" ]]
+
+echo "Mac 安装锁、内嵌产物隔离和 Go 全局缓存继承自测通过。"
