@@ -1805,6 +1805,7 @@ struct ComposerView: View {
             selectedMode: composerState.permissionMode,
             selectedProfileID: selectedPermissionProfileID,
             activeProfileID: activePermissionProfile?.id,
+            preservesThreadPermissionSettings: composerState.turnOptions.preservesThreadPermissionSettings,
             permissionAccessibilityValue: permissionTitle,
             tint: permissionTint,
             reduceMotion: reduceMotion,

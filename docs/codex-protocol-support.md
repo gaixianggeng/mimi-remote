@@ -34,9 +34,13 @@ Go Gateway 当前开放 31 个 client frame method，其中 `initialized` 是 no
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
 
-共享 SSH 模式的普通用户消息只使用 `thread/queue/add`。客户端初始化时必须声明 `experimentalApi: true`。需要任务管理工具的客户端还必须声明 `mimiDynamicTaskToolsV1: true`；该私有 capability 只在 Gateway 本地生效，不会转发给 Codex。新建 Thread 只接受完整的 `mimi_tasks` V1 opt-in，Gateway 会丢弃客户端描述和 schema，并重建 `create_thread`、`list_threads`、`read_thread`、`send_message_to_thread`、`wait_threads` 五个固定 typed function。`thread/resume` 不注入工具，由 Codex 从 rollout 恢复；升级前创建的旧 Thread 不补工具。发送结果不确定时，客户端用同一个 `clientUserMessageId` 依次查询 `thread/queue/list` 和 `thread/items/list`，不能盲目重发。`turn/start` 只保留给非共享旧链路和内部标题任务。
+输入框的普通消息与官方 Desktop 一样，通过携带本轮权限的 `turn/start` 启动新回合。当前回合仍在运行时，“下一回合发送”保存在本地持久队列，等待当前回合结束；明确的当前回合引导使用 `turn/steer`，沿用当前回合权限。切换权限产生的新回合边界不能被引导绕过。独立任务工具仍可使用 `thread/queue/add`，在 App 离线后由服务端调度。队列 ACK 不确定时按同一 `clientUserMessageId` 查询 queue 与 items，不能盲目重发。
 
-历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。线程模型、工作目录和权限是共享状态；`thread/queue/add` 不隐式修改它们。移动端提交共享队列消息时，会先用独立的 `thread/settings/update` 应用 Composer 为下一回合明确选择的模型、推理强度和协作模式，确认成功后才调用 `thread/queue/add`；权限继续走独立的受控链路。
+客户端初始化时必须声明 `experimentalApi: true`。需要任务管理工具的客户端还必须声明 `mimiDynamicTaskToolsV1: true`；该私有 capability 只在 Gateway 本地生效，不会转发给 Codex。新建 Thread 只接受完整的 `mimi_tasks` V1 opt-in，Gateway 会丢弃客户端描述和 schema，并重建 `create_thread`、`list_threads`、`read_thread`、`send_message_to_thread`、`wait_threads` 五个固定 typed function。`thread/resume` 不注入工具，由 Codex 从 rollout 恢复；升级前创建的旧 Thread 不补工具。
+
+历史读取固定使用 `thread/read(includeTurns:false)`，随后分页调用 `thread/turns/list` 和 `thread/items/list`。已有会话显式选择权限时，客户端立即用 `thread/settings/update` 只提交权限；新草稿仅保存选择，创建时带入。每个会话的设置请求串行发送。输入框启动新回合前只等待设置请求 ACK，随后 `turn/start` 再次携带消息保存时的完整权限，不等待 `thread/settings/updated`；该通知用于更新服务端状态显示。完全访问固定为 `never/user`，不再为旧 agentd 静默改成 `on-request`。不支持的服务端返回错误，不能假装权限已生效。被动恢复仍省略权限字段。
+
+独立任务工具使用的服务端队列不携带权限覆盖。它先提交模型和权限设置，再同时等待 ACK 与匹配的权限快照，之后调用 `thread/queue/add`。快照来自创建／恢复响应或 `thread/settings/updated`；相同设置不会重复通知，已有匹配快照时只需 ACK。断线后丢弃快照，失败不继续入队。旧草稿的完全访问先归一化为 `never/user`，再构造请求和确认目标。该队列不能保证其他客户端修改共享设置后仍使用原权限。
 
 Claude 实验通道使用更小的独立 allowlist，当前要求 `alleycat-claude-bridge >= 0.2.7`。`0.2.1` 首次开放 `account/rateLimits/read`，请求参数固定改写为 `{}`；`0.2.3` 起补齐事件百分比映射。`0.2.5` 起优先复用 Claude Code 已登录凭据主动读取 OAuth usage：macOS 从登录 Keychain 的 `Claude Code-credentials` 获取短期 access token，其他平台可使用权限收紧的 `~/.claude/.credentials.json`，随后请求固定的 Anthropic OAuth usage beta endpoint，将 5h/7d 窗口映射为现有协议。`0.2.6` 起，macOS token 过期或接口返回 401 时通过系统 PTY 执行 Claude CLI `/status` 认证路径，等待 Keychain 更新后只重试一次；`0.2.7` 起支持受控的运行期 `thread/list.refreshHistory`。bridge 不直接读取、消费或覆盖 refresh token。access token 只通过子进程 stdin 传给禁用 `.curlrc` 的系统 `curl`，不进入命令参数、日志或磁盘缓存；成功快照缓存 60 秒，Keychain、scope、续期、网络、HTTP 或解析失败均不影响会话链路。
 
@@ -109,7 +113,7 @@ Gateway 保持 Notification 透明转发，移动客户端第一批明确消费�
 
 未知 Notification 不会造成连接失败，但在移动客户端明确适配前不会被当作已支持的产品能力。
 
-新建 Codex 会话的自动标题使用一条独立的 App Server 连接（macOS 为 SSH proxy，Linux 为共享本机 control socket，Windows 为本机受管 WebSocket），不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个成功转发的普通 `thread/queue/add`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
+新建 Codex 会话的自动标题使用一条独立的 App Server 连接（macOS 为 SSH proxy，Linux 为共享本机 control socket，Windows 为本机受管 WebSocket），不扩大移动端 allowlist。`agentd` 只在同一 Gateway 连接完成 `thread/start` 后消费首个成功转发的 `turn/start` 或任务 `thread/queue/add`，用临时只读线程生成结构化标题，再通过 `thread/name/set` 写回目标线程。由于 app-server 只把该写操作的通知返回给内部连接，Gateway 会向发起会话的移动端补发同形的 `thread/name/updated`；完整边界见 [自动会话标题设计](auto-thread-titles.md)。
 
 ## 明确不开放
 

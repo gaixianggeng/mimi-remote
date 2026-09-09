@@ -2,8 +2,6 @@ import Foundation
 
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
-    nonisolated static let codexRemoteFullAccessCapability = "codex_remote_full_access_v1"
-
     func refreshCodexUsage() async {
         await refreshUsage(runtimeProvider: "codex")
     }
@@ -230,7 +228,7 @@ extension SessionStore {
            !model.isEmpty {
             // 开发者模式明确允许未列入 model/list 的自定义模型；普通模式才执行目录校验和回落。
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
+            return resolved
         }
         if appServerModelOptions.isEmpty {
             await refreshAppServerModelOptions()
@@ -259,12 +257,12 @@ extension SessionStore {
             resolved.options.model = matched.model
             resolved.options.modelProvider = matched.provider
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
+            return resolved
         }
 
         guard let selected = candidateOptions.first(where: \.isDefault) ?? candidateOptions.first else {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
-            return payloadApplyingRemoteNoApprovalCompatibility(resolved)
+            return resolved
         }
 
         // app-server 的 turn/start 目前要求顶层 model 必填；模型来源必须优先使用
@@ -275,18 +273,32 @@ extension SessionStore {
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
-        return payloadApplyingRemoteNoApprovalCompatibility(resolved)
+        return resolved
     }
 
-    func payloadApplyingRemoteNoApprovalCompatibility(
-        _ payload: CodexAppServerTurnPayload
-    ) -> CodexAppServerTurnPayload {
-        var compatible = payload
-        let isSupported = appStore.capabilityDecision(
-            for: Self.codexRemoteFullAccessCapability
-        ) == .enabled
-        compatible.options = compatible.options.adjustedForRemoteNoApprovalSupport(isSupported)
-        return compatible
+    func updateSelectedThreadPermissionsForNextTurn(_ options: CodexAppServerTurnOptions) {
+        guard let session = selectedSession,
+              !session.isLocalDraft,
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
+        else { return }
+
+        let sessionID = session.id
+        let client: any SessionStoreAPIClient
+        do {
+            client = try clientFactory()
+        } catch {
+            setErrorMessage(error.localizedDescription)
+            return
+        }
+        Task { @MainActor [weak self] in
+            do {
+                try await client.updateThreadPermissions(threadID: sessionID, options: options)
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.setErrorMessage(error.localizedDescription)
+            }
+        }
     }
 
     func selectedSessionRuntimeProviderForTurn() -> String? {

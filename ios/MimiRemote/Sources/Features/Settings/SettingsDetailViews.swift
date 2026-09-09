@@ -89,6 +89,8 @@ struct ConnectionProfileRenameDraft: Equatable {
 
 // 设置详情组件只持有局部值草稿、Binding 与回调，不引入额外引用状态层。
 struct ConnectionProfileRenameSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.dismiss) private var dismiss
 
     let route: ConnectionProfileRenameRoute
@@ -113,21 +115,23 @@ struct ConnectionProfileRenameSheet: View {
                         ),
                         onSubmit: { perform(.save) }
                     )
-                        .frame(minHeight: 28)
+                        .settingsRow()
                         .accessibilityIdentifier("settings.profile.rename.name")
                 } footer: {
                     Text(draft.validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
-                        .foregroundStyle(draft.validationMessage == nil ? Color.secondary : Color.red)
+                        .foregroundStyle(draft.validationMessage == nil ? themeStore.tokens(for: colorScheme).secondaryText : themeStore.tokens(for: colorScheme).warning)
                 }
 
                 if let submitError = draft.submitError {
                     Section {
                         Text(submitError)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
                             .accessibilityIdentifier("settings.profile.rename.error")
                     }
                 }
             }
+            .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
+            .settingsDetailPage()
             .navigationTitle(L10n.text("ui.rename_mac"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -219,19 +223,25 @@ struct ConnectionProfileNameTextField: UIViewRepresentable {
 }
 
 struct EndpointTransportNotice: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
     let assessment: EndpointTransportAssessment
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         VStack(alignment: .leading, spacing: 5) {
             Label(assessment.title, systemImage: systemImage)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(tint)
+                .font(themeStore.uiFont(.callout, weight: .semibold))
+                .foregroundStyle(tint(tokens: tokens))
             Text(assessment.guidance)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .settingsDetailFont()
+                .foregroundStyle(tokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
+        .settingsRow(.descriptive)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("settings.endpointTransportNotice")
     }
@@ -249,16 +259,16 @@ struct EndpointTransportNotice: View {
         }
     }
 
-    private var tint: Color {
+    private func tint(tokens: ThemeTokens) -> Color {
         switch assessment.status {
         case .empty:
-            return .secondary
+            return tokens.secondaryText
         case .invalid, .blockedPublicHTTP:
-            return .red
+            return tokens.warning
         case .allowedPrivateHTTP:
-            return .orange
+            return tokens.warning
         case .allowedHTTPS:
-            return .green
+            return tokens.success
         }
     }
 }
@@ -288,6 +298,7 @@ struct CapabilitiesView: View {
                     }
                 }
                 .disabled(sessionStore.isRefreshingCapabilities)
+                .settingsRow()
             } footer: {
                 Text(L10n.text("ui.here_the_local_skills_and_mcp_configurations_discoverable"))
             }
@@ -297,7 +308,7 @@ struct CapabilitiesView: View {
                 Section(L10n.text("ui.error")) {
                     Text(error)
                         .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(tokens.warning)
                 }
                 .listRowBackground(tokens.elevatedSurface)
             }
@@ -343,6 +354,7 @@ struct CapabilitiesView: View {
             .listRowBackground(tokens.elevatedSurface)
         }
         .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
         .navigationTitle(L10n.text("ui.ability"))
         .tint(tokens.accent)
         .task {
@@ -460,6 +472,7 @@ struct CapabilitiesView: View {
 }
 
 struct CapabilityValueRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     let title: String
     let value: String
@@ -467,14 +480,15 @@ struct CapabilityValueRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(themeStore.uiFont(.caption, weight: .medium))
+                .settingsTitleFont(weight: .medium)
             Text(value)
-                .font(themeStore.codeFont(.caption2))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
+                .font(themeStore.codeFont(.subheadline))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
                 .textSelection(.enabled)
         }
+        .settingsRow(.descriptive)
     }
 }
 
@@ -510,41 +524,42 @@ struct CapabilityItemRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbolName)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(isEnabled ? tokens.accent : Color.secondary)
-                .frame(width: 20, height: 20)
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title)
-                        .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .lineLimit(2)
+                        .settingsTitleFont(weight: .semibold)
+                        .fixedSize(horizontal: false, vertical: true)
                     if let statusText {
                         Text(statusText)
-                            .font(themeStore.uiFont(.caption2, weight: .medium))
+                            .settingsDetailFont(weight: .medium)
                             .foregroundStyle(statusColor)
                     } else if !isEnabled {
                         Text(L10n.text("ui.deactivated"))
-                            .font(themeStore.uiFont(.caption2, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .settingsDetailFont(weight: .medium)
+                            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
                     }
                 }
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(themeStore.uiFont(.caption2))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .settingsDetailFont()
+                        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(detail)
-                    .font(themeStore.codeFont(.caption2))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
+                    .font(themeStore.codeFont(.subheadline))
+                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
                     .textSelection(.enabled)
             }
         }
         .padding(.vertical, 3)
+        .settingsRow(.descriptive)
     }
 }
 
@@ -591,6 +606,7 @@ struct AppearanceView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .settingsRow()
             } header: {
                 Text(L10n.text("ui.dark_and_light_colors"))
             } footer: {
@@ -666,12 +682,14 @@ struct AppearanceView: View {
                         Text(font.title).tag(font)
                     }
                 }
+                .settingsRow()
 
                 Picker(L10n.text("ui.code_font"), selection: $themeStore.codeFontPreset) {
                     ForEach(ThemeCodeFontPreset.allCases) { font in
                         Text(font.title).tag(font)
                     }
                 }
+                .settingsRow()
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -701,6 +719,7 @@ struct AppearanceView: View {
                     .foregroundStyle(tokens.secondaryText)
                 }
                 .padding(.vertical, 4)
+                .settingsRow(.descriptive)
             } header: {
                 Text(L10n.text("ui.font"))
             }
@@ -724,12 +743,12 @@ struct AppearanceView: View {
                 } label: {
                     Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
                 }
+                .settingsRow()
             }
             .listRowBackground(tokens.elevatedSurface)
         }
         .themedSettingsForm(tokens: tokens)
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
+        .settingsDetailPage()
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
@@ -954,10 +973,10 @@ struct ThemePresetRow: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(preset.title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .settingsTitleFont(weight: .semibold)
                         .foregroundStyle(tokens.primaryText)
                     Text(preset.subtitle)
-                        .font(themeStore.uiFont(.footnote))
+                        .settingsDetailFont()
                         .foregroundStyle(tokens.secondaryText)
                 }
 
@@ -973,6 +992,7 @@ struct ThemePresetRow: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
+        .settingsRow(.descriptive)
     }
 }
 
@@ -1195,8 +1215,7 @@ struct DefaultModelSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
+        .settingsDetailPage()
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
@@ -1292,6 +1311,7 @@ private struct DefaultModelRuntimeSection: View {
                 }
             }
             .pickerStyle(.navigationLink)
+            .settingsRow()
             .accessibilityIdentifier("settings.defaultModels.model.\(runtime.rawValue)")
 
             if availableEfforts.isEmpty {
@@ -1303,6 +1323,7 @@ private struct DefaultModelRuntimeSection: View {
                 .accessibilityIdentifier(
                     "settings.defaultModels.reasoning.\(runtime.rawValue).unavailable"
                 )
+                .settingsRow(.descriptive)
             } else {
                 Picker(L10n.text("ui.reasoning_effort"), selection: reasoningEffortSelectionBinding) {
                     ForEach(availableEfforts) { effort in
@@ -1311,6 +1332,7 @@ private struct DefaultModelRuntimeSection: View {
                     }
                 }
                 .pickerStyle(.navigationLink)
+                .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
             }
 
@@ -1326,6 +1348,7 @@ private struct DefaultModelRuntimeSection: View {
                     )
                 }
                 .foregroundStyle(tokens.warning)
+                .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reset.\(runtime.rawValue)")
             }
         } header: {
@@ -1442,10 +1465,12 @@ struct TailcatExperimentSettingsView: View {
                 }
                 // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户关闭该偏好。
                 .disabled(!controller.isAvailable && !controller.isEnabled)
+                .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.tailcatToggle")
 
                 Label(statusText, systemImage: statusSystemImage)
                     .foregroundStyle(statusColor)
+                    .settingsRow()
                     .accessibilityIdentifier("settings.experimentalFeatures.status")
             } footer: {
                 Text(L10n.text("ui.custom_tailcat_summary"))
@@ -1457,6 +1482,7 @@ struct TailcatExperimentSettingsView: View {
                     systemImage: "qrcode.viewfinder"
                 )
                 .foregroundStyle(tokens.secondaryText)
+                .settingsRow(.descriptive)
             } header: {
                 Text(L10n.text("ui.scan_the_pairing_qr_code"))
             }
@@ -1467,8 +1493,10 @@ struct TailcatExperimentSettingsView: View {
                         L10n.text("ui.diagnostics_have_not_been_run_yet"),
                     systemImage: "point.3.connected.trianglepath.dotted"
                 )
+                .settingsRow(.descriptive)
                 if let requestSummary = controller.lastDiagnostic?.requestSummary {
                     Label(requestSummary, systemImage: "stopwatch")
+                        .settingsRow(.descriptive)
                 }
 
                 Button {
@@ -1477,6 +1505,7 @@ struct TailcatExperimentSettingsView: View {
                     Label(L10n.text("ui.refresh"), systemImage: "arrow.clockwise")
                 }
                 .disabled(!controller.isEnabled)
+                .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.refreshPath")
 
                 Button {
@@ -1485,6 +1514,7 @@ struct TailcatExperimentSettingsView: View {
                     Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
                 }
                 .disabled(controller.diagnostics.isEmpty)
+                .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
             } header: {
                 Text(L10n.text("ui.connection_diagnostics"))
@@ -1495,9 +1525,11 @@ struct TailcatExperimentSettingsView: View {
             Section {
                 Label(L10n.text("ui.custom_tailcat_safety_note"), systemImage: "exclamationmark.shield")
                     .foregroundStyle(tokens.secondaryText)
+                    .settingsRow(.descriptive)
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
         .navigationTitle(L10n.text("ui.custom_tailcat"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
@@ -1568,6 +1600,7 @@ extension View {
 
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
+            .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
             .settingsCanvasBackground(tokens: tokens)
     }
 }

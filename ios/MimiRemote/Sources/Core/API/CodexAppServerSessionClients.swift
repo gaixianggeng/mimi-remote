@@ -189,6 +189,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.threadGoal(threadID: threadID)
     }
 
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
+        try await runtime.updateThreadPermissions(threadID: threadID, options: options)
+    }
+
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal {
         try await runtime.setThreadGoal(threadID: threadID, objective: objective, status: status, tokenBudget: tokenBudget)
     }
@@ -596,6 +600,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         try await bundle.runtime(forSessionID: threadID).threadGoal(threadID: threadID)
     }
 
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
+        try await bundle.runtime(forSessionID: threadID).updateThreadPermissions(threadID: threadID, options: options)
+    }
+
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal {
         try await bundle.runtime(forSessionID: threadID).setThreadGoal(threadID: threadID, objective: objective, status: status, tokenBudget: tokenBudget)
     }
@@ -850,12 +858,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             }
             do {
                 try await runtime.connectForEvents(sessionID: threadID)
-                let deliveryMode = try await runtime.turnDeliveryMode()
                 guard !Task.isCancelled else {
                     return
                 }
                 await MainActor.run {
-                    self.turnDeliveryMode = deliveryMode
                     statusHandler?(.connected)
                 }
                 for await event in events {
@@ -916,25 +922,16 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let outcomeHandler = onTurnSendOutcome
         Task { [runtime] in
             do {
-                let submissionOutcome = try await runtime.submitTurnOutcome(
+                // 输入框按 Desktop 使用本地排队和 turn/start；每条新回合自带权限。
+                // thread/queue/add 只供独立任务工具向服务端队列提交消息。
+                let startOutcome = try await runtime.startTurnOutcome(
                     sessionID: sessionID,
                     payload: payload,
                     clientMessageID: clientMessageID
                 )
                 await MainActor.run {
                     if let outcomeHandler {
-                        switch submissionOutcome {
-                        case .direct(let startOutcome):
-                            outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
-                        case .serverQueued(let submissionID, let startedTurnID):
-                            outcomeHandler(
-                                clientMessageID,
-                                .serverQueued(
-                                    submissionID: submissionID,
-                                    startedTurnID: startedTurnID
-                                )
-                            )
-                        }
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
                     } else {
                         acceptedHandler?(clientMessageID)
                     }

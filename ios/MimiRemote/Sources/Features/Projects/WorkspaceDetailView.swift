@@ -80,9 +80,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
             .scrollIndicators(.hidden)
             .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-            // 浮起按钮会压住列表最后几行。用系统原生的柔化滚动边缘让内容在撞上它之前淡掉，
-            // 而不是给按钮加一块底板——会话页用的也是同一个 helper。
-            .workbenchSoftBottomScrollEdge()
+            // 底部浮起的按钮和 Tab 栏自己就是玻璃，只该虚化各自盖住的那一块；
+            // 全宽的柔化边缘反而会在它们两侧糊出一条雾带。会话页用的也是同一个 helper。
+            .workbenchClearBottomScrollEdge()
             // 叠在 ScrollView 之外，否则会跟着内容一起滚走。
             // 新建会话是本页最高频的动作，右上角在竖屏是最难够的位置；下沉到拇指区。
             // 底部已经站着一条浮动 Tab 栏时不再浮第二层——那会在同一个角上叠两层浮动材质。

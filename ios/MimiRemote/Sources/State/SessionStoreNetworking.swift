@@ -155,6 +155,7 @@ protocol SessionStoreAPIClient {
     func stopSession(id: String) async throws
     func setSessionArchived(id: String, archived: Bool) async throws
     func setThreadName(threadID: String, name: String) async throws
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws
     func compactThread(threadID: String) async throws
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
@@ -268,6 +269,10 @@ extension SessionStoreAPIClient {
     }
 
     func setThreadName(threadID: String, name: String) async throws {
+        throw AgentAPIError.invalidResponse
+    }
+
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
         throw AgentAPIError.invalidResponse
     }
 

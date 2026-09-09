@@ -222,12 +222,21 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 失败")
 		return
 	}
-	defer upstream.Close()
+	// observer 接管后这条 bridge 连接要比本次 HTTP 请求活得更久，不能由 handler 关闭。
+	upstreamOwnedByObserver := false
+	defer func() {
+		if !upstreamOwnedByObserver {
+			upstream.Close()
+		}
+	}()
 
 	// The bridge outlives this connection, so a client that names a session
 	// resumes the one it had; an unnamed client gets an isolated session and
 	// today's semantics.
 	sessionKey := claudeGatewaySessionKey(req)
+	// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
+	// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
+	observerEpoch := r.stopClaudeApprovalObserver(sessionKey)
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
 	if sessionKey != "" {
@@ -270,15 +279,21 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
 		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:     map[string]struct{}{},
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
-	defer policy.close()
+	defer func() {
+		if !upstreamOwnedByObserver {
+			policy.close()
+		}
+	}()
 
 	go func() {
 		done <- copyClientFramesToClaudeBridge(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
+	upstreamReaderDone := make(chan string, 1)
 	go func() {
-		done <- copyClaudeBridgeFrames(
+		readerReason := copyClaudeBridgeFrames(
 			ctx,
 			reader,
 			client,
@@ -289,6 +304,8 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			sessionKey,
 			bridgeCursorEpoch,
 		)
+		upstreamReaderDone <- readerReason
+		done <- readerReason
 	}()
 	go func() {
 		pingClientGateway(ctx, client, &clientWriteMu)
@@ -297,8 +314,33 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 
 	reason := <-done
 	cancel()
-	_ = upstream.Close()
 	_ = client.Close()
+	// 取消 context 不能中断已经阻塞在 net.Conn.Read 的旧 goroutine。先用一次性
+	// deadline 唤醒它并确认退出，再把同一个 bufio.Reader 交给 observer。
+	_ = upstream.SetReadDeadline(time.Now())
+	readerReleased := false
+	select {
+	case <-upstreamReaderDone:
+		readerReleased = true
+	case <-time.After(2 * time.Second):
+	}
+	_ = upstream.SetReadDeadline(time.Time{})
+	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
+	// 离线期间到达的审批请求并触发提醒。
+	observerStarted := readerReleased && r.startClaudeApprovalObserver(
+		sessionKey,
+		upstream,
+		&upstreamWriteMu,
+		reader,
+		policy,
+		observerEpoch,
+	)
+	if observerStarted {
+		upstreamOwnedByObserver = true
+	} else {
+		r.releaseClaudeApprovalObserverEpoch(sessionKey, observerEpoch)
+		_ = upstream.Close()
+	}
 	if monitor != nil {
 		monitor.finish(reason)
 	}

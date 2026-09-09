@@ -28,12 +28,12 @@ struct ThirdPartyNoticesView: View {
             LazyVStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(L10n.text("ui.mimi_remote_project_license"))
-                        .font(.title3.weight(.semibold))
+                        .font(themeStore.uiFont(.title3, weight: .semibold))
                     Text("Copyright © 2026 Gaixiang Geng")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(themeStore.uiFont(.subheadline))
+                        .foregroundStyle(tokens.secondaryText)
                     Text(L10n.text("ui.mimi_remote_is_licensed_under_the_gnu_gplv3"))
-                        .font(.body)
+                        .font(themeStore.uiFont(.body))
                     DisclosureGroup(L10n.text("ui.view_the_full_terms_of_gnu_gplv3")) {
                         Text(projectLicense)
                             .font(.system(.caption, design: .monospaced))
@@ -46,16 +46,13 @@ struct ThirdPartyNoticesView: View {
                 Divider()
 
                 Text(L10n.text("ui.third_party_dependency_license"))
-                    .font(.title3.weight(.semibold))
+                    .font(themeStore.uiFont(.title3, weight: .semibold))
 
                 ForEach(blocks) { block in
                     MarkdownBlockView(block: block, style: style)
                 }
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .settingsScrollContent()
             .textSelection(.enabled)
         }
         .settingsCanvasBackground(tokens: tokens)
