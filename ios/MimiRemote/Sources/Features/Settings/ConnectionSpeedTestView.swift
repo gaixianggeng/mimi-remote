@@ -25,7 +25,7 @@ struct ConnectionSpeedTestView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            Section(L10n.text("ui.connection_method")) {
+            Section {
                 Picker(
                     L10n.text("ui.connection_method"),
                     selection: $transientPreferences.speedTestRoute
@@ -36,6 +36,9 @@ struct ConnectionSpeedTestView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .accessibilityIdentifier("settings.connectionSpeedTest.route")
+            } header: {
+                Text(L10n.text("ui.connection_method"))
+                    .settingsSectionHeaderStyle()
             }
 
             benchmarkRecordingSection(tokens: tokens)
@@ -95,28 +98,36 @@ struct ConnectionSpeedTestView: View {
                 .accessibilityIdentifier("settings.connectionSpeedTest.run")
             } header: {
                 Text(transientPreferences.speedTestRoute.title)
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(testFooter)
+                    .settingsSectionFooterStyle()
             }
 
             if let report = currentReport {
-                Section(L10n.text("ui.speed_test_results")) {
+                Section {
                     connectionSpeedResultSummary(report: report, tokens: tokens)
                         // 把结果概览作为一个内容自适应的 Form 行，避免系统 LabeledContent
                         // 在部分 iOS 26/27 布局中把最后一行拉伸到整屏高度。
                         .fixedSize(horizontal: false, vertical: true)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
+                } header: {
+                    Text(L10n.text("ui.speed_test_results"))
+                        .settingsSectionHeaderStyle()
                 }
 
-                Section(L10n.text("ui.segmentation_takes_time")) {
+                Section {
                     ForEach(report.stages) { stage in
                         ConnectionSpeedTestStageRow(stage: stage)
                     }
+                } header: {
+                    Text(L10n.text("ui.segmentation_takes_time"))
+                        .settingsSectionHeaderStyle()
                 }
 
                 if let diagnostics = report.gatewayDiagnostics {
-                    Section(L10n.text("ui.gateway_observation")) {
+                    Section {
                         if let connection = diagnostics.relatedConnection {
                             ConnectionSpeedMetricRow(
                                 title: L10n.text("ui.mac_upstream_dialing"),
@@ -135,6 +146,9 @@ struct ConnectionSpeedTestView: View {
                                 value: AppStore.connectionTestDurationText(milliseconds: diagnostics.writeBackMillisMax)
                             )
                         }
+                    } header: {
+                        Text(L10n.text("ui.gateway_observation"))
+                            .settingsSectionHeaderStyle()
                     }
                 }
             }
@@ -228,12 +242,16 @@ struct ConnectionSpeedTestView: View {
             }
         } header: {
             Text(L10n.text("ui.connection_benchmark_title"))
+                .settingsSectionHeaderStyle()
         } footer: {
-            if transientPreferences.recordsBenchmarkSamples {
-                Text(transientPreferences.benchmarkScenario.footer)
-            } else {
-                Text(L10n.text("ui.connection_benchmark_privacy_footer"))
+            Group {
+                if transientPreferences.recordsBenchmarkSamples {
+                    Text(transientPreferences.benchmarkScenario.footer)
+                } else {
+                    Text(L10n.text("ui.connection_benchmark_privacy_footer"))
+                }
             }
+            .settingsSectionFooterStyle()
         }
     }
 

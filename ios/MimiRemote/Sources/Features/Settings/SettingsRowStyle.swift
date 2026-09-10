@@ -23,6 +23,16 @@ extension View {
         modifier(SettingsDetailPageModifier(width: width))
     }
 
+    /// 分组标题与脚注在整条设置链路只有这一套排版。系统默认标题字号更大、英文还会转成
+    /// 全大写，和「我的」自己写的标题不是一套；两个 Tab 并排看时最先被读成「配色没对上」。
+    func settingsSectionHeaderStyle() -> some View {
+        modifier(SettingsSectionCaptionModifier(weight: .medium))
+    }
+
+    func settingsSectionFooterStyle() -> some View {
+        modifier(SettingsSectionCaptionModifier(weight: .regular))
+    }
+
     func settingsScrollContent(width: CGFloat = 720) -> some View {
         frame(maxWidth: width, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
@@ -102,5 +112,23 @@ private struct SettingsRowModifier: ViewModifier {
                     trailing: SettingsLayoutMetrics.rowHorizontalInset
                 )
             )
+    }
+}
+
+
+/// 标题和脚注共用同一个字号与文字色，只靠字重区分主次。
+/// 字号与行文字一样先跟随系统辅助功能字号，再交给 ThemeStore 叠应用内比例。
+private struct SettingsSectionCaptionModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    @ScaledMetric(relativeTo: .footnote) private var pointSize: CGFloat = 13
+
+    let weight: Font.Weight
+
+    func body(content: Content) -> some View {
+        content
+            .font(themeStore.uiFont(size: pointSize, weight: weight))
+            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+            .textCase(nil)
     }
 }

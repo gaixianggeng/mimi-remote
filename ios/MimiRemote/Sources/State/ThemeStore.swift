@@ -217,7 +217,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.980392, green: 0.968627, blue: 0.945098)
         case .dark:
-            return Color(red: 0.090, green: 0.082, blue: 0.086)
+            return Color(red: 24.0 / 255.0, green: 24.0 / 255.0, blue: 24.0 / 255.0)
         }
     }
 
@@ -228,7 +228,7 @@ extension ThemeTokens {
         guard preset == .codex, resolvedScheme == .dark else {
             return contentPanelBackground
         }
-        return Color(red: 0.098, green: 0.092, blue: 0.098)
+        return sidebarBackground
     }
 
     var sidebarHoverFill: Color {
@@ -239,7 +239,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.941, green: 0.937, blue: 0.929)
         case .dark:
-            return Color(red: 0.165, green: 0.153, blue: 0.161)
+            return elevatedSurface
         }
     }
 
@@ -252,7 +252,7 @@ extension ThemeTokens {
             // 与浅色侧栏复用同一清晰白色，避免页面同时出现侧栏白、额度暖白和阴影过渡白。
             return .white
         case .dark:
-            return Color(red: 0.137, green: 0.129, blue: 0.141)
+            return elevatedSurface
         }
     }
 
@@ -324,7 +324,7 @@ extension ThemeTokens {
                 blue: 238.0 / 255.0
             )
         case .dark:
-            return Color(red: 0.176, green: 0.165, blue: 0.176)
+            return Color(red: 51.0 / 255.0, green: 51.0 / 255.0, blue: 51.0 / 255.0)
         }
     }
 
@@ -347,11 +347,7 @@ extension ThemeTokens {
                 blue: 231.0 / 255.0
             )
         case .dark:
-            return Color(
-                red: 55.0 / 255.0,
-                green: 52.0 / 255.0,
-                blue: 56.0 / 255.0
-            )
+            return composerControlSurface
         }
     }
 
@@ -388,7 +384,7 @@ extension ThemeTokens {
         case .light:
             return .white
         case .dark:
-            return Color(red: 0.137, green: 0.129, blue: 0.141)
+            return surface
         }
     }
 
@@ -400,18 +396,18 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.902, green: 0.890, blue: 0.878)
         case .dark:
-            return Color(red: 0.294, green: 0.271, blue: 0.286)
+            return border
         }
     }
 
-    /// 深色主按钮使用明确的梅紫实色；亮紫只留给小面积焦点，避免大按钮呈现灰紫雾感。
+    /// 默认深色用低饱和紫承载白字主操作；更亮的 accent 只用于小面积前景。
     var primaryAction: Color {
         guard preset == .codex else { return accent }
         switch resolvedScheme {
         case .light:
             return .mimiPrimary
         case .dark:
-            return Color(red: 0.608, green: 0.341, blue: 0.616)
+            return Color(red: 124.0 / 255.0, green: 107.0 / 255.0, blue: 158.0 / 255.0)
         }
     }
 
@@ -480,7 +476,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.949, green: 0.933, blue: 0.945)
         case .dark:
-            return Color(red: 0.169, green: 0.145, blue: 0.165)
+            return selectionFill
         }
     }
 
@@ -522,22 +518,26 @@ extension ThemeTokens {
         }
     }
 
-    /// 会话库与工作区里的大块内容容器复用输入面板的暖石墨层级。
-    /// 最外层仍保持暖黑，既拉开层次，也避免把所有通用 surface 一起提亮。
+    /// 内容卡片不再借用输入框/浮层的提亮层级；非默认深色原本就使用 surface。
     var contentPanelBackground: Color {
-        guard preset == .codex, resolvedScheme == .dark else {
-            return surface
-        }
-        return elevatedSurface
+        surface
     }
 
-    /// 工作区卡片需要比通用选中底更明确，但不使用发光描边。
-    /// 仅默认深色主题采用整块深梅紫，其余外观继续复用各自的选中语义色。
+    /// 设置链路里所有 Form 分组的底：设备页、各设置详情页和「我的」共用这一个入口，
+    /// 与内容卡片同级。
+    ///
+    /// 曾经这些分组各自铺 elevatedSurface。深色下它比画布亮一整级、还带暖紫；浅色下
+    /// 是 #F4F3F0，比工作台画布只暗几个百分点——读不出层级，只读得出「颜色没对上」。
+    /// 而「我的」根页的行落在系统分组背景上（那里的 listRowBackground 挂在 Form 外层，
+    /// SwiftUI 不会下发到行），于是同一条链路里出现两种分组底。这里收敛成一个 token，
+    /// 明暗和各预设都跟随主题的 surface。
+    var settingsGroupBackground: Color {
+        surface
+    }
+
+    /// 选中反馈复用同一低饱和填充，不再为工作区额外引入一档深梅紫。
     var workspaceCardSelectionFill: Color {
-        guard preset == .codex, resolvedScheme == .dark else {
-            return selectionFill
-        }
-        return Color(red: 0.208, green: 0.149, blue: 0.208)
+        selectionFill
     }
 
     var userBubbleForeground: Color {
@@ -547,8 +547,9 @@ extension ThemeTokens {
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 运行态延续当前外观的主操作色；真正完成/成功仍使用 success。
-            return primaryAction
+            // 默认深色的运行文字/图标使用亮 accent；白字按钮仍使用 primaryAction。
+            // 其他外观保持原映射，状态判定本身不变。
+            return preset == .codex && resolvedScheme == .dark ? accent : primaryAction
         case .warning:
             return warning
         case .danger:
@@ -811,22 +812,22 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexDarkTokens: ThemeTokens {
-        // 深色延续浅色主题的温暖气质：大面积使用暖石墨，梅紫集中在操作、状态和选中反馈。
+        // 中性石墨承载内容；低饱和紫只承担交互强调，成功/警告/录音语义色保持不变。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
-            background: Color(red: 0.071, green: 0.067, blue: 0.071),
-            surface: Color(red: 0.122, green: 0.114, blue: 0.118),
-            elevatedSurface: Color(red: 0.165, green: 0.153, blue: 0.161),
-            userBubble: Color(red: 0.165, green: 0.153, blue: 0.161),
-            assistantBubble: Color(red: 0.122, green: 0.114, blue: 0.118),
-            systemBubble: Color(red: 0.137, green: 0.129, blue: 0.141),
-            codeBlock: Color(red: 0.051, green: 0.047, blue: 0.055),
-            codeText: Color(red: 0.957, green: 0.945, blue: 0.937),
-            primaryText: Color(red: 0.957, green: 0.945, blue: 0.937),
-            secondaryText: Color(red: 0.706, green: 0.678, blue: 0.659),
-            tertiaryText: Color(red: 0.600, green: 0.569, blue: 0.549),
-            accent: Color(red: 0.820, green: 0.608, blue: 0.827),
+            background: Color(red: 20.0 / 255.0, green: 20.0 / 255.0, blue: 20.0 / 255.0),
+            surface: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
+            elevatedSurface: Color(red: 41.0 / 255.0, green: 41.0 / 255.0, blue: 41.0 / 255.0),
+            userBubble: Color(red: 41.0 / 255.0, green: 41.0 / 255.0, blue: 41.0 / 255.0),
+            assistantBubble: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
+            systemBubble: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
+            codeBlock: Color(red: 16.0 / 255.0, green: 16.0 / 255.0, blue: 16.0 / 255.0),
+            codeText: Color(red: 235.0 / 255.0, green: 235.0 / 255.0, blue: 235.0 / 255.0),
+            primaryText: Color(red: 235.0 / 255.0, green: 235.0 / 255.0, blue: 235.0 / 255.0),
+            secondaryText: Color(red: 184.0 / 255.0, green: 184.0 / 255.0, blue: 184.0 / 255.0),
+            tertiaryText: Color(red: 150.0 / 255.0, green: 150.0 / 255.0, blue: 150.0 / 255.0),
+            accent: Color(red: 184.0 / 255.0, green: 174.0 / 255.0, blue: 213.0 / 255.0),
             warning: Color(red: 0.941, green: 0.710, blue: 0.384),
             success: Color(red: 0.396, green: 0.773, blue: 0.557),
             goalActive: Color(red: 0.827, green: 0.490, blue: 0.608),
@@ -836,8 +837,8 @@ final class ThemeStore: ObservableObject {
                 Color(red: 0.776, green: 0.506, blue: 0.796),
                 Color(red: 0.608, green: 0.341, blue: 0.616)
             ],
-            border: Color(red: 0.251, green: 0.231, blue: 0.247),
-            selectionFill: Color(red: 0.169, green: 0.145, blue: 0.165)
+            border: Color(red: 58.0 / 255.0, green: 58.0 / 255.0, blue: 58.0 / 255.0),
+            selectionFill: Color(red: 44.0 / 255.0, green: 41.0 / 255.0, blue: 50.0 / 255.0)
         )
     }
 

@@ -300,6 +300,7 @@ struct LanguageSettingsView: View {
                 .accessibilityIdentifier("settings.language.detail.language")
             } header: {
                 Text(L10n.text("ui.language"))
+                    .settingsSectionHeaderStyle()
             }
 
             Section {

@@ -263,7 +263,7 @@ struct InitialConnectionSettingsSections: View {
             }
 #endif
         }
-        .listRowBackground(tokens.elevatedSurface)
+        .listRowBackground(tokens.settingsGroupBackground)
         .settingsStandardListRow()
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
@@ -300,19 +300,27 @@ struct InitialConnectionSettingsSections: View {
                 }
             } header: {
                 Text(L10n.text("ui.saved_mac"))
+                    .settingsSectionHeaderStyle()
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
                     Text(L10n.text("ui.connection_info_copy_security_notice"))
                 }
+                .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
         }
     }
 
+    /// 一台电脑都还没存过：这时安装 Mac 端才是第一步，安装说明排到扫码之上并默认展开。
+    private var isFirstComputerSetup: Bool {
+        appStore.connectionProfiles.isEmpty && !appStore.isConfigured
+    }
+
     @ViewBuilder
     private func addConnectionSection(tokens: ThemeTokens) -> some View {
         // 添加电脑的所有入口属于同一组，扫码是唯一主按钮。
+        // 首次连接时安装说明排在扫码之上并默认展开：Mac 端没装好之前，二维码根本不存在。
         connectionPresentationSection {
 #if targetEnvironment(macCatalyst)
             if appStore.localAgentDetected {
@@ -332,6 +340,13 @@ struct InitialConnectionSettingsSections: View {
                 .padding(.vertical, 2)
             }
 #endif
+            if isFirstComputerSetup {
+                HostInstallationSetupView(
+                    transientPreferences: transientPreferences,
+                    defaultExpanded: true
+                )
+            }
+
             ConnectionPrimaryActionsLayout(layoutDirection: layoutDirection) {
                 Button(action: beginScanningHost) {
                     ConnectionActionLabel(
@@ -362,16 +377,22 @@ struct InitialConnectionSettingsSections: View {
             // 不覆盖 buttonBorderShape：沿用系统给 bordered 按钮的默认外形，
             // 和连接测速、手动连接里的按钮保持同一套圆角。
             // 顶部与左右留白一致；下方普通行自带留白，避免主操作和次级入口过于分离。
-            .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
+            // 首次连接时上面已经是安装说明行，行间距由分隔线承担，不再额外撑开。
+            .padding(.top, isFirstComputerSetup ? 8 : SettingsLayoutMetrics.rowHorizontalInset)
             .padding(.bottom, 8)
             .listRowSeparator(.hidden)
 
-            HostInstallationSetupView(transientPreferences: transientPreferences)
+            // 已经存过电脑时对方软件早就装好了，扫码才是主操作，安装说明留在次级位置。
+            if !isFirstComputerSetup {
+                HostInstallationSetupView(transientPreferences: transientPreferences)
+            }
             advancedConnectionOptions(tokens: tokens)
         } header: {
             Text(L10n.text("ui.add_mac"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(connectionSectionFooter)
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -413,6 +434,7 @@ struct InitialConnectionSettingsSections: View {
                 }
             } header: {
                 Text(L10n.text("ui.status"))
+                    .settingsSectionHeaderStyle()
             }
         }
     }
@@ -448,6 +470,7 @@ struct InitialConnectionSettingsSections: View {
                 }
             } header: {
                 Text(L10n.text("ui.connection_method"))
+                    .settingsSectionHeaderStyle()
             }
         }
     }
