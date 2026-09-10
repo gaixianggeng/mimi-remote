@@ -99,6 +99,7 @@ def testflight_payload_path?(path)
   # 功能，也不属于这个 TestFlight 构建，不能写进本包的测试说明。
   return true if path.start_with?("ios/MimiRemote/Sources/") && !path.include?("/.claude/")
   return true if path.start_with?("ios/MimiRemote/WidgetExtension/")
+  return true if path.start_with?("ios/MimiRemote/NotificationServiceExtension/")
   return true if path.start_with?("ios/MimiRemote/Resources/Assets.xcassets/") &&
     !path.start_with?("ios/MimiRemote/Resources/Assets.xcassets/AppIconMac.appiconset/")
   return true if %w[

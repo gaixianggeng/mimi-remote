@@ -373,6 +373,29 @@ final class LockScreenApprovalTests: XCTestCase {
         }
     }
 
+    /// 通知扩展命中标题缓存后改用 `.titled` 正文（gh-418）。这些 key 只在设备上由
+    /// 扩展查表渲染，没有任何参数：标题已经标识会话，不再拼「· 会话 7D92」。
+    func testTitledPushNotificationLocalizationKeysExist() {
+        let keys = [
+            "push.message.body.completed.titled",
+            "push.message.body.failed.titled",
+            "push.message.body.interrupted.titled",
+            "push.approval.body.command.titled",
+            "push.approval.body.patch.titled",
+            "push.approval.body.permission.titled",
+            "push.approval.body.user_input.titled",
+            "push.approval.body.elicitation.titled",
+        ]
+        for key in keys {
+            for language in [AppLanguage.simplifiedChinese, .english] {
+                let value = L10n.text(key, language: language)
+                XCTAssertNotEqual(value, key, "缺少文案：\(key) (\(language.rawValue))")
+                XCTAssertFalse(value.contains("%@"), "\(key) 由扩展直接查表渲染，不能带占位符")
+                XCTAssertFalse(value.isEmpty)
+            }
+        }
+    }
+
 	/// disable 入队前构造的 client 只能操作当时绑定的 Profile。等待期间绑定切换后，
 	/// 旧操作必须在发出网络请求前失败，并保留当前绑定。
 	@MainActor

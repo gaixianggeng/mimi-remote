@@ -259,6 +259,8 @@ struct MimiRemoteApp: App {
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
     @StateObject private var lockScreenApprovalStore: LockScreenApprovalStore
+    /// 把会话标题写进 App Group，通知扩展据此改写锁屏通知；随 App 生命周期常驻。
+    @StateObject private var notificationTitleCacheWriter: NotificationTitleCacheWriter
     @StateObject private var tailcatExperimentController: TailcatExperimentController
     @StateObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @StateObject private var managedConnectionDeviceStore: ManagedConnectionDeviceStore
@@ -331,6 +333,14 @@ struct MimiRemoteApp: App {
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
 		let lockScreenApprovalStore = LockScreenApprovalStore()
 		_lockScreenApprovalStore = StateObject(wrappedValue: lockScreenApprovalStore)
+		// 会话标题缓存只在锁屏提醒开启时维护；写入防抖并在后台队列完成。
+		let notificationTitleCacheWriter = NotificationTitleCacheWriter()
+		notificationTitleCacheWriter.attach(
+			sessionStore: sessionStore,
+			appStore: appStore,
+			lockScreenApprovalStore: lockScreenApprovalStore
+		)
+		_notificationTitleCacheWriter = StateObject(wrappedValue: notificationTitleCacheWriter)
 		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore, weak sessionStore] delivery in
 			guard let appStore, let lockScreenApprovalStore, let sessionStore, let decision = delivery.decision else { return }
 			do {

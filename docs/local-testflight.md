@@ -33,6 +33,38 @@ MIM-78 引入 Widget Extension 后，Apple Developer 还必须先完成：
 
 配置未完成时，`git testflight-push --check` 会明确失败；不要用主 App profile 代替 Widget profile。
 
+#418 引入通知服务扩展后，发布前还需要：
+
+1. App ID `com.gaixianggeng.mimi.notificationservice` 启用同一个 App Group。本机 Xcode 登录开发者账号后做一次真机构建，自动签名会注册它并生成开发 profile。
+2. 为它新建 App Store profile，使用与主 App 相同的分发证书。
+3. 把 profile 的 ID 或名称写入本机 `~/.config/ios-testflight/mimi/secrets.env` 的 `IOS_NOTIFICATION_PROVISIONING_PROFILE_ID` 或 `IOS_NOTIFICATION_PROVISIONING_PROFILE_NAME`；需要校验名称时再设 `IOS_NOTIFICATION_EXPECTED_PROVISIONING_PROFILE_NAME`。
+4. 把 profile 的 base64 写入 GitHub repository secret `IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64`；CI 与 Nightly 缺少它时会在凭据预检失败。
+
+配置未完成时，`git testflight-push --check` 同样会明确失败；不要用主 App 或 Widget profile 代替通知服务扩展 profile。
+
+### 签名材料清单与续期（2026-09-10 核对）
+
+| 材料 | 名称 | 到期 | CI Secret | 本机位置 |
+| --- | --- | --- | --- | --- |
+| Apple Distribution 证书 | 团队 9HZ89R58PZ 的分发证书 | 2027-06-29 | `IOS_DISTRIBUTION_CERTIFICATE_BASE64`、`IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` | `~/secure/` 下的分发证书目录，含 p12 与密码文件 |
+| App Store Connect API Key | 发布用 Key | 不过期，可吊销 | `ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY` | `~/secure/AuthKey_<Key ID>.p8` |
+| 主 App App Store profile | `Mimi App Store 202608212141` | 2027-06-29 | `IOS_APPSTORE_PROVISIONING_PROFILE_BASE64` | `~/secure/mimi_ios_profiles/` |
+| Widget App Store profile | `Mimi Widget App Store 202608041101` | 2027-06-29 | `IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64` | 同上 |
+| 通知服务扩展 App Store profile | `Mimi Notification App Store 20260910` | 2027-06-29 | `IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64` | 同上 |
+| 三个 target 的开发 profile | Xcode 自动管理 | 自动续期 | 无 | Xcode 管理目录 |
+
+- 三份 App Store profile 绑定同一张分发证书，会随证书一起到期。`~/secure/mimi_ios_profiles/` 里的副本只用于核对与应急；发布脚本每次仍用 API Key 按 secrets.env 中的 ID 或名称重新下载。
+- 本机发布以 secrets.env 中的 profile ID 与名称为准，它会覆盖仓库配置中的同名变量。
+- App ID 的能力发生变化后，例如启用 App Group 或推送，已有 profile 会变成 INVALID，必须重新生成。2026-06 生成的旧主 App profile 就是这样失效的。
+- 开发 profile 由 Xcode 自动管理，前提是本机 Xcode 已登录开发者账号。
+
+证书到期前一个月内续期：
+
+1. 在 Apple Developer 新建 Apple Distribution 证书，导出 p12 与密码，放进 `~/secure/` 下新的证书目录，并更新 secrets.env 中的 `IOS_DISTRIBUTION_CERTIFICATE_PATH`、`IOS_DISTRIBUTION_CERTIFICATE_PASSWORD_FILE`。
+2. 更新 GitHub secret `IOS_DISTRIBUTION_CERTIFICATE_BASE64`、`IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`。
+3. 用新证书为主 App、Widget、通知服务扩展各重新生成 App Store profile，更新 secrets.env 中对应的 profile ID 或名称，以及三个 `*_APPSTORE_PROVISIONING_PROFILE_BASE64` secret。
+4. 把新 profile 副本放进 `~/secure/mimi_ios_profiles/`，运行 `git testflight-push --check` 确认本机配置。
+
 ### 固定版本 asc（MIM-92 第一阶段）
 
 仓库把 `asc` 固定为 `3.4.1`，版本、macOS arm64/amd64 SHA-256 与 Developer ID Team 都记录在 `config/release/ios-asc-cli.env`。不使用 `latest`，也不把二进制或凭据提交到仓库。

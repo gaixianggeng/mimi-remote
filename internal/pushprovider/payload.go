@@ -161,6 +161,11 @@ func validateTag(field string, value string) error {
 }
 
 // BuildAPNsPayload 由 Provider 单方面组装。调用方给不了任何自由文本。
+//
+// 审批与 turn.* 消息都带 mutable-content=1：这只是允许设备上的 Notification
+// Service Extension 在展示前改写文案。会话标题、项目名等一律来自 App 写在
+// App Group 里的本地缓存（键是会话匿名标签），从不经过 Provider 或 APNs；
+// Payload 里依旧只有本地化 key 和匿名标签，Provider 对会话内容一无所知。
 func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 	aps := map[string]any{}
 	switch n.Event {
@@ -184,6 +189,9 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 			"title-loc-key": "push.message.title." + n.Runtime,
 			"loc-key":       "push.message.body." + strings.TrimPrefix(n.Event, "turn."),
 		}
+		// 允许设备上的通知扩展按 thread-id 查本机缓存改写成会话标题。这里不多带
+		// 任何字段：标题不在 Payload 里，缓存未命中或旧版 App 没有扩展时仍显示通用文案。
+		aps["mutable-content"] = 1
 	case resolvedPushEvent:
 		// 其它设备已经处理完毕：只唤醒 App 清理旧通知，不再打扰用户。
 		aps["content-available"] = 1

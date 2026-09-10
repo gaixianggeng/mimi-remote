@@ -79,6 +79,10 @@ targets:
         embed: true
         destinationFilters:
           - iOS
+      - target: MimiNotificationServiceExtension
+        embed: true
+        destinationFilters:
+          - iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
@@ -134,6 +138,43 @@ targets:
         CODE_SIGN_ENTITLEMENTS: WidgetExtension/MimiCarStatusWidget.entitlements
         APPLICATION_EXTENSION_API_ONLY: "YES"
         "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)"
+        SKIP_INSTALL: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: "100098"
+        MARKETING_VERSION: "1.2.1"
+        SWIFT_EMIT_LOC_STRINGS: "NO"
+  # 通知服务扩展：推送展示前在设备上把「Codex 消息」改写成会话标题（gh-418）。
+  # 只依赖 Foundation / CryptoKit / UserNotifications，共享的四个源文件必须能在
+  # APPLICATION_EXTENSION_API_ONLY 下编译；标题来自 App 写入 App Group 的本地缓存。
+  MimiNotificationServiceExtension:
+    type: app-extension
+    platform: iOS
+    productName: MimiNotificationService
+    sources:
+      - path: NotificationServiceExtension
+        excludes:
+          - "*.entitlements"
+          - Info.plist
+      - path: Sources/Core/Push/LockScreenApprovalNotification.swift
+        group: Sources/Core/Push
+      - path: Sources/Core/Push/NotificationSessionTag.swift
+        group: Sources/Core/Push
+      - path: Sources/Core/Push/NotificationTitleCache.swift
+        group: Sources/Core/Push
+      - path: Sources/Core/Push/NotificationContentRewriter.swift
+        group: Sources/Core/Push
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.notificationservice
+        PRODUCT_NAME: MimiNotificationService
+        INFOPLIST_FILE: NotificationServiceExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NotificationServiceExtension/MimiNotificationService.entitlements
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER)"
         SKIP_INSTALL: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
         CURRENT_PROJECT_VERSION: "100098"

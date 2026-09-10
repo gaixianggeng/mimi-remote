@@ -77,6 +77,9 @@ final class LockScreenApprovalStore: ObservableObject {
     private let center: UNUserNotificationCenter
     private let ticketStore: PushTicketStore
     private let environment: PushEnvironment
+	/// 关闭提醒时同步删除 App Group 里的会话标题缓存（gh-418）；功能关掉后
+	/// 设备上不该留着一份没有用途的标题副本。测试可注入替身。
+	private let clearNotificationTitleCache: () -> Void
 	private let identity: PushInstallationIdentity?
 	private var deviceTokenContinuations: [CheckedContinuation<String, Error>] = []
 	private var cachedDeviceToken: String?
@@ -90,12 +93,14 @@ final class LockScreenApprovalStore: ObservableObject {
         center: UNUserNotificationCenter = .current(),
         ticketStore: PushTicketStore = PushTicketStore(),
 		identityStore: PushInstallationIdentityStore = PushInstallationIdentityStore(),
-        environment: PushEnvironment = .current()
+        environment: PushEnvironment = .current(),
+		clearNotificationTitleCache: @escaping () -> Void = { NotificationTitleCache.clear() }
     ) {
         self.defaults = defaults
         self.center = center
         self.ticketStore = ticketStore
         self.environment = environment
+		self.clearNotificationTitleCache = clearNotificationTitleCache
 		do {
 			let resolution = try Self.resolveIdentity(
 				defaults: defaults,
@@ -477,6 +482,8 @@ final class LockScreenApprovalStore: ObservableObject {
 			defaults.removeObject(forKey: key)
 		}
 		status = .off
+		// 关闭后不会再有推送命中缓存；标题副本随功能一起清掉。
+		clearNotificationTitleCache()
 		#if canImport(UIKit)
 		UIApplication.shared.unregisterForRemoteNotifications()
 		#endif

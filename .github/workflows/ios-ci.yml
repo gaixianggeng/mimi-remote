@@ -110,6 +110,7 @@ jobs:
           for target_name in \
             MimiRemote \
             MimiCarStatusWidgetExtension \
+            MimiNotificationServiceExtension \
             MimiRemoteTests \
             MimiRemoteUITests
           do
@@ -198,6 +199,7 @@ jobs:
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
       IOS_WIDGET_BUNDLE_ID: com.gaixianggeng.mimi.carstatuswidget
+      IOS_NOTIFICATION_BUNDLE_ID: com.gaixianggeng.mimi.notificationservice
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
       IOS_TESTFLIGHT_UPLOAD: >-
@@ -307,6 +309,7 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
           IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
@@ -318,6 +321,7 @@ jobs:
             ASC_PRIVATE_KEY \
             IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 \
             IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
             IOS_KEYCHAIN_PASSWORD; do
@@ -337,13 +341,16 @@ jobs:
           profile_plist="$release_secrets/profile.plist"
           widget_profile="$release_secrets/widget-app-store.mobileprovision"
           widget_profile_plist="$release_secrets/widget-profile.plist"
+          notification_profile="$release_secrets/notification-app-store.mobileprovision"
+          notification_profile_plist="$release_secrets/notification-profile.plist"
           keychain="$release_secrets/signing.keychain-db"
 
           printf '%s' "$ASC_PRIVATE_KEY" > "$api_key"
           printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           printf '%s' "$IOS_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
           printf '%s' "$IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$widget_profile"
-          chmod 600 "$api_key" "$certificate" "$profile" "$widget_profile"
+          printf '%s' "$IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$notification_profile"
+          chmod 600 "$api_key" "$certificate" "$profile" "$widget_profile" "$notification_profile"
 
           security cms -D -i "$profile" > "$profile_plist"
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
@@ -369,10 +376,24 @@ jobs:
           [[ "$widget_profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
           ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_profile_expiration"
 
+          # 通知扩展（#418）在设备上用 App Group 缓存改写锁屏标题，profile 同样必须带 App Group。
+          security cms -D -i "$notification_profile" > "$notification_profile_plist"
+          notification_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$notification_profile_plist")"
+          notification_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$notification_profile_plist")"
+          notification_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$notification_profile_plist")"
+          notification_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$notification_profile_plist")"
+          notification_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$notification_profile_plist")"
+          notification_profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$notification_profile_plist")"
+          [[ "$notification_profile_team" == "$DEVELOPMENT_TEAM" ]]
+          [[ "$notification_profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_NOTIFICATION_BUNDLE_ID" ]]
+          [[ "$notification_profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
+          ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$notification_profile_expiration"
+
           profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$profiles_dir"
           cp "$profile" "$profiles_dir/$profile_uuid.mobileprovision"
           cp "$widget_profile" "$profiles_dir/$widget_profile_uuid.mobileprovision"
+          cp "$notification_profile" "$profiles_dir/$notification_profile_uuid.mobileprovision"
 
           security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
@@ -412,6 +433,9 @@ jobs:
             echo "IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER<<__WIDGET_PROFILE__"
             echo "$widget_profile_name"
             echo "__WIDGET_PROFILE__"
+            echo "IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER<<__NOTIFICATION_PROFILE__"
+            echo "$notification_profile_name"
+            echo "__NOTIFICATION_PROFILE__"
             echo "IOS_CODE_SIGN_IDENTITY<<__IDENTITY__"
             echo "$signing_identity"
             echo "__IDENTITY__"

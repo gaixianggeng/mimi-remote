@@ -6,6 +6,7 @@ PROJECT="$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj"
 SCHEME="MimiRemote"
 IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.gaixianggeng.mimi}"
 IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
+IOS_NOTIFICATION_BUNDLE_ID="${IOS_NOTIFICATION_BUNDLE_ID:-com.gaixianggeng.mimi.notificationservice}"
 IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
@@ -85,7 +86,7 @@ run_asc_build_number_shadow() {
 for command in git ruby bash go xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
-for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER; do
+for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER; do
   require_env "$key"
 done
 case "$IOS_TESTFLIGHT_UPLOAD:$IOS_TESTFLIGHT_VALIDATE" in
@@ -186,6 +187,7 @@ cat > "$export_options" <<PLIST
   <dict>
     <key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string>
     <key>$IOS_WIDGET_BUNDLE_ID</key><string>$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER</string>
+    <key>$IOS_NOTIFICATION_BUNDLE_ID</key><string>$IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER</string>
   </dict>
 </dict>
 </plist>
@@ -205,6 +207,7 @@ xcodebuild archive \
   CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
   IOS_PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
   IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER="$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER" \
+  IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER="$IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER" \
   OTHER_CODE_SIGN_FLAGS="--keychain $IOS_SIGNING_KEYCHAIN_PATH" \
   -quiet
 
@@ -222,9 +225,18 @@ widget_info="$widget_path/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$widget_info")" == "$marketing_version" ]] || fail "archive widget version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$widget_info")" == "$build_number" ]] || fail "archive widget build mismatch"
 
-# 主 App 与 Widget 必须分别由各自 profile 签名，同时共享同一个 App Group。
+# 通知扩展（#418）在设备上把锁屏提醒改写成会话标题，标题只来自 App Group 缓存，
+# 因此它和 Widget 一样必须进包、独立签名并共享 App Group。
+notification_path="$archive/Products/Applications/MimiRemote.app/PlugIns/MimiNotificationService.appex"
+notification_info="$notification_path/Info.plist"
+[[ -f "$notification_info" ]] || fail "archive notification service Info.plist not found"
+[[ "$(plutil -extract CFBundleIdentifier raw -o - "$notification_info")" == "$IOS_NOTIFICATION_BUNDLE_ID" ]] || fail "archive notification service bundle id mismatch"
+[[ "$(plutil -extract CFBundleShortVersionString raw -o - "$notification_info")" == "$marketing_version" ]] || fail "archive notification service version mismatch"
+[[ "$(plutil -extract CFBundleVersion raw -o - "$notification_info")" == "$build_number" ]] || fail "archive notification service build mismatch"
+
+# 主 App、Widget 与通知扩展必须分别由各自 profile 签名，同时共享同一个 App Group。
 # 这里审计最终归档签名，而不是只相信构建参数，防止 extension 被主 App profile 误签。
-for signed_bundle in "$archive/Products/Applications/MimiRemote.app" "$widget_path"; do
+for signed_bundle in "$archive/Products/Applications/MimiRemote.app" "$widget_path" "$notification_path"; do
   entitlements_plist="$output/$(basename "$signed_bundle").entitlements.plist"
   codesign -d --entitlements :- "$signed_bundle" > "$entitlements_plist" 2>/dev/null
   app_groups="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$entitlements_plist" 2>/dev/null || true)"
