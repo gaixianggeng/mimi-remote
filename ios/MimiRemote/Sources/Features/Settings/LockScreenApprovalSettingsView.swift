@@ -10,6 +10,7 @@ struct LockScreenApprovalSettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var store: LockScreenApprovalStore
 
+    @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @State private var isBusy = false
     @State private var showsConsent = false
 
@@ -77,6 +78,25 @@ struct LockScreenApprovalSettingsView: View {
             } footer: {
                 Text(L10n.text("ui.push_disclosure_actionable_kinds"))
                     .settingsSectionFooterStyle()
+            }
+
+            if developerModeEnabled {
+                // 只在开发者模式露出：导出的是阶段/结果/原因和脱敏标识，方便把
+                // “点了通知没反应”连同日志一起贴进问题反馈。
+                Section {
+                    Button {
+#if canImport(UIKit)
+                        UIPasteboard.general.string = NotificationRouteDiagnostics.exportText()
+#endif
+                    } label: {
+                        Label(L10n.text("ui.push_route_diagnostics_copy"), systemImage: "doc.on.doc")
+                    }
+                    .settingsRow()
+                    .accessibilityIdentifier("settings.lockScreenApproval.copyRouteDiagnostics")
+                } footer: {
+                    Text(L10n.text("ui.push_route_diagnostics_footer"))
+                        .settingsSectionFooterStyle()
+                }
             }
         }
         .themedSettingsForm(tokens: tokens)

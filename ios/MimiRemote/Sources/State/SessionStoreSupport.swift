@@ -1699,7 +1699,9 @@ enum SessionNotificationOpenOutcome: Equatable {
     case opened
     case requiresProfileSwitch(displayName: String?)
     case unavailable(message: String)
-    case ignored
+    /// 用户在通知处理期间已经明确去往别处，旧通知意图作废；这是唯一允许保持安静的结果。
+    /// 其余打不开的情况必须给出 unavailable 提示或自动兜底，并留下阶段诊断。
+    case superseded
 }
 
 // 列表预览与最近活动投影属于本地状态保护：服务端确认前保留用户刚刚创建或更新的会话，

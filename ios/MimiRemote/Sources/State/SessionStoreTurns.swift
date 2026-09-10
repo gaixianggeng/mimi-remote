@@ -441,144 +441,176 @@ extension SessionStore {
         }
     }
 
-    /// 打开本地通知对应会话。安全边界：只允许当前 profile，最多做一次有界首屏刷新，绝不自动切 Mac。
+    /// 打开本地通知对应会话。安全边界：只允许当前 profile，最多做一次有界刷新
+    /// （thread/read 直读 + 首屏列表兜底），绝不自动切 Mac。
+    /// 除“用户已明确去往别处”（.superseded）外，打不开都必须给出提示，并在每个决策点留下阶段诊断。
     func openSessionFromNotification(
         _ route: SessionNotificationRoute,
         ifCurrent expectedLease: SessionSelectionLease? = nil
     ) async -> SessionNotificationOpenOutcome {
-        if let expectedLease, !isSelectionLeaseCurrent(expectedLease) {
-            return .ignored
+        let startedAt = Date()
+        let correlation = NotificationRouteDiagnostics.shortReference(route.sessionID)
+        func finish(_ outcome: SessionNotificationOpenOutcome, reason: String) -> SessionNotificationOpenOutcome {
+            NotificationRouteDiagnostics.record(
+                stage: NotificationRouteDiagnostics.Stage.sessionOpen,
+                outcome: Self.notificationOpenOutcomeLabel(outcome),
+                reason: reason,
+                correlation: correlation,
+                elapsedMilliseconds: NotificationRouteDiagnostics.elapsedMilliseconds(since: startedAt)
+            )
+            return outcome
         }
-        let activeProfileID = appStore.notificationRoutingProfileID
-        guard route.profileID == activeProfileID else {
-            let profileName = appStore.connectionProfiles
-                .first(where: { $0.id == route.profileID })?
-                .displayName
-            let message: String
-            if let profileName {
-                message = L10n.format("ui.the_notification_comes_from_value_please_switch_the", profileName)
-            } else {
-                message = L10n.text("ui.the_notification_comes_from_another_mac_please_switch")
-            }
+        func unavailable(_ key: String, reason: String) -> SessionNotificationOpenOutcome {
+            let message = L10n.text(key)
             setStatusMessage(message)
-            return .requiresProfileSwitch(displayName: profileName)
-        }
-        let selectionIntent = reserveSelectionIntent()
-
-        let connectionGeneration = appStore.connectionGeneration
-        var targetSession = sessionsByID[route.sessionID]
-        if let targetSession, targetSession.projectID != route.projectID {
-            // 同一 sessionID 却指向不同项目属于畸形或过期路由，不猜测、不发请求。
-            return .ignored
+            return finish(.unavailable(message: message), reason: reason)
         }
 
-        if targetSession == nil {
+        // 调用方在发网络请求前预留的意图若已过期，只有用户可见的导航才让通知让路；
+        // 代次被自动推进时重新预留即可。nil 视为“现在预留”。
+        if let expectedLease,
+           !isSelectionLeaseCurrent(expectedLease),
+           notificationIntentSuperseded(since: expectedLease, target: route.sessionID) {
+            return finish(.superseded, reason: "intent_superseded_before_start")
+        }
+        guard route.profileID == appStore.notificationRoutingProfileID else {
+            return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_mismatch")
+        }
+        var intent = reserveSelectionIntent()
+
+        let targetSession: AgentSession
+        let resolution: String
+        if let known = localSessionForNotification(threadID: route.sessionID) {
+            // agentd 的根项目 id 与 iOS 的 ws_ 工作区 id 标注同一线程并不冲突：线程 id 才是身份，
+            // 项目标签不同只记诊断，直接打开本地已知会话。
+            _ = sessionMatchesNotificationRoute(known, route)
+            targetSession = known
+            resolution = "local"
+        } else {
             do {
-                targetSession = try await refreshSessionForNotification(
-                    route,
-                    connectionGeneration: connectionGeneration
-                )
-                if targetSession == nil {
-                    guard connectionGeneration == appStore.connectionGeneration,
-                          route.profileID == appStore.notificationRoutingProfileID,
-                          isSelectionLeaseCurrent(selectionIntent) else {
-                        return .ignored
+                switch try await refreshSessionForNotification(route) {
+                case .found(let session):
+                    targetSession = session
+                    resolution = "refreshed"
+                case .profileSwitched:
+                    return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_switched_during_refresh")
+                case .missing:
+                    if notificationIntentSuperseded(since: intent, target: route.sessionID) {
+                        return finish(.superseded, reason: "intent_superseded_target_missing")
                     }
-                    let message = L10n.text("ui.the_session_corresponding_to_the_notification_is_temporarily")
-                    setStatusMessage(message)
-                    return .unavailable(message: message)
+                    return unavailable(
+                        "ui.the_session_corresponding_to_the_notification_is_temporarily",
+                        reason: "target_missing"
+                    )
                 }
             } catch {
                 if terminateConnectionIfCredentialsInvalid(error) {
-                    return .unavailable(message: L10n.text("ui.the_current_connection_credentials_have_expired_please_re"))
+                    return finish(
+                        .unavailable(message: L10n.text("ui.the_current_connection_credentials_have_expired_please_re")),
+                        reason: "credentials_invalid"
+                    )
                 }
-                guard isSelectionLeaseCurrent(selectionIntent) else {
-                    return .ignored
+                if isCancellationError(error) {
+                    // 新的通知或生命周期已接管本次打开；取消不是 Mac 离线。
+                    return finish(.superseded, reason: "cancelled")
                 }
-                let message = L10n.text("ui.the_session_corresponding_to_the_notification_cannot_be")
-                setStatusMessage(message)
-                return .unavailable(message: message)
+                guard route.profileID == appStore.notificationRoutingProfileID else {
+                    return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_switched_during_refresh")
+                }
+                if notificationIntentSuperseded(since: intent, target: route.sessionID) {
+                    return finish(.superseded, reason: "intent_superseded_refresh_failed")
+                }
+                return unavailable(
+                    "ui.the_session_corresponding_to_the_notification_cannot_be",
+                    reason: "refresh_failed"
+                )
             }
         }
 
-        guard connectionGeneration == appStore.connectionGeneration,
-              route.profileID == appStore.notificationRoutingProfileID,
-              isSelectionLeaseCurrent(selectionIntent),
-              let targetSession,
-              targetSession.id == route.sessionID,
-              targetSession.projectID == route.projectID
-        else {
-            return .ignored
+        // 连接代次可能被 Tailcat 选路等自动推进，本身不构成取代；只有 Profile 变了才需要提示切换。
+        guard route.profileID == appStore.notificationRoutingProfileID else {
+            return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_switched_before_select")
         }
+        guard let currentIntent = notificationIntentAfterAwait(intent, target: targetSession.id) else {
+            return finish(.superseded, reason: "intent_superseded_before_select")
+        }
+        intent = currentIntent
 
         let didSelect = await selectSession(
             targetSession,
             reason: .notification,
-            ifCurrent: selectionIntent
+            ifCurrent: intent
         )
-        guard connectionGeneration == appStore.connectionGeneration,
-              route.profileID == appStore.notificationRoutingProfileID,
-              didSelect,
-              selectedSessionID == route.sessionID
-        else {
-            return .ignored
+        guard route.profileID == appStore.notificationRoutingProfileID else {
+            return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_switched_during_select")
         }
-        return .opened
+        if didSelect, selectedSessionID == targetSession.id || selectedSessionID == route.sessionID {
+            return finish(.opened, reason: resolution)
+        }
+        if didSelect,
+           case .identityReplacement(let previousID)? = lastSelectionCommit?.reason,
+           previousID == targetSession.id {
+            // 目标自己的 optimistic / resume ID 在加载历史时被替换，仍是同一会话。
+            return finish(.opened, reason: "identity_replaced")
+        }
+        if notificationIntentSuperseded(since: intent, target: targetSession.id) {
+            return finish(.superseded, reason: "intent_superseded_during_select")
+        }
+        return unavailable(
+            "ui.the_session_corresponding_to_the_notification_is_temporarily",
+            reason: "selection_not_committed"
+        )
     }
 
+    /// 通知目标不在本地索引时的有界刷新：先解析工作区（未知时只补一次项目元数据），
+    /// 登记 runtime 路由后 thread/read 直读；直读失败再退回首屏列表（最多两趟）。
+    /// 每次 await 之后都复核 Profile；连接代次的自动推进不视为取代。
     func refreshSessionForNotification(
-        _ route: SessionNotificationRoute,
-        connectionGeneration: Int
-    ) async throws -> AgentSession? {
+        _ route: SessionNotificationRoute
+    ) async throws -> NotificationSessionRefreshResult {
         let client = try clientFactory()
+        let hostScope = appStore.activeHostScope
         var workspace = ensureWorkspaceForKnownProjectID(route.projectID)
 
         if workspace == nil {
             // 冷启动时项目索引可能尚未建立；只补一次项目元数据，不进入 bootstrap 的循环重试。
             let fetchedProjects = try await client.projects()
-            guard connectionGeneration == appStore.connectionGeneration,
-                  route.profileID == appStore.notificationRoutingProfileID else {
-                return nil
+            guard route.profileID == appStore.notificationRoutingProfileID else {
+                return .profileSwitched
             }
             setProjectsIfChanged(fetchedProjects)
             reloadRecentWorkspaces()
             workspace = ensureWorkspaceForKnownProjectID(route.projectID)
         }
 
-        guard let workspace else {
-            return nil
-        }
-        // 用 workspace 首屏建立 Codex/Claude 的真实 runtime 路由；不盲猜 provider，也不自动翻页循环。
-        let page = try await client.sessionsPage(
-            workspace: workspace,
-            cursor: nil,
-            limit: Self.initialSessionPageLimit
-        )
-        guard connectionGeneration == appStore.connectionGeneration,
-              route.profileID == appStore.notificationRoutingProfileID else {
-            return nil
-        }
-        let refreshedSessions = sessions(page.sessions, in: workspace)
-        guard isCurrentWorkspaceIdentity(workspace) else { return nil }
-        mergeFastIndexedSessionPagePreservingAuthoritativeFields(
-            refreshedSessions,
-            workspace: workspace
-        )
-        updateWorkspaceSessionFirstPageState(
-            workspace: workspace,
-            page: page,
-            consistency: .fastIndexed
-        )
-        recordWorkspaceSessionFirstPageCompletion(
-            workspace: workspace,
-            page: page,
-            consistency: .fastIndexed
-        )
-        clearWorkspaceUnavailable(workspace.id)
+        // 通知携带的 runtime 是权威信息：先登记路由，thread/read 才会落到正确的 Runtime。
+        // 未知时保持已记住的路由，不能把 Claude 会话改写成 Codex。
+        client.rememberRuntimeRoute(route.runtimeProvider, forSessionID: route.sessionID)
 
-        guard let target = sessionsByID[route.sessionID],
-              target.projectID == route.projectID else { return nil }
-        return target
+        switch try await readNotificationSession(route, workspace: workspace, client: client) {
+        case .found(let session):
+            return .found(session)
+        case .profileSwitched:
+            return .profileSwitched
+        case .missing:
+            break
+        }
+
+        guard let workspace else {
+            NotificationRouteDiagnostics.record(
+                stage: NotificationRouteDiagnostics.Stage.sessionOpen,
+                outcome: "list_skipped",
+                reason: "workspace_unknown",
+                correlation: NotificationRouteDiagnostics.shortReference(route.sessionID)
+            )
+            return .missing
+        }
+        return try await listNotificationSession(
+            route,
+            workspace: workspace,
+            client: client,
+            hostScope: hostScope
+        )
     }
 
     @discardableResult
