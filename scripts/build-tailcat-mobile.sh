@@ -53,10 +53,42 @@ framework_is_complete() {
   done
 }
 
-source_fingerprint() {
+production_inputs() {
+  local architecture
+  local template='{{if and .Module .Module.Main}}{{$dir := .Dir}}
+{{range .GoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .CgoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .CFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .CXXFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .MFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .HFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .FFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .SFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .SysoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{range .EmbedFiles}}{{printf "%s/%s\n" $dir .}}{{end}}
+{{end}}'
+  (
+    cd "$MODULE_DIR"
+    # 按 gomobile 的 iOS 构建标签枚举两个架构的依赖，避免测试和无关命令触发重建。
+    # 外部 module 由 go.mod/go.sum 锁定；本地 package 同时跟踪原生文件和 embed 资源。
+    for architecture in arm64 amd64; do
+      GOOS=ios GOARCH="$architecture" CGO_ENABLED=1 "$GO_BIN" list -mod=readonly -deps -tags=ios \
+        -f "$template" \
+        ./mobile/tailcatmobile || exit "$?"
+    done
+    printf '%s\n' "$MODULE_DIR/go.mod"
+    [[ ! -f "$MODULE_DIR/go.sum" ]] || printf '%s\n' "$MODULE_DIR/go.sum"
+  ) | LC_ALL=C sort -u
+}
+
+source_fingerprint() (
+  # 命令替换默认不继承 errexit；输入枚举或哈希失败时必须停止，不能复用不完整指纹。
+  set -e
   local source_file relative_path
+  local inputs
+  inputs="$(production_inputs)"
   {
-    printf 'schema=2\n'
+    printf 'schema=3\n'
     printf 'gomobile=%s\n' "$GOMOBILE_VERSION"
     "$GO_BIN" version
     (
@@ -66,16 +98,41 @@ source_fingerprint() {
     "$XCRUN_BIN" --sdk iphoneos --show-sdk-build-version
     "$XCRUN_BIN" --sdk iphonesimulator --show-sdk-build-version
     while IFS= read -r source_file; do
+      [[ -n "$source_file" ]] || continue
       relative_path="${source_file#"$MODULE_DIR"/}"
       printf 'file=%s\n' "$relative_path"
-      shasum -a 256 "$source_file"
-    done < <(
-      find "$MODULE_DIR" -type f \
-        \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) \
-        | LC_ALL=C sort
-    )
-    shasum -a 256 "$0"
+      shasum -a 256 < "$source_file"
+    done <<< "$inputs"
+    shasum -a 256 < "$0"
   } | shasum -a 256 | awk '{ print $1 }'
+)
+
+build_framework() {
+  # 不同 Worktree 可能要求不同工具版本；直到 bind 完成前都不能让另一构建替换工具。
+  bash "$SCRIPT_DIR/development-cache-lock.sh" "$TOOL_DIR/install.lock" -- \
+    bash -euo pipefail -s -- "$GO_BIN" "$TOOL_DIR/bin" "$GOMOBILE_VERSION" "$MODULE_DIR" "$1" <<'TOOLS'
+go_bin="$1"
+tool_bin="$2"
+expected_version="$3"
+tool_matches() {
+  [[ -x "$tool_bin/$1" ]] || return 1
+  local version
+  version="$("$go_bin" version -m "$tool_bin/$1" | awk '$1 == "mod" && $2 == "golang.org/x/mobile" { print $3 }')"
+  [[ "$version" == "$expected_version" ]]
+}
+mkdir -p "$tool_bin"
+for tool in gomobile gobind; do
+  if ! tool_matches "$tool"; then
+    GOBIN="$tool_bin" "$go_bin" install "golang.org/x/mobile/cmd/$tool@$expected_version"
+    tool_matches "$tool" || { echo "Tailcat 工具版本不匹配：$tool" >&2; exit 1; }
+  fi
+done
+cd "$4"
+"$tool_bin/gomobile" bind \
+  -target=ios,iossimulator \
+  -o "$5" \
+  ./mobile/tailcatmobile
+TOOLS
 }
 
 acquire_lock() {
@@ -98,11 +155,13 @@ acquire_lock() {
   LOCK_HELD=1
 }
 
-for command_name in "$GO_BIN" "$XCRUN_BIN" "$NM_BIN" find shasum awk grep sort; do
+for command_name in "$GO_BIN" "$XCRUN_BIN" "$NM_BIN" shasum awk grep sort; do
   require_command "$command_name"
 done
 [[ -d "$MODULE_DIR" ]] || fail "缺少 Tailcat module：$MODULE_DIR"
 [[ -f "$BRIDGE_SOURCE" ]] || fail "缺少 iOS Tailcat bridge：$BRIDGE_SOURCE"
+# go list 返回规范化目录；先统一符号链接和重复斜杠，才能稳定剥离绝对路径。
+MODULE_DIR="$(cd "$MODULE_DIR" && pwd -P)"
 
 fingerprint="$(source_fingerprint)"
 if framework_is_complete && [[ "$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)" == "$fingerprint" ]]; then
@@ -119,17 +178,10 @@ fi
 
 mkdir -p "$TOOL_DIR/bin" "$OUTPUT_DIR"
 export PATH="$TOOL_DIR/bin:$PATH"
-GOBIN="$TOOL_DIR/bin" "$GO_BIN" install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
-GOBIN="$TOOL_DIR/bin" "$GO_BIN" install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
-"$TOOL_DIR/bin/gomobile" init
-
 TEMPORARY_DIR="$(mktemp -d "$OUTPUT_DIR/.tailcat-mobile.XXXXXX")"
 TEMPORARY_OUTPUT="$TEMPORARY_DIR/TailcatMobile.xcframework"
-cd "$MODULE_DIR"
-"$TOOL_DIR/bin/gomobile" bind \
-  -target=ios,iossimulator \
-  -o "$TEMPORARY_OUTPUT" \
-  ./mobile/tailcatmobile
+# Apple 环境由 bind 自行准备；init 还会清理全局 gomobile 目录并安装 gobind@latest。
+build_framework "$TEMPORARY_OUTPUT"
 
 framework_is_complete "$TEMPORARY_OUTPUT" \
   || fail "生成的 XCFramework 缺少必要 slice、header 或原生符号"

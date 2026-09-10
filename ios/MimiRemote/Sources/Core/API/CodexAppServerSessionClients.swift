@@ -575,6 +575,24 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return response
     }
 
+    /// 只有明确的 codex / claude 才写入路由表。`remember` 会把 nil 与未知值归一成 codex，
+    /// 那会把已记住的 Claude 会话改写成 Codex，随后的 thread/read 就落到错误的 Runtime；
+    /// 因此未知值一律不动已有路由，codex 也只在调用方明确断言时才覆盖。
+    func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {
+        guard let raw = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return
+        }
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
+        guard normalized == "codex" || normalized == "claude" else {
+            return
+        }
+        bundle.routes.remember(normalized, for: sessionID)
+    }
+
+    func rememberedRuntimeRoute(forSessionID sessionID: SessionID) -> String? {
+        bundle.routes.runtimeProvider(for: sessionID)
+    }
+
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
         if let sessionID {
             return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()

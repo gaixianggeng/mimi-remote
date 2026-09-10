@@ -57,15 +57,69 @@ enum LockScreenApprovalRouting {
         return (profileID, try await client(profileID: profileID, appStore: appStore))
 	}
 
-    static func detailsErrorMessage(_ error: Error) -> String {
-        if let apiError = error as? AgentAPIError,
-           LockScreenApprovalStore.isDefinitive(apiError) {
-            return LockScreenApprovalStore.message(forServerError: apiError)
+    /// 本机快路径只允许同一台 Mac：通知里的档案摘要必须正好对应当前活动档案。
+    /// 其它 Mac 的通知即使本地缓存里恰好有同名会话也不能直接打开，那是另一台机器的数据。
+    static func isLocalRouteEligible(
+        _ notification: LockScreenApprovalNotification,
+        activeProfileID: String?,
+        profiles: [ConnectionProfile]
+    ) -> Bool {
+        guard let activeProfileID,
+              let localID = localProfileID(for: notification, profiles: profiles) else {
+            return false
         }
-        if case LockScreenApprovalRoutingError.sourceProfileUnavailable = error {
+        return localID == activeProfileID
+    }
+
+    /// 定位失败的文案要按通知类型区分：审批的 404/410 确实意味着“请求已结束”，
+    /// 而回复通知的 404/410 只是“找不到定位记录”，任务本身还在会话列表里。
+    /// 凭据或连接没恢复时也不能借用决策结果的“结果未知”文案——用户什么都没提交。
+    static func detailsErrorMessage(
+        _ error: Error,
+        for notification: LockScreenApprovalNotification
+    ) -> String {
+        if let apiError = error as? AgentAPIError {
+            if case .credentialsInvalid = apiError {
+                return L10n.text("ui.the_current_connection_credentials_have_expired_please_re")
+            }
+            if notification.event.isMessage {
+                return messageRouteErrorMessage(apiError)
+            }
+            if LockScreenApprovalStore.isDefinitive(apiError) {
+                return LockScreenApprovalStore.message(forServerError: apiError)
+            }
+            return L10n.text("ui.push_approval_result_unknown")
+        }
+        switch error {
+        case LockScreenApprovalRoutingError.sourceProfileUnavailable:
             return L10n.text("ui.the_session_corresponding_to_the_notification_is_temporarily")
+        case LockScreenApprovalRoutingError.sourceCredentialUnavailable, is CancellationError:
+            // 合成的 CancellationError 来自凭据代次或活动档案在等待期间发生变化，
+            // 本质上也是“连接还没恢复到能用的状态”。
+            return L10n.text("ui.push_route_connection_not_restored")
+        default:
+            break
+        }
+        if notification.event.isMessage {
+            return L10n.text("ui.the_session_corresponding_to_the_notification_cannot_be")
         }
         return L10n.text("ui.push_approval_result_unknown")
+    }
+
+    private static func messageRouteErrorMessage(_ error: AgentAPIError) -> String {
+        guard case .server(let status, _) = error else {
+            return L10n.text("ui.the_session_corresponding_to_the_notification_cannot_be")
+        }
+        switch status {
+        case 404:
+            return L10n.text("ui.push_message_route_missing")
+        case 410:
+            return L10n.text("ui.push_message_route_expired")
+        case 403:
+            return L10n.text("ui.push_approval_device_not_allowed")
+        default:
+            return L10n.text("ui.the_session_corresponding_to_the_notification_is_temporarily")
+        }
     }
 
     static func client(profileID: String, appStore: AppStore) async throws -> AgentAPIClient {

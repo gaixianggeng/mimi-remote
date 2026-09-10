@@ -12,20 +12,30 @@ struct SessionNotificationRoute: Equatable, Hashable {
     let profileID: String
     let projectID: String
     let sessionID: SessionID
+    /// 来源 runtime（codex / claude）。远程推送和 agentd 路由都知道它；缺失时由
+    /// SessionStore 按已记住的会话路由推断，不得把已知 Claude 会话改写成 Codex。
+    let runtimeProvider: String?
 
     private enum Key {
         static let version = "mimi.route.version"
         static let profileID = "mimi.route.profileID"
         static let projectID = "mimi.route.projectID"
         static let sessionID = "mimi.route.sessionID"
+        static let runtimeProvider = "mimi.route.runtime"
     }
 
-    static func current(profileID: String, projectID: String, sessionID: SessionID) -> SessionNotificationRoute {
+    static func current(
+        profileID: String,
+        projectID: String,
+        sessionID: SessionID,
+        runtimeProvider: String? = nil
+    ) -> SessionNotificationRoute {
         SessionNotificationRoute(
             version: currentVersion,
             profileID: profileID,
             projectID: projectID,
-            sessionID: sessionID
+            sessionID: sessionID,
+            runtimeProvider: Self.normalizedRuntimeProvider(runtimeProvider)
         )
     }
 
@@ -42,22 +52,43 @@ struct SessionNotificationRoute: Equatable, Hashable {
         self.profileID = profileID
         self.projectID = projectID
         self.sessionID = sessionID
+        self.runtimeProvider = Self.normalizedRuntimeProvider(userInfo[Key.runtimeProvider] as? String)
     }
 
     var userInfo: [AnyHashable: Any] {
-        [
+        var info: [AnyHashable: Any] = [
             Key.version: version,
             Key.profileID: profileID,
             Key.projectID: projectID,
             Key.sessionID: sessionID
         ]
+        if let runtimeProvider {
+            info[Key.runtimeProvider] = runtimeProvider
+        }
+        return info
     }
 
-    private init(version: Int, profileID: String, projectID: String, sessionID: SessionID) {
+    private init(
+        version: Int,
+        profileID: String,
+        projectID: String,
+        sessionID: SessionID,
+        runtimeProvider: String?
+    ) {
         self.version = version
         self.profileID = profileID
         self.projectID = projectID
         self.sessionID = sessionID
+        self.runtimeProvider = runtimeProvider
+    }
+
+    /// 只接受两个已知 runtime；其它值视为未知，交给本地会话路由推断。
+    private static func normalizedRuntimeProvider(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              value == "codex" || value == "claude" else {
+            return nil
+        }
+        return value
     }
 
     private static func normalizedIdentifier(_ value: Any?) -> String? {
@@ -160,6 +191,14 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 					actionIdentifier: actionIdentifier,
 					requestIdentifier: requestIdentifier
 				) {
+				// 只记事件、类型和截短的 action_id；这是整条路由诊断链的起点。
+				NotificationRouteDiagnostics.record(
+					stage: NotificationRouteDiagnostics.Stage.received,
+					outcome: delivery.notification.event.rawValue,
+					reason: delivery.decision.map { "\(delivery.notification.kind.rawValue)/\($0.rawValue)" }
+						?? delivery.notification.kind.rawValue,
+					correlation: NotificationRouteDiagnostics.shortReference(delivery.notification.actionID)
+				)
 				if delivery.decision != nil, let handleApprovalAction {
 					await handleApprovalAction(delivery)
 				} else {
@@ -171,7 +210,19 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 				}
 				return
 			}
-			_ = self.receive(userInfo: userInfo)
+			let accepted = self.receive(userInfo: userInfo)
+			// 本地运行态通知没有 action_id，用会话标签摘要做关联；无法解码的载荷也要留痕，
+			// 否则“点了没反应”在诊断里会是一片空白。
+			NotificationRouteDiagnostics.record(
+				stage: NotificationRouteDiagnostics.Stage.received,
+				outcome: accepted ? "session_route" : "rejected",
+				reason: accepted ? nil : "undecodable_payload",
+				correlation: self.pendingRoute.flatMap {
+					NotificationRouteDiagnostics.shortReference(
+						LockScreenApprovalRouting.messageSessionTag(threadID: $0.sessionID)
+					)
+				}
+			)
 		}
     }
 

@@ -21474,6 +21474,40 @@
         }
       }
     },
+    "ui.push_message_route_expired": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This notification is past its retention window. Open it from the session list."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条通知已超过保留时间，请从会话列表打开。"
+          }
+        }
+      }
+    },
+    "ui.push_message_route_missing": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This notification's task could not be located. Open it from the session list."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到这条通知对应的任务定位，请从会话列表打开。"
+          }
+        }
+      }
+    },
     "ui.push_provider_rejected_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -21572,6 +21606,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接的电脑尚未提供提醒服务地址，暂时无法开启。"
+          }
+        }
+      }
+    },
+    "ui.push_route_connection_not_restored": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection to your computer isn't restored yet. Try the notification again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与电脑的连接尚未恢复，请稍后再点开通知。"
+          }
+        }
+      }
+    },
+    "ui.push_route_diagnostics_copy": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy notification routing diagnostics"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制通知路由诊断"
+          }
+        }
+      }
+    },
+    "ui.push_route_diagnostics_footer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contains only stages, outcomes, reasons and anonymized references. No session content."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只包含阶段、结果、原因和脱敏标识，不含会话内容。"
           }
         }
       }

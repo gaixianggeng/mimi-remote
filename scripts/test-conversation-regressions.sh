@@ -111,6 +111,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \
   -only-testing:MimiRemoteTests/LockScreenApprovalTests \
   -only-testing:MimiRemoteTests/LockScreenApprovalRoutingTests \
+  -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
+  -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
   -only-testing:MimiRemoteTests/NotificationContentRewriterTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreReplaysDirectAppServerEventStreamFixture \

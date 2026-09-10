@@ -258,6 +258,7 @@ final class LockScreenApprovalTests: XCTestCase {
             XCTAssertEqual(inbox.pending, delivery)
             await Task.yield()
             XCTAssertEqual(inbox.pending, delivery, "网络等待期间不能改变 SwiftUI task id")
+            return .handled
         }
         XCTAssertNil(inbox.pending)
     }
@@ -271,6 +272,7 @@ final class LockScreenApprovalTests: XCTestCase {
             await inbox.processPending { _ in
                 withUnsafeCurrentTask { $0?.cancel() }
                 await Task.yield()
+                return .handled
             }
         }
         await task.value
@@ -284,6 +286,7 @@ final class LockScreenApprovalTests: XCTestCase {
         await inbox.processPending { _ in
             await Task.yield()
             inbox.receive(userInfo: payload(), actionIdentifier: LockScreenApprovalCategory.denyActionID)
+            return .handled
         }
         XCTAssertEqual(inbox.pending?.decision, .deny)
     }
@@ -634,5 +637,137 @@ extension LockScreenApprovalTests {
         XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.server(status: 502, message: "")))
         XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.server(status: 202, message: "busy")))
         XCTAssertFalse(LockScreenApprovalStore.isDefinitive(.invalidResponse))
+    }
+}
+
+// MARK: - #417 通知路由：收件箱结论、定位响应解码与对账判定
+
+extension LockScreenApprovalTests {
+    @MainActor
+    func testInboxKeepsPendingWhenHandlerAsksToRetryLater() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: UNNotificationDefaultActionIdentifier)
+        let delivery = try XCTUnwrap(inbox.pending)
+        await inbox.processPending { _ in .retryLater }
+        XCTAssertEqual(inbox.pending, delivery, "恢复失败时通知必须留在收件箱，等下一次前台重试")
+
+        await inbox.processPending { _ in .handled }
+        XCTAssertNil(inbox.pending, "只有 handled 才消费")
+    }
+
+    /// 合成的 CancellationError（凭据代次变化、切换主机）不等于任务被取消：
+    /// 任务仍在跑就要如实报错并消费；真取消才静默保留。
+    @MainActor
+    func testSyntheticCancellationIsHandledWhileRealCancellationRetriesLater() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: UNNotificationDefaultActionIdentifier)
+        let delivery = try XCTUnwrap(inbox.pending)
+        let notification = delivery.notification
+
+        var reportedMessage: String?
+        await inbox.processPending { _ in
+            do {
+                throw CancellationError()
+            } catch {
+                guard !Task.isCancelled else { return .retryLater }
+                reportedMessage = LockScreenApprovalRouting.detailsErrorMessage(error, for: notification)
+                return .handled
+            }
+        }
+        XCTAssertNil(inbox.pending, "合成取消时任务没被取消，应当报错并消费")
+        XCTAssertEqual(reportedMessage, L10n.text("ui.push_route_connection_not_restored"))
+
+        inbox.receive(userInfo: payload(), actionIdentifier: UNNotificationDefaultActionIdentifier)
+        let second = try XCTUnwrap(inbox.pending)
+        var secondMessage: String?
+        let task = Task { @MainActor in
+            await inbox.processPending { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                do {
+                    throw CancellationError()
+                } catch {
+                    guard !Task.isCancelled else { return .retryLater }
+                    secondMessage = LockScreenApprovalRouting.detailsErrorMessage(error, for: notification)
+                    return .handled
+                }
+            }
+        }
+        await task.value
+        XCTAssertEqual(inbox.pending, second, "真取消保留通知")
+        XCTAssertNil(secondMessage, "真取消不弹提示")
+    }
+
+    func testPushActionRouteResponseDecodesWithAndWithoutNewFields() throws {
+        let legacy = """
+        {"runtime":"codex","thread_id":"thread-1","project_id":"proj-1"}
+        """
+        let decodedLegacy = try AgentAPIClient.decoder.decode(PushActionRouteResponse.self, from: Data(legacy.utf8))
+        XCTAssertEqual(decodedLegacy, PushActionRouteResponse(runtime: "codex", threadID: "thread-1", projectID: "proj-1"))
+        XCTAssertNil(decodedLegacy.scopeID)
+        XCTAssertNil(decodedLegacy.cwd)
+        XCTAssertNil(decodedLegacy.kind)
+        XCTAssertNil(decodedLegacy.state)
+        XCTAssertNil(decodedLegacy.threadAuthorized)
+
+        let full = """
+        {"runtime":"claude","thread_id":"thread-2","project_id":"","scope_id":"ws_abc","cwd":"/Users/me/repo","kind":"approval","state":"approved","thread_authorized":true}
+        """
+        let decodedFull = try AgentAPIClient.decoder.decode(PushActionRouteResponse.self, from: Data(full.utf8))
+        XCTAssertEqual(decodedFull.runtime, "claude")
+        XCTAssertEqual(decodedFull.threadID, "thread-2")
+        XCTAssertEqual(decodedFull.projectID, "")
+        XCTAssertEqual(decodedFull.scopeID, "ws_abc")
+        XCTAssertEqual(decodedFull.cwd, "/Users/me/repo")
+        XCTAssertEqual(decodedFull.kind, "approval")
+        XCTAssertEqual(decodedFull.state, "approved")
+        XCTAssertEqual(decodedFull.threadAuthorized, true)
+    }
+
+    /// 对账不能再把回复通知的 404 当成“已处理”删掉：agentd 重启后记录丢失，任务本身还在。
+    @MainActor
+    func testReconcileRemovesMessageNotificationsOnlyWhenExpired() throws {
+        let message = try XCTUnwrap(LockScreenApprovalNotification(
+            userInfo: payload(overrides: ["event": "turn.completed", "approval_kind": ""])
+        ))
+        func remove(_ result: Result<PushActionRouteResponse, Error>) -> Bool {
+            LockScreenApprovalStore.shouldRemoveDeliveredNotification(message, afterLocate: result)
+        }
+        XCTAssertFalse(remove(.failure(AgentAPIError.server(status: 404, message: ""))), "404 可能只是旧版 agentd 或记录丢失")
+        XCTAssertTrue(remove(.failure(AgentAPIError.server(status: 410, message: ""))), "410 才是超过保留时间")
+        XCTAssertFalse(remove(.failure(AgentAPIError.server(status: 403, message: ""))))
+        XCTAssertFalse(remove(.failure(AgentAPIError.server(status: 409, message: ""))))
+        XCTAssertFalse(remove(.failure(URLError(.notConnectedToInternet))))
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(runtime: "codex", threadID: "t", projectID: "p", kind: "message"))))
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(
+            runtime: "codex", threadID: "t", projectID: "p", kind: "approval", state: "approved"
+        ))), "回复通知不因为字段异常而被误删")
+    }
+
+    @MainActor
+    func testReconcileRemovesApprovalsOnDefinitiveStatusesAndTerminalStates() throws {
+        let approval = try XCTUnwrap(LockScreenApprovalNotification(userInfo: payload()))
+        func remove(_ result: Result<PushActionRouteResponse, Error>) -> Bool {
+            LockScreenApprovalStore.shouldRemoveDeliveredNotification(approval, afterLocate: result)
+        }
+        for status in [403, 404, 409, 410] {
+            XCTAssertTrue(remove(.failure(AgentAPIError.server(status: status, message: ""))), "\(status) 应撤下审批通知")
+        }
+        XCTAssertFalse(remove(.failure(AgentAPIError.server(status: 502, message: ""))))
+        XCTAssertFalse(remove(.failure(URLError(.timedOut))))
+        for state in ["approved", "rejected", "expired", "revoked"] {
+            XCTAssertTrue(remove(.success(PushActionRouteResponse(
+                runtime: "codex", threadID: "t", projectID: "p", kind: "approval", state: state
+            ))), "终态 \(state) 应撤下审批通知")
+        }
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(
+            runtime: "codex", threadID: "t", projectID: "p", kind: "approval", state: "pending"
+        ))))
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(
+            runtime: "codex", threadID: "t", projectID: "p", kind: "approval", state: "unknown"
+        ))))
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(runtime: "codex", threadID: "t", projectID: "p"))), "旧版 agentd 的 200 没有状态，保留")
+        XCTAssertFalse(remove(.success(PushActionRouteResponse(
+            runtime: "codex", threadID: "t", projectID: "p", kind: "message", state: "approved"
+        ))), "类型对不上时不删")
     }
 }
