@@ -15,18 +15,23 @@ import (
 // 默认关闭。未启用或 Provider 未配置时，所有入口都是空操作 —— 升级后的行为与
 // 今天逐字一致，不会产生任何对外请求。
 type Manager struct {
-	mu       sync.RWMutex
-	routes   *RouteStore
-	enabled  bool
-	client   *Client
-	devices  *DeviceStore
-	actions  *ActionStore
-	hostTag  string
-	profile  string
-	install  string
-	environ  string
-	notifyer func(ctx context.Context, notification Notification) error
-	now      func() time.Time
+	mu      sync.RWMutex
+	routes  *RouteStore
+	enabled bool
+	// 在途投递计数：定位记录在投递 goroutine 里落盘，关闭时必须等它们结束再做最后一次
+	// Flush，否则测试临时目录和真实关机都可能在写盘中途被拆掉。
+	deliveries sync.WaitGroup
+	closeMu    sync.Mutex
+	closed     bool
+	client     *Client
+	devices    *DeviceStore
+	actions    *ActionStore
+	hostTag    string
+	profile    string
+	install    string
+	environ    string
+	notifyer   func(ctx context.Context, notification Notification) error
+	now        func() time.Time
 }
 
 type Options struct {
@@ -316,4 +321,46 @@ func (m *Manager) fanout(ctx context.Context, action Action, event string, devic
 		}()
 	}
 	deliveries.Wait()
+}
+
+// PushDispatchTimeout 是单次投递（含落盘与 Provider 调用）的总时限。
+const PushDispatchTimeout = 15 * time.Second
+
+// Dispatch 在独立 goroutine 中执行一次投递并计入在途计数；Close 之后的投递直接丢弃，
+// 前台链路不受影响。调用方不再自行 go func，避免关闭后仍有 goroutine 往磁盘写记录。
+func (m *Manager) Dispatch(delivery PreparedDelivery, timeout time.Duration) {
+	if m == nil || delivery == nil {
+		return
+	}
+	m.closeMu.Lock()
+	if m.closed {
+		m.closeMu.Unlock()
+		return
+	}
+	m.deliveries.Add(1)
+	m.closeMu.Unlock()
+	go func() {
+		defer m.deliveries.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		delivery(ctx)
+	}()
+}
+
+// Close 拒绝新的投递、等待在途投递结束，并把最新的定位记录快照写盘。幂等。
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
+	m.closeMu.Lock()
+	if m.closed {
+		m.closeMu.Unlock()
+		return
+	}
+	m.closed = true
+	m.closeMu.Unlock()
+	m.deliveries.Wait()
+	if m.routes != nil {
+		m.routes.Flush()
+	}
 }

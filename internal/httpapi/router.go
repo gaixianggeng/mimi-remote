@@ -336,6 +336,10 @@ func (r *Router) Shutdown() {
 	}
 	r.shutdownOnce.Do(func() {
 		r.shutdownCodexGateways()
+		if r.push != nil {
+			// 等在途通知投递结束并落盘定位记录，之后才拆运行时与临时目录。
+			r.push.Close()
+		}
 		if r.autoThreadTitles != nil {
 			r.autoThreadTitles.Close()
 		}

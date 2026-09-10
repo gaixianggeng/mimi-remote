@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -29,11 +28,7 @@ func (p *appServerGatewayPolicy) notifyTurnMessage(frame *appServerGatewayFrame)
 	if delivery == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
-		defer cancel()
-		delivery(ctx)
-	}()
+	p.router.push.Dispatch(delivery, pushDecideTimeout)
 }
 
 func turnMessageFromFrame(frame *appServerGatewayFrame) (pushbridge.TurnMessage, bool) {

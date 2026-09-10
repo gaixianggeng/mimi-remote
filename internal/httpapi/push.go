@@ -72,11 +72,7 @@ func (r *Router) notifyPendingApproval(runtime string, sessionKey string, thread
 	if delivery == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
-		defer cancel()
-		delivery(ctx)
-	}()
+	r.push.Dispatch(delivery, pushDecideTimeout)
 }
 
 // resolveApprovalNotificationsForThread 用于 turn 结束、thread 关闭这类只影响
@@ -90,11 +86,7 @@ func (r *Router) resolveApprovalNotificationsForThread(runtime string, sessionKe
 	if delivery == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
-		defer cancel()
-		delivery(ctx)
-	}()
+	r.push.Dispatch(delivery, pushDecideTimeout)
 }
 
 func (r *Router) resolveApprovalNotifications(runtime string, sessionKey string, requestID string) {
@@ -105,11 +97,7 @@ func (r *Router) resolveApprovalNotifications(runtime string, sessionKey string,
 	if delivery == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
-		defer cancel()
-		delivery(ctx)
-	}()
+	r.push.Dispatch(delivery, pushDecideTimeout)
 }
 
 type pushDeviceRegisterRequest struct {
