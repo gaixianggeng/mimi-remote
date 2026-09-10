@@ -1356,6 +1356,7 @@ extension SessionStore {
 #endif
         invalidatePreparedConnectionChange()
         cancelAllTurnCompletionReconciliations()
+        pauseMissingAssistantReplyBackfills()
         isAppInBackground = true
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
@@ -1406,6 +1407,7 @@ extension SessionStore {
 #endif
         guard !Task.isCancelled else { return }
         isAppInBackground = false
+        defer { resumeMissingAssistantReplyBackfillIfNeeded() }
         // 不用常驻 timer：App 每次回前台同步清理已触发提醒，离线或未配置时也能保持本地状态准确。
         reloadSessionReminders()
         guard appStore.isConfigured else {

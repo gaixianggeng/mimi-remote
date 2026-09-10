@@ -1042,24 +1042,22 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(queryItems.first(where: { $0.name == "thread_id" })?.value, "thr_claude")
     }
 
-    // 网关按会话名「同名只留一条连接」。探针连上即断，若沿用常驻会话名会把正在跑 turn 的
-    // 正式连接顶下线，所以探针必须落在另一个会话名上。
-    func testProbeGatewayURLUsesSeparateSessionNameFromResidentConnection() throws {
-        func sessionKey(_ url: URL) throws -> String {
+    // 有名探针也会占用常驻 broker 槽位；Codex 必须省略 session，使用网关已有的短连接路径。
+    func testCodexProbeGatewayURLDoesNotUseResidentBrokerSession() throws {
+        func sessionKey(_ url: URL) -> String? {
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            return try XCTUnwrap(items.first(where: { $0.name == "session" })?.value)
+            return items.first(where: { $0.name == "session" })?.value
         }
-        let resident = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
-            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .resident))
+        let resident = try XCTUnwrap(sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .resident)))
         let probe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
             endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .probe))
 
-        XCTAssertNotEqual(resident, probe)
+        XCTAssertNil(probe)
         XCTAssertTrue(resident.hasSuffix("-codex"))
-        XCTAssertTrue(probe.hasSuffix("-codex-probe"))
-        XCTAssertTrue(probe.hasPrefix(String(resident.dropLast("-codex".count))), "探针仍应属于同一安装，只是换会话名")
-        XCTAssertLessThanOrEqual(probe.count, 128)
-        XCTAssertTrue(probe.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        let claudeProbe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", runtimeProvider: "claude", purpose: .probe))
+        XCTAssertTrue(try XCTUnwrap(claudeProbe).hasSuffix("-claude-probe"))
     }
 
     // 真实连接的 thread_id 是空的（一条连接承载所有线程），所以能不能接回常驻会话

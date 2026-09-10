@@ -2426,6 +2426,7 @@ extension SessionStore {
             sessionID: sessionID,
             reason: reason
         )
+        resumeMissingAssistantReplyBackfillIfNeeded()
         return committedLease
     }
 
@@ -2555,6 +2556,7 @@ extension SessionStore {
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         cancelAllTurnCompletionReconciliations()
+        cancelAllMissingAssistantReplyBackfills()
         queuedRunningTurnsBySessionID.removeAll()
         pendingPermissionTurnBoundariesBySessionID.removeAll()
         permissionTurnRetryRequirementsByClientMessageID.removeAll()
