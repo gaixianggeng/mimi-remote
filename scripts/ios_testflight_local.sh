@@ -202,6 +202,9 @@ fi
 if [[ -z "${IOS_WIDGET_PROVISIONING_PROFILE_PATH:-}" && -z "${IOS_WIDGET_PROVISIONING_PROFILE_ID:-}" && -z "${IOS_WIDGET_PROVISIONING_PROFILE_NAME:-}" ]]; then
   fail "provide IOS_WIDGET_PROVISIONING_PROFILE_PATH, IOS_WIDGET_PROVISIONING_PROFILE_ID or IOS_WIDGET_PROVISIONING_PROFILE_NAME"
 fi
+if [[ -z "${IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH:-}" && -z "${IOS_NOTIFICATION_PROVISIONING_PROFILE_ID:-}" && -z "${IOS_NOTIFICATION_PROVISIONING_PROFILE_NAME:-}" ]]; then
+  fail "provide IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH, IOS_NOTIFICATION_PROVISIONING_PROFILE_ID or IOS_NOTIFICATION_PROVISIONING_PROFILE_NAME"
+fi
 
 for command in git security ruby plutil xcodebuild xcrun codesign tee caffeinate; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
@@ -254,6 +257,10 @@ widget_profile=""
 widget_profile_plist=""
 installed_widget_profile=""
 widget_profile_backup=""
+notification_profile=""
+notification_profile_plist=""
+installed_notification_profile=""
+notification_profile_backup=""
 worktree_added=0
 
 cleanup() {
@@ -286,6 +293,13 @@ cleanup() {
       cp "$widget_profile_backup" "$installed_widget_profile" >/dev/null 2>&1 || true
     else
       rm -f "$installed_widget_profile"
+    fi
+  fi
+  if [[ -n "$installed_notification_profile" ]]; then
+    if [[ -n "$notification_profile_backup" && -f "$notification_profile_backup" ]]; then
+      cp "$notification_profile_backup" "$installed_notification_profile" >/dev/null 2>&1 || true
+    else
+      rm -f "$installed_notification_profile"
     fi
   fi
 
@@ -322,6 +336,8 @@ profile="$work_dir/app-store.mobileprovision"
 profile_plist="$work_dir/profile.plist"
 widget_profile="$work_dir/widget-app-store.mobileprovision"
 widget_profile_plist="$work_dir/widget-profile.plist"
+notification_profile="$work_dir/notification-app-store.mobileprovision"
+notification_profile_plist="$work_dir/notification-profile.plist"
 log_dir="${IOS_RELEASE_LOG_DIR:-$HOME/Library/Logs/ios-testflight-local/$IOS_RELEASE_PROJECT_ID}"
 state_dir="${IOS_RELEASE_STATE_DIR:-$HOME/Library/Application Support/ios-testflight-local/$IOS_RELEASE_PROJECT_ID}"
 mkdir -p "$log_dir" "$state_dir" "$runner_temp"
@@ -423,7 +439,38 @@ fi
 ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_profile_expiration" \
   || fail "widget provisioning profile is expired"
 
-for entitlement_plist in "$profile_plist" "$widget_profile_plist"; do
+# 通知扩展（#418）在设备上用 App Group 缓存改写锁屏标题，和 Widget 一样需要
+# 独立的 App Store profile；不能拿主 App 或 Widget profile 代替。
+if [[ -n "${IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH:-}" ]]; then
+  [[ -f "$IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH" ]] || fail "notification provisioning profile not found: $IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH"
+  cp "$IOS_NOTIFICATION_PROVISIONING_PROFILE_PATH" "$notification_profile"
+else
+  notification_profile_args=()
+  if [[ -n "${IOS_NOTIFICATION_PROVISIONING_PROFILE_ID:-}" ]]; then
+    notification_profile_args=(--profile-id "$IOS_NOTIFICATION_PROVISIONING_PROFILE_ID")
+  else
+    notification_profile_args=(--profile-name "$IOS_NOTIFICATION_PROVISIONING_PROFILE_NAME")
+  fi
+  ruby "$SCRIPT_DIR/ios_asc_download_profile.rb" "${notification_profile_args[@]}" --output "$notification_profile"
+fi
+chmod 600 "$notification_profile"
+
+security cms -D -i "$notification_profile" > "$notification_profile_plist"
+notification_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$notification_profile_plist")"
+notification_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$notification_profile_plist")"
+notification_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$notification_profile_plist")"
+notification_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$notification_profile_plist")"
+notification_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$notification_profile_plist")"
+notification_bundle_id="${IOS_NOTIFICATION_BUNDLE_ID:-com.gaixianggeng.mimi.notificationservice}"
+[[ "$notification_profile_team" == "$DEVELOPMENT_TEAM" ]] || fail "notification provisioning profile team mismatch"
+[[ "$notification_profile_app_id" == "$DEVELOPMENT_TEAM.$notification_bundle_id" ]] || fail "notification provisioning profile bundle id mismatch"
+if [[ -n "${IOS_NOTIFICATION_EXPECTED_PROVISIONING_PROFILE_NAME:-}" ]]; then
+  [[ "$notification_profile_name" == "$IOS_NOTIFICATION_EXPECTED_PROVISIONING_PROFILE_NAME" ]] || fail "unexpected notification provisioning profile: $notification_profile_name"
+fi
+ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$notification_profile_expiration" \
+  || fail "notification provisioning profile is expired"
+
+for entitlement_plist in "$profile_plist" "$widget_profile_plist" "$notification_profile_plist"; do
   profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$entitlement_plist" 2>/dev/null || true)"
   [[ "$profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
     || fail "provisioning profile missing group.com.gaixianggeng.mimi App Group"
@@ -435,6 +482,13 @@ if [[ -f "$installed_widget_profile" ]]; then
   cp "$installed_widget_profile" "$widget_profile_backup"
 fi
 cp "$widget_profile" "$installed_widget_profile"
+
+installed_notification_profile="$profiles_dir/$notification_profile_uuid.mobileprovision"
+if [[ -f "$installed_notification_profile" ]]; then
+  notification_profile_backup="$work_dir/installed-notification-profile.backup"
+  cp "$installed_notification_profile" "$notification_profile_backup"
+fi
+cp "$notification_profile" "$installed_notification_profile"
 
 distribution_password="$(read_secret IOS_DISTRIBUTION_CERTIFICATE_PASSWORD)"
 keychain_password="$(read_secret IOS_KEYCHAIN_PASSWORD)"
@@ -482,6 +536,7 @@ export IOS_SIGNING_KEYCHAIN_PATH="$keychain"
 export IOS_CODE_SIGN_IDENTITY="$signing_identity"
 export IOS_PROVISIONING_PROFILE_SPECIFIER="$profile_name"
 export IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER="$widget_profile_name"
+export IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER="$notification_profile_name"
 if [[ "$LOCAL_RELEASE_MODE" == "upload" ]]; then
   export IOS_TESTFLIGHT_UPLOAD=1
   export IOS_TESTFLIGHT_VALIDATE=0
