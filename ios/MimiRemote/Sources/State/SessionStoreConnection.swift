@@ -899,6 +899,13 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
+        if case .turnCompleted(let metadata) = event {
+            scheduleMissingAssistantReplyBackfillIfNeeded(
+                turnMetadata: metadata,
+                fallbackSessionID: sessionID,
+                hostScope: lease.hostScope
+            )
+        }
         if case .messageCompleted(let message, let metadata) = event {
             scheduleTurnCompletionReconciliationIfNeeded(
                 message: message,
@@ -2419,6 +2426,7 @@ extension SessionStore {
             sessionID: sessionID,
             reason: reason
         )
+        resumeMissingAssistantReplyBackfillIfNeeded()
         return committedLease
     }
 
@@ -2548,6 +2556,7 @@ extension SessionStore {
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         cancelAllTurnCompletionReconciliations()
+        cancelAllMissingAssistantReplyBackfills()
         queuedRunningTurnsBySessionID.removeAll()
         pendingPermissionTurnBoundariesBySessionID.removeAll()
         permissionTurnRetryRequirementsByClientMessageID.removeAll()

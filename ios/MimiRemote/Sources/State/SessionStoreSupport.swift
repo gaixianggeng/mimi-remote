@@ -289,6 +289,7 @@ enum HistoryLoadReason: Equatable {
     case manualFull
     case summaryChoice
     case writerRetry
+    case missingAssistantReply
 }
 
 enum HistoryLoadQuality: Equatable {

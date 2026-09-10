@@ -420,6 +420,8 @@ final class SessionStore: ObservableObject {
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
     var turnCompletionReconciliationGeneration: UInt64 = 0
     var turnCompletionReconciliationJobsBySessionID: [SessionID: TurnCompletionReconciliationJob] = [:]
+    /// 一次历史读取可补齐多个 turn；缺口只有在正文落地后才移除。
+    var missingAssistantReplyBackfillJobsBySessionID: [SessionID: MissingAssistantReplyBackfillJob] = [:]
     // 最终回答通常紧跟 turn/completed。仅在通知缺失时按有限退避读取最新完整 Turn，
     // 避免健康 WebSocket 下等待 60 秒列表轮询仍无法释放本地队列。
     var turnCompletionReconciliationDelaysNanoseconds: [UInt64] = [
@@ -750,6 +752,7 @@ final class SessionStore: ObservableObject {
         missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
         queuedSessionReconnectTasks.values.forEach { $0.cancel() }
         turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
+        missingAssistantReplyBackfillJobsBySessionID.values.forEach { $0.task?.cancel() }
         networkPathStatusSource.stop()
     }
 

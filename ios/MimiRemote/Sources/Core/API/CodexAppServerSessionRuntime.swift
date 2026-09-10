@@ -390,7 +390,8 @@ actor CodexAppServerSessionRuntime {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
-        let gatewayURL = try gatewayURL(from: config)
+        // Codex 探针使用无名短连接，既不接管正式会话，也不占常驻 broker 槽位。
+        let gatewayURL = try gatewayURL(from: config, purpose: .probe)
         let probe = CodexAppServerConnection(transport: transportFactory())
         try await probe.connect(url: gatewayURL, token: token)
         await probe.disconnect()
@@ -2952,10 +2953,30 @@ actor CodexAppServerSessionRuntime {
         return minted
     }
 
+    /// 一条 gateway 连接的用途决定它在网关上的会话名。
+    ///
+    /// 网关按会话名复用 broker，且「同名会话只留一条在线连接」——新连接一 attach，
+    /// 旧连接立刻被 `broker_sink_replaced` 踢掉。Codex 探针省略会话名，沿用网关
+    /// 一对一短连接路径，避免独立具名探针在池满时淘汰离线正式 broker。
+    enum GatewayConnectionPurpose {
+        case resident
+        case probe
+
+        var sessionNameSuffix: String {
+            switch self {
+            case .resident:
+                return ""
+            case .probe:
+                return "-probe"
+            }
+        }
+    }
+
     static func gatewayURL(
         endpoint: String,
         sessionID: SessionID,
         runtimeProvider: String = "codex",
+        purpose: GatewayConnectionPurpose = .resident,
         defaults: UserDefaults = .standard
     ) throws -> URL {
         // WebSocket 也必须复用 HTTP Endpoint 策略；ATS 不会替应用阻止自行构造的公网 ws:// 地址。
@@ -2979,11 +3000,15 @@ actor CodexAppServerSessionRuntime {
         }
         // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
         // 断线重连拿不回还在跑的 turn 和未应答的审批。
-        let gatewaySession = "\(gatewaySessionKey(defaults: defaults))-\(runtime)"
-        queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
+        let gatewaySession: String? = runtime == "codex" && purpose == .probe
+            ? nil
+            : "\(gatewaySessionKey(defaults: defaults))-\(runtime)\(purpose.sessionNameSuffix)"
+        if let gatewaySession {
+            queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
+        }
         // Go 写 WebSocket 成功不等于 App 已经投影完该帧。由客户端带回最后
         // 处理完成的 turn 边界，bridge 才能从真正安全的 cursor 继续回放。
-        if runtime == "claude", let lastSeen = gatewayLastSeenSequence(
+        if runtime == "claude", let gatewaySession, let lastSeen = gatewayLastSeenSequence(
             endpoint: validatedEndpoint,
             gatewaySession: gatewaySession,
             runtimeProvider: runtime,
@@ -3234,7 +3259,10 @@ actor CodexAppServerSessionRuntime {
         return await connection.isReadyForRequests()
     }
 
-    func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
+    func gatewayURL(
+        from config: CodexAppServerConfigResponse,
+        purpose: GatewayConnectionPurpose = .resident
+    ) throws -> URL {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
@@ -3244,6 +3272,7 @@ actor CodexAppServerSessionRuntime {
             endpoint: endpoint,
             sessionID: "",
             runtimeProvider: runtimeProvider,
+            purpose: purpose,
             defaults: gatewayDefaults
         )
     }

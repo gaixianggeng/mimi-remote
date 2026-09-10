@@ -1042,6 +1042,24 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(queryItems.first(where: { $0.name == "thread_id" })?.value, "thr_claude")
     }
 
+    // 有名探针也会占用常驻 broker 槽位；Codex 必须省略 session，使用网关已有的短连接路径。
+    func testCodexProbeGatewayURLDoesNotUseResidentBrokerSession() throws {
+        func sessionKey(_ url: URL) -> String? {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return items.first(where: { $0.name == "session" })?.value
+        }
+        let resident = try XCTUnwrap(sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .resident)))
+        let probe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .probe))
+
+        XCTAssertNil(probe)
+        XCTAssertTrue(resident.hasSuffix("-codex"))
+        let claudeProbe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", runtimeProvider: "claude", purpose: .probe))
+        XCTAssertTrue(try XCTUnwrap(claudeProbe).hasSuffix("-claude-probe"))
+    }
+
     // 真实连接的 thread_id 是空的（一条连接承载所有线程），所以能不能接回常驻会话
     // 全看这个 session 键。它必须存在、跨调用稳定、且落在网关的字符集白名单里。
     func testGatewayURLCarriesStableSessionKey() throws {
@@ -1937,6 +1955,68 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(message.id, "appserver:turn-1:item-1")
         XCTAssertEqual(message.sessionID, "thread-1")
         XCTAssertEqual(message.content, "hello world")
+    }
+
+    @MainActor
+    func testProjectorSequenceSurvivesRuntimeRebuildSoShortReplyIsNotDroppedAsStale() throws {
+        // 进后台/切主机会整体重建 runtime 和投影器。旧投影器已经给这个 thread 发过序号 1...3；
+        // 新投影器若从 1 重来，重建后第一条回复会被 ConversationStore 的水位线当成陈旧重放丢掉，
+        // 而 turn 完成不走水位线——表现为「完成震动响了、气泡没出现」。
+        let clock = CodexAppServerEventSequenceClock()
+        let store = ConversationStore()
+        let sessionID = "thread-rebuild"
+
+        var firstProjector = CodexAppServerEventProjector(sequenceClock: clock)
+        guard case .messageCompleted(let firstMessage, let firstMetadata) = firstProjector.project(
+            CodexAppServerNotification(method: "item/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string("turn-1"),
+                "item": .object([
+                    "id": .string("item-1"),
+                    "type": .string("agentMessage"),
+                    "text": .string("第一轮的长回复")
+                ])
+            ]))
+        ) else {
+            return XCTFail("expected first completed message")
+        }
+        guard case .turnCompleted(let firstTurnMetadata) = firstProjector.project(
+            CodexAppServerNotification(method: "turn/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turn": .object(["id": .string("turn-1"), "status": .string("completed")])
+            ]))
+        ) else {
+            return XCTFail("expected first turn completion")
+        }
+        store.completeMessage(firstMessage, metadata: firstMetadata, fallbackSessionID: sessionID)
+        store.markCurrentAssistantCompleted(metadata: firstTurnMetadata, fallbackSessionID: sessionID)
+        XCTAssertEqual(store.lastSeenSeq(for: sessionID), firstTurnMetadata.seq)
+
+        var rebuiltProjector = CodexAppServerEventProjector(sequenceClock: clock)
+        guard case .messageCompleted(let secondMessage, let secondMetadata) = rebuiltProjector.project(
+            CodexAppServerNotification(method: "item/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string("turn-2"),
+                "item": .object([
+                    "id": .string("item-2"),
+                    "type": .string("agentMessage"),
+                    "text": .string("收到，消息正常。")
+                ])
+            ]))
+        ) else {
+            return XCTFail("expected rebuilt completed message")
+        }
+        XCTAssertGreaterThan(
+            try XCTUnwrap(secondMetadata.seq),
+            try XCTUnwrap(firstTurnMetadata.seq),
+            "重建后的投影器必须接着同一 thread 的序号继续发，不能从 1 重来"
+        )
+
+        store.completeMessage(secondMessage, metadata: secondMetadata, fallbackSessionID: sessionID)
+        XCTAssertTrue(
+            store.messages(for: sessionID).contains { $0.role == .assistant && $0.content == "收到，消息正常。" },
+            "重建 runtime 后的短回复不能被水位线当成陈旧事件丢掉"
+        )
     }
 
     func testProjectorMapsCompletedGeneratedAndViewedImages() throws {
