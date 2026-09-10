@@ -476,7 +476,7 @@ func (b *codexGatewayBroker) notifyPendingApprovalIfDetached(frame appServerGate
 		"codex",
 		b.key,
 		threadID,
-		b.policy.projectIDForThread(threadID),
+		b.policy.threadRouteFacts(threadID),
 		requestID,
 		strings.TrimSpace(frame.Method),
 	)

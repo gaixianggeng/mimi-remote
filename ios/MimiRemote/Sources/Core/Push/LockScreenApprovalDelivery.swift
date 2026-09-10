@@ -33,6 +33,14 @@ struct LockScreenApprovalDelivery: Equatable, Identifiable {
 	}
 }
 
+/// 一次投递处理完的结论。只有 `handled` 才会把通知从收件箱消费掉；
+/// `retryLater` 表示这次没有拿到可用连接（恢复失败、任务被取消），通知留在收件箱，
+/// 下一次前台恢复成功后再试，而不是静默丢掉用户的点击。
+enum NotificationDeliveryOutcome: Equatable, Sendable {
+    case handled
+    case retryLater
+}
+
 /// 系统回调只负责严格解码并入队，真正的网络动作在视图层执行。静默推送只等待
 /// 本地通知清理完成，不等待网络请求。
 @MainActor
@@ -61,13 +69,16 @@ final class LockScreenApprovalInbox: ObservableObject {
         pending = nil
     }
 
-    func processPending(_ handler: (LockScreenApprovalDelivery) async -> Void) async {
+    func processPending(
+        _ handler: (LockScreenApprovalDelivery) async -> NotificationDeliveryOutcome
+    ) async {
         guard let delivery = pending else { return }
         // SwiftUI 用 pending 作为 task id。网络操作前清空它会取消正在执行的
         // 通知路由；完成后再消费，同时保留执行期间新收到的通知。
-        await handler(delivery)
-        // 再次进入后台会取消路由，保留通知供下一次前台恢复继续处理。
-        guard !Task.isCancelled else { return }
+        let outcome = await handler(delivery)
+        // 再次进入后台会取消路由；恢复失败也只是“这次没打开”。两种情况都保留通知，
+        // 供下一次前台恢复继续处理。
+        guard !Task.isCancelled, outcome == .handled else { return }
         consume(delivery)
     }
 }

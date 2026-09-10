@@ -655,6 +655,39 @@ final class LockScreenApprovalStore: ObservableObject {
 		await removeNotification(for: notification)
     }
 
+    /// agentd 对审批句柄给出的终态；定位接口 200 且落在这些状态时，卡片已经不可操作。
+    static let terminalApprovalStates: Set<String> = ["approved", "rejected", "expired", "revoked"]
+
+    /// 对账时是否撤下一张已投递的通知。
+    ///
+    /// 回复通知只在 410（记录已超过保留时间）时撤下：404 可能只是 Mac 上的 agentd
+    /// 较旧或重启后丢了定位记录，任务本身还在会话列表里，用户仍能从列表打开。
+    /// 审批通知沿用“agentd 明确说结束”的规则，并把新版定位接口返回的终态一并算进去。
+    static func shouldRemoveDeliveredNotification(
+        _ notification: LockScreenApprovalNotification,
+        afterLocate result: Result<PushActionRouteResponse, Error>
+    ) -> Bool {
+        switch result {
+        case .success(let response):
+            guard !notification.event.isMessage,
+                  response.kind == "approval",
+                  let state = response.state else {
+                return false
+            }
+            return terminalApprovalStates.contains(state)
+        case .failure(let error):
+            guard let apiError = error as? AgentAPIError,
+                  case .server(let status, _) = apiError else {
+                // 网络失败、服务暂不可用或响应格式异常都保留通知，等待下一次对账。
+                return false
+            }
+            if notification.event.isMessage {
+                return status == 410
+            }
+            return isDefinitive(apiError)
+        }
+    }
+
     /// 前台恢复后的权威对账：过期的审批卡片一律清掉，不留下点了没反应的通知。
 	func reconcileDeliveredNotifications(
 		client: AgentAPIClient? = nil,
@@ -662,37 +695,55 @@ final class LockScreenApprovalStore: ObservableObject {
 		now: Date = Date()
 	) async {
         let delivered = await center.deliveredNotifications()
-		let stale = delivered.compactMap { item -> String? in
-			guard let payload = LockScreenApprovalNotification(
-				userInfo: item.request.content.userInfo
-			) else {
-				return nil
-			}
-			return payload.isExpired(at: now) ? item.request.identifier : nil
-		}
-		var identifiers = stale
-		if let client, let sourceProfileTag {
-			for item in delivered where !identifiers.contains(item.request.identifier) {
-				guard let payload = LockScreenApprovalNotification(
-					userInfo: item.request.content.userInfo
-				) else {
-					continue
-				}
-                // 其他 Mac 的通知不能拿当前 Mac 的“找不到”结果来删除。
-                guard payload.profileID == sourceProfileTag else { continue }
-				do {
-					_ = try await client.pushActionRoute(
-						actionID: payload.actionID,
-						deviceID: payload.deviceID
-					)
-				} catch let error as AgentAPIError where Self.isDefinitive(error) {
-					// agentd 已明确说明句柄结束或设备无权查看，才可以撤下通知。
-					identifiers.append(item.request.identifier)
-				} catch {
-					// 网络失败、服务暂不可用或响应格式异常都保留通知，等待下一次对账。
-				}
-			}
-		}
+        var identifiers: [String] = []
+        var candidates = 0
+        var expired = 0
+        var removedByServer = 0
+        var kept = 0
+        var otherMac = 0
+        for item in delivered {
+            guard let payload = LockScreenApprovalNotification(
+                userInfo: item.request.content.userInfo
+            ) else {
+                continue
+            }
+            candidates += 1
+            if payload.isExpired(at: now) {
+                identifiers.append(item.request.identifier)
+                expired += 1
+                continue
+            }
+            guard let client, let sourceProfileTag else { continue }
+            // 其他 Mac 的通知不能拿当前 Mac 的“找不到”结果来删除。
+            guard payload.profileID == sourceProfileTag else {
+                otherMac += 1
+                continue
+            }
+            let locate: Result<PushActionRouteResponse, Error>
+            do {
+                locate = .success(try await client.pushActionRoute(
+                    actionID: payload.actionID,
+                    deviceID: payload.deviceID
+                ))
+            } catch {
+                locate = .failure(error)
+            }
+            if Self.shouldRemoveDeliveredNotification(payload, afterLocate: locate) {
+                identifiers.append(item.request.identifier)
+                removedByServer += 1
+            } else {
+                kept += 1
+            }
+        }
+        if candidates > 0 {
+            // 只记计数：对账涉及多条通知，不写任何单条标识。
+            NotificationRouteDiagnostics.record(
+                stage: NotificationRouteDiagnostics.Stage.reconcile,
+                outcome: identifiers.isEmpty ? "kept_all" : "removed",
+                reason: "expired=\(expired) server=\(removedByServer) kept=\(kept) other_mac=\(otherMac)"
+                    + (client == nil ? " offline" : "")
+            )
+        }
 		guard !identifiers.isEmpty else { return }
 		center.removeDeliveredNotifications(withIdentifiers: identifiers)
 	}

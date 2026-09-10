@@ -62,6 +62,9 @@ type Action struct {
 	SessionKey string
 	ThreadID   string
 	ProjectID  string
+	ScopeID    string
+	CWD        string
+	ReadOnly   bool
 	RequestID  string
 	Method     string
 	Kind       string

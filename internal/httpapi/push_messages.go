@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -19,16 +18,17 @@ func (p *appServerGatewayPolicy) notifyTurnMessage(frame *appServerGatewayFrame)
 		return
 	}
 	message.Runtime = normalizeAppServerRuntimeID(p.runtimeID)
-	message.ProjectID = p.projectIDForThread(message.ThreadID)
+	// 推送时截下线程事实：定位记录会落盘跨重启，之后没有第二次机会读到授权表。
+	route := p.threadRouteFacts(message.ThreadID)
+	message.ProjectID = route.projectID
+	message.ScopeID = route.scopeID
+	message.CWD = route.cwd
+	message.ReadOnly = route.readOnly
 	delivery := p.router.push.PrepareTurnMessage(message)
 	if delivery == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pushDecideTimeout)
-		defer cancel()
-		delivery(ctx)
-	}()
+	p.router.push.Dispatch(delivery, pushDecideTimeout)
 }
 
 func turnMessageFromFrame(frame *appServerGatewayFrame) (pushbridge.TurnMessage, bool) {

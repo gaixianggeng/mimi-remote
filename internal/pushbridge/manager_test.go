@@ -63,7 +63,14 @@ func (f *fakeProvider) events(event string) []recordedNotification {
 
 func newTestManager(t *testing.T, enabled bool, deviceIDs ...string) (*Manager, *fakeProvider) {
 	t.Helper()
-	store, err := NewDeviceStore(filepath.Join(t.TempDir(), "push-devices.json"))
+	return newTestManagerInDir(t, t.TempDir(), enabled, deviceIDs...)
+}
+
+// newTestManagerInDir 从同一目录重建 Manager 即等价于一次 agentd 重启：设备
+// 注册表与通知定位记录都从磁盘恢复，动作句柄则按设计全部丢失。
+func newTestManagerInDir(t *testing.T, dir string, enabled bool, deviceIDs ...string) (*Manager, *fakeProvider) {
+	t.Helper()
+	store, err := NewDeviceStore(filepath.Join(dir, "push-devices.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +80,7 @@ func newTestManager(t *testing.T, enabled bool, deviceIDs ...string) (*Manager, 
 		Environment:    "production",
 		InstallationID: "install-test",
 		DeviceStore:    store,
+		RouteStore:     NewRouteStore(filepath.Join(dir, "push-routes.json")),
 	})
 	provider := newFakeProvider()
 	manager.notifyer = provider.notify

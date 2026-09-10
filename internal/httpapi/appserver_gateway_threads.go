@@ -1332,21 +1332,48 @@ func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appS
 	return request, ok
 }
 
-func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
+// threadRouteFacts 是通知定位记录需要的线程事实快照。
+//
+// 它只读本连接与全局授权缓存，绝不在这里重新解析作用域：通知路径可能在
+// broker 锁内被调用，而 gatewayScopeForPath 要拿 managed worktree 清理锁、还
+// 可能改写注册表。projectID 优先取作用域 id —— iOS 用 /api/workspaces/resolve
+// 的 ws_… 标识 worktree 与子目录会话，退回根项目 id 会让它认不出这条路由。
+type threadRouteFacts struct {
+	runtime   string
+	cwd       string
+	scopeID   string
+	readOnly  bool
+	projectID string
+}
+
+func (p *appServerGatewayPolicy) threadRouteFacts(threadID string) threadRouteFacts {
 	if p == nil || p.router == nil || strings.TrimSpace(threadID) == "" {
-		return ""
+		return threadRouteFacts{}
 	}
-	p.mu.Lock()
-	thread, ok := p.allowedThreads[threadID]
-	p.mu.Unlock()
+	thread, ok := p.allowedThread(threadID)
 	if !ok {
-		return ""
+		return threadRouteFacts{}
 	}
-	project, ok := p.router.projectForGatewayPath(thread.cwd)
-	if !ok {
-		return ""
+	facts := threadRouteFacts{
+		runtime:  normalizeAppServerRuntimeID(thread.runtimeID),
+		cwd:      thread.cwd,
+		scopeID:  thread.scopeID,
+		readOnly: thread.readOnly,
 	}
-	return project.ID
+	if facts.runtime == "" {
+		facts.runtime = normalizeAppServerRuntimeID(p.runtimeID)
+	}
+	facts.projectID = facts.scopeID
+	if facts.projectID == "" {
+		if project, ok := p.router.projectForGatewayPath(thread.cwd); ok {
+			facts.projectID = project.ID
+		}
+	}
+	return facts
+}
+
+func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
+	return p.threadRouteFacts(threadID).projectID
 }
 
 func (p *appServerGatewayPolicy) prunePendingServerRequestsLocked(now time.Time) {
