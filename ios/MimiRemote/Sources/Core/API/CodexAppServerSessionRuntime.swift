@@ -390,7 +390,8 @@ actor CodexAppServerSessionRuntime {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
-        let gatewayURL = try gatewayURL(from: config)
+        // 探针连上即断，必须用独立会话名；否则会把同名的正式连接从网关上顶下线。
+        let gatewayURL = try gatewayURL(from: config, purpose: .probe)
         let probe = CodexAppServerConnection(transport: transportFactory())
         try await probe.connect(url: gatewayURL, token: token)
         await probe.disconnect()
@@ -2952,10 +2953,31 @@ actor CodexAppServerSessionRuntime {
         return minted
     }
 
+    /// 一条 gateway 连接的用途决定它在网关上的会话名。
+    ///
+    /// 网关按会话名复用 broker，且「同名会话只留一条在线连接」——新连接一 attach，
+    /// 旧连接立刻被 `broker_sink_replaced` 踢掉。路由探测和连接诊断开的那种
+    /// 连上即断的探针，若沿用常驻会话名，就会把正在跑 turn 的正式连接顶下线，
+    /// 客户端只看到一次莫名其妙的断线重连。探针必须用独立的会话名。
+    enum GatewayConnectionPurpose {
+        case resident
+        case probe
+
+        var sessionNameSuffix: String {
+            switch self {
+            case .resident:
+                return ""
+            case .probe:
+                return "-probe"
+            }
+        }
+    }
+
     static func gatewayURL(
         endpoint: String,
         sessionID: SessionID,
         runtimeProvider: String = "codex",
+        purpose: GatewayConnectionPurpose = .resident,
         defaults: UserDefaults = .standard
     ) throws -> URL {
         // WebSocket 也必须复用 HTTP Endpoint 策略；ATS 不会替应用阻止自行构造的公网 ws:// 地址。
@@ -2979,7 +3001,7 @@ actor CodexAppServerSessionRuntime {
         }
         // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
         // 断线重连拿不回还在跑的 turn 和未应答的审批。
-        let gatewaySession = "\(gatewaySessionKey(defaults: defaults))-\(runtime)"
+        let gatewaySession = "\(gatewaySessionKey(defaults: defaults))-\(runtime)\(purpose.sessionNameSuffix)"
         queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
         // Go 写 WebSocket 成功不等于 App 已经投影完该帧。由客户端带回最后
         // 处理完成的 turn 边界，bridge 才能从真正安全的 cursor 继续回放。
@@ -3234,7 +3256,10 @@ actor CodexAppServerSessionRuntime {
         return await connection.isReadyForRequests()
     }
 
-    func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
+    func gatewayURL(
+        from config: CodexAppServerConfigResponse,
+        purpose: GatewayConnectionPurpose = .resident
+    ) throws -> URL {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
@@ -3244,6 +3269,7 @@ actor CodexAppServerSessionRuntime {
             endpoint: endpoint,
             sessionID: "",
             runtimeProvider: runtimeProvider,
+            purpose: purpose,
             defaults: gatewayDefaults
         )
     }

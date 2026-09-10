@@ -899,6 +899,13 @@ extension SessionStore {
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
+        if case .turnCompleted(let metadata) = event {
+            scheduleMissingAssistantReplyBackfillIfNeeded(
+                turnMetadata: metadata,
+                fallbackSessionID: sessionID,
+                hostScope: lease.hostScope
+            )
+        }
         if case .messageCompleted(let message, let metadata) = event {
             scheduleTurnCompletionReconciliationIfNeeded(
                 message: message,
