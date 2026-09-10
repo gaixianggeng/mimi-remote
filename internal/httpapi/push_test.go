@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gorilla/websocket"
 )
 
@@ -70,7 +72,30 @@ func (p *fakePushProvider) count() int {
 
 func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*httptest.Server, *Router) {
 	t.Helper()
+	return pushTestFixtureWith(t, upstreamURL, providerURL, pushFixtureOptions{seedThread: true})
+}
+
+// pushFixtureOptions 让用例模拟 agentd 重启：复用同一配置目录（设备注册表与
+// 定位记录都在那里）和同一项目目录（落盘的 cwd 必须还能解析成作用域），并
+// 选择不预先授权 thread-1，以证明授权是由定位接口恢复的。
+type pushFixtureOptions struct {
+	configPath string
+	projectDir string
+	seedThread bool
+}
+
+func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, opts pushFixtureOptions) (*httptest.Server, *Router) {
+	t.Helper()
 	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
+	if opts.projectDir != "" {
+		projectDir = opts.projectDir
+		cfg.Projects[0].Path = projectDir
+		var err error
+		if registry, err = projects.NewRegistry(cfg.Projects); err != nil {
+			t.Fatal(err)
+		}
+		checker = doctor.NewChecker("test", cfg, registry)
+	}
 	cfg.AppServer = config.AppServerConfig{
 		Transport:      "ssh",
 		SSHTarget:      upstreamURL,
@@ -81,7 +106,10 @@ func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*htt
 		ProviderURL: providerURL,
 		Environment: "sandbox",
 	}
-	configPath := filepath.Join(t.TempDir(), "config.json")
+	configPath := opts.configPath
+	if configPath == "" {
+		configPath = filepath.Join(t.TempDir(), "config.json")
+	}
 	handler, router := NewRouterWithInstallationIDAndOptions(
 		cfg, registry, manager, checker, "test", "install-push-test",
 		RouterOptions{
@@ -89,11 +117,13 @@ func pushTestFixture(t *testing.T, upstreamURL string, providerURL string) (*htt
 			AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 		},
 	)
-	scope, ok := router.gatewayScopeForPath(projectDir)
-	if !ok {
-		t.Fatal("测试项目必须具有 gateway scope")
+	if opts.seedThread {
+		scope, ok := router.gatewayScopeForPath(projectDir)
+		if !ok {
+			t.Fatal("测试项目必须具有 gateway scope")
+		}
+		router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id})
 	}
-	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-1", runtimeID: "codex", cwd: projectDir, scopeID: scope.id})
 	t.Cleanup(router.Shutdown)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -221,8 +251,14 @@ func TestApprovalArrivingWhileClientOfflineNotifiesAndCanBeDecided(t *testing.T)
 	if body["state"] != "approved" {
 		t.Fatalf("放行后状态应为 approved：%v", body)
 	}
-	if status, _ := getPushActionRoute(t, server, actionID, "device-a"); status != http.StatusGone {
-		t.Fatalf("审批完成后查看详情句柄应失效，got=%d", status)
+	// 审批落定后仍能定位到会话（用户可能稍后才点开通知），只是 state 说明已不可操作。
+	status, route = getPushActionRoute(t, server, actionID, "device-a")
+	if status != http.StatusOK || route["state"] != "approved" || route["kind"] != "approval" ||
+		route["scope_id"] != "demo" || route["thread_authorized"] != true {
+		t.Fatalf("审批完成后仍应能定位会话 status=%d body=%v", status, route)
+	}
+	if status, _ := postDecide(t, server, actionID, "device-a", "deny"); status != http.StatusConflict {
+		t.Fatalf("定位不改变审批终态，冲突决策仍应被拒 got=%d", status)
 	}
 
 	// 决策必须真的回到 runtime，而不是只在 agentd 内部落定。
@@ -506,6 +542,14 @@ func TestPushDeviceStorePathFollowsConfigDirectory(t *testing.T) {
 	}
 	if got := pushDeviceStorePath("  "); got != "" {
 		t.Fatalf("没有配置路径时应返回空，got=%q", got)
+	}
+	// 定位记录与设备注册表同目录，才能在重启后一起被找到。
+	configPath := filepath.Join(root, "etc", "mimi", "agentd.json")
+	if got := pushRouteStorePath(configPath); got != filepath.Join(root, "etc", "mimi", "push-routes.json") {
+		t.Fatalf("pushRouteStorePath(%q) = %q", configPath, got)
+	}
+	if got := pushRouteStorePath(""); got != "" {
+		t.Fatalf("没有配置路径时定位记录不应落盘，got=%q", got)
 	}
 }
 

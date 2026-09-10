@@ -259,6 +259,7 @@ func NewRouterWithInstallationIDAndOptions(
 		Environment:     cfg.Push.Environment,
 		InstallationID:  installationID,
 		DeviceStorePath: pushDeviceStorePath(options.ConfigPath),
+		RouteStorePath:  pushRouteStorePath(options.ConfigPath),
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)

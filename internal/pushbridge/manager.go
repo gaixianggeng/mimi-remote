@@ -16,7 +16,7 @@ import (
 // 今天逐字一致，不会产生任何对外请求。
 type Manager struct {
 	mu       sync.RWMutex
-	messages map[string]messageRoute
+	routes   *RouteStore
 	enabled  bool
 	client   *Client
 	devices  *DeviceStore
@@ -35,7 +35,9 @@ type Options struct {
 	Environment    string
 	InstallationID string
 	DeviceStore    *DeviceStore
-	ActionTTL      time.Duration
+	// RouteStore 为空时定位记录只留在内存：行为与落盘版本完全一致，只是不跨重启。
+	RouteStore *RouteStore
+	ActionTTL  time.Duration
 }
 
 func NewManager(options Options) *Manager {
@@ -44,11 +46,16 @@ func NewManager(options Options) *Manager {
 	if environment == "" {
 		environment = "production"
 	}
+	routes := options.RouteStore
+	if routes == nil {
+		routes = NewRouteStore("")
+	}
 	manager := &Manager{
 		// Provider 没配置就等于没开：这样「忘了配 URL」不会变成静默失败的推送。
 		enabled: options.Enabled && client.Configured(),
 		client:  client,
 		devices: options.DeviceStore,
+		routes:  routes,
 		actions: NewActionStore(options.ActionTTL),
 		hostTag: HostTag(options.InstallationID),
 		profile: ProfileTag(options.InstallationID),
@@ -77,17 +84,22 @@ func (m *Manager) Environment() string {
 
 func (m *Manager) Actions() *ActionStore  { return m.actions }
 func (m *Manager) Devices() *DeviceStore  { return m.devices }
+func (m *Manager) Routes() *RouteStore    { return m.routes }
 func (m *Manager) Client() *Client        { return m.client }
 func (m *Manager) ProfileID() string      { return m.profile }
 func (m *Manager) InstallationID() string { return m.install }
 
-// ApprovalRequest 是 runtime 侧待审批请求的脱敏投影。它刻意不含命令、路径、
-// diff 或任何模型输出 —— 那些内容不参与推送链路。
+// ApprovalRequest 是 runtime 侧待审批请求的脱敏投影。它刻意不含命令、diff 或
+// 任何模型输出 —— 那些内容不参与推送链路。CWD 只是线程工作目录，用于重启后
+// 按当前作用域配置恢复线程授权，它不出 Mac。
 type ApprovalRequest struct {
 	Runtime    string
 	SessionKey string
 	ThreadID   string
 	ProjectID  string
+	ScopeID    string
+	CWD        string
+	ReadOnly   bool
 	RequestID  string
 	Method     string
 }
@@ -129,6 +141,9 @@ func (m *Manager) PreparePending(request ApprovalRequest) (Action, PreparedDeliv
 		SessionKey: request.SessionKey,
 		ThreadID:   request.ThreadID,
 		ProjectID:  request.ProjectID,
+		ScopeID:    request.ScopeID,
+		CWD:        request.CWD,
+		ReadOnly:   request.ReadOnly,
 		RequestID:  request.RequestID,
 		Method:     request.Method,
 		Kind:       kind,
@@ -141,7 +156,25 @@ func (m *Manager) PreparePending(request ApprovalRequest) (Action, PreparedDeliv
 		// 已经推送过的同一请求不再重复打扰。
 		return action, nil, false
 	}
+	// 定位记录与句柄同 id、同设备集，但寿命更长：审批窗口只有几分钟，而用户
+	// 可能几小时后才点开通知——那时仍应能打开会话看结果，只是不再能批准。
+	m.routes.Insert(m.now(), LocateRecord{
+		ID:           action.ID,
+		Kind:         RouteKindApproval,
+		Runtime:      action.Runtime,
+		ThreadID:     action.ThreadID,
+		ProjectID:    action.ProjectID,
+		ScopeID:      action.ScopeID,
+		CWD:          action.CWD,
+		ReadOnly:     action.ReadOnly,
+		ApprovalKind: action.Kind,
+		DeviceIDs:    deviceIDs,
+		CreatedAt:    action.IssuedAt,
+		ExpiresAt:    action.IssuedAt.Add(routeTTL),
+	})
 	return action, func(ctx context.Context) {
+		// 与消息一致：定位记录在投递 goroutine 中落盘，审批 broker 的锁内不做磁盘写入。
+		m.routes.Flush()
 		m.fanout(ctx, action, EventApprovalPending, devices)
 	}, true
 }

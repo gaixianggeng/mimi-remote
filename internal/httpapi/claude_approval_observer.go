@@ -220,7 +220,7 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 		_, known := o.pending[requestID]
 		o.pending[requestID] = threadID
 		if !known {
-			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, o.policy.projectIDForThread(threadID), requestID, method)
+			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, o.policy.threadRouteFacts(threadID), requestID, method)
 		}
 		o.mu.Unlock()
 		return
@@ -267,7 +267,7 @@ func (o *claudeApprovalObserver) notifyPendingIfCurrent(requestID string, thread
 		"claude",
 		o.sessionKey,
 		threadID,
-		o.policy.projectIDForThread(threadID),
+		o.policy.threadRouteFacts(threadID),
 		requestID,
 		method,
 	)
