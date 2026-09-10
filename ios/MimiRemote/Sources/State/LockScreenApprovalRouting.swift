@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 enum LockScreenApprovalRoutingError: Error {
@@ -8,21 +7,15 @@ enum LockScreenApprovalRoutingError: Error {
 
 /// Provider 只给出 installation_id 的不可逆短摘要。这里从本机已保存 Profile
 /// 重新计算摘要，既能选中正确 Mac，又不需要把 endpoint 或 Token 放进通知。
+/// 摘要算法收口在 `NotificationSessionTag`，与通知扩展共用同一实现。
 @MainActor
 enum LockScreenApprovalRouting {
 	static func profileTag(installationID: String) -> String {
-		let value = "mimi-profile:" + installationID.trimmingCharacters(in: .whitespacesAndNewlines)
-		return SHA256.hash(data: Data(value.utf8))
-			.map { String(format: "%02x", $0) }
-			.joined()
-			.prefix(16)
-			.lowercased()
+		NotificationSessionTag.profileTag(installationID: installationID)
 	}
 
     static func messageSessionTag(threadID: String) -> String {
-        let value = "mimi-tag:session:" + threadID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return SHA256.hash(data: Data(value.utf8))
-            .map { String(format: "%02X", $0) }.joined().prefix(16).description
+        NotificationSessionTag.messageTag(threadID: threadID)
     }
 
 	static func localProfileID(

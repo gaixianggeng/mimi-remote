@@ -1,6 +1,142 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "push.message.body.completed.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replied. Tap to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回复，点按查看。"
+          }
+        }
+      }
+    },
+    "push.message.body.failed.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task could not finish. Tap to see why."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务未能完成，点按查看原因。"
+          }
+        }
+      }
+    },
+    "push.message.body.interrupted.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task has stopped. Tap to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已停止，点按查看。"
+          }
+        }
+      }
+    },
+    "push.approval.body.command.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a command"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行命令"
+          }
+        }
+      }
+    },
+    "push.approval.body.patch.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修改文件"
+          }
+        }
+      }
+    },
+    "push.approval.body.permission.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grant a permission"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "授予权限"
+          }
+        }
+      }
+    },
+    "push.approval.body.user_input.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs your input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要你补充输入"
+          }
+        }
+      }
+    },
+    "push.approval.body.elicitation.titled": {
+      "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A tool is asking a question"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具正在提问"
+          }
+        }
+      }
+    },
     "push.message.body.interrupted": {
       "localizations": {
         "en": {
