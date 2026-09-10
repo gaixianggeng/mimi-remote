@@ -88,6 +88,9 @@ struct ForegroundResumeTracker: Equatable {
     private(set) var inFlightGeneration: UInt64?
     /// 最近一次真正结束（而非被顶替）的恢复结果；冷启动前为 nil。
     private(set) var lastOutcome: ForegroundResumeOutcome?
+    /// 产生 lastOutcome 时的活动连接档案。恢复失败只对那一台 Mac 成立：用户随后切到
+    /// 另一台并连上后，不能再拿旧失败去拦截新 Mac 的通知。
+    private(set) var lastOutcomeProfileID: String?
 
     var isInFlight: Bool { inFlightGeneration != nil }
 
@@ -101,10 +104,21 @@ struct ForegroundResumeTracker: Equatable {
     /// 只有当前代次的任务能结束进行中状态并记录结果；被顶替的旧任务返回 false，
     /// 不改变任何状态。
     @discardableResult
-    mutating func finish(generation: UInt64, outcome: ForegroundResumeOutcome) -> Bool {
+    mutating func finish(
+        generation: UInt64,
+        outcome: ForegroundResumeOutcome,
+        profileID: String? = nil
+    ) -> Bool {
         guard inFlightGeneration == generation else { return false }
         inFlightGeneration = nil
         lastOutcome = outcome
+        lastOutcomeProfileID = profileID
         return true
+    }
+
+    /// 只返回属于当前活动档案的恢复结果；档案已切换则视为没有可用结论。
+    func outcome(forActiveProfileID profileID: String?) -> ForegroundResumeOutcome? {
+        guard lastOutcomeProfileID == profileID else { return nil }
+        return lastOutcome
     }
 }

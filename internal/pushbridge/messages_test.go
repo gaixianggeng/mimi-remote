@@ -3,9 +3,11 @@ package pushbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -214,8 +216,12 @@ func TestRouteStoreToleratesCorruptFilesAndKeepsPrivateFields(t *testing.T) {
 			t.Fatalf("store unusable after corrupt file %d: %s", index, outcome)
 		}
 		info, err := os.Stat(path)
-		if err != nil || info.Mode().Perm() != routeFileMode {
-			t.Fatalf("route file mode: %v %v", info, err)
+		if err != nil {
+			t.Fatalf("route file missing: %v", err)
+		}
+		// Windows 没有 POSIX 权限位，只在类 Unix 平台核对 0600。
+		if runtime.GOOS != "windows" && info.Mode().Perm() != routeFileMode {
+			t.Fatalf("route file mode: %v", info.Mode())
 		}
 		encoded, err := os.ReadFile(path)
 		if err != nil {
@@ -283,5 +289,35 @@ func TestApprovalLocateRecordOutlivesHandleWithoutGrantingRights(t *testing.T) {
 		func(context.Context, Action, Decision) error { called = true; return nil })
 	if err != nil || outcome != OutcomeNotFound || called {
 		t.Fatalf("locate record granted approval rights: outcome=%s called=%v err=%v", outcome, called, err)
+	}
+}
+
+// 写盘瞬时失败（目录不可写）时脏快照必须保留，之后的 Flush 仍能把已投递的记录补写到磁盘。
+func TestRouteStoreRetainsDirtySnapshotWhenWriteFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 的只读目录不阻止创建文件")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "push-routes.json")
+	store := NewRouteStore(path)
+	now := time.Now()
+	if !store.Insert(now, LocateRecord{ID: "act-keep", Kind: RouteKindMessage, Runtime: "codex", ThreadID: "thread", TurnID: "turn", DeviceIDs: []string{"one"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}) {
+		t.Fatal("insert failed")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	store.Flush()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("只读目录下不应写出文件: %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store.Flush()
+	reloaded := NewRouteStore(path)
+	if _, ok := reloaded.Get("act-keep"); !ok {
+		t.Fatal("写失败后的脏快照没有在下一次 Flush 落盘")
 	}
 }

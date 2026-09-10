@@ -220,7 +220,10 @@ struct RootView: View {
                 var outcome = ForegroundResumeOutcome.cancelled
                 // 无论怎么结束都要清掉进行中标记，否则通知闸门永远不开；
                 // 但被更新任务顶掉的旧任务不能清掉新任务的标记，代次在 tracker 里把关。
-                defer { foregroundResume.finish(generation: generation, outcome: outcome) }
+                let profileID = appStore.activeConnectionProfileID
+                defer {
+                    foregroundResume.finish(generation: generation, outcome: outcome, profileID: profileID)
+                }
                 outcome = await performForegroundResume(recoverTailcat: shouldRecoverTailcat)
             }
         }
@@ -424,7 +427,9 @@ struct RootView: View {
     ) async -> NotificationDeliveryOutcome {
         let notification = delivery.notification
         let reference = NotificationRouteDiagnostics.shortReference(notification.actionID)
-        if let resumeOutcome = foregroundResume.lastOutcome, resumeOutcome.blocksNotificationRouting {
+        // 恢复失败只对发生失败的那台 Mac 生效；用户切到别的 Mac 后不再用旧结论拦通知。
+        if let resumeOutcome = foregroundResume.outcome(forActiveProfileID: appStore.activeConnectionProfileID),
+           resumeOutcome.blocksNotificationRouting {
             NotificationRouteDiagnostics.record(
                 stage: NotificationRouteDiagnostics.Stage.sessionOpen,
                 outcome: "deferred",
@@ -506,15 +511,26 @@ struct RootView: View {
         reference: String?
     ) async -> NotificationDeliveryOutcome {
         do {
+            let profileBeforeSource = appStore.activeConnectionProfileID
             let source = try await resolveSourceClient(for: notification, reference: reference)
+            var selectionIntent = intent
+            if appStore.activeConnectionProfileID != profileBeforeSource {
+                // Tailcat 档案由 sourceClient 内部完成切换：旧意图绑定的是切换前的 HostScope，
+                // 而切换自身的 invalidation 提交不是用户导航，这里直接重新预留。
+                selectionIntent = sessionStore.reserveSelectionIntent()
+                NotificationRouteDiagnostics.record(
+                    stage: NotificationRouteDiagnostics.Stage.sourceClient,
+                    outcome: "switched_host",
+                    correlation: reference
+                )
+            }
             let destination = try await locateNotificationRoute(
                 notification,
                 client: source.client,
                 reference: reference
             )
-            var selectionIntent = intent
             if appStore.activeConnectionProfileID != source.profileID {
-                guard sessionStore.isSelectionLeaseCurrent(intent) else {
+                guard sessionStore.isSelectionLeaseCurrent(selectionIntent) else {
                     NotificationRouteDiagnostics.record(
                         stage: NotificationRouteDiagnostics.Stage.sessionOpen,
                         outcome: "superseded",
@@ -524,10 +540,22 @@ struct RootView: View {
                     return .handled
                 }
                 _ = try await sessionStore.switchConnectionProfile(id: source.profileID)
-                await sessionStore.bootstrap()
-                // 租约绑定 HostScope，换了 Mac 之后旧意图必然失效；切换本身已经清空选择，
-                // 这里重新占一次，让 bootstrap 之后的用户操作仍能淘汰这条通知。
+                // 切换后立刻预留：bootstrap 最长可等数十秒，其间用户打开别的会话必须能淘汰这条通知；
+                // bootstrap 自己的自动选择不算用户导航，结束后按提交原因区分。
                 selectionIntent = sessionStore.reserveSelectionIntent()
+                await sessionStore.bootstrap()
+                if !sessionStore.isSelectionLeaseCurrent(selectionIntent) {
+                    if case .userOpen? = sessionStore.lastSelectionCommit?.reason {
+                        NotificationRouteDiagnostics.record(
+                            stage: NotificationRouteDiagnostics.Stage.sessionOpen,
+                            outcome: "superseded",
+                            reason: "user_navigated_during_bootstrap",
+                            correlation: reference
+                        )
+                        return .handled
+                    }
+                    selectionIntent = sessionStore.reserveSelectionIntent()
+                }
             }
             // project_resolve 的命中规则由 SessionStore 记录；解析不到不再当成“来源档案不可用”，
             // 会话本身可能还在，只是本地没有可归属的工作区。

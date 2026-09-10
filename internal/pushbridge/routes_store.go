@@ -160,13 +160,21 @@ func (s *RouteStore) Flush() {
 	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	encoded, seq := s.dirty, s.dirtySeq
-	s.dirty = nil
 	s.mu.Unlock()
 	if encoded == nil || seq <= s.writtenSeq {
 		return
 	}
-	s.write(encoded)
+	// 写失败时脏快照原样保留，下一次 Flush（下一条通知或关闭）再试；
+	// 只有真正写成功才推进 writtenSeq，否则重启会丢掉已经投递过的通知。
+	if !s.write(encoded) {
+		return
+	}
 	s.writtenSeq = seq
+	s.mu.Lock()
+	if s.dirtySeq == seq {
+		s.dirty = nil
+	}
+	s.mu.Unlock()
 }
 
 func (s *RouteStore) Get(id string) (LocateRecord, bool) {
@@ -220,9 +228,9 @@ func (s *RouteStore) snapshotLocked() ([]byte, error) {
 
 // write 在 writeMu 内、mu 外执行。失败只记录有界日志：定位记录是尽力而为的
 // 便利，绝不能反过来阻塞正在推送的 runtime 事件。
-func (s *RouteStore) write(encoded []byte) {
+func (s *RouteStore) write(encoded []byte) bool {
 	if s.path == "" || encoded == nil {
-		return
+		return false
 	}
 	err := os.MkdirAll(filepath.Dir(s.path), routeDirMode)
 	if err == nil {
@@ -234,7 +242,7 @@ func (s *RouteStore) write(encoded []byte) {
 	}
 	if err == nil {
 		s.failures = 0
-		return
+		return true
 	}
 	s.failures++
 	if s.failures <= routeWriteLogCap {
@@ -243,4 +251,5 @@ func (s *RouteStore) write(encoded []byte) {
 	if s.failures == routeWriteLogCap {
 		log.Printf("push bridge 通知定位记录连续写入失败，后续同类错误不再记录")
 	}
+	return false
 }

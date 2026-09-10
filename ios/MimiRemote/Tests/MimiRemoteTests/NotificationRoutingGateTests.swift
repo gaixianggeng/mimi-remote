@@ -105,4 +105,14 @@ final class NotificationRoutingGateTests: XCTestCase {
         XCTAssertEqual(ForegroundResumeOutcome.credentialsUnavailable.diagnosticReason, "credentials_unavailable")
         XCTAssertEqual(ForegroundResumeOutcome.tailcatUnavailable.diagnosticReason, "tailcat_unavailable")
     }
+
+    func testResumeFailureIsScopedToTheProfileItHappenedOn() {
+        var tracker = ForegroundResumeTracker()
+        let generation = tracker.begin()
+        XCTAssertTrue(tracker.finish(generation: generation, outcome: .credentialsUnavailable, profileID: "mac-a"))
+        XCTAssertEqual(tracker.outcome(forActiveProfileID: "mac-a"), .credentialsUnavailable)
+        // 用户切到另一台 Mac 后，旧失败不能再拦截新 Mac 的通知。
+        XCTAssertNil(tracker.outcome(forActiveProfileID: "mac-b"))
+        XCTAssertNil(tracker.outcome(forActiveProfileID: nil))
+    }
 }
