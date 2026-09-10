@@ -25,6 +25,8 @@ enum NotificationRouteDiagnostics {
         static let projectResolve = "project_resolve"
         static let sessionOpen = "session_open"
         static let reconcile = "reconcile"
+        /// 锁屏标题缓存的写入结论（#418）：written / cleared / failed / unavailable。
+        static let titleCache = "title_cache"
     }
 
     static let capacity = 200

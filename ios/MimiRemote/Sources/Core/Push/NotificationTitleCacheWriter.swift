@@ -4,7 +4,8 @@ import Foundation
 /// 观察会话列表与连接档案，把「短标签 → 会话标题」缓存写进 App Group，供通知扩展改写锁屏通知。
 ///
 /// 只有锁屏提醒开启时才维护缓存；关闭后文件即被删除，设备上不留下没有用途的会话标题副本。
-/// 会话列表在流式回复期间会高频变化，因此写入做约 1 秒防抖，摘要计算与文件 IO 都在后台队列完成。
+/// 会话列表在流式回复与轮询期间持续变化，因此写入按约 1 秒节流并取最新值：防抖会被持续变化
+/// 一再推迟、永远等不到落盘。摘要计算与文件 IO 都在后台队列完成，相同内容不重复写。
 @MainActor
 final class NotificationTitleCacheWriter: ObservableObject {
     /// 只在 `queue` 上访问：记录上一次落盘的内容，相同内容不重复写文件，
@@ -12,10 +13,25 @@ final class NotificationTitleCacheWriter: ObservableObject {
     /// 因此标成 `@unchecked Sendable` 以便从主线程投递到队列。
     private final class Worker: @unchecked Sendable {
         private var lastWritten: (profileCount: Int, entries: [String: NotificationTitleCache.Entry])?
+        /// 只在 `queue` 上访问：上一次写进诊断的结论。结论不变不重复记录，避免每秒一条。
+        private var lastRecorded: String?
 
-        func clear(fileURL: URL) {
+        /// 结论只含枚举式短语与条目数、错误码，不含标题、路径或会话标识。
+        func record(_ outcome: String, reason: String?) {
+            let key = outcome + "|" + (reason ?? "")
+            guard key != lastRecorded else { return }
+            lastRecorded = key
+            NotificationRouteDiagnostics.record(
+                stage: NotificationRouteDiagnostics.Stage.titleCache,
+                outcome: outcome,
+                reason: reason
+            )
+        }
+
+        func clear(fileURL: URL, reason: String) {
             lastWritten = nil
             NotificationTitleCache.clear(fileURL: fileURL)
+            record("cleared", reason: reason)
         }
 
         func synchronize(
@@ -35,9 +51,12 @@ final class NotificationTitleCacheWriter: ObservableObject {
             do {
                 try NotificationTitleCache.write(entries: merged, profileCount: profileCount, fileURL: fileURL)
                 lastWritten = (profileCount, merged)
+                record("written", reason: "entries=\(merged.count)")
             } catch {
                 // 写失败只影响这一次；下一次会话变化会再试，通知则回退到通用文案。
                 lastWritten = nil
+                let nsError = error as NSError
+                record("failed", reason: "\(nsError.domain)#\(nsError.code)")
             }
         }
     }
@@ -71,7 +90,7 @@ final class NotificationTitleCacheWriter: ObservableObject {
             appStore.$activeConnectionProfileID,
             lockScreenApprovalStore.$status.removeDuplicates()
         )
-        .debounce(for: .seconds(debounceInterval), scheduler: DispatchQueue.main)
+        .throttle(for: .seconds(debounceInterval), scheduler: DispatchQueue.main, latest: true)
         .sink { [weak self, weak lockScreenApprovalStore] sessions, profiles, activeProfileID, _ in
             guard let self else { return }
             let isEnabled = lockScreenApprovalStore?.isEnabled ?? false
@@ -90,15 +109,23 @@ final class NotificationTitleCacheWriter: ObservableObject {
         activeProfileID: String?,
         isEnabled: Bool
     ) {
-        guard let fileURL else { return }
         let worker = worker
-        guard isEnabled,
-              let profile = profiles.first(where: { $0.id == activeProfileID }),
-              let installationID = profile.installationID?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !installationID.isEmpty else {
+        guard let fileURL else {
+            // App Group 容器不可用（entitlement 缺失）时读写都会静默降级，这里至少留下诊断。
+            queue.async { worker.record("unavailable", reason: "no_app_group_container") }
+            return
+        }
+        let profile = profiles.first(where: { $0.id == activeProfileID })
+        let installationID = profile?.installationID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let skipReason: String? = !isEnabled ? "disabled"
+            : profile == nil ? "no_active_profile"
+            : installationID.isEmpty ? "no_installation_id"
+            : nil
+        guard skipReason == nil, let profile else {
             // 未开启、没有当前档案或档案尚未配对（无 installationID）时，本机没有
             // 任何推送能命中缓存，直接清掉。
-            queue.async { worker.clear(fileURL: fileURL) }
+            let reason = skipReason ?? "no_active_profile"
+            queue.async { worker.clear(fileURL: fileURL, reason: reason) }
             return
         }
         let hostName = profile.displayName
