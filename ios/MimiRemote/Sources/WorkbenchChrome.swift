@@ -1360,7 +1360,7 @@ struct RelatedSessionConversationView: View {
     private func statusColor(tokens: ThemeTokens) -> Color {
         switch normalizedStatus {
         case "active", "running", "inprogress", "in_progress", "started":
-            return tokens.primaryAction
+            return tokens.tint(for: .active)
         case "completed", "complete", "success", "succeeded":
             return .green
         case "systemerror", "failed":

@@ -275,33 +275,33 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(lightUserBubble, red: 244, green: 243, blue: 240)
         assertRGB(rgba(lightTokens.primaryAction), red: 74, green: 20, blue: 74)
         let darkPrimaryAction = rgba(darkTokens.primaryAction)
-        assertRGB(darkPrimaryAction, red: 155, green: 87, blue: 157)
+        assertRGB(darkPrimaryAction, red: 124, green: 107, blue: 158)
         XCTAssertGreaterThan(colorDistance(darkAccent, darkPrimaryAction), 0.1)
         XCTAssertGreaterThan(lightUserBubble.alpha, 0.99)
         XCTAssertEqual(codexSwatchForeground.red, lightAccent.red, accuracy: 0.001)
         XCTAssertEqual(codexSwatchForeground.green, lightAccent.green, accuracy: 0.001)
         XCTAssertEqual(codexSwatchForeground.blue, lightAccent.blue, accuracy: 0.001)
 
-        // 大面积表面使用暖石墨，紫色集中在操作与明确的选中反馈。
-        assertRGB(darkBackground, red: 18, green: 17, blue: 18)
-        assertRGB(darkSurface, red: 31, green: 29, blue: 30)
-        assertRGB(darkElevatedSurface, red: 42, green: 39, blue: 41)
-        assertRGB(darkSidebarBackground, red: 23, green: 21, blue: 22)
-        assertRGB(darkSidebarSurfaceBackground, red: 25, green: 23, blue: 25)
-        assertRGB(darkSidebarHoverFill, red: 42, green: 39, blue: 41)
-        assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
-        assertRGB(darkConversationCanvasBackground, red: 18, green: 17, blue: 18)
-        assertRGB(darkComposerControlSurface, red: 45, green: 42, blue: 45)
-        assertRGB(darkComposerInactiveActionSurface, red: 55, green: 52, blue: 56)
-        assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
-        assertRGB(darkPlanCardBorder, red: 75, green: 69, blue: 73)
-        assertRGB(darkBorder, red: 64, green: 59, blue: 63)
-        assertRGB(darkSelectionFill, red: 43, green: 37, blue: 42)
-        assertRGB(darkContentPanelBackground, red: 42, green: 39, blue: 41)
-        assertRGB(darkWorkspaceCardSelectionFill, red: 53, green: 38, blue: 53)
-        assertRGB(darkPrimaryText, red: 244, green: 241, blue: 239)
-        assertRGB(darkSecondaryText, red: 180, green: 173, blue: 168)
-        assertRGB(darkTertiaryText, red: 153, green: 145, blue: 140)
+        // 大面积表面和三级文字使用中性灰；卡片、输入/浮层和控件保留明确层级。
+        assertRGB(darkBackground, red: 20, green: 20, blue: 20)
+        assertRGB(darkSurface, red: 31, green: 31, blue: 31)
+        assertRGB(darkElevatedSurface, red: 41, green: 41, blue: 41)
+        assertRGB(darkSidebarBackground, red: 24, green: 24, blue: 24)
+        assertRGB(darkSidebarSurfaceBackground, red: 24, green: 24, blue: 24)
+        assertRGB(darkSidebarHoverFill, red: 41, green: 41, blue: 41)
+        assertRGB(darkInputBackground, red: 41, green: 41, blue: 41)
+        assertRGB(darkConversationCanvasBackground, red: 20, green: 20, blue: 20)
+        assertRGB(darkComposerControlSurface, red: 51, green: 51, blue: 51)
+        assertRGB(darkComposerInactiveActionSurface, red: 51, green: 51, blue: 51)
+        assertRGB(darkPlanCardBackground, red: 31, green: 31, blue: 31)
+        assertRGB(darkPlanCardBorder, red: 58, green: 58, blue: 58)
+        assertRGB(darkBorder, red: 58, green: 58, blue: 58)
+        assertRGB(darkSelectionFill, red: 44, green: 41, blue: 50)
+        assertRGB(darkContentPanelBackground, red: 31, green: 31, blue: 31)
+        assertRGB(darkWorkspaceCardSelectionFill, red: 44, green: 41, blue: 50)
+        assertRGB(darkPrimaryText, red: 235, green: 235, blue: 235)
+        assertRGB(darkSecondaryText, red: 184, green: 184, blue: 184)
+        assertRGB(darkTertiaryText, red: 150, green: 150, blue: 150)
         XCTAssertLessThan(abs(darkBackground.red - darkBackground.blue), 0.02)
         XCTAssertLessThan(abs(darkSurface.red - darkSurface.blue), 0.04)
         XCTAssertLessThan(abs(darkElevatedSurface.red - darkElevatedSurface.blue), 0.04)
@@ -326,7 +326,7 @@ final class ThemeStoreTests: XCTestCase {
         // 跟内容区差一整级亮度会让整屏出现两块明显不同的深色。
         // 这里只比背景高一点点，层级交给留白和字重表达，因此断言的是
         // “贴近背景、明显低于内容表面”，而不是与内容表面相等。
-        XCTAssertLessThan(darkSidebarSurfaceBackground.red, darkContentPanelBackground.red - 0.03)
+        XCTAssertLessThan(darkSidebarSurfaceBackground.red, darkContentPanelBackground.red - 0.02)
         XCTAssertGreaterThan(darkSidebarSurfaceBackground.red, darkBackground.red)
         XCTAssertLessThan(darkSidebarSurfaceBackground.red - darkBackground.red, 0.05)
     }
@@ -442,6 +442,100 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.secondaryText, tokens.workspaceCardSelectionFill), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.tertiaryText, tokens.workspaceCardSelectionFill), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.accent, tokens.workspaceCardSelectionFill), 3.0)
+    }
+
+    func testCodexDarkDerivedSurfacesAndTextAreNeutralAndOpaque() {
+        let store = ThemeStore(defaults: defaults)
+        let tokens = store.tokens(for: .dark)
+        let neutralColors = [
+            tokens.background, tokens.surface, tokens.elevatedSurface,
+            tokens.sidebarBackground, tokens.sidebarSurfaceBackground, tokens.sidebarHoverFill,
+            tokens.inputBackground, tokens.composerControlSurface, tokens.composerInactiveActionSurface,
+            tokens.planCardBackground, tokens.planCardBorder, tokens.contentPanelBackground,
+            tokens.settingsGroupBackground, tokens.border, tokens.codeBlock,
+            tokens.primaryText, tokens.secondaryText, tokens.tertiaryText, tokens.codeText
+        ]
+        for color in neutralColors {
+            let value = rgba(color)
+            XCTAssertEqual(value.red, value.green, accuracy: 0.0001)
+            XCTAssertEqual(value.green, value.blue, accuracy: 0.0001)
+            XCTAssertEqual(value.alpha, 1, accuracy: 0.0001)
+        }
+        assertRGB(rgba(tokens.accent), red: 184, green: 174, blue: 213)
+        assertRGB(rgba(tokens.accentSoft), red: 44, green: 41, blue: 50)
+        assertRGB(rgba(tokens.settingsGroupBackground), red: 31, green: 31, blue: 31)
+        // 保留已有成功/警告/录音语义色，不把状态统一染成主题紫。
+        assertRGB(rgba(tokens.success), red: 101, green: 197, blue: 142)
+        assertRGB(rgba(tokens.warning), red: 240, green: 181, blue: 98)
+        assertRGB(rgba(tokens.voiceRecording), red: 198, green: 129, blue: 203)
+    }
+
+    func testDefaultDarkColorOverridesDoNotLeakIntoOtherSchemesOrPresets() {
+        let store = ThemeStore(defaults: defaults)
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for scheme in [ColorScheme.light, .dark] {
+                let tokens = store.tokens(for: scheme)
+                let isDefaultDark = preset == .codex && scheme == .dark
+                // 设置分组底在所有预设、明暗下都等于该主题的 surface：设备页、设置详情页
+                // 和「我的」共用同一个入口，不允许某一支单独回到 elevatedSurface。
+                let group = rgba(tokens.settingsGroupBackground)
+                let expectedGroup = rgba(tokens.surface)
+                XCTAssertLessThan(colorDistance(group, expectedGroup), 0.0001)
+                XCTAssertEqual(group.alpha, expectedGroup.alpha, accuracy: 0.0001)
+                let active = rgba(tokens.tint(for: .active))
+                let expectedActive = rgba(isDefaultDark ? tokens.accent : tokens.primaryAction)
+                XCTAssertLessThan(colorDistance(active, expectedActive), 0.0001)
+                XCTAssertEqual(active.alpha, expectedActive.alpha, accuracy: 0.0001)
+            }
+        }
+        store.preset = .codex
+        store.mode = .light
+        let forcedLight = store.tokens(for: .dark)
+        assertRGB(rgba(forcedLight.background), red: 250, green: 247, blue: 241)
+        assertRGB(rgba(forcedLight.settingsGroupBackground), red: 255, green: 255, blue: 255)
+        assertRGB(rgba(forcedLight.tint(for: .active)), red: 74, green: 20, blue: 74)
+    }
+
+    func testCodexDarkForegroundsRemainReadableOnEveryStaticSurface() {
+        let store = ThemeStore(defaults: defaults)
+        let tokens = store.tokens(for: .dark)
+        let surfaces = [
+            tokens.background, tokens.settingsGroupBackground, tokens.contentPanelBackground,
+            tokens.elevatedSurface, tokens.inputBackground, tokens.userBubble,
+            tokens.selectionFill, tokens.workspaceCardSelectionFill
+        ]
+        for surface in surfaces {
+            for text in [tokens.primaryText, tokens.secondaryText, tokens.tertiaryText] {
+                XCTAssertGreaterThanOrEqual(contrastRatio(flatten(text, over: surface), surface), 4.5)
+            }
+            XCTAssertGreaterThanOrEqual(contrastRatio(tokens.tint(for: .active), surface), 4.5)
+            XCTAssertGreaterThanOrEqual(contrastRatio(tokens.success, surface), 4.5)
+            XCTAssertGreaterThanOrEqual(contrastRatio(tokens.warning, surface), 4.5)
+        }
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryAction, tokens.elevatedSurface), 3.0)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryActionForeground, tokens.primaryAction), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.codeText, tokens.codeBlock), 4.5)
+    }
+
+    func testCodexDarkKnownOpacityLayersKeepUsedForegroundsReadable() {
+        let store = ThemeStore(defaults: defaults)
+        let tokens = store.tokens(for: .dark)
+        let canvas = tokens.conversationCanvasBackground
+        // ConversationMessageContent 的整组 sending opacity 同时作用于文字与气泡。
+        // MessageTimestampCaption 的最终渲染仍须由会话快照覆盖。
+        let sendingBubble = flatten(tokens.userBubble.opacity(0.72), over: canvas)
+        let sendingTimestamp = flatten(tokens.secondaryText.opacity(0.72), over: canvas)
+        XCTAssertGreaterThanOrEqual(contrastRatio(sendingTimestamp, sendingBubble), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(sendingTimestamp, canvas), 4.5)
+        // WorkbenchChromeMaterial 的 Reduce Transparency + 完整选中态有可确定的合成底色。
+        let selectedChrome = flatten(tokens.primaryText.opacity(0.14), over: tokens.elevatedSurface)
+        for text in [tokens.primaryText, tokens.secondaryText] {
+            XCTAssertGreaterThanOrEqual(contrastRatio(text, selectedChrome), 4.5)
+        }
+        let inactiveFill = tokens.composerInactiveActionSurface
+        let inactiveGlyph = flatten(tokens.composerInactiveActionForeground, over: inactiveFill)
+        XCTAssertGreaterThanOrEqual(contrastRatio(inactiveGlyph, inactiveFill), 3.0)
     }
 
     func testWriterConflictCardStaysReadableInEveryPreset() {

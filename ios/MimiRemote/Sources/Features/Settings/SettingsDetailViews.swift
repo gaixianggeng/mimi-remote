@@ -120,6 +120,7 @@ struct ConnectionProfileRenameSheet: View {
                 } footer: {
                     Text(draft.validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
                         .foregroundStyle(draft.validationMessage == nil ? themeStore.tokens(for: colorScheme).secondaryText : themeStore.tokens(for: colorScheme).warning)
+                        .settingsSectionFooterStyle()
                 }
 
                 if let submitError = draft.submitError {
@@ -301,19 +302,23 @@ struct CapabilitiesView: View {
                 .settingsRow()
             } footer: {
                 Text(L10n.text("ui.here_the_local_skills_and_mcp_configurations_discoverable"))
+                    .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             if let error = sessionStore.capabilityErrorMessage {
-                Section(L10n.text("ui.error")) {
+                Section {
                     Text(error)
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.warning)
+                } header: {
+                    Text(L10n.text("ui.error"))
+                        .settingsSectionHeaderStyle()
                 }
-                .listRowBackground(tokens.elevatedSurface)
+                .listRowBackground(tokens.settingsGroupBackground)
             }
 
-            Section(L10n.text("ui.skills")) {
+            Section {
                 let skills = sessionStore.capabilityList?.skills ?? []
                 if skills.isEmpty {
                     ContentUnavailableView(L10n.text("ui.skills_not_found"), systemImage: "wand.and.stars")
@@ -329,10 +334,13 @@ struct CapabilitiesView: View {
                         )
                     }
                 }
+            } header: {
+                Text(L10n.text("ui.skills"))
+                    .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
-            Section("MCP") {
+            Section {
                 let servers = sessionStore.capabilityList?.mcpServers ?? []
                 if servers.isEmpty {
                     ContentUnavailableView(L10n.text("ui.mcp_server_not_found"), systemImage: "point.3.connected.trianglepath.dotted")
@@ -350,8 +358,11 @@ struct CapabilitiesView: View {
                         )
                     }
                 }
+            } header: {
+                Text("MCP")
+                    .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -609,10 +620,12 @@ struct AppearanceView: View {
                 .settingsRow()
             } header: {
                 Text(L10n.text("ui.dark_and_light_colors"))
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
+                    .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 ScrollViewReader { scrollProxy in
@@ -656,10 +669,12 @@ struct AppearanceView: View {
                 }
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(L10n.text("ui.workspace_avatar_style_description"))
+                    .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 ForEach(ThemePreset.allCases) { preset in
@@ -673,8 +688,9 @@ struct AppearanceView: View {
                 }
             } header: {
                 Text(L10n.text("ui.topic"))
+                    .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 Picker(L10n.text("ui.ui_font"), selection: $themeStore.uiFontPreset) {
@@ -722,16 +738,18 @@ struct AppearanceView: View {
                 .settingsRow(.descriptive)
             } header: {
                 Text(L10n.text("ui.font"))
+                    .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 AppearanceConversationPreview()
                     .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
             } header: {
                 Text(L10n.text("ui.chat_preview"))
+                    .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 Button(role: .destructive) {
@@ -745,7 +763,7 @@ struct AppearanceView: View {
                 }
                 .settingsRow()
             }
-            .listRowBackground(tokens.elevatedSurface)
+            .listRowBackground(tokens.settingsGroupBackground)
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -864,7 +882,7 @@ private struct WorkspaceIconStyleOptionLabel: View {
                         weight: isSelected ? .semibold : .medium
                     )
                 )
-                .foregroundStyle(isSelected ? tokens.primaryAction : tokens.primaryText)
+                .foregroundStyle(isSelected ? tokens.tint(for: .active) : tokens.primaryText)
                 // 完整英文作品名需要两行空间；短标题仍自然保持单行。
                 .lineLimit(2)
                 .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.72)
@@ -918,7 +936,7 @@ private struct WorkspaceIconStyleOptionLabel: View {
                     .background(tokens.primaryAction, in: Circle())
                     .overlay {
                         Circle()
-                            .stroke(tokens.elevatedSurface, lineWidth: 2)
+                            .stroke(tokens.settingsGroupBackground, lineWidth: 2)
                     }
                     .offset(x: 2, y: 2)
             }
@@ -1353,12 +1371,16 @@ private struct DefaultModelRuntimeSection: View {
             }
         } header: {
             Text(runtime.settingsTitle)
+                .settingsSectionHeaderStyle()
         } footer: {
-            if let footer {
-                Text(footer)
+            Group {
+                if let footer {
+                    Text(footer)
+                }
             }
+            .settingsSectionFooterStyle()
         }
-        .listRowBackground(tokens.elevatedSurface)
+        .listRowBackground(tokens.settingsGroupBackground)
     }
 
     private var hasCustomDefault: Bool {
@@ -1474,6 +1496,7 @@ struct TailcatExperimentSettingsView: View {
                     .accessibilityIdentifier("settings.experimentalFeatures.status")
             } footer: {
                 Text(L10n.text("ui.custom_tailcat_summary"))
+                    .settingsSectionFooterStyle()
             }
 
             Section {
@@ -1485,6 +1508,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsRow(.descriptive)
             } header: {
                 Text(L10n.text("ui.scan_the_pairing_qr_code"))
+                    .settingsSectionHeaderStyle()
             }
 
             Section {
@@ -1518,8 +1542,10 @@ struct TailcatExperimentSettingsView: View {
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
             } header: {
                 Text(L10n.text("ui.connection_diagnostics"))
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(L10n.text("ui.tailcat_diagnostics_help"))
+                    .settingsSectionFooterStyle()
             }
 
             Section {
@@ -1598,8 +1624,11 @@ extension View {
         modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
     }
 
+    /// 分组底由各 Section 显式接 settingsGroupBackground，「我的」根页用的是同一个 token。
+    /// 注意：listRowBackground 挂在 Form 外层不会下发到行，所以这里不设，只能在 Section 上设。
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
+            .textCase(nil)
             .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
             .settingsCanvasBackground(tokens: tokens)
     }

@@ -40,10 +40,8 @@ struct ManagedConnectionSubscriptionView: View {
             productsSection
             subscriptionInformationSection
         }
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
-        .scrollContentBackground(.hidden)
+        .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -127,7 +125,7 @@ struct ManagedConnectionSubscriptionView: View {
 
     @ViewBuilder
     private var statusSection: some View {
-        Section(L10n.text("ui.managed_subscription_status")) {
+        Section {
             switch entitlementStore.status {
             case .loading, .resolving:
                 HStack(spacing: 12) {
@@ -183,6 +181,9 @@ struct ManagedConnectionSubscriptionView: View {
                     .disabled(entitlementStore.isBusy)
                 }
             }
+        } header: {
+            Text(L10n.text("ui.managed_subscription_status"))
+                .settingsSectionHeaderStyle()
         }
     }
 
@@ -232,8 +233,10 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_devices_connection"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -292,10 +295,14 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_connection_route_status"))
+                .settingsSectionHeaderStyle()
         } footer: {
-            if showsManagedRecoveryActions {
-                Text(L10n.text("ui.managed_connection_fallback_notice"))
+            Group {
+                if showsManagedRecoveryActions {
+                    Text(L10n.text("ui.managed_connection_fallback_notice"))
+                }
             }
+            .settingsSectionFooterStyle()
         }
     }
 
@@ -426,8 +433,10 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_devices_title"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_devices_privacy_notice"))
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -596,8 +605,10 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_subscription_plans"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -621,6 +632,7 @@ struct ManagedConnectionSubscriptionView: View {
             .frame(minHeight: 44)
         } header: {
             Text(L10n.text("ui.subscription_information"))
+                .settingsSectionHeaderStyle()
         }
     }
 }

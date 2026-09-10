@@ -282,6 +282,7 @@ struct SettingsView: View {
                 } header: {
                     sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
                 }
+                .listRowBackground(tokens.settingsGroupBackground)
             }
 
             Section {
@@ -330,6 +331,7 @@ struct SettingsView: View {
             } header: {
                 sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
             }
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
                 NavigationLink(value: SettingsDestination.lockScreenApproval) {
@@ -371,10 +373,13 @@ struct SettingsView: View {
             } header: {
                 sectionHeader(L10n.text("ui.more"), tokens: tokens)
             }
+            .listRowBackground(tokens.settingsGroupBackground)
         }
-        // 分组之间靠留白划分，行本身不再套在圆角白卡里。
+        // 与 themedSettingsForm 同一套：画布自绘、标题不转大写；分组底走
+        // settingsGroupBackground，和「设备」及各设置详情页是同一个 token。
+        // 分组底只能挂在 Section 上：listRowBackground 放到 Form 外层不会下发到行。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
-        .listRowBackground(Color.clear)
+        .textCase(nil)
         .scrollContentBackground(.hidden)
         .background(canvasBackground.ignoresSafeArea())
         // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
@@ -430,12 +435,11 @@ struct SettingsView: View {
         }
     }
 
-    /// 系统默认会把分组标题转成全大写并用最小字号，和页面其余部分不是一套排版。
+    /// 排版本体在 settingsSectionHeaderStyle：整条设置链路（含「设备」和各详情页）
+    /// 共用同一套分组标题，不再由每个页面各自决定字号和文字色。
     private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
         Text(title)
-            .font(themeStore.uiFont(.footnote, weight: .medium))
-            .foregroundStyle(tokens.secondaryText)
-            .textCase(nil)
+            .settingsSectionHeaderStyle()
     }
 
     private func refreshAccountUsage() async {

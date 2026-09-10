@@ -67,17 +67,30 @@ struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var transientPreferences: SettingsTransientPreferences
+    /// 首次连接时默认展开：Mac 端还没装，这一步才是真正的起点。
+    private let defaultExpanded: Bool
 
-    init(transientPreferences: SettingsTransientPreferences? = nil) {
+    init(
+        transientPreferences: SettingsTransientPreferences? = nil,
+        defaultExpanded: Bool = false
+    ) {
         _transientPreferences = StateObject(
             wrappedValue: transientPreferences ?? SettingsTransientPreferences()
+        )
+        self.defaultExpanded = defaultExpanded
+    }
+
+    private var isExpanded: Binding<Bool> {
+        Binding(
+            get: { transientPreferences.hostInstallationExpansionOverride ?? defaultExpanded },
+            set: { transientPreferences.hostInstallationExpansionOverride = $0 }
         )
     }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        DisclosureGroup(isExpanded: $transientPreferences.isHostInstallationExpanded) {
+        DisclosureGroup(isExpanded: isExpanded) {
             VStack(alignment: .leading, spacing: 16) {
                 Picker(
                     L10n.text("ui.computer_platform"),
@@ -142,7 +155,10 @@ struct HostInstallationSetupView: View {
                     )
                 }
                 .buttonStyle(.bordered)
+                // tint 同时决定 bordered 按钮的底色和文字色。只给中性 tint 会让文字
+                // 也变成次级灰，整枚按钮读起来像被禁用；底保持中性，文字单独回到正文色。
                 .tint(tokens.secondaryText)
+                .foregroundStyle(tokens.primaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
                 Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
@@ -156,7 +172,7 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.disclosure")
         }
         .settingsRow()
-        .listRowBackground(tokens.elevatedSurface)
+        .listRowBackground(tokens.settingsGroupBackground)
     }
 }
 

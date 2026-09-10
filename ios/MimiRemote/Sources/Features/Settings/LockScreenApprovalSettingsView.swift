@@ -33,9 +33,10 @@ struct LockScreenApprovalSettingsView: View {
                 .accessibilityIdentifier("settings.lockScreenApproval.toggle")
             } header: {
                 Text(L10n.text("ui.experimental_features"))
-                    .textCase(nil)
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(L10n.text("ui.push_lock_screen_approval_summary"))
+                    .settingsSectionFooterStyle()
             }
 
 			if !store.hostSupportsPush(for: appStore.activeConnectionProfileID) {
@@ -60,9 +61,10 @@ struct LockScreenApprovalSettingsView: View {
                 }
             } header: {
                 Text(L10n.text("ui.push_disclosure_leaves_device"))
-                    .textCase(nil)
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(receiverDescription)
+                    .settingsSectionFooterStyle()
             }
 
             Section {
@@ -71,9 +73,10 @@ struct LockScreenApprovalSettingsView: View {
                 }
             } header: {
                 Text(L10n.text("ui.push_disclosure_stays_local"))
-                    .textCase(nil)
+                    .settingsSectionHeaderStyle()
             } footer: {
                 Text(L10n.text("ui.push_disclosure_actionable_kinds"))
+                    .settingsSectionFooterStyle()
             }
         }
         .themedSettingsForm(tokens: tokens)
@@ -266,6 +269,7 @@ struct LockScreenApprovalConsentSheet: View {
                     Text(isOfficialService
                         ? L10n.text("ui.push_consent_official_note")
                         : L10n.text("ui.push_consent_custom_note"))
+                        .settingsSectionFooterStyle()
                 }
 
                 Section {
@@ -277,7 +281,7 @@ struct LockScreenApprovalConsentSheet: View {
                     }
                 } header: {
                     Text(L10n.text("ui.push_disclosure_leaves_device"))
-                        .textCase(nil)
+                        .settingsSectionHeaderStyle()
                 }
 
                 Section {
@@ -289,9 +293,10 @@ struct LockScreenApprovalConsentSheet: View {
                     }
                 } header: {
                     Text(L10n.text("ui.push_disclosure_stays_local"))
-                        .textCase(nil)
+                        .settingsSectionHeaderStyle()
                 } footer: {
                     Text(L10n.text("ui.push_consent_retention"))
+                        .settingsSectionFooterStyle()
                 }
             }
             .themedSettingsForm(tokens: tokens)

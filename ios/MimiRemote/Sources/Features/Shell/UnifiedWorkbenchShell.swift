@@ -1625,7 +1625,7 @@ struct UnifiedWorkbenchShell: View {
             WorkbenchChromeIcon(systemName: systemImage)
                 .workbenchToolbarChromeCircle(tokens: tokens)
         }
-        .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
+        .foregroundStyle(isActive ? tokens.tint(for: .active) : tokens.secondaryText)
         .disabled(isDisabled)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -1754,7 +1754,7 @@ struct UnifiedWorkbenchShell: View {
         }
         switch session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).tone {
         case .active:
-            return tokens.primaryAction
+            return tokens.tint(for: .active)
         case .warning:
             return tokens.warning
         case .danger:
