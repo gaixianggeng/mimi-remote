@@ -83,24 +83,46 @@ final class NotificationTitleCacheWriter: ObservableObject {
         lockScreenApprovalStore: LockScreenApprovalStore
     ) {
         // `@Published` 在 willSet 发布，所以只用管道里带过来的值，不回头读 Store 属性。
-        // 开关状态通过 `status` 触发重算，具体是否启用在防抖结束后再问一次 defaults。
+        // 开关状态通过 `status` 触发重算，具体是否启用在节流结束后再问一次 defaults。
+        //
+        // 切换 Mac 时 AppStore 先发布新档案，中间经过 await，SessionStore 才清掉旧会话；
+        // 这段时间里的组合是「旧会话 + 新档案」。给每次会话发布编号，档案切换后只接受更新
+        // 编号的会话，避免把上一台 Mac 的标题写到新档案名下。
+        let coherence = NotificationTitleCacheCoherenceBox()
         cancellable = Publishers.CombineLatest4(
-            sessionStore.$sessions,
+            sessionStore.$sessions.map { sessions -> ([AgentSession], UInt64) in
+                (sessions, coherence.sessionsDidPublish())
+            },
             appStore.$connectionProfiles,
-            appStore.$activeConnectionProfileID,
+            appStore.$activeConnectionProfileID.map { profileID -> (String?, UInt64) in
+                (profileID, coherence.profileDidPublish(profileID))
+            },
             lockScreenApprovalStore.$status.removeDuplicates()
         )
         .throttle(for: .seconds(debounceInterval), scheduler: DispatchQueue.main, latest: true)
-        .sink { [weak self, weak lockScreenApprovalStore] sessions, profiles, activeProfileID, _ in
+        .sink { [weak self, weak lockScreenApprovalStore] sessionsState, profiles, profileState, _ in
             guard let self else { return }
+            guard NotificationTitleCacheCoherence.isCoherent(
+                sessionsGeneration: sessionsState.1,
+                requiredGeneration: profileState.1
+            ) else {
+                // 档案刚切换、会话列表还属于上一台 Mac：跳过，等新会话列表发布后再写。
+                self.recordSkip("awaiting_sessions_after_switch")
+                return
+            }
             let isEnabled = lockScreenApprovalStore?.isEnabled ?? false
             self.synchronize(
-                sessions: sessions,
+                sessions: sessionsState.0,
                 profiles: profiles,
-                activeProfileID: activeProfileID,
+                activeProfileID: profileState.0,
                 isEnabled: isEnabled
             )
         }
+    }
+
+    private func recordSkip(_ reason: String) {
+        let worker = worker
+        queue.async { worker.record("skipped", reason: reason) }
     }
 
     func synchronize(
@@ -190,8 +212,59 @@ final class NotificationTitleCacheWriter: ObservableObject {
         profileTag: String
     ) -> [String: NotificationTitleCache.Entry] {
         let prefix = profileTag.lowercased() + ":"
+        // 空列表几乎总是「还没加载」：冷启动或切换 Mac 后刚清空。不能拿它抹掉这台 Mac 已有的标题，
+        // 否则加载完成前到达的推送只能显示通用文案。
+        guard !fresh.isEmpty else { return NotificationTitleCache.capped(existing) }
         var merged = existing.filter { !$0.key.hasPrefix(prefix) }
         merged.merge(fresh) { _, new in new }
         return NotificationTitleCache.capped(merged)
+    }
+}
+
+/// 会话列表与活动档案的一致性。每次会话发布编一个号；活动档案变化后，只有编号不小于
+/// 「变化时刻的下一个编号」的会话才属于新档案。首次档案发布视为与当前会话一致，
+/// 因为启动时两者来自同一份持久化状态。
+struct NotificationTitleCacheCoherence: Equatable {
+    private(set) var sessionsGeneration: UInt64 = 0
+    private(set) var requiredGeneration: UInt64 = 0
+    private var profileID: String?
+    private var hasProfile = false
+
+    mutating func sessionsDidPublish() -> UInt64 {
+        sessionsGeneration &+= 1
+        return sessionsGeneration
+    }
+
+    mutating func profileDidPublish(_ id: String?) -> UInt64 {
+        defer {
+            hasProfile = true
+            profileID = id
+        }
+        guard hasProfile else {
+            requiredGeneration = 0
+            return requiredGeneration
+        }
+        if id != profileID {
+            requiredGeneration = sessionsGeneration &+ 1
+        }
+        return requiredGeneration
+    }
+
+    static func isCoherent(sessionsGeneration: UInt64, requiredGeneration: UInt64) -> Bool {
+        sessionsGeneration >= requiredGeneration
+    }
+}
+
+/// Combine 的 map 闭包不受主线程隔离约束；这些发布实际都在主线程，这里再加锁兜底。
+final class NotificationTitleCacheCoherenceBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = NotificationTitleCacheCoherence()
+
+    func sessionsDidPublish() -> UInt64 {
+        lock.withLock { state.sessionsDidPublish() }
+    }
+
+    func profileDidPublish(_ id: String?) -> UInt64 {
+        lock.withLock { state.profileDidPublish(id) }
     }
 }

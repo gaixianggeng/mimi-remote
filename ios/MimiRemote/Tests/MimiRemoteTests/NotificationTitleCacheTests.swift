@@ -323,4 +323,52 @@ final class NotificationTitleCacheTests: XCTestCase {
             updatedAt: referenceDate
         )
     }
+
+    // MARK: - 切换 Mac 时的一致性
+
+    func testCoherenceTreatsInitialProfileAsConsistent() {
+        var coherence = NotificationTitleCacheCoherence()
+        let sessionsGeneration = coherence.sessionsDidPublish()
+        let required = coherence.profileDidPublish("mac-a")
+        XCTAssertTrue(NotificationTitleCacheCoherence.isCoherent(
+            sessionsGeneration: sessionsGeneration,
+            requiredGeneration: required
+        ))
+    }
+
+    func testCoherenceRejectsPreviousHostSessionsAfterProfileSwitch() {
+        var coherence = NotificationTitleCacheCoherence()
+        _ = coherence.profileDidPublish("mac-a")
+        let staleSessions = coherence.sessionsDidPublish()
+        let required = coherence.profileDidPublish("mac-b")
+        // 新档案已发布、会话仍是上一台 Mac 的：不能写进缓存。
+        XCTAssertFalse(NotificationTitleCacheCoherence.isCoherent(
+            sessionsGeneration: staleSessions,
+            requiredGeneration: required
+        ))
+        let clearedSessions = coherence.sessionsDidPublish()
+        XCTAssertTrue(NotificationTitleCacheCoherence.isCoherent(
+            sessionsGeneration: clearedSessions,
+            requiredGeneration: required
+        ))
+        // 同一档案重复发布不会再次要求新会话。
+        XCTAssertEqual(coherence.profileDidPublish("mac-b"), required)
+    }
+
+    func testMergeWithEmptyFreshKeepsExistingTitles() {
+        let entry = NotificationTitleCache.Entry(
+            title: "修复通知",
+            project: "mimi",
+            runtime: "codex",
+            hostName: "Mac",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let existing = ["aaaaaaaaaaaaaaaa:0123456789ABCDEF": entry]
+        let merged = NotificationTitleCacheWriter.merge(
+            existing: existing,
+            fresh: [:],
+            profileTag: "aaaaaaaaaaaaaaaa"
+        )
+        XCTAssertEqual(merged, existing)
+    }
 }

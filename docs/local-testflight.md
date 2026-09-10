@@ -33,6 +33,15 @@ MIM-78 引入 Widget Extension 后，Apple Developer 还必须先完成：
 
 配置未完成时，`git testflight-push --check` 会明确失败；不要用主 App profile 代替 Widget profile。
 
+#418 引入通知服务扩展后，发布前还需要：
+
+1. App ID `com.gaixianggeng.mimi.notificationservice` 启用同一个 App Group。本机 Xcode 登录开发者账号后做一次真机构建，自动签名会注册它并生成开发 profile。
+2. 为它新建 App Store profile，使用与主 App 相同的分发证书。
+3. 把 profile 的 ID 或名称写入本机 `~/.config/ios-testflight/mimi/secrets.env` 的 `IOS_NOTIFICATION_PROVISIONING_PROFILE_ID` 或 `IOS_NOTIFICATION_PROVISIONING_PROFILE_NAME`；需要校验名称时再设 `IOS_NOTIFICATION_EXPECTED_PROVISIONING_PROFILE_NAME`。
+4. 把 profile 的 base64 写入 GitHub repository secret `IOS_NOTIFICATION_APPSTORE_PROVISIONING_PROFILE_BASE64`；CI 与 Nightly 缺少它时会在凭据预检失败。
+
+配置未完成时，`git testflight-push --check` 同样会明确失败；不要用主 App 或 Widget profile 代替通知服务扩展 profile。
+
 ### 固定版本 asc（MIM-92 第一阶段）
 
 仓库把 `asc` 固定为 `3.4.1`，版本、macOS arm64/amd64 SHA-256 与 Developer ID Team 都记录在 `config/release/ios-asc-cli.env`。不使用 `latest`，也不把二进制或凭据提交到仓库。
