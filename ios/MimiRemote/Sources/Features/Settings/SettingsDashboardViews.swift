@@ -76,6 +76,9 @@ struct ConnectionSettingsView: View {
                 try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
             }
         }
+        // 「发送下载链接」的分享面板同理挂在整页上。挂在 Form.Section 上时，启动后第一次
+        // 点击会弹出又立刻收回（#424 真机验收）。
+        .modifier(HostInstallerSharePresenter(preferences: navigation.transientPreferences))
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
