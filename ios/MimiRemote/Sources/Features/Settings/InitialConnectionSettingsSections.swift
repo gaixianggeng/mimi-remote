@@ -176,7 +176,9 @@ struct InitialConnectionSettingsSections: View {
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
 
     @ObservedObject var draft: ConnectionSettingsDraft
-    let transientPreferences: SettingsTransientPreferences
+    // 观察它是为了在 Section 级呈现「发送下载链接」的分享面板；只拿引用的话，
+    // 请求写进去了这里也不会重算 body，sheet 永远不会打开。
+    @ObservedObject var transientPreferences: SettingsTransientPreferences
     var prioritizesConnectionStatus = false
 
     private var endpoint: String {
@@ -581,6 +583,11 @@ struct InitialConnectionSettingsSections: View {
             }
         } message: { confirmation in
             Text(confirmation.message)
+        }
+        // 「发送下载链接」的系统分享面板。安装说明行里的 ShareLink 点了没有任何反应（#424，
+        // 原因未定位）；改为行里登记请求、这里和删除确认一样由 Section 统一呈现。
+        .sheet(item: $transientPreferences.hostInstallerShareRequest) { request in
+            HostInstallerActivityView(url: request.url)
         }
     }
 

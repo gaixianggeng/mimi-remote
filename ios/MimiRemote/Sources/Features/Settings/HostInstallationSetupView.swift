@@ -160,7 +160,13 @@ struct HostInstallationSetupView: View {
                 .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
                 .accessibilityIdentifier("settings.hostInstaller.githubRelease")
 
-                ShareLink(item: transientPreferences.hostInstallationPlatform.installerURL) {
+                // 不用 ShareLink：它在这一行里点了没有任何反应（#424，模拟器与真机都复现，
+                // 原因未定位）。分享面板改由连接分组的 Section 呈现，这里只登记请求。
+                Button {
+                    transientPreferences.hostInstallerShareRequest = HostInstallerShareRequest(
+                        url: transientPreferences.hostInstallationPlatform.installerURL
+                    )
+                } label: {
                     ConnectionActionLabel(
                         title: transientPreferences.hostInstallationPlatform.shareTitle,
                         systemImage: "square.and.arrow.up"
@@ -185,6 +191,22 @@ struct HostInstallationSetupView: View {
             .listRowSeparator(.hidden, edges: .top)
         }
     }
+}
+
+struct HostInstallerShareRequest: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// 系统分享面板。与 ShareJourneyActivityView 相同的包装，只是分享的是安装包链接。
+struct HostInstallerActivityView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 /// 图标与文字作为一个整体居中，避免宽窗口中两者分散到按钮两端。
