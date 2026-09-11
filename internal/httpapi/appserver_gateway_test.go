@@ -140,6 +140,34 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	if containsAnyString(methods, "account/usage/read") {
 		t.Fatalf("Claude bridge 不应开放 Codex 账号 Token 活动：%v", methods)
 	}
+	if !containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.9 起的 bridge 按 turn 分页 item，channel 必须声明 thread/items/list：%v", methods)
+	}
+}
+
+// #411：旧 bridge 无视 itemsView 直接回完整 items，iOS 能正常显示，不抬最低版本；
+// 但不能对它声明 thread/items/list，否则 iOS 会把 summary 首页排进注定失败的补齐任务。
+func TestAppServerConfigHidesClaudeItemsListForBridgeWithoutItemPaging(t *testing.T) {
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.8")
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	body := decodeJSON(t, rec)
+	claude := body["channels"].([]any)[1].(map[string]any)
+	if claude["gateway_available"] != true {
+		t.Fatalf("0.2.8 仍满足最低版本，gateway 应可用：%v", claude)
+	}
+	methods := claude["methods"].([]any)
+	if containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.8 bridge 没有 thread/items/list，channel 不应声明：%v", methods)
+	}
+	if !containsAnyString(methods, "thread/turns/list") || !containsAnyString(methods, "account/rateLimits/read") {
+		t.Fatalf("其余 Claude 方法不应受影响：%v", methods)
+	}
 }
 
 func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testing.T) {
@@ -1769,6 +1797,31 @@ func TestGatewayThreadListAllowsExplicitHistoryRefreshOnFirstPage(t *testing.T) 
 	if sanitized["refreshHistory"] != true {
 		t.Fatalf("thread/list 应保留 refreshHistory：%v", sanitized)
 	}
+}
+
+// PR #430 评审：新 bridge 可以单独升级。只有网关会转发 thread/items/list 时，bridge 才能按
+// summary 裁掉工具过程；因此由网关给 Claude 的 thread/turns/list 写入 itemsListAvailable，
+// Codex 不写，客户端同名参数不透传。
+func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
+	params := map[string]any{
+		"threadId":           "thread-claude",
+		"limit":              json.Number("10"),
+		"sortDirection":      "desc",
+		"itemsView":          "summary",
+		"itemsListAvailable": false,
+	}
+	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
+	}
+
+	claude := sanitizedGatewayThreadTurnsListParams("claude", params)
+	assertGatewayParamsOnly(t, claude, "threadId", "limit", "sortDirection", "itemsView", "itemsListAvailable")
+	if claude["itemsListAvailable"] != true {
+		t.Fatalf("Claude 的 thread/turns/list 应由网关写入 itemsListAvailable=true：%v", claude)
+	}
+
+	codex := sanitizedGatewayThreadTurnsListParams("codex", params)
+	assertGatewayParamsOnly(t, codex, "threadId", "limit", "sortDirection", "itemsView")
 }
 
 func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {

@@ -769,7 +769,7 @@ pub async fn handle_thread_turns_list(
         .await
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
     let turns = cached_thread_turns(state, &entry).await?;
-    Ok(paginate_turns(
+    let page = paginate_turns(
         turns,
         params.cursor.as_deref(),
         params.limit,
@@ -777,7 +777,135 @@ pub async fn handle_thread_turns_list(
             params.sort_direction.unwrap_or(p::SortDirection::Desc),
             p::SortDirection::Desc
         ),
+    );
+    Ok(apply_items_view(
+        page,
+        params.items_view.as_deref(),
+        params.items_list_available,
     ))
+}
+
+/// Codex 的 `summary` 视图只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn
+/// 补齐。此前 bridge 无视 itemsView 一律回完整 items：一个 18 MB 的会话首页要 400–650 KB，
+/// 同样的 Codex 首页只有几 KB，移动端经中继打开 Claude 会话因此明显更慢。
+///
+/// 只有调用方声明会转发 `thread/items/list`（`items_list_available`）时才裁剪：新 bridge 可以
+/// 单独升级，配旧 agentd 时 iOS 仍请求 summary，旧网关却不转发 items/list，裁掉就补不回来。
+fn apply_items_view(
+    mut page: p::ThreadTurnsListResponse,
+    items_view: Option<&str>,
+    items_list_available: bool,
+) -> p::ThreadTurnsListResponse {
+    if items_view != Some("summary") || !items_list_available {
+        return page;
+    }
+    for turn in &mut page.data {
+        turn.items.retain(|item| {
+            matches!(
+                item,
+                p::ThreadItem::UserMessage { .. } | p::ThreadItem::AgentMessage { .. }
+            )
+        });
+        turn.items_view = "summary".to_string();
+    }
+    page
+}
+
+// ============================================================================
+// thread/items/list
+// ============================================================================
+
+pub async fn handle_thread_items_list(
+    state: &Arc<ConnectionState>,
+    params: p::ThreadItemsListParams,
+) -> Result<p::ThreadItemsListResponse, ThreadError> {
+    let entry = state
+        .thread_index()
+        .lookup(&params.thread_id)
+        .await
+        .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
+    let turns = cached_thread_turns(state, &entry).await?;
+    let entries: Vec<p::ThreadItemsListEntry> = match params.turn_id.as_deref() {
+        Some(turn_id) => {
+            let turn = turns
+                .into_iter()
+                .find(|turn| turn.id == turn_id)
+                .ok_or_else(|| {
+                    ThreadError::InvalidParams(format!(
+                        "turn `{turn_id}` not found in thread `{}`",
+                        params.thread_id
+                    ))
+                })?;
+            items_entries(turn)
+        }
+        None => turns.into_iter().flat_map(items_entries).collect(),
+    };
+    Ok(paginate_items(
+        entries,
+        params.cursor.as_deref(),
+        params.limit,
+        matches!(
+            params.sort_direction.unwrap_or(p::SortDirection::Asc),
+            p::SortDirection::Desc
+        ),
+    ))
+}
+
+fn items_entries(turn: p::Turn) -> Vec<p::ThreadItemsListEntry> {
+    let turn_id = turn.id;
+    turn.items
+        .into_iter()
+        .map(|item| p::ThreadItemsListEntry {
+            turn_id: turn_id.clone(),
+            item,
+        })
+        .collect()
+}
+
+/// item 游标按位置编码：item id 在跨 turn 合并时可能重复，不适合做锚点。
+/// 位置相对于已按方向排好的序列；调用方翻页时保持同一方向。
+fn encode_item_cursor(offset: usize) -> String {
+    let json = serde_json::json!({ "offset": offset }).to_string();
+    URL_SAFE_NO_PAD.encode(json)
+}
+
+fn decode_item_cursor(raw: &str) -> Option<usize> {
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .map(|offset| offset as usize)
+}
+
+fn paginate_items(
+    mut entries: Vec<p::ThreadItemsListEntry>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+    descending: bool,
+) -> p::ThreadItemsListResponse {
+    if descending {
+        entries.reverse();
+    }
+    // 游标无法解析时返回空页且不再给 next_cursor，让调用方干净收敛，而不是从头重发。
+    let start = match cursor.filter(|c| !c.is_empty()) {
+        Some(raw) => match decode_item_cursor(raw) {
+            Some(offset) => offset,
+            None => return p::ThreadItemsListResponse::default(),
+        },
+        None => 0,
+    };
+    if start >= entries.len() {
+        return p::ThreadItemsListResponse::default();
+    }
+    let limit = alleycat_bridge_core::resolve_list_limit(limit) as usize;
+    let end = entries.len().min(start + limit);
+    let has_more = end < entries.len();
+    let page = entries.drain(start..end).collect();
+    p::ThreadItemsListResponse {
+        data: page,
+        next_cursor: has_more.then(|| encode_item_cursor(end)),
+    }
 }
 
 /// turns 的游标分页。抽成纯函数便于覆盖跨页边界，handler 只负责取数据。
@@ -1254,6 +1382,146 @@ mod tests {
             decode_turn_cursor(&encode_turn_cursor("turn-42")).as_deref(),
             Some("turn-42")
         );
+    }
+
+    fn user(id: &str) -> p::ThreadItem {
+        p::ThreadItem::UserMessage {
+            id: id.to_string(),
+            content: Vec::new(),
+            client_id: None,
+        }
+    }
+
+    fn agent(id: &str) -> p::ThreadItem {
+        p::ThreadItem::AgentMessage {
+            id: id.to_string(),
+            text: "answer".to_string(),
+            phase: None,
+            memory_citation: None,
+        }
+    }
+
+    fn plan(id: &str) -> p::ThreadItem {
+        p::ThreadItem::Plan {
+            id: id.to_string(),
+            text: "plan".to_string(),
+        }
+    }
+
+    fn turn_with_items(id: &str, items: Vec<p::ThreadItem>) -> p::Turn {
+        let mut turn = turn(id);
+        turn.items = items;
+        turn
+    }
+
+    fn item_ids(response: &p::ThreadItemsListResponse) -> Vec<(String, String)> {
+        response
+            .data
+            .iter()
+            .map(|entry| (entry.turn_id.clone(), entry.item.id().to_string()))
+            .collect()
+    }
+
+    /// #411：summary 首页只保留用户与助手文本，工具过程留给 thread/items/list 补齐；
+    /// 此前无视 itemsView 一律回完整 items，Claude 首页比 Codex 大两个数量级。
+    #[test]
+    fn summary_view_keeps_only_messages_and_marks_turns() {
+        let page = p::ThreadTurnsListResponse {
+            data: vec![turn_with_items(
+                "turn-0",
+                vec![user("u1"), plan("p1"), agent("a1"), plan("p2")],
+            )],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        let summary = apply_items_view(page.clone(), Some("summary"), true);
+        let ids: Vec<&str> = summary.data[0].items.iter().map(|i| i.id()).collect();
+        assert_eq!(ids, ["u1", "a1"], "summary 只保留 userMessage/agentMessage");
+        assert_eq!(summary.data[0].items_view, "summary");
+
+        let full = apply_items_view(page.clone(), Some("full"), true);
+        assert_eq!(full, page, "full 视图原样返回");
+        let unspecified = apply_items_view(page.clone(), None, true);
+        assert_eq!(
+            unspecified, page,
+            "未指定时保持原有 full 行为，兼容旧客户端"
+        );
+    }
+
+    /// 新 bridge 配旧 agentd：旧网关不转发 items/list，也不会带上 items_list_available。
+    /// 这时 summary 必须原样回完整 item，否则工具过程再也补不回来（PR #430 评审）。
+    #[test]
+    fn summary_view_keeps_full_items_when_gateway_cannot_hydrate() {
+        let page = p::ThreadTurnsListResponse {
+            data: vec![turn_with_items(
+                "turn-0",
+                vec![user("u1"), plan("p1"), agent("a1")],
+            )],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        assert_eq!(apply_items_view(page.clone(), Some("summary"), false), page);
+    }
+
+    #[test]
+    fn turns_list_items_list_available_defaults_to_false() {
+        let from_old_gateway: p::ThreadTurnsListParams =
+            serde_json::from_value(serde_json::json!({"threadId": "t", "itemsView": "summary"}))
+                .unwrap();
+        assert!(!from_old_gateway.items_list_available);
+        let from_new_gateway: p::ThreadTurnsListParams = serde_json::from_value(
+            serde_json::json!({"threadId": "t", "itemsView": "summary", "itemsListAvailable": true}),
+        )
+        .unwrap();
+        assert!(from_new_gateway.items_list_available);
+    }
+
+    #[test]
+    fn paginate_items_walks_every_item_without_gaps_or_repeats() {
+        let entries = items_entries(turn_with_items(
+            "turn-7",
+            (0..7).map(|i| plan(&format!("item-{i}"))).collect(),
+        ));
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let page = paginate_items(entries.clone(), cursor.as_deref(), Some(3), false);
+            assert!(!page.data.is_empty(), "分页不得在走完之前返回空页");
+            seen.extend(item_ids(&page));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let expected: Vec<(String, String)> = (0..7)
+            .map(|i| ("turn-7".to_string(), format!("item-{i}")))
+            .collect();
+        assert_eq!(
+            seen, expected,
+            "必须无重复无跳段地覆盖全部 item，且带回所属 turn"
+        );
+    }
+
+    #[test]
+    fn paginate_items_honours_direction_and_terminates_on_bad_cursor() {
+        let entries = items_entries(turn_with_items(
+            "turn-1",
+            vec![plan("a"), plan("b"), plan("c")],
+        ));
+        let desc = paginate_items(entries.clone(), None, Some(2), true);
+        assert_eq!(
+            item_ids(&desc),
+            [("turn-1".into(), "c".into()), ("turn-1".into(), "b".into())]
+        );
+        assert!(desc.next_cursor.is_some());
+
+        let garbage = paginate_items(entries.clone(), Some("!!!not-base64!!!"), Some(2), false);
+        assert!(garbage.data.is_empty());
+        assert!(garbage.next_cursor.is_none());
+
+        let past_end = paginate_items(entries, Some(&encode_item_cursor(99)), Some(2), false);
+        assert!(past_end.data.is_empty());
+        assert!(past_end.next_cursor.is_none());
     }
 
     #[test]

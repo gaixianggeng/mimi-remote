@@ -417,6 +417,14 @@ pub struct ThreadTurnsListParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub sort_direction: Option<SortDirection>,
+    /// `summary` 只保留用户与助手文本；`full`（默认）带全部 item。
+    #[serde(default)]
+    pub items_view: Option<String>,
+    /// 调用方（agentd 网关）会转发 `thread/items/list` 时才为 true，只有这时 bridge 才按
+    /// summary 裁掉工具过程。旧网关不认识这个字段、转发时会丢掉，bridge 就照旧回完整
+    /// item；否则被裁掉的内容在旧网关后面再也补不回来。
+    #[serde(default)]
+    pub items_list_available: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -425,6 +433,37 @@ pub struct ThreadTurnsListResponse {
     pub data: Vec<Turn>,
     pub next_cursor: Option<String>,
     pub backwards_cursor: Option<String>,
+}
+
+// === thread/items/list =====================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListParams {
+    pub thread_id: String,
+    /// 为空时列出整个 thread 的 item。
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub sort_direction: Option<SortDirection>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListEntry {
+    pub turn_id: String,
+    pub item: ThreadItem,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListResponse {
+    pub data: Vec<ThreadItemsListEntry>,
+    pub next_cursor: Option<String>,
 }
 
 // === thread/backgroundTerminals/clean ======================================

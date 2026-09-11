@@ -720,7 +720,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "thread/read":
 		sanitized = map[string]any{"threadId": params["threadId"], "includeTurns": false}
 	case "thread/turns/list":
-		sanitized = sanitizedGatewayThreadTurnsListParams(params)
+		sanitized = sanitizedGatewayThreadTurnsListParams(runtimeID, params)
 	case "thread/items/list":
 		sanitized = copyGatewayParams(params, "threadId", "turnId", "cursor", "limit", "sortDirection")
 	case "thread/queue/list":
@@ -890,7 +890,7 @@ func sanitizedGatewayReviewStartParams(params map[string]any) map[string]any {
 	}
 }
 
-func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any {
+func sanitizedGatewayThreadTurnsListParams(runtimeID string, params map[string]any) map[string]any {
 	safe := copyGatewayParams(params, "threadId", "cursor", "sortDirection", "itemsView")
 	limit := int64(appServerGatewayThreadTurnsDefaultLimit)
 	if value, ok := params["limit"]; ok && value != nil {
@@ -906,6 +906,12 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 		limit = appServerGatewayThreadTurnsFullMaxLimit
 	}
 	safe["limit"] = limit
+	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		// 本网关会转发 thread/items/list，Claude bridge（0.2.9 起）见到这个字段才按 summary
+		// 裁掉工具过程。字段由网关写入、不透传客户端同名参数；旧网关不写，bridge 就回完整
+		// item，裁掉的内容不会无处补齐。旧 bridge 忽略未知字段。
+		safe["itemsListAvailable"] = true
+	}
 	return safe
 }
 

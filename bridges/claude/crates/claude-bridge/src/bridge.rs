@@ -581,6 +581,13 @@ async fn dispatch_request(
                 .map_err(thread_to_rpc)?;
             to_value(resp)
         }
+        "thread/items/list" => {
+            let typed: p::ThreadItemsListParams = decode(params)?;
+            let resp = handlers::thread::handle_thread_items_list(state, typed)
+                .await
+                .map_err(thread_to_rpc)?;
+            to_value(resp)
+        }
         "thread/backgroundTerminals/clean" => {
             let typed: p::ThreadBackgroundTerminalsCleanParams = decode(params)?;
             to_value(handlers::thread::handle_thread_background_terminals_clean(state, typed).await)

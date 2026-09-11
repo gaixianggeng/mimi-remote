@@ -81,6 +81,7 @@ sequenceDiagram
 - `agentd` 维护 gateway 授权状态和每个稳定 session 的转发 cursor；它不是会话历史的权威来源。
 - bridge 的 `ConnectionState` 可在 bridge-core 重建 replay session 后重新绑定，避免长期 runtime 把事件写进旧 ring。
 - bridge 先从 Claude JSONL 播种完整历史，再追加尚未 flush 的实时 turn；`thread/read` 和 `thread/turns/list` 不会因为本进程出现新 turn 而丢掉旧历史。
+- `thread/turns/list` 按 `itemsView` 返回：`summary` 只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn 分页补齐，和 Codex 首屏走同一条路；`full` 或省略时仍带全部 item。裁剪只在请求带 `itemsListAvailable: true` 时生效，这个字段由 agentd 网关写入，表示网关会转发 `thread/items/list`；新 bridge 配旧 agentd 时没有这个字段，bridge 照旧回完整 item。此前 bridge 无视 `itemsView`，一个 18 MB 会话的首页要 400–650 KB，移动端经中继打开明显更慢。
 - bridge 的协议输入输出是逐行 JSON；`agentd` 不把整段上下文重新拼成额外提示词。
 - Claude Code 登录态和可恢复历史由用户本机 Claude Code 环境管理，不上传到 Mimi Remote 服务器。
 
