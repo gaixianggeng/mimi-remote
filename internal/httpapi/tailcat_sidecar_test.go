@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -86,6 +89,104 @@ func TestTailcatSupervisorPairTimeoutExplainsRetry(t *testing.T) {
 	}
 	if strings.Contains(message, "context deadline exceeded") || strings.Contains(message, "tailcat.local") {
 		t.Fatalf("超时错误不应把底层 HTTP 细节交给用户，got %q", message)
+	}
+}
+
+// fakePairingSidecar 模拟辅助程序的配对语义：每次 /pair 都生成新节点；配对期间持有状态锁，
+// 所以 /status 会等到那次配对结束（与 managed.Manager.StartPairing 一致）。
+type fakePairingSidecar struct {
+	mu        sync.Mutex
+	delay     time.Duration
+	ttl       time.Duration
+	pairCalls atomic.Int32
+	address   string
+	expiresAt time.Time
+}
+
+func (f *fakePairingSidecar) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	switch req.URL.Path {
+	case "/pair":
+		call := f.pairCalls.Add(1)
+		f.mu.Lock()
+		time.Sleep(f.delay)
+		f.address = fmt.Sprintf("pair-%d.example.invalid", call)
+		f.expiresAt = time.Now().Add(f.ttl)
+		status := f.statusLocked()
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, status)
+	case "/status":
+		f.mu.Lock()
+		status := f.statusLocked()
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, status)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func (f *fakePairingSidecar) statusLocked() map[string]any {
+	status := map[string]any{"running": true}
+	if f.address != "" && time.Now().Before(f.expiresAt) {
+		status["pair_address"] = f.address
+		status["pair_expires_at"] = f.expiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return status
+}
+
+// PR #428 评审：超时后按提示重试时，重发 /pair 会先销毁辅助程序刚建好的节点、再走一遍慢授权。
+// 重试必须取回那次配对的结果。
+func TestTailcatSupervisorPairRetryReclaimsNodeFinishedAfterTimeout(t *testing.T) {
+	fake := &fakePairingSidecar{delay: 500 * time.Millisecond, ttl: 10 * time.Minute}
+	socket := startFakeTailcatControl(t, fake)
+	supervisor := &tailcatSidecarSupervisor{controlPath: socket, pairTimeout: 60 * time.Millisecond}
+
+	if _, err := supervisor.Pair(context.Background()); err == nil {
+		t.Fatal("首次配对应按配对超时返回")
+	}
+	// 立刻重试：那次配对仍在进行，/status 等不到结果，继续提示稍后重试，不能重发 /pair。
+	if _, err := supervisor.Pair(context.Background()); err == nil || !strings.Contains(err.Error(), "稍后重试") {
+		t.Fatalf("配对仍在进行时应继续提示稍后重试，got %v", err)
+	}
+	if got := fake.pairCalls.Load(); got != 1 {
+		t.Fatalf("配对进行中不应重发 /pair：calls=%d", got)
+	}
+
+	time.Sleep(600 * time.Millisecond)
+	status, err := supervisor.Pair(context.Background())
+	if err != nil {
+		t.Fatalf("那次配对建好后，重试应直接取回：%v", err)
+	}
+	if status.PairAddress != "pair-1.example.invalid" {
+		t.Fatalf("应复用超时后建好的节点，got %q", status.PairAddress)
+	}
+	if got := fake.pairCalls.Load(); got != 1 {
+		t.Fatalf("取回时不应重发 /pair 拆掉刚建好的节点：calls=%d", got)
+	}
+
+	// 取回之后恢复正常语义：再次配对（刷新二维码）生成新节点。
+	supervisor.pairTimeout = 2 * time.Second
+	status, err = supervisor.Pair(context.Background())
+	if err != nil || status.PairAddress != "pair-2.example.invalid" || fake.pairCalls.Load() != 2 {
+		t.Fatalf("取回后的下一次配对应生成新节点：status=%+v err=%v calls=%d", status, err, fake.pairCalls.Load())
+	}
+}
+
+func TestTailcatSupervisorPairRetryRegeneratesWhenReclaimedNodeNearlyExpired(t *testing.T) {
+	fake := &fakePairingSidecar{delay: 200 * time.Millisecond, ttl: time.Minute}
+	socket := startFakeTailcatControl(t, fake)
+	supervisor := &tailcatSidecarSupervisor{controlPath: socket, pairTimeout: 60 * time.Millisecond}
+
+	if _, err := supervisor.Pair(context.Background()); err == nil {
+		t.Fatal("首次配对应按配对超时返回")
+	}
+	time.Sleep(300 * time.Millisecond)
+	supervisor.pairTimeout = 2 * time.Second
+	status, err := supervisor.Pair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.PairAddress != "pair-2.example.invalid" || fake.pairCalls.Load() != 2 {
+		t.Fatalf("剩余有效期不足时应重新生成：status=%+v calls=%d", status, fake.pairCalls.Load())
 	}
 }
 

@@ -36,6 +36,9 @@ const (
 	// 节点其实已经生成，却被报成失败。CLI 与 Mac App 各给 25 秒，这里留 20 秒
 	// 让辅助程序把结果交回来。
 	tailcatPairCallTimeout = 20 * time.Second
+	// 取回超时后建好的配对节点时，剩余有效期（辅助程序给 10 分钟）至少要这么长；
+	// 再短的话用户扫码前可能就过期了，宁可重新生成。
+	tailcatPairReuseMinRemaining = 5 * time.Minute
 )
 
 type tailcatStatus struct {
@@ -82,6 +85,8 @@ type tailcatSidecarSupervisor struct {
 	// 零值表示使用上面的默认超时；测试用短超时驱动。
 	controlTimeout time.Duration
 	pairTimeout    time.Duration
+	// 上一次 /pair 超时、辅助程序可能还在把那个节点建完。受 operationMu 保护。
+	pairTimedOut bool
 }
 
 func (s *tailcatSidecarSupervisor) controlCallTimeout() time.Duration {
@@ -342,23 +347,62 @@ func (s *tailcatSidecarSupervisor) Pair(ctx context.Context) (tailcatStatus, err
 	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
-	var status tailcatStatus
 	timeout := s.pairCallTimeout()
+	if s.pairTimedOut {
+		if status, reused, err := s.reclaimTimedOutPair(ctx, timeout); reused || err != nil {
+			s.applyConfigurationToStatus(&status)
+			return status, err
+		}
+	}
+	var status tailcatStatus
 	started := time.Now()
 	err := s.call(ctx, timeout, http.MethodPost, "/pair", nil, &status)
 	elapsed := time.Since(started).Round(time.Millisecond)
+	s.pairTimedOut = false
 	switch {
 	case err == nil:
 		log.Printf("tailcat pair: 辅助程序 %s 内生成配对节点", elapsed)
 	case errors.Is(err, context.DeadlineExceeded):
-		// 辅助程序不看请求是否还在，配对节点会继续生成完；此时重试通常立即成功。
+		// 辅助程序不看请求是否还在，配对节点会继续建完；下一次配对先取回它，不能重发 /pair。
 		log.Printf("tailcat pair: 辅助程序 %s 内未返回配对结果", elapsed)
-		err = fmt.Errorf("Tailcat 配对节点仍在等待中继授权，%s 内未完成；节点可能已经生成，请稍后重试一次", timeout)
+		s.pairTimedOut = true
+		err = tailcatPairPendingError(timeout)
 	default:
 		log.Printf("tailcat pair: 辅助程序返回失败（耗时 %s）：%v", elapsed, err)
 	}
 	s.applyConfigurationToStatus(&status)
 	return status, err
+}
+
+// reclaimTimedOutPair 取回上一次超时的配对。辅助程序的 StartPairing 会先销毁现有节点再重建，
+// 直接重发 /pair 会把刚建好的节点拆掉、再走一遍慢授权，可能一直超时下去。辅助程序在配对
+// 期间持有状态锁，这里读 /status 会等到那次配对结束。返回 reused=false 且 err 为空时，
+// 由调用方按正常流程重新生成。
+func (s *tailcatSidecarSupervisor) reclaimTimedOutPair(
+	ctx context.Context,
+	timeout time.Duration,
+) (tailcatStatus, bool, error) {
+	var status tailcatStatus
+	err := s.call(ctx, timeout, http.MethodGet, "/status", nil, &status)
+	if errors.Is(err, context.DeadlineExceeded) {
+		log.Printf("tailcat pair: 上一次的配对节点仍未建好")
+		return status, false, tailcatPairPendingError(timeout)
+	}
+	s.pairTimedOut = false
+	if err != nil || strings.TrimSpace(status.PairAddress) == "" {
+		// 上一次最终失败、已过期，或辅助程序已重启：重新生成。
+		return tailcatStatus{}, false, nil
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339Nano, status.PairExpiresAt)
+	if parseErr != nil || time.Until(expiresAt) < tailcatPairReuseMinRemaining {
+		return tailcatStatus{}, false, nil
+	}
+	log.Printf("tailcat pair: 复用上一次超时后建好的配对节点（剩余 %s）", time.Until(expiresAt).Round(time.Second))
+	return status, true, nil
+}
+
+func tailcatPairPendingError(timeout time.Duration) error {
+	return fmt.Errorf("Tailcat 配对节点仍在等待中继授权，%s 内未完成；节点可能已经生成，请稍后重试一次", timeout)
 }
 
 func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
