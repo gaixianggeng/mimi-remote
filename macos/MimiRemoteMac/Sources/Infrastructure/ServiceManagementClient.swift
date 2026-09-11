@@ -147,13 +147,19 @@ extension ServiceManagementClient {
         if let pid, !pid.isEmpty, pid != "0" { return nil }
         if state == "running" { return nil }
         let neverExited = lastExitCode == nil || lastExitCode == "(never exited)"
+        // launchctl 输出形如 `78`、`78: EX_CONFIG` 或 `0`。KeepAlive 服务有序退出后、
+        // 下一次拉起前同样没有 pid；退出码 0 本身不算失败，只有反复拉起才算循环。
+        let exitCode = lastExitCode.flatMap { value -> Int? in
+            Int(value.prefix { $0 == "-" || $0.isNumber })
+        }
+        let abnormalExit = !neverExited && exitCode != 0
         let repeatedRuns = (runs ?? 0) >= 2
-        guard repeatedRuns || !neverExited else { return nil }
+        guard repeatedRuns || abnormalExit else { return nil }
         var detail = "launchd 无法启动 agentd"
         if let runs, runs >= 2 {
             detail += "，已连续尝试 \(runs) 次"
         }
-        if !neverExited, let lastExitCode {
+        if abnormalExit, let lastExitCode {
             detail += "，最近退出码 \(lastExitCode)"
         }
         if let state, !state.isEmpty {

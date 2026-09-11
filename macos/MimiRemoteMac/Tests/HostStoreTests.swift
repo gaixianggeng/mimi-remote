@@ -647,6 +647,44 @@ final class HostStoreTests: XCTestCase {
         XCTAssertNil(ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: ""))
     }
 
+    /// KeepAlive 服务有序退出（退出码 0）后到下一次拉起之间也没有 pid；只跑过一次时
+    /// 不能当成失败循环，否则会把一次正常退出变成不必要的注销与重新登记。
+    func testLaunchFailureDescriptionIgnoresSingleCleanExit() throws {
+        let cleanExit = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tstate = not running
+        \truns = 1
+        \tlast exit code = 0
+        }
+        """
+        XCTAssertNil(ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: cleanExit))
+
+        let abnormalFirstExit = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tstate = spawn scheduled
+        \truns = 1
+        \tlast exit code = 78: EX_CONFIG
+        }
+        """
+        let detail = try XCTUnwrap(
+            ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: abnormalFirstExit)
+        )
+        XCTAssertTrue(detail.contains("78"), detail)
+
+        let cleanExitLoop = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tstate = spawn scheduled
+        \truns = 4
+        \tlast exit code = 0
+        }
+        """
+        let loopDetail = try XCTUnwrap(
+            ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: cleanExitLoop)
+        )
+        XCTAssertTrue(loopDetail.contains("4 次"), loopDetail)
+        XCTAssertFalse(loopDetail.contains("退出码"), loopDetail)
+    }
+
     func testAgentConfigurationValidatorChecksPlistAndExecutable() throws {
         let fileManager = FileManager.default
         let bundleURL = fileManager.temporaryDirectory
