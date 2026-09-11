@@ -25,8 +25,15 @@ final class HostStore {
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
+    /// `.starting` 期间有值，进入其它生命周期状态时清空。
+    private(set) var startingDetail: String?
     var lastError: String?
     @ObservationIgnored private var pairingRefreshGeneration = 0
+    /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
+    /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
+    /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
+    @ObservationIgnored private var isAwaitingServiceStart = false
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
@@ -169,7 +176,7 @@ final class HostStore {
     static func live() -> HostStore {
         HostStore(
             agent: .live(),
-            services: .live,
+            services: .live(),
             homebrew: .live(),
             health: .live,
             logs: .live,
@@ -907,6 +914,8 @@ final class HostStore {
     }
 
     private func waitForClaudeRuntime(enabled: Bool) async throws {
+        isAwaitingServiceStart = true
+        defer { isAwaitingServiceStart = false }
         for attempt in 0..<12 {
             try Task.checkCancellation()
             if let current = try? await fetchAndApplyLatestStatus() {
@@ -955,6 +964,8 @@ final class HostStore {
     }
 
     private func waitForMacAgentReady() async throws {
+        isAwaitingServiceStart = true
+        defer { isAwaitingServiceStart = false }
         var lastStatus: AgentStatus?
         for _ in 0..<15 {
             try Task.checkCancellation()
@@ -962,9 +973,15 @@ final class HostStore {
                 lastStatus = current
                 if current.serviceOK { return }
             }
+            // 覆盖安装后 BTM 可能沿用旧 App 的 Launch Constraint，launchd 会每 3 秒
+            // 重试却始终拉不起进程。等满整轮再修复会白白浪费近一分钟；一旦 launchd
+            // 自己已经报告反复 spawn 失败，就立即交给上层做一次有界换代。
+            if let launchFailure = await services.agentLaunchFailure() {
+                throw ServiceLifecycleError.agentSpawnFailed(launchFailure)
+            }
             try await Task.sleep(for: .seconds(1))
         }
-        let detail = lastStatus?.serviceError ?? "服务在 15 秒内没有通过就绪检查。"
+        let detail = lastStatus?.serviceError ?? "服务在有限等待内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
     }
 
@@ -983,6 +1000,11 @@ final class HostStore {
             }
 
             let initialError = error
+            // 换代期间仍属于启动阶段：保持 starting 并给出说明，
+            // 避免菜单栏在自动修复时显示"服务已停止"。
+            lifecycle = .starting
+            startingDetail = "覆盖安装后正在重新登记后台服务…"
+            defer { startingDetail = nil }
             do {
                 // register 已落入 enabled 但进程未就绪时，完整换代一次以刷新 BTM
                 // 的 Launch Constraint；递归调用关闭修复开关，保证最多只重试一次。
@@ -1157,6 +1179,9 @@ final class HostStore {
         readinessFailureStartedAt = nil
         if resolved.serviceOK {
             lifecycle = .ready
+        } else if isAwaitingServiceStart {
+            // 启动闭环还在等待就绪；保持"正在启动"，把 degraded/stopped 留给稳态监控。
+            lifecycle = .starting
         } else if resolved.processOK {
             lifecycle = .degraded(
                 resolved.serviceError ?? firstBlockingIssue(in: resolved.doctor)
@@ -1253,6 +1278,8 @@ final class HostStore {
     /// 常驻监控始终以 healthz 作为进程探针；readiness 和完整 runtime 状态按不同频率读取。
     /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
     func performMonitoringTick(_ tick: Int, now: Date) async {
+        // 启动闭环自己在轮询 status；监控此时不得把未就绪写成 degraded。
+        guard !isAwaitingServiceStart else { return }
         guard owner != .none, let endpoint = status?.endpoint else { return }
         guard await health.check(endpoint) else {
             await refresh()
@@ -1380,6 +1407,7 @@ final class HostStore {
     private func fail(_ error: Error) {
         lastError = error.localizedDescription
         lifecycle = .failed(error.localizedDescription)
+        startingDetail = nil
     }
 
     private func validateMacAgentConfiguration() throws {
@@ -1527,6 +1555,7 @@ final class HostStore {
             markAgentRegistrationCurrent: {},
             registerAgent: {},
             unregisterAgent: {},
+            agentLaunchFailure: { nil },
             mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
             openLoginItemsSettings: {}
         )
