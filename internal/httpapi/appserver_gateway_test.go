@@ -1799,6 +1799,31 @@ func TestGatewayThreadListAllowsExplicitHistoryRefreshOnFirstPage(t *testing.T) 
 	}
 }
 
+// PR #430 评审：新 bridge 可以单独升级。只有网关会转发 thread/items/list 时，bridge 才能按
+// summary 裁掉工具过程；因此由网关给 Claude 的 thread/turns/list 写入 itemsListAvailable，
+// Codex 不写，客户端同名参数不透传。
+func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
+	params := map[string]any{
+		"threadId":           "thread-claude",
+		"limit":              json.Number("10"),
+		"sortDirection":      "desc",
+		"itemsView":          "summary",
+		"itemsListAvailable": false,
+	}
+	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
+	}
+
+	claude := sanitizedGatewayThreadTurnsListParams("claude", params)
+	assertGatewayParamsOnly(t, claude, "threadId", "limit", "sortDirection", "itemsView", "itemsListAvailable")
+	if claude["itemsListAvailable"] != true {
+		t.Fatalf("Claude 的 thread/turns/list 应由网关写入 itemsListAvailable=true：%v", claude)
+	}
+
+	codex := sanitizedGatewayThreadTurnsListParams("codex", params)
+	assertGatewayParamsOnly(t, codex, "threadId", "limit", "sortDirection", "itemsView")
+}
+
 func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {
 	updated, ok := gatewayHistoryRequestFromParams("thread/list", map[string]any{
 		"cwd": "/tmp/project", "limit": json.Number("20"), "sortKey": "updated_at",

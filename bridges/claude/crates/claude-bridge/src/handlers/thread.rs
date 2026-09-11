@@ -778,17 +778,25 @@ pub async fn handle_thread_turns_list(
             p::SortDirection::Desc
         ),
     );
-    Ok(apply_items_view(page, params.items_view.as_deref()))
+    Ok(apply_items_view(
+        page,
+        params.items_view.as_deref(),
+        params.items_list_available,
+    ))
 }
 
 /// Codex 的 `summary` 视图只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn
 /// 补齐。此前 bridge 无视 itemsView 一律回完整 items：一个 18 MB 的会话首页要 400–650 KB，
 /// 同样的 Codex 首页只有几 KB，移动端经中继打开 Claude 会话因此明显更慢。
+///
+/// 只有调用方声明会转发 `thread/items/list`（`items_list_available`）时才裁剪：新 bridge 可以
+/// 单独升级，配旧 agentd 时 iOS 仍请求 summary，旧网关却不转发 items/list，裁掉就补不回来。
 fn apply_items_view(
     mut page: p::ThreadTurnsListResponse,
     items_view: Option<&str>,
+    items_list_available: bool,
 ) -> p::ThreadTurnsListResponse {
-    if items_view != Some("summary") {
+    if items_view != Some("summary") || !items_list_available {
         return page;
     }
     for turn in &mut page.data {
@@ -1426,18 +1434,46 @@ mod tests {
             next_cursor: None,
             backwards_cursor: None,
         };
-        let summary = apply_items_view(page.clone(), Some("summary"));
+        let summary = apply_items_view(page.clone(), Some("summary"), true);
         let ids: Vec<&str> = summary.data[0].items.iter().map(|i| i.id()).collect();
         assert_eq!(ids, ["u1", "a1"], "summary 只保留 userMessage/agentMessage");
         assert_eq!(summary.data[0].items_view, "summary");
 
-        let full = apply_items_view(page.clone(), Some("full"));
+        let full = apply_items_view(page.clone(), Some("full"), true);
         assert_eq!(full, page, "full 视图原样返回");
-        let unspecified = apply_items_view(page.clone(), None);
+        let unspecified = apply_items_view(page.clone(), None, true);
         assert_eq!(
             unspecified, page,
             "未指定时保持原有 full 行为，兼容旧客户端"
         );
+    }
+
+    /// 新 bridge 配旧 agentd：旧网关不转发 items/list，也不会带上 items_list_available。
+    /// 这时 summary 必须原样回完整 item，否则工具过程再也补不回来（PR #430 评审）。
+    #[test]
+    fn summary_view_keeps_full_items_when_gateway_cannot_hydrate() {
+        let page = p::ThreadTurnsListResponse {
+            data: vec![turn_with_items(
+                "turn-0",
+                vec![user("u1"), plan("p1"), agent("a1")],
+            )],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        assert_eq!(apply_items_view(page.clone(), Some("summary"), false), page);
+    }
+
+    #[test]
+    fn turns_list_items_list_available_defaults_to_false() {
+        let from_old_gateway: p::ThreadTurnsListParams =
+            serde_json::from_value(serde_json::json!({"threadId": "t", "itemsView": "summary"}))
+                .unwrap();
+        assert!(!from_old_gateway.items_list_available);
+        let from_new_gateway: p::ThreadTurnsListParams = serde_json::from_value(
+            serde_json::json!({"threadId": "t", "itemsView": "summary", "itemsListAvailable": true}),
+        )
+        .unwrap();
+        assert!(from_new_gateway.items_list_available);
     }
 
     #[test]

@@ -420,6 +420,11 @@ pub struct ThreadTurnsListParams {
     /// `summary` 只保留用户与助手文本；`full`（默认）带全部 item。
     #[serde(default)]
     pub items_view: Option<String>,
+    /// 调用方（agentd 网关）会转发 `thread/items/list` 时才为 true，只有这时 bridge 才按
+    /// summary 裁掉工具过程。旧网关不认识这个字段、转发时会丢掉，bridge 就照旧回完整
+    /// item；否则被裁掉的内容在旧网关后面再也补不回来。
+    #[serde(default)]
+    pub items_list_available: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
