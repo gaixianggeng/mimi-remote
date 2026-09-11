@@ -21729,6 +21729,108 @@
         }
       }
     },
+    "ui.push_previous_host_unavailable": {
+      "comment": "Shown when the push binding belongs to another computer that cannot be reached (reinstalled, removed from the app, offline or token rejected).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The previously linked computer can't be reached. It may have been reinstalled, removed, or be offline. You can move notifications to this computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前绑定的电脑无法连接，可能已重装、已删除或离线。可以直接换绑到这台电脑。"
+          }
+        }
+      }
+    },
+    "ui.push_rebind_to_this_computer": {
+      "comment": "Button and confirmation action that moves the push binding to the current computer without contacting the previous one.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move Notifications Here"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直接换绑到这台电脑"
+          }
+        }
+      }
+    },
+    "ui.push_rebind_confirm_title": {
+      "comment": "Confirmation alert title before moving the push binding to the current computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move notifications to this computer?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "换绑到这台电脑？"
+          }
+        }
+      }
+    },
+    "ui.push_rebind_confirm_message": {
+      "comment": "Confirmation alert message before moving the push binding to the current computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications from the previous computer will stop, and this computer will start receiving them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旧电脑上的消息提醒会失效，这台电脑将开始接收提醒。"
+          }
+        }
+      }
+    },
+    "ui.push_previous_binding_revoke_failed": {
+      "comment": "Shown when the push service could not revoke the previous computer's ticket; the old binding is kept unchanged.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't revoke the previous computer's binding. Check your network and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法撤销旧电脑的绑定，请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "ui.push_turn_off_previous_binding": {
+      "comment": "Secondary action that turns off notifications bound to an unreachable previous computer by revoking its ticket, without binding this computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Just Turn Off Previous Notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅关闭旧电脑的消息提醒"
+          }
+        }
+      }
+    },
     "ui.push_switch_to_registered_mac": {
       "comment": "Return to the previously bound Mac before enabling approval notifications for a different Mac.",
       "localizations": {

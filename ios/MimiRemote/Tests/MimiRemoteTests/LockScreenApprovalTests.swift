@@ -771,3 +771,333 @@ extension LockScreenApprovalTests {
         ))), "类型对不上时不删")
     }
 }
+
+// MARK: - 旧电脑联系不上时的换绑与关闭（gh-432）
+
+extension LockScreenApprovalTests {
+    private struct RebindFixture {
+        let defaults: UserDefaults
+        let suite: String
+        let session: URLSession
+        let store: LockScreenApprovalStore
+        let tickets: PushTicketStore
+        let newClient: AgentAPIClient
+        let oldClient: AgentAPIClient
+
+        func tearDown() {
+            defaults.removePersistentDomain(forName: suite)
+            RebindURLProtocol.reset()
+        }
+    }
+
+    /// 绑定在 profile-old 上，当前电脑是 profile-new；两台电脑共用同一个 Provider。
+    @MainActor
+    private func makeRebindFixture() async throws -> RebindFixture {
+        let suite = "LockScreenApprovalTests.Rebind.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        RebindURLProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RebindURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let keychain = TestKeychainOperations()
+        let identityStore = PushInstallationIdentityStore(keychain: keychain)
+        try identityStore.save(.make())
+        let tickets = PushTicketStore(keychain: keychain)
+        try tickets.save("ticket-old")
+        defaults.set(true, forKey: "lockScreenApproval.enabled")
+        defaults.set("profile-old", forKey: "lockScreenApproval.registeredProfileID")
+        defaults.set(RebindURLProtocol.providerURL, forKey: "lockScreenApproval.registeredProviderURL")
+        defaults.set(Date().addingTimeInterval(86400), forKey: "lockScreenApproval.ticketExpiresAt")
+        let store = LockScreenApprovalStore(
+            defaults: defaults,
+            ticketStore: tickets,
+            identityStore: identityStore,
+            clearNotificationTitleCache: {},
+            providerClientFactory: { PushProviderClient(baseURL: $0, session: session) },
+            requestAuthorization: { true }
+        )
+        let newClient = AgentAPIClient(endpoint: "https://profile-new.example", token: "new", session: session)
+        let oldClient = AgentAPIClient(endpoint: "https://profile-old.example", token: "old", session: session)
+        await store.refreshHostSupport(client: newClient, profileID: "profile-new")
+        store.recordConsent(for: "profile-new")
+        XCTAssertTrue(store.hasConsented(for: "profile-new"))
+        store.handleDeviceToken(Data([0xAB, 0xCD, 0xEF]))
+        RebindURLProtocol.clearRecordedRequests()
+        return RebindFixture(
+            defaults: defaults,
+            suite: suite,
+            session: session,
+            store: store,
+            tickets: tickets,
+            newClient: newClient,
+            oldClient: oldClient
+        )
+    }
+
+    /// 旧档案已删或凭据缺失时构造不出旧 client：不发任何请求，旧绑定原样保留，
+    /// 状态明确告诉 UI“旧电脑联系不上”，而不是要求用户回到一台不存在的电脑。
+    @MainActor
+    func testEnableWithoutPreviousClientReportsPreviousHostUnavailableWithoutRequests() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+
+        await fixture.store.enable(client: fixture.newClient, profileID: "profile-new")
+
+        XCTAssertEqual(fixture.store.status, .previousHostUnavailable)
+        XCTAssertEqual(RebindURLProtocol.recordedRequests, [])
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+    }
+
+    /// 旧 agentd 拒绝注销（重装后 Token 失效的典型表现）：撤销刚签发的新 Ticket、
+    /// 保留旧绑定，并进入“旧电脑联系不上”状态，而不是把 401 原样丢给用户。
+    @MainActor
+    func testPreviousHostRejectingUnregisterRollsBackAndReportsPreviousHostUnavailable() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+        RebindURLProtocol.fail("DELETE profile-old.example /api/push/devices", status: 401)
+
+        await fixture.store.enable(
+            client: fixture.newClient,
+            profileID: "profile-new",
+            previousClient: fixture.oldClient,
+            previousClientProfileID: "profile-old"
+        )
+
+        XCTAssertEqual(fixture.store.status, .previousHostUnavailable)
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+        let requests = RebindURLProtocol.recordedRequests
+        XCTAssertTrue(requests.contains("DELETE profile-old.example /api/push/devices"), "\(requests)")
+        XCTAssertFalse(requests.contains("POST profile-new.example /api/push/devices"), "新电脑不应被注册：\(requests)")
+        XCTAssertEqual(RebindURLProtocol.revokedTickets, ["ticket-new"], "只能撤销刚签发的新 Ticket")
+    }
+
+    /// 用户确认换绑：不再联系旧 agentd，先在 Provider 撤销旧 Ticket，再为当前电脑注册。
+    @MainActor
+    func testTakeoverRevokesOldTicketAtProviderThenRegistersCurrentComputer() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+
+        await fixture.store.enable(
+            client: fixture.newClient,
+            profileID: "profile-new",
+            takeOverPreviousBinding: true
+        )
+
+        guard case .active = fixture.store.status else {
+            return XCTFail("换绑后应处于 active，实际：\(fixture.store.status)")
+        }
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(fixture.store.registeredProfileID, "profile-new")
+        XCTAssertEqual(fixture.store.registeredProviderURL, RebindURLProtocol.providerURL)
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-new")
+        XCTAssertEqual(RebindURLProtocol.revokedTickets, ["ticket-old"])
+        XCTAssertEqual(
+            RebindURLProtocol.recordedRequests,
+            [
+                "POST provider.example /mimi-push/v1/ticket/revoke",
+                "POST provider.example /mimi-push/v1/ticket",
+                "POST profile-new.example /api/push/devices",
+            ]
+        )
+    }
+
+    /// Provider 撤销失败时必须原样保留旧绑定：不签发新 Ticket、不注册新电脑、不清本地。
+    @MainActor
+    func testTakeoverKeepsOldBindingWhenProviderRevokeFails() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+        RebindURLProtocol.fail("POST provider.example /mimi-push/v1/ticket/revoke", status: 503)
+
+        await fixture.store.enable(
+            client: fixture.newClient,
+            profileID: "profile-new",
+            takeOverPreviousBinding: true
+        )
+
+        XCTAssertEqual(
+            fixture.store.status,
+            .failed(message: L10n.text("ui.push_previous_binding_revoke_failed"))
+        )
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+        XCTAssertEqual(
+            RebindURLProtocol.recordedRequests,
+            ["POST provider.example /mimi-push/v1/ticket/revoke"]
+        )
+    }
+
+    /// 旧电脑联系不上时也能关闭：Provider 撤销成功后清掉本地绑定，不再要求旧 agentd 注销。
+    @MainActor
+    func testDisableWithoutPreviousHostRevokesAtProviderAndClearsBinding() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+
+        await fixture.store.disable(client: nil, profileID: "profile-old", previousHostUnavailable: true)
+
+        XCTAssertEqual(fixture.store.status, .off)
+        XCTAssertFalse(fixture.store.isEnabled)
+        XCTAssertNil(fixture.store.registeredProfileID)
+        XCTAssertNil(fixture.store.registeredProviderURL)
+        XCTAssertNil(fixture.tickets.load())
+        XCTAssertEqual(RebindURLProtocol.revokedTickets, ["ticket-old"])
+        XCTAssertEqual(
+            RebindURLProtocol.recordedRequests,
+            ["POST provider.example /mimi-push/v1/ticket/revoke"]
+        )
+    }
+
+    /// 没有旧 client 且没有明确标记“旧电脑联系不上”时仍然 fail closed，行为不变。
+    @MainActor
+    func testDisableWithoutClientStillFailsClosedUnlessPreviousHostFlagged() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+        RebindURLProtocol.fail("POST provider.example /mimi-push/v1/ticket/revoke", status: 503)
+
+        await fixture.store.disable(client: nil, profileID: "profile-old")
+        guard case .failed = fixture.store.status else {
+            return XCTFail("未标记旧电脑不可达时不能只清本地痕迹")
+        }
+        XCTAssertEqual(RebindURLProtocol.recordedRequests, [])
+
+        await fixture.store.disable(client: nil, profileID: "profile-old", previousHostUnavailable: true)
+        XCTAssertEqual(
+            fixture.store.status,
+            .failed(message: L10n.text("ui.push_previous_binding_revoke_failed"))
+        )
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+    }
+
+    func testRebindLocalizationKeysExist() {
+        let keys = [
+            "ui.push_previous_host_unavailable",
+            "ui.push_rebind_to_this_computer",
+            "ui.push_rebind_confirm_title",
+            "ui.push_rebind_confirm_message",
+            "ui.push_previous_binding_revoke_failed",
+            "ui.push_turn_off_previous_binding",
+        ]
+        for key in keys {
+            XCTAssertNotEqual(L10n.text(key, language: .simplifiedChinese), key, "缺少中文文案：\(key)")
+            XCTAssertNotEqual(L10n.text(key, language: .english), key, "缺少英文文案：\(key)")
+        }
+    }
+}
+
+/// 同时扮演两台 agentd 和一个 Provider：按“方法 主机 路径”记录请求，并可让指定请求失败。
+private final class RebindURLProtocol: URLProtocol {
+    static let providerURL = "https://provider.example/mimi-push"
+
+    private static let lock = NSLock()
+    private static var requests: [String] = []
+    private static var revoked: [String] = []
+    private static var failures: [String: Int] = [:]
+
+    static var recordedRequests: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    static var revokedTickets: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return revoked
+    }
+
+    static func fail(_ key: String, status: Int) {
+        lock.lock()
+        failures[key] = status
+        lock.unlock()
+    }
+
+    static func clearRecordedRequests() {
+        lock.lock()
+        requests.removeAll()
+        revoked.removeAll()
+        lock.unlock()
+    }
+
+    static func reset() {
+        lock.lock()
+        requests.removeAll()
+        revoked.removeAll()
+        failures.removeAll()
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, let host = url.host else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let method = request.httpMethod ?? "GET"
+        let key = "\(method) \(host) \(url.path)"
+        let body = Self.readBody(of: request)
+        Self.lock.lock()
+        Self.requests.append(key)
+        if url.path.hasSuffix("/v1/ticket/revoke"),
+           let body,
+           let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let ticket = object["ticket"] as? String {
+            Self.revoked.append(ticket)
+        }
+        let failure = Self.failures[key]
+        Self.lock.unlock()
+
+        let status = failure ?? 200
+        let payload: String
+        switch url.path {
+        case let path where path.hasSuffix("/api/push/status"):
+            payload = #"{"enabled":true,"provider_configured":true,"provider_url":"\#(Self.providerURL)"}"#
+        case let path where path.hasSuffix("/api/push/devices") && method == "POST":
+            payload = #"{"device_id":"dev","expires_at":"2099-01-01T00:00:00Z","needs_refresh":false}"#
+        case let path where path.hasSuffix("/api/push/devices"):
+            payload = #"{"removed":true}"#
+        case let path where path.hasSuffix("/v1/ticket/revoke"):
+            payload = "{}"
+        case let path where path.hasSuffix("/v1/ticket"):
+            payload = #"{"ticket":"ticket-new","expires_at":"2099-01-01T00:00:00Z"}"#
+        default:
+            payload = "{}"
+        }
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data((status == 200 ? payload : #"{"error":"stubbed failure"}"#).utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func readBody(of request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: buffer.count)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
+}
