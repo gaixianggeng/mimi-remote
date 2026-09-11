@@ -49,6 +49,10 @@ final class HostInstallerShareUITests: XCTestCase {
             activitySheet.waitForExistence(timeout: 8),
             "点击「发送下载链接」后应弹出系统分享面板；当前元素树：\(app.debugDescription.prefix(4000))"
         )
+        // 真机上启动后的第一次点击会「弹出又立刻收回」（#424 验收反馈）。只看出现过
+        // 不够，必须确认面板停住了。
+        Thread.sleep(forTimeInterval: 2.5)
+        XCTAssertTrue(activitySheet.exists, "分享面板弹出后不应自行收回")
     }
 
     private func element(_ identifier: String) -> XCUIElement {

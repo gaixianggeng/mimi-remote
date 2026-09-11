@@ -161,7 +161,7 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.githubRelease")
 
                 // 不用 ShareLink：它在这一行里点了没有任何反应（#424，模拟器与真机都复现，
-                // 原因未定位）。分享面板改由连接分组的 Section 呈现，这里只登记请求。
+                // 原因未定位）。分享面板由连接页整页呈现，这里只登记请求。
                 Button {
                     transientPreferences.hostInstallerShareRequest = HostInstallerShareRequest(
                         url: transientPreferences.hostInstallationPlatform.installerURL
@@ -196,6 +196,17 @@ struct HostInstallationSetupView: View {
 struct HostInstallerShareRequest: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// 连接页整页持有分享面板的 presenter；只观察这一个对象，登记请求时不会让整页重算。
+struct HostInstallerSharePresenter: ViewModifier {
+    @ObservedObject var preferences: SettingsTransientPreferences
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $preferences.hostInstallerShareRequest) { request in
+            HostInstallerActivityView(url: request.url)
+        }
+    }
 }
 
 /// 系统分享面板。与 ShareJourneyActivityView 相同的包装，只是分享的是安装包链接。
