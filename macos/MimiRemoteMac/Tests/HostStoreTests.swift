@@ -516,6 +516,71 @@ final class HostStoreTests: XCTestCase {
         XCTAssertNil(store?.startingDetail)
     }
 
+    /// 启动等待期间每轮 status 都可能返回"未就绪"。这些结果只用于判断是否继续等，
+    /// 不能把菜单栏从"正在启动"改成"服务需要处理"或"服务已停止"。
+    func testStartupWaitKeepsStartingLifecycleUntilReady() async {
+        let observed = EventRecorder()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var store: HostStore?
+        let capture = { @MainActor in
+            observed.append(store?.lifecycle.title ?? "nil")
+        }
+        store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                await capture()
+                return statusCalls.increment() >= 3 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: { registrationState = .enabled },
+            healthCheck: { _ in false }
+        )
+
+        await store?.bootstrap()
+
+        XCTAssertEqual(statusCalls.current, 3)
+        XCTAssertEqual(observed.values, ["正在启动", "正在启动", "正在启动"])
+        XCTAssertEqual(store?.lifecycle, .ready)
+    }
+
+    /// 自动换代后仍拉不起进程时，结果必须是明确的"启动失败"，而不是停留在
+    /// 启动中，也不是被轮询结果写成"服务已停止"。
+    func testStartupRepairFailureEndsInFailedLifecycle() async {
+        let observed = EventRecorder()
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var store: HostStore?
+        let capture = { @MainActor in
+            observed.append(store?.lifecycle.title ?? "nil")
+        }
+        store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                await capture()
+                return Self.stoppedStatus
+            },
+            registerAgent: {
+                _ = registrationAttempts.increment()
+                registrationState = .enabled
+            },
+            unregisterAgent: { registrationState = .notRegistered },
+            agentLaunchFailure: { "launchd 无法启动 agentd，已连续尝试 2 次，最近退出码 78" },
+            healthCheck: { _ in false }
+        )
+
+        await store?.bootstrap()
+
+        XCTAssertEqual(registrationAttempts.current, 2)
+        XCTAssertEqual(observed.values, ["正在启动", "正在启动"])
+        guard case .failed(let message)? = store?.lifecycle else {
+            return XCTFail("换代后仍失败应进入 failed，实际 \(String(describing: store?.lifecycle))")
+        }
+        XCTAssertTrue(message.contains("自动重新登记仍未恢复"), message)
+        XCTAssertNil(store?.startingDetail)
+    }
+
     func testLaunchFailureDescriptionIgnoresRunningJob() {
         let output = """
         gui/501/com.gaixianggeng.mimi.mac.agentd = {

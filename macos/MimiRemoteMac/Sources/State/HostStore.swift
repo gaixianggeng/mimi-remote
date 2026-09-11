@@ -30,6 +30,10 @@ final class HostStore {
     private(set) var startingDetail: String?
     var lastError: String?
     @ObservationIgnored private var pairingRefreshGeneration = 0
+    /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
+    /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
+    /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
+    @ObservationIgnored private var isAwaitingServiceStart = false
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
@@ -910,6 +914,8 @@ final class HostStore {
     }
 
     private func waitForClaudeRuntime(enabled: Bool) async throws {
+        isAwaitingServiceStart = true
+        defer { isAwaitingServiceStart = false }
         for attempt in 0..<12 {
             try Task.checkCancellation()
             if let current = try? await fetchAndApplyLatestStatus() {
@@ -958,6 +964,8 @@ final class HostStore {
     }
 
     private func waitForMacAgentReady() async throws {
+        isAwaitingServiceStart = true
+        defer { isAwaitingServiceStart = false }
         var lastStatus: AgentStatus?
         for _ in 0..<15 {
             try Task.checkCancellation()
@@ -992,8 +1000,8 @@ final class HostStore {
             }
 
             let initialError = error
-            // 换代期间仍属于启动阶段：轮询 status 可能已把生命周期落成 stopped，
-            // 这里恢复 starting 并给出说明，避免菜单栏在自动修复时显示“服务已停止”。
+            // 换代期间仍属于启动阶段：保持 starting 并给出说明，
+            // 避免菜单栏在自动修复时显示"服务已停止"。
             lifecycle = .starting
             startingDetail = "覆盖安装后正在重新登记后台服务…"
             defer { startingDetail = nil }
@@ -1171,6 +1179,9 @@ final class HostStore {
         readinessFailureStartedAt = nil
         if resolved.serviceOK {
             lifecycle = .ready
+        } else if isAwaitingServiceStart {
+            // 启动闭环还在等待就绪；保持"正在启动"，把 degraded/stopped 留给稳态监控。
+            lifecycle = .starting
         } else if resolved.processOK {
             lifecycle = .degraded(
                 resolved.serviceError ?? firstBlockingIssue(in: resolved.doctor)
@@ -1267,6 +1278,8 @@ final class HostStore {
     /// 常驻监控始终以 healthz 作为进程探针；readiness 和完整 runtime 状态按不同频率读取。
     /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
     func performMonitoringTick(_ tick: Int, now: Date) async {
+        // 启动闭环自己在轮询 status；监控此时不得把未就绪写成 degraded。
+        guard !isAwaitingServiceStart else { return }
         guard owner != .none, let endpoint = status?.endpoint else { return }
         guard await health.check(endpoint) else {
             await refresh()
