@@ -24,24 +24,39 @@ final class LockScreenApprovalStore: ObservableObject {
         case registering
         case active(expiresAt: Date)
         case failed(message: String)
+        /// 绑定还在另一台电脑上，而那台电脑联系不上（档案已删、已重装、离线或
+        /// Token 被拒）。旧绑定原样保留；UI 据此提供“直接换绑到这台电脑”的出口。
+        case previousHostUnavailable
     }
 
     private enum BindingError: LocalizedError {
         case previousClientUnavailable
         case previousProviderUnavailable
 		case providerChanged
+		/// 旧 agentd 的注销请求失败。无论是 401、404 还是网络错误，对用户来说都是
+		/// “旧电脑联系不上”；具体原因不影响下一步（Provider 撤销后换绑）。
+		case previousHostUnreachable
+		/// 换绑或关闭时 Provider 没能撤销旧 Ticket；旧绑定必须原样保留。
+		case previousBindingRevokeFailed
 
         var errorDescription: String? {
 			switch self {
 			case .providerChanged:
 				return L10n.text("ui.push_consent_required")
-			case .previousClientUnavailable:
-                return L10n.text("ui.push_switch_to_registered_mac")
+			case .previousClientUnavailable, .previousHostUnreachable:
+                return L10n.text("ui.push_previous_host_unavailable")
+			case .previousBindingRevokeFailed:
+				return L10n.text("ui.push_previous_binding_revoke_failed")
             case .previousProviderUnavailable:
 				return L10n.text("ui.push_approval_result_unknown")
 			}
         }
     }
+
+	/// 测试需要替换 Provider 与系统通知授权：前者用 URLProtocol 桩，后者不能真的弹
+	/// 系统对话框。生产路径保持默认值。
+	typealias ProviderClientFactory = (String) -> PushProviderClient
+	typealias NotificationAuthorizationRequest = () async throws -> Bool
 
 	private enum Key {
         static let enabled = "lockScreenApproval.enabled"
@@ -80,6 +95,8 @@ final class LockScreenApprovalStore: ObservableObject {
 	/// 关闭提醒时同步删除 App Group 里的会话标题缓存（gh-418）；功能关掉后
 	/// 设备上不该留着一份没有用途的标题副本。测试可注入替身。
 	private let clearNotificationTitleCache: () -> Void
+	private let providerClientFactory: ProviderClientFactory
+	private let requestAuthorization: NotificationAuthorizationRequest
 	private let identity: PushInstallationIdentity?
 	private var deviceTokenContinuations: [CheckedContinuation<String, Error>] = []
 	private var cachedDeviceToken: String?
@@ -94,13 +111,19 @@ final class LockScreenApprovalStore: ObservableObject {
         ticketStore: PushTicketStore = PushTicketStore(),
 		identityStore: PushInstallationIdentityStore = PushInstallationIdentityStore(),
         environment: PushEnvironment = .current(),
-		clearNotificationTitleCache: @escaping () -> Void = { NotificationTitleCache.clear() }
+		clearNotificationTitleCache: @escaping () -> Void = { NotificationTitleCache.clear() },
+		providerClientFactory: @escaping ProviderClientFactory = { PushProviderClient(baseURL: $0) },
+		requestAuthorization: NotificationAuthorizationRequest? = nil
     ) {
         self.defaults = defaults
         self.center = center
         self.ticketStore = ticketStore
         self.environment = environment
 		self.clearNotificationTitleCache = clearNotificationTitleCache
+		self.providerClientFactory = providerClientFactory
+		self.requestAuthorization = requestAuthorization ?? {
+			try await center.requestAuthorization(options: [.alert, .sound, .badge])
+		}
 		do {
 			let resolution = try Self.resolveIdentity(
 				defaults: defaults,
@@ -219,12 +242,16 @@ final class LockScreenApprovalStore: ObservableObject {
 		defaults.removeObject(forKey: Key.consentedHost)
 	}
 
+	/// `takeOverPreviousBinding` 只在旧绑定属于另一台电脑且那台电脑联系不上时使用：
+	/// 跳过旧 agentd 的注销，以 Provider 撤销旧 Ticket 为准，再为当前电脑重新注册。
+	/// 必须由用户在设置页显式确认后才传 true。
 	func enable(
 		client: AgentAPIClient,
 		profileID: String,
 		providerURL: String? = nil,
 		previousClient: AgentAPIClient? = nil,
-		previousClientProfileID: String? = nil
+		previousClientProfileID: String? = nil,
+		takeOverPreviousBinding: Bool = false
 	) async {
 		await withBindingOperation {
 			await performEnableUntilCurrentDeviceToken(
@@ -232,7 +259,8 @@ final class LockScreenApprovalStore: ObservableObject {
 				profileID: profileID,
 				providerURL: providerURL,
 				previousClient: previousClient,
-				previousClientProfileID: previousClientProfileID
+				previousClientProfileID: previousClientProfileID,
+				takeOverPreviousBinding: takeOverPreviousBinding
 			)
 		}
 	}
@@ -242,14 +270,16 @@ final class LockScreenApprovalStore: ObservableObject {
 		profileID: String,
 		providerURL: String?,
 		previousClient: AgentAPIClient?,
-		previousClientProfileID: String?
+		previousClientProfileID: String?,
+		takeOverPreviousBinding: Bool = false
 	) async {
 		await performEnable(
 			client: client,
 			profileID: profileID,
 			providerURL: providerURL,
 			previousClient: previousClient,
-			previousClientProfileID: previousClientProfileID
+			previousClientProfileID: previousClientProfileID,
+			takeOverPreviousBinding: takeOverPreviousBinding
 		)
 		// APNs 可能在上一次注册已经读取 cachedDeviceToken 后回调新 Token。
 		// 每次成功后重新比较，直到远端绑定与当前缓存一致。
@@ -275,7 +305,8 @@ final class LockScreenApprovalStore: ObservableObject {
 		profileID: String,
 		providerURL: String?,
 		previousClient: AgentAPIClient?,
-		previousClientProfileID: String?
+		previousClientProfileID: String?,
+		takeOverPreviousBinding: Bool = false
 	) async {
 		guard let identity else {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
@@ -300,24 +331,50 @@ final class LockScreenApprovalStore: ObservableObject {
 		}
 		let needsProviderSwitch = previousProviderURL != nil && previousProviderURL != baseURL
 		let needsBindingSwitch = needsProfileSwitch || needsProviderSwitch
-		let provider = PushProviderClient(baseURL: baseURL)
+		let provider = providerClientFactory(baseURL)
 		guard defaults.string(forKey: Key.consentedProviderURL) == baseURL else {
 			status = .failed(message: L10n.text("ui.push_consent_required"))
 			return
 		}
 		if needsBindingSwitch {
-			guard previousTicket != nil,
-			      previousExpiry != nil else {
+			guard let previousTicket,
+			      previousExpiry != nil,
+			      let previousProviderURL else {
 				status = .failed(message: BindingError.previousProviderUnavailable.localizedDescription)
 				return
 			}
-			if previousProviderURL == nil {
-				status = .failed(message: BindingError.previousProviderUnavailable.localizedDescription)
+			if takeOverPreviousBinding {
+				// 旧电脑联系不上时不再要求它先注销：真正决定投递的是 Provider 手里的
+				// Ticket。撤销成功后 Provider 以 ticket_revoked 拒绝旧 agentd 的投递，
+				// 旧 agentd 据此删除这台设备。撤销必须成功；失败就原样保留旧绑定，
+				// 绝不制造两边都注册的窗口。
+				status = .registering
+				do {
+					try await providerClientFactory(previousProviderURL).revokeTicket(previousTicket)
+				} catch {
+					status = .failed(message: BindingError.previousBindingRevokeFailed.localizedDescription)
+					return
+				}
+				clearStoredBinding()
+				// 旧绑定已经不存在，剩下的就是一次干净的首次开启；中途失败留下的也是关闭态。
+				await performEnable(
+					client: client,
+					profileID: profileID,
+					providerURL: providerURL,
+					previousClient: nil,
+					previousClientProfileID: nil
+				)
+				if !isEnabled {
+					// 旧绑定已撤销、新注册没成功：此刻功能就是关闭态。按关闭路径清掉标题缓存、
+					// 远程通知注册和残留的锁屏卡片，保留 performEnable 给出的失败状态。
+					await clearOffStateArtifacts()
+				}
 				return
 			}
 			if needsProfileSwitch,
 			   previousClient == nil || previousClientProfileID != previousProfileID {
-				status = .failed(message: BindingError.previousClientUnavailable.localizedDescription)
+				// 旧档案已删、Tailcat 档案非当前或缺少凭据：没有网络请求可发。
+				status = .previousHostUnavailable
 				return
 			}
 		}
@@ -357,7 +414,13 @@ final class LockScreenApprovalStore: ObservableObject {
 				}
 				// 同一安装只允许一个绑定。先撤销旧 agentd 注册，再提交新 Profile。
 				previousUnregistrationAttempted = true
-				try await previousClient.unregisterPushDevice(deviceID: identity.deviceID)
+				do {
+					try await previousClient.unregisterPushDevice(deviceID: identity.deviceID)
+				} catch {
+					// 401、404、超时或断网在这里都是同一个结论：旧电脑联系不上。
+					// 具体错误不改变下一步，用户可以在确认后走 Provider 撤销换绑。
+					throw BindingError.previousHostUnreachable
+				}
 			}
 
 			try ticketStore.save(ticket.value)
@@ -377,7 +440,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			   let previousTicket,
 			   let previousProviderURL {
 				// 新注册确认后再撤销旧 Ticket；撤销失败会进入下方回滚，避免静默双活。
-				try await PushProviderClient(baseURL: previousProviderURL).revokeTicket(previousTicket)
+				try await providerClientFactory(previousProviderURL).revokeTicket(previousTicket)
 			}
 
 			defaults.set(true, forKey: Key.enabled)
@@ -391,7 +454,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			if !needsBindingSwitch,
 			   let previousTicket,
 			   previousTicket != ticket.value {
-				try? await PushProviderClient(baseURL: previousProviderURL ?? baseURL)
+				try? await providerClientFactory(previousProviderURL ?? baseURL)
 					.revokeTicket(previousTicket)
 			}
 		} catch {
@@ -432,19 +495,47 @@ final class LockScreenApprovalStore: ObservableObject {
 				try? await provider.revokeTicket(issuedTicket)
 			}
 			defaults.set(wasEnabled, forKey: Key.enabled)
-			status = .failed(message: error.localizedDescription)
+			switch error as? BindingError {
+			case .previousClientUnavailable?, .previousHostUnreachable?:
+				// 旧绑定原样保留；由 UI 提供“直接换绑到这台电脑”的出口。
+				status = .previousHostUnavailable
+			default:
+				status = .failed(message: error.localizedDescription)
+			}
+		}
+	}
+
+	/// 把本地绑定彻底清成关闭态：Ticket、注册记录和 Token 指纹都不保留。
+	/// 只在 Provider 已经撤销旧 Ticket 之后调用。
+	private func clearStoredBinding() {
+		try? ticketStore.delete()
+		defaults.set(false, forKey: Key.enabled)
+		for key in [Key.ticketExpiresAt, Key.registeredProfileID, Key.registeredProviderURL, Key.deviceTokenFingerprint] {
+			defaults.removeObject(forKey: key)
 		}
 	}
 
 	/// 关闭等价于撤销：删除本地 Ticket、让 agentd 忘记这台设备、请求 Provider
 	/// 把 Ticket ID 加入撤销表，并注销远程通知。
-	func disable(client: AgentAPIClient?, profileID: String?) async {
+	func disable(
+		client: AgentAPIClient?,
+		profileID: String?,
+		previousHostUnavailable: Bool = false
+	) async {
 		await withBindingOperation {
-			await performDisable(client: client, profileID: profileID)
+			await performDisable(
+				client: client,
+				profileID: profileID,
+				previousHostUnavailable: previousHostUnavailable
+			)
 		}
 	}
 
-	private func performDisable(client: AgentAPIClient?, profileID: String?) async {
+	private func performDisable(
+		client: AgentAPIClient?,
+		profileID: String?,
+		previousHostUnavailable: Bool
+	) async {
 		guard let identity else {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
@@ -455,7 +546,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
 		}
-		guard let client else {
+		guard client != nil || previousHostUnavailable else {
 			// 没有来源 client 时不能确认 agentd 已注销；保留全部绑定状态，
 			// 让用户恢复连接后重试，而不是只清理本地痕迹。
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
@@ -468,9 +559,17 @@ final class LockScreenApprovalStore: ObservableObject {
 			return
 		}
 		do {
-			try await client.unregisterPushDevice(deviceID: identity.deviceID)
+			if let client {
+				try await client.unregisterPushDevice(deviceID: identity.deviceID)
+			}
+			// 旧电脑联系不上时（client 为 nil），Provider 撤销就是关闭的全部保证：
+			// 撤销失败必须保留绑定，只清本地痕迹会让 Provider 继续持有一张有效 Ticket。
 			if let ticket, let registeredProviderURL {
-				try await PushProviderClient(baseURL: registeredProviderURL).revokeTicket(ticket)
+				do {
+					try await providerClientFactory(registeredProviderURL).revokeTicket(ticket)
+				} catch where client == nil {
+					throw BindingError.previousBindingRevokeFailed
+				}
 			}
 			try ticketStore.delete()
 		} catch {
@@ -482,7 +581,12 @@ final class LockScreenApprovalStore: ObservableObject {
 			defaults.removeObject(forKey: key)
 		}
 		status = .off
-		// 关闭后不会再有推送命中缓存；标题副本随功能一起清掉。
+		await clearOffStateArtifacts()
+	}
+
+	/// 功能进入关闭态后的本地清理：不会再有推送命中缓存，标题副本随功能一起清掉；
+	/// 注销远程通知，并移走已经送达的审批卡片。
+	private func clearOffStateArtifacts() async {
 		clearNotificationTitleCache()
 		#if canImport(UIKit)
 		UIApplication.shared.unregisterForRemoteNotifications()
@@ -758,7 +862,7 @@ final class LockScreenApprovalStore: ObservableObject {
     // MARK: - 内部
 
     private func requestNotificationAuthorization() async throws -> Bool {
-        try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        try await requestAuthorization()
     }
 
     private func obtainDeviceToken() async throws -> String {

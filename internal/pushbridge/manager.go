@@ -308,7 +308,7 @@ func (m *Manager) fanout(ctx context.Context, action Action, event string, devic
 			}
 			if err := m.notifyer(deviceCtx, notification); err != nil {
 				if errors.Is(err, ErrDeviceUnregistered) {
-					if _, removed, removeErr := m.devices.Remove(device.ID); removeErr != nil {
+					if _, removed, removeErr := m.devices.RemoveIfTicket(device.ID, device.Ticket); removeErr != nil {
 						log.Printf("push bridge 删除失效设备失败 err=%v", removeErr)
 					} else if removed {
 						m.actions.RevokeDevice(device.ID)

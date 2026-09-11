@@ -19,7 +19,8 @@ const (
 	providerUserAgent = "mimi-agentd-push/1"
 )
 
-// ErrDeviceUnregistered 表示 APNs 已确认该设备 Token 失效，调用方应删除本地设备。
+// ErrDeviceUnregistered 表示 APNs 已确认该设备 Token 失效，或 Provider 确认这张
+// Ticket 已被撤销；两种情况下本机注册都不可能再投递成功，调用方应删除本地设备。
 var ErrDeviceUnregistered = errors.New("设备 Token 已失效")
 
 type Notification struct {
@@ -129,6 +130,12 @@ func (c *Client) post(ctx context.Context, path string, body any, target any) er
 	if resp.StatusCode == http.StatusGone {
 		return ErrDeviceUnregistered
 	}
+	if resp.StatusCode == http.StatusForbidden && providerReason(raw) == providerReasonTicketRevoked {
+		// 手机把消息提醒换绑到另一台电脑时，旧 Ticket 在 Provider 被撤销，而这台电脑
+		// 可能根本没被联系到。Provider 以 ticket_revoked 拒绝后按设备失效处理，
+		// 避免之后每次审批都拿同一张死 Ticket 重试。
+		return ErrDeviceUnregistered
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// 只回状态码与 Provider 的固定错误枚举，绝不把响应体原样带进日志。
 		return fmt.Errorf("push provider %s 返回 %d (%s)", path, resp.StatusCode, providerReason(raw))
@@ -138,6 +145,9 @@ func (c *Client) post(ctx context.Context, path string, body any, target any) er
 	}
 	return json.Unmarshal(raw, target)
 }
+
+// providerReasonTicketRevoked 是 Provider 对已撤销 Ticket 返回的固定错误枚举。
+const providerReasonTicketRevoked = "ticket_revoked"
 
 func providerReason(raw []byte) string {
 	var body struct {
