@@ -615,7 +615,9 @@ func makeDirectAppServerConfig(
     )
 }
 
-func makeClaudeChannelMetadata() -> CodexAppServerChannelMetadata {
+/// 默认方法集对应 #411 之前的 agentd：Claude 渠道没有 thread/items/list。
+/// 新 agentd 会声明该方法，测试用 `methods:` 覆盖。
+func makeClaudeChannelMetadata(methods: [String]? = nil) -> CodexAppServerChannelMetadata {
     CodexAppServerChannelMetadata(
         id: "claude",
         runtimeID: "claude",
@@ -629,9 +631,9 @@ func makeClaudeChannelMetadata() -> CodexAppServerChannelMetadata {
         experimental: true,
         lifecycle: "per_connection",
         bridge: nil,
-        // 与 agentd 的 appServerClaudeAllowedMethods 保持一致：Claude 渠道没有
-        // thread/items/list，顶层 policy.allowed_methods 里的那一条对它不作数。
-        methods: [
+        // 顶层 policy.allowed_methods 里的 thread/items/list 对 Claude 渠道不作数，
+        // 只看这里声明了什么。
+        methods: methods ?? [
             "initialize", "initialized", "thread/list", "thread/start", "thread/resume",
             "thread/read", "thread/turns/list", "turn/start", "turn/steer", "turn/interrupt",
             "model/list", "account/rateLimits/read"

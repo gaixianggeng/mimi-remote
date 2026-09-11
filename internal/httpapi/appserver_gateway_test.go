@@ -140,6 +140,34 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	if containsAnyString(methods, "account/usage/read") {
 		t.Fatalf("Claude bridge 不应开放 Codex 账号 Token 活动：%v", methods)
 	}
+	if !containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.9 起的 bridge 按 turn 分页 item，channel 必须声明 thread/items/list：%v", methods)
+	}
+}
+
+// #411：旧 bridge 无视 itemsView 直接回完整 items，iOS 能正常显示，不抬最低版本；
+// 但不能对它声明 thread/items/list，否则 iOS 会把 summary 首页排进注定失败的补齐任务。
+func TestAppServerConfigHidesClaudeItemsListForBridgeWithoutItemPaging(t *testing.T) {
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.8")
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	body := decodeJSON(t, rec)
+	claude := body["channels"].([]any)[1].(map[string]any)
+	if claude["gateway_available"] != true {
+		t.Fatalf("0.2.8 仍满足最低版本，gateway 应可用：%v", claude)
+	}
+	methods := claude["methods"].([]any)
+	if containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.8 bridge 没有 thread/items/list，channel 不应声明：%v", methods)
+	}
+	if !containsAnyString(methods, "thread/turns/list") || !containsAnyString(methods, "account/rateLimits/read") {
+		t.Fatalf("其余 Claude 方法不应受影响：%v", methods)
+	}
 }
 
 func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testing.T) {

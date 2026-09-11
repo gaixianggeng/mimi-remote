@@ -11,6 +11,11 @@ const (
 	// 0.2.8 移除额度查询触发的隐藏 Claude OAuth 刷新。旧 0.2.7 会继续
 	// 启动 /status 并可能竞争 refresh token，因此必须整体 fail closed。
 	MinimumVersion = "0.2.8"
+	// 0.2.9 起 thread/turns/list 按 itemsView=summary 只回文本，并提供 thread/items/list
+	// 按 turn 补齐工具过程。旧 bridge 无视 itemsView 直接回完整 items，iOS 也能正常
+	// 显示，所以不抬最低版本；只是不能对它声明 thread/items/list，否则 iOS 会把
+	// 首页排进注定失败的补齐任务。
+	ThreadItemsListVersion = "0.2.9"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
 	BridgeRepository = "https://github.com/gaixianggeng/mimi-remote.git"
 	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"
@@ -30,6 +35,11 @@ func ParseVersion(output string) (string, bool) {
 
 func IsSupported(version string) bool {
 	return Compare(version, MinimumVersion) >= 0
+}
+
+// SupportsThreadItemsList 只在 bridge 真能按 turn 分页 item 时为真。
+func SupportsThreadItemsList(version string) bool {
+	return Compare(version, ThreadItemsListVersion) >= 0
 }
 
 func Compare(left string, right string) int {

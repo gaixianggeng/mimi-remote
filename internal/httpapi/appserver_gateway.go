@@ -193,13 +193,16 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 }
 
 var appServerClaudeAllowedMethods = map[string]struct{}{
-	"initialize":              {},
-	"initialized":             {},
-	"thread/list":             {},
-	"thread/start":            {},
-	"thread/resume":           {},
-	"thread/read":             {},
-	"thread/turns/list":       {},
+	"initialize":        {},
+	"initialized":       {},
+	"thread/list":       {},
+	"thread/start":      {},
+	"thread/resume":     {},
+	"thread/read":       {},
+	"thread/turns/list": {},
+	// bridge 按 turn 分页 item；iOS 只在 channel 声明了该方法时才把 summary 首页的
+	// 工具过程排进后台补齐，否则会把 summary 当成"内容未加载"。
+	"thread/items/list":       {},
 	"turn/start":              {},
 	"turn/steer":              {},
 	"turn/interrupt":          {},
@@ -539,6 +542,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		claudeMethods := appServerAllowedMethodListForRuntime("claude")
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
+		}
+		if !probe.Healthy || !claudebridge.SupportsThreadItemsList(probe.Version) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "thread/items/list")
 		}
 		channels = append(channels, appServerChannel{
 			ID:               "claude",

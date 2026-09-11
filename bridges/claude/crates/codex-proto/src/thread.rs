@@ -417,6 +417,9 @@ pub struct ThreadTurnsListParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub sort_direction: Option<SortDirection>,
+    /// `summary` 只保留用户与助手文本；`full`（默认）带全部 item。
+    #[serde(default)]
+    pub items_view: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -425,6 +428,37 @@ pub struct ThreadTurnsListResponse {
     pub data: Vec<Turn>,
     pub next_cursor: Option<String>,
     pub backwards_cursor: Option<String>,
+}
+
+// === thread/items/list =====================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListParams {
+    pub thread_id: String,
+    /// 为空时列出整个 thread 的 item。
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub sort_direction: Option<SortDirection>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListEntry {
+    pub turn_id: String,
+    pub item: ThreadItem,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListResponse {
+    pub data: Vec<ThreadItemsListEntry>,
+    pub next_cursor: Option<String>,
 }
 
 // === thread/backgroundTerminals/clean ======================================

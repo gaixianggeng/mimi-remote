@@ -43,6 +43,18 @@ func TestIsSupported(t *testing.T) {
 	}
 }
 
+func TestSupportsThreadItemsList(t *testing.T) {
+	if SupportsThreadItemsList("0.2.8") {
+		t.Fatal("0.2.8 无视 itemsView 也没有 thread/items/list，不应声明能力")
+	}
+	if !SupportsThreadItemsList("0.2.9") || !SupportsThreadItemsList("1.0.0") {
+		t.Fatal("0.2.9 及更高版本应声明 thread/items/list")
+	}
+	if SupportsThreadItemsList("0.2.9-beta.1") || SupportsThreadItemsList("") {
+		t.Fatal("预发布或缺失版本不能通过能力门禁")
+	}
+}
+
 func TestInstallHintUsesMonorepo(t *testing.T) {
 	if !strings.Contains(InstallHint, BridgeRepository) {
 		t.Fatalf("安装提示未指向 Mimi Remote monorepo：%s", InstallHint)
