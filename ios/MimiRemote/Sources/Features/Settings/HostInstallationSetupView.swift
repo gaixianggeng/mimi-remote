@@ -90,7 +90,19 @@ struct HostInstallationSetupView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
+        // Form 会把 DisclosureGroup 的展开内容当作子行再缩进一级（约 20pt），和下方扫码按钮、
+        // 其他入口的起始边对不齐。这里只让 DisclosureGroup 负责标题行、系统展开箭头和旁白的
+        // 展开状态；内容作为同级行跟随同一个展开状态出现，与整个分组共用一条起始边。
         DisclosureGroup(isExpanded: isExpanded) {
+            EmptyView()
+        } label: {
+            ConnectionRowLabel(title: L10n.text("ui.first_time_installation"), systemImage: "arrow.down.app")
+                .accessibilityIdentifier("settings.hostInstaller.disclosure")
+        }
+        .settingsRow()
+        .listRowBackground(tokens.settingsGroupBackground)
+
+        if isExpanded.wrappedValue {
             VStack(alignment: .leading, spacing: 16) {
                 Picker(
                     L10n.text("ui.computer_platform"),
@@ -167,12 +179,11 @@ struct HostInstallationSetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 12)
-        } label: {
-            ConnectionRowLabel(title: L10n.text("ui.first_time_installation"), systemImage: "arrow.down.app")
-                .accessibilityIdentifier("settings.hostInstaller.disclosure")
+            .settingsRow()
+            .listRowBackground(tokens.settingsGroupBackground)
+            // 展开内容是标题行的延续，不用分隔线把两者切开。
+            .listRowSeparator(.hidden, edges: .top)
         }
-        .settingsRow()
-        .listRowBackground(tokens.settingsGroupBackground)
     }
 }
 
