@@ -402,6 +402,186 @@ final class HostStoreTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    /// 覆盖安装后 launchd 可能沿用旧 Launch Constraint，每 3 秒 spawn 失败一次。
+    /// 只要 launchd 自己已报告反复失败，就应在少量轮询后立即换代，而不是等满整轮。
+    func testLaunchdSpawnFailureTriggersImmediateReregistration() async {
+        let events = EventRecorder()
+        let statusCalls = CallCounter()
+        let launchFailureCalls = CallCounter()
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                _ = statusCalls.increment()
+                return registrationAttempts.current >= 2 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: {
+                let attempt = registrationAttempts.increment()
+                events.append("register-\(attempt)")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: {
+                _ = launchFailureCalls.increment()
+                return registrationAttempts.current == 1
+                    ? "launchd 无法启动 agentd，已连续尝试 3 次，最近退出码 78"
+                    : nil
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["register-1", "unregister-mac", "register-2"])
+        XCTAssertEqual(registrationAttempts.current, 2)
+        // 第一次登记只轮询一次 status 就发现 launchd 已在失败循环里，随后换代成功。
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(launchFailureCalls.current, 1)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.startingDetail)
+        XCTAssertNil(store.lastError)
+    }
+
+    /// 进程存活但尚未就绪的慢启动不会被误判：launchd 没有报告失败时继续等待，
+    /// 不做多余的注销与重新登记。
+    func testSlowStartWithoutLaunchdFailureKeepsWaitingWithoutRepair() async {
+        let events = EventRecorder()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusCalls.increment() >= 3 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: { nil },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["register-mac"])
+        XCTAssertEqual(statusCalls.current, 3)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.startingDetail)
+    }
+
+    /// 自动换代期间菜单栏应显示正在重新登记的说明，而不是“服务已停止”。
+    func testAutomaticRepairExposesStartingDetailWhileReregistering() async {
+        let observed = EventRecorder()
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var store: HostStore?
+        let capture = { @MainActor in
+            observed.append("\(store?.lifecycle == .starting)|\(store?.startingDetail ?? "nil")")
+        }
+        store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                registrationAttempts.current >= 2 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: {
+                _ = registrationAttempts.increment()
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                await capture()
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: {
+                registrationAttempts.current == 1 ? "launchd 无法启动 agentd，已连续尝试 2 次" : nil
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store?.bootstrap()
+
+        XCTAssertEqual(observed.values, ["true|覆盖安装后正在重新登记后台服务…"])
+        XCTAssertEqual(store?.lifecycle, .ready)
+        XCTAssertNil(store?.startingDetail)
+    }
+
+    func testLaunchFailureDescriptionIgnoresRunningJob() {
+        let output = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tactive count = 1
+        \tpath = /Applications/Mimi Remote Mac.app/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist
+        \tstate = running
+        \tparent bundle identifier = com.gaixianggeng.mimi.mac
+        \truns = 1
+        \tpid = 3856
+        \tlast exit code = (never exited)
+        \tendpoints = {
+        \t\t"com.gaixianggeng.mimi.mac.agentd" = {
+        \t\t\tstate = active
+        \t\t}
+        \t}
+        \tjob state = running
+        }
+        """
+        XCTAssertNil(ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: output))
+    }
+
+    func testLaunchFailureDescriptionDetectsSpawnFailureLoop() throws {
+        let output = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tactive count = 0
+        \tstate = spawn scheduled
+        \tparent bundle identifier = com.gaixianggeng.mimi.mac
+        \truns = 17
+        \tlast exit code = 78
+        \tendpoints = {
+        \t\t"com.gaixianggeng.mimi.mac.agentd" = {
+        \t\t\tstate = active
+        \t\t}
+        \t}
+        \tjob state = spawn scheduled
+        }
+        """
+        let detail = try XCTUnwrap(
+            ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: output)
+        )
+        XCTAssertTrue(detail.contains("17 次"), detail)
+        XCTAssertTrue(detail.contains("78"), detail)
+        XCTAssertEqual(
+            ServiceLifecycleError.agentSpawnFailed(detail).errorDescription?.contains("后台服务记录可能已过期"),
+            true
+        )
+    }
+
+    func testLaunchFailureDescriptionIgnoresFirstSpawnAndMissingJob() {
+        let firstSpawn = """
+        gui/501/com.gaixianggeng.mimi.mac.agentd = {
+        \tstate = spawn scheduled
+        \truns = 1
+        \tlast exit code = (never exited)
+        }
+        """
+        XCTAssertNil(ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: firstSpawn))
+        XCTAssertNil(
+            ServiceManagementClient.launchFailureDescription(
+                fromLaunchctlOutput: "Could not find service \"com.gaixianggeng.mimi.mac.agentd\" in domain for login: 100015",
+                exitStatus: 113
+            )
+        )
+        XCTAssertNil(ServiceManagementClient.launchFailureDescription(fromLaunchctlOutput: ""))
+    }
+
     func testAgentConfigurationValidatorChecksPlistAndExecutable() throws {
         let fileManager = FileManager.default
         let bundleURL = fileManager.temporaryDirectory
@@ -1293,6 +1473,7 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
         homebrewStop: @escaping @Sendable () async throws -> Void = {},
         configureClaude: @escaping @Sendable (
@@ -1355,6 +1536,7 @@ final class HostStoreTests: XCTestCase {
             markAgentRegistrationCurrent: markAgentRegistrationCurrent,
             registerAgent: registerAgent,
             unregisterAgent: unregisterAgent,
+            agentLaunchFailure: agentLaunchFailure,
             mainAppStatus: { .enabled },
             registerMainApp: {},
             unregisterMainApp: {},

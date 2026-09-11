@@ -14,6 +14,9 @@ struct ServiceManagementClient {
     var markAgentRegistrationCurrent: @MainActor () -> Void
     var registerAgent: @MainActor () throws -> Void
     var unregisterAgent: @MainActor () async throws -> Void
+    /// launchd 是否正卡在反复拉起却启动不了 agentd 的循环里（例如覆盖安装后
+    /// BTM 复用了旧 App 的 Launch Constraint）。返回非空即表示需要立即换代登记。
+    var agentLaunchFailure: @MainActor () async -> String?
     var mainAppStatus: @MainActor () -> ServiceRegistrationState
     var registerMainApp: @MainActor () throws -> Void
     var unregisterMainApp: @MainActor () async throws -> Void
@@ -22,8 +25,10 @@ struct ServiceManagementClient {
 
 extension ServiceManagementClient {
     @MainActor
-    static var live: ServiceManagementClient {
+    static func live(executor: ProcessExecutor = .shared) -> ServiceManagementClient {
         let registrationRevision = currentAgentRegistrationRevision()
+        let launchctl = URL(filePath: "/bin/launchctl")
+        let environment = ProcessEnvironment.userTooling
         return ServiceManagementClient(
             agentStatus: {
                 registrationState(for: agentService.status)
@@ -56,6 +61,24 @@ extension ServiceManagementClient {
                 // 使用异步 API 等待系统真正终止旧进程；回调完成后才可安全重新注册。
                 try await service.unregister()
             },
+            agentLaunchFailure: {
+                // SMAppService 在 launchd 拉不起进程时仍报告 enabled，只有 launchd
+                // 自己的 job 记录能看出 spawn 失败与重试次数。这里只读取，不改动。
+                let target = "gui/\(getuid())/\(agentLabel)"
+                guard let result = try? await executor.run(
+                    executable: launchctl,
+                    arguments: ["print", target],
+                    timeout: .seconds(3),
+                    outputLimit: 256 * 1024,
+                    environment: environment
+                ) else {
+                    return nil
+                }
+                return launchFailureDescription(
+                    fromLaunchctlOutput: result.stdoutText,
+                    exitStatus: result.status
+                )
+            },
             mainAppStatus: {
                 registrationState(for: SMAppService.mainApp.status)
             },
@@ -84,7 +107,60 @@ extension ServiceManagementClient {
     private static let agentRegistrationRevisionKey =
         "MimiRemoteMac.agentRegistrationRevision"
 
-    private static let agentPlistName = "com.gaixianggeng.mimi.mac.agentd.plist"
+    private static let agentLabel = "com.gaixianggeng.mimi.mac.agentd"
+
+    private static let agentPlistName = "\(agentLabel).plist"
+
+    /// 解析 `launchctl print gui/<uid>/<label>` 的输出。只有 job 存在、当前没有
+    /// 运行中的进程，且 launchd 已经至少重试过一次或记录了异常退出码时，才判定为
+    /// “拉起失败循环”。正在运行（有 pid）或刚刚首次派生的 job 都返回 nil，避免把
+    /// 正常的慢启动误判成失败。
+    static func launchFailureDescription(
+        fromLaunchctlOutput output: String,
+        exitStatus: Int32 = 0
+    ) -> String? {
+        guard exitStatus == 0 else { return nil }
+        var state: String?
+        var pid: String?
+        var runs: Int?
+        var lastExitCode: String?
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let separator = line.range(of: " = ") else { continue }
+            let key = line[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+            let value = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
+            switch key {
+            case "state" where state == nil:
+                // 顶层 job 的 state 先于内部 endpoint/子项出现，只取第一条。
+                state = value
+            case "pid" where pid == nil:
+                pid = value
+            case "runs" where runs == nil:
+                runs = Int(value)
+            case "last exit code" where lastExitCode == nil:
+                lastExitCode = value
+            default:
+                continue
+            }
+        }
+        guard state != nil || runs != nil || lastExitCode != nil else { return nil }
+        if let pid, !pid.isEmpty, pid != "0" { return nil }
+        if state == "running" { return nil }
+        let neverExited = lastExitCode == nil || lastExitCode == "(never exited)"
+        let repeatedRuns = (runs ?? 0) >= 2
+        guard repeatedRuns || !neverExited else { return nil }
+        var detail = "launchd 无法启动 agentd"
+        if let runs, runs >= 2 {
+            detail += "，已连续尝试 \(runs) 次"
+        }
+        if !neverExited, let lastExitCode {
+            detail += "，最近退出码 \(lastExitCode)"
+        }
+        if let state, !state.isEmpty {
+            detail += "，当前状态 \(state)"
+        }
+        return detail
+    }
 
     /// `.notFound` 只表示 ServiceManagement 没找到服务记录，不能据此判断安装包漏文件。
     /// 这里直接核对包内 plist 与 BundleProgram，只有资源真的损坏时才要求重新安装。

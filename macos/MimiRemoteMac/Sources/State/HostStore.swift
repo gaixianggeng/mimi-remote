@@ -25,6 +25,9 @@ final class HostStore {
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
+    /// `.starting` 期间有值，进入其它生命周期状态时清空。
+    private(set) var startingDetail: String?
     var lastError: String?
     @ObservationIgnored private var pairingRefreshGeneration = 0
 
@@ -169,7 +172,7 @@ final class HostStore {
     static func live() -> HostStore {
         HostStore(
             agent: .live(),
-            services: .live,
+            services: .live(),
             homebrew: .live(),
             health: .live,
             logs: .live,
@@ -962,9 +965,15 @@ final class HostStore {
                 lastStatus = current
                 if current.serviceOK { return }
             }
+            // 覆盖安装后 BTM 可能沿用旧 App 的 Launch Constraint，launchd 会每 3 秒
+            // 重试却始终拉不起进程。等满整轮再修复会白白浪费近一分钟；一旦 launchd
+            // 自己已经报告反复 spawn 失败，就立即交给上层做一次有界换代。
+            if let launchFailure = await services.agentLaunchFailure() {
+                throw ServiceLifecycleError.agentSpawnFailed(launchFailure)
+            }
             try await Task.sleep(for: .seconds(1))
         }
-        let detail = lastStatus?.serviceError ?? "服务在 15 秒内没有通过就绪检查。"
+        let detail = lastStatus?.serviceError ?? "服务在有限等待内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
     }
 
@@ -983,6 +992,11 @@ final class HostStore {
             }
 
             let initialError = error
+            // 换代期间仍属于启动阶段：轮询 status 可能已把生命周期落成 stopped，
+            // 这里恢复 starting 并给出说明，避免菜单栏在自动修复时显示“服务已停止”。
+            lifecycle = .starting
+            startingDetail = "覆盖安装后正在重新登记后台服务…"
+            defer { startingDetail = nil }
             do {
                 // register 已落入 enabled 但进程未就绪时，完整换代一次以刷新 BTM
                 // 的 Launch Constraint；递归调用关闭修复开关，保证最多只重试一次。
@@ -1380,6 +1394,7 @@ final class HostStore {
     private func fail(_ error: Error) {
         lastError = error.localizedDescription
         lifecycle = .failed(error.localizedDescription)
+        startingDetail = nil
     }
 
     private func validateMacAgentConfiguration() throws {
@@ -1527,6 +1542,7 @@ final class HostStore {
             markAgentRegistrationCurrent: {},
             registerAgent: {},
             unregisterAgent: {},
+            agentLaunchFailure: { nil },
             mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
             openLoginItemsSettings: {}
         )

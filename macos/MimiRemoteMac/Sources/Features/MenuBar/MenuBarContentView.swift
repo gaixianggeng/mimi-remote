@@ -25,6 +25,7 @@ struct MenuBarContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             MenuStatusHeader(
                 lifecycle: store.lifecycle,
+                startingDetail: store.startingDetail,
                 isRefreshing: store.isRefreshingStatus || store.isBusy,
                 refresh: refreshStatus
             )
@@ -249,6 +250,7 @@ struct MenuBarContentView: View {
 
 private struct MenuStatusHeader: View {
     let lifecycle: HostLifecycleState
+    var startingDetail: String? = nil
     let isRefreshing: Bool
     let refresh: () -> Void
 
@@ -318,7 +320,7 @@ private struct MenuStatusHeader: View {
         case .loading: "正在读取服务和连接状态。"
         case .notConfigured: "选择代码目录后即可配对移动设备。"
         case .migrationRequired: "可安全迁移，现有配置和配对都会保留。"
-        case .starting: "移动设备连接会在服务就绪后自动恢复。"
+        case .starting: startingDetail ?? "移动设备连接会在服务就绪后自动恢复。"
         case .ready: "Mac 端服务运行正常。"
         case .degraded(let message), .failed(let message): message
         case .stopped: "打开 App 或重新登录后可以再次启动。"
