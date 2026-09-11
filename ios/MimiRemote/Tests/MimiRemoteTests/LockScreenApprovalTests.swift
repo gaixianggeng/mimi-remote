@@ -792,7 +792,9 @@ extension LockScreenApprovalTests {
 
     /// 绑定在 profile-old 上，当前电脑是 profile-new；两台电脑共用同一个 Provider。
     @MainActor
-    private func makeRebindFixture() async throws -> RebindFixture {
+    private func makeRebindFixture(
+        clearTitleCache: @escaping () -> Void = {}
+    ) async throws -> RebindFixture {
         let suite = "LockScreenApprovalTests.Rebind.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         RebindURLProtocol.reset()
@@ -812,7 +814,7 @@ extension LockScreenApprovalTests {
             defaults: defaults,
             ticketStore: tickets,
             identityStore: identityStore,
-            clearNotificationTitleCache: {},
+            clearNotificationTitleCache: clearTitleCache,
             providerClientFactory: { PushProviderClient(baseURL: $0, session: session) },
             requestAuthorization: { true }
         )
@@ -929,6 +931,32 @@ extension LockScreenApprovalTests {
             RebindURLProtocol.recordedRequests,
             ["POST provider.example /mimi-push/v1/ticket/revoke"]
         )
+    }
+
+    /// 旧 Ticket 已撤销、新电脑注册失败：结果就是关闭态，必须和正常关闭一样清掉
+    /// 标题缓存与残留卡片，并撤销刚签发的新 Ticket，不留下半开的绑定。
+    @MainActor
+    func testTakeoverCleansUpOffStateWhenNewRegistrationFails() async throws {
+        final class Counter { var value = 0 }
+        let clears = Counter()
+        let fixture = try await makeRebindFixture(clearTitleCache: { clears.value += 1 })
+        defer { fixture.tearDown() }
+        RebindURLProtocol.fail("POST profile-new.example /api/push/devices", status: 500)
+
+        await fixture.store.enable(
+            client: fixture.newClient,
+            profileID: "profile-new",
+            takeOverPreviousBinding: true
+        )
+
+        guard case .failed = fixture.store.status else {
+            return XCTFail("新注册失败应给出失败状态，实际：\(fixture.store.status)")
+        }
+        XCTAssertFalse(fixture.store.isEnabled)
+        XCTAssertNil(fixture.store.registeredProfileID)
+        XCTAssertNil(fixture.tickets.load())
+        XCTAssertEqual(clears.value, 1, "关闭态必须清掉通知标题缓存")
+        XCTAssertEqual(RebindURLProtocol.revokedTickets, ["ticket-old", "ticket-new"])
     }
 
     /// 旧电脑联系不上时也能关闭：Provider 撤销成功后清掉本地绑定，不再要求旧 agentd 注销。

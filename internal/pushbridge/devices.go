@@ -147,6 +147,23 @@ func (s *DeviceStore) Remove(deviceID string) (Device, bool, error) {
 	return device, true, nil
 }
 
+// RemoveIfTicket 只在本地记录仍是这张 Ticket 时删除。投递失败回报的是发出请求时的
+// 快照；期间手机可能已用新 Ticket 重新注册同一个设备 ID，不能把新注册一并删掉。
+func (s *DeviceStore) RemoveIfTicket(deviceID string, ticket string) (Device, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	device, ok := s.devices[deviceID]
+	if !ok || device.Ticket != ticket {
+		return Device{}, false, nil
+	}
+	delete(s.devices, deviceID)
+	if err := s.saveLocked(); err != nil {
+		s.devices[deviceID] = device
+		return Device{}, false, err
+	}
+	return device, true, nil
+}
+
 func (s *DeviceStore) Get(deviceID string) (Device, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

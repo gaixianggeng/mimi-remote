@@ -345,8 +345,9 @@ final class LockScreenApprovalStore: ObservableObject {
 			}
 			if takeOverPreviousBinding {
 				// 旧电脑联系不上时不再要求它先注销：真正决定投递的是 Provider 手里的
-				// Ticket，撤销成功即旧绑定失效，旧 agentd 收到 410 后会自行清理设备。
-				// 撤销必须成功；失败就原样保留旧绑定，绝不制造两边都注册的窗口。
+				// Ticket。撤销成功后 Provider 以 ticket_revoked 拒绝旧 agentd 的投递，
+				// 旧 agentd 据此删除这台设备。撤销必须成功；失败就原样保留旧绑定，
+				// 绝不制造两边都注册的窗口。
 				status = .registering
 				do {
 					try await providerClientFactory(previousProviderURL).revokeTicket(previousTicket)
@@ -363,6 +364,11 @@ final class LockScreenApprovalStore: ObservableObject {
 					previousClient: nil,
 					previousClientProfileID: nil
 				)
+				if !isEnabled {
+					// 旧绑定已撤销、新注册没成功：此刻功能就是关闭态。按关闭路径清掉标题缓存、
+					// 远程通知注册和残留的锁屏卡片，保留 performEnable 给出的失败状态。
+					await clearOffStateArtifacts()
+				}
 				return
 			}
 			if needsProfileSwitch,
@@ -575,7 +581,12 @@ final class LockScreenApprovalStore: ObservableObject {
 			defaults.removeObject(forKey: key)
 		}
 		status = .off
-		// 关闭后不会再有推送命中缓存；标题副本随功能一起清掉。
+		await clearOffStateArtifacts()
+	}
+
+	/// 功能进入关闭态后的本地清理：不会再有推送命中缓存，标题副本随功能一起清掉；
+	/// 注销远程通知，并移走已经送达的审批卡片。
+	private func clearOffStateArtifacts() async {
 		clearNotificationTitleCache()
 		#if canImport(UIKit)
 		UIApplication.shared.unregisterForRemoteNotifications()
