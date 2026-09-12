@@ -115,7 +115,7 @@ log "agentd 已内嵌：archs=${architectures[*]}"
 tailcat_module="$project_root/experiments/tailcat"
 tailcat_go_version="$(cd "$tailcat_module" && GOTOOLCHAIN=auto "$go_binary" env GOVERSION)"
 if [[ "$tailcat_go_version" != go1.27.* ]]; then
-  echo "Mimi Remote Mac 构建失败：Tailcat v0.5.0 需要 Go 1.27，实际为 ${tailcat_go_version}。" >&2
+  echo "Mimi Remote Mac 构建失败：Tailcat v0.6.0 需要 Go 1.27，实际为 ${tailcat_go_version}。" >&2
   exit 1
 fi
 
