@@ -144,11 +144,13 @@ impl ClaudePool {
         &self.claude_bin
     }
 
+    /// 前台 `model/list`：命中缓存直接回；否则最多等 [`model_catalog::CATALOG_QUERY_TIMEOUT`]，
+    /// 等不到先回退（调用方用别名兜底），后台发现继续跑完填缓存。
     pub async fn discover_models(&self) -> anyhow::Result<Vec<model_catalog::ClaudeModelInfo>> {
         self.model_catalog
             .get_or_discover(
-                self.launcher.as_ref(),
-                &self.claude_bin,
+                Arc::clone(&self.launcher),
+                self.claude_bin.clone(),
                 model_catalog::CATALOG_QUERY_TIMEOUT,
             )
             .await
@@ -160,9 +162,9 @@ impl ClaudePool {
         if let Err(err) = self
             .model_catalog
             .get_or_discover(
-                self.launcher.as_ref(),
-                &self.claude_bin,
-                model_catalog::CATALOG_WARM_TIMEOUT,
+                Arc::clone(&self.launcher),
+                self.claude_bin.clone(),
+                model_catalog::CATALOG_DISCOVERY_TIMEOUT,
             )
             .await
         {
