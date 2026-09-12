@@ -9,6 +9,29 @@ private let codex56SnapshotModels = CodexAppServerModelOption.builtInFallback.fi
     $0.model.hasPrefix("gpt-5.6-")
 }
 
+// 图片基线验证服务端返回的版本化标题布局，不依赖产品的无版本 fallback。
+private let claudeCatalogSnapshotModels = [
+    CodexAppServerModelOption(
+        id: "claude-fable-5",
+        title: "Claude Fable 5",
+        runtimeProvider: "claude",
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    ),
+    CodexAppServerModelOption(
+        id: "claude-opus-5",
+        title: "Claude Opus 5",
+        runtimeProvider: "claude",
+        isDefault: true,
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    ),
+    CodexAppServerModelOption(
+        id: "claude-sonnet-5",
+        title: "Claude Sonnet 5",
+        runtimeProvider: "claude",
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    )
+]
+
 @MainActor
 final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testEffectiveModelUsesExplicitSelectionBeforeServerDefault() {
@@ -101,14 +124,14 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         XCTAssertTrue(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.models.map(\.model), ["claude-fable-5-1", "opus", "sonnet"])
+        XCTAssertEqual(claudeLayout.models.map(\.model), ["opus", "sonnet", "haiku"])
         XCTAssertEqual(
             claudeLayout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Claude Fable 5.1", "Claude Opus 5", "Claude Sonnet 5"]
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.compactTriggerTitle(for: "opus", layout: claudeLayout),
-            "Opus 5"
+            "Opus"
         )
         XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.low), "Light")
@@ -445,8 +468,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 colorScheme: .dark,
                 horizontalSizeClass: .regular,
                 runtimeProvider: "claude",
-                options: CodexAppServerModelOption.builtInClaudeFallback,
-                selection: ModelReasoningGridSelection(modelID: "opus", effort: .high)
+                options: claudeCatalogSnapshotModels,
+                selection: ModelReasoningGridSelection(modelID: "claude-opus-5", effort: .high)
             ),
             as: .image(
                 precision: 0.98,

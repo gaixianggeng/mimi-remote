@@ -277,7 +277,6 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		router:                r,
 		runtimeID:             "claude",
 		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
 		activeServerTurns:     map[string]struct{}{},
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
@@ -611,9 +610,6 @@ func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWrit
 		return "", false
 	}
 	frame := append([]byte(nil), forwardPayload...)
-	if rewritten, ok := rewriteClaudeModelListResponse(policy, frame); ok {
-		frame = rewritten
-	}
 	writeStart := time.Now()
 	if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, frame); err != nil {
 		return gatewayCloseReason("client_write", err), true
@@ -689,107 +685,6 @@ func compactJSONLine(payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("JSON-RPC frame 重编码失败：%w", err)
 	}
 	return compacted, nil
-}
-
-func rewriteClaudeModelListResponse(policy *appServerGatewayPolicy, payload []byte) ([]byte, bool) {
-	if policy == nil {
-		return nil, false
-	}
-	var frame appServerGatewayFrame
-	if err := json.Unmarshal(payload, &frame); err != nil || !gatewayFrameIsResponse(&frame) {
-		return nil, false
-	}
-	pending, ok := policy.consumePendingClientRequest(frame.ID)
-	if !ok || pending.method != "model/list" || len(frame.Error) > 0 {
-		return nil, false
-	}
-	var object map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	if err := decoder.Decode(&object); err != nil {
-		return nil, false
-	}
-	object["result"] = map[string]any{
-		"data":       claudeCurrentModelList(),
-		"nextCursor": nil,
-	}
-	delete(object, "error")
-	rewritten, err := json.Marshal(object)
-	if err != nil {
-		return nil, false
-	}
-	return rewritten, true
-}
-
-func claudeCurrentModelList() []map[string]any {
-	// Claude CLI 的具体模型 ID 会比产品命名更频繁变化；这里用 CLI alias 作为真正发送的
-	// model，避免新名字尚未进入本机 metadata 时触发 fallback warning。为兼容尚不识别 `fable`
-	// 短 alias 的旧 CLI，Fable 使用官方完整 ID；展示名仍表达当前推荐代际。
-	return []map[string]any{
-		claudeModelOption(
-			"claude-fable-5-1",
-			"Claude Fable 5.1",
-			"Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
-			false,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"opus",
-			"Claude Opus 5",
-			"Alias resolved by the Claude CLI to the latest available Opus model; best for complex agentic coding and deep reasoning.",
-			true,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"sonnet",
-			"Claude Sonnet 5",
-			"Alias resolved by the Claude CLI to the latest available Sonnet model; default balanced model for everyday coding work.",
-			false,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"haiku",
-			"Claude Haiku 4.5",
-			"Alias resolved by the Claude CLI to the latest available Haiku model; fastest choice for quick edits and small tasks.",
-			false,
-			"none",
-			false,
-		),
-	}
-}
-
-func claudeModelOption(modelID string, displayName string, description string, isDefault bool, defaultEffort string, supportsNativeEffort bool) map[string]any {
-	supportedEfforts := []map[string]string{}
-	if supportsNativeEffort {
-		// 与 Claude bridge 的原生 effort 档位保持一致；iPad 只会启用这里声明的格子。
-		supportedEfforts = claudeReasoningEffortOptions()
-	}
-	return map[string]any{
-		"id":                        modelID,
-		"model":                     modelID,
-		"displayName":               displayName,
-		"description":               description,
-		"hidden":                    false,
-		"supportedReasoningEfforts": supportedEfforts,
-		"defaultReasoningEffort":    defaultEffort,
-		"inputModalities":           []string{"text", "image"},
-		"supportsPersonality":       false,
-		"additionalSpeedTiers":      []any{},
-		"serviceTiers":              []map[string]string{{"id": "standard", "name": "Standard", "description": "Default bridge service tier"}},
-		"isDefault":                 isDefault,
-	}
-}
-
-func claudeReasoningEffortOptions() []map[string]string {
-	return []map[string]string{
-		{"reasoningEffort": "medium", "description": "Balanced native Claude effort"},
-		{"reasoningEffort": "high", "description": "High native Claude effort (default)"},
-		{"reasoningEffort": "xhigh", "description": "Extended native Claude effort"},
-		{"reasoningEffort": "max", "description": "Maximum native Claude effort"},
-	}
 }
 
 func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteMu *sync.Mutex) {

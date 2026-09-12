@@ -288,7 +288,11 @@ func TestClaudeGatewayStartsBridgeAndProxiesJSONLines(t *testing.T) {
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 IFS= read -r line
 printf '%%s\n' "$line" > %q
-printf '{"jsonrpc":"2.0","id":99,"result":{"models":[]}}\n'
+printf '{"jsonrpc":"2.0","id":99,"result":{"data":[{"id":"claude-future-9","model":"claude-future-9","displayName":"Claude Future 9 Preview","supportedReasoningEfforts":[{"reasoningEffort":"adaptive","description":"Bridge-defined adaptive effort","futureEffortField":{"budget":123}}],"defaultReasoningEffort":"adaptive","futureModelField":{"contextWindow":123456}}],"nextCursor":"future-page-2","futureResultField":{"source":"cli-initialize"}},"futureEnvelopeField":"keep-me"}\n'
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":100,"result":{"data":[],"nextCursor":null,"futureResultField":"empty-kept"}}\n'
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":101,"error":{"code":-32042,"message":"CLI initialize failed","data":{"source":"initialize","retryable":true}},"futureEnvelopeField":"error-kept"}\n'
 while IFS= read -r line; do :; done
 `, receivedPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
@@ -306,15 +310,25 @@ while IFS= read -r line; do :; done
 	if err := conn.WriteMessage(websocket.TextMessage, pretty); err != nil {
 		t.Fatal(err)
 	}
-	raw := readGatewayRaw(t, conn)
-	if !bytes.Contains(raw, []byte(`"id":99`)) ||
-		!bytes.Contains(raw, []byte(`"model":"claude-fable-5-1"`)) ||
-		!bytes.Contains(raw, []byte(`"model":"sonnet"`)) ||
-		!bytes.Contains(raw, []byte(`"model":"opus"`)) ||
-		!bytes.Contains(raw, []byte(`"Claude Fable 5.1"`)) ||
-		!bytes.Contains(raw, []byte(`"Claude Opus 5"`)) ||
-		bytes.Contains(raw, []byte(`"models":[]`)) {
-		t.Fatalf("Claude model/list 应由 gateway 覆盖成当前模型目录：%s", raw)
+	want := []byte(`{"jsonrpc":"2.0","id":99,"result":{"data":[{"id":"claude-future-9","model":"claude-future-9","displayName":"Claude Future 9 Preview","supportedReasoningEfforts":[{"reasoningEffort":"adaptive","description":"Bridge-defined adaptive effort","futureEffortField":{"budget":123}}],"defaultReasoningEffort":"adaptive","futureModelField":{"contextWindow":123456}}],"nextCursor":"future-page-2","futureResultField":{"source":"cli-initialize"}},"futureEnvelopeField":"keep-me"}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 必须原样转发 bridge 的动态目录：\ngot =%s\nwant=%s", raw, want)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":100,"method":"model/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	want = []byte(`{"jsonrpc":"2.0","id":100,"result":{"data":[],"nextCursor":null,"futureResultField":"empty-kept"}}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 空目录必须原样转发，不能伪造固定模型：\ngot =%s\nwant=%s", raw, want)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":101,"method":"model/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	want = []byte(`{"jsonrpc":"2.0","id":101,"error":{"code":-32042,"message":"CLI initialize failed","data":{"source":"initialize","retryable":true}},"futureEnvelopeField":"error-kept"}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 错误必须原样转发，不能伪造固定模型：\ngot =%s\nwant=%s", raw, want)
 	}
 	received, err := os.ReadFile(receivedPath)
 	if err != nil {

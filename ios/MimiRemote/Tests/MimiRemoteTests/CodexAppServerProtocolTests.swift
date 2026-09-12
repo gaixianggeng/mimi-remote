@@ -1602,11 +1602,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
     }
 
-    func testPreferredClaudeDefaultUsesCanonicalOpus5High() throws {
+    func testPreferredClaudeDefaultUsesServerDefaultForUnknownFutureModel() throws {
         let options = [
             CodexAppServerModelOption(
-                id: "claude-fable-5",
-                title: "Claude Fable 5",
+                id: "claude-future-model",
+                title: "Claude Future Model",
                 runtimeProvider: "claude",
                 isDefault: true,
                 supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
@@ -1628,7 +1628,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: options)
 
-        XCTAssertEqual(option.model, "claude-opus-5")
+        XCTAssertEqual(option.model, "claude-future-model")
         XCTAssertEqual(
             ModelReasoningGridCatalog.preferredDefaultEffort(
                 runtimeProvider: "claude",
@@ -1651,6 +1651,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
             options: CodexAppServerModelOption.builtInClaudeFallback
         )
 
+        XCTAssertEqual(CodexAppServerModelOption.builtInClaudeFallback.map(\.model), ["opus", "sonnet", "haiku"])
+        XCTAssertEqual(
+            CodexAppServerModelOption.builtInClaudeFallback.map(\.title),
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+        )
         XCTAssertEqual(option.model, "opus")
         XCTAssertTrue(option.isDefault)
         XCTAssertEqual(option.defaultReasoningEffort, "high")
