@@ -117,6 +117,8 @@ pub fn entry_to_thread_with_git_info(
         agent_role: None,
         git_info: git_info.unwrap_or_else(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd)),
         name: entry.name.clone(),
+        can_accept_direct_input: None,
+        claude_owner: None,
         turns: Vec::new(),
     }
 }

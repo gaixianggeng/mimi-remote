@@ -128,6 +128,8 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 							map[string]any{
 								"id": "thread-root", "cwd": projectDir, "name": "Root",
 								"canAcceptDirectInput": true,
+								"claudeOwner":          map[string]any{"entrypoint": "cli", "status": "busy", "pid": 4242},
+								"secretUpstreamField":  "must-not-leak",
 							},
 							map[string]any{
 								"id": "thread-root-child", "cwd": projectDir, "name": "Root child",
@@ -249,13 +251,15 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	var response struct {
 		Result struct {
 			Data []struct {
-				ID                   string `json:"id"`
-				CWD                  string `json:"cwd"`
-				ParentThreadID       string `json:"parentThreadId"`
-				AgentNickname        string `json:"agentNickname"`
-				AgentRole            string `json:"agentRole"`
-				SessionID            string `json:"sessionId"`
-				CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+				ID                   string         `json:"id"`
+				CWD                  string         `json:"cwd"`
+				ParentThreadID       string         `json:"parentThreadId"`
+				AgentNickname        string         `json:"agentNickname"`
+				AgentRole            string         `json:"agentRole"`
+				SessionID            string         `json:"sessionId"`
+				CanAcceptDirectInput *bool          `json:"canAcceptDirectInput"`
+				ClaudeOwner          map[string]any `json:"claudeOwner"`
+				SecretUpstreamField  string         `json:"secretUpstreamField"`
 				MimiRemote           struct {
 					ProjectID string `json:"projectId"`
 					ReadOnly  bool   `json:"readOnly"`
@@ -294,6 +298,19 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	}
 	if root := byID["thread-root"]; root.readOnly || root.canInput == nil || !*root.canInput {
 		t.Fatalf("项目根顶层 thread 应保留显式写能力：%+v", root)
+	}
+	for _, item := range response.Result.Data {
+		if item.ID != "thread-root" {
+			continue
+		}
+		// Claude bridge 的持有方摘要要原样透传给 App 做"正在 Mac 上运行"提示；
+		// 白名单之外的上游字段仍然必须被裁掉。
+		if item.ClaudeOwner["entrypoint"] != "cli" || item.ClaudeOwner["status"] != "busy" {
+			t.Fatalf("claudeOwner 必须透传：%+v", item.ClaudeOwner)
+		}
+		if item.SecretUpstreamField != "" {
+			t.Fatalf("白名单外字段不得透传：%s", item.SecretUpstreamField)
+		}
 	}
 	if child := byID["thread-root-child"]; !child.readOnly || child.canInput == nil || *child.canInput {
 		t.Fatalf("显式 parent 子 Thread 即使声明可输入也必须保持只读：%+v", child)

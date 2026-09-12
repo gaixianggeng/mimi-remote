@@ -23,6 +23,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use alleycat_codex_proto as p;
 
+use crate::foreign_session::ForeignSessionOwner;
 use crate::handlers::model::{normalize_claude_model, normalize_claude_model_id};
 use crate::index::IndexEntry;
 use crate::pool::PoolError;
@@ -198,7 +199,18 @@ pub async fn handle_thread_resume(
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
     let system_prompt = defaults.system_prompt.clone();
 
-    if !should_defer_process_start(state, &model, &system_prompt) {
+    // 会话正被本机其他 Claude 进程（终端 / Claude 桌面）持有时不起第二个进程：
+    // 两个进程会让 transcript 从同一个 leaf 分叉，第二个还会把持有方正在做的事
+    // 重做一遍。这里按只读返回并附持有方摘要，持有方退出后同 id 正常续聊。
+    let foreign_owner = state.foreign_owner(&params.thread_id).await;
+    if let Some(owner) = &foreign_owner {
+        tracing::info!(
+            thread_id = %params.thread_id,
+            pid = owner.pid,
+            entrypoint = ?owner.entrypoint,
+            "claude session is held by another local process; resuming read-only"
+        );
+    } else if !should_defer_process_start(state, &model, &system_prompt) {
         let _handle = state
             .claude_pool()
             .acquire_for_resume(params.thread_id.clone(), &cwd, model.clone(), system_prompt)
@@ -220,6 +232,9 @@ pub async fn handle_thread_resume(
         .iter()
         .any(|id| id == &params.thread_id);
     apply_live_thread_status(&mut thread, is_loaded);
+    if let Some(owner) = &foreign_owner {
+        mark_owned_elsewhere(&mut thread, owner);
+    }
 
     let response_model = match model {
         Some(m) => normalize_claude_model_id(&m),
@@ -674,6 +689,8 @@ pub async fn handle_thread_list(
         String,
         Option<alleycat_codex_proto::GitInfo>,
     > = std::collections::HashMap::new();
+    // 一页只扫一次登记目录（几个小 JSON），再按 id 标注别处持有的会话。
+    let foreign_owners = state.foreign_owners().await;
     let data = page
         .data
         .into_iter()
@@ -685,6 +702,9 @@ pub async fn handle_thread_list(
             let mut t = crate::index::entry_to_thread_with_git_info(&entry, Some(git_info));
             let is_loaded = loaded.contains(&t.id);
             apply_live_thread_status(&mut t, is_loaded);
+            if !is_loaded && let Some(owner) = foreign_owners.get(&t.id) {
+                mark_owned_elsewhere(&mut t, owner);
+            }
             t
         })
         .collect();
@@ -735,6 +755,9 @@ pub async fn handle_thread_read(
         .iter()
         .any(|id| id == &params.thread_id);
     apply_live_thread_status(&mut thread, is_loaded);
+    if let Some(owner) = state.foreign_owner(&params.thread_id).await {
+        mark_owned_elsewhere(&mut thread, &owner);
+    }
     Ok(p::ThreadReadResponse { thread })
 }
 
@@ -1170,6 +1193,14 @@ fn apply_live_thread_status(thread: &mut p::Thread, is_loaded: bool) {
     } else if is_loaded {
         thread.status = p::ThreadStatus::Idle;
     }
+}
+
+/// 会话被本机其他 Claude 进程持有：输入关闭，附持有方摘要。status 保持磁盘/进程池
+/// 的判断，不伪造成 Active——是否在执行由 `claudeOwner.status` 告诉客户端，
+/// 避免网关把它登记成一个永远等不到 turn/completed 的活跃 turn。
+fn mark_owned_elsewhere(thread: &mut p::Thread, owner: &ForeignSessionOwner) {
+    thread.can_accept_direct_input = Some(false);
+    thread.claude_owner = Some(owner.to_json());
 }
 
 /// Default `permissionProfile` matching codex's `{type: "disabled"}` shape

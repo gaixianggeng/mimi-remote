@@ -27,6 +27,7 @@ struct ConversationView: View {
             runtimeActivitySnapshot: sessionStore.selectedRuntimeActivitySnapshot,
             historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
             quotaNotice: sessionStore.selectedQuotaNotice,
+            ownershipNotice: sessionStore.selectedOwnershipNotice,
             webSocketStatus: sessionStore.webSocketStatus,
             // writer 冲突在输入区提供唯一恢复入口；顶部不再重复一条泛化错误。
             // 预热窗口只压住连接探测的失败：那一轮还会自动重试，冷启动直接恢复到会话页时
@@ -159,7 +160,10 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
+        if model.errorMessage != nil
+            || model.historySavingsNotice != nil
+            || model.quotaNotice != nil
+            || model.ownershipNotice != nil {
             statusStripContainer(model: model)
                 .padding(.horizontal, layout.horizontalInset)
                 .padding(.top, 10)
@@ -170,6 +174,9 @@ struct ConversationView: View {
     private func statusStripContainer(model: ConversationScreenModel) -> some View {
         let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
         return VStack(spacing: 8) {
+            if let notice = model.ownershipNotice {
+                ownershipBanner(notice)
+            }
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
             }
@@ -235,6 +242,45 @@ struct ConversationView: View {
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 会话正被 Mac 上其他 Claude 进程持有：解释为什么这里只读，持有方退出后即可继续。
+    private func ownershipBanner(_ notice: SessionOwnershipNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "desktopcomputer")
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+                .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(notice.title)
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    if notice.isBusy {
+                        Text(L10n.text("ui.session_owned_elsewhere_busy"))
+                            .font(themeStore.uiFont(.caption2, weight: .medium))
+                            .foregroundStyle(tokens.accent)
+                    }
+                }
+                Text(notice.message)
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.elevatedSurface)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
     }
 
     private func quotaLimitBanner(_ notice: CodexQuotaNotice) -> some View {

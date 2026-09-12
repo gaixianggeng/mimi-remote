@@ -685,6 +685,56 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
     }
 
+    /// bridge 在会话被 Mac 上其他 Claude 进程持有时回 `canAcceptDirectInput=false` + `claudeOwner`；
+    /// App 端要把它投影成只读会话和"正在 Mac 上运行"提示，缺字段时保持原有可写行为。
+    func testClaudeThreadHeldElsewhereProjectsOwnerAndReadOnly() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        var thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("held-thread"),
+            "sessionId": .string("held-thread"),
+            "cwd": .string(project.path),
+            "name": .string("Held"),
+            "status": .object(["type": .string("idle")]),
+            "canAcceptDirectInput": .bool(false),
+            "claudeOwner": .object([
+                "entrypoint": .string("cli"),
+                "kind": .string("interactive"),
+                "status": .string("busy"),
+                "pid": .int(4242),
+            ]),
+            "mimiRemote": .object([
+                "projectId": .string(project.id),
+                "projectName": .string(project.name),
+                "projectPath": .string(project.path),
+                "readOnly": .bool(false),
+            ]),
+        ]
+
+        let held = try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        XCTAssertEqual(held.canAcceptDirectInput, false)
+        XCTAssertFalse(held.allowsDirectInput)
+        XCTAssertFalse(held.isSubagentThread, "别处持有不是子 Agent 关系")
+        let owner = try XCTUnwrap(held.claudeOwner)
+        XCTAssertEqual(owner.entrypoint, "cli")
+        XCTAssertEqual(owner.pid, 4242)
+        XCTAssertTrue(owner.isBusy)
+        XCTAssertEqual(owner.displayName, L10n.text("ui.claude_owner_terminal"))
+        let notice = SessionOwnershipNotice(sessionID: held.id, owner: owner)
+        XCTAssertTrue(notice.isBusy)
+        XCTAssertEqual(notice.title, L10n.text("ui.session_owned_elsewhere_title"))
+        XCTAssertTrue(notice.message.contains(owner.displayName))
+
+        thread["claudeOwner"] = nil
+        thread["canAcceptDirectInput"] = .bool(true)
+        let released = try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        XCTAssertNil(released.claudeOwner)
+        XCTAssertTrue(released.allowsDirectInput)
+    }
+
     func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
         let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
         let project = AgentProject(id: "repo", name: "Repo", path: "  \(windowsPath)  ")

@@ -45,6 +45,14 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     #[serde(default)]
     pub name: Option<String>,
+    /// 上游用它表示线程是否接受直接输入（子 Agent 线程为 false）。Claude bridge
+    /// 在会话被本机其他 Claude 进程持有时也置为 false。缺省不序列化，旧客户端不受影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_accept_direct_input: Option<bool>,
+    /// Claude 专用：正持有该会话的本机进程摘要（`entrypoint` / `kind` / `status` / `pid`）。
+    /// 只在 `can_accept_direct_input == Some(false)` 且原因是别处持有时出现。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_owner: Option<Value>,
     /// Populated only on resume / fork / rollback / read+includeTurns.
     #[serde(default)]
     pub turns: Vec<Turn>,

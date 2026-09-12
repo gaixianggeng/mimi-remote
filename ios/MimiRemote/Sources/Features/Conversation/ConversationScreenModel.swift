@@ -8,6 +8,7 @@ struct ConversationScreenModel: Equatable {
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
     let historySavingsNotice: HistorySavingsNotice?
     let quotaNotice: CodexQuotaNotice?
+    let ownershipNotice: SessionOwnershipNotice?
     let webSocketStatus: WebSocketStatus
     let statusDisplay: AgentSessionDisplayStatus?
     let errorMessage: String?
@@ -19,6 +20,7 @@ struct ConversationScreenModel: Equatable {
         runtimeActivitySnapshot: RuntimeActivitySnapshot?,
         historySavingsNotice: HistorySavingsNotice?,
         quotaNotice: CodexQuotaNotice?,
+        ownershipNotice: SessionOwnershipNotice? = nil,
         webSocketStatus: WebSocketStatus,
         errorMessage: String?
     ) {
@@ -29,6 +31,7 @@ struct ConversationScreenModel: Equatable {
         self.runtimeActivitySnapshot = runtimeActivitySnapshot
         self.historySavingsNotice = historySavingsNotice
         self.quotaNotice = quotaNotice
+        self.ownershipNotice = ownershipNotice
         self.webSocketStatus = webSocketStatus
         self.statusDisplay = Self.visibleStatusDisplay(for: selectedSession, foregroundActivity: foregroundActivity)
         let trimmedError = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
