@@ -248,10 +248,10 @@ async fn held_session_is_read_only_and_turn_start_is_refused_until_owner_exits()
         json!({"threadId": SESSION_ID, "includeTurns": false}),
     )
     .await;
-    assert!(
-        read["result"]["thread"]
-            .get("canAcceptDirectInput")
-            .is_none(),
+    // 必须明确回 true：网关会缓存已知的 false，省略字段不会解除只读。
+    assert_eq!(
+        read["result"]["thread"]["canAcceptDirectInput"],
+        json!(true),
         "{read}"
     );
     assert!(read["result"]["thread"].get("claudeOwner").is_none());
@@ -263,11 +263,9 @@ async fn held_session_is_read_only_and_turn_start_is_refused_until_owner_exits()
         json!({"cwd": CWD}),
     )
     .await;
-    assert!(
-        listed_thread(&listed, SESSION_ID)
-            .get("claudeOwner")
-            .is_none()
-    );
+    let released = listed_thread(&listed, SESSION_ID);
+    assert!(released.get("claudeOwner").is_none());
+    assert_eq!(released["canAcceptDirectInput"], json!(true));
 }
 
 #[cfg(unix)]
@@ -289,10 +287,9 @@ async fn legacy_policy_and_stale_registry_records_keep_sessions_writable() {
         json!({"threadId": SESSION_ID, "includeTurns": false}),
     )
     .await;
-    assert!(
-        read["result"]["thread"]
-            .get("canAcceptDirectInput")
-            .is_none(),
+    assert_eq!(
+        read["result"]["thread"]["canAcceptDirectInput"],
+        json!(true),
         "legacy 策略必须无视登记：{read}"
     );
 
