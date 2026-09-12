@@ -330,6 +330,7 @@ cat > "$execution_root/bin/cargo" <<'SH'
 #!/usr/bin/env bash
 printf 'cargo %s\n' "$*" >> "$VERIFY_TEST_CALLS"
 printf 'quiet-cargo-success\n'
+[[ "$1" != fmt ]] || exit "${VERIFY_TEST_FMT_EXIT:-0}"
 exit 0
 SH
 cat > "$execution_root/scripts/ios-dev.sh" <<'SH'
@@ -385,9 +386,15 @@ assert_contains "$(<"${execution_summary%/*}/plan.txt")" "PR Gate scope："
 run_execution_case VERIFY_TEST_PREFLIGHT_EXIT=1
 [[ "$execution_code" -eq 1 ]] || fail "前置失败不能算验证通过。"
 assert_contains "$(<"$execution_summary")" "阻塞（前置检查失败）"
-assert_not_contains "$(<"$execution_calls")" "go test"
+assert_not_contains "$(<"$execution_calls")" "go test ./internal/example"
 assert_not_contains "$(<"$execution_calls")" "ios build"
+assert_contains "$(<"$execution_calls")" "cargo test --locked"
+
+run_execution_case VERIFY_TEST_FMT_EXIT=8
+[[ "$execution_code" -eq 8 ]] || fail "Rust 前置失败不能算通过。"
 assert_not_contains "$(<"$execution_calls")" "cargo test"
+assert_contains "$(<"$execution_calls")" "go test ./internal/example"
+assert_contains "$(<"$execution_calls")" "ios build"
 
 run_execution_case VERIFY_TEST_IOS_EXIT=75
 [[ "$execution_code" -eq 75 ]] || fail "设备阻塞必须保留退出码 75。"
@@ -412,7 +419,7 @@ assert_not_contains "$(<"$execution_calls")" "ios build"
 # 同一 HEAD 下再次执行仍真正调用工具；这些日志不是自动跳过检查的缓存。
 run_execution_case VERIFY_TEST_GO_EXIT=0
 [[ "$execution_code" -eq 0 ]] || fail "全部检查通过应返回零。"
-assert_contains "$(<"$execution_calls")" "go test"
+assert_contains "$(<"$execution_calls")" "go test ./internal/example"
 assert_not_contains "$(<"$execution_output")" "go-log-line-59"
 assert_not_contains "$(<"$execution_summary")" "未运行 |"
 

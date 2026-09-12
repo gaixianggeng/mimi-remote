@@ -455,6 +455,7 @@ done
 
 checks=()
 check_reasons=()
+check_domains=()
 
 add_check() {
   local reason="$1"
@@ -465,6 +466,8 @@ add_check() {
   done
   check_reasons+=("$reason")
   checks+=("$command")
+  # 前置项标记它阻塞的技术栈，重型项标记自身技术栈；空值表示没有构建依赖。
+  check_domains+=("${3:-}")
 }
 
 shell_quote() {
@@ -485,7 +488,7 @@ if [[ "${#shell_paths[@]}" -gt 0 ]]; then
     [[ -z "$shell_command" ]] || shell_command+=" && "
     shell_command+="bash -n -- $(shell_quote "$path")"
   done
-  add_check "变更的 Shell 脚本先做语法检查" "$shell_command"
+  add_check "变更的 Shell 脚本先做语法检查" "$shell_command" "all"
 fi
 
 if [[ "${#yaml_paths[@]}" -gt 0 ]]; then
@@ -494,7 +497,7 @@ if [[ "${#yaml_paths[@]}" -gt 0 ]]; then
   for path in "${yaml_paths[@]}"; do
     yaml_command+=" $(shell_quote "$path")"
   done
-  add_check "变更的 YAML 文件先做语法解析" "$yaml_command"
+  add_check "变更的 YAML 文件先做语法解析" "$yaml_command" "all"
 fi
 
 if [[ "${#ruby_paths[@]}" -gt 0 ]]; then
@@ -504,7 +507,7 @@ if [[ "${#ruby_paths[@]}" -gt 0 ]]; then
     [[ -z "$ruby_command" ]] || ruby_command+=" && "
     ruby_command+="ruby -c -- $(shell_quote "$path")"
   done
-  add_check "变更的 Ruby 脚本先做语法检查" "$ruby_command"
+  add_check "变更的 Ruby 脚本先做语法检查" "$ruby_command" "all"
 fi
 
 if [[ "${#python_paths[@]}" -gt 0 ]]; then
@@ -513,7 +516,7 @@ if [[ "${#python_paths[@]}" -gt 0 ]]; then
   for path in "${python_paths[@]}"; do
     python_command+=" $(shell_quote "$path")"
   done
-  add_check "变更的 Python 脚本先做无产物语法检查" "$python_command"
+  add_check "变更的 Python 脚本先做无产物语法检查" "$python_command" "all"
 fi
 
 if [[ "$docs_scope" == true ]]; then
@@ -543,10 +546,10 @@ if [[ "$has_repository_security_control" == true ]]; then
   add_check "公开仓库安全门自身变化必须执行完整安全检查" "bash ./scripts/check-public-repo-safety.sh"
 fi
 if [[ "$has_ios_privacy_control" == true ]]; then
-  add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh"
+  add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh" "ios"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
+  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh" "ios"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
@@ -561,17 +564,17 @@ if [[ "$has_agentd_restart_control" == true ]]; then
   add_check "agentd 本地重启链路只执行无安装副作用的 self-test" "bash ./scripts/restart-agentd-dev-macos.sh --self-test"
 fi
 if [[ "$has_development_cache_control" == true ]]; then
-  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh"
+  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh" "all"
 fi
 if [[ "$has_contract" == true ]]; then
-  add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh"
+  add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh" "go ios"
 fi
 if [[ "$direct_go" == true || "$direct_ios" == true || "$has_source_size_control" == true ]]; then
   # 先用秒级门禁拦住超大源文件，避免等到 Xcode/Go 构建后才失败。
-  add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh"
+  add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh" "go ios"
 fi
 if [[ "$direct_rust" == true ]]; then
-  add_check "Rust 格式检查" "cargo fmt --all -- --check"
+  add_check "Rust 格式检查" "cargo fmt --all -- --check" "rust"
 fi
 if [[ "$mode" == "full" ]]; then
   # 普通本地 full 不重复扫描完整历史。PR 增量与 main 完整历史扫描由现有
@@ -584,35 +587,35 @@ preflight_count="${#checks[@]}"
 
 if [[ "$direct_go" == true ]]; then
   if [[ "$mode" == "full" || "$go_requires_full" == true || "${#go_packages[@]}" -gt 8 ]]; then
-    add_check "Go 受影响范围使用完整回归" "go test ./... -count=1"
+    add_check "Go 受影响范围使用完整回归" "go test ./... -count=1" "go"
   elif [[ "${#go_packages[@]}" -gt 0 ]]; then
     go_test_command="go test"
     for package_path in "${go_packages[@]}"; do
       go_test_command+=" $(shell_quote "$package_path")"
     done
     go_test_command+=" -count=1"
-    add_check "Go quick 只测试直接变更的 package" "$go_test_command"
+    add_check "Go quick 只测试直接变更的 package" "$go_test_command" "go"
   elif [[ "$has_contract" == false ]]; then
-    add_check "Go 受影响范围无法定位 package，使用完整回归" "go test ./... -count=1"
+    add_check "Go 受影响范围无法定位 package，使用完整回归" "go test ./... -count=1" "go"
   fi
   if [[ "$mode" == "full" ]]; then
-    add_check "Go full 补充静态分析" "go vet ./..."
+    add_check "Go full 补充静态分析" "go vet ./..." "go"
   fi
 fi
 
 if [[ "$has_tailcat_source" == true ]]; then
-  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)"
+  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)" "ios"
 fi
 
 if [[ "$direct_ios" == true ]]; then
   if [[ "$mode" == "full" ]]; then
     # Go 变更由上方独立 Go 计划覆盖；iOS 阶段不在 macOS/Simulator 链路重复执行。
-    add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only"
+    add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only" "ios"
   else
     # quick 只证明生产 App 能在固定 M5 Simulator 上编译。整个 XCTest 测试包会随
     # 项目增长而持续变慢；问题相关 selector 应在开发阶段单独执行，完整集合交给 full/CI。
     add_check "iOS quick 只编译 App，不编译或运行 XCTest" \
-      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
+      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build" "ios"
   fi
 fi
 
@@ -626,11 +629,11 @@ if [[ "$direct_rust" == true ]]; then
   [[ "$rust_codex" == true ]] && rust_test_command+=" -p alleycat-codex-proto"
   [[ "$rust_core" == true ]] && rust_test_command+=" -p alleycat-bridge-core"
   [[ "$rust_claude" == true ]] && rust_test_command+=" -p alleycat-claude-bridge"
-  add_check "Rust 只回归变更 crate 及其下游 crate" "$rust_test_command"
+  add_check "Rust 只回归变更 crate 及其下游 crate" "$rust_test_command" "rust"
 fi
 
 if [[ "$direct_macos" == true ]]; then
-  add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh"
+  add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh" "macos"
 fi
 
 print_plan() {
@@ -728,6 +731,9 @@ print_plan() {
   for index in "${!checks[@]}"; do
     echo "$((index + 1)). ${check_reasons[$index]}"
     echo "   ${checks[$index]}"
+    if [[ "$index" -lt "$preflight_count" && -n "${check_domains[$index]}" ]]; then
+      echo "   前置失败阻塞：${check_domains[$index]}"
+    fi
   done
 }
 
@@ -763,7 +769,7 @@ done
 overall_started="$SECONDS"
 current_index=-1
 check_pid=""
-preflight_failed=false
+blocked_domains=" "
 overall_code=0
 
 write_result_summary() {
@@ -836,7 +842,8 @@ trap 'cancel_run 143' TERM
 set -m
 echo "Mimi 分层验证：${mode}，${#checks[@]} 项；完整计划：${result_dir}/plan.txt"
 for index in "${!checks[@]}"; do
-  if [[ "$index" -ge "$preflight_count" && "$preflight_failed" == true ]]; then
+  if [[ "$index" -ge "$preflight_count" ]] && \
+     [[ "$blocked_domains" == *" all "* || "$blocked_domains" == *" ${check_domains[$index]} "* ]]; then
     result_states[$index]="阻塞（前置检查失败）"
     echo "<== [$((index + 1))/${#checks[@]}] ${result_states[$index]}：${check_reasons[$index]}"
     continue
@@ -868,7 +875,9 @@ for index in "${!checks[@]}"; do
     if [[ "$overall_code" -eq 0 || ( "$overall_code" -eq 75 && "$check_code" -ne 75 ) ]]; then
       overall_code="$check_code"
     fi
-    [[ "$index" -ge "$preflight_count" ]] || preflight_failed=true
+    if [[ "$index" -lt "$preflight_count" && -n "${check_domains[$index]}" ]]; then
+      blocked_domains+="${check_domains[$index]} "
+    fi
     echo "日志：${result_dir}/$((index + 1)).log（末尾最多 40 行、8 KiB）"
     tail -n 40 "$result_dir/$((index + 1)).log" | tail -c 8192
     if [[ "$check_code" -eq 130 || "$check_code" -eq 143 ]]; then
