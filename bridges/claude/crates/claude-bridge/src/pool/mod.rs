@@ -19,6 +19,7 @@
 //! to re-implement the eviction / capacity loop.
 
 pub mod claude_protocol;
+pub mod model_catalog;
 pub mod process;
 
 use std::path::{Path, PathBuf};
@@ -138,6 +139,10 @@ impl ClaudePool {
     /// Path of the claude binary this pool spawns.
     pub fn claude_bin(&self) -> &Path {
         &self.claude_bin
+    }
+
+    pub async fn discover_models(&self) -> anyhow::Result<Vec<model_catalog::ClaudeModelInfo>> {
+        model_catalog::discover(self.launcher.as_ref(), &self.claude_bin).await
     }
 
     /// Spawn a fresh claude process for a brand-new codex thread, mint a

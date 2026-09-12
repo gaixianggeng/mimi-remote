@@ -1288,39 +1288,30 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
 
     static let builtInClaudeFallback: [CodexAppServerModelOption] = [
         CodexAppServerModelOption(
-            id: "claude-fable-5",
-            title: "Claude Fable 5",
-            provider: "anthropic",
-            runtimeProvider: "claude",
-            description: "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
-            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
-            defaultReasoningEffort: "high"
-        ),
-        CodexAppServerModelOption(
             id: "opus",
-            title: "Claude Opus 5",
+            title: "Claude Opus",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Opus model.",
+            description: "Stable Claude CLI alias for Opus.",
             isDefault: true,
             supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
             id: "sonnet",
-            title: "Claude Sonnet 5",
+            title: "Claude Sonnet",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Sonnet model.",
+            description: "Stable Claude CLI alias for Sonnet.",
             supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
             id: "haiku",
-            title: "Claude Haiku 4.5",
+            title: "Claude Haiku",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Haiku model."
+            description: "Stable Claude CLI alias for Haiku."
         )
     ]
 

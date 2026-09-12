@@ -82,10 +82,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
-	tracksClientResponse := (runtimeID == "claude" && method == "model/list") ||
-		(runtimeID == "codex" && method == "account/usage/read")
-	if frame.ID != nil && tracksClientResponse {
+	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" && method == "account/usage/read" {
 		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
 			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
