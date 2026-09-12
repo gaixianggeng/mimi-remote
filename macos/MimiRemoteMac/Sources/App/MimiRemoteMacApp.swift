@@ -1,12 +1,26 @@
+import AppKit
 import SwiftUI
 
 /// Mimi Remote Mac 只运行菜单栏 App；后台 Codex App Server 由 agentd 托管。
 @main
 enum MimiRemoteMacMain {
+    @MainActor
     static func main() {
         // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
         // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
         if CommandLine.arguments.contains("--codex-daemon-supervisor") {
+            return
+        }
+        if let error = ServiceManagementClient.installationLocationError() {
+            // 必须先于 Store/bootstrap：隔离副本连登录项和已有服务的注销都不能执行。
+            let app = NSApplication.shared
+            app.setActivationPolicy(.accessory)
+            let alert = NSAlert()
+            alert.messageText = "请先安装 Mimi Remote Mac"
+            alert.informativeText = error
+            alert.addButton(withTitle: "退出")
+            app.activate(ignoringOtherApps: true)
+            alert.runModal()
             return
         }
         MimiRemoteMacApp.main()
@@ -15,6 +29,7 @@ enum MimiRemoteMacMain {
 
 struct MimiRemoteMacApp: App {
     @State private var store: HostStore
+    @State private var updates: AppUpdateStore
 
     init() {
 #if DEBUG
@@ -25,21 +40,31 @@ struct MimiRemoteMacApp: App {
         let store = HostStore.live()
 #endif
         _store = State(initialValue: store)
+        let updates = AppUpdateStore()
+        _updates = State(initialValue: updates)
 #if DEBUG
         guard !usesSeedUI else { return }
 #endif
         Task { @MainActor in
             await store.bootstrap()
         }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            Task { await updates.runAutomaticChecks() }
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContentView(store: store)
+            MenuBarContentView(store: store, updates: updates)
         } label: {
             // 菜单栏使用稳定的品牌标记，服务状态交由弹窗内的语义图标表达。
-            MimiMenuBarMark()
-                .accessibilityLabel("Mimi Remote Mac：\(store.lifecycle.title)")
+            HStack(spacing: 2) {
+                MimiMenuBarMark()
+                if updates.showsUpdateNotice {
+                    Image(systemName: "arrow.down.circle")
+                }
+            }
+            .accessibilityLabel("Mimi Remote Mac：\(store.lifecycle.title)\(updates.showsUpdateNotice ? "，有新版本可更新" : "")")
         }
         .menuBarExtraStyle(.window)
 
@@ -64,7 +89,7 @@ struct MimiRemoteMacApp: App {
         .defaultSize(width: 500, height: 680)
 
         Settings {
-            MacSettingsView(store: store)
+            MacSettingsView(store: store, updates: updates)
         }
     }
 }
