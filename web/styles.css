@@ -407,7 +407,10 @@ svg { flex: none; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  body, .header, .panel, .privacy { transition: none; }
+  /* 保留颜色反馈，去掉所有位移、缩放和渐变动效 */
+  body, .header, .panel, .privacy,
+  .btn, .icon-btn, .text-btn, .header__nav a, .ov h3, .footer__links a { transition: none; }
+  .btn:active { transform: none; }
   .rd-flow, .term__caret { animation: none; }
 }
 @media (prefers-reduced-transparency: reduce) {

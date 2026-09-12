@@ -4,11 +4,15 @@
 # 画面全部来自 Debug 种子数据（Demo Mac Studio、/Users/demo、占位 Token），
 # 不连接真实主机，不会出现维护者的项目、路径或凭据。
 #
-# 用法：
-#   bash ./scripts/ios-dev.sh run                                   # 先把 Debug App 装到目标 Simulator
+# 用法（先把 Debug App 装到"采集用的这台" Simulator，再采集）：
+#   IOS_TARGET_MODE=simulator IOS_SIMULATOR_NAME='iPhone 17 Pro' \
+#     IOS_OPEN_BIN=/usr/bin/true bash ./scripts/ios-dev.sh run
 #   bash ./web/capture-screenshots.sh --device iphone [--simulator-id UDID]
-#   bash ./web/capture-screenshots.sh --device ipad   [--simulator-id UDID]
-#   只补拍部分画面：追加 --scenes settings,approval 和/或 --langs en
+#   iPad 同理，把机型换成 'iPad Pro 13-inch (M5)' 后 --device ipad。
+#   只补拍部分画面：追加 --scenes approval,workspaces 和/或 --langs en
+#
+# 不显式指定机型时 ios-dev.sh 会优先真机、无真机才回退固定 M5 iPad，装不到本脚本
+# 选中的设备上；采集前会检查 App 是否存在，缺少时直接报出该执行的安装命令。
 #
 # 产物：web/assets/shots/{iphone|ipad}-{场景}-{zh|en}-{light|dark}.webp
 # 页面用 [data-shot] 加当前语言与深浅色拼出文件名，见 web/site.js。
@@ -31,7 +35,7 @@ while [[ $# -gt 0 ]]; do
     --simulator-id) [[ $# -ge 2 ]] || fail "--simulator-id requires a value"; SIMULATOR_ID="$2"; shift 2 ;;
     --scenes) [[ $# -ge 2 ]] || fail "--scenes requires a value"; SCENES_OVERRIDE="$2"; shift 2 ;;
     --langs) [[ $# -ge 2 ]] || fail "--langs requires a value"; LANGS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
@@ -72,6 +76,13 @@ ios_lease_acquire_wait simulator "$SIMULATOR_ID" "$SIMULATOR_NAME" \
   "bash ./web/capture-screenshots.sh --device $DEVICE" \
   "$ROOT_DIR/ios/MimiRemote/build/dev-simulator-derived/$SIMULATOR_ID"
 ios_lease_install_traps
+
+# Simulator 关机时 get_app_container 查不到任何 App，所以这一步必须在 boot 之后做。
+ensure_app_installed() {
+  xcrun simctl get_app_container "$SIMULATOR_ID" "$BUNDLE_ID" >/dev/null 2>&1 && return 0
+  fail "App 未安装在 $SIMULATOR_NAME ($SIMULATOR_ID)。先执行：
+  IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID=$SIMULATOR_ID IOS_OPEN_BIN=/usr/bin/true bash ./scripts/ios-dev.sh run"
+}
 
 scene_args() {
   case "$1" in
@@ -119,6 +130,8 @@ capture() {
 }
 
 mkdir -p "$OUT_DIR"
+boot
+ensure_app_installed
 for spec in "zh zh-Hans zh-Hans-CN zh_CN" "en en en-US en_US"; do
   read -r lang app_lang sys_lang sys_locale <<< "$spec"
   [[ ",$LANGS," == *",$lang,"* ]] || continue
