@@ -105,9 +105,13 @@ final class WorkspacePullRefreshTests: XCTestCase {
         ) {
             !refreshControl.isRefreshing
         }
-        // 只断言“下拉确实拉了会话”。会话如何合并进 Store 由 Store 侧用例负责；
-        // 把整条会话管线绑进这个 UI 用例，正是这个文件先前反复失败的来源。
         XCTAssertGreaterThan(client.sessionPageCallCount, sessionRequestCountBeforePull, "下拉应发出会话请求")
+        // 请求成功不等于刷新成功；同时检查 canonical Store 和实际列表使用的目录成员。
+        try await waitForRefreshUI("刷新响应未提交：sessions=\(store.sessionsByID.keys.sorted())") {
+            store.sessionsByID[refreshedSession.id] != nil
+                && store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "codex")
+                    .contains { $0.id == refreshedSession.id }
+        }
 
         // 目录同步是下拉的附属工作，退到指示器之后仍然要跑；Git 摘要则一次都不能发。
         try await waitForRefreshUI(
