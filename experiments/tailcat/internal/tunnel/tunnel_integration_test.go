@@ -226,9 +226,14 @@ func newAgentdFixture(t *testing.T) *httptest.Server {
 			return
 		}
 		defer connection.Close()
-		messageType, message, err := connection.ReadMessage()
-		if err == nil {
-			_ = connection.WriteMessage(messageType, message)
+		for {
+			messageType, message, err := connection.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := connection.WriteMessage(messageType, message); err != nil {
+				return
+			}
 		}
 	}))
 	server := httptest.NewServer(mux)
