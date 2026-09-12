@@ -24,10 +24,17 @@ type ForwarderConfig struct {
 }
 
 type Forwarder struct {
-	client   *tailcat.Client
-	listener net.Listener
-	done     chan struct{}
-	close    sync.Once
+	listener    net.Listener
+	done        chan struct{}
+	close       sync.Once
+	closeErr    error
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.Mutex
+	current     *forwarderClient
+	recovery    *forwarderRecovery
+	newClient   func() tunnelClient
+	connections map[net.Conn]*forwarderClient
 }
 
 func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, error) {
@@ -44,11 +51,10 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 	if err != nil {
 		return nil, err
 	}
-	client := &tailcat.Client{
-		Server: tailcat.Addr(config.Address),
-		Key:    privateKey,
-		Logf:   logger.Discard,
+	newClient := func() tunnelClient {
+		return &tailcat.Client{Server: tailcat.Addr(config.Address), Key: privateKey, Logf: logger.Discard}
 	}
+	client := newClient()
 	pingContext, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if _, err := client.Ping(pingContext); err != nil {
@@ -61,11 +67,7 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 		client.Close()
 		return nil, fmt.Errorf("监听本地端口：%w", err)
 	}
-	forwarder := &Forwarder{
-		client:   client,
-		listener: listener,
-		done:     make(chan struct{}),
-	}
+	forwarder := newForwarder(listener, client, newClient)
 	if config.EndpointPath != "" {
 		if err := writePrivateFile(config.EndpointPath, []byte(forwarder.Endpoint()+"\n")); err != nil {
 			forwarder.Close()
@@ -73,6 +75,7 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 		}
 	}
 	go forwarder.accept(config.RemotePort)
+	go forwarder.monitor()
 	return forwarder, nil
 }
 
@@ -101,10 +104,22 @@ type PathDiagnostic struct {
 }
 
 func (f *Forwarder) DiscoPing(ctx context.Context) (PathDiagnostic, error) {
-	if f == nil || f.client == nil {
+	if f == nil {
 		return PathDiagnostic{}, errors.New("Tailcat 客户端未启动")
 	}
-	result, err := f.client.DiscoPing(ctx)
+	client, err := f.clientForRequest(ctx)
+	if err != nil {
+		return PathDiagnostic{}, err
+	}
+	probeContext, cancel := context.WithTimeout(ctx, forwarderAttemptTimeout)
+	result, err := client.transport.DiscoPing(probeContext)
+	cancel()
+	if err != nil && ctx.Err() == nil {
+		client, err = f.recoverClient(ctx, client)
+		if err == nil {
+			result, err = client.transport.DiscoPing(ctx)
+		}
+	}
 	if err != nil {
 		return PathDiagnostic{}, err
 	}
@@ -134,17 +149,34 @@ func (f *Forwarder) DiscoPingJSON(ctx context.Context) (string, error) {
 }
 
 func (f *Forwarder) Close() error {
-	var closeError error
 	f.close.Do(func() {
+		f.mu.Lock()
 		close(f.done)
-		if err := f.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			closeError = err
+		f.cancel()
+		client, recovery := f.current, f.recovery
+		f.current = nil
+		connections := make([]net.Conn, 0, len(f.connections))
+		for connection := range f.connections {
+			connections = append(connections, connection)
 		}
-		if err := f.client.Close(); err != nil && closeError == nil {
-			closeError = err
+		f.mu.Unlock()
+		if err := f.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			f.closeErr = err
+		}
+		for _, connection := range connections {
+			connection.Close()
+		}
+		if client != nil {
+			if err := client.transport.Close(); err != nil && f.closeErr == nil {
+				f.closeErr = err
+			}
+		}
+		if recovery != nil {
+			// 等待恢复任务清理尚未发布的新引擎，Close 返回后不能留下同身份连接。
+			<-recovery.done
 		}
 	})
-	return closeError
+	return f.closeErr
 }
 
 func (f *Forwarder) accept(remotePort uint16) {
@@ -153,17 +185,65 @@ func (f *Forwarder) accept(remotePort uint16) {
 		if err != nil {
 			return
 		}
+		f.mu.Lock()
+		if f.ctx.Err() != nil {
+			f.mu.Unlock()
+			localConn.Close()
+			return
+		}
+		f.connections[localConn] = nil
+		f.mu.Unlock()
 		go f.proxy(localConn, remotePort)
 	}
 }
 
 func (f *Forwarder) proxy(localConn net.Conn, remotePort uint16) {
-	dialContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	tunnelConn, err := f.client.DialTCPPort(dialContext, remotePort)
-	if err != nil {
+	defer func() {
 		localConn.Close()
+		f.mu.Lock()
+		delete(f.connections, localConn)
+		f.mu.Unlock()
+	}()
+	dialContext, cancel := context.WithTimeout(f.ctx, 15*time.Second)
+	defer cancel()
+	client, err := f.clientForRequest(dialContext)
+	if err != nil {
 		return
 	}
-	tailcat.ProxyConns(localConn, tunnelConn)
+	for dialContext.Err() == nil {
+		attemptContext, stopAttempt := context.WithTimeout(dialContext, forwarderAttemptTimeout)
+		tunnelConn, err := client.transport.DialTCPPort(attemptContext, remotePort)
+		stopAttempt()
+		if err != nil && dialContext.Err() == nil {
+			client, err = f.recoverClient(dialContext, client)
+			if err == nil {
+				tunnelConn, err = client.transport.DialTCPPort(dialContext, remotePort)
+			}
+		}
+		if err != nil {
+			return
+		}
+		f.mu.Lock()
+		if dialContext.Err() != nil {
+			f.mu.Unlock()
+			tunnelConn.Close()
+			return
+		}
+		if f.current != client {
+			f.mu.Unlock()
+			tunnelConn.Close()
+			// 拨号成功也可能落后于并发恢复；尚未转发字节，可以共享恢复后重新拨号。
+			client, err = f.recoverClient(dialContext, client)
+			if err != nil {
+				return
+			}
+			continue
+		}
+		f.connections[localConn] = client
+		f.mu.Unlock()
+
+		// 只重试建立 TCP，开始复制业务字节后绝不重放，结果未知的消息交给上层处理。
+		tailcat.ProxyConns(localConn, tunnelConn)
+		return
+	}
 }
