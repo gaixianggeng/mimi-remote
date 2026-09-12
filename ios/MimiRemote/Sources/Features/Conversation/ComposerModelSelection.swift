@@ -273,6 +273,7 @@ extension ComposerView {
     }
 
     func clampModelSelectionToSelectedSessionRuntime() {
+        composerState.updateTurnOptions { ComposerModelSelectionCompatibility.apply(to: &$0) }
         guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
             return
         }
@@ -350,6 +351,7 @@ extension ComposerView {
     func normalizeModelControlsForStandardComposer(
         _ options: inout CodexAppServerTurnOptions
     ) {
+        ComposerModelSelectionCompatibility.apply(to: &options)
         let modelID = ModelReasoningGridCatalog.effectiveModelID(
             selectedModelID: options.model,
             options: modelOptionsForMenu

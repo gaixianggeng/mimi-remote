@@ -164,6 +164,31 @@ struct ComposerDraftCache {
     }
 }
 
+enum ComposerModelSelectionCompatibility {
+    static func modelID(_ modelID: String?, runtimeProvider: String?) -> String? {
+        // 目录升级不能把用户明确选择的 Fable 静默改为服务端默认的 Opus。
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude",
+              modelID == "claude-fable-5" else { return modelID }
+        return "claude-fable-5-1"
+    }
+
+    static func apply(to options: inout CodexAppServerTurnOptions) {
+        options.model = modelID(options.model, runtimeProvider: options.runtimeProvider)
+    }
+
+    static func optionID(_ optionID: String?, runtimeProvider: String) -> String? {
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude",
+              let optionID else { return optionID }
+        // 设置保存的是 runtime@model@provider，历史版本也可能只保存裸模型 ID。
+        var components = optionID.components(separatedBy: "@")
+        if components.count >= 2, components[0] == "claude" {
+            components[1] = modelID(components[1], runtimeProvider: runtimeProvider)!
+            return components.joined(separator: "@")
+        }
+        return modelID(optionID, runtimeProvider: runtimeProvider)
+    }
+}
+
 struct ComposerModelSelectionSnapshot: Equatable {
     var runtimeProvider: String?
     var model: String?
@@ -173,7 +198,7 @@ struct ComposerModelSelectionSnapshot: Equatable {
 
     init(options: CodexAppServerTurnOptions) {
         runtimeProvider = options.runtimeProvider
-        model = options.model
+        model = ComposerModelSelectionCompatibility.modelID(options.model, runtimeProvider: options.runtimeProvider)
         modelProvider = options.modelProvider
         reasoningEffort = options.reasoningEffort
         serviceTier = options.serviceTier
@@ -181,7 +206,8 @@ struct ComposerModelSelectionSnapshot: Equatable {
 
     func apply(to options: inout CodexAppServerTurnOptions) {
         options.runtimeProvider = runtimeProvider
-        options.model = model
+        // 恢复时也做兼容处理，覆盖目录刷新前已经留在会话缓存里的快照。
+        options.model = ComposerModelSelectionCompatibility.modelID(model, runtimeProvider: runtimeProvider)
         options.modelProvider = modelProvider
         options.reasoningEffort = reasoningEffort
         options.serviceTier = serviceTier
@@ -268,9 +294,15 @@ enum DefaultModelPreferences {
         for runtimeProvider: String,
         in defaults: UserDefaults = .standard
     ) -> String? {
-        defaults.string(forKey: modelOptionIDKey(for: runtimeProvider))?
+        let key = modelOptionIDKey(for: runtimeProvider)
+        let storedID = defaults.string(forKey: key)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .appServerNilIfEmpty
+        let migratedID = ComposerModelSelectionCompatibility.optionID(storedID, runtimeProvider: runtimeProvider)
+        if migratedID != storedID {
+            defaults.set(migratedID, forKey: key)
+        }
+        return migratedID
     }
 
     static func storedReasoningEffort(
@@ -290,7 +322,15 @@ enum DefaultModelPreferences {
     ) -> DefaultModelSelection? {
         let candidates = options(for: runtimeProvider, allOptions: allOptions)
         let option = storedModelOptionID(for: runtimeProvider, in: defaults)
-            .flatMap { storedID in candidates.first { $0.id == storedID } }
+            .flatMap { storedID in
+                if let exact = candidates.first(where: { $0.id == storedID }) { return exact }
+                // 裸 Fable ID 升级后绑定到实际目录的 option ID，设置和提交共用同一项。
+                guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude",
+                      storedID == "claude-fable-5-1",
+                      let migrated = candidates.first(where: { $0.model == storedID }) else { return nil }
+                defaults.set(migrated.id, forKey: modelOptionIDKey(for: runtimeProvider))
+                return migrated
+            }
             ?? ModelReasoningGridCatalog.preferredDefaultOption(
                 runtimeProvider: runtimeProvider,
                 options: candidates
