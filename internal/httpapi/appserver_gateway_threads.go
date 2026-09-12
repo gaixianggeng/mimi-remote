@@ -1483,7 +1483,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
 			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput,
 			directInputKnown:     item.CanAcceptDirectInput != nil,
-			autoTitleEligible:    pending.method == "thread/start" && normalizeAppServerRuntimeID(p.runtimeID) == "codex",
+			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
 			scopeID: scope.id,

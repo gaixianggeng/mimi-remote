@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"time"
 
@@ -171,21 +170,7 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 	writeDuration := time.Since(writeStart)
 	monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, writeDuration, forwardPayload)
 	monitor.logSessionListStage(forwardPayload, "upstream_written", writeDuration)
-	r.scheduleAutoThreadTitleFromMessage(forwardPayload, policy, func(threadID string, title string) {
-		// thread/name/set 由独立 loopback 连接执行，它产生的 notification 只回到
-		// 那条连接；这里给发起会话的移动端补发同形通知，让 UI 无需轮询即可更新。
-		notification, err := json.Marshal(map[string]any{
-			"method": "thread/name/updated",
-			"params": map[string]any{
-				"threadId":   threadID,
-				"threadName": title,
-			},
-		})
-		if err != nil {
-			return
-		}
-		_ = writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, notification)
-	})
+	r.scheduleAutoThreadTitleFromMessage(forwardPayload, policy, autoThreadTitleClientNotifier(client, clientWriteMu))
 	return "", false
 }
 
