@@ -61,6 +61,8 @@ pub struct ClaudePool {
     /// 同一时刻只允许一个新进程完成“检查 + 启动 + 入池”，避免两个首轮消息
     /// 同时命中空池时为同一个 thread 重复启动 Claude。
     spawn_lock: Arc<Mutex<()>>,
+    /// CLI 模型目录缓存，所有连接共享；见 [`model_catalog::ModelCatalogCache`]。
+    model_catalog: Arc<model_catalog::ModelCatalogCache>,
 }
 
 impl std::fmt::Debug for ClaudePool {
@@ -128,6 +130,7 @@ impl ClaudePool {
             policy,
             launcher,
             spawn_lock: Arc::new(Mutex::new(())),
+            model_catalog: Arc::new(model_catalog::ModelCatalogCache::default()),
         }
     }
 
@@ -142,7 +145,29 @@ impl ClaudePool {
     }
 
     pub async fn discover_models(&self) -> anyhow::Result<Vec<model_catalog::ClaudeModelInfo>> {
-        model_catalog::discover(self.launcher.as_ref(), &self.claude_bin).await
+        self.model_catalog
+            .get_or_discover(
+                self.launcher.as_ref(),
+                &self.claude_bin,
+                model_catalog::CATALOG_QUERY_TIMEOUT,
+            )
+            .await
+    }
+
+    /// 启动时后台预热目录：让首个 `model/list` 命中缓存，而不是在 CLI 冷启动
+    /// 期间超时回退成别名。失败只记日志，不影响任何会话。
+    pub async fn warm_model_catalog(&self) {
+        if let Err(err) = self
+            .model_catalog
+            .get_or_discover(
+                self.launcher.as_ref(),
+                &self.claude_bin,
+                model_catalog::CATALOG_WARM_TIMEOUT,
+            )
+            .await
+        {
+            tracing::debug!(error = %err, "claude model catalog warm-up failed; will retry on demand");
+        }
     }
 
     /// Spawn a fresh claude process for a brand-new codex thread, mint a

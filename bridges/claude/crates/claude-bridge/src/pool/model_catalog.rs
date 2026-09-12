@@ -1,7 +1,7 @@
 //! 通过 CLI 的 SDK initialize 控制请求读取目录，不发送 user 消息。
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alleycat_bridge_core::{ProcessLauncher, ProcessSpec, StdioMode};
 use anyhow::{Context, Result, bail};
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeModelInfo {
     pub value: String,
@@ -97,6 +97,87 @@ async fn discover_with_timeout(
     result
 }
 
+/// 目录有效期。CLI 目录只随 CLI 升级变化，10 分钟内重复查询没有意义。
+pub const CATALOG_TTL: Duration = Duration::from_secs(10 * 60);
+/// 发现失败后的冷却：期间不再为每个 model/list 都起一个 CLI。
+pub const CATALOG_FAILURE_COOLDOWN: Duration = Duration::from_secs(15);
+/// 按需查询的超时；启动预热允许更久，CLI 冷启动可能超过 10 秒。
+pub const CATALOG_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+pub const CATALOG_WARM_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct CatalogState {
+    models: Option<Vec<ClaudeModelInfo>>,
+    fetched_at: Option<Instant>,
+    failed_at: Option<Instant>,
+}
+
+/// 进程级目录缓存。此前每次 `model/list` 都现起一个 CLI 做发现，首次失败或超时
+/// 就回退成无版本别名，而客户端会把这次结果缓存几分钟——用户看到的就是"第一次
+/// 打开只有 Opus / Sonnet / Haiku，第二次才正常"。这里做三件事：缓存、单飞
+/// （并发调用等同一次发现）、发现失败时优先返回上一次成功的目录。
+pub struct ModelCatalogCache {
+    state: tokio::sync::Mutex<CatalogState>,
+    ttl: Duration,
+    failure_cooldown: Duration,
+}
+
+impl Default for ModelCatalogCache {
+    fn default() -> Self {
+        Self::with_limits(CATALOG_TTL, CATALOG_FAILURE_COOLDOWN)
+    }
+}
+
+impl ModelCatalogCache {
+    pub fn with_limits(ttl: Duration, failure_cooldown: Duration) -> Self {
+        Self {
+            state: tokio::sync::Mutex::new(CatalogState::default()),
+            ttl,
+            failure_cooldown,
+        }
+    }
+
+    pub async fn get_or_discover(
+        &self,
+        launcher: &dyn ProcessLauncher,
+        claude_bin: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<ClaudeModelInfo>> {
+        // 持锁跨越整个发现过程就是单飞：后来的调用者等它结束后直接命中缓存。
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        if let (Some(models), Some(fetched_at)) = (&state.models, state.fetched_at)
+            && now.duration_since(fetched_at) < self.ttl
+        {
+            return Ok(models.clone());
+        }
+        if let Some(failed_at) = state.failed_at
+            && now.duration_since(failed_at) < self.failure_cooldown
+        {
+            return state
+                .models
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("CLI model catalog recently failed"));
+        }
+        match discover_with_timeout(launcher, claude_bin, timeout).await {
+            Ok(models) => {
+                state.models = Some(models.clone());
+                state.fetched_at = Some(Instant::now());
+                state.failed_at = None;
+                Ok(models)
+            }
+            Err(err) => {
+                state.failed_at = Some(Instant::now());
+                // 旧目录比无版本别名更接近事实；只有从未成功过才把错误抛给调用方。
+                match &state.models {
+                    Some(models) => Ok(models.clone()),
+                    None => Err(err),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +190,7 @@ mod tests {
         hang: bool,
         events: Arc<Mutex<Vec<&'static str>>>,
         request: Arc<Mutex<String>>,
+        launches: Arc<Mutex<usize>>,
     }
 
     struct FakeChild {
@@ -124,6 +206,7 @@ mod tests {
             spec: ProcessSpec,
         ) -> BoxFuture<'_, std::io::Result<Box<dyn ChildProcess>>> {
             Box::pin(async move {
+                *self.launches.lock().unwrap() += 1;
                 let args: Vec<_> = spec.args.iter().map(|s| s.to_string_lossy()).collect();
                 assert!(args.contains(&"--no-session-persistence".into()));
                 assert!(args.contains(&"--strict-mcp-config".into()));
@@ -190,6 +273,7 @@ mod tests {
             hang,
             events: Arc::default(),
             request: Arc::default(),
+            launches: Arc::default(),
         };
         let result =
             discover_with_timeout(&launcher, Path::new("claude"), Duration::from_millis(100)).await;
@@ -215,6 +299,75 @@ mod tests {
             .unwrap();
             assert_eq!(models[0].value, version);
         }
+    }
+
+    fn catalog_response(version: &str) -> String {
+        let response = json!({"type":"control_response","response":{"subtype":"success","request_id":"model-catalog","response":{"models":[{"value":version,"displayName":"Future"}]}}});
+        format!("{response}\n")
+    }
+
+    fn fake_launcher(output: String) -> FakeLauncher {
+        FakeLauncher {
+            output,
+            hang: false,
+            events: Arc::default(),
+            request: Arc::default(),
+            launches: Arc::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_serves_repeat_queries_without_relaunching_the_cli() {
+        let launcher = fake_launcher(catalog_response("claude-fable-9-1"));
+        let cache = ModelCatalogCache::default();
+        for _ in 0..3 {
+            let models = cache
+                .get_or_discover(&launcher, Path::new("claude"), Duration::from_millis(200))
+                .await
+                .unwrap();
+            assert_eq!(models[0].value, "claude-fable-9-1");
+        }
+        assert_eq!(
+            *launcher.launches.lock().unwrap(),
+            1,
+            "TTL 内不得重复起 CLI"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_keeps_last_good_catalog_when_refresh_fails_and_cools_down() {
+        // ttl=0 强制每次都刷新，便于模拟过期后的失败。
+        let cache = ModelCatalogCache::with_limits(Duration::ZERO, Duration::from_secs(60));
+        let good = fake_launcher(catalog_response("claude-fable-9-1"));
+        cache
+            .get_or_discover(&good, Path::new("claude"), Duration::from_millis(200))
+            .await
+            .unwrap();
+
+        let broken = fake_launcher(String::new());
+        let models = cache
+            .get_or_discover(&broken, Path::new("claude"), Duration::from_millis(200))
+            .await
+            .expect("刷新失败时必须返回上一次成功的目录");
+        assert_eq!(models[0].value, "claude-fable-9-1");
+        assert_eq!(*broken.launches.lock().unwrap(), 1);
+
+        let again = cache
+            .get_or_discover(&broken, Path::new("claude"), Duration::from_millis(200))
+            .await
+            .unwrap();
+        assert_eq!(again[0].value, "claude-fable-9-1");
+        assert_eq!(*broken.launches.lock().unwrap(), 1, "冷却期内不得再起 CLI");
+
+        let never_succeeded =
+            ModelCatalogCache::with_limits(Duration::ZERO, Duration::from_secs(60));
+        assert!(
+            never_succeeded
+                .get_or_discover(&broken, Path::new("claude"), Duration::from_millis(200))
+                .await
+                .is_err(),
+            "从未成功过时才把错误抛给调用方"
+        );
     }
 
     #[tokio::test]

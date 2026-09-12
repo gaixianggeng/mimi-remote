@@ -83,6 +83,7 @@ sequenceDiagram
 - bridge 先从 Claude JSONL 播种完整历史，再追加尚未 flush 的实时 turn；`thread/read` 和 `thread/turns/list` 不会因为本进程出现新 turn 而丢掉旧历史。
 - `thread/turns/list` 按 `itemsView` 返回：`summary` 只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn 分页补齐，和 Codex 首屏走同一条路；`full` 或省略时仍带全部 item。裁剪只在请求带 `itemsListAvailable: true` 时生效，这个字段由 agentd 网关写入，表示网关会转发 `thread/items/list`；新 bridge 配旧 agentd 时没有这个字段，bridge 照旧回完整 item。此前 bridge 无视 `itemsView`，一个 18 MB 会话的首页要 400–650 KB，移动端经中继打开明显更慢。
 - bridge 的协议输入输出是逐行 JSON；`agentd` 不把整段上下文重新拼成额外提示词。
+- `model/list` 的目录来自 Claude CLI 的 SDK initialize，进程级缓存 10 分钟并单飞；发现失败时优先返回上一次成功的目录，15 秒内不重复起 CLI；bridge 启动时后台预热一次，避免首个请求在 CLI 冷启动期间超时回退成无版本别名。列表顺序固定为 Default、Fable、Opus、Sonnet、Haiku，家族内按版本号降序、同版本 1M 上下文优先。
 - Claude Code 登录态和可恢复历史由用户本机 Claude Code 环境管理，不上传到 Mimi Remote 服务器。
 
 ### 观测与恢复

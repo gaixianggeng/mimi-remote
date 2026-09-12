@@ -27,7 +27,7 @@ pub async fn handle_model_list(
     _params: p::ModelListParams,
 ) -> p::ModelListResponse {
     let data = match state.claude_pool().discover_models().await {
-        Ok(models) => models
+        Ok(models) => order_strongest_first(models)
             .into_iter()
             .filter_map(convert_model)
             .collect::<Vec<_>>(),
@@ -125,6 +125,55 @@ fn model_version_title(id: &str) -> Option<String> {
         title.push_str(&format!(" ({})", context.to_uppercase()));
     }
     Some(title)
+}
+
+/// 列表顺序：Default 固定第一，其余按家族（Fable > Opus > Sonnet > Haiku）再按版本号
+/// 降序，同版本优先 1M 上下文。CLI 自己的顺序把 Opus 排在 Fable 前面，用户要的是
+/// 最强模型在最上面。未知家族按 CLI 原顺序排在最后。
+fn order_strongest_first(mut models: Vec<ClaudeModelInfo>) -> Vec<ClaudeModelInfo> {
+    models.sort_by_key(catalog_rank);
+    models
+}
+
+fn catalog_rank(info: &ClaudeModelInfo) -> (u8, u8, [std::cmp::Reverse<u32>; 4], u8) {
+    if info.value == "default" {
+        return (0, 0, [std::cmp::Reverse(0); 4], 0);
+    }
+    let id = info
+        .resolved_model
+        .as_deref()
+        .unwrap_or(info.value.as_str());
+    let (base, context) = match id.split_once('[') {
+        Some((base, context)) => (base, context.trim_end_matches(']')),
+        None => (id, ""),
+    };
+    let base = base.strip_prefix("claude-").unwrap_or(base);
+    let family = base.split('-').next().unwrap_or("").to_ascii_lowercase();
+    let family_rank = match family.as_str() {
+        "fable" => 1,
+        "opus" => 2,
+        "sonnet" => 3,
+        "haiku" => 4,
+        _ => 5,
+    };
+    let mut version = [std::cmp::Reverse(0u32); 4];
+    for (slot, part) in base
+        .split('-')
+        .skip(1)
+        .take_while(|part| {
+            !part.is_empty() && part.len() < 8 && part.chars().all(|ch| ch.is_ascii_digit())
+        })
+        .take(4)
+        .enumerate()
+    {
+        version[slot] = std::cmp::Reverse(part.parse().unwrap_or(0));
+    }
+    let context_rank = if context.eq_ignore_ascii_case("1m") {
+        0
+    } else {
+        1
+    };
+    (1, family_rank, version, context_rank)
 }
 
 fn fallback_models() -> Vec<p::Model> {
@@ -262,5 +311,74 @@ mod tests {
             vec!["Claude Opus", "Claude Sonnet", "Claude Haiku"]
         );
         assert!(models[0].is_default);
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    fn info(value: &str, resolved: Option<&str>) -> ClaudeModelInfo {
+        ClaudeModelInfo {
+            value: value.to_string(),
+            display_name: value.to_string(),
+            resolved_model: resolved.map(str::to_string),
+            description: String::new(),
+            supports_effort: None,
+            supported_effort_levels: None,
+        }
+    }
+
+    #[test]
+    fn strongest_model_first_after_default() {
+        // CLI 的原顺序：Default、Opus、Fable 5、Fable 5.1、Sonnet、Haiku。
+        let cli_order = vec![
+            info("default", None),
+            info("opus[1m]", Some("claude-opus-5[1m]")),
+            info("claude-fable-5[1m]", Some("claude-fable-5[1m]")),
+            info("claude-fable-5-1", Some("claude-fable-5-1")),
+            info("sonnet", Some("claude-sonnet-5")),
+            info("haiku", Some("claude-haiku-4-5-20251001")),
+        ];
+        let ordered: Vec<_> = order_strongest_first(cli_order)
+            .into_iter()
+            .map(|info| info.value)
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                "default",
+                "claude-fable-5-1",
+                "claude-fable-5[1m]",
+                "opus[1m]",
+                "sonnet",
+                "haiku"
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_families_and_aliases_keep_cli_order_at_the_end() {
+        let ordered: Vec<_> = order_strongest_first(vec![
+            info("mystery-model", None),
+            info("opus", None),
+            info("claude-opus-5[1m]", Some("claude-opus-5[1m]")),
+            info("claude-opus-5", Some("claude-opus-5")),
+            info("another-mystery", None),
+        ])
+        .into_iter()
+        .map(|info| info.value)
+        .collect();
+        // 同版本 1M 优先；无版本别名排在有版本的同家族之后；未知家族按原顺序垫底。
+        assert_eq!(
+            ordered,
+            vec![
+                "claude-opus-5[1m]",
+                "claude-opus-5",
+                "opus",
+                "mystery-model",
+                "another-mystery"
+            ]
+        );
     }
 }
