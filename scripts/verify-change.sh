@@ -12,6 +12,8 @@ usage() {
 
 默认执行 quick 验证：分析 origin/main...HEAD、暂存区、工作区和未跟踪文件，
 只运行受影响栈的最小检查。--plan 只打印计划；--full 升级为受影响栈的完整本地回归。
+执行时只输出分项状态与有限的失败日志；完整计划、结果和日志保存在输出的临时目录。
+quick 与 full 选择一轮执行，专项测试是否被覆盖仍需核对；不跨轮复用旧结果。
 EOF
 }
 
@@ -453,6 +455,7 @@ done
 
 checks=()
 check_reasons=()
+check_domains=()
 
 add_check() {
   local reason="$1"
@@ -463,6 +466,8 @@ add_check() {
   done
   check_reasons+=("$reason")
   checks+=("$command")
+  # 前置项标记它阻塞的技术栈，重型项标记自身技术栈；空值表示没有构建依赖。
+  check_domains+=("${3:-}")
 }
 
 shell_quote() {
@@ -483,7 +488,7 @@ if [[ "${#shell_paths[@]}" -gt 0 ]]; then
     [[ -z "$shell_command" ]] || shell_command+=" && "
     shell_command+="bash -n -- $(shell_quote "$path")"
   done
-  add_check "变更的 Shell 脚本先做语法检查" "$shell_command"
+  add_check "变更的 Shell 脚本先做语法检查" "$shell_command" "all"
 fi
 
 if [[ "${#yaml_paths[@]}" -gt 0 ]]; then
@@ -492,7 +497,7 @@ if [[ "${#yaml_paths[@]}" -gt 0 ]]; then
   for path in "${yaml_paths[@]}"; do
     yaml_command+=" $(shell_quote "$path")"
   done
-  add_check "变更的 YAML 文件先做语法解析" "$yaml_command"
+  add_check "变更的 YAML 文件先做语法解析" "$yaml_command" "all"
 fi
 
 if [[ "${#ruby_paths[@]}" -gt 0 ]]; then
@@ -502,7 +507,7 @@ if [[ "${#ruby_paths[@]}" -gt 0 ]]; then
     [[ -z "$ruby_command" ]] || ruby_command+=" && "
     ruby_command+="ruby -c -- $(shell_quote "$path")"
   done
-  add_check "变更的 Ruby 脚本先做语法检查" "$ruby_command"
+  add_check "变更的 Ruby 脚本先做语法检查" "$ruby_command" "all"
 fi
 
 if [[ "${#python_paths[@]}" -gt 0 ]]; then
@@ -511,17 +516,17 @@ if [[ "${#python_paths[@]}" -gt 0 ]]; then
   for path in "${python_paths[@]}"; do
     python_command+=" $(shell_quote "$path")"
   done
-  add_check "变更的 Python 脚本先做无产物语法检查" "$python_command"
+  add_check "变更的 Python 脚本先做无产物语法检查" "$python_command" "all"
 fi
 
 if [[ "$docs_scope" == true ]]; then
   add_check "文档与公开发布说明使用轻量静态门禁" "bash ./scripts/check-docs-static.sh"
 fi
 
-if [[ "$has_gate_control" == true && "$has_repository_security_control" == false ]]; then
+if [[ ( "$has_gate_control" == true || "$mode" == "full" ) && "$has_repository_security_control" == false ]]; then
   add_check "CI 编排或路径分类变化必须通过 Gate 自检" "bash ./scripts/check-pr-gate.sh"
 fi
-if [[ "$has_verify_control" == true && "$has_gate_control" == false && "$has_repository_security_control" == false ]]; then
+if [[ "$has_verify_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
   # check-pr-gate.sh 已包含这项自测；同一轮不要嵌套执行两次。
   add_check "分层验证入口或说明变化必须通过无设备自测" "bash ./scripts/test-verify-change.sh"
 fi
@@ -541,15 +546,15 @@ if [[ "$has_repository_security_control" == true ]]; then
   add_check "公开仓库安全门自身变化必须执行完整安全检查" "bash ./scripts/check-public-repo-safety.sh"
 fi
 if [[ "$has_ios_privacy_control" == true ]]; then
-  add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh"
+  add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh" "ios"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh"
+  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh" "ios"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
 fi
-if [[ "$has_critical_mapping_control" == true && "$has_gate_control" == false && "$has_repository_security_control" == false ]]; then
+if [[ "$has_critical_mapping_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
   add_check "关键用户链路 selector 变化执行静态映射自检" "bash ./scripts/check-critical-regressions.sh"
 fi
 if [[ "$has_linear_polling_control" == true ]]; then
@@ -559,52 +564,62 @@ if [[ "$has_agentd_restart_control" == true ]]; then
   add_check "agentd 本地重启链路只执行无安装副作用的 self-test" "bash ./scripts/restart-agentd-dev-macos.sh --self-test"
 fi
 if [[ "$has_development_cache_control" == true ]]; then
-  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh"
+  add_check "本地重型构建必须复用仓库外缓存并串行写入" "bash ./scripts/test-development-cache.sh" "all"
 fi
 if [[ "$has_contract" == true ]]; then
-  add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh"
+  add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh" "go ios"
 fi
 if [[ "$direct_go" == true || "$direct_ios" == true || "$has_source_size_control" == true ]]; then
   # 先用秒级门禁拦住超大源文件，避免等到 Xcode/Go 构建后才失败。
-  add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh"
+  add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh" "go ios"
 fi
+if [[ "$direct_rust" == true ]]; then
+  add_check "Rust 格式检查" "cargo fmt --all -- --check" "rust"
+fi
+if [[ "$mode" == "full" ]]; then
+  # 普通本地 full 不重复扫描完整历史。PR 增量与 main 完整历史扫描由现有
+  # Public Repository Safety 工作流执行；安全门自身变更仍走上面的完整检查。
+  add_check "full 模式补齐 Codex 协议检查" "bash ./scripts/check-codex-protocol.sh"
+fi
+
+# 前置门禁失败时不继续昂贵的语言构建；后面的测试互相独立，失败后仍可汇总。
+preflight_count="${#checks[@]}"
 
 if [[ "$direct_go" == true ]]; then
   if [[ "$mode" == "full" || "$go_requires_full" == true || "${#go_packages[@]}" -gt 8 ]]; then
-    add_check "Go 受影响范围使用完整回归" "go test ./... -count=1"
+    add_check "Go 受影响范围使用完整回归" "go test ./... -count=1" "go"
   elif [[ "${#go_packages[@]}" -gt 0 ]]; then
     go_test_command="go test"
     for package_path in "${go_packages[@]}"; do
       go_test_command+=" $(shell_quote "$package_path")"
     done
     go_test_command+=" -count=1"
-    add_check "Go quick 只测试直接变更的 package" "$go_test_command"
+    add_check "Go quick 只测试直接变更的 package" "$go_test_command" "go"
   elif [[ "$has_contract" == false ]]; then
-    add_check "Go 受影响范围无法定位 package，使用完整回归" "go test ./... -count=1"
+    add_check "Go 受影响范围无法定位 package，使用完整回归" "go test ./... -count=1" "go"
   fi
   if [[ "$mode" == "full" ]]; then
-    add_check "Go full 补充静态分析" "go vet ./..."
+    add_check "Go full 补充静态分析" "go vet ./..." "go"
   fi
 fi
 
 if [[ "$has_tailcat_source" == true ]]; then
-  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)"
+  add_check "Tailcat 独立 Go module 变化使用自身测试" "(cd experiments/tailcat && go test ./... -count=1)" "ios"
 fi
 
 if [[ "$direct_ios" == true ]]; then
   if [[ "$mode" == "full" ]]; then
     # Go 变更由上方独立 Go 计划覆盖；iOS 阶段不在 macOS/Simulator 链路重复执行。
-    add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only"
+    add_check "iOS full 单次执行核心链路与双语资源回归" "bash ./scripts/test-conversation-regressions.sh --ios-only" "ios"
   else
     # quick 只证明生产 App 能在固定 M5 Simulator 上编译。整个 XCTest 测试包会随
     # 项目增长而持续变慢；问题相关 selector 应在开发阶段单独执行，完整集合交给 full/CI。
     add_check "iOS quick 只编译 App，不编译或运行 XCTest" \
-      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
+      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build" "ios"
   fi
 fi
 
 if [[ "$direct_rust" == true ]]; then
-  add_check "Rust 格式检查" "cargo fmt --all -- --check"
   rust_test_command='CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(bash ./scripts/development-cache-path.sh cargo/target)}" cargo test --locked'
   if [[ "$rust_all" == true || "$mode" == "full" ]]; then
     rust_codex=true
@@ -614,124 +629,267 @@ if [[ "$direct_rust" == true ]]; then
   [[ "$rust_codex" == true ]] && rust_test_command+=" -p alleycat-codex-proto"
   [[ "$rust_core" == true ]] && rust_test_command+=" -p alleycat-bridge-core"
   [[ "$rust_claude" == true ]] && rust_test_command+=" -p alleycat-claude-bridge"
-  add_check "Rust 只回归变更 crate 及其下游 crate" "$rust_test_command"
+  add_check "Rust 只回归变更 crate 及其下游 crate" "$rust_test_command" "rust"
 fi
 
 if [[ "$direct_macos" == true ]]; then
-  add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh"
+  add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh" "macos"
 fi
 
-if [[ "$mode" == "full" ]]; then
-  # public-repo-safety 末尾已经调用 check-pr-gate；full 不再提前重复执行一次。
-  add_check "full 模式补齐公开仓库安全检查（包含 PR Gate 自检）" "bash ./scripts/check-public-repo-safety.sh"
-  add_check "full 模式补齐 Codex 协议检查" "bash ./scripts/check-codex-protocol.sh"
-fi
+print_plan() {
+  plan_suffix=""
+  [[ "$plan_only" -eq 1 ]] && plan_suffix="（仅计划）"
+  echo "Mimi 分层验证计划"
+  echo "- 模式：${mode}${plan_suffix}"
+  if [[ -n "$paths_file" ]]; then
+    echo "- 变更来源：显式 paths file"
+  else
+    echo "- Base：${base_ref}"
+    echo "- 来源计数：committed=${committed_count}, staged=${staged_count}, unstaged=${unstaged_count}, untracked=${untracked_count}"
+  fi
+  echo "- 去重后路径：${#changed_paths[@]}"
+  echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
+  echo
 
-plan_suffix=""
-[[ "$plan_only" -eq 1 ]] && plan_suffix="（仅计划）"
-echo "Mimi 分层验证计划"
-echo "- 模式：${mode}${plan_suffix}"
-if [[ -n "$paths_file" ]]; then
-  echo "- 变更来源：显式 paths file"
-else
-  echo "- Base：${base_ref}"
-  echo "- 来源计数：committed=${committed_count}, staged=${staged_count}, unstaged=${unstaged_count}, untracked=${untracked_count}"
-fi
-echo "- 去重后路径：${#changed_paths[@]}"
-echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
-echo
+  echo "验证阶段："
+  if [[ "$mode" == "full" ]]; then
+    echo "- 当前：full；交付报告必须说明命中的高风险条件。"
+  else
+    echo "- 当前：quick；只在最后一次代码修改后执行一次，不要在每个微调后重复执行。"
+  fi
+  echo "- 开发中：只运行问题直接相关的 package、XCTest selector、快照或静态检查。"
+  echo "- full 条件：高风险状态语义、影响范围无法界定的大重构、本地 full 能补齐必要回归的 CI 覆盖缺口、正式发布或用户明确要求。"
+  echo "- 跨栈或共享协议：定向覆盖接口兼容与失败/降级链路；不因语言数量自动升级 full。"
+  echo "- 非 full 条件：普通 UI、文案、单 package、测试文件、改动文件较多、准备提交或“为了保险”。"
+  if [[ "$has_contract" == true ]]; then
+    echo "- 自动高风险信号：检测到 Go/iOS 共享协议路径；核对兼容语义和定向契约覆盖后评估 full。"
+  elif [[ "$direct_go" == true && "$direct_ios" == true ]] || \
+       [[ "$direct_go" == true && "$direct_rust" == true ]] || \
+       [[ "$direct_go" == true && "$direct_macos" == true ]] || \
+       [[ "$direct_ios" == true && "$direct_rust" == true ]] || \
+       [[ "$direct_ios" == true && "$direct_macos" == true ]] || \
+       [[ "$direct_rust" == true && "$direct_macos" == true ]]; then
+    echo "- 自动高风险信号：检测到多个产品栈；先确认接口语义与定向覆盖，不自动执行 full。"
+  else
+    echo "- 自动高风险信号：未检测到；除非存在脚本无法识别的高风险语义，否则保持 quick。"
+  fi
+  echo
 
-echo "验证阶段："
-if [[ "$mode" == "full" ]]; then
-  echo "- 当前：full；交付报告必须说明命中的高风险条件。"
-else
-  echo "- 当前：quick；只在最后一次代码修改后执行一次，不要在每个微调后重复执行。"
-fi
-echo "- 开发中：只运行问题直接相关的 package、XCTest selector、快照或静态检查。"
-echo "- full 条件：共享协议/跨栈接口，高风险状态语义，影响范围无法界定的大重构，正式发布或用户明确要求。"
-echo "- 非 full 条件：普通 UI、文案、单 package、测试文件、改动文件较多、准备提交或“为了保险”。"
-if [[ "$has_contract" == true ]]; then
-  echo "- 自动高风险信号：检测到 Go/iOS 共享协议路径；建议显式评估 full。"
-elif [[ "$direct_go" == true && "$direct_ios" == true ]] || \
-     [[ "$direct_go" == true && "$direct_rust" == true ]] || \
-     [[ "$direct_go" == true && "$direct_macos" == true ]] || \
-     [[ "$direct_ios" == true && "$direct_rust" == true ]] || \
-     [[ "$direct_ios" == true && "$direct_macos" == true ]] || \
-     [[ "$direct_rust" == true && "$direct_macos" == true ]]; then
-  echo "- 自动高风险信号：检测到多个产品栈；建议确认是否修改同一跨栈接口。"
-else
-  echo "- 自动高风险信号：未检测到；除非存在脚本无法识别的高风险语义，否则保持 quick。"
-fi
-echo
+  if [[ "${#changed_paths[@]}" -eq 0 ]]; then
+    echo "没有发现需要验证的变更。"
+    return 0
+  fi
 
-if [[ "${#changed_paths[@]}" -eq 0 ]]; then
-  echo "没有发现需要验证的变更。"
-  exit 0
-fi
-
-echo "变更路径："
-for path in "${changed_paths[@]}"; do
-  echo "- ${path}"
-done
-echo
-
-if [[ "$all_docs" == true ]]; then
-  echo "判定：纯文档/静态内容；不启动 Go、Cargo、Xcode 或真机。"
-elif [[ "$has_control" == true && "$direct_go" == false && "$direct_ios" == false && "$direct_rust" == false && "$direct_macos" == false ]]; then
-  echo "判定：CI/脚本/发布控制面；只运行语法与映射自检，不启动语言构建。"
-else
-  echo "判定：包含产品源码；只验证直接受影响的语言栈。"
-fi
-
-echo "跳过的语言栈："
-[[ "$direct_go" == false ]] && echo "- Go：没有直接 Go 产品路径。"
-[[ "$direct_ios" == false ]] && echo "- iOS：没有直接 iOS 产品路径，不启动 Xcode/Simulator/真机。"
-[[ "$direct_rust" == false ]] && echo "- Rust：没有直接 bridge 产品路径。"
-[[ "$direct_macos" == false ]] && echo "- Mac App：没有直接 Mac App 产品路径。"
-if [[ "$direct_go" == true && "$direct_ios" == true && "$direct_rust" == true && "$direct_macos" == true ]]; then
-  echo "- 无：四个产品栈均受影响。"
-fi
-
-if [[ "$direct_ios" == true ]]; then
-  echo "真机：默认延后。相机、通知、Keychain、Tailscale/弱网、性能和发布前专项仍必须单独真机验收。"
-fi
-if [[ "${#powershell_paths[@]}" -gt 0 ]]; then
-  echo "Windows：PowerShell 脚本的执行与平台语义延后到 Windows CI；本地不启动额外虚拟机。"
-fi
-if [[ "$mode" == "quick" ]]; then
-  echo "完整回归：默认延后到 --full 或 PR Gate；不要在每个微调后重复执行。"
-fi
-if [[ "${#unknown_paths[@]}" -gt 0 ]]; then
-  echo "人工确认：以下路径没有验证映射，quick 不会把它们静默视为通过："
-  for path in "${unknown_paths[@]}"; do
+  echo "变更路径："
+  for path in "${changed_paths[@]}"; do
     echo "- ${path}"
   done
-fi
-echo
+  echo
 
-echo "将执行 ${#checks[@]} 项："
-for index in "${!checks[@]}"; do
-  echo "$((index + 1)). ${check_reasons[$index]}"
-  echo "   ${checks[$index]}"
-done
+  if [[ "$all_docs" == true ]]; then
+    echo "判定：纯文档/静态内容；不启动 Go、Cargo、Xcode 或真机。"
+  elif [[ "$has_control" == true && "$direct_go" == false && "$direct_ios" == false && "$direct_rust" == false && "$direct_macos" == false ]]; then
+    echo "判定：CI/脚本/发布控制面；只运行语法与映射自检，不启动语言构建。"
+  else
+    echo "判定：包含产品源码；只验证直接受影响的语言栈。"
+  fi
+
+  echo "跳过的语言栈："
+  [[ "$direct_go" == false ]] && echo "- Go：没有直接 Go 产品路径。"
+  [[ "$direct_ios" == false ]] && echo "- iOS：没有直接 iOS 产品路径，不启动 Xcode/Simulator/真机。"
+  [[ "$direct_rust" == false ]] && echo "- Rust：没有直接 bridge 产品路径。"
+  [[ "$direct_macos" == false ]] && echo "- Mac App：没有直接 Mac App 产品路径。"
+  if [[ "$direct_go" == true && "$direct_ios" == true && "$direct_rust" == true && "$direct_macos" == true ]]; then
+    echo "- 无：四个产品栈均受影响。"
+  fi
+
+  if [[ "$direct_ios" == true ]]; then
+    echo "真机：默认延后。相机、通知、Keychain、Tailscale/弱网、性能和发布前专项仍必须单独真机验收。"
+  fi
+  if [[ "${#powershell_paths[@]}" -gt 0 ]]; then
+    echo "Windows：PowerShell 脚本的执行与平台语义延后到 Windows CI；本地不启动额外虚拟机。"
+  fi
+  if [[ "$mode" == "quick" ]]; then
+    echo "完整回归：默认延后到 --full 或 PR Gate；不要在每个微调后重复执行。"
+  else
+    echo "覆盖核对：Go/Rust full 扩大本轮 package/crate 测试集；iOS full 构建 App 并运行核心 selector。"
+    echo "专项缺项：对照实际命令、目标、配置与 selector 补齐；不能把 full 当作所有专项均已覆盖。"
+  fi
+  echo "结果复用：本轮重新执行计划，不自动引用此前或其他 Worktree 的通过记录。"
+  echo "安全检查：普通 PR 由 CI 增量扫描，main push/手动安全工作流扫描完整历史；安全门自身变更仍本地完整检查。"
+  echo "CI 交接：核对 PR 最新受检提交及必需检查；不同工具链结果分开记录。等待时保持 Verify，成功和失败均回原任务收尾。"
+  echo "等待方式：由执行工具挂起等待完成，不反复读取无变化日志；未确认宿主完成事件时不承诺自动恢复。"
+  if [[ "${#unknown_paths[@]}" -gt 0 ]]; then
+    echo "人工确认：以下路径没有验证映射，quick 不会把它们静默视为通过："
+    for path in "${unknown_paths[@]}"; do
+      echo "- ${path}"
+    done
+  fi
+  echo
+
+  echo "将执行 ${#checks[@]} 项："
+  for index in "${!checks[@]}"; do
+    echo "$((index + 1)). ${check_reasons[$index]}"
+    echo "   ${checks[$index]}"
+    if [[ "$index" -lt "$preflight_count" && -n "${check_domains[$index]}" ]]; then
+      echo "   前置失败阻塞：${check_domains[$index]}"
+    fi
+  done
+}
 
 if [[ "$plan_only" -eq 1 ]]; then
+  print_plan
   exit 0
 fi
 
 if [[ "${#unknown_paths[@]}" -gt 0 ]]; then
+  print_plan
   fail "存在未映射路径；请先人工确认风险并补充映射，不要用 quick 静默跳过。"
 fi
+if [[ "${#changed_paths[@]}" -eq 0 ]]; then
+  print_plan
+  exit 0
+fi
 
-overall_started="$SECONDS"
+# 日志是诊断记录，不是可复用的通过凭据。放在仓库外，避免改变下一轮变更集合。
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/mimi-verify-results.XXXXXX")"
+print_plan > "$result_dir/plan.txt"
+result_head="$(git rev-parse HEAD)"
+result_branch="$(git branch --show-current)"
+result_dirty="$(git status --porcelain --untracked-files=normal)"
+result_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+result_states=()
+result_codes=()
+result_seconds=()
 for index in "${!checks[@]}"; do
+  result_states+=("未运行")
+  result_codes+=("-")
+  result_seconds+=("0")
+done
+overall_started="$SECONDS"
+current_index=-1
+check_pid=""
+blocked_domains=" "
+overall_code=0
+
+write_result_summary() {
+  local index
+  {
+    echo "Mimi 分层验证结果（仅诊断，不用于跨轮复用）"
+    echo "模式：${mode}；Branch：${result_branch}；HEAD：${result_head}"
+    if [[ -n "$result_dirty" ]]; then
+      echo "输入：包含未提交或未跟踪改动；HEAD 不代表全部受检输入。"
+    else
+      echo "输入：启动时工作区干净。"
+    fi
+    echo "开始：${result_started}；总耗时：$((SECONDS - overall_started))s；退出码：${overall_code}"
+    echo "完整计划：${result_dir}/plan.txt"
+    for index in "${!checks[@]}"; do
+      echo "$((index + 1)). ${result_states[$index]} | ${result_seconds[$index]}s | exit=${result_codes[$index]} | ${check_reasons[$index]}"
+      echo "   命令：${checks[$index]}"
+      [[ ! -f "$result_dir/$((index + 1)).log" ]] || echo "   日志：${result_dir}/$((index + 1)).log"
+    done
+    echo "CI：此结果不代表 PR Gate 通过；核对最新受检提交和必需检查，保持 Verify 直至完成收尾。"
+  } > "$result_dir/summary.txt"
+}
+
+finish_run() {
+  local exit_code=$?
+  # 收尾只写一次结果，避免第二次取消打断汇总文件。
+  trap '' INT TERM
+  trap - EXIT
+  overall_code="$exit_code"
+  if [[ "$current_index" -ge 0 && "${result_states[$current_index]}" == "运行中" ]]; then
+    result_states[$current_index]="未完成"
+    result_codes[$current_index]="$exit_code"
+    result_seconds[$current_index]="$((SECONDS - started))"
+  fi
+  write_result_summary
+  rm -rf "$temporary_root"
+  echo "结果汇总：${result_dir}/summary.txt"
+}
+
+cancel_run() {
+  local exit_code="$1"
+  local cancellation_guard
+  trap '' INT TERM
+  if [[ -n "$check_pid" ]]; then
+    # 每项检查拥有独立进程组。只终止本轮检查及其子进程，让设备入口先释放租约。
+    kill -TERM -- "-$check_pid" 2>/dev/null || true
+    (trap - INT TERM; sleep 5; kill -KILL -- "-$check_pid" 2>/dev/null || true) &
+    cancellation_guard=$!
+    wait "$check_pid" 2>/dev/null || true
+    if kill -0 -- "-$check_pid" 2>/dev/null; then
+      wait "$cancellation_guard" 2>/dev/null || true
+    else
+      kill -TERM -- "-$cancellation_guard" 2>/dev/null || true
+      wait "$cancellation_guard" 2>/dev/null || true
+    fi
+  fi
+  if [[ "$current_index" -ge 0 && "${result_states[$current_index]}" == "运行中" ]]; then
+    result_states[$current_index]="取消"
+    result_codes[$current_index]="$exit_code"
+    result_seconds[$current_index]="$((SECONDS - started))"
+  fi
+  echo "分层验证已取消；剩余检查未运行。"
+  exit "$exit_code"
+}
+
+trap finish_run EXIT
+trap 'cancel_run 130' INT
+trap 'cancel_run 143' TERM
+# 非交互 Bash 也为每项后台命令建立独立进程组，使取消不波及其他 Worktree。
+set -m
+echo "Mimi 分层验证：${mode}，${#checks[@]} 项；完整计划：${result_dir}/plan.txt"
+for index in "${!checks[@]}"; do
+  if [[ "$index" -ge "$preflight_count" ]] && \
+     [[ "$blocked_domains" == *" all "* || "$blocked_domains" == *" ${check_domains[$index]} "* ]]; then
+    result_states[$index]="阻塞（前置检查失败）"
+    echo "<== [$((index + 1))/${#checks[@]}] ${result_states[$index]}：${check_reasons[$index]}"
+    continue
+  fi
+  current_index="$index"
   started="$SECONDS"
-  echo
   echo "==> [$((index + 1))/${#checks[@]}] ${check_reasons[$index]}"
-  echo "    ${checks[$index]}"
-  bash -c "${checks[$index]}"
-  echo "<== 通过，用时 $((SECONDS - started))s"
+  result_states[$index]="运行中"
+  bash -c "${checks[$index]}" > "$result_dir/$((index + 1)).log" 2>&1 &
+  check_pid=$!
+  if wait "$check_pid"; then
+    check_code=0
+  else
+    check_code=$?
+  fi
+  check_pid=""
+  result_codes[$index]="$check_code"
+  result_seconds[$index]="$((SECONDS - started))"
+  case "$check_code" in
+    0) result_states[$index]="通过" ;;
+    75) result_states[$index]="阻塞" ;;
+    124) result_states[$index]="超时" ;;
+    130|143) result_states[$index]="取消" ;;
+    *) result_states[$index]="失败" ;;
+  esac
+  echo "<== ${result_states[$index]}，用时 ${result_seconds[$index]}s，退出码 ${check_code}"
+  if [[ "$check_code" -ne 0 ]]; then
+    # 75 仅表示暂时阻塞；其他检查真正失败时，不能让最早的设备占用掩盖失败。
+    if [[ "$overall_code" -eq 0 || ( "$overall_code" -eq 75 && "$check_code" -ne 75 ) ]]; then
+      overall_code="$check_code"
+    fi
+    if [[ "$index" -lt "$preflight_count" && -n "${check_domains[$index]}" ]]; then
+      blocked_domains+="${check_domains[$index]} "
+    fi
+    echo "日志：${result_dir}/$((index + 1)).log（末尾最多 40 行、8 KiB）"
+    tail -n 40 "$result_dir/$((index + 1)).log" | tail -c 8192
+    if [[ "$check_code" -eq 130 || "$check_code" -eq 143 ]]; then
+      overall_code="$check_code"
+      break
+    fi
+  fi
 done
 
-echo
-echo "分层验证通过：${#checks[@]} 项，总用时 $((SECONDS - overall_started))s。"
+if [[ "$overall_code" -eq 0 ]]; then
+  echo "分层验证通过：${#checks[@]} 项，总用时 $((SECONDS - overall_started))s。"
+else
+  echo "分层验证未通过：存在失败、阻塞、超时或取消；仅重跑受影响检查，不把剩余项记为通过。"
+fi
+exit "$overall_code"

@@ -4,7 +4,7 @@
 
 验证 iPad 不安装 Tailscale 客户端时，Mimi Remote 能否仅通过 Tailcat 连接 Mac 上的 `agentd`，并保持现有 HTTP、WebSocket、认证和大文件传输能力。
 
-本实验固定使用 Tailcat `v0.5.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。
+本实验固定使用 Tailcat `v0.6.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。
 
 ## 方案
 
@@ -106,11 +106,24 @@ bash ./scripts/ios-dev.sh run
 - `gomobile bind` 已生成真机和 Simulator 两个平台的 XCFramework。
 - iOS 覆盖二维码字段、Tailcat-only 路由验证和规范地址保留测试。
 
+2026-09-12 升级到 Tailcat `v0.6.0` 后补充验证：
+
+- 模块测试通过，新增“稳定地址不带 PSK”断言；未关闭 PSK 时原有的“重启后地址不变”测试会失败。
+- `gomobile bind` 重新生成 XCFramework，体积仍约 137 MB；`test-tailcat-mobile-build.sh` 通过。
+- 本机 DERP 上用 `v0.5.0` 与 `v0.6.0` 两套 sidecar 二进制交叉冒烟：Mac 与 iPad 新旧四种组合都能连通，
+  沿用 `v0.5.0` 身份文件升级后地址不变；开启 PSK 的对照组中 `v0.5.0` 客户端握手超时。
+- 默认公共 DERP 上（开发机当前网络），`v0.5.0` 客户端连 `v0.5.0` 服务端也会超时，`v0.6.0` 客户端 2–3 秒连通。
+  现象与 `v0.6.0` 的 meow 重发改动一致，但尚未确认根因。
+
 真实 iPad 的跨网络、后台恢复和长期稳定性还没有完成，因此当前结论是“技术链路可行，但不能替换生产 Tailscale”。
 
 ## 风险与优化
 
-- Tailcat `v0.5.0` 未承诺 API 或连接地址格式稳定。升级前必须重新构建和回归。
+- Tailcat `v0.6.0` 未承诺 API 或连接地址格式稳定。升级前必须重新构建和回归。
+- Tailcat `v0.6.0` 起地址默认携带 WireGuard 预共享密钥（PSK），且 `Server.Start` 每次启动都会生成新的 PSK。
+  稳定服务和短期配对服务都显式关闭 PSK：已配对 iPad 持有的是无 PSK 地址，`v0.5.0` 客户端解析地址时会
+  静默忽略 PSK 字段并在握手阶段超时。以后启用 PSK 必须同时满足三点：身份文件恢复原 PSK、iOS 设置最低
+  客户端版本、重新审查地址流经的二维码、日志和控制面（届时地址成为秘密）。
 - 本地生成的 XCFramework 约 137 MB；当前 Debug App 约 98 MB。此体积不能直接视为发布包体积，但需要在发布前单独评估。
 - 当前自动测试验证了 HTTP、WebSocket、认证、1 MB 以上二进制传输、重连和身份持久化。真实蜂窝网络、NAT 切换、后台恢复、耗电和长期稳定性仍需真机验证。
 - DERP 是外部依赖。中继不可用时，无法直连的设备会断开。国内自建 DERP Map 仍需在跨网络验收时确认地址、证书和可达性。
