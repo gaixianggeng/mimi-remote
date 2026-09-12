@@ -727,8 +727,8 @@ func claudeCurrentModelList() []map[string]any {
 	// 短 alias 的旧 CLI，Fable 使用官方完整 ID；展示名仍表达当前推荐代际。
 	return []map[string]any{
 		claudeModelOption(
-			"claude-fable-5",
-			"Claude Fable 5",
+			"claude-fable-5-1",
+			"Claude Fable 5.1",
 			"Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
 			false,
 			"high",

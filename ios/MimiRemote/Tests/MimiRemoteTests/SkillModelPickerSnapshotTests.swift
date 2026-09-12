@@ -101,10 +101,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         XCTAssertTrue(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.models.map(\.model), ["claude-fable-5", "opus", "sonnet"])
+        XCTAssertEqual(claudeLayout.models.map(\.model), ["claude-fable-5-1", "opus", "sonnet"])
         XCTAssertEqual(
             claudeLayout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 5"]
+            ["Claude Fable 5.1", "Claude Opus 5", "Claude Sonnet 5"]
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.compactTriggerTitle(for: "opus", layout: claudeLayout),

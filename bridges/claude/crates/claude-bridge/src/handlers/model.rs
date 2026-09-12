@@ -18,7 +18,7 @@ use crate::state::ConnectionState;
 
 pub const MODEL_PROVIDER: &str = "anthropic";
 
-pub const FABLE_MODEL: &str = "claude-fable-5";
+pub const FABLE_MODEL: &str = "claude-fable-5-1";
 pub const OPUS_MODEL: &str = "claude-opus-5";
 pub const SONNET_MODEL: &str = "claude-sonnet-4-6";
 pub const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -43,7 +43,7 @@ pub async fn handle_model_list(
         // Concrete model ids first.
         build_model(
             FABLE_MODEL,
-            "Claude Fable 5",
+            "Claude Fable 5.1",
             "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
             false,
             p::ReasoningEffort::High,
@@ -232,7 +232,11 @@ mod tests {
         let by_id: std::collections::HashMap<_, _> =
             resp.data.iter().map(|m| (m.model.as_str(), m)).collect();
 
-        assert!(by_id.contains_key(FABLE_MODEL));
+        // 同时锁定显示名和真正传给 CLI 的 ID，避免只升级文案。
+        let fable = by_id["claude-fable-5-1"];
+        assert_eq!(fable.id, "claude-fable-5-1");
+        assert_eq!(fable.display_name, "Claude Fable 5.1");
+        assert!(!by_id.contains_key("claude-fable-5"));
         assert!(by_id.contains_key(OPUS_MODEL));
         assert!(by_id.contains_key(SONNET_MODEL));
         assert!(by_id.contains_key(HAIKU_MODEL));
