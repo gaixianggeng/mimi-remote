@@ -2396,3 +2396,78 @@ private actor WorkspaceProjectsGate {
         continuation = nil
     }
 }
+
+@MainActor
+extension ConversationDataFlowTests {
+    /// 新会话创建成功后，全局发现会把它纳入受控 ID，此后工作区归属只认目录登记；
+    /// 普通刷新又跳过“当前且已有会话”的工作区。创建时必须直接登记归属，否则新会话
+    /// 会在下一轮全局刷新后从工作区列表消失（#441）。
+    func testCreatedSessionStaysVisibleInWorkspaceAfterGlobalDiscovery() async throws {
+        let appStore = makeIsolatedAppStore()
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://127.0.0.1:8787",
+            token: "created-session-membership-token"
+        ))
+        let project = makeProject(id: "gh-441-membership")
+        let recentWorkspace = AgentWorkspace(
+            id: project.id, name: project.name, path: project.path,
+            rootProjectID: project.id, rootProjectName: project.name,
+            rootProjectPath: project.path, lastOpenedAt: Date()
+        )
+        let existing = makeSession(
+            id: "claude-existing", projectID: project.id, title: "旧会话", status: "history",
+            source: "claude", runtimeProvider: "claude", updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let created = makeSession(
+            id: "claude-created", projectID: project.id, title: "排查 SSH 报错", status: "running",
+            source: "claude", updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [existing])
+        let store = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [recentWorkspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+        try await store.refreshWorkspaceCatalog()
+        // 创建会话走的就是这个入口拿工作区；目录登记只认它登记过的工作区身份。
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        // 已有目录缓存：之前的 Claude 目录页只登记了旧会话。
+        store.recordWorkspaceDirectorySessionPage([existing], in: workspace, runtimeProvider: "claude", replacing: true)
+        let claudeKey = store.workspaceDirectoryScopeKey(for: workspace, runtimeProvider: "claude")
+        XCTAssertEqual(store.workspaceDirectorySessionIDsByKey[claudeKey], [existing.id])
+
+        let createTask = Task {
+            await store.createSession(
+                projectID: project.id, prompt: "帮我排查 SSH 报错", resume: nil,
+                clientMessageID: "gh-441-create", runtimeProvider: "claude"
+            )
+        }
+        await client.waitForCreateRequestCount(1)
+        client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
+        let accepted = await createTask.value
+        XCTAssertTrue(accepted)
+
+        XCTAssertEqual(
+            store.workspaceDirectorySessionIDsByKey[claudeKey],
+            [existing.id, created.id],
+            "创建结果必须并入已有目录登记，而不是覆盖旧页"
+        )
+        XCTAssertTrue(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "claude").contains { $0.id == created.id }
+        )
+
+        // 全局发现把新会话纳入受控集合后，归属只认目录登记，新会话仍应可见。
+        store.controlledGlobalSessionIDs.insert(created.id)
+        XCTAssertTrue(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "claude").contains { $0.id == created.id },
+            "全局发现后新会话不能从工作区列表消失"
+        )
+        XCTAssertEqual(store.sessionAlignedToOpenedWorkspace(created)?.projectID, project.id)
+        let codexKey = store.workspaceDirectoryScopeKey(for: workspace, runtimeProvider: "codex")
+        XCTAssertNotEqual(
+            store.workspaceDirectorySessionIDsByKey[codexKey]?.contains(created.id), true,
+            "Claude 会话不能写进 Codex 的目录归属"
+        )
+    }
+}
