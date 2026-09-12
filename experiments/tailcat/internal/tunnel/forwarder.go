@@ -210,27 +210,40 @@ func (f *Forwarder) proxy(localConn net.Conn, remotePort uint16) {
 	if err != nil {
 		return
 	}
-	attemptContext, stopAttempt := context.WithTimeout(dialContext, forwarderAttemptTimeout)
-	tunnelConn, err := client.transport.DialTCPPort(attemptContext, remotePort)
-	stopAttempt()
-	if err != nil && dialContext.Err() == nil {
-		client, err = f.recoverClient(dialContext, client)
-		if err == nil {
-			tunnelConn, err = client.transport.DialTCPPort(dialContext, remotePort)
+	for dialContext.Err() == nil {
+		attemptContext, stopAttempt := context.WithTimeout(dialContext, forwarderAttemptTimeout)
+		tunnelConn, err := client.transport.DialTCPPort(attemptContext, remotePort)
+		stopAttempt()
+		if err != nil && dialContext.Err() == nil {
+			client, err = f.recoverClient(dialContext, client)
+			if err == nil {
+				tunnelConn, err = client.transport.DialTCPPort(dialContext, remotePort)
+			}
 		}
-	}
-	if err != nil {
-		return
-	}
-	f.mu.Lock()
-	if f.current != client || f.ctx.Err() != nil {
+		if err != nil {
+			return
+		}
+		f.mu.Lock()
+		if dialContext.Err() != nil {
+			f.mu.Unlock()
+			tunnelConn.Close()
+			return
+		}
+		if f.current != client {
+			f.mu.Unlock()
+			tunnelConn.Close()
+			// 拨号成功也可能落后于并发恢复；尚未转发字节，可以共享恢复后重新拨号。
+			client, err = f.recoverClient(dialContext, client)
+			if err != nil {
+				return
+			}
+			continue
+		}
+		f.connections[localConn] = client
 		f.mu.Unlock()
-		tunnelConn.Close()
+
+		// 只重试建立 TCP，开始复制业务字节后绝不重放，结果未知的消息交给上层处理。
+		tailcat.ProxyConns(localConn, tunnelConn)
 		return
 	}
-	f.connections[localConn] = client
-	f.mu.Unlock()
-
-	// 只重试建立 TCP，开始复制业务字节后绝不重放，结果未知的消息交给上层处理。
-	tailcat.ProxyConns(localConn, tunnelConn)
 }

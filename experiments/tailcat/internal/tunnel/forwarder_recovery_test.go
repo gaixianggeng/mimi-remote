@@ -335,3 +335,99 @@ func TestForwarderMonitorPreservesHealthySlowBusinessConnection(t *testing.T) {
 		t.Fatal("业务静默导致健康连接被销毁")
 	}
 }
+
+func TestForwarderRetriesSuccessfulDialInvalidatedByRecovery(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		name := "recovery_pending"
+		if completed {
+			name = "recovery_completed"
+		}
+		t.Run(name, func(t *testing.T) {
+			var received, created, dials atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received.Add(1)
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != "one message" {
+					t.Errorf("请求内容为 %q", body)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			target, _ := url.Parse(server.URL)
+			dialStarted, releaseDial := make(chan struct{}), make(chan struct{})
+			pingStarted, releasePing := make(chan struct{}), make(chan struct{})
+			staleClosed := make(chan struct{})
+			initial := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+				close(dialStarted)
+				select {
+				case <-releaseDial:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				local, remote := net.Pipe()
+				go func() {
+					defer remote.Close()
+					defer close(staleClosed)
+					if n, _ := remote.Read(make([]byte, 1)); n != 0 {
+						t.Error("失效连接收到了业务字节")
+					}
+				}()
+				return local, nil
+			}}
+			next := &stubTunnelClient{
+				ping: func(ctx context.Context) error {
+					close(pingStarted)
+					select {
+					case <-releasePing:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				},
+				dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+					dials.Add(1)
+					return (&net.Dialer{}).DialContext(ctx, "tcp", target.Host)
+				},
+			}
+			f := newStubForwarder(t, initial, func() tunnelClient { created.Add(1); return next })
+			endpoint, old := f.Endpoint(), f.current
+			requestDone := make(chan error, 1)
+			go func() {
+				client := &http.Client{Timeout: 5 * time.Second}
+				response, err := client.Post(endpoint, "text/plain", strings.NewReader("one message"))
+				if err == nil {
+					response.Body.Close()
+					if response.StatusCode != http.StatusNoContent {
+						err = errors.New("响应状态不正确")
+					}
+				}
+				requestDone <- err
+			}()
+			awaitSignal(t, dialStarted)
+			recoveryDone := make(chan error, 1)
+			go func() { _, err := f.recoverClient(f.ctx, old); recoveryDone <- err }()
+			awaitSignal(t, pingStarted)
+			// 显式控制两种时序，避免依赖调度速度碰巧触发竞态。
+			if completed {
+				close(releasePing)
+				if err := <-recoveryDone; err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(releaseDial)
+			awaitSignal(t, staleClosed)
+			if !completed {
+				close(releasePing)
+				if err := <-recoveryDone; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := <-requestDone; err != nil {
+				t.Fatalf("尚未转发字节的请求被关闭：%v", err)
+			}
+			if received.Load() != 1 || created.Load() != 1 || dials.Load() != 1 || f.Endpoint() != endpoint {
+				t.Fatal("请求未恰好转发一次、重复恢复或本地入口改变")
+			}
+		})
+	}
+}
