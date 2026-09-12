@@ -145,25 +145,14 @@ enum ModelReasoningGridCatalog {
             : CodexAppServerModelOption.builtInFallback
         let candidates = runtimeOptions.isEmpty ? fallbackOptions : runtimeOptions
 
-        if normalizedRuntime == "claude" {
-            // Bridge 可能返回稳定 alias `opus`，也可能返回带版本的 canonical id。
-            // 以产品名 Opus 5 匹配，避免服务端把其他模型标成默认后改变新会话体验。
-            if let opus = candidates.first(where: { option in
-                let model = option.model.lowercased()
-                let title = option.title.lowercased()
-                return model == "opus" ||
-                    model.contains("opus-5") ||
-                    title.contains("opus 5")
-            }) {
-                return opus
-            }
-        } else if let astra = candidates.first(where: {
+        if normalizedRuntime != "claude", let astra = candidates.first(where: {
             $0.model.caseInsensitiveCompare("gpt-6-astra") == .orderedSame
         }) {
             return astra
         }
 
-        // 账号尚未获得目标模型时不能发送目录外 ID；退回该 runtime 的可用默认项。
+        // Claude 的动态目录以运行时标记的默认项为准；目录不可用时
+        // built-in fallback 会用稳定 alias 提供默认项。
         return candidates.first(where: \.isDefault) ?? candidates.first
     }
 

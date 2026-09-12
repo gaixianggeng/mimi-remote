@@ -57,6 +57,14 @@ func TestTailcatCarriesAgentdHTTPWebSocketAndBinaryTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := host.Address()
+	// 旧版 iPad 客户端会静默忽略地址里的 PSK 字段；稳定地址带 PSK 会让已配对设备握手超时。
+	_, savedInfo, err := loadOrCreateHostIdentity(hostConfig.IdentityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !savedInfo.PresharedKey.IsZero() {
+		t.Fatal("稳定 Tailcat 地址不应携带 PSK")
+	}
 	forwarders := make([]*Forwarder, 0, len(clientIdentityPaths))
 	for _, identityPath := range clientIdentityPaths {
 		forwarder := startTestForwarder(t, address, identityPath)

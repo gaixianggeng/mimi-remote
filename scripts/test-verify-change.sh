@@ -15,7 +15,16 @@ for command_name in bash chmod cp git grep mkdir mktemp printf rm; do
 done
 
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-verify-change-test.XXXXXX")"
-trap 'rm -rf "$test_root"' EXIT
+runner_pid=""
+unrelated_pid=""
+cleanup() {
+  [[ -z "$runner_pid" ]] || kill -TERM "$runner_pid" 2>/dev/null || true
+  [[ -z "$unrelated_pid" ]] || kill -TERM "$unrelated_pid" 2>/dev/null || true
+  [[ -z "$runner_pid" ]] || wait "$runner_pid" 2>/dev/null || true
+  [[ -z "$unrelated_pid" ]] || wait "$unrelated_pid" 2>/dev/null || true
+  rm -rf "$test_root"
+}
+trap cleanup EXIT
 
 assert_contains() {
   local output="$1"
@@ -141,6 +150,16 @@ assert_not_contains "$ios_full_output" "test-ios-localization-smoke.sh"
 assert_not_contains "$ios_full_output" "ios-dev.sh build-for-testing"
 assert_not_contains "$ios_full_output" "ios-dev.sh target"
 assert_not_contains "$ios_full_output" "ios-dev.sh leases"
+assert_not_contains "$ios_full_output" "bash ./scripts/check-public-repo-safety.sh"
+assert_not_contains "$ios_full_output" "CODE_SIGNING_ALLOWED=NO build"
+assert_contains "$ios_full_output" "bash ./scripts/check-pr-gate.sh"
+assert_contains "$ios_full_output" "专项缺项："
+assert_contains "$ios_full_output" "不因语言数量自动升级 full"
+assert_contains "$ios_full_output" "等待时保持 Verify，成功和失败均回原任务收尾"
+
+verify_full_output="$(assert_full_plan verify_full scripts/verify-change.sh)"
+assert_contains "$verify_full_output" "bash ./scripts/check-pr-gate.sh"
+assert_not_contains "$verify_full_output" "分层验证入口或说明变化必须通过无设备自测"
 
 mixed_full_output="$(assert_full_plan mixed_full internal/httpapi/router.go ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$mixed_full_output" "go test ./... -count=1"
@@ -164,6 +183,9 @@ assert_not_contains "$security_workflow_output" "bash ./scripts/check-pr-gate.sh
 security_verify_output="$(assert_plan security_verify scripts/check-public-repo-safety.sh scripts/verify-change.sh)"
 assert_contains "$security_verify_output" "bash ./scripts/check-public-repo-safety.sh"
 assert_not_contains "$security_verify_output" "分层验证入口或说明变化必须通过无设备自测"
+security_full_output="$(assert_full_plan security_full scripts/check-public-repo-safety.sh)"
+assert_contains "$security_full_output" "bash ./scripts/check-public-repo-safety.sh"
+assert_not_contains "$security_full_output" "bash ./scripts/check-pr-gate.sh"
 
 privacy_output="$(assert_plan ios_privacy ios/MimiRemote/Sources/Resources/PrivacyInfo.xcprivacy)"
 assert_contains "$privacy_output" "check-ios-network-security.sh"
@@ -287,7 +309,150 @@ if (cd "$repo_root" && bash ./scripts/verify-change.sh --plan --base "$unrelated
 fi
 assert_contains "$(<"$collection_failure_output")" "无法收集 committed 变更路径。"
 
-rm -rf "$test_root"
-trap - EXIT
+# 执行层用独立临时仓库与 fake 工具，覆盖失败汇总和真实进程取消，绝不启动编译器。
+execution_root="$test_root/execution-repository"
+mkdir -p "$execution_root/scripts" "$execution_root/bin" "$execution_root/internal/example"
+cp scripts/verify-change.sh scripts/ci-pr-scope.sh "$execution_root/scripts/"
+printf 'package example\n' > "$execution_root/internal/example/example.go"
+cat > "$execution_root/scripts/check-source-size.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'preflight\n' >> "$VERIFY_TEST_CALLS"
+exit "${VERIFY_TEST_PREFLIGHT_EXIT:-0}"
+SH
+cat > "$execution_root/bin/go" <<'SH'
+#!/usr/bin/env bash
+printf 'go %s\n' "$*" >> "$VERIFY_TEST_CALLS"
+printf 'go-log-first-line\n'
+for ((line=0; line<60; line++)); do printf 'go-log-line-%s\n' "$line"; done
+exit "${VERIFY_TEST_GO_EXIT:-0}"
+SH
+cat > "$execution_root/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+printf 'cargo %s\n' "$*" >> "$VERIFY_TEST_CALLS"
+printf 'quiet-cargo-success\n'
+[[ "$1" != fmt ]] || exit "${VERIFY_TEST_FMT_EXIT:-0}"
+exit 0
+SH
+cat > "$execution_root/scripts/ios-dev.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'ios %s\n' "$*" >> "$VERIFY_TEST_CALLS"
+if [[ -n "${VERIFY_TEST_HOLD:-}" ]]; then
+  mkdir "$VERIFY_TEST_HOLD.lease"
+  trap 'rm -rf "$VERIFY_TEST_HOLD.lease"' EXIT
+  trap 'exit 143' TERM
+  sleep 300 &
+  child=$!
+  printf '%s %s\n' "$$" "$child" > "$VERIFY_TEST_HOLD"
+  wait "$child"
+fi
+exit "${VERIFY_TEST_IOS_EXIT:-0}"
+SH
+chmod +x "$execution_root/bin/go" "$execution_root/bin/cargo"
+git -C "$execution_root" init -q
+git -C "$execution_root" config user.name "Mimi Verify Test"
+git -C "$execution_root" config user.email "verify-test@example.invalid"
+git -C "$execution_root" add .
+git -C "$execution_root" commit -qm baseline
+execution_paths="$test_root/execution.paths"
+printf '%s\0' internal/example/example.go ios/MimiRemote/Sources/Example.swift \
+  bridges/claude/crates/claude-bridge/src/lib.rs > "$execution_paths"
+execution_calls="$test_root/execution.calls"
+execution_output="$test_root/execution.output"
 
-echo "分层验证自测通过：docs/iOS/Go/Rust/contract/release/unknown、Gate 去重与四类 Git 变更来源均符合预期。"
+run_execution_case() {
+  : > "$execution_calls"
+  execution_code=0
+  (cd "$execution_root" && env PATH="$execution_root/bin:$PATH" TMPDIR="$test_root" \
+    VERIFY_TEST_CALLS="$execution_calls" "$@" \
+    bash ./scripts/verify-change.sh --paths-file "$execution_paths") \
+    > "$execution_output" 2>&1 || execution_code=$?
+  execution_summary="$(sed -n 's/^结果汇总：//p' "$execution_output")"
+  [[ -f "$execution_summary" ]] || fail "执行后必须留下结果汇总。"
+}
+
+run_execution_case VERIFY_TEST_GO_EXIT=7
+[[ "$execution_code" -eq 7 ]] || fail "独立检查失败必须保留非零退出码。"
+assert_contains "$(<"$execution_calls")" "ios build"
+assert_contains "$(<"$execution_calls")" "cargo test --locked"
+assert_contains "$(<"$execution_summary")" "失败 |"
+assert_contains "$(<"$execution_summary")" "exit=7"
+assert_contains "$(<"$execution_summary")" "通过 |"
+assert_not_contains "$(<"$execution_output")" "go-log-first-line"
+assert_not_contains "$(<"$execution_output")" "quiet-cargo-success"
+assert_contains "$(<"$execution_output")" "go-log-line-59"
+assert_contains "$(<"${execution_summary%/*}/3.log")" "go-log-first-line"
+assert_contains "$(<"${execution_summary%/*}/plan.txt")" "PR Gate scope："
+
+run_execution_case VERIFY_TEST_PREFLIGHT_EXIT=1
+[[ "$execution_code" -eq 1 ]] || fail "前置失败不能算验证通过。"
+assert_contains "$(<"$execution_summary")" "阻塞（前置检查失败）"
+assert_not_contains "$(<"$execution_calls")" "go test ./internal/example"
+assert_not_contains "$(<"$execution_calls")" "ios build"
+assert_contains "$(<"$execution_calls")" "cargo test --locked"
+
+run_execution_case VERIFY_TEST_FMT_EXIT=8
+[[ "$execution_code" -eq 8 ]] || fail "Rust 前置失败不能算通过。"
+assert_not_contains "$(<"$execution_calls")" "cargo test"
+assert_contains "$(<"$execution_calls")" "go test ./internal/example"
+assert_contains "$(<"$execution_calls")" "ios build"
+
+run_execution_case VERIFY_TEST_IOS_EXIT=75
+[[ "$execution_code" -eq 75 ]] || fail "设备阻塞必须保留退出码 75。"
+assert_contains "$(<"$execution_summary")" "阻塞 |"
+assert_contains "$(<"$execution_calls")" "cargo test --locked"
+
+run_execution_case VERIFY_TEST_GO_EXIT=75 VERIFY_TEST_IOS_EXIT=9
+[[ "$execution_code" -eq 9 ]] || fail "已有阻塞不能掩盖另一独立检查的真实失败。"
+assert_contains "$(<"$execution_summary")" "阻塞 |"
+assert_contains "$(<"$execution_summary")" "失败 |"
+
+run_execution_case VERIFY_TEST_GO_EXIT=124
+[[ "$execution_code" -eq 124 ]] || fail "子命令超时不能算通过。"
+assert_contains "$(<"$execution_summary")" "超时 |"
+
+run_execution_case VERIFY_TEST_GO_EXIT=130
+[[ "$execution_code" -eq 130 ]] || fail "子命令取消必须使整轮取消。"
+assert_contains "$(<"$execution_summary")" "取消 |"
+assert_contains "$(<"$execution_summary")" "未运行 |"
+assert_not_contains "$(<"$execution_calls")" "ios build"
+
+# 同一 HEAD 下再次执行仍真正调用工具；这些日志不是自动跳过检查的缓存。
+run_execution_case VERIFY_TEST_GO_EXIT=0
+[[ "$execution_code" -eq 0 ]] || fail "全部检查通过应返回零。"
+assert_contains "$(<"$execution_calls")" "go test ./internal/example"
+assert_not_contains "$(<"$execution_output")" "go-log-line-59"
+assert_not_contains "$(<"$execution_summary")" "未运行 |"
+
+hold_file="$test_root/held-check.pids"
+: > "$execution_calls"
+sleep 300 &
+unrelated_pid=$!
+(cd "$execution_root" && exec env PATH="$execution_root/bin:$PATH" TMPDIR="$test_root" \
+  VERIFY_TEST_CALLS="$execution_calls" VERIFY_TEST_HOLD="$hold_file" \
+  bash ./scripts/verify-change.sh --paths-file "$execution_paths") > "$execution_output" 2>&1 &
+runner_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+  [[ ! -s "$hold_file" ]] || break
+  sleep 0.05
+done
+[[ -s "$hold_file" ]] || fail "取消测试未进入正在运行的检查。"
+read -r held_pid held_child_pid < "$hold_file"
+kill -TERM "$runner_pid"
+execution_code=0
+wait "$runner_pid" || execution_code=$?
+runner_pid=""
+[[ "$execution_code" -eq 143 ]] || fail "取消入口必须返回 143。"
+execution_summary="$(sed -n 's/^结果汇总：//p' "$execution_output")"
+[[ -f "$execution_summary" ]] || fail "取消后必须保留汇总。"
+assert_contains "$(<"$execution_summary")" "取消 |"
+assert_contains "$(<"$execution_summary")" "未运行 |"
+[[ ! -d "$hold_file.lease" ]] || fail "取消后目标入口必须完成租约清理。"
+if kill -0 "$held_pid" 2>/dev/null || kill -0 "$held_child_pid" 2>/dev/null; then
+  fail "取消后本轮检查仍有子进程存活。"
+fi
+kill -0 "$unrelated_pid" 2>/dev/null || fail "取消误伤了不属于本轮检查的进程。"
+kill -TERM "$unrelated_pid"
+wait "$unrelated_pid" 2>/dev/null || true
+unrelated_pid=""
+
+echo "分层验证自测通过：范围与来源、full 覆盖边界、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"

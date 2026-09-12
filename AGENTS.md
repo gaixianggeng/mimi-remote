@@ -98,17 +98,24 @@
 ## 分层验证执行规范
 
 - 开发过程中只运行与当前行为直接相关的最小检查。Go 优先运行变更 package 的测试；iOS 优先运行精确 XCTest selector、相关快照或静态检查。不要在每次微调后运行 quick、完整 XCTest 或全仓测试。
-- 完成最后一次代码修改后，交付或 push 前执行一轮：
-  - `bash ./scripts/verify-change.sh --plan`
-  - `bash ./scripts/verify-change.sh`
+- 完成最后一次代码修改后，交付或 push 前先根据下述条件选择模式。quick 先运行 `bash ./scripts/verify-change.sh --plan`，再运行一次 `bash ./scripts/verify-change.sh`；full 先运行 `bash ./scripts/verify-change.sh --plan --full`，再运行一次 `bash ./scripts/verify-change.sh --full`。计划与执行使用同一模式，选择 full 时不先执行 quick。
 - quick 是普通 Issue 的默认收尾。iOS quick 只在固定 `iPad Pro 13-inch (M5)` Simulator 上编译 App，不编译或运行整个 XCTest 测试包；需要回归测试时，在开发阶段运行与问题直接相关的 selector。
+- 修改共享协议、跨栈接口或同一用户链路的多个产品栈，本身不要求本地 full。必须对接口兼容、错误语义和降级链路运行定向检查；只有同时命中下述 full 条件时才升级。
 - 只有以下任一条件成立时，才执行 `bash ./scripts/verify-change.sh --full`：
-  - 修改 Go/iOS 共享协议、跨栈接口或同一用户链路的多个产品栈；
   - 修改鉴权、权限、持久化格式或迁移、消息 exactly-once、并发、重连等高风险语义；
   - 大范围重构导致直接影响范围无法可靠界定；
+  - 必要回归缺少等价 CI 覆盖，且本地 full 能补齐该缺口；
   - 准备正式发布，或用户明确要求完整回归。
-- Issue 已完成、改动文件较多、准备提交和“为了保险”都不是 full 的触发条件。quick 或 CI 失败时先定位，修复后只重跑失败项；修复引入新影响时补相应检查，不自动升级为全量流程。
+- 运行 full 前，检查 full 计划中的命令，并核对这些命令所调用脚本的实际目标、配置和 selector。full 计划已经覆盖 quick 项目时，不另跑 quick；full 没有覆盖当前风险所需的专项时，才额外补验。所选 full 计划中的每一项仍须在本轮执行，不能因开发阶段或以前轮次运行过等价测试而跳过。
+- 普通本地 full 不默认扫描完整 Git 历史；它保留必要的 PR Gate 自检和 Codex 协议检查。修改公开仓库安全门自身时，仍执行完整安全检查。`Public Repository Safety` 在 `main` push 和 `workflow_dispatch` 使用 full-history，在 Pull Request 使用增量检查。
+- `--plan` 保持详细输出。实际执行时，计划、结果汇总和每项完整输出分别写入脚本报告结果目录中的 `plan.txt`、`summary.txt` 和编号日志；该目录默认位于本机临时目录。控制台只显示状态、实际耗时和失败项的有限日志。不要另建统计系统。
+- 前置静态检查失败时，不再启动依赖它的重型检查；其他独立检查仍继续并汇总。非零退出、阻塞退出码 75、取消和超时都不能算通过，也不能跨轮引用旧结果。检查执行中收到 INT 或 TERM 时，只终止当前检查的进程组，并保留取消结果。
+- Issue 已完成、改动文件较多、准备提交和“为了保险”都不是 full 的触发条件。quick、本地 full 或 CI 失败时先定位，修复后只重跑失败项；修复引入新影响时补相应检查，不自动升级为全量流程。
 - 真机验证仍只用于相机、通知、Keychain、Tailscale/弱网、性能、发布前专项或 Issue 明确要求。普通 UI、文案、局部状态和单 package 修复不得默认启动真机。
+- 设备排队沿用现有租约等待预算。租约超时是阻塞，不能据此豁免检查或切换到其他设备。环境故障必须按日志和运行环境证据判断；`main` 有相同失败或重跑变绿都不能单独证明改动无关。
+- 等待长时间本地命令或 CI 时，使用宿主已有的阻塞或挂起工具。没有状态变化时，不反复运行 `tail`、`ps` 或派另一个 Agent 监视。
+- 必需检查必须对最新受检提交实际返回成功。使用不同 Xcode 或 SDK 的本地结果与 CI 结果分别记录，不能互相替代。
+- 如果宿主没有完成事件可继续唤醒当前任务，把 Issue 保持在 `Verify`，并交接 Commit、PR、CI 链接、已执行检查、未验证范围和恢复原任务的入口。负责人在 CI 成功或失败后回到原任务继续处理。开发结束本身不满足 `Done`。
 - 交付时只报告实际执行的检查，并明确列出延后到 PR Gate、真机或发布阶段的范围。不得把 quick 结果表述为完整回归通过。
 
 ## iOS 日常构建与模拟器标准
