@@ -1,186 +1,170 @@
-/* Mimi Remote — marketing site behaviour.
-   Four small jobs, no framework:
-     1. language      [data-i18n] / [data-i18n-alt] / [data-i18n-label]
-     2. appearance    light <-> dark, remembered, follows the system until chosen
-     3. screenshots   [data-shot="name"] -> ./assets/name-<light|dark>.png
-     4. polish        scroll-progress hairline + reveal-on-scroll
+/* Mimi Remote — site behaviour. Four small jobs, no framework:
+     1. language     [data-i18n] / [data-i18n-alt] / [data-i18n-label] / [data-href-zh]
+     2. appearance   light <-> dark, remembered; follows the system until chosen
+     3. screenshots  [data-shot="name"] -> ./assets/shots/name-<zh|en>-<light|dark>.webp
+                     ([data-shot-theme] pins one appearance regardless of the page's)
+     4. polish       header hairline + reveal-on-scroll
 
-   Screenshots currently ship in one language. When language-specific captures
-   exist, add them to SHOT_LANG below as  shot: { en: "file-base-name" }  and
-   they will be picked up for that language automatically. */
+   English lives in index.html and is read back from the markup on load, so each
+   language has exactly one source. Screenshots come from web/capture-screenshots.sh. */
 (function () {
   "use strict";
 
-  var LANG_KEY  = "mimi-lang";
+  var LANG_KEY = "mimi-lang";
   var THEME_KEY = "mimi-theme";
+  var root = document.documentElement;
 
   /* ---------------------------------------------------------- 1. language */
 
-  var DICT = {
-    en: {
-      "skip": "Skip to main content",
+  var ZH = {
+    "meta.title": "Mimi Remote — 离开电脑，会话不断",
+    "meta.description": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端：在任何地方接着电脑上的会话，Agent 需要你时及时提醒，内置 Tailcat 随时连回电脑。",
 
-      "nav.remote": "Remote",
-      "nav.runtimes": "Runtimes",
-      "nav.personal": "Personal",
-      "nav.cta": "TestFlight",
+    "skip": "跳到正文",
 
-      "hero.eyebrow": "Coding agents, on the go",
-      "hero.title": "Your agents.<br>Within reach.",
-      "hero.lede": "A native iPhone and iPad client for Codex and Claude Code. Your Mac or Windows PC keeps running the work — Tailscale keeps the link private and fast. Android is coming soon.",
-      "hero.cta1": "Join TestFlight",
-      "hero.cta2": "View source",
-      "hero.meta": "iPhone &amp; iPad · macOS &amp; Windows hosts · Android coming soon · Open source",
+    "nav.handoff": "接力",
+    "nav.devices": "多设备",
+    "nav.connect": "连接",
+    "nav.notify": "通知",
+    "nav.design": "设计",
+    "nav.get": "下载",
 
-      "pillar.1.title": "Remote",
-      "pillar.1.note": "A direct Tailscale link to your Mac or Windows PC. Fast, encrypted, and it stays up.",
-      "pillar.2.title": "Runtimes",
-      "pillar.2.note": "Codex and Claude Code, with sessions and workspaces each getting their own home.",
-      "pillar.3.title": "Personal",
-      "pillar.3.note": "Themes, workspace faces, and a light and dark mode that both got the same care.",
+    "hero.eyebrow": "为 Codex 与 Claude Code 打造",
+    "hero.title": "离开电脑，<br>会话不断。",
+    "hero.lede": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端。任务继续在你的电脑上运行，你在任何地方都能跟进进度、继续对话、处理审批。",
+    "cta.appstore": "在 App Store 下载",
+    "cta.testflight": "加入 TestFlight 测试",
+    "cta.host": "下载电脑端",
+    "hero.meta": "iPhone 与 iPad · 支持 Mac、Windows、Linux 电脑 · 开源",
 
-      "remote.eyebrow": "Remote",
-      "remote.title": "A private line to your host.",
-      "remote.lede": "Mimi Remote rides your own Tailscale network — a WireGuard tunnel from the device in your hand straight to the Mac or Windows PC doing the work. No relay in the middle, no port forwarding, nothing published to the open internet.",
-      "remote.tunnel": "Tailscale · WireGuard",
-      "remote.diagramLabel": "iPhone and iPad connect over an encrypted Tailscale tunnel to agentd on macOS or Windows, which runs Codex and Claude Code.",
-      "remote.f1.title": "Direct and encrypted",
-      "remote.f1.note": "Peer-to-peer WireGuard between your own devices. Keys never leave them, and no third party sits in the path.",
-      "remote.f2.title": "Recovers on its own",
-      "remote.f2.note": "Drop the signal and nothing is lost. Unsent instructions wait in a queue on the device and go out the moment the link returns.",
-      "remote.f3.title": "Works wherever you are",
-      "remote.f3.note": "Café Wi-Fi, cellular, a locked-down office network — if both ends are on your tailnet, the session is right there.",
+    "overview.title": "为离开电脑的每个时刻<br>而设计。",
+    "ov.1.t": "无缝接力",
+    "ov.1.n": "Codex 会话在电脑与手机之间接力，上下文完整保留。",
+    "ov.2.t": "多台电脑",
+    "ov.2.n": "Mac、Windows、Linux 各自保存，轻点即可切换。",
+    "ov.3.t": "内置 Tailcat",
+    "ov.3.n": "不用另装 VPN App，在任何网络都能连回电脑。",
+    "ov.4.t": "及时通知",
+    "ov.4.n": "审批、回复与失败，锁屏第一时间提醒。",
+    "ov.5.t": "顺手好用",
+    "ov.5.n": "审批、排队、切换模型，都在输入框旁边。",
+    "ov.6.t": "精致好看",
+    "ov.6.n": "为 iPhone 与 iPad 分别打磨，深浅色同样用心。",
 
-      "devices.eyebrow": "iPhone &amp; iPad",
-      "devices.title": "Two screens. Two layouts.",
-      "devices.lede": "Not one interface stretched to fit. The iPad gets a standing sidebar with in-progress work and recent history in view; the iPhone gets a single column and a tab bar your thumb can reach.",
-      "devices.capPad": "iPad · sidebar and list side by side",
-      "devices.capPhone": "iPhone · one column, one thumb",
+    "handoff.eyebrow": "无缝接力",
+    "handoff.title": "在电脑上开始，<br>在手机上接着聊。",
+    "handoff.body": "Mimi 与 Codex Desktop、Codex CLI 连接同一个 App Server。在任何一端开始的会话，另一端都能直接打开——历史、上下文和正在运行的任务一样不少。不用复制粘贴，也不用重新交代背景。",
+    "term.user": "帮我检查这次 README 改动，确认安装步骤和安全边界与代码一致。",
+    "term.agent": "我会核对源码构建和配对流程，并把主运行时与可选运行时的边界拆开说明。",
+    "handoff.link": "同一个会话",
+    "handoff.chip1": "历史完整",
+    "handoff.chip2": "进度实时同步",
+    "handoff.chip3": "Claude Code 同样适用",
+    "handoff.fine": "与 Codex Desktop、CLI 共享会话目前支持 Mac 与 Linux 电脑。",
 
-      "runtimes.eyebrow": "Runtimes",
-      "runtimes.title": "Codex and Claude Code, side by side.",
-      "runtimes.lede": "Both runtimes are first-class. Pick one when you start a session, and switch which you are looking at without leaving the screen.",
-      "runtimes.sessions.head": "Sessions",
-      "runtimes.sessions.body": "Every conversation across every project, grouped by when it happened and searchable in one field. Work still running is marked as running.",
-      "runtimes.workspaces.head": "Workspaces",
-      "runtimes.workspaces.body": "Each repository is a tab of its own, carrying its recent conversations and the branch each one ran on. Starting a new session there takes one tap.",
+    "devices.eyebrow": "多设备",
+    "devices.title": "一部手机，<br>管好每一台电脑。",
+    "devices.body": "家里的 Mac Studio、出差带的 MacBook、公司的 Windows 工作站，各自保存为独立连接，凭据分别存进钥匙串。轻点一下就能切换；iPad 上能力完全一致，布局更宽。",
+    "devices.mac": "菜单栏 App，服务状态、额度与配对一目了然。",
+    "devices.win": "托盘 App 与用户级服务，支持 Windows 10 / 11。",
+    "devices.linux": "桌面托盘与 systemd 用户服务。",
 
-      "personal.eyebrow": "Personal",
-      "personal.title": "Make it look like yours.",
-      "personal.lede": "Eight icon sets give every workspace a face you recognise at a glance. Themes reset the whole palette. Light and dark both got the same attention — follow the system, or pin the one you like.",
-      "personal.capLight": "Light · icon sets and themes",
-      "personal.capDark": "Dark · same care, other end",
-      "personal.try": "This page follows the same rule.",
-      "personal.tryCta": "Try the other one",
+    "connect.eyebrow": "远程连接",
+    "connect.title": "在哪里，<br>都能连回电脑。",
+    "connect.body": "Mimi 内置 Tailcat。在电脑上生成二维码，用手机扫一下就完成配对，不用另装 VPN App。网络允许时点对点直连，不允许时自动走加密中转；私钥始终只留在你自己的设备里。",
+    "route.tc": "内置，扫码一次，之后在任何网络都能连。",
+    "route.ts": "已经在用 tailnet？直接连就行。",
+    "route.lan.t": "局域网",
+    "route.lan": "同一网络下直接连接，不需要任何额外设置。",
+    "route.direct": "点对点直连",
+    "route.relay": "必要时经加密中转",
+    "route.computer": "你的电脑",
 
-      "footer.eyebrow": "Get early access",
-      "footer.title": "Take your coding agents with you.",
-      "footer.cta1": "Join TestFlight",
-      "footer.cta2": "View source",
-      "footer.docs": "Docs",
-      "footer.privacy": "Privacy",
-      "footer.fine": "Open-source iPhone and iPad client · macOS and Windows hosts · Android coming soon.",
+    "notify.eyebrow": "通知",
+    "notify.title": "需要你的时候，<br>第一时间知道。",
+    "notify.body": "Agent 想运行命令、修改文件或需要你补充信息时，带着会话标题的通知会直接送达；任务回复、失败或中断也会及时提醒。审批在通知里就能允许或拒绝。",
+    "notify.privacy": "默认关闭。开启后，离开电脑的只有固定格式的状态信息，不含你的代码、提示词或对话；会话标题在手机本地补全。",
+    "lock.date": "9月12日 星期六",
+    "lock.now": "现在",
+    "lock.n1.t": "整理开源发布说明",
+    "lock.n1.b": "Codex 在 Demo Mac Studio 上等待审批 · 运行命令",
+    "lock.allow": "仅允许一次",
+    "lock.deny": "拒绝",
+    "lock.n2.t": "检查连接恢复测试",
+    "lock.n2.time": "2 分钟前",
+    "lock.n2.b": "已回复，点按查看。",
+    "lock.n3.t": "完善示例项目文档",
+    "lock.n3.time": "18 分钟前",
+    "lock.n3.b": "任务未能完成，点按查看原因。",
 
-      "alt.ipadWorkspace": "Mimi Remote's workspace on iPad: a sidebar of sessions and workspaces beside project tabs and recent conversations.",
-      "alt.iphoneWorkspace": "The same workspace on iPhone, as a single column with a compact tab bar.",
-      "alt.promoOverview": "Mimi Remote promotional overview showing conversations, live session progress, and control of development computers from iPhone.",
-      "alt.ipadSessions": "The session list on iPad, grouped by day, with the sidebar showing just-finished and recent work.",
-      "alt.iphoneSessions": "The same session list on iPhone, one column, with a floating tab bar.",
-      "alt.cropSessions": "A close crop of the session list: a day heading with several conversations beneath it.",
-      "alt.cropWorkspaces": "A close crop of the workspace tabs, each project carrying its own character icon.",
-      "alt.appearance": "The appearance settings on iPhone in light mode: a light/dark selector, eight workspace icon sets, and a list of themes.",
-      "alt.meDark": "The same app in dark mode, showing token usage rings, a connected Mac, and the preference list."
-    },
+    "easy.eyebrow": "好用",
+    "easy.title": "复杂的工作，<br>在手机上也轻松。",
+    "easy.body": "消息、推理、命令、工具调用与审批，整理成一条清晰易读的时间线。模型、推理强度、Skill、权限和排队中的下一步，都在输入框旁边。",
+    "mini.1.t": "就地审批",
+    "mini.1.n": "仅一次、本会话或始终允许，不用离开当前会话。",
+    "mini.2.t": "排队下一步",
+    "mini.2.n": "当前任务还在运行，就能把后续指令排进队列。",
+    "mini.3.t": "随时切换模型",
+    "mini.3.n": "每一轮都能调整模型、推理强度和速度。",
+    "mini.4.t": "语音、图片与文件",
+    "mini.4.n": "语音输入、附上截图，用快速查看预览文件。",
+    "mini.5.t": "断线自动恢复",
+    "mini.5.n": "自动重连，诊断信息一点即看。",
+    "mini.6.t": "需要时也能用 Git",
+    "mini.6.n": "查看 Diff、管理 Worktree，提交并创建草稿 PR。",
 
-    zh: {
-      "skip": "跳到主要内容",
+    "design.eyebrow": "好看",
+    "design.title": "为 iPhone 打磨，<br>也为 iPad 打磨。",
+    "design.body": "从里到外都是原生 SwiftUI。iPhone 单手就能够到一切，iPad 把同样的会话展开成多栏工作台。浅色和深色同样用心，还有多套主题与工作区图标，调成你喜欢的样子。",
+    "design.legend": "浅色与深色 · 多套主题 · 工作区图标",
+    "design.try": "切换本页深浅色",
 
-      "nav.remote": "远程",
-      "nav.runtimes": "运行时",
-      "nav.personal": "个性化",
-      "nav.cta": "TestFlight",
+    "trust.1.t": "开源",
+    "trust.1.n": "App、电脑端服务与 Claude 桥接，代码全部公开在 GitHub。",
+    "trust.2.t": "数据留在你的电脑",
+    "trust.2.n": "项目文件、会话历史和运行时凭据，都留在你自己的电脑上。",
+    "trust.3.t": "沿用你的 Agent 账号",
+    "trust.3.n": "直接使用电脑上已登录的 Codex 或 Claude Code，Mimi 不接触这些凭据。",
 
-      "hero.eyebrow": "随身携带的编码 Agent",
-      "hero.title": "你的 Agent，<br>触手可及。",
-      "hero.lede": "为 iPhone 和 iPad 原生打造的 Codex 与 Claude Code 客户端。任务照旧跑在你的 Mac 或 Windows PC 上，Tailscale 让这条链路既私密又快；Android 即将推出。",
-      "hero.cta1": "加入 TestFlight",
-      "hero.cta2": "查看源码",
-      "hero.meta": "iPhone 与 iPad · macOS 与 Windows 宿主 · Android 即将推出 · 开源",
+    "final.title": "把你的 Agent 带在身边。",
+    "final.sub": "需要 iOS / iPadOS 18 或更高版本，以及一台装有 Codex CLI 的 Mac、Windows 或 Linux 电脑。",
 
-      "pillar.1.title": "远程",
-      "pillar.1.note": "基于 Tailscale 直连你的 Mac 或 Windows PC，快、加密，而且一直在线。",
-      "pillar.2.title": "运行时",
-      "pillar.2.note": "Codex 与 Claude Code 都支持，会话与工作区各有自己的位置。",
-      "pillar.3.title": "个性化",
-      "pillar.3.note": "主题、工作区头像，深色与浅色都被同样认真地对待。",
+    "footer.docs": "文档",
+    "footer.privacy": "隐私",
+    "footer.terms": "条款",
+    "footer.support": "支持",
+    "footer.fine": "Mimi Remote 是独立的开源项目，与 OpenAI、Anthropic、Tailscale 均无关联。",
 
-      "remote.eyebrow": "远程",
-      "remote.title": "一条通往宿主电脑的私有链路。",
-      "remote.lede": "Mimi Remote 走你自己的 Tailscale 网络——从手里的设备直达那台干活的 Mac 或 Windows PC 的 WireGuard 隧道。中间没有转发服务器，不用做端口映射，也不向公网暴露任何东西。",
-      "remote.tunnel": "Tailscale · WireGuard",
-      "remote.diagramLabel": "iPhone 与 iPad 通过加密的 Tailscale 隧道连到 macOS 或 Windows 上的 agentd，由它运行 Codex 与 Claude Code。",
-      "remote.f1.title": "点对点加密直连",
-      "remote.f1.note": "在你自己的设备之间建立 WireGuard 直连，密钥不离开设备，链路上也没有第三方。",
-      "remote.f2.title": "断了自己会恢复",
-      "remote.f2.note": "掉线也不会丢东西。没发出去的指令留在设备的本地队列里，连接一恢复就自动补发。",
-      "remote.f3.title": "在哪都能用",
-      "remote.f3.note": "咖啡馆 Wi-Fi、蜂窝网络、管得很严的公司网——只要两端都在你的 tailnet 里，会话就在手边。",
+    "alt.heroIpad": "iPad 上的 Mimi Remote：左侧是会话侧栏，右侧对话正在等待审批。",
+    "alt.heroPhone": "iPhone 上的会话列表，进行中的任务排在最上方。",
+    "alt.handoff": "同一段对话，在 iPhone 上接着进行。",
+    "alt.devices": "iPhone 上的「Mac 连接」页面，列出两台已保存的电脑。",
+    "alt.easy": "对话中的审批卡片：拒绝、仅允许一次、本会话允许、始终允许此工具。",
+    "alt.designLight": "浅色模式下 iPhone 的工作区。",
+    "alt.designIpad": "iPad 上的工作区视图。",
+    "alt.designDark": "深色模式下 iPhone 的会话列表。",
 
-      "devices.eyebrow": "iPhone 与 iPad",
-      "devices.title": "两块屏幕，两套布局。",
-      "devices.lede": "不是把同一套界面拉伸了事。iPad 有常驻侧栏，进行中的任务和最近历史一直在视野里；iPhone 是单列加一条拇指够得到的标签栏。",
-      "devices.capPad": "iPad · 侧栏与列表并列",
-      "devices.capPhone": "iPhone · 单列，单手",
-
-      "runtimes.eyebrow": "运行时",
-      "runtimes.title": "Codex 与 Claude Code，并列支持。",
-      "runtimes.lede": "两套运行时都是一等公民。开会话时选一个，想看另一个也不用离开当前页面。",
-      "runtimes.sessions.head": "会话",
-      "runtimes.sessions.body": "所有项目里的每一次对话，按时间分组，一个搜索框就能找到。还在跑的任务会明确标出来。",
-      "runtimes.workspaces.head": "工作区",
-      "runtimes.workspaces.body": "每个仓库都是一个独立的标签，带着自己的最近对话和各自所在的分支。在那里新建会话只需一次点按。",
-
-      "personal.eyebrow": "个性化",
-      "personal.title": "调成你喜欢的样子。",
-      "personal.lede": "八套图标风格，让每个工作区都有一张一眼认得出的脸。主题会换掉整套配色。深色和浅色被同样认真地打磨——跟随系统，或者固定成你偏爱的那一种。",
-      "personal.capLight": "浅色 · 图标风格与主题",
-      "personal.capDark": "深色 · 同样的用心",
-      "personal.try": "这个页面也遵守同一条规矩。",
-      "personal.tryCta": "换一种看看",
-
-      "footer.eyebrow": "抢先体验",
-      "footer.title": "把你的编码 Agent 带在身边。",
-      "footer.cta1": "加入 TestFlight",
-      "footer.cta2": "查看源码",
-      "footer.docs": "文档",
-      "footer.privacy": "隐私",
-      "footer.fine": "开源 iPhone 与 iPad 客户端 · macOS 与 Windows 宿主 · Android 即将推出。",
-
-      "alt.ipadWorkspace": "Mimi Remote 在 iPad 上的工作区：侧栏是会话与工作区，右侧是项目标签和最近对话。",
-      "alt.iphoneWorkspace": "同一个工作区在 iPhone 上的样子：单列布局，底部是紧凑的标签栏。",
-      "alt.promoOverview": "Mimi Remote 推广总览：在 iPhone 上继续对话、跟进会话进度并控制自己的开发电脑。",
-      "alt.ipadSessions": "iPad 上的会话列表，按天分组，侧栏显示刚完成和最近的任务。",
-      "alt.iphoneSessions": "同一份会话列表在 iPhone 上：单列，底部悬浮标签栏。",
-      "alt.cropSessions": "会话列表的局部特写：一个日期分组下面跟着若干条对话。",
-      "alt.cropWorkspaces": "工作区标签的局部特写，每个项目都带着自己的角色头像。",
-      "alt.appearance": "iPhone 浅色模式下的外观设置：深浅色选择、八套工作区图标风格，以及主题列表。",
-      "alt.meDark": "同一个 App 的深色模式：Token 用量圆环、已连接的 Mac，以及偏好设置列表。"
-    }
+    "label.diagram": "手机与电脑点对点直连；无法直连时自动改走加密中转。",
+    "label.lock": "锁屏上的 Mimi Remote 通知：一条带「仅允许一次」和「拒绝」的审批请求、一条已回复提醒，以及一条任务未完成提醒。",
+    "label.trust": "开源与隐私"
   };
 
-  /* Optional per-language screenshot overrides, e.g.
-       "iphone-sessions": { en: "iphone-sessions-en" }
-     Anything not listed here uses the shared capture. */
-  var SHOT_LANG = {};
+  var EN = {};   /* filled from the markup by captureEnglish() */
 
-  var LANG_LABEL  = { en: "中文", zh: "EN" };   /* label shows the *other* language */
-  var HTML_LANG   = { en: "en", zh: "zh-Hans" };
-  var LANG_ARIA   = { en: "Switch to Chinese", zh: "切换到英文" };
-  var THEME_ARIA  = { light: "Switch to dark appearance", dark: "切换到浅色外观" };
+  var LANG_LABEL = { en: "中文", zh: "EN" };            /* the button names the *other* language */
+  var LANG_ARIA  = { en: "切换到中文", zh: "Switch to English" };
+  var THEME_ARIA = {
+    en: { light: "Switch to dark appearance", dark: "Switch to light appearance" },
+    zh: { light: "切换到深色外观", dark: "切换到浅色外观" }
+  };
 
-  var lang  = "en";
-  var theme = "light";
+  var lang  = root.getAttribute("data-lang") === "zh" ? "zh" : "en";
+  var theme = root.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  var metaDescription = document.querySelector('meta[name="description"]');
 
+  function each(selector, fn) {
+    Array.prototype.forEach.call(document.querySelectorAll(selector), fn);
+  }
   function readStored(key, allowed) {
     try {
       var v = localStorage.getItem(key);
@@ -191,44 +175,27 @@
     try { localStorage.setItem(key, value); } catch (e) {}
   }
 
-  function detectLang() {
-    var saved = readStored(LANG_KEY, ["en", "zh"]);
-    if (saved) return saved;
-    var list = navigator.languages || [navigator.language || "en"];
-    for (var i = 0; i < list.length; i++) {
-      if (/^zh\b/i.test(list[i])) return "zh";
-      if (/^en\b/i.test(list[i])) return "en";
-    }
-    return "en";
+  function captureEnglish() {
+    EN["meta.title"] = document.title;
+    if (metaDescription) EN["meta.description"] = metaDescription.getAttribute("content");
+    each("[data-i18n]", function (el) { EN[el.getAttribute("data-i18n")] = el.innerHTML; });
+    each("[data-i18n-alt]", function (el) { EN[el.getAttribute("data-i18n-alt")] = el.getAttribute("alt"); });
+    each("[data-i18n-label]", function (el) { EN[el.getAttribute("data-i18n-label")] = el.getAttribute("aria-label"); });
+    each("[data-href-zh]", function (el) { el.setAttribute("data-href-en", el.getAttribute("href")); });
   }
 
-  function each(selector, fn) {
-    Array.prototype.forEach.call(document.querySelectorAll(selector), fn);
-  }
-
-  /* ------------------------------------------------------ 3. screenshots */
-
-  function paintShots() {
-    each("[data-shot]", function (img) {
-      var shot = img.getAttribute("data-shot");
-      var override = SHOT_LANG[shot] && SHOT_LANG[shot][lang];
-      img.setAttribute("src", "./assets/" + (override || shot) + "-" + theme + ".png");
-    });
-    each("[data-promo-shot]", function (img) {
-      img.setAttribute("src", "./assets/promo-overview-" + lang + ".png");
-    });
-  }
-
-  function applyLang(next) {
+  function applyLang(next, remember) {
     lang = next;
-    var dict = DICT[lang] || DICT.en;
+    var dict = lang === "zh" ? ZH : EN;
 
-    document.documentElement.setAttribute("lang", HTML_LANG[lang]);
-    document.documentElement.setAttribute("data-lang", lang);
+    root.setAttribute("data-lang", lang);
+    root.setAttribute("lang", lang === "zh" ? "zh-Hans" : "en");
+    document.title = dict["meta.title"];
+    if (metaDescription) metaDescription.setAttribute("content", dict["meta.description"]);
 
     each("[data-i18n]", function (el) {
       var v = dict[el.getAttribute("data-i18n")];
-      if (v != null) el.innerHTML = v;
+      if (v != null && el.innerHTML !== v) el.innerHTML = v;
     });
     each("[data-i18n-alt]", function (el) {
       var v = dict[el.getAttribute("data-i18n-alt")];
@@ -238,29 +205,44 @@
       var v = dict[el.getAttribute("data-i18n-label")];
       if (v != null) el.setAttribute("aria-label", v);
     });
-
+    each("[data-href-zh]", function (el) {
+      el.setAttribute("href", el.getAttribute(lang === "zh" ? "data-href-zh" : "data-href-en"));
+    });
     each("[data-lang-toggle]", function (btn) {
       btn.textContent = LANG_LABEL[lang];
       btn.setAttribute("aria-label", LANG_ARIA[lang]);
     });
-    each("[data-theme-toggle]", function (btn) {
-      if (!btn.hasAttribute("data-i18n")) btn.setAttribute("aria-label", THEME_ARIA[theme]);
-    });
 
+    labelThemeToggles();
     paintShots();
-    store(LANG_KEY, lang);
+    if (remember) store(LANG_KEY, lang);
   }
 
   /* ------------------------------------------------------- 2. appearance */
 
+  function labelThemeToggles() {
+    each("[data-theme-toggle]", function (btn) {
+      /* text buttons carry their own translated label */
+      if (!btn.hasAttribute("data-i18n")) btn.setAttribute("aria-label", THEME_ARIA[lang][theme]);
+    });
+  }
+
   function applyTheme(next, remember) {
     theme = next;
-    document.documentElement.setAttribute("data-theme", theme);
-    each("[data-theme-toggle]", function (btn) {
-      if (!btn.hasAttribute("data-i18n")) btn.setAttribute("aria-label", THEME_ARIA[theme]);
-    });
+    root.setAttribute("data-theme", theme);
+    labelThemeToggles();
     paintShots();
     if (remember) store(THEME_KEY, theme);
+  }
+
+  /* ------------------------------------------------------ 3. screenshots */
+
+  function paintShots() {
+    each("[data-shot]", function (img) {
+      var t = img.getAttribute("data-shot-theme") || theme;
+      var src = "./assets/shots/" + img.getAttribute("data-shot") + "-" + lang + "-" + t + ".webp";
+      if (img.getAttribute("src") !== src) img.setAttribute("src", src);
+    });
   }
 
   /* ----------------------------------------------------------- 4. polish */
@@ -268,28 +250,20 @@
   /* One scroll listener drives both the header hairline and the reveals.
      Reveals are a plain "is its top above the fold yet?" sweep rather than an
      IntersectionObserver: a fast flick or an anchor jump can carry an element
-     from below the viewport to above it without crossing a threshold, and an
-     observer would then never fire, leaving that section invisible forever. */
+     past the viewport without crossing a threshold, and an observer would then
+     never fire, leaving that section invisible. */
   function polish() {
-    var bar = document.querySelector("[data-scroll-rule]");
-    /* has-reveal is set by the head script only when motion is welcome; without
-       it the CSS never hides anything and there is nothing to reveal. */
-    var pending = document.documentElement.classList.contains("has-reveal")
+    var header = document.querySelector("[data-header]");
+    var pending = root.classList.contains("has-reveal")
       ? Array.prototype.slice.call(document.querySelectorAll(".reveal"))
       : [];
-
     var ticking = false;
+
     function update() {
       ticking = false;
-
-      if (bar) {
-        var doc = document.documentElement;
-        var max = doc.scrollHeight - doc.clientHeight;
-        bar.style.transform = "scaleX(" + (max > 0 ? Math.min(1, doc.scrollTop / max) : 0) + ")";
-      }
-
+      if (header) header.classList.toggle("is-scrolled", window.scrollY > 4);
       if (pending.length) {
-        var fold = window.innerHeight * 0.94;
+        var fold = window.innerHeight * 0.92;
         pending = pending.filter(function (el) {
           if (el.getBoundingClientRect().top >= fold) return true;
           el.classList.add("is-in");
@@ -309,20 +283,20 @@
   /* -------------------------------------------------------------- start */
 
   function init() {
-    var storedTheme = readStored(THEME_KEY, ["light", "dark"]);
-    theme = storedTheme || document.documentElement.getAttribute("data-theme") || "light";
+    captureEnglish();
+    applyLang(lang, false);
     applyTheme(theme, false);
-    applyLang(detectLang());
 
     each("[data-lang-toggle]", function (btn) {
-      btn.addEventListener("click", function () { applyLang(lang === "en" ? "zh" : "en"); });
+      btn.addEventListener("click", function () { applyLang(lang === "en" ? "zh" : "en", true); });
     });
     each("[data-theme-toggle]", function (btn) {
       btn.addEventListener("click", function () { applyTheme(theme === "light" ? "dark" : "light", true); });
     });
 
-    if (!storedTheme && window.matchMedia) {
-      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    /* Follow the system until the visitor picks an appearance themselves. */
+    if (window.matchMedia && !readStored(THEME_KEY, ["light", "dark"])) {
+      var mq = matchMedia("(prefers-color-scheme: dark)");
       var onSystem = function (e) {
         if (!readStored(THEME_KEY, ["light", "dark"])) applyTheme(e.matches ? "dark" : "light", false);
       };
@@ -333,9 +307,6 @@
     polish();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
-  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();
