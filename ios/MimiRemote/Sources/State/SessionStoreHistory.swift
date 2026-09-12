@@ -186,6 +186,18 @@ extension SessionStore {
                 }
             }
             upsert(responseSession)
+            if resume == nil {
+                // 创建成功时工作区和 runtime 都已由服务端确认。全局发现随后会把这个 ID 纳入
+                // controlledGlobalSessionIDs，此后目录归属只认 cwd 查询登记；而普通刷新会跳过
+                // “当前且已有会话”的工作区，登记永远补不上，新会话就会从工作区列表消失。
+                // 这里直接用创建结果登记归属，不放宽任何授权判断。
+                recordWorkspaceDirectorySessionPage(
+                    [responseSession],
+                    in: workspace,
+                    runtimeProvider: responseSession.runtimeProvider ?? responseSession.source,
+                    replacing: false
+                )
+            }
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
 
