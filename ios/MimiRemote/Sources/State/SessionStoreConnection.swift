@@ -2643,6 +2643,7 @@ extension SessionStore {
             workspaceSessionFirstPageCompletionByKey = [:]
         }
         workspaceDirectorySessionIDsByKey = [:]
+        workspaceCreatedSessionIDsByKey = [:]
         sessionListCooldownUntilByBudgetKey = [:]
         sessionLibraryIndexRefreshJob?.task.cancel()
         sessionLibraryIndexRefreshJob = nil

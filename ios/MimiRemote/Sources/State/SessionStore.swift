@@ -385,6 +385,9 @@ final class SessionStore: ObservableObject {
     }
     /// 记录按工作区真实目录查询到的会话 ID。默认列表只用这份证据接纳全局发现结果。
     @Published var workspaceDirectorySessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
+    /// 本设备在某个工作区里创建成功的会话 ID。目录页用 `replacing` 整页覆盖时必须并回它们：
+    /// 创建时可能有一页更早发出的首屏还在路上，它落地时会把刚登记的新会话冲掉。
+    var workspaceCreatedSessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?

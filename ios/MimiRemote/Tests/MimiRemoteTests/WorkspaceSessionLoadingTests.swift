@@ -2469,5 +2469,18 @@ extension ConversationDataFlowTests {
             store.workspaceDirectorySessionIDsByKey[codexKey]?.contains(created.id), true,
             "Claude 会话不能写进 Codex 的目录归属"
         )
+
+        // 创建前就已发出的权威首屏页此时才落地：整页覆盖不能把刚创建的会话冲掉。
+        store.recordWorkspaceDirectorySessionPage([existing], in: workspace, runtimeProvider: "claude", replacing: true)
+        XCTAssertEqual(store.workspaceDirectorySessionIDsByKey[claudeKey], [existing.id, created.id])
+        XCTAssertTrue(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "claude").contains { $0.id == created.id },
+            "更早发出的目录页覆盖后新会话仍应可见"
+        )
+
+        // 全局发现完整遍历后撤权：会话真的没了，"本设备创建"的记忆也要一起清掉。
+        store.removeWorkspaceDirectorySessionIDs([created.id])
+        store.recordWorkspaceDirectorySessionPage([existing], in: workspace, runtimeProvider: "claude", replacing: true)
+        XCTAssertEqual(store.workspaceDirectorySessionIDsByKey[claudeKey], [existing.id])
     }
 }
