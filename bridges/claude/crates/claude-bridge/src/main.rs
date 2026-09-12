@@ -37,7 +37,11 @@ async fn main() -> Result<()> {
     // Parse and validate the transport before starting any child-process
     // discovery or other bridge initialization.
     let transport = transport_arg()?;
-    let bridge = ClaudeBridge::builder().from_env().build().await?;
+    let bridge = ClaudeBridge::builder()
+        .from_env()
+        .warm_model_catalog(true)
+        .build()
+        .await?;
 
     match transport {
         Transport::Unix(path) => {

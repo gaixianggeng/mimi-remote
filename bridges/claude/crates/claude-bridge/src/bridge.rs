@@ -155,6 +155,7 @@ pub struct ClaudeBridgeBuilder {
     /// uses [`crate::index::claude_projects_dir`].
     projects_dir_override: Option<PathBuf>,
     history_refresh_interval: Duration,
+    warm_model_catalog: bool,
 }
 
 impl Default for ClaudeBridgeBuilder {
@@ -169,6 +170,7 @@ impl Default for ClaudeBridgeBuilder {
             trust_persisted_cwd: false,
             projects_dir_override: None,
             history_refresh_interval: DEFAULT_HISTORY_REFRESH_INTERVAL,
+            warm_model_catalog: false,
         }
     }
 }
@@ -217,6 +219,13 @@ impl ClaudeBridgeBuilder {
     /// 调整显式历史扫描冷却窗口。生产使用默认值，测试可用更长窗口验证限频。
     pub fn history_refresh_interval(mut self, interval: Duration) -> Self {
         self.history_refresh_interval = interval;
+        self
+    }
+
+    /// 启动后在后台预热 CLI 模型目录。生产入口打开；测试默认关闭，避免每个
+    /// 测试 bridge 都拉起一个 CLI 查询。
+    pub fn warm_model_catalog(mut self, enabled: bool) -> Self {
+        self.warm_model_catalog = enabled;
         self
     }
 
@@ -272,6 +281,11 @@ impl ClaudeBridgeBuilder {
             max_processes,
             idle_ttl,
         ));
+
+        if self.warm_model_catalog {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.warm_model_catalog().await });
+        }
 
         let hydrator = match self.projects_dir_override {
             Some(dir) => ClaudeHydrator::with_override_dir(dir),
