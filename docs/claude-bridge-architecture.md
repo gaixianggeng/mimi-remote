@@ -1,6 +1,6 @@
 # Claude bridge 架构
 
-更新日期：2026-08-03
+更新日期：2026-09-12
 
 ## 目标
 
@@ -65,6 +65,7 @@ sequenceDiagram
 - 客户端 `turn/start` 结束后，Claude 的 cron、`ScheduleWakeup` 或其他自主输出会创建 synthetic turn，继续产生标准 `turn/started → item/* → turn/completed` 事件。
 - 普通空闲 Claude 进程默认 10 分钟后可回收；检测到一次性 wakeup 或持久 cron 时保持 active，直到 wakeup 被消费或 cron 被删除。
 - 默认最多同时接受 3 条 Claude gateway 连接；Claude 进程池还有独立容量限制，后台任务不会绕过该限制。
+- 同一个 Claude session 同一时刻只允许一个活进程。bridge 在 `thread/resume`、`thread/read`、`thread/list` 和兜底的 `turn/start` 前读取 Claude Code 自己维护的 `~/.claude/sessions/<pid>.json`（`claude --bg --resume` 也靠它判断 "already running"），发现该 session 正被本机终端 `claude` 或 Claude 桌面内置 Claude Code 的活进程持有时，不再起第二个 `claude -p --resume`：会话按 `canAcceptDirectInput=false` 返回并附 `claudeOwner`（entrypoint / kind / status / pid），`turn/start` 返回 `reason=owned_elsewhere, retryable=true`。持有方退出后同 id 正常续聊。bridge 自己拉起的子进程同样会登记，探测时按进程池 pid 排除；登记文件残留时按 pid 存活过滤。`0.2.10` 起生效，`claude.env.CLAUDE_BRIDGE_FOREIGN_SESSION_POLICY=legacy` 可关闭回到旧行为；Windows 暂不探测。
 
 ### Tool 调用与权限
 
@@ -106,4 +107,5 @@ sequenceDiagram
 - replay ring 是有界快速恢复层；超过窗口或 bridge/Mac 重启后，以本机 Claude JSONL 历史为准，运行中但尚未落盘的极短窗口仍可能无法恢复。
 - `CronCreate` 属于当前 Claude 进程内任务，会占用一个进程池槽位直到删除；需要在产品层展示后台任务状态，避免用户无感知地长期占用容量。
 - 当前不支持 `goal`、`archive`、`fork`，也没有 APNs 后台 push 和跨设备云同步。App 重新打开可以看到结果，不等于系统一定弹出通知。
+- 别处持有的会话目前只做只读 + 提示，Mac 上进行中的轮次要等持有方落盘、iOS 刷新后才可见；实时镜像（bridge 监听 JSONL 增量推 synthetic turn）是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）bridge 管不了 CLI，仍会分叉。
 - 不对断线 turn 做自动重试，避免重复写文件或执行命令；后续优化优先补 run record、客户端确认 cursor 和明确的失败状态。

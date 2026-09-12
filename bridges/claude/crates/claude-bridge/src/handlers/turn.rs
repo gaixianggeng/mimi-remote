@@ -186,6 +186,11 @@ pub enum TurnError {
     ClaudeRpc(String),
     #[error("review/start is not implemented in claude-bridge v1")]
     ReviewUnsupported,
+    #[error("thread `{thread_id}` is held by another local claude process")]
+    OwnedElsewhere {
+        thread_id: String,
+        owner: serde_json::Value,
+    },
 }
 
 impl TurnError {
@@ -197,7 +202,8 @@ impl TurnError {
             | TurnError::NoActiveTurn(_)
             | TurnError::InputTranslation(_)
             | TurnError::ModelRejected { .. }
-            | TurnError::AlreadyActive { .. } => p::error_codes::INVALID_PARAMS,
+            | TurnError::AlreadyActive { .. }
+            | TurnError::OwnedElsewhere { .. } => p::error_codes::INVALID_PARAMS,
             TurnError::ReviewUnsupported => p::error_codes::METHOD_NOT_FOUND,
             TurnError::ClaudeRpc(_) => p::error_codes::INTERNAL_ERROR,
         }
@@ -222,6 +228,15 @@ impl TurnError {
                 "threadId": thread_id,
                 "activeTurnId": active_turn_id,
                 "retryable": false,
+            })),
+            // 持有方退出后同一请求就能成功，所以标 retryable；客户端据此提示
+            // "正在 Mac 上运行"而不是当成永久失败。
+            TurnError::OwnedElsewhere { thread_id, owner } => Some(serde_json::json!({
+                "accepted": false,
+                "reason": "owned_elsewhere",
+                "threadId": thread_id,
+                "claudeOwner": owner,
+                "retryable": true,
             })),
             _ => None,
         }
@@ -472,6 +487,14 @@ async fn acquire_turn_process(
         .lookup(&params.thread_id)
         .await
         .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
+    // 进程池里没有这个 thread 的进程，而本机别的 Claude 进程正持有它：拒绝起第二个
+    // 进程。thread/resume 已把会话标成只读，这里是绕过 resume 直接 turn/start 的兜底。
+    if let Some(owner) = state.foreign_owner(&params.thread_id).await {
+        return Err(TurnError::OwnedElsewhere {
+            thread_id: params.thread_id.clone(),
+            owner: owner.to_json(),
+        });
+    }
     let cwd = resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
     let defaults = state.defaults();
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));

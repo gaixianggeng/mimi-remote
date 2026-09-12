@@ -697,7 +697,21 @@ extension CodexAppServerSessionRuntime {
             agentNickname: nonEmpty(thread["agentNickname"]?.stringValue),
             agentRole: nonEmpty(thread["agentRole"]?.stringValue),
             canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
+            claudeOwner: claudeSessionOwner(from: thread["claudeOwner"]),
             context: context
+        )
+    }
+
+    /// bridge 只在会话被 Mac 上其他 Claude 进程持有时附带 `claudeOwner`。
+    private func claudeSessionOwner(from value: CodexAppServerJSONValue?) -> ClaudeSessionOwner? {
+        guard let object = value?.objectValue else {
+            return nil
+        }
+        return ClaudeSessionOwner(
+            entrypoint: object["entrypoint"]?.stringValue,
+            kind: object["kind"]?.stringValue,
+            status: object["status"]?.stringValue,
+            pid: object["pid"]?.intValue
         )
     }
 

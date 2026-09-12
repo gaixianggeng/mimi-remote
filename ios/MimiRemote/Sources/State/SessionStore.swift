@@ -1945,6 +1945,17 @@ final class SessionStore: ObservableObject {
         return historyHasMoreBeforeBySessionID[sessionID] == true
     }
 
+    /// bridge 用 `canAcceptDirectInput=false` + `claudeOwner` 表示会话正被 Mac 上其他
+    /// Claude 进程持有。只读本身由 `allowsDirectInput` 处理，这里只负责解释原因。
+    var selectedOwnershipNotice: SessionOwnershipNotice? {
+        guard let session = selectedSession,
+              session.canAcceptDirectInput == false,
+              let owner = session.claudeOwner else {
+            return nil
+        }
+        return SessionOwnershipNotice(sessionID: session.id, owner: owner)
+    }
+
     var selectedHistorySavingsNotice: HistorySavingsNotice? {
         guard let selectedSessionID else {
             return nil
