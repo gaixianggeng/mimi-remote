@@ -221,6 +221,14 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.compactThread(threadID: threadID)
     }
 
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        try await runtime.takeOverThread(sessionID: threadID)
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        try await runtime.supportsThreadTakeover()
+    }
+
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         try await runtime.unsubscribeThread(threadID: threadID)
     }
@@ -670,6 +678,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func compactThread(threadID: String) async throws {
         try await bundle.runtime(forSessionID: threadID).compactThread(threadID: threadID)
+    }
+
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        try await bundle.runtime(forSessionID: threadID).takeOverThread(sessionID: threadID)
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        try await bundle.runtime(forSessionID: sessionID).supportsThreadTakeover()
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {

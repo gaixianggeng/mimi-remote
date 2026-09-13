@@ -948,6 +948,9 @@ struct SessionReminderStore {
 struct SessionOwnershipNotice: Equatable {
     let sessionID: SessionID
     let owner: ClaudeSessionOwner
+    /// 当前主机的 Claude channel 声明了 thread/takeover 时才提供"在此设备上接管"。
+    var canTakeOver = false
+    var isTakingOver = false
 
     var title: String {
         L10n.text("ui.session_owned_elsewhere_title")

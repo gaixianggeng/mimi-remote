@@ -92,6 +92,9 @@ final class SessionStore: ObservableObject {
     }
     @Published var sessionSearchNextCursor: String?
     @Published var sessionSearchHasMore = false
+    /// #451：当前主机 Claude channel 是否声明 thread/takeover，按主机缓存；nil 表示尚未探测。
+    @Published var claudeTakeoverSupport: ClaudeTakeoverSupport?
+    @Published var claudeTakeoverInFlightSessionID: SessionID?
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
@@ -1956,7 +1959,13 @@ final class SessionStore: ObservableObject {
               let owner = session.claudeOwner else {
             return nil
         }
-        return SessionOwnershipNotice(sessionID: session.id, owner: owner)
+        return SessionOwnershipNotice(
+            sessionID: session.id,
+            owner: owner,
+            canTakeOver: claudeTakeoverSupport?.scope == appStore.activeHostScope
+                && claudeTakeoverSupport?.supported == true,
+            isTakingOver: claudeTakeoverInFlightSessionID == session.id
+        )
     }
 
     var selectedHistorySavingsNotice: HistorySavingsNotice? {

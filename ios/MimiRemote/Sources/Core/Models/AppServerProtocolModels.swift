@@ -751,6 +751,19 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/fork", params: .object(params.compactMapValues { $0 }))
     }
 
+    /// #451：结束 Mac 上持有该会话的 claude 进程后同 id 续聊。只带 threadId / cwd；
+    /// 历史仍走分页接口，所以固定 excludeTurns。
+    func threadTakeover(threadID: String, cwd: String) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let params: [String: CodexAppServerJSONValue] = [
+            "threadId": .string(threadID),
+            "cwd": .string(path),
+            "excludeTurns": .bool(true)
+        ]
+        try validateRemoteSafeParams(params.mapValues { Optional($0) }, projectPath: path)
+        return CodexAppServerRequestSpec(method: "thread/takeover", params: .object(params))
+    }
+
     func threadRead(threadID: String, includeTurns: Bool = false) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/read", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
@@ -1229,4 +1242,50 @@ struct CodexAppServerRequestBuilder {
             $0 == "." || $0 == ".."
         }
     }
+}
+
+// MARK: - thread/takeover
+
+/// `thread/takeover` 的结果摘要。响应与 `thread/resume` 同形状，多一个 `takeover` 对象。
+struct CodexAppServerThreadTakeoverResult: Equatable, Sendable {
+    /// false 表示 bridge 没找到别处持有方，等价于普通 resume。
+    let released: Bool
+    let holderEntrypoint: String?
+    let signal: String?
+    /// 响应里 thread 的可写标记；nil 表示 bridge 未回该字段。
+    let canAcceptDirectInput: Bool?
+
+    init(released: Bool, holderEntrypoint: String? = nil, signal: String? = nil, canAcceptDirectInput: Bool? = nil) {
+        self.released = released
+        self.holderEntrypoint = holderEntrypoint
+        self.signal = signal
+        self.canAcceptDirectInput = canAcceptDirectInput
+    }
+
+    init(result: CodexAppServerJSONValue?) {
+        let object = result?.objectValue ?? [:]
+        let takeover = object["takeover"]?.objectValue ?? [:]
+        released = takeover["released"]?.boolValue ?? false
+        holderEntrypoint = takeover["holder"]?.objectValue?["entrypoint"]?.stringValue
+        signal = takeover["signal"]?.stringValue
+        canAcceptDirectInput = object["thread"]?.objectValue?["canAcceptDirectInput"]?.boolValue
+    }
+
+    /// bridge 用 `{accepted:false, reason, retryable}` 描述接管失败（holder_unverified /
+    /// takeover_timeout / holder_respawned / signal_failed）；没有 reason 的按普通 RPC 错误处理。
+    static func failure(from error: Error) -> CodexAppServerThreadTakeoverFailure? {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error,
+              let data = appError.data?.objectValue,
+              data["accepted"]?.boolValue == false,
+              let reason = data["reason"]?.stringValue,
+              !reason.isEmpty else {
+            return nil
+        }
+        return CodexAppServerThreadTakeoverFailure(reason: reason, retryable: data["retryable"]?.boolValue ?? false)
+    }
+}
+
+struct CodexAppServerThreadTakeoverFailure: Equatable, Sendable {
+    let reason: String
+    let retryable: Bool
 }
