@@ -71,19 +71,22 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     case github
     case xcode
     case gruvbox
+    case meadow
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .codex:
-            return L10n.text("ui.warm_sun")
+            return L10n.text("ui.default")
         case .github:
             return "GitHub"
         case .xcode:
             return "Xcode"
         case .gruvbox:
             return "Gruvbox"
+        case .meadow:
+            return L10n.text("ui.meadow")
         }
     }
 
@@ -97,6 +100,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
             return L10n.text("ui.close_to_xcode_s_native_editing_area_and")
         case .gruvbox:
             return L10n.text("ui.warm_colors_and_low_contrast_suitable_for_night")
+        case .meadow:
+            return L10n.text("ui.paper_white_with_forest_ink_and_a_grass_green_accent")
         }
     }
 
@@ -111,6 +116,9 @@ enum ThemePreset: String, CaseIterable, Identifiable {
             return Color(red: 0.988394, green: 0.37355, blue: 0.638329)
         case .gruvbox:
             return Color(red: 0.84, green: 0.55, blue: 0.22)
+        case .meadow:
+            // 草绿 #0DB83B 压在森林墨绿上约 4.6:1，比压在纸白上（约 2.5:1）更容易在列表里认出这个预设。
+            return Color(red: 13.0 / 255.0, green: 184.0 / 255.0, blue: 59.0 / 255.0)
         }
     }
 
@@ -124,6 +132,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
             return Color(red: 0.120543, green: 0.122844, blue: 0.141312)
         case .gruvbox:
             return Color(red: 0.20, green: 0.19, blue: 0.16)
+        case .meadow:
+            return Color(red: 33.0 / 255.0, green: 59.0 / 255.0, blue: 44.0 / 255.0)
         }
     }
 }
@@ -463,9 +473,10 @@ extension ThemeTokens {
     /// 只为本卡片选择经过校准的黑白前景，不改变其它主操作。
     var writerConflictPrimaryActionForeground: Color {
         switch (preset, resolvedScheme) {
-        case (.codex, _), (.github, .light), (.gruvbox, .light):
+        case (.codex, _), (.github, .light), (.gruvbox, .light), (.meadow, .light):
             return .white
-        case (.github, .dark), (.xcode, _), (.gruvbox, .dark):
+        case (.github, .dark), (.xcode, _), (.gruvbox, .dark), (.meadow, .dark):
+            // 青草深色的主操作是鼠尾草绿，白字只有约 3.6:1，黑字约 5.8:1。
             return .black
         }
     }
@@ -538,6 +549,20 @@ extension ThemeTokens {
     /// 选中反馈复用同一低饱和填充，不再为工作区额外引入一档深梅紫。
     var workspaceCardSelectionFill: Color {
         selectionFill
+    }
+
+    /// 会话搜索框的底。紧凑布局走系统 `.searchable`，只能靠 appearance proxy 铺底色。
+    /// 曾用 selectionFill：在青草这类带色相的预设里它就是一块明显的强调色，
+    /// 搜索框成了页面上唯一被主题色染过的输入位。这里改成与主题无关的中性阴影——
+    /// 纯黑 / 纯白按极低透明度压在页面底上，浅色比底暗一档、深色比底亮一档，
+    /// 所有预设一致，不再跟着主题色走。
+    var searchFieldBackground: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color.black.opacity(0.05)
+        case .dark:
+            return Color.white.opacity(0.08)
+        }
     }
 
     var userBubbleForeground: Color {
@@ -723,6 +748,10 @@ final class ThemeStore: ObservableObject {
             return gruvboxLightTokens
         case (.gruvbox, .dark):
             return gruvboxDarkTokens
+        case (.meadow, .light):
+            return meadowLightTokens
+        case (.meadow, .dark):
+            return meadowDarkTokens
         }
     }
 
@@ -1023,6 +1052,76 @@ final class ThemeStore: ObservableObject {
             ],
             border: Color(red: 0.38, green: 0.35, blue: 0.29),
             selectionFill: Color(red: 0.84, green: 0.55, blue: 0.22).opacity(0.20)
+        )
+    }
+
+    private var meadowLightTokens: ThemeTokens {
+        // 取自 sweepmap.app 的三色体系：纸白 #F7FAF2 铺底、森林墨绿 #213B2C 同时承担
+        // 正文与主操作（站内所有按钮都是墨绿底白字），草绿 #0DB83B 只做小面积点缀。
+        // 草绿压在纸白上只有约 2.5:1，不能直接当文字或按钮色，所以强调色仍是墨绿，
+        // 草绿留给目标、语音和成功这些不承载正文的语义位。
+        ThemeTokens(
+            preset: .meadow,
+            resolvedScheme: .light,
+            background: Color(red: 247.0 / 255.0, green: 250.0 / 255.0, blue: 242.0 / 255.0),
+            surface: .white,
+            elevatedSurface: Color(red: 236.0 / 255.0, green: 242.0 / 255.0, blue: 234.0 / 255.0),
+            userBubble: Color(red: 230.0 / 255.0, green: 239.0 / 255.0, blue: 232.0 / 255.0),
+            assistantBubble: .white,
+            systemBubble: Color(red: 236.0 / 255.0, green: 242.0 / 255.0, blue: 234.0 / 255.0),
+            // 代码块沿用站内深绿分区的做法：墨绿底、纸白字，与页面形成明确的明暗反差。
+            codeBlock: Color(red: 33.0 / 255.0, green: 59.0 / 255.0, blue: 44.0 / 255.0),
+            codeText: Color(red: 247.0 / 255.0, green: 250.0 / 255.0, blue: 242.0 / 255.0),
+            primaryText: Color(red: 33.0 / 255.0, green: 59.0 / 255.0, blue: 44.0 / 255.0),
+            secondaryText: Color(red: 93.0 / 255.0, green: 107.0 / 255.0, blue: 98.0 / 255.0),
+            tertiaryText: Color(red: 122.0 / 255.0, green: 135.0 / 255.0, blue: 126.0 / 255.0),
+            accent: Color(red: 33.0 / 255.0, green: 59.0 / 255.0, blue: 44.0 / 255.0),
+            // 琥珀压在 elevatedSurface 上要保住 4.5:1，比 GitHub 浅色的 warning 再深一档。
+            warning: Color(red: 0.58, green: 0.35, blue: 0.00),
+            success: Color(red: 14.0 / 255.0, green: 127.0 / 255.0, blue: 48.0 / 255.0),
+            goalActive: Color(red: 13.0 / 255.0, green: 184.0 / 255.0, blue: 59.0 / 255.0),
+            voiceRecording: Color(red: 16.0 / 255.0, green: 150.0 / 255.0, blue: 56.0 / 255.0),
+            voiceWaveformGradient: [
+                Color(red: 13.0 / 255.0, green: 184.0 / 255.0, blue: 59.0 / 255.0),
+                Color(red: 16.0 / 255.0, green: 150.0 / 255.0, blue: 56.0 / 255.0),
+                Color(red: 14.0 / 255.0, green: 127.0 / 255.0, blue: 48.0 / 255.0)
+            ],
+            border: Color(red: 227.0 / 255.0, green: 234.0 / 255.0, blue: 228.0 / 255.0),
+            selectionFill: Color(red: 222.0 / 255.0, green: 236.0 / 255.0, blue: 226.0 / 255.0)
+        )
+    }
+
+    private var meadowDarkTokens: ThemeTokens {
+        // 站点本身没有深色版；这里以它手机模型的机身色 #141816 为底，保留同一族的偏绿
+        // 中性灰阶。墨绿在深底上压不出对比，主操作改用鼠尾草绿 #54946B：饱和度压低、
+        // 亮度与之前的亮草绿相当，近黑底上不再刺眼。对底约 5.0:1，黑字约 5.8:1，白字约 3.6:1。
+        ThemeTokens(
+            preset: .meadow,
+            resolvedScheme: .dark,
+            background: Color(red: 20.0 / 255.0, green: 24.0 / 255.0, blue: 22.0 / 255.0),
+            surface: Color(red: 28.0 / 255.0, green: 34.0 / 255.0, blue: 30.0 / 255.0),
+            elevatedSurface: Color(red: 38.0 / 255.0, green: 48.0 / 255.0, blue: 42.0 / 255.0),
+            userBubble: Color(red: 36.0 / 255.0, green: 66.0 / 255.0, blue: 46.0 / 255.0),
+            assistantBubble: Color(red: 28.0 / 255.0, green: 34.0 / 255.0, blue: 30.0 / 255.0),
+            systemBubble: Color(red: 38.0 / 255.0, green: 48.0 / 255.0, blue: 42.0 / 255.0),
+            codeBlock: Color(red: 14.0 / 255.0, green: 18.0 / 255.0, blue: 16.0 / 255.0),
+            codeText: Color(red: 226.0 / 255.0, green: 236.0 / 255.0, blue: 224.0 / 255.0),
+            primaryText: Color(red: 232.0 / 255.0, green: 240.0 / 255.0, blue: 228.0 / 255.0),
+            secondaryText: Color(red: 169.0 / 255.0, green: 184.0 / 255.0, blue: 172.0 / 255.0),
+            tertiaryText: Color(red: 127.0 / 255.0, green: 143.0 / 255.0, blue: 131.0 / 255.0),
+            accent: Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0),
+            warning: Color(red: 0.94, green: 0.71, blue: 0.38),
+            success: Color(red: 102.0 / 255.0, green: 184.0 / 255.0, blue: 125.0 / 255.0),
+            // 站内深绿分区上的浅绿文字 #B7D9BF，用作活跃目标的高亮。
+            goalActive: Color(red: 183.0 / 255.0, green: 217.0 / 255.0, blue: 191.0 / 255.0),
+            voiceRecording: Color(red: 92.0 / 255.0, green: 179.0 / 255.0, blue: 120.0 / 255.0),
+            voiceWaveformGradient: [
+                Color(red: 183.0 / 255.0, green: 217.0 / 255.0, blue: 191.0 / 255.0),
+                Color(red: 92.0 / 255.0, green: 179.0 / 255.0, blue: 120.0 / 255.0),
+                Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0)
+            ],
+            border: Color(red: 47.0 / 255.0, green: 59.0 / 255.0, blue: 51.0 / 255.0),
+            selectionFill: Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0).opacity(0.20)
         )
     }
 

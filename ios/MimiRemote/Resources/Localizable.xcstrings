@@ -5553,6 +5553,23 @@
         }
       }
     },
+    "ui.default": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认"
+          }
+        }
+      }
+    },
     "ui.retry_writer_access": {
       "comment": "Accessibility label for reloading the latest messages and retrying writer access from the active-writer conflict card.",
       "localizations": {
@@ -16491,6 +16508,23 @@
         }
       }
     },
+    "ui.meadow": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meadow"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "青草"
+          }
+        }
+      }
+    },
     "ui.message_attachments_are_too_large": {
       "comment": "Shown when the attachment context for one message exceeds the protocol limit.",
       "localizations": {
@@ -17410,13 +17444,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Neutral warm white with a single main color of deep purple, restrained but not boring"
+            "value": "Neutral warm white with a single deep-purple main color"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "中性暖白配单一深紫主色，克制但不沉闷"
+            "value": "中性暖白配单一深紫主色"
           }
         }
       }
@@ -19335,6 +19369,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对信息只在你的设备之间传输。"
+          }
+        }
+      }
+    },
+    "ui.paper_white_with_forest_ink_and_a_grass_green_accent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paper white with forest-green ink and a grass-green accent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纸白底配森林墨绿，草绿点缀"
           }
         }
       }
@@ -36999,23 +37050,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "暖色低对比，适合夜间阅读"
-          }
-        }
-      }
-    },
-    "ui.warm_sun": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "warm sun"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暖阳"
           }
         }
       }

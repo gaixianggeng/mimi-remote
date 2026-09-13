@@ -274,9 +274,9 @@ struct MimiRemoteApp: App {
     private static func installFlatSearchFieldAppearance(themeStore: ThemeStore) {
         UISearchTextField.appearance().backgroundColor = UIColor { traits in
             let scheme: ColorScheme = traits.userInterfaceStyle == .dark ? .dark : .light
-            // selectionFill 是主题里的中性色阶填充：浅色下比页面底暗、深色下比页面底亮，
-            // 与磨砂 chrome 的明暗方向一致（纯 surface 在浅色下反而会比底色更亮）。
-            return UIColor(themeStore.tokens(for: scheme).selectionFill)
+            // 中性阴影：浅色下比页面底暗、深色下比页面底亮，与磨砂 chrome 的明暗方向
+            // 一致，且不带任何预设的主题色（纯 surface 在浅色下反而会比底色更亮）。
+            return UIColor(themeStore.tokens(for: scheme).searchFieldBackground)
         }
     }
 
