@@ -657,7 +657,7 @@ struct InitialConnectionSettingsSections: View {
 
     private func computerGlyph(_ item: ConnectionProfileSettingsItem) -> some View {
         // 平台图标用品牌原色：彩虹苹果、四色 Windows、黑白橙 Tux 一眼就能分出电脑，
-        // 比染成次级文字色更容易识别。只有未知平台的通用电脑轮廓继承次级墨色。
+        // 比统一染成次级文字色更容易识别。只有未知平台的通用电脑轮廓继承次级墨色。
         HostPlatformGlyph(
             kind: item.profile.hostPlatform.iconKind,
             size: SettingsLayoutMetrics.symbolPointSize
