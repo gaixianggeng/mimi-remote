@@ -617,11 +617,11 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func computerGlyph(_ item: ConnectionProfileSettingsItem) -> some View {
-        // 保留平台轮廓帮助识别电脑；只统一颜色，避免丢失 Mac、Windows 和 Linux 的区别。
+        // 平台图标用品牌原色：彩虹苹果、四色 Windows、黑白橙 Tux 一眼就能分出电脑，
+        // 比统一染成次级文字色更容易识别。只有未知平台的通用电脑轮廓继承次级墨色。
         HostPlatformGlyph(
             kind: item.profile.hostPlatform.iconKind,
-            size: SettingsLayoutMetrics.symbolPointSize,
-            monochrome: true
+            size: SettingsLayoutMetrics.symbolPointSize
         )
         .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
         .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
