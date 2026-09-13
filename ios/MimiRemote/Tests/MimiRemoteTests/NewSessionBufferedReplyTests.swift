@@ -100,9 +100,12 @@ final class NewSessionBufferedReplyTests: XCTestCase {
         XCTAssertEqual(store.selectedSessionID, "thr_store_direct")
         XCTAssertEqual(store.connectedSessionID, "thr_store_direct", "已完成的首轮仍需接入缓存事件流")
         defer { store.disconnectWebSocket() }
+        // 助手正文落地时就会清掉等待态，但事件逐条经 EventReducer 应用，turn/completed 可能还没到。
+        // ACK 先于通知处理时 runtime 会先记下 activeTurnID，必须等完成事件清掉它再断言。
         let messages = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
             $0.contains { $0.role == .assistant && $0.content == "最终回答" }
                 && store.selectedForegroundActivity == nil
+                && store.selectedSession?.activeTurnID == nil
         }
         XCTAssertEqual(messages.filter { $0.role == .assistant }.count, 1)
         XCTAssertEqual(messages.filter { $0.role == .user }.count, 1)
