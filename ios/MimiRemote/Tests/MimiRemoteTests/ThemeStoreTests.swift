@@ -394,10 +394,51 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(darkTokens.resolvedScheme, .dark)
     }
 
+    func testMeadowPresetUsesPaperInkAndGrassGreenPalette() {
+        let store = ThemeStore(defaults: defaults)
+        store.preset = .meadow
+
+        XCTAssertTrue(ThemePreset.allCases.contains(.meadow))
+
+        store.mode = .light
+        let light = store.tokens(for: .dark)
+        XCTAssertEqual(light.preset, .meadow)
+        XCTAssertEqual(light.resolvedScheme, .light)
+        // sweepmap.app 的纸白、森林墨绿与草绿：墨绿同时承担正文和主操作，草绿只做点缀。
+        assertRGB(rgba(light.background), red: 247, green: 250, blue: 242)
+        assertRGB(rgba(light.primaryText), red: 33, green: 59, blue: 44)
+        assertRGB(rgba(light.primaryAction), red: 33, green: 59, blue: 44)
+        assertRGB(rgba(light.goalActive), red: 13, green: 184, blue: 59)
+        assertRGB(rgba(light.secondaryText), red: 93, green: 107, blue: 98)
+        // 代码块沿用站内深绿分区：墨绿底纸白字。
+        assertRGB(rgba(light.codeBlock), red: 33, green: 59, blue: 44)
+        XCTAssertGreaterThanOrEqual(contrastRatio(light.codeText, light.codeBlock), 7.0)
+        XCTAssertGreaterThanOrEqual(contrastRatio(light.primaryActionForeground, light.primaryAction), 7.0)
+        for surface in [light.background, light.surface, light.elevatedSurface, light.userBubble, light.selectionFill] {
+            XCTAssertGreaterThanOrEqual(contrastRatio(light.primaryText, surface), 7.0)
+            XCTAssertGreaterThanOrEqual(contrastRatio(light.secondaryText, surface), 4.5)
+        }
+
+        store.mode = .dark
+        let dark = store.tokens(for: .light)
+        XCTAssertEqual(dark.preset, .meadow)
+        XCTAssertEqual(dark.resolvedScheme, .dark)
+        assertRGB(rgba(dark.background), red: 20, green: 24, blue: 22)
+        assertRGB(rgba(dark.primaryAction), red: 28, green: 158, blue: 69)
+        // 深色主操作是明亮草绿，冲突卡改用黑字；同时草绿自身要在底色上可读。
+        XCTAssertGreaterThanOrEqual(contrastRatio(dark.writerConflictPrimaryActionForeground, dark.primaryAction), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryAction, dark.background), 4.5)
+        for surface in [dark.background, dark.surface, dark.elevatedSurface, dark.userBubble] {
+            XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryText, surface), 7.0)
+            XCTAssertGreaterThanOrEqual(contrastRatio(dark.secondaryText, surface), 4.5)
+        }
+        XCTAssertGreaterThanOrEqual(contrastRatio(dark.codeText, dark.codeBlock), 7.0)
+    }
+
     func testPrimaryColorPresetsKeepVoiceRecordingAlignedWithAccent() {
         let store = ThemeStore(defaults: defaults)
 
-        for preset in [ThemePreset.codex, .github, .xcode] {
+        for preset in [ThemePreset.codex, .github, .xcode, .meadow] {
             store.preset = preset
 
             for scheme in [ColorScheme.light, .dark] {
