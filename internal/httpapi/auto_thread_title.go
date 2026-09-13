@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -34,7 +36,47 @@ type autoThreadTitleRequest struct {
 	ThreadID string
 	CWD      string
 	Prompt   string
-	Notify   func(threadID string, title string)
+	// RuntimeID 决定目标线程的读取与写回通道：codex 走 app-server，claude 走 bridge。
+	// 标题文本无论哪条 runtime 都由 Codex 临时线程生成。
+	RuntimeID string
+	Notify    func(threadID string, title string)
+}
+
+// autoThreadTitleRuntimeSupported 列出自动标题覆盖的 runtime。历史线程、resume 与
+// 其他 runtime 不触发。
+func autoThreadTitleRuntimeSupported(runtimeID string) bool {
+	switch normalizeAppServerRuntimeID(runtimeID) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+// autoThreadTitleRPC 是标题任务对目标线程的最小依赖：Codex 用 WebSocket，Claude
+// bridge 用 socket JSONL，两者都只需要 initialize 和请求/响应。
+type autoThreadTitleRPC interface {
+	initializeClient(ctx context.Context, name string, title string, version string) (string, error)
+	call(ctx context.Context, method string, params any, result any) error
+}
+
+// autoThreadTitleClientNotifier 给发起会话的移动端补发 thread/name/updated。
+// thread/name/set 由独立内部连接执行，它产生的 notification 只回到那条连接，
+// 这里补发同形通知让 UI 无需轮询即可更新。
+func autoThreadTitleClientNotifier(client *websocket.Conn, clientWriteMu *sync.Mutex) func(threadID string, title string) {
+	return func(threadID string, title string) {
+		notification, err := json.Marshal(map[string]any{
+			"method": "thread/name/updated",
+			"params": map[string]any{
+				"threadId":   threadID,
+				"threadName": title,
+			},
+		})
+		if err != nil {
+			return
+		}
+		_ = writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, notification)
+	}
 }
 
 // autoThreadTitleScheduler 把 gateway 热路径与模型调用隔开，测试可注入纯内存实现。
@@ -162,12 +204,19 @@ func autoThreadTitleErrorReason(err error) string {
 	}
 }
 
+// codexAutoThreadTitleGenerator 用 Codex 临时线程生成标题文本；目标线程按
+// runtime 分别通过 app-server 或 Claude bridge 读取和写回。
 type codexAutoThreadTitleGenerator struct {
 	router *Router
+	// dialClaudeBridge 供测试注入假 bridge；生产使用 supervisor 的 socket。
+	dialClaudeBridge func(ctx context.Context) (*claudeBridgeRPC, error)
 }
 
 func newCodexAutoThreadTitleGenerator(router *Router) *codexAutoThreadTitleGenerator {
-	return &codexAutoThreadTitleGenerator{router: router}
+	return &codexAutoThreadTitleGenerator{
+		router:           router,
+		dialClaudeBridge: router.dialClaudeBridgeRPC,
+	}
 }
 
 func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
@@ -176,6 +225,27 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 ) (string, bool, error) {
 	if g == nil || g.router == nil {
 		return "", false, errors.New("auto title generator 未配置")
+	}
+	// Claude 线程先连 bridge：bridge 不可用时直接跳过，不白白占用一次 Codex 请求。
+	var target autoThreadTitleRPC
+	if normalizeAppServerRuntimeID(request.RuntimeID) == "claude" {
+		if g.dialClaudeBridge == nil {
+			return "", false, errors.New("Claude bridge 内部连接未配置")
+		}
+		bridge, err := g.dialClaudeBridge(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		defer bridge.close()
+		if _, err := bridge.initializeClient(
+			ctx,
+			autoThreadTitleClientName,
+			autoThreadTitleClientTitle,
+			g.router.version,
+		); err != nil {
+			return "", false, err
+		}
+		target = bridge
 	}
 	upstreamURL, err := g.router.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -213,7 +283,10 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 	); err != nil {
 		return "", false, err
 	}
-	named, err := autoThreadAlreadyNamed(ctx, &rpc, request.ThreadID)
+	if target == nil {
+		target = &rpc
+	}
+	named, err := autoThreadAlreadyNamed(ctx, target, request.ThreadID)
 	if err != nil || named {
 		return "", false, err
 	}
@@ -235,11 +308,11 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 
 	// thread/name/set 没有 CAS 参数。写回前紧邻再读一次，是当前公开协议下
 	// 避免覆盖用户手动改名的最小竞态窗口。
-	named, err = autoThreadAlreadyNamed(ctx, &rpc, request.ThreadID)
+	named, err = autoThreadAlreadyNamed(ctx, target, request.ThreadID)
 	if err != nil || named {
 		return "", false, err
 	}
-	if err := rpc.call(ctx, "thread/name/set", map[string]any{
+	if err := target.call(ctx, "thread/name/set", map[string]any{
 		"threadId": request.ThreadID,
 		"name":     title,
 	}, &struct{}{}); err != nil {
@@ -248,7 +321,7 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 	return title, true, nil
 }
 
-func autoThreadAlreadyNamed(ctx context.Context, rpc *runtimeWebSocketRPC, threadID string) (bool, error) {
+func autoThreadAlreadyNamed(ctx context.Context, rpc autoThreadTitleRPC, threadID string) (bool, error) {
 	var response struct {
 		Thread struct {
 			Name *string `json:"name"`
@@ -566,9 +639,10 @@ func (p *appServerGatewayPolicy) takeAutoThreadTitleRequest(payload []byte) (aut
 		prompt = autoThreadTitleFallbackUntitled
 	}
 	return autoThreadTitleRequest{
-		ThreadID: thread.id,
-		CWD:      thread.cwd,
-		Prompt:   prompt,
+		ThreadID:  thread.id,
+		CWD:       thread.cwd,
+		Prompt:    prompt,
+		RuntimeID: thread.runtimeID,
 	}, true
 }
 
