@@ -25,6 +25,7 @@ use crate::index::{
 };
 use crate::pool::{ClaudePool, PoolPolicy};
 use crate::state::{ConnectionState, ThreadDefaults};
+use crate::takeover::TakeoverTimeouts;
 
 /// Concrete handle type stored on the bridge. Uses [`crate::state::ThreadIndexHandle`]
 /// (a marker subtrait of `bridge_core::ThreadIndexHandle<ClaudeSessionRef>`)
@@ -52,6 +53,7 @@ pub struct ClaudeBridge {
     trust_persisted_cwd: bool,
     /// 本机其他 Claude 进程持有会话的探测器；所有连接共享同一份策略。
     foreign_sessions: Arc<ForeignSessionRegistry>,
+    takeover_timeouts: TakeoverTimeouts,
 }
 
 impl std::fmt::Debug for ClaudeBridge {
@@ -109,7 +111,8 @@ impl ClaudeBridge {
                 self.trust_persisted_cwd,
                 self.history_refresher.as_ref().map(Arc::clone),
             )
-            .with_foreign_session_registry(Arc::clone(&self.foreign_sessions)),
+            .with_foreign_session_registry(Arc::clone(&self.foreign_sessions))
+            .with_takeover_timeouts(self.takeover_timeouts),
         );
         // Insert; concurrent calls may race — entry/or_insert resolves the
         // race deterministically.
@@ -145,6 +148,7 @@ impl ClaudeBridge {
             per_conn,
             trust_persisted_cwd: false,
             foreign_sessions: Arc::new(ForeignSessionRegistry::from_env()),
+            takeover_timeouts: TakeoverTimeouts::default(),
         }
     }
 }
@@ -165,6 +169,7 @@ pub struct ClaudeBridgeBuilder {
     sessions_dir_override: Option<PathBuf>,
     foreign_session_policy: Option<ForeignSessionPolicy>,
     warm_model_catalog: bool,
+    takeover_timeouts: TakeoverTimeouts,
 }
 
 impl Default for ClaudeBridgeBuilder {
@@ -182,6 +187,7 @@ impl Default for ClaudeBridgeBuilder {
             sessions_dir_override: None,
             foreign_session_policy: None,
             warm_model_catalog: false,
+            takeover_timeouts: TakeoverTimeouts::default(),
         }
     }
 }
@@ -243,6 +249,12 @@ impl ClaudeBridgeBuilder {
     /// 缺省为 Guard。
     pub fn foreign_session_policy(mut self, policy: ForeignSessionPolicy) -> Self {
         self.foreign_session_policy = Some(policy);
+        self
+    }
+
+    /// 测试用：缩短 `thread/takeover` 等待持有方退出的时限。
+    pub fn takeover_timeouts(mut self, timeouts: TakeoverTimeouts) -> Self {
+        self.takeover_timeouts = timeouts;
         self
     }
 
@@ -347,6 +359,7 @@ impl ClaudeBridgeBuilder {
             per_conn: DashMap::new(),
             trust_persisted_cwd: self.trust_persisted_cwd,
             foreign_sessions,
+            takeover_timeouts: self.takeover_timeouts,
         }))
     }
 }
@@ -560,6 +573,13 @@ async fn dispatch_request(
                 .map_err(thread_to_rpc)?;
             to_value(resp)
         }
+        "thread/takeover" => {
+            let typed: p::ThreadTakeoverParams = decode(params)?;
+            let resp = handlers::thread::handle_thread_takeover(state, typed)
+                .await
+                .map_err(thread_to_rpc)?;
+            to_value(resp)
+        }
         "thread/fork" => {
             let typed: p::ThreadForkParams = decode(params)?;
             let resp = handlers::thread::handle_thread_fork(state, typed)
@@ -691,10 +711,11 @@ fn exec_to_rpc(err: handlers::command_exec::ExecError) -> JsonRpcError {
 }
 
 fn thread_to_rpc(err: handlers::thread::ThreadError) -> JsonRpcError {
+    let data = err.rpc_data();
     JsonRpcError {
         code: err.rpc_code(),
         message: err.to_string(),
-        data: None,
+        data,
     }
 }
 

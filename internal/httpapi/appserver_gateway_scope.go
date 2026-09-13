@@ -233,7 +233,7 @@ func gatewaySingleListCWD(params map[string]any, method string) (string, error) 
 
 func gatewayMethodNeedsManagedPendingUse(method string) bool {
 	switch strings.TrimSpace(method) {
-	case "thread/start", "thread/resume", "thread/fork":
+	case "thread/start", "thread/resume", "thread/fork", "thread/takeover":
 		return true
 	default:
 		return false
@@ -242,7 +242,7 @@ func gatewayMethodNeedsManagedPendingUse(method string) bool {
 
 func requiresGatewayCWD(method string) bool {
 	switch method {
-	case "thread/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "permissionProfile/list":
+	case "thread/list", "thread/start", "thread/resume", "thread/fork", "thread/takeover", "turn/start", "permissionProfile/list":
 		return true
 	default:
 		return false

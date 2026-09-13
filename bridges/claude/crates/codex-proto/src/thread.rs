@@ -206,6 +206,41 @@ pub struct ThreadResumeResponse {
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
+// === thread/takeover =======================================================
+
+/// Claude runtime 专用：结束本机别处持有该会话的 Claude 进程，然后以同 id 续聊。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub exclude_turns: bool,
+    #[serde(flatten)]
+    pub additional: HashMap<String, Value>,
+}
+
+/// 接管过程摘要：`released=false` 表示没有别处持有方，等价于普通 resume。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverSummary {
+    pub released: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+}
+
+/// 与 `thread/resume` 同形状，多一个 `takeover` 摘要，客户端可复用 resume 的解析。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverResponse {
+    #[serde(flatten)]
+    pub resume: ThreadResumeResponse,
+    pub takeover: ThreadTakeoverSummary,
+}
+
 // === thread/fork ===========================================================
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

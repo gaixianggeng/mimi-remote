@@ -202,7 +202,10 @@ var appServerClaudeAllowedMethods = map[string]struct{}{
 	"thread/turns/list": {},
 	// bridge 按 turn 分页 item；iOS 只在 channel 声明了该方法时才把 summary 首页的
 	// 工具过程排进后台补齐，否则会把 summary 当成"内容未加载"。
-	"thread/items/list":       {},
+	"thread/items/list": {},
+	// Claude 专用：结束本机别处持有该会话的 claude 进程后同 id 续聊。线程授权同
+	// turn/start，但不套只读拒写——被别处持有的会话恰好就是 canAcceptDirectInput=false。
+	"thread/takeover":         {},
 	"turn/start":              {},
 	"turn/steer":              {},
 	"turn/interrupt":          {},
@@ -545,6 +548,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		}
 		if !probe.Healthy || !claudebridge.SupportsThreadItemsList(probe.Version) {
 			claudeMethods = removeAppServerMethod(claudeMethods, "thread/items/list")
+		}
+		if !probe.Healthy || !claudebridge.SupportsThreadTakeover(probe.Version) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "thread/takeover")
 		}
 		channels = append(channels, appServerChannel{
 			ID:               "claude",

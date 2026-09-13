@@ -1004,6 +1004,28 @@ actor CodexAppServerSessionRuntime {
         _ = try await sendRecoveringFromStaleInitialization(builder.threadCompactStart(threadID: threadID))
     }
 
+    /// #451：Claude channel 只在 bridge >= 0.2.11 时声明 thread/takeover；按方法表判断，不猜版本。
+    func supportsThreadTakeover() async throws -> Bool {
+        runtimeSupportsMethod("thread/takeover", in: try await ensureConfig())
+    }
+
+    /// 结束 Mac 上持有该会话的 claude 进程后同 id 续聊。cwd 与 turn/start 同源，取自会话上下文。
+    func takeOverThread(sessionID: SessionID) async throws -> CodexAppServerThreadTakeoverResult {
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context)
+        )
+        let result = try await sendRecoveringFromStaleInitialization(
+            try builder.threadTakeover(threadID: sessionID, cwd: context.cwd)
+        )
+        // 接管前这条连接可能已按只读 resume 过；下一次订阅必须真的重新 thread/resume，
+        // 让 bridge 回权威的可写状态，而不是被"已 resume"缓存短路。
+        threadsResumedOnConnection.remove(sessionID)
+        return CodexAppServerThreadTakeoverResult(result: result)
+    }
+
     @discardableResult
     func unsubscribeThread(
         threadID: SessionID,

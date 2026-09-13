@@ -12,6 +12,7 @@ struct ConversationView: View {
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
     // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
     @State private var measuredContentWidth: CGFloat?
+    @State private var isClaudeTakeoverConfirmationPresented = false
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -270,6 +271,9 @@ struct ConversationView: View {
             .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
+            if notice.canTakeOver {
+                claudeTakeoverButton(notice)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -280,7 +284,45 @@ struct ConversationView: View {
                 .stroke(tokens.border, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+        .task(id: notice.sessionID) {
+            await sessionStore.refreshClaudeTakeoverSupportIfNeeded(sessionID: notice.sessionID)
+        }
+    }
+
+    /// 接管会结束 Mac 上的一个进程，必须二次确认；进行中显示进度并禁用，失败后按钮保留可重试。
+    private func claudeTakeoverButton(_ notice: SessionOwnershipNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return Button {
+            isClaudeTakeoverConfirmationPresented = true
+        } label: {
+            if notice.isTakingOver {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(minWidth: 44, minHeight: 44)
+            } else {
+                Text(L10n.text("ui.take_over_to_ipad"))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                    .lineLimit(1)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.borderless)
+        .disabled(notice.isTakingOver)
+        .confirmationDialog(
+            L10n.text("ui.take_over_claude_session_confirm_title"),
+            isPresented: $isClaudeTakeoverConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.text("ui.take_over_claude_session_confirm_action"), role: .destructive) {
+                let sessionID = notice.sessionID
+                Task { await sessionStore.takeOverHeldClaudeSession(sessionID: sessionID) }
+            }
+        } message: {
+            Text(L10n.text("ui.take_over_claude_session_confirm_message"))
+        }
     }
 
     private func quotaLimitBanner(_ notice: CodexQuotaNotice) -> some View {

@@ -26,6 +26,7 @@ use crate::foreign_session::{ForeignSessionOwner, ForeignSessionRegistry};
 use crate::index::{ClaudeHistoryRefresher, ClaudeSessionRef};
 use crate::pool::ClaudePool;
 use crate::pool::claude_protocol::{McpServerInit, RateLimitInfo, SystemInit};
+use crate::takeover::TakeoverTimeouts;
 use crate::translate::items::normalize_dynamic_tool_call_output;
 
 /// Compat re-export so the daemon's
@@ -71,6 +72,8 @@ pub struct ConnectionState {
     /// 本机其他 Claude 进程持有会话的探测器。生产 builder 注入共享实例；
     /// 旧构造函数按环境变量自建，行为与生产一致。
     foreign_sessions: Arc<ForeignSessionRegistry>,
+    /// `thread/takeover` 等待持有方退出的时限；测试用 builder 缩短。
+    takeover_timeouts: TakeoverTimeouts,
 }
 
 /// One turn's worth of items captured live from the event pump.
@@ -242,6 +245,7 @@ impl ConnectionState {
             oauth_rate_limit_refresh: tokio::sync::Mutex::new(()),
             thread_logs: Mutex::new(HashMap::new()),
             foreign_sessions: Arc::new(ForeignSessionRegistry::from_env()),
+            takeover_timeouts: TakeoverTimeouts::default(),
         }
     }
 
@@ -253,6 +257,16 @@ impl ConnectionState {
 
     pub fn foreign_sessions(&self) -> &Arc<ForeignSessionRegistry> {
         &self.foreign_sessions
+    }
+
+    /// 只在 `Arc::new` 之前由 bridge builder 调用。
+    pub fn with_takeover_timeouts(mut self, timeouts: TakeoverTimeouts) -> Self {
+        self.takeover_timeouts = timeouts;
+        self
+    }
+
+    pub fn takeover_timeouts(&self) -> &TakeoverTimeouts {
+        &self.takeover_timeouts
     }
 
     /// 进程池里本 bridge 自己拉起的 claude 子进程 pid。它们同样会在

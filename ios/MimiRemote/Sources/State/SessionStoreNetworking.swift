@@ -162,6 +162,10 @@ protocol SessionStoreAPIClient {
     func setThreadName(threadID: String, name: String) async throws
     func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws
     func compactThread(threadID: String) async throws
+    /// #451：Claude 专用，结束 Mac 上持有该会话的进程后同 id 续聊；其他 runtime 抛错。
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult
+    /// 当前主机对应 runtime 的 channel 是否声明 thread/takeover。
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
@@ -290,6 +294,14 @@ extension SessionStoreAPIClient {
 
     func compactThread(threadID: String) async throws {
         throw AgentAPIError.invalidResponse
+    }
+
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        throw AgentAPIError.invalidResponse
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        false
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
