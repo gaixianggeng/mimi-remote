@@ -22,6 +22,7 @@
   --header:      rgba(251, 250, 249, 0.74);
   --device:      #111113;
   --device-edge: rgba(0, 0, 0, 0.10);
+  --device-rim:  linear-gradient(145deg, #EDEDEF 0%, #A8A8AD 20%, #F8F8FA 42%, #9D9DA2 68%, #D9D9DC 88%, #B4B4B8 100%);
   --shadow:      0 44px 90px -40px rgba(45, 20, 55, 0.36), 0 18px 36px -22px rgba(0, 0, 0, 0.18);
   --shadow-sm:   0 22px 44px -26px rgba(45, 20, 55, 0.34);
 
@@ -54,7 +55,8 @@
   --btn-ink:     #0F0F0F;
   --header:      rgba(15, 15, 15, 0.72);
   --device:      #050505;
-  --device-edge: rgba(255, 255, 255, 0.14);
+  --device-edge: rgba(255, 255, 255, 0.10);
+  --device-rim:  linear-gradient(145deg, #6A6A70 0%, #2B2B2F 22%, #7C7C82 44%, #262629 68%, #55555B 88%, #3A3A3F 100%);
   --shadow:      0 44px 96px -40px rgba(0, 0, 0, 0.9), 0 18px 36px -22px rgba(0, 0, 0, 0.6);
   --shadow-sm:   0 22px 44px -26px rgba(0, 0, 0, 0.75);
 }
@@ -193,18 +195,41 @@ svg { flex: none; }
 
 /* -------------------------------------------------------------- devices */
 
-.device { position: relative; background: var(--device); box-shadow: 0 0 0 1px var(--device-edge), var(--shadow); }
-.device::after {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.07);
+/* The bezel is the screen's margin, not the device's padding: padding percentages
+   resolve against the parent's width, which made every bezel scale with its panel.
+   Margins on the child resolve against the device itself. flow-root stops the
+   screen's top margin collapsing through the device; isolation keeps the rim and
+   island above this device's screen without painting over a device stacked on top. */
+.device { display: flow-root; position: relative; isolation: isolate; background: var(--device); box-shadow: 0 0 0 1px var(--device-edge), var(--shadow); }
+/* Brushed-metal rim: a gradient ring masked to the outer band of the bezel.
+   The pseudo-element's containing block is the device, so its padding scales with it. */
+.device::before {
+  content: ""; position: absolute; inset: 0; z-index: 1; border-radius: inherit; pointer-events: none;
+  background: var(--device-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
 }
-.device img { width: 100%; height: auto; background: var(--panel); }
-/* iPhone 17 Pro: 1206 × 2622 screen, bezel 3.3% of the width */
-.device--phone { padding: 3.3%; border-radius: 16.1% / 7.68%; }
-.device--phone img { border-radius: 13.7% / 6.3%; }
-/* iPad Pro 13": 2064 × 2752 screen, bezel 2.6% of the width */
-.device--ipad { padding: 2.6%; border-radius: 5.1% / 3.85%; }
-.device--ipad img { border-radius: 2.6% / 1.95%; }
+/* Dynamic Island / front camera. `top: 0` plus a percentage margin keeps the
+   offset proportional to the width rather than the height. */
+.device::after {
+  content: ""; position: absolute; z-index: 1; top: 0; left: 50%; translate: -50% 0; pointer-events: none;
+  background: #000;
+}
+.device img { display: block; position: relative; height: auto; background: var(--panel); }
+/* iPhone 17 Pro: 1206 × 2622 screen, bezel 3.3% of the width, 126 × 37 pt island 11 pt below the screen top */
+.device--phone { border-radius: 16.1% / 7.68%; }
+.device--phone::before { padding: 0.95%; }
+.device--phone::after { width: 29.3%; aspect-ratio: 126 / 37; margin-top: 5.86%; border-radius: 999px; }
+.device--phone img { width: 93.4%; margin: 3.3%; border-radius: 13.7% / 6.3%; }
+/* iPad Pro 13": 2064 × 2752 screen, bezel 2.6% of the width, camera centred in the top bezel */
+.device--ipad { border-radius: 5.1% / 3.85%; }
+.device--ipad::before { padding: 0.7%; }
+.device--ipad::after {
+  width: 0.7%; aspect-ratio: 1; margin-top: 1.25%; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #2C3440, #0A0C10 70%);
+}
+.device--ipad img { width: 94.8%; margin: 2.6%; border-radius: 2.6% / 1.95%; }
 
 /* ------------------------------------------------------------- overview */
 
