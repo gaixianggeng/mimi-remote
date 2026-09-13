@@ -378,6 +378,16 @@ enum ActiveConnectionRoute: Equatable {
     }
 }
 
+/// 探测开始前的展示状态；探测被取消时原样放回，不把「没做完」写成「未连接」。
+/// revision 与 hostScope 用来确认取消时状态仍归这次探测所有：期间 WebSocket 连上、别的探测
+/// 下了结论或切换了电脑，都不能被这份旧快照覆盖。
+struct ConnectionProbeSnapshot: Equatable {
+    let status: ConnectionStatus
+    let lastError: String?
+    let revision: UInt64
+    let hostScope: HostScope
+}
+
 struct PreparedHostLease: Equatable {
     let endpoint: String
     let installationID: String

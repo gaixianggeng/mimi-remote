@@ -397,6 +397,9 @@ extension SessionStore {
             setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
+            // 真实会话通道连上了，就是「已连接」的事实；用它覆盖冷启动首个 preflight 遗留的
+            // 失败值，设备页不再把过程当结论。
+            appStore.markLiveConnectionEstablished()
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
         case .failed(let message):
             if isNetworkUnavailable {

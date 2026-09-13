@@ -67,9 +67,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
 
         try openConnectionSettings()
+        openAddComputerIfNeeded()
 
         let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-        XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "连接设置页应提供二维码扫码入口")
+        XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "添加电脑页应提供二维码扫码入口")
         XCTAssertTrue(scan.isHittable, "竖屏下扫码按钮必须留在可命中的区域内")
 
         installCameraPermissionMonitor()
@@ -111,7 +112,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let devices = app.descendant(identifier: "compactTab.devices")
         if devices.exists {
             devices.tap()
-            XCTAssertTrue(app.descendant(identifier: "settings.connection.scanQRCode").waitForExistence(timeout: 10))
+            // 已有电脑时首页只有添加入口；一台都没有时首页就是添加流程，直接有扫码按钮。
+            let entry = app.descendant(identifier: "settings.connection.otherAddMethods")
+            let scan = app.descendant(identifier: "settings.connection.scanQRCode")
+            XCTAssertTrue(entry.waitForExistence(timeout: 10) || scan.exists)
             return
         }
         try openSettings()
@@ -121,8 +125,22 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         connection.tap()
     }
 
+    /// 设备首页已有电脑时，扫码和安装说明都在添加电脑页；首页就是添加流程时什么都不用做。
+    private func openAddComputerIfNeeded() {
+        let scan = app.descendant(identifier: "settings.connection.scanQRCode")
+        if scan.exists { return }
+        let entry = app.descendant(identifier: "settings.connection.otherAddMethods")
+        guard scrollUntilHittable(entry, maximumSwipes: 4) else { return }
+        entry.tap()
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.addComputer.page").waitForExistence(timeout: 10),
+            "点击添加电脑后应进入添加电脑页"
+        )
+    }
+
     private func openHostInstaller() throws {
         try openConnectionSettings()
+        openAddComputerIfNeeded()
 
         let installerDisclosure = app.descendant(identifier: "settings.hostInstaller.disclosure")
         XCTAssertTrue(
@@ -1208,8 +1226,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             let connection = app.descendant(identifier: "settings.connectionManagement")
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
+            openAddComputerIfNeeded()
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-            XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "连接设置页应提供二维码扫码入口")
+            XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "添加电脑页应提供二维码扫码入口")
             scan.tap()
         }
 
