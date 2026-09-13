@@ -282,7 +282,7 @@ pub async fn handle_thread_takeover(
             additional: params.additional,
             ..Default::default()
         },
-        ResumeAcquire::Forced,
+        ResumeAcquire::AfterTakeover,
     )
     .await?;
     Ok(p::ThreadTakeoverResponse { resume, takeover })
@@ -292,8 +292,12 @@ pub async fn handle_thread_takeover(
 enum ResumeAcquire {
     /// 普通 resume：先探测别处持有，本地空配置时推迟起进程到首个 turn。
     Guarded,
-    /// 接管刚结束持有方：立刻由本 bridge 持有，不再探测也不推迟。
-    Forced,
+    /// 接管刚结束持有方：不再探测，但起进程仍按普通规则推迟到首个 turn。
+    /// 实测过反例：接管时就起一个不带模型的进程，首个 turn/start 带着模型来，bridge 只能
+    /// 给活进程发 `/model` 切换，CLI 把这条本地命令的回显写出来时 turn 还没登记，被当成
+    /// autonomous turn，用户的 turn/start 随即以 active_turn 被拒。推迟到首个 turn 起进程
+    /// 就能直接带 `--model`，没有这个窗口。
+    AfterTakeover,
 }
 
 async fn resume_thread(
@@ -317,7 +321,7 @@ async fn resume_thread(
     // 重做一遍。这里按只读返回并附持有方摘要，持有方退出后同 id 正常续聊。
     let foreign_owner = match acquire {
         ResumeAcquire::Guarded => state.foreign_owner(&params.thread_id).await,
-        ResumeAcquire::Forced => None,
+        ResumeAcquire::AfterTakeover => None,
     };
     if let Some(owner) = &foreign_owner {
         tracing::info!(
@@ -326,9 +330,7 @@ async fn resume_thread(
             entrypoint = ?owner.entrypoint,
             "claude session is held by another local process; resuming read-only"
         );
-    } else if acquire == ResumeAcquire::Forced
-        || !should_defer_process_start(state, &model, &system_prompt)
-    {
+    } else if !should_defer_process_start(state, &model, &system_prompt) {
         let _handle = state
             .claude_pool()
             .acquire_for_resume(params.thread_id.clone(), &cwd, model.clone(), system_prompt)

@@ -312,9 +312,12 @@ async fn takeover_interrupts_registered_holder_and_resumes_writable() {
         "持有方应被 SIGINT 结束"
     );
     assert!(record.exists(), "残留登记不影响接管结果");
+    // 接管后按普通 resume 规则推迟起进程：首个 turn/start 才带着模型拉起 claude。
+    // 若在这里就起一个不带模型的进程，首个 turn 只能给活进程发 `/model`，CLI 的回显
+    // 会被当成 autonomous turn，用户的 turn/start 随即以 active_turn 被拒（真机复现过）。
     assert!(
-        !bridge.pool().is_empty().await,
-        "接管后应立刻由 bridge 持有该会话"
+        bridge.pool().is_empty().await,
+        "接管后不应提前起进程，起进程推迟到首个 turn"
     );
 
     let read = request(
@@ -329,6 +332,22 @@ async fn takeover_interrupts_registered_holder_and_resumes_writable() {
         read["result"]["thread"]["canAcceptDirectInput"],
         json!(true),
         "{read}"
+    );
+
+    // 接管后的首个 turn/start 必须直接被接受：既不再是 owned_elsewhere，也没有
+    // 提前起的进程制造 active_turn 冲突。
+    let started = request(
+        &mut writer,
+        &mut reader,
+        4,
+        "turn/start",
+        json!({"threadId": SESSION_ID, "input": [{"type": "text", "text": "继续"}]}),
+    )
+    .await;
+    assert!(started.get("error").is_none(), "{started}");
+    assert!(
+        !bridge.pool().is_empty().await,
+        "首个 turn/start 才由 bridge 拉起并持有该会话"
     );
 }
 
