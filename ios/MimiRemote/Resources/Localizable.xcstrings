@@ -5553,6 +5553,23 @@
         }
       }
     },
+    "ui.default": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认"
+          }
+        }
+      }
+    },
     "ui.retry_writer_access": {
       "comment": "Accessibility label for reloading the latest messages and retrying writer access from the active-writer conflict card.",
       "localizations": {
@@ -17427,13 +17444,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Neutral warm white with a single main color of deep purple, restrained but not boring"
+            "value": "Neutral warm white with a single deep-purple main color"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "中性暖白配单一深紫主色，克制但不沉闷"
+            "value": "中性暖白配单一深紫主色"
           }
         }
       }
@@ -36897,23 +36914,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "暖色低对比，适合夜间阅读"
-          }
-        }
-      }
-    },
-    "ui.warm_sun": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "warm sun"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暖阳"
           }
         }
       }

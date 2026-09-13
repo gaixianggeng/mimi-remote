@@ -78,7 +78,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .codex:
-            return L10n.text("ui.warm_sun")
+            return L10n.text("ui.default")
         case .github:
             return "GitHub"
         case .xcode:
@@ -476,7 +476,7 @@ extension ThemeTokens {
         case (.codex, _), (.github, .light), (.gruvbox, .light), (.meadow, .light):
             return .white
         case (.github, .dark), (.xcode, _), (.gruvbox, .dark), (.meadow, .dark):
-            // 青草深色的主操作是明亮草绿，白字只有约 3.5:1，黑字约 6:1。
+            // 青草深色的主操作是鼠尾草绿，白字只有约 3.6:1，黑字约 5.8:1。
             return .black
         }
     }
@@ -549,6 +549,20 @@ extension ThemeTokens {
     /// 选中反馈复用同一低饱和填充，不再为工作区额外引入一档深梅紫。
     var workspaceCardSelectionFill: Color {
         selectionFill
+    }
+
+    /// 会话搜索框的底。紧凑布局走系统 `.searchable`，只能靠 appearance proxy 铺底色。
+    /// 曾用 selectionFill：在青草这类带色相的预设里它就是一块明显的强调色，
+    /// 搜索框成了页面上唯一被主题色染过的输入位。这里改成与主题无关的中性阴影——
+    /// 纯黑 / 纯白按极低透明度压在页面底上，浅色比底暗一档、深色比底亮一档，
+    /// 所有预设一致，不再跟着主题色走。
+    var searchFieldBackground: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color.black.opacity(0.05)
+        case .dark:
+            return Color.white.opacity(0.08)
+        }
     }
 
     var userBubbleForeground: Color {
@@ -1079,8 +1093,8 @@ final class ThemeStore: ObservableObject {
 
     private var meadowDarkTokens: ThemeTokens {
         // 站点本身没有深色版；这里以它手机模型的机身色 #141816 为底，保留同一族的偏绿
-        // 中性灰阶。墨绿在深底上压不出对比，主操作改用明亮草绿：草绿对底约 5.1:1，
-        // 黑字压草绿约 6:1，白字约 3.5:1。
+        // 中性灰阶。墨绿在深底上压不出对比，主操作改用鼠尾草绿 #54946B：饱和度压低、
+        // 亮度与之前的亮草绿相当，近黑底上不再刺眼。对底约 5.0:1，黑字约 5.8:1，白字约 3.6:1。
         ThemeTokens(
             preset: .meadow,
             resolvedScheme: .dark,
@@ -1095,19 +1109,19 @@ final class ThemeStore: ObservableObject {
             primaryText: Color(red: 232.0 / 255.0, green: 240.0 / 255.0, blue: 228.0 / 255.0),
             secondaryText: Color(red: 169.0 / 255.0, green: 184.0 / 255.0, blue: 172.0 / 255.0),
             tertiaryText: Color(red: 127.0 / 255.0, green: 143.0 / 255.0, blue: 131.0 / 255.0),
-            accent: Color(red: 28.0 / 255.0, green: 158.0 / 255.0, blue: 69.0 / 255.0),
+            accent: Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0),
             warning: Color(red: 0.94, green: 0.71, blue: 0.38),
-            success: Color(red: 92.0 / 255.0, green: 204.0 / 255.0, blue: 120.0 / 255.0),
+            success: Color(red: 102.0 / 255.0, green: 184.0 / 255.0, blue: 125.0 / 255.0),
             // 站内深绿分区上的浅绿文字 #B7D9BF，用作活跃目标的高亮。
             goalActive: Color(red: 183.0 / 255.0, green: 217.0 / 255.0, blue: 191.0 / 255.0),
-            voiceRecording: Color(red: 79.0 / 255.0, green: 199.0 / 255.0, blue: 115.0 / 255.0),
+            voiceRecording: Color(red: 92.0 / 255.0, green: 179.0 / 255.0, blue: 120.0 / 255.0),
             voiceWaveformGradient: [
                 Color(red: 183.0 / 255.0, green: 217.0 / 255.0, blue: 191.0 / 255.0),
-                Color(red: 79.0 / 255.0, green: 199.0 / 255.0, blue: 115.0 / 255.0),
-                Color(red: 28.0 / 255.0, green: 158.0 / 255.0, blue: 69.0 / 255.0)
+                Color(red: 92.0 / 255.0, green: 179.0 / 255.0, blue: 120.0 / 255.0),
+                Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0)
             ],
             border: Color(red: 47.0 / 255.0, green: 59.0 / 255.0, blue: 51.0 / 255.0),
-            selectionFill: Color(red: 28.0 / 255.0, green: 158.0 / 255.0, blue: 69.0 / 255.0).opacity(0.20)
+            selectionFill: Color(red: 84.0 / 255.0, green: 148.0 / 255.0, blue: 107.0 / 255.0).opacity(0.20)
         )
     }
 

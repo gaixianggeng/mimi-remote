@@ -348,10 +348,10 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
-    func testNewProfileDefaultsToJourneyStyle() {
+    func testNewProfileDefaultsToEmojiStyle() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
 
-        XCTAssertEqual(store.style(profileID: "mac-a"), .journey)
+        XCTAssertEqual(store.style(profileID: "mac-a"), .emoji)
     }
 
     func testLegacyEmojiSelectionRestoresEmojiStyleAndChoice() throws {
@@ -396,7 +396,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
         let store = WorkspaceAppearanceStore(defaults: defaults)
 
-        XCTAssertEqual(store.style(profileID: profile.id), .journey)
+        XCTAssertEqual(store.style(profileID: profile.id), .emoji)
 
         store.migrateLegacyValueIfNeeded(
             profileID: profile.id,
@@ -530,10 +530,10 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
 
     func testStylePreferenceStaysScopedToConnectionProfile() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
-        store.setStyle(.emoji, profileID: "mac-a")
+        store.setStyle(.journey, profileID: "mac-a")
 
-        XCTAssertEqual(store.style(profileID: "mac-a"), .emoji)
-        XCTAssertEqual(store.style(profileID: "mac-b"), .journey)
+        XCTAssertEqual(store.style(profileID: "mac-a"), .journey)
+        XCTAssertEqual(store.style(profileID: "mac-b"), .emoji)
     }
 
     func testDefaultCharacterUsesFirstRoleInSelectedTheme() {
@@ -555,6 +555,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
 
     func testProjectCharacterIconsFollowDirectoryOrder() throws {
         let store = WorkspaceAppearanceStore(defaults: defaults)
+        // 默认风格已是 Emoji，角色顺序断言要显式切到角色风格。
+        store.setStyle(.journey, profileID: "mac-a")
         let assignments = store.projectIconContents(
             profileID: "mac-a",
             projectIDs: ["project-z", "project-a", "project-b"]

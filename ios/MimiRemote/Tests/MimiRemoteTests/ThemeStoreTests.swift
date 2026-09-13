@@ -236,7 +236,7 @@ final class ThemeStoreTests: XCTestCase {
         let darkSecondaryText = rgba(darkTokens.secondaryText)
         let darkTertiaryText = rgba(darkTokens.tertiaryText)
 
-        XCTAssertEqual(ThemePreset.codex.title, L10n.text("ui.warm_sun"))
+        XCTAssertEqual(ThemePreset.codex.title, L10n.text("ui.default"))
         XCTAssertEqual(ThemePreset.codex.subtitle, L10n.text("ui.neutral_warm_white_with_a_single_main_color"))
 
         assertRGB(lightBackground, red: 250, green: 247, blue: 241)
@@ -424,8 +424,8 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(dark.preset, .meadow)
         XCTAssertEqual(dark.resolvedScheme, .dark)
         assertRGB(rgba(dark.background), red: 20, green: 24, blue: 22)
-        assertRGB(rgba(dark.primaryAction), red: 28, green: 158, blue: 69)
-        // 深色主操作是明亮草绿，冲突卡改用黑字；同时草绿自身要在底色上可读。
+        assertRGB(rgba(dark.primaryAction), red: 84, green: 148, blue: 107)
+        // 深色主操作是鼠尾草绿，冲突卡改用黑字；同时它自身要在底色上可读。
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.writerConflictPrimaryActionForeground, dark.primaryAction), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryAction, dark.background), 4.5)
         for surface in [dark.background, dark.surface, dark.elevatedSurface, dark.userBubble] {
