@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -301,23 +300,23 @@ func TestValidateRejectsNonSSHAppServer(t *testing.T) {
 	}
 }
 
-func TestValidateSharedLocalAppServerOnlyOnLinux(t *testing.T) {
+func TestValidateSharedLocalAppServerOnlyOnSharedLocalHosts(t *testing.T) {
 	cfg := defaults()
 	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
 	cfg.AppServer = DefaultSharedLocalAppServerConfig()
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
 
 	err := cfg.Validate()
-	if runtime.GOOS == "linux" {
+	if SupportsSharedLocalAppServer() {
 		if err != nil {
-			t.Fatalf("Linux 应允许共享本机 control socket：%v", err)
+			t.Fatalf("macOS 与 Linux 应允许共享本机 control socket：%v", err)
 		}
 		cfg.AppServer.Listen = DefaultManagedAppServerListen()
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "不能混用") {
 			t.Fatalf("local transport 不得混用 WebSocket 字段：%v", err)
 		}
-	} else if err == nil || !strings.Contains(err.Error(), "Linux") {
-		t.Fatalf("非 Linux 必须拒绝 local transport：%v", err)
+	} else if err == nil || !strings.Contains(err.Error(), "macOS 与 Linux") {
+		t.Fatalf("其他平台必须拒绝 local transport：%v", err)
 	}
 }
 

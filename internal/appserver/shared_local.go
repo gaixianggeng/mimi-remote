@@ -41,9 +41,16 @@ type SharedLocalTransport struct {
 	startOnce func(context.Context, SharedLocalOptions) error
 }
 
+// SupportsSharedLocalTransport reports whether this host can attach to Codex's
+// standard Unix control socket directly. macOS and Linux share the same socket
+// with local terminal clients and with Codex Desktop's SSH-host proxy.
+func SupportsSharedLocalTransport() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+}
+
 func NewSharedLocalTransport(options SharedLocalOptions) (*SharedLocalTransport, error) {
-	if runtime.GOOS != "linux" {
-		return nil, errors.New("共享本机 App Server 目前只支持 Linux")
+	if !SupportsSharedLocalTransport() {
+		return nil, errors.New("共享本机 App Server 只支持 macOS 与 Linux 本机宿主")
 	}
 	socket, err := SharedLocalSocketPath(options.Env)
 	if err != nil {
@@ -403,7 +410,8 @@ func startResidentCommand(bin string, args []string, extraEnv map[string]string)
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(context.Background(), bin, args...)
+	launchBin, launchArgs := residentLaunchCommand(bin, args)
+	cmd := exec.CommandContext(context.Background(), launchBin, launchArgs...)
 	configureSharedLocalCommand(cmd)
 	// The installer may invoke agentd from a temporary extraction directory.
 	// The resident server outlives that directory, and Codex needs a valid cwd

@@ -167,7 +167,7 @@ MIM-207 暂停的是 Windows 公开安装包发布，不是 Windows Runtime 支�
 
 Linux 使用 Release 归档中的安装脚本和当前用户的 systemd 服务。以运行服务的同一用户安装并登录 Codex CLI 0.149.1 或更高版本，校验 Release 摘要、解压后运行 `bash ./scripts/install-linux.sh install`。
 
-Linux 默认不要求 `sshd`、SSH 密钥，也不会修改 `authorized_keys`。`agentd` 会用私有 capability token 在 `ws://127.0.0.1:4222` 托管一个本机 Codex App Server，完成真实协议初始化后才报告就绪，并在服务停止时回收子进程。只有高级远端部署显式设置 `AGENTD_APP_SERVER_SSH_TARGET` 时才使用 SSH。
+Linux 默认不要求 `sshd`、SSH 密钥，也不会修改 `authorized_keys`。`agentd` 直接连接 `~/.codex/app-server-control/app-server-control.sock`；socket 缺失时在独立的 user-systemd scope 中启动一个 resident Codex App Server。本机终端用 `codex --remote unix://` 和 Mimi 打开的是同一个后端，重启 `agentd` 不会停止它。只有高级远端部署显式设置 `AGENTD_APP_SERVER_SSH_TARGET` 时才使用 SSH。
 
 ### Mac 安装
 
@@ -192,7 +192,7 @@ codex app-server --help
 agentd up
 ```
 
-首次启动前先启用“远程登录”，并确认 `ssh 127.0.0.1 true` 无需输入登录密码即可成功。`agentd` 通过非交互 SSH 检查 Codex 时会补齐 Homebrew、npm 与 mise 的常见安装路径；仍有运行时路径问题时由 `agentd doctor` 给出诊断。`agentd up` 会生成用户私有配置，通过 localhost SSH 接入共享 Unix App Server，完成真实协议初始化后再显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 SSH App Server](docs/shared-ssh-app-server.md)。
+不需要开启“远程登录”或配置 SSH 密钥。`agentd up` 会生成用户私有配置，直接连接 `~/.codex/app-server-control/app-server-control.sock`（缺失时以独立会话启动一个 resident Codex App Server），完成真实协议初始化后再显示短期配对二维码。重启 `agentd` 不会停止 resident，本机终端用 `codex --remote unix://` 打开的是同一个后端。只有 Codex Desktop 想接入同一个共享运行时时才需要指向 `127.0.0.1` 的 SSH 主机；远端部署仍可显式设置 `AGENTD_APP_SERVER_SSH_TARGET`。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。Desktop 接入与运行时边界见[共享 App Server](docs/shared-ssh-app-server.md)。
 
 Homebrew / CLI 常用命令：
 

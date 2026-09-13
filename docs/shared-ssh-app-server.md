@@ -1,22 +1,23 @@
-# 共享 SSH App Server
+# 共享 App Server
 
-本文描述 macOS 默认使用的共享 SSH transport、Linux 默认使用的本机 Unix control socket，以及 Linux 显式指定远端 SSH target 时的高级模式。Linux 本机模式不要求 SSH，也不使用 Desktop 私有 IPC。
+本文描述 macOS 与 Linux 默认使用的本机 Unix control socket transport、显式指定远端 SSH target 时的 SSH transport，以及 Codex Desktop 如何接入同一个共享 App Server。本机模式不要求 sshd、SSH 密钥或 macOS 的“远程登录”，也不使用 Desktop 私有 IPC。
 
 ## 目标
 
-Mimi、远程 Codex Desktop 和本机 Codex Desktop 通过 SSH 连接同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
+Mimi、本机终端和 Codex Desktop 共用同一个 Unix App Server。任一入口创建的普通 Codex Thread 都可以由其他入口接续。
 
 ```text
-Mimi App -> agentd 鉴权 WebSocket -> localhost SSH -> codex app-server proxy --┐
-本机 Desktop -----------------------> localhost SSH -> proxy -----------------+-> ~/.codex/app-server-control/app-server-control.sock
-远程 Desktop -------------------------------> Mac SSH -> proxy ---------------┘
-
-Linux：Mimi App -> agentd -> ~/.codex/app-server-control/app-server-control.sock <- codex --remote unix://
+Mimi App -> agentd 鉴权 WebSocket -> unix:// ----------------------------------┐
+本机终端 ----------------------------> codex --remote unix:// -----------------+-> ~/.codex/app-server-control/app-server-control.sock
+本机 Desktop ---> localhost SSH -----> codex app-server proxy -----------------+
+远程 Desktop ---> Mac SSH -----------> codex app-server proxy -----------------┘
 ```
 
 OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
 
-Linux 默认配置为：
+## 配置
+
+macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的对应配置文件默认为：
 
 ```json
 {
@@ -27,23 +28,25 @@ Linux 默认配置为：
 }
 ```
 
-agentd 直接连接标准 control socket。socket 缺失时，它优先通过独立的 user-systemd scope 启动 `codex app-server --listen unix://`；因此 agentd 重启不会终止 resident。没有可用 user-systemd 时会退回同一用户下的 detached 进程。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
+agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `codex app-server --listen unix://`：Linux 优先通过独立的 user-systemd scope，macOS 以独立会话（setsid）启动并把 open-file soft limit 提到至少 8192。两种方式下 agentd 重启都不会终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
-## 配置
+旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成直连预检，再原子改写为 `local`。带用户名的 target 或远端主机不会被自动迁移；预检失败时原配置保持不变。
 
-macOS 的 `~/Library/Application Support/mimi-remote/config.json`（或 Linux 显式远端模式的对应配置文件）使用以下 Codex 配置：
+### 显式远端 SSH（高级）
+
+要把 Codex 放到另一台主机时，显式指定 target；agentd 用 `ssh -T <target> codex app-server proxy` 连接远端的共享 socket：
 
 ```json
 {
   "app_server": {
     "transport": "ssh",
-    "ssh_target": "127.0.0.1",
+    "ssh_target": "user@mac-host",
     "auto_title": true
   }
 }
 ```
 
-`ssh_target` 是传给 OpenSSH 的单个目标参数。它可以是主机名、`user@host`，或 `~/.ssh/config` 中的 Host 别名。目标必须登录运行共享 App Server 的同一个 macOS 用户，并使用同一个默认 `~/.codex`。
+`ssh_target` 是传给 OpenSSH 的单个目标参数。它可以是主机名、`user@host`，或 `~/.ssh/config` 中的 Host 别名。目标必须登录运行共享 App Server 的同一个用户，并使用同一个默认 `~/.codex`。
 
 首次 `setup` / `up` 可以用命令行参数或环境变量指定目标。命令行参数优先；成功预检后，目标会写入配置，后台服务不需要继承安装终端的环境变量：
 
@@ -52,13 +55,13 @@ agentd up --app-server-ssh-target user@mac-host
 AGENTD_APP_SERVER_SSH_TARGET=user@mac-host agentd up
 ```
 
-agentd 不保存 SSH 密码或私钥。启动前必须确保 Remote Login、host key 和非交互密钥认证可用：
+agentd 不保存 SSH 密码或私钥。SSH 模式启动前必须确保远端的 Remote Login、host key 和非交互密钥认证可用：
 
 ```bash
-ssh 127.0.0.1 true
+ssh user@mac-host true
 ```
 
-首次运行会要求确认本机 SSH host key。命令必须在无需输入登录密码的情况下成功。agentd 的固定远端命令会显式补齐 `~/.local/bin`、`~/.npm-global/bin`、mise shims / latest Codex、Homebrew 和系统目录，不依赖非交互 SSH 是否加载 shell rc。完成后运行：
+首次运行会要求确认 SSH host key。命令必须在无需输入登录密码的情况下成功。agentd 的固定远端命令会显式补齐 `~/.local/bin`、`~/.npm-global/bin`、mise shims / latest Codex、Homebrew 和系统目录，不依赖非交互 SSH 是否加载 shell rc。完成后运行：
 
 ```bash
 agentd doctor
@@ -68,7 +71,7 @@ agentd status
 
 ## 启动与连接
 
-agentd 先通过 SSH 打开 `codex app-server proxy` 并执行真实 WebSocket 初始化。若默认 Unix Socket 尚未提供服务，agentd 才通过同一个 SSH 目标后台启动：
+本机模式下 agentd 先探测 control socket 并执行真实 WebSocket 初始化；SSH 模式下则先通过 SSH 打开 `codex app-server proxy`。只有默认 Unix Socket 尚未提供服务时，agentd 才启动 resident；两种模式使用同一条命令：
 
 ```bash
 open_file_limit=$(ulimit -Sn)
@@ -79,17 +82,21 @@ CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 \
   codex -c features.code_mode_host=true app-server --listen unix://
 ```
 
-SSH 登录在 macOS 上的 open-file soft limit 通常只有 256。agentd 启动新 resident 前会读取当前值；低于 8192 时先提高到 8192，无法提高时拒绝启动。它不会降低已经更高的限制。
+launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通常只有 256。agentd 启动新 resident 前会读取当前值；低于 8192 时先提高到 8192，无法提高时拒绝启动。它不会降低已经更高的限制。
 
 这个容量余量不能替代订阅释放。App Server 会为每个已加载 Thread 保留 session 和 MCP 资源；取消最后一个订阅后，官方实现仍有 30 分钟无活动宽限期，之后才卸载 Thread。
 
-这个 App Server 只接受 Unix Socket 上的 SSH proxy 连接。启动命令会关闭它的 Remote Control 注册，防止它继承 Desktop 已保存的同一套服务端身份。ChatGPT 移动端和 Desktop 普通 “This Mac” 模式继续连接官方 App Server，不会被 SSH resident 接管。
+这个 App Server 只接受 Unix Socket 上的连接：agentd 直连、本机终端或 SSH proxy。启动命令会关闭它的 Remote Control 注册，防止它继承 Desktop 已保存的同一套服务端身份。ChatGPT 移动端和 Desktop 普通 “This Mac” 模式继续连接官方 App Server，不会被共享 resident 接管。
 
-agentd 在进程内串行执行探测与启动。多个入口同时尝试启动时，只有成功绑定默认 Socket 的 App Server 成为 owner；其余 proxy 连接这个 owner。
+agentd 在进程内串行执行探测与启动。多个入口同时尝试启动时，只有成功绑定默认 Socket 的 App Server 成为 owner；其余连接这个 owner。
 
-agentd 或单条 Mimi WebSocket 退出时只关闭对应 SSH proxy，不停止共享 App Server。SSH、Codex 版本或协议初始化失败时，agentd 明确失败，不回退到独立 WebSocket、stdio 或 Desktop IPC。
+agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH proxy，不停止共享 App Server。socket、SSH、Codex 版本或协议初始化失败时，agentd 明确失败，不回退到独立 WebSocket、stdio 或 Desktop IPC。
 
-若默认 Socket 文件仍存在，但 proxy 无法完成初始化，agentd 会停止并报告错误。它不会猜测 owner 或删除共享 Socket。先在 SSH 目标上确认没有仍在使用该 Socket 的 App Server，再手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。
+若默认 Socket 文件仍存在，但无法完成初始化，agentd 会停止并报告错误。它不会猜测 owner 或删除共享 Socket。先确认没有仍在使用该 Socket 的 App Server，再手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。
+
+## macOS 文件访问权限
+
+本机模式下 resident 由 agentd 启动，继承 agentd（Mac App 内嵌 LaunchAgent 或 Homebrew 服务）的 macOS 隐私授权。SSH 模式下 resident 是 sshd 的子进程，会继承“远程登录”附带的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 agentd 授予完全磁盘访问。
 
 ## 会话和消息规则
 
@@ -105,11 +112,11 @@ agentd 或单条 Mimi WebSocket 退出时只关闭对应 SSH proxy，不停止�
 
 ## Desktop 使用方式
 
-本机 Desktop 需要新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。远程 Desktop 使用指向这台 Mac 的 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
+本机 Desktop 需要新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。只有这一步才需要开启 macOS 的“远程登录”并配置本机非交互 SSH 认证；只用 Mimi 不需要。远程 Desktop 使用指向这台 Mac 的 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
 
 普通 “This Mac” 模式仍可用于 ChatGPT Desktop 私有的 `codex_app`、Browser 和专用渲染能力，但它不属于共享运行时。不要同时用普通本地模式和 SSH 模式打开同一个活动 Thread。
 
-Thread writer 锁仍然生效。若普通 “This Mac” 模式和共享 SSH 模式同时恢复同一个活动 Thread，后恢复的一方会明确失败。该限制用于保护历史文件，不能通过取消 writer 锁规避。
+Thread writer 锁仍然生效。若普通 “This Mac” 模式和共享模式同时恢复同一个活动 Thread，后恢复的一方会明确失败。该限制用于保护历史文件，不能通过取消 writer 锁规避。
 
 ## 诊断与验收
 
@@ -128,7 +135,7 @@ kill -TERM <上一步确认的-resident-pid>
 agentd doctor
 ```
 
-不要对模糊的 `pgrep codex` 结果批量执行 `kill`。普通 “This Mac”、OpenClaw 和共享 SSH resident 可能同时存在。
+不要对模糊的 `pgrep codex` 结果批量执行 `kill`。普通 “This Mac”、OpenClaw 和共享 resident 可能同时存在。
 
 验收至少覆盖：Mimi-first、远程 Desktop-first、本机 Desktop-first、并发排队、审批首响应、agentd 重启和分页历史。验收前后分别记录 OpenClaw 的 App Server PID；二者必须保持不变。
 

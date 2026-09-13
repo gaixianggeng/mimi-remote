@@ -125,8 +125,8 @@ type RuntimeConfig struct {
 
 type AppServerConfig struct {
 	Transport string `json:"transport"`
-	// Windows 使用本机受管 WebSocket，Linux 默认使用共享本机 control socket，
-	// macOS 使用共享 SSH transport；Linux 显式远端 target 时仍可选择 SSH。
+	// Windows 使用本机受管 WebSocket；macOS 与 Linux 默认使用共享本机 control socket，
+	// 显式指定远端 target 时才使用 SSH transport。
 	Managed bool   `json:"managed,omitempty"`
 	Listen  string `json:"listen,omitempty"`
 	// WSTokenFile 只保存本机 App Server capability token 的路径。
@@ -416,6 +416,12 @@ func DefaultManagedAppServerListen() string {
 
 func SupportsManagedAppServer() bool {
 	return runtime.GOOS == "windows"
+}
+
+// SupportsSharedLocalAppServer 表示本机可以直接连接 Codex 标准 control socket。
+// macOS 与 Linux 的终端客户端、Codex Desktop 的 SSH 主机代理和 agentd 共用同一个 socket。
+func SupportsSharedLocalAppServer() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "darwin"
 }
 
 func DefaultManagedAppServerConfig() AppServerConfig {
@@ -770,15 +776,15 @@ func (c Config) Validate() error {
 			return err
 		}
 	case "local":
-		if runtime.GOOS != "linux" {
-			return fmt.Errorf("app_server.transport=local 只支持 Linux 本机宿主")
+		if !SupportsSharedLocalAppServer() {
+			return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主")
 		}
 		if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
 			strings.TrimSpace(c.AppServer.WSTokenFile) != "" || strings.TrimSpace(c.AppServer.SSHTarget) != "" {
 			return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
 		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh；Linux 另支持共享 local，Windows 另支持受管 ws")
+		return fmt.Errorf("app_server.transport 只支持 ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

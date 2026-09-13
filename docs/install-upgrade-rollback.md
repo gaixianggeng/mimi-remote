@@ -48,7 +48,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 ### macOS 首次安装（推荐）
 
-前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。启用“远程登录”，并先确认 `ssh 127.0.0.1 true` 无需输入登录密码即可成功。agentd 会为非交互 SSH 补齐 Homebrew、npm 和 mise 的常见 Codex 安装路径。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。不需要开启“远程登录”或配置 SSH：agentd 直接连接本机 Codex 的 control socket，只有想让 Codex Desktop 通过 SSH 主机接入同一个共享运行时时才需要它们，见[共享 App Server](shared-ssh-app-server.md)。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
 从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
 
@@ -68,7 +68,7 @@ agentd status
 
 `agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、当前平台的 App Server transport、Codex 版本和真实 `initialize` 均已通过。安装与升级只能以后者为成功条件。
 
-`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json`，以 `0600` 保存，并通过 localhost SSH 连接共享 Unix App Server，然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置和移动端 Token，不会停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。
+`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json`，以 `0600` 保存，并直接连接本机共享 Unix App Server（缺失时启动它），然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置和移动端 Token，不会停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。
 
 Agent 或自动化首次安装必须使用安全模式，初始化与启动逻辑不变，但不输出二维码、Endpoint 或长期访问码：
 
@@ -239,7 +239,7 @@ rm -f "$formula_file"
 rmdir "$formula_dir"
 ```
 
-只有确认新版本改写了不兼容配置时，才从备份恢复 `config.json`。共享 SSH 模式不生成 App Server WebSocket Token。恢复前必须先停止服务，恢复后保持文件权限为 `0600`：
+只有确认新版本改写了不兼容配置时，才从备份恢复 `config.json`。共享本机 socket 与 SSH 模式都不生成 App Server WebSocket Token。恢复前必须先停止服务，恢复后保持文件权限为 `0600`：
 
 ```bash
 brew services stop mimi-remote

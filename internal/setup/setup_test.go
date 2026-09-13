@@ -132,7 +132,7 @@ func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
 
 func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 	t.Helper()
-	if config.SupportsManagedAppServer() || runtime.GOOS == "linux" {
+	if config.SupportsManagedAppServer() || config.SupportsSharedLocalAppServer() {
 		if result.AppServerSSHTarget != "" {
 			t.Fatalf("本机 App Server setup 不应持久化 SSH target：%q", result.AppServerSSHTarget)
 		}
@@ -145,9 +145,9 @@ func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 
 func assertDefaultSetupConfigAppServer(t *testing.T, cfg config.Config) {
 	t.Helper()
-	if runtime.GOOS == "linux" {
+	if config.SupportsSharedLocalAppServer() {
 		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
-			t.Fatalf("Linux setup 应默认启用共享本机 App Server：%+v", cfg.AppServer)
+			t.Fatalf("macOS 与 Linux setup 应默认启用共享本机 App Server：%+v", cfg.AppServer)
 		}
 		return
 	}

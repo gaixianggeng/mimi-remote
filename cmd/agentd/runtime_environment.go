@@ -45,13 +45,19 @@ func ensureProcessUserEnvironment() error {
 }
 
 // ensureAppServerTransportMigration upgrades the platform's former managed WS
-// configuration before normal validation. macOS uses SSH; Linux uses Codex's
-// standard local control socket. Windows keeps its managed WebSocket process.
+// configuration before normal validation. macOS and Linux use Codex's standard
+// local control socket; macOS additionally rewrites the loopback SSH default
+// that older setups wrote. An explicit SSH target keeps the SSH transport.
+// Windows keeps its managed WebSocket process.
 func ensureAppServerTransportMigration(ctx context.Context, configPath string, target string) error {
 	var err error
 	switch runtime.GOOS {
 	case "darwin":
-		err = agentsetup.MigrateAppServerToSSH(ctx, configPath, target)
+		if strings.TrimSpace(target) != "" {
+			err = agentsetup.MigrateAppServerToSSH(ctx, configPath, target)
+		} else {
+			err = migrateAppServerToSharedLocal(ctx, configPath)
+		}
 	case "linux":
 		err = migrateAppServerToSharedLocal(ctx, configPath)
 	default:

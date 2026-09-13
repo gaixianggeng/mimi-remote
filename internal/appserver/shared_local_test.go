@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package appserver
 
@@ -182,8 +182,12 @@ func TestStartResidentCommandUsesStableHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(contents)); got != home {
-		t.Fatalf("resident cwd = %q, want stable HOME %q", got, home)
+	wantHome := home
+	if canonical, evalErr := filepath.EvalSymlinks(home); evalErr == nil {
+		wantHome = canonical
+	}
+	if got := strings.TrimSpace(string(contents)); got != wantHome {
+		t.Fatalf("resident cwd = %q, want stable HOME %q", got, wantHome)
 	}
 }
 
@@ -276,6 +280,10 @@ func shortSharedLocalCodexHome(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	// macOS 的 /tmp 是 /private/tmp 的符号链接；socket 路径按规范路径比较。
+	if canonical, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+		root = canonical
+	}
 	path := filepath.Join(root, "c")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
