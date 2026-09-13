@@ -1281,11 +1281,23 @@ struct CodexAppServerThreadTakeoverResult: Equatable, Sendable {
               !reason.isEmpty else {
             return nil
         }
-        return CodexAppServerThreadTakeoverFailure(reason: reason, retryable: data["retryable"]?.boolValue ?? false)
+        return CodexAppServerThreadTakeoverFailure(
+            reason: reason,
+            retryable: data["retryable"]?.boolValue ?? false,
+            holderPID: data["claudeOwner"]?.objectValue?["pid"]?.intValue
+        )
     }
 }
 
 struct CodexAppServerThreadTakeoverFailure: Equatable, Sendable {
     let reason: String
     let retryable: Bool
+    /// bridge 指认的持有方 pid：holder_respawned 时是新认领者，其余情况是没能结束的那个。
+    let holderPID: Int?
+
+    init(reason: String, retryable: Bool, holderPID: Int? = nil) {
+        self.reason = reason
+        self.retryable = retryable
+        self.holderPID = holderPID
+    }
 }

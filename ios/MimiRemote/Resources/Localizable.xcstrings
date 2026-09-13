@@ -29611,6 +29611,23 @@
         }
       }
     },
+    "ui.take_over_claude_failed_signal": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not signal the process holding this session on your Mac; an earlier process may already have been interrupted. Check the Mac before trying again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向 Mac 上持有该会话的进程发信号失败，之前的进程可能已被中断；请先到 Mac 上确认再试。"
+          }
+        }
+      }
+    },
     "ui.take_over_claude_failed_timeout": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

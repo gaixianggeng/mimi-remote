@@ -530,6 +530,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     /// #451：Claude 接管。nil 时走协议默认实现（抛错），与真实的非 Claude runtime 一致。
     var takeOverThreadHandler: ((String) async throws -> CodexAppServerThreadTakeoverResult)?
     var sessionSupportsThreadTakeoverResult = false
+    var sessionSupportsThreadTakeoverError: Error?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -2142,6 +2143,9 @@ extension MockSessionStoreClient {
     }
 
     func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
-        sessionSupportsThreadTakeoverResult
+        if let sessionSupportsThreadTakeoverError {
+            throw sessionSupportsThreadTakeoverError
+        }
+        return sessionSupportsThreadTakeoverResult
     }
 }
