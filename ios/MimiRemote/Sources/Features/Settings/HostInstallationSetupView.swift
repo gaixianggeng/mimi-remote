@@ -438,8 +438,11 @@ enum ConnectionRouteFormatting {
         } else {
             parts.append(L10n.text("ui.route_probe_failed"))
         }
+        // 路径通但 HTTP 失败也是失败：写进文字，不能只靠着色（VoiceOver 读不到颜色）。
         if diagnostic.requestSucceeded == true, let httpMillis = diagnostic.requestLatencyMillis {
             parts.append(httpText(httpMillis))
+        } else if diagnostic.requestSucceeded == false {
+            parts.append(L10n.text("ui.tailcat_request_failed"))
         }
         parts.append(timeText(diagnostic.checkedAt))
         return parts.joined(separator: " · ")

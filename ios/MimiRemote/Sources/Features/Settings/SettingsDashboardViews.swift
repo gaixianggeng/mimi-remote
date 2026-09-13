@@ -12,16 +12,22 @@ struct ConnectionSettingsView: View {
     // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
     // 这里是整页而不是 Form.Section，Section 刷新不会销毁它（MIM-63）。
     @StateObject private var navigation: SettingsNavigationState
+    // 扫码回落到手动连接时推出添加电脑页；用 isPresented 形式不依赖所在的是哪条导航栈。
+    @State private var isPresentingAddComputerForManualConnection = false
     var isDevicesTab = false
+    /// 快照测试传 false：线路行保持「未检测」，不让网络耗时和时间戳进基线。
+    var probesRouteAutomatically = true
 
     init(
         qrScannerPresentation: ConnectionQRCodeScannerPresentation,
         navigation: SettingsNavigationState? = nil,
-        isDevicesTab: Bool = false
+        isDevicesTab: Bool = false,
+        probesRouteAutomatically: Bool = true
     ) {
         self.qrScannerPresentation = qrScannerPresentation
         _navigation = StateObject(wrappedValue: navigation ?? SettingsNavigationState())
         self.isDevicesTab = isDevicesTab
+        self.probesRouteAutomatically = probesRouteAutomatically
     }
 
     var body: some View {
@@ -33,8 +39,13 @@ struct ConnectionSettingsView: View {
                 draft: navigation.connectionDraft,
                 transientPreferences: navigation.transientPreferences,
                 mode: .deviceHome,
-                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) }
+                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
+                onRequestManualConnection: { isPresentingAddComputerForManualConnection = true },
+                probesRouteAutomatically: probesRouteAutomatically
             )
+        }
+        .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
+            AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         }
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。

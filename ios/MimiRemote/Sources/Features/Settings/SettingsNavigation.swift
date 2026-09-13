@@ -60,8 +60,10 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var copyingConnectionProfileID: String?
     @Published var copiedConnectionProfileID: String?
     // 设备首页线路行的探测状态放草稿里，Section 重建或旋转都不丢。
+    // 结果记着属于哪台电脑：切换后不能拿 A 的路径和延迟冒充 B 的。
     @Published var isProbingRoute = false
     @Published var fallbackRouteProbe: FallbackRouteProbe?
+    @Published var routeProbeProfileID: String?
     var copyConnectionTask: Task<Void, Never>?
     var copyFeedbackTask: Task<Void, Never>?
 

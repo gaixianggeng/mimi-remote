@@ -247,6 +247,10 @@ struct InitialConnectionSettingsSections: View {
     }
 
     let onRequestProfileRename: (ConnectionProfile) -> Void
+    /// 手动表单只在添加电脑页渲染；设备首页上的扫码/重新配对回落到手动时，由外壳把那一页推出来。
+    var onRequestManualConnection: (() -> Void)? = nil
+    /// 快照容器要的是确定的静态画面：探测结果带时间戳、spinner 取决于网络耗时，都不能进基线。
+    var probesRouteAutomatically = true
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -289,12 +293,15 @@ struct InitialConnectionSettingsSections: View {
 
     /// 切到这台电脑就该直接看到延迟，不必先点刷新；30 秒内已有结果就不重复打扰网络。
     private func autoRefreshRouteProbeIfNeeded() async {
-        guard mode == .deviceHome, appStore.isConfigured else { return }
-        let lastCheckedAt = tailcatController.isEnabled
-            ? tailcatController.lastDiagnostic?.checkedAt
-            : draft.fallbackRouteProbe?.checkedAt
-        if let lastCheckedAt, Date().timeIntervalSince(lastCheckedAt) < 30 {
-            return
+        guard probesRouteAutomatically, mode == .deviceHome, appStore.isConfigured else { return }
+        // 新鲜度按电脑判断：上一台电脑 10 秒前测过，不等于这一台不用测。
+        if routeProbeBelongsToActiveProfile {
+            let lastCheckedAt = tailcatController.isEnabled
+                ? tailcatController.lastDiagnostic?.checkedAt
+                : draft.fallbackRouteProbe?.checkedAt
+            if let lastCheckedAt, Date().timeIntervalSince(lastCheckedAt) < 30 {
+                return
+            }
         }
         await refreshRouteProbe()
     }
@@ -388,7 +395,14 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
+    /// 只承认为当前电脑探测出的结果；持久化的 Tailcat 历史和上一台电脑的结果都不算。
+    private var routeProbeBelongsToActiveProfile: Bool {
+        draft.routeProbeProfileID != nil
+            && draft.routeProbeProfileID == appStore.activeConnectionProfileID
+    }
+
     private var routeProbeFailed: Bool {
+        guard routeProbeBelongsToActiveProfile else { return false }
         if tailcatController.isEnabled {
             return tailcatController.lastDiagnostic.map(ConnectionRouteFormatting.isFailure) ?? false
         }
@@ -396,6 +410,9 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private var routeProbeSummary: String {
+        guard routeProbeBelongsToActiveProfile else {
+            return L10n.text("ui.route_not_probed")
+        }
         if tailcatController.isEnabled {
             guard let diagnostic = tailcatController.lastDiagnostic else {
                 return L10n.text("ui.route_not_probed")
@@ -425,9 +442,14 @@ struct InitialConnectionSettingsSections: View {
         guard !draft.isProbingRoute else { return }
         draft.isProbingRoute = true
         defer { draft.isProbingRoute = false }
+        // 探测期间可能切换电脑：结果记在发起时的那台名下，展示时再与当前电脑比对。
+        let profileID = appStore.activeConnectionProfileID
 
         if tailcatController.isEnabled {
-            _ = await tailcatController.refreshPathDiagnostic(appStore: appStore)
+            let diagnostic = await tailcatController.refreshPathDiagnostic(appStore: appStore)
+            if diagnostic != nil, !Task.isCancelled {
+                draft.routeProbeProfileID = profileID
+            }
             return
         }
         guard appStore.isConfigured else { return }
@@ -445,6 +467,7 @@ struct InitialConnectionSettingsSections: View {
         }
         let path = try? await appStore.client().tailscaleNetworkPath()
         guard !Task.isCancelled else { return }
+        draft.routeProbeProfileID = profileID
         draft.fallbackRouteProbe = FallbackRouteProbe(
             checkedAt: Date(),
             pathKind: path?.kind,
@@ -1530,6 +1553,10 @@ struct InitialConnectionSettingsSections: View {
             localError = nil
         }
         isShowingAdvancedManualConnection = true
+        // 已有电脑时首页不内联添加流程，表单在添加电脑页：不推过去用户会看到一片空。
+        if mode == .deviceHome, !appStore.connectionProfiles.isEmpty {
+            onRequestManualConnection?()
+        }
     }
 
     private func switchConnectionProfile(id: String) async {

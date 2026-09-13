@@ -133,8 +133,10 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             connectionStatus: connectionStatus
         )
         // 导航由真实入口持有；这里固定表单容器，独立验证分组、按钮和电脑行的布局。
+        // 线路自动探测依赖网络耗时且结果带时间戳，快照里必须关掉，让线路行停在「未检测」。
         let view = ConnectionSettingsView(
-            qrScannerPresentation: fixture.qrScannerPresentation
+            qrScannerPresentation: fixture.qrScannerPresentation,
+            probesRouteAutomatically: false
         )
         .environmentObject(fixture.appStore)
         .environmentObject(fixture.sessionStore)
