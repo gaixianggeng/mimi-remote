@@ -62,6 +62,10 @@ struct SessionRegistryRecord {
     status: Option<String>,
     #[serde(default)]
     version: Option<String>,
+    /// CLI 自身启动时刻（Unix 毫秒），与内核记录的进程启动时间只差约 2 秒；
+    /// `thread/takeover` 用它确认 pid 没有被别的进程复用。
+    #[serde(rename = "startedAt", default)]
+    started_at_ms: Option<u64>,
 }
 
 /// 正持有某个会话的本机 Claude 进程摘要。
@@ -72,6 +76,23 @@ pub struct ForeignSessionOwner {
     pub kind: Option<String>,
     pub status: Option<String>,
     pub version: Option<String>,
+    pub started_at_ms: Option<u64>,
+}
+
+/// `thread/takeover` 会发给持有方的信号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSignal {
+    Interrupt,
+    Terminate,
+}
+
+impl ProcessSignal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProcessSignal::Interrupt => "SIGINT",
+            ProcessSignal::Terminate => "SIGTERM",
+        }
+    }
 }
 
 impl ForeignSessionOwner {
@@ -167,13 +188,7 @@ impl ForeignSessionRegistry {
             if own_pids.contains(&record.pid) || !pid_is_alive(record.pid) {
                 continue;
             }
-            let owner = ForeignSessionOwner {
-                pid: record.pid,
-                entrypoint: record.entrypoint,
-                kind: record.kind,
-                status: record.status,
-                version: record.version,
-            };
+            let owner = owner_from_record(&record);
             // 同一个 session 有多个活进程时保留正在执行的那个，客户端提示更准确。
             match out.get(&record.session_id) {
                 Some(existing) if existing.is_busy() && !owner.is_busy() => {}
@@ -195,6 +210,57 @@ impl ForeignSessionRegistry {
         }
         self.owners(own_pids).await.remove(session_id)
     }
+
+    /// 某个 session 的全部活着的别处持有方，不去重：`thread/takeover` 必须把每一个
+    /// 都结束，只结束"正在执行的那个"会留下另一个继续分叉。
+    pub async fn holders_of(
+        &self,
+        session_id: &str,
+        own_pids: &HashSet<u32>,
+    ) -> Vec<ForeignSessionOwner> {
+        let mut holders = Vec::new();
+        if !self.is_enabled() {
+            return holders;
+        }
+        let Some(dir) = self.dir.as_deref() else {
+            return holders;
+        };
+        let mut read_dir = match tokio::fs::read_dir(dir).await {
+            Ok(read_dir) => read_dir,
+            Err(_) => return holders,
+        };
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(record) = read_record(&path).await else {
+                continue;
+            };
+            if record.session_id != session_id
+                || own_pids.contains(&record.pid)
+                || !pid_is_alive(record.pid)
+                || holders
+                    .iter()
+                    .any(|holder: &ForeignSessionOwner| holder.pid == record.pid)
+            {
+                continue;
+            }
+            holders.push(owner_from_record(&record));
+        }
+        holders
+    }
+}
+
+fn owner_from_record(record: &SessionRegistryRecord) -> ForeignSessionOwner {
+    ForeignSessionOwner {
+        pid: record.pid,
+        entrypoint: record.entrypoint.clone(),
+        kind: record.kind.clone(),
+        status: record.status.clone(),
+        version: record.version.clone(),
+        started_at_ms: record.started_at_ms,
+    }
 }
 
 async fn read_record(path: &Path) -> Option<SessionRegistryRecord> {
@@ -208,7 +274,7 @@ async fn read_record(path: &Path) -> Option<SessionRegistryRecord> {
 }
 
 #[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -225,9 +291,92 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn pid_is_alive(_pid: u32) -> bool {
+pub(crate) fn pid_is_alive(_pid: u32) -> bool {
     // Windows 上暂不探测活进程；宁可保持旧行为，也不把残余登记误判成持有方。
     false
+}
+
+/// 给单个进程发信号。pid 0 / 1 / 负数会打到整个进程组或 init，这里一律拒绝；
+/// 进程已经不在（ESRCH）视为送达，调用方靠存活轮询判断结果。
+#[cfg(unix)]
+pub(crate) fn signal_pid(pid: u32, signal: ProcessSignal) -> std::io::Result<()> {
+    if pid <= 1 {
+        return Err(std::io::Error::other(format!(
+            "refusing to signal pid {pid}"
+        )));
+    }
+    let pid = i32::try_from(pid).map_err(std::io::Error::other)?;
+    let signal = match signal {
+        ProcessSignal::Interrupt => libc::SIGINT,
+        ProcessSignal::Terminate => libc::SIGTERM,
+    };
+    // SAFETY: kill 只接收整数参数，不涉及内存所有权。
+    let rc = unsafe { libc::kill(pid, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn signal_pid(_pid: u32, _signal: ProcessSignal) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "signalling foreign claude processes is not supported on this platform",
+    ))
+}
+
+/// 内核记录的进程启动时刻（Unix 秒）。拿不到就返回 None，调用方按"无法核实"拒绝。
+#[cfg(target_os = "macos")]
+pub(crate) fn process_start_epoch_secs(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: proc_bsdinfo 是 plain-old-data，全零是合法初值。
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: 缓冲区与声明的大小一致，proc_pidinfo 只写入该缓冲区。
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast::<libc::c_void>(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    Some(info.pbi_start_tvsec)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn process_start_epoch_secs(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm 可能含空格和括号，从最后一个 ')' 之后再切；starttime 是第 22 个字段，
+    // 即 ')' 之后的第 20 个，单位是时钟滴答。
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let start_ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let btime: u64 = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    // SAFETY: sysconf 只读取系统常量。
+    let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let ticks_per_sec = u64::try_from(ticks_per_sec)
+        .ok()
+        .filter(|ticks| *ticks > 0)?;
+    Some(btime + start_ticks / ticks_per_sec)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn process_start_epoch_secs(_pid: u32) -> Option<u64> {
+    None
 }
 
 #[cfg(test)]

@@ -20,6 +20,10 @@ const (
 	// 终端 / Claude 桌面的活进程持有时不再另起 claude 进程，按只读返回并附 claudeOwner。
 	// agentd 不按它做门禁（字段可选、旧版本静默缺失），常量只记录能力起点。
 	ForeignSessionGuardVersion = "0.2.10"
+	// 0.2.11 起 bridge 提供 thread/takeover：结束本机别处持有该会话的 claude 进程后同 id
+	// 续聊。旧 bridge 会回 method not found，所以 channel 只对达标版本声明该方法，iOS 据此
+	// 决定是否显示"在此设备上接管"。
+	ThreadTakeoverVersion = "0.2.11"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
 	BridgeRepository = "https://github.com/gaixianggeng/mimi-remote.git"
 	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"
@@ -44,6 +48,11 @@ func IsSupported(version string) bool {
 // SupportsThreadItemsList 只在 bridge 真能按 turn 分页 item 时为真。
 func SupportsThreadItemsList(version string) bool {
 	return Compare(version, ThreadItemsListVersion) >= 0
+}
+
+// SupportsThreadTakeover 只在 bridge 真能结束别处持有方并同 id 续聊时为真。
+func SupportsThreadTakeover(version string) bool {
+	return Compare(version, ThreadTakeoverVersion) >= 0
 }
 
 // IsComparable 只对正式三段式版本为真；预发布或无法解析的版本不能参与择优排序。
