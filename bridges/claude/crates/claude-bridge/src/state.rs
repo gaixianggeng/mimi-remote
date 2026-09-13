@@ -22,6 +22,7 @@ use alleycat_codex_proto::{
     ReasoningEffort, RequestId, SandboxMode, ThreadItem, Turn, TurnError, TurnStatus,
 };
 
+use crate::foreign_session::{ForeignSessionOwner, ForeignSessionRegistry};
 use crate::index::{ClaudeHistoryRefresher, ClaudeSessionRef};
 use crate::pool::ClaudePool;
 use crate::pool::claude_protocol::{McpServerInit, RateLimitInfo, SystemInit};
@@ -67,6 +68,9 @@ pub struct ConnectionState {
     caches: Mutex<ClaudeCaches>,
     oauth_rate_limit_refresh: tokio::sync::Mutex<()>,
     thread_logs: Mutex<HashMap<String, Vec<RecordedTurn>>>,
+    /// 本机其他 Claude 进程持有会话的探测器。生产 builder 注入共享实例；
+    /// 旧构造函数按环境变量自建，行为与生产一致。
+    foreign_sessions: Arc<ForeignSessionRegistry>,
 }
 
 /// One turn's worth of items captured live from the event pump.
@@ -237,7 +241,57 @@ impl ConnectionState {
             caches: Mutex::new(ClaudeCaches::default()),
             oauth_rate_limit_refresh: tokio::sync::Mutex::new(()),
             thread_logs: Mutex::new(HashMap::new()),
+            foreign_sessions: Arc::new(ForeignSessionRegistry::from_env()),
         }
+    }
+
+    /// 替换探测器；只在 `Arc::new` 之前由 bridge builder 调用。
+    pub fn with_foreign_session_registry(mut self, registry: Arc<ForeignSessionRegistry>) -> Self {
+        self.foreign_sessions = registry;
+        self
+    }
+
+    pub fn foreign_sessions(&self) -> &Arc<ForeignSessionRegistry> {
+        &self.foreign_sessions
+    }
+
+    /// 进程池里本 bridge 自己拉起的 claude 子进程 pid。它们同样会在
+    /// `~/.claude/sessions` 登记，探测别处持有时必须排除。
+    pub async fn own_child_pids(&self) -> std::collections::HashSet<u32> {
+        let pool = self.claude_pool();
+        let mut pids = std::collections::HashSet::new();
+        for thread_id in pool.loaded_thread_ids().await {
+            if let Some(handle) = pool.get(&thread_id).await
+                && let Some(pid) = handle.pid()
+            {
+                pids.insert(pid);
+            }
+        }
+        pids
+    }
+
+    /// 某个 thread 是否正被本机其他 Claude 进程持有。进程池里已有该 thread 的
+    /// 进程时一定是我们自己持有，直接返回 None，不读登记目录。
+    pub async fn foreign_owner(&self, thread_id: &str) -> Option<ForeignSessionOwner> {
+        if !self.foreign_sessions.is_enabled() {
+            return None;
+        }
+        if self.claude_pool().get(thread_id).await.is_some() {
+            return None;
+        }
+        self.foreign_sessions
+            .owner_of(thread_id, &self.own_child_pids().await)
+            .await
+    }
+
+    /// 列表路径用：一次扫描，按 session id 查持有方。调用方自行跳过进程池里的 thread。
+    pub async fn foreign_owners(&self) -> HashMap<String, ForeignSessionOwner> {
+        if !self.foreign_sessions.is_enabled() {
+            return HashMap::new();
+        }
+        self.foreign_sessions
+            .owners(&self.own_child_pids().await)
+            .await
     }
 
     pub fn launcher(&self) -> Option<&Arc<dyn ProcessLauncher>> {

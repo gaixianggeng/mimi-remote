@@ -117,6 +117,10 @@ pub fn entry_to_thread_with_git_info(
         agent_role: None,
         git_info: git_info.unwrap_or_else(|| alleycat_bridge_core::git_info_for_cwd(&entry.cwd)),
         name: entry.name.clone(),
+        // 明确给 true：网关会把已知的 canAcceptDirectInput 缓存 24 小时，别处持有解除后
+        // 如果只是省略字段，网关会沿用之前的 false 继续拒绝 turn/start。
+        can_accept_direct_input: Some(true),
+        claude_owner: None,
         turns: Vec::new(),
     }
 }

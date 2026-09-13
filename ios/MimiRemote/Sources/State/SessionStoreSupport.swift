@@ -943,6 +943,25 @@ struct SessionReminderStore {
     }
 }
 
+/// Claude 会话正被 Mac 上其他 Claude 进程持有：输入框已经因只读禁用，这条提示解释原因，
+/// 并说明持有方退出后可以在此继续。
+struct SessionOwnershipNotice: Equatable {
+    let sessionID: SessionID
+    let owner: ClaudeSessionOwner
+
+    var title: String {
+        L10n.text("ui.session_owned_elsewhere_title")
+    }
+
+    var message: String {
+        L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
+    }
+
+    var isBusy: Bool {
+        owner.isBusy
+    }
+}
+
 struct HistorySavingsNotice: Equatable {
     enum Kind: Equatable {
         case loadingFull

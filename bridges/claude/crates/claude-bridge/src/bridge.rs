@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
 
+use crate::foreign_session::{ForeignSessionPolicy, ForeignSessionRegistry};
 use crate::handlers;
 use crate::index::{
     ClaudeHistoryRefresher, ClaudeHydrator, DEFAULT_HISTORY_REFRESH_INTERVAL,
@@ -49,6 +50,8 @@ pub struct ClaudeBridge {
     launcher: Arc<dyn ProcessLauncher>,
     per_conn: DashMap<String, Arc<ConnectionState>>,
     trust_persisted_cwd: bool,
+    /// 本机其他 Claude 进程持有会话的探测器；所有连接共享同一份策略。
+    foreign_sessions: Arc<ForeignSessionRegistry>,
 }
 
 impl std::fmt::Debug for ClaudeBridge {
@@ -96,15 +99,18 @@ impl ClaudeBridge {
             state.rebind_session(Arc::clone(session));
             return state;
         }
-        let state = Arc::new(ConnectionState::with_launcher_and_history_refresher(
-            Arc::clone(ctx.session()),
-            Arc::clone(&self.pool),
-            Arc::clone(&self.thread_index),
-            ThreadDefaults::default(),
-            Some(Arc::clone(&self.launcher)),
-            self.trust_persisted_cwd,
-            self.history_refresher.as_ref().map(Arc::clone),
-        ));
+        let state = Arc::new(
+            ConnectionState::with_launcher_and_history_refresher(
+                Arc::clone(ctx.session()),
+                Arc::clone(&self.pool),
+                Arc::clone(&self.thread_index),
+                ThreadDefaults::default(),
+                Some(Arc::clone(&self.launcher)),
+                self.trust_persisted_cwd,
+                self.history_refresher.as_ref().map(Arc::clone),
+            )
+            .with_foreign_session_registry(Arc::clone(&self.foreign_sessions)),
+        );
         // Insert; concurrent calls may race — entry/or_insert resolves the
         // race deterministically.
         let entry = self
@@ -138,6 +144,7 @@ impl ClaudeBridge {
             launcher,
             per_conn,
             trust_persisted_cwd: false,
+            foreign_sessions: Arc::new(ForeignSessionRegistry::from_env()),
         }
     }
 }
@@ -155,6 +162,8 @@ pub struct ClaudeBridgeBuilder {
     /// uses [`crate::index::claude_projects_dir`].
     projects_dir_override: Option<PathBuf>,
     history_refresh_interval: Duration,
+    sessions_dir_override: Option<PathBuf>,
+    foreign_session_policy: Option<ForeignSessionPolicy>,
     warm_model_catalog: bool,
 }
 
@@ -170,6 +179,8 @@ impl Default for ClaudeBridgeBuilder {
             trust_persisted_cwd: false,
             projects_dir_override: None,
             history_refresh_interval: DEFAULT_HISTORY_REFRESH_INTERVAL,
+            sessions_dir_override: None,
+            foreign_session_policy: None,
             warm_model_catalog: false,
         }
     }
@@ -222,6 +233,19 @@ impl ClaudeBridgeBuilder {
         self
     }
 
+    /// 测试用：用临时目录代替 `~/.claude/sessions`。
+    pub fn sessions_dir_override(mut self, dir: PathBuf) -> Self {
+        self.sessions_dir_override = Some(dir);
+        self
+    }
+
+    /// 别处持有会话时的策略；不设置时读 `CLAUDE_BRIDGE_FOREIGN_SESSION_POLICY`，
+    /// 缺省为 Guard。
+    pub fn foreign_session_policy(mut self, policy: ForeignSessionPolicy) -> Self {
+        self.foreign_session_policy = Some(policy);
+        self
+    }
+
     /// 启动后在后台预热 CLI 模型目录。生产入口打开；测试默认关闭，避免每个
     /// 测试 bridge 都拉起一个 CLI 查询。
     pub fn warm_model_catalog(mut self, enabled: bool) -> Self {
@@ -247,6 +271,11 @@ impl ClaudeBridgeBuilder {
             if let Some(home) = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
                 self.codex_home = Some(PathBuf::from(home));
             }
+        }
+        if self.foreign_session_policy.is_none()
+            && let Ok(value) = std::env::var(ForeignSessionPolicy::ENV_KEY)
+        {
+            self.foreign_session_policy = Some(ForeignSessionPolicy::parse(&value));
         }
         if let Ok(value) = std::env::var("CLAUDE_BRIDGE_BYPASS_PERMISSIONS") {
             self.bypass_permissions = matches!(
@@ -298,6 +327,16 @@ impl ClaudeBridgeBuilder {
             self.history_refresh_interval,
         ));
         let thread_index: ThreadIndexHandle = index;
+        let foreign_session_policy = self
+            .foreign_session_policy
+            .unwrap_or_else(ForeignSessionPolicy::from_env);
+        let foreign_sessions = Arc::new(match self.sessions_dir_override {
+            Some(dir) => ForeignSessionRegistry::with_dir(dir, foreign_session_policy),
+            None => match crate::foreign_session::claude_sessions_dir() {
+                Some(dir) => ForeignSessionRegistry::with_dir(dir, foreign_session_policy),
+                None => ForeignSessionRegistry::disabled(),
+            },
+        });
 
         Ok(Arc::new(ClaudeBridge {
             pool,
@@ -307,6 +346,7 @@ impl ClaudeBridgeBuilder {
             launcher,
             per_conn: DashMap::new(),
             trust_persisted_cwd: self.trust_persisted_cwd,
+            foreign_sessions,
         }))
     }
 }

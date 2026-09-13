@@ -16,6 +16,10 @@ const (
 	// 显示，所以不抬最低版本；只是不能对它声明 thread/items/list，否则 iOS 会把
 	// 首页排进注定失败的补齐任务。
 	ThreadItemsListVersion = "0.2.9"
+	// 0.2.10 起 bridge 会读取 Claude Code 的 ~/.claude/sessions 登记：会话正被本机
+	// 终端 / Claude 桌面的活进程持有时不再另起 claude 进程，按只读返回并附 claudeOwner。
+	// agentd 不按它做门禁（字段可选、旧版本静默缺失），常量只记录能力起点。
+	ForeignSessionGuardVersion = "0.2.10"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
 	BridgeRepository = "https://github.com/gaixianggeng/mimi-remote.git"
 	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"

@@ -2,6 +2,7 @@
 
 pub mod approval;
 pub mod bridge;
+pub mod foreign_session;
 pub mod handlers;
 pub mod index;
 mod oauth_usage;

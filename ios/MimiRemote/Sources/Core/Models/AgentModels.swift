@@ -109,6 +109,9 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var agentNickname: String?
     var agentRole: String?
     var canAcceptDirectInput: Bool?
+    /// Claude 会话正被 Mac 上其他 Claude 进程（终端 / Claude 桌面）持有时，bridge 附带的
+    /// 持有方摘要；此时 `canAcceptDirectInput` 一定为 false。只用于展示，不参与授权判断。
+    var claudeOwner: ClaudeSessionOwner?
     let context: SessionContextSnapshot?
 
     /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
@@ -180,6 +183,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         agentNickname: String? = nil,
         agentRole: String? = nil,
         canAcceptDirectInput: Bool? = nil,
+        claudeOwner: ClaudeSessionOwner? = nil,
         context: SessionContextSnapshot? = nil
     ) {
         self.id = id
@@ -222,6 +226,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.agentNickname = agentNickname
         self.agentRole = agentRole
         self.canAcceptDirectInput = canAcceptDirectInput
+        self.claudeOwner = claudeOwner
         self.context = context
     }
 
@@ -281,7 +286,35 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case agentNickname = "agent_nickname"
         case agentRole = "agent_role"
         case canAcceptDirectInput = "can_accept_direct_input"
+        case claudeOwner = "claude_owner"
         case context
+    }
+}
+
+/// 正持有某个 Claude 会话的本机进程摘要，来自 bridge 的 `claudeOwner`。
+struct ClaudeSessionOwner: Codable, Hashable, Sendable {
+    let entrypoint: String?
+    let kind: String?
+    let status: String?
+    let pid: Int?
+
+    /// Claude Code 把执行中的进程标成 `busy` / `shell`；`-p` 进程不写状态。
+    var isBusy: Bool {
+        status == "busy" || status == "shell"
+    }
+
+    /// 给用户看的持有方名称。`entrypoint` 是 Claude Code 写进登记文件的固定值。
+    var displayName: String {
+        switch entrypoint {
+        case "cli":
+            return L10n.text("ui.claude_owner_terminal")
+        case "claude-desktop":
+            return L10n.text("ui.claude_owner_desktop")
+        case "claude-vscode":
+            return L10n.text("ui.claude_owner_vscode")
+        default:
+            return L10n.text("ui.claude_owner_other")
+        }
     }
 }
 

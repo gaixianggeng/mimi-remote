@@ -648,6 +648,9 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			"name", "preview", "status", "modelProvider", "source", "threadSource",
 			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
 			"canAcceptDirectInput",
+			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
+			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
+			"claudeOwner",
 		)
 		if forceReadOnly {
 			safeThread["canAcceptDirectInput"] = false

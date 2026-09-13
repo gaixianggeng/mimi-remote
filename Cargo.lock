@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "alleycat-claude-bridge"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "alleycat-bridge-core",
  "alleycat-codex-proto",
@@ -43,6 +43,7 @@ dependencies = [
  "dashmap",
  "directories",
  "futures",
+ "libc",
  "pretty_assertions",
  "serde",
  "serde_json",

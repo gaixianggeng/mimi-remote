@@ -2716,6 +2716,8 @@ extension SessionStore {
             agentNickname: item.agentNickname,
             agentRole: item.agentRole,
             canAcceptDirectInput: item.canAcceptDirectInput,
+            // 别处持有的摘要和只读标记必须一起进工作区投影，否则输入框灰了却没有原因提示。
+            claudeOwner: item.claudeOwner,
             context: item.context
         )
     }
