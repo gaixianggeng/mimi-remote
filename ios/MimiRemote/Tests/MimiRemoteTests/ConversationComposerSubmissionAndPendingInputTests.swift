@@ -230,6 +230,89 @@ extension ConversationDataFlowTests {
         XCTAssertGreaterThan(host.view.bounds.width, 0)
     }
 
+    /// gh-408：iPad 上权限菜单与 Skill 放得下时不能套在 UIScrollView 里。
+    /// UIScrollView 默认 delaysContentTouches，会把系统菜单的触摸按下推迟约 150ms，
+    /// 让权限入口每次点击都比同排的模型、选项按钮慢一拍；只有溢出时才允许回退到横向滚动。
+    func testIPadContextControlsOnlyFallBackToScrollViewWhenOverflowing() throws {
+        guard UIDevice.current.userInterfaceIdiom != .phone else {
+            throw XCTSkip("iPhone 的权限入口在「+」面板里，不走平铺行")
+        }
+        let defaultsSuite = "ComposerContextControlsTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+
+        let sessionStore = SessionStore(
+            appStore: AppStore(
+                defaults: defaults,
+                tokenStore: TokenStore(keychain: TestKeychainOperations())
+            ),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let session = makeSession(
+            id: "context-controls-session",
+            projectID: "context-controls-project",
+            title: "上下文控件回归",
+            status: "completed",
+            source: "codex"
+        )
+        sessionStore.sessionsByID[session.id] = session
+        sessionStore.selectedSessionID = session.id
+        sessionStore.sessionControlStateByID[session.id] = .takenOver
+        let themeStore = ThemeStore(defaults: defaults)
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+
+        func menuButtonsInsideScrollViews(hostedAt width: CGFloat) -> (menuButtons: Int, insideScrollView: Int) {
+            let host = UIHostingController(
+                rootView: ComposerView(availableWidth: width)
+                    .environmentObject(sessionStore)
+                    .environmentObject(themeStore)
+                    .environment(\.horizontalSizeClass, .regular)
+                    .defaultAppStorage(defaults)
+                    .frame(width: width, height: 360)
+            )
+            let window = UIWindow(windowScene: windowScene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: 360)
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            defer { window.isHidden = true }
+            host.view.frame = window.bounds
+            host.view.layoutIfNeeded()
+
+            // SwiftUI Menu 由 UIKit 按钮承载；只有它会吃到 UIScrollView 的触摸延迟。
+            var menuButtons = 0
+            var insideScrollView = 0
+            func walk(_ view: UIView) {
+                if view is UIButton {
+                    menuButtons += 1
+                    var ancestor = view.superview
+                    while let current = ancestor, current !== host.view {
+                        if current is UIScrollView {
+                            insideScrollView += 1
+                            break
+                        }
+                        ancestor = current.superview
+                    }
+                }
+                view.subviews.forEach(walk)
+            }
+            walk(host.view)
+            return (menuButtons, insideScrollView)
+        }
+
+        let wide = menuButtonsInsideScrollViews(hostedAt: 744)
+        XCTAssertGreaterThan(wide.menuButtons, 0, "iPad Composer 应至少承载一个系统菜单按钮")
+        XCTAssertEqual(wide.insideScrollView, 0, "放得下时权限菜单不能套在 UIScrollView 里")
+
+        let narrow = menuButtonsInsideScrollViews(hostedAt: 200)
+        XCTAssertGreaterThan(narrow.insideScrollView, 0, "溢出时应回退到横向滚动，保证控件仍可触达")
+    }
+
     func testIPadComposerDefaultsExpandedAndExplicitCollapseUsesSingleRow() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else {
             throw XCTSkip("该布局回归仅在 iPad 目标上验证")
