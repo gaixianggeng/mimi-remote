@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,7 @@ func TestResolveClaudeBinDoesNotApplyCodexVersionParser(t *testing.T) {
 	if err != nil {
 		t.Skip("当前 Windows 环境没有可用的非 Codex 版本探测程序")
 	}
-	resolved, err := resolveClaudeBin(probe)
+	resolved, err := resolveClaudeBin(context.Background(), probe, claudeCommandEnvironment(nil))
 	if err != nil {
 		t.Fatalf("Claude 路径探测不应要求 codex-cli 版本输出：%v", err)
 	}
@@ -23,8 +24,8 @@ func TestResolveClaudeBinDoesNotApplyCodexVersionParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCleanPath(resolved, want) {
-		t.Fatalf("Claude 路径解析异常：got=%q want=%q", resolved, want)
+	if !sameCleanPath(resolved.path, want) {
+		t.Fatalf("Claude 路径解析异常：got=%q want=%q", resolved.path, want)
 	}
 }
 

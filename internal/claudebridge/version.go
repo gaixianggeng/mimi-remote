@@ -46,6 +46,12 @@ func SupportsThreadItemsList(version string) bool {
 	return Compare(version, ThreadItemsListVersion) >= 0
 }
 
+// IsComparable 只对正式三段式版本为真；预发布或无法解析的版本不能参与择优排序。
+func IsComparable(version string) bool {
+	_, ok := numericParts(version)
+	return ok
+}
+
 func Compare(left string, right string) int {
 	leftParts, leftOK := numericParts(left)
 	rightParts, rightOK := numericParts(right)

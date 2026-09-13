@@ -56,6 +56,7 @@ sequenceDiagram
 - 新配置以 `claude.enabled=false`、`claude.activation=auto` 开始。Mimi Remote Mac 启动时依次检查随包 bridge 兼容版本、Claude CLI 和 `claude auth status`；全部通过才自动启用，否则保持关闭且不影响 Codex 主通道。
 - `claude.activation` 记录用户意图：`auto` 跟随启动检测，`enabled` / `disabled` 是设置页中的明确选择。明确关闭后不得在后续启动中自动启用；明确开启但前置条件暂时失败时，运行状态仍 fail closed，同时保留偏好，环境恢复后可在下次启动自动恢复。兼容旧配置时，没有 `activation` 的 `enabled=true` 视为用户明确开启。
 - 检测到的 Claude CLI 使用本机绝对路径写入 `claude.env.CLAUDE_BRIDGE_CLAUDE_BIN`，避免 LaunchAgent 的精简 `PATH` 导致运行态找不到 CLI；写入过程保留未知字段与配置文件 `0600` 权限。
+- Claude CLI 候选顺序为「已配置路径 → `PATH` 上的 `claude` → `~/.local/bin/claude` → `~/.npm-global/bin/claude`」（Windows 另有 npm shim 到原生 `claude.exe` 的映射）。启动检测只按路径收集候选（不逐个执行），再对全部候选并行执行 `--version`（各 3 秒超时）：启动失败或超时的候选直接排除，剩下的选正式三段式版本最高者，同版本按候选顺序；同一真实文件的不同写法只算一次。版本无法解析的候选不参与择优，只有全部候选都无法解析时才退回第一个能启动的候选并按 `claude_version_unknown` 报告；没有任何候选能启动时按 `claude_missing` 报告且不写配置。已配置路径版本落后或已不可用时，检测结果直接覆盖 `CLAUDE_BRIDGE_CLAUDE_BIN` 并要求重载服务，因此官方安装器自动升级后 Mimi 会跟随最新 CLI，不会被 LaunchAgent `PATH` 前列的 Homebrew/npm 旧安装钉住，模型目录与终端、Claude 桌面保持一致。不提供"固定某个版本"的配置项。
 - 开关变化由 Mac App 重新加载其管理的 LaunchAgent，并等待 Claude Runtime 达到目标状态；失败时恢复修改前的 `activation` / `enabled` 并再次加载服务。
 - 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.7`、无标准版本或二进制不存在时 fail closed。`0.2.7` 是首个支持运行期 `thread/list.refreshHistory` 的版本，旧版会静默忽略该字段，不能继续当作兼容实现。
 - bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
