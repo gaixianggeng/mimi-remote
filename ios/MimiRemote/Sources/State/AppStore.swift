@@ -17,7 +17,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var activeHostState: ActiveHostState
     @Published private(set) var isCredentialMemorySuspended = false
     @Published var token: String
-    @Published var connectionStatus: ConnectionStatus = .idle
+    // 每次写入都递增，被取消的探测据此判断期间是否有更新的结论（见 AppStoreConnectionTesting）。
+    @Published var connectionStatus: ConnectionStatus = .idle { didSet { connectionStatusRevision &+= 1 } }
+    private(set) var connectionStatusRevision: UInt64 = 0
     @Published private(set) var connectionTermination: ConnectionTerminationStatus?
     @Published var lastError: String?
     @Published var lastConnectionTestDurationMillis: Int?

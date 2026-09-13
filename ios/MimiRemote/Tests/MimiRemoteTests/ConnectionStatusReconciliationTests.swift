@@ -34,6 +34,35 @@ final class ConnectionStatusReconciliationTests: XCTestCase {
         XCTAssertEqual(store.lastError, "冷启动首个探测失败")
     }
 
+    func testCancelledPreflightKeepsNewerLiveConnection() async throws {
+        let suiteName = "ConnectionStatusReconciliationTests.CancelledAfterLive.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            routeProbeTimeout: 5,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in
+                try await Task.sleep(for: .seconds(30))
+            }
+        )
+        store.endpoint = "http://100.64.0.1:8787"
+        store.token = "test-token"
+        store.connectionStatus = .failed("冷启动首个探测失败")
+        store.lastError = "冷启动首个探测失败"
+
+        let preflight = Task { await store.preflightConnection() }
+        try await waitUntil { store.connectionStatus == .testing }
+        // 探测还挂着时会话通道先连上：这是更新的结论，取消探测不能把它改回旧的失败值。
+        store.markLiveConnectionEstablished()
+        preflight.cancel()
+        _ = await preflight.value
+
+        XCTAssertEqual(store.connectionStatus, .connected(ActiveConnectionRoute.configured.statusTitle))
+        XCTAssertNil(store.lastError)
+    }
+
     func testCancelledAutomaticConnectionTestKeepsConnectedStatus() async throws {
         let store = makeIsolatedAppStore()
         store.endpoint = "http://100.64.0.1:8787"

@@ -47,13 +47,24 @@ extension AppStore {
 
     /// 进入探测态前记住原状态。探测被取消只说明这次没做完，不是「未连接」的结论；
     /// 否则「我」页的 task 被 Tab 切换打断后，设备页会一直显示「未连接」，直到下一次探测。
+    /// 必须紧挨在探测把状态置为 .testing 之前调用：取消时要求期间只发生过这一次写入。
     func captureConnectionProbeSnapshot() -> ConnectionProbeSnapshot {
-        ConnectionProbeSnapshot(status: connectionStatus, lastError: lastError)
+        ConnectionProbeSnapshot(
+            status: connectionStatus,
+            lastError: lastError,
+            revision: connectionStatusRevision,
+            hostScope: activeHostScope
+        )
     }
 
     func restoreConnectionStatusAfterCancelledProbe(_ snapshot: ConnectionProbeSnapshot) {
         // 探测前若已在转圈，说明另一条验证正在跑，让它自己下结论，不在这里改写。
         if case .testing = snapshot.status { return }
+        // 状态仍是这次探测写下的 .testing 才放回；等待期间 WebSocket 已连上、另一条探测已下结论
+        // 或已经切换电脑时，保留那个更新的结果。
+        guard case .testing = connectionStatus,
+              connectionStatusRevision == snapshot.revision &+ 1,
+              activeHostScope == snapshot.hostScope else { return }
         connectionStatus = snapshot.status
         lastError = snapshot.lastError
     }
