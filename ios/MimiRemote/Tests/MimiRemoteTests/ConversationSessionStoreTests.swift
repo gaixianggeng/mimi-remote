@@ -1913,7 +1913,7 @@ extension ConversationDataFlowTests {
         client.releaseBlockedSessionListRefresh()
         let outcome = await notificationTask.value
 
-        XCTAssertEqual(outcome, .ignored)
+        XCTAssertEqual(outcome, .superseded)
         XCTAssertEqual(store.selectedSessionID, selected.id)
         XCTAssertEqual(store.connectedSessionID, selected.id)
         XCTAssertTrue(store.sessions.contains { $0.id == target.id }, "通知目标仍应合并进索引")

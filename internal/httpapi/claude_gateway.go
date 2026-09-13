@@ -222,12 +222,21 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 失败")
 		return
 	}
-	defer upstream.Close()
+	// observer 接管后这条 bridge 连接要比本次 HTTP 请求活得更久，不能由 handler 关闭。
+	upstreamOwnedByObserver := false
+	defer func() {
+		if !upstreamOwnedByObserver {
+			upstream.Close()
+		}
+	}()
 
 	// The bridge outlives this connection, so a client that names a session
 	// resumes the one it had; an unnamed client gets an isolated session and
 	// today's semantics.
 	sessionKey := claudeGatewaySessionKey(req)
+	// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
+	// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
+	observerEpoch := r.stopClaudeApprovalObserver(sessionKey)
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
 	if sessionKey != "" {
@@ -268,17 +277,22 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		router:                r,
 		runtimeID:             "claude",
 		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:     map[string]struct{}{},
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
-	defer policy.close()
+	defer func() {
+		if !upstreamOwnedByObserver {
+			policy.close()
+		}
+	}()
 
 	go func() {
 		done <- copyClientFramesToClaudeBridge(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
+	upstreamReaderDone := make(chan string, 1)
 	go func() {
-		done <- copyClaudeBridgeFrames(
+		readerReason := copyClaudeBridgeFrames(
 			ctx,
 			reader,
 			client,
@@ -289,6 +303,8 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			sessionKey,
 			bridgeCursorEpoch,
 		)
+		upstreamReaderDone <- readerReason
+		done <- readerReason
 	}()
 	go func() {
 		pingClientGateway(ctx, client, &clientWriteMu)
@@ -297,8 +313,33 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 
 	reason := <-done
 	cancel()
-	_ = upstream.Close()
 	_ = client.Close()
+	// 取消 context 不能中断已经阻塞在 net.Conn.Read 的旧 goroutine。先用一次性
+	// deadline 唤醒它并确认退出，再把同一个 bufio.Reader 交给 observer。
+	_ = upstream.SetReadDeadline(time.Now())
+	readerReleased := false
+	select {
+	case <-upstreamReaderDone:
+		readerReleased = true
+	case <-time.After(2 * time.Second):
+	}
+	_ = upstream.SetReadDeadline(time.Time{})
+	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
+	// 离线期间到达的审批请求并触发提醒。
+	observerStarted := readerReleased && r.startClaudeApprovalObserver(
+		sessionKey,
+		upstream,
+		&upstreamWriteMu,
+		reader,
+		policy,
+		observerEpoch,
+	)
+	if observerStarted {
+		upstreamOwnedByObserver = true
+	} else {
+		r.releaseClaudeApprovalObserverEpoch(sessionKey, observerEpoch)
+		_ = upstream.Close()
+	}
 	if monitor != nil {
 		monitor.finish(reason)
 	}
@@ -501,6 +542,10 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 		if monitor != nil {
 			monitor.recordForward("client_to_upstream", len(payload), len(compacted), policyDuration, time.Since(writeStart), compacted)
 		}
+		// 与 Codex 网关同一触发点：首条成功写给 bridge 的 turn/start 消费新线程的
+		// 标题资格。标题写回走 bridge 的独立匿名连接，这里只负责给发起会话的
+		// 移动端补发 thread/name/updated。
+		policy.router.scheduleAutoThreadTitleFromMessage(compacted, policy, autoThreadTitleClientNotifier(client, clientWriteMu))
 	}
 }
 
@@ -569,9 +614,6 @@ func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWrit
 		return "", false
 	}
 	frame := append([]byte(nil), forwardPayload...)
-	if rewritten, ok := rewriteClaudeModelListResponse(policy, frame); ok {
-		frame = rewritten
-	}
 	writeStart := time.Now()
 	if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, frame); err != nil {
 		return gatewayCloseReason("client_write", err), true
@@ -647,107 +689,6 @@ func compactJSONLine(payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("JSON-RPC frame 重编码失败：%w", err)
 	}
 	return compacted, nil
-}
-
-func rewriteClaudeModelListResponse(policy *appServerGatewayPolicy, payload []byte) ([]byte, bool) {
-	if policy == nil {
-		return nil, false
-	}
-	var frame appServerGatewayFrame
-	if err := json.Unmarshal(payload, &frame); err != nil || !gatewayFrameIsResponse(&frame) {
-		return nil, false
-	}
-	pending, ok := policy.consumePendingClientRequest(frame.ID)
-	if !ok || pending.method != "model/list" || len(frame.Error) > 0 {
-		return nil, false
-	}
-	var object map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	if err := decoder.Decode(&object); err != nil {
-		return nil, false
-	}
-	object["result"] = map[string]any{
-		"data":       claudeCurrentModelList(),
-		"nextCursor": nil,
-	}
-	delete(object, "error")
-	rewritten, err := json.Marshal(object)
-	if err != nil {
-		return nil, false
-	}
-	return rewritten, true
-}
-
-func claudeCurrentModelList() []map[string]any {
-	// Claude CLI 的具体模型 ID 会比产品命名更频繁变化；这里用 CLI alias 作为真正发送的
-	// model，避免新名字尚未进入本机 metadata 时触发 fallback warning。为兼容尚不识别 `fable`
-	// 短 alias 的旧 CLI，Fable 使用官方完整 ID；展示名仍表达当前推荐代际。
-	return []map[string]any{
-		claudeModelOption(
-			"claude-fable-5",
-			"Claude Fable 5",
-			"Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
-			false,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"opus",
-			"Claude Opus 5",
-			"Alias resolved by the Claude CLI to the latest available Opus model; best for complex agentic coding and deep reasoning.",
-			true,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"sonnet",
-			"Claude Sonnet 5",
-			"Alias resolved by the Claude CLI to the latest available Sonnet model; default balanced model for everyday coding work.",
-			false,
-			"high",
-			true,
-		),
-		claudeModelOption(
-			"haiku",
-			"Claude Haiku 4.5",
-			"Alias resolved by the Claude CLI to the latest available Haiku model; fastest choice for quick edits and small tasks.",
-			false,
-			"none",
-			false,
-		),
-	}
-}
-
-func claudeModelOption(modelID string, displayName string, description string, isDefault bool, defaultEffort string, supportsNativeEffort bool) map[string]any {
-	supportedEfforts := []map[string]string{}
-	if supportsNativeEffort {
-		// 与 Claude bridge 的原生 effort 档位保持一致；iPad 只会启用这里声明的格子。
-		supportedEfforts = claudeReasoningEffortOptions()
-	}
-	return map[string]any{
-		"id":                        modelID,
-		"model":                     modelID,
-		"displayName":               displayName,
-		"description":               description,
-		"hidden":                    false,
-		"supportedReasoningEfforts": supportedEfforts,
-		"defaultReasoningEffort":    defaultEffort,
-		"inputModalities":           []string{"text", "image"},
-		"supportsPersonality":       false,
-		"additionalSpeedTiers":      []any{},
-		"serviceTiers":              []map[string]string{{"id": "standard", "name": "Standard", "description": "Default bridge service tier"}},
-		"isDefault":                 isDefault,
-	}
-}
-
-func claudeReasoningEffortOptions() []map[string]string {
-	return []map[string]string{
-		{"reasoningEffort": "medium", "description": "Balanced native Claude effort"},
-		{"reasoningEffort": "high", "description": "High native Claude effort (default)"},
-		{"reasoningEffort": "xhigh", "description": "Extended native Claude effort"},
-		{"reasoningEffort": "max", "description": "Maximum native Claude effort"},
-	}
 }
 
 func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteMu *sync.Mutex) {

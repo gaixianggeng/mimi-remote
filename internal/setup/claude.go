@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
@@ -372,19 +373,20 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 	}
 
 	configuredClaudeBin := strings.TrimSpace(cfg.Claude.Env[claudeBinaryEnvKey])
-	claudeBin, err := resolveClaudeBin(configuredClaudeBin)
+	claude, err := resolveClaudeBin(ctx, configuredClaudeBin, commandEnvironment)
 	if err != nil {
 		baseResult.Reason = "claude_missing"
 		baseResult.Message = "未检测到 Claude Code。安装并登录后，重新打开 Mimi Remote 即可自动启用。"
 		return baseResult
 	}
+	claudeBin := claude.path
 	baseResult.ClaudeBin = claudeBin
-	claudeVersion, err := probeClaudeVersion(ctx, claudeBin, commandEnvironment)
-	if err != nil {
+	if claude.version == "" {
 		baseResult.Reason = "claude_version_unknown"
 		baseResult.Message = "检测到 Claude Code，但无法确认版本。请重新安装或升级 Claude Code。"
 		return baseResult
 	}
+	claudeVersion := claude.version
 	baseResult.ClaudeVersion = claudeVersion
 	loggedIn, authErr := probeClaudeAuthStatus(ctx, claudeBin, commandEnvironment, 5*time.Second)
 	baseResult.LoggedIn = loggedIn
@@ -407,43 +409,113 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 	return baseResult
 }
 
-func resolveClaudeBin(configured string) (string, error) {
-	candidates := claudeExecutableCandidates(configured)
+type claudeBinCandidate struct {
+	path string
+	// version 为空表示 --version 失败或输出无法解析。
+	version string
+}
+
+// resolveClaudeBin 在所有能启动的候选里选 --version 最高的 Claude CLI，同版本按候选顺序。
+// 已配置路径不再天然优先：LaunchAgent 的 PATH 以 /opt/homebrew/bin 开头，首次启动会把
+// 不再更新的 Homebrew/npm 旧安装写进配置，若只认已配置值就永远切不到官方安装器自动
+// 升级的 ~/.local/bin/claude。版本无法解析的候选不参与择优；只有全部候选都无法解析时
+// 才退回第一个能启动的候选，让上层继续报告 claude_version_unknown 而不是 claude_missing。
+// 启动失败或超时的候选一律排除，避免把不能用的路径写进配置。
+func resolveClaudeBin(
+	ctx context.Context,
+	configured string,
+	environment []string,
+) (claudeBinCandidate, error) {
+	paths := claudeCandidatePaths(configured)
+	if len(paths) == 0 {
+		return claudeBinCandidate{}, exec.ErrNotFound
+	}
+	// 并行探测：npm 安装的 CLI 每次 --version 要拉起 node，串行会把 App 启动检测拖慢数秒。
+	// 这一步同时充当可启动性检查，收集阶段不再逐个执行候选。
+	launched := make([]bool, len(paths))
+	versions := make([]string, len(paths))
+	var wait sync.WaitGroup
+	for index, path := range paths {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if version, err := probeClaudeVersion(ctx, path, environment); err == nil {
+				launched[index] = true
+				versions[index] = version
+			}
+		}()
+	}
+	wait.Wait()
+
+	best := -1
+	for index, version := range versions {
+		if !launched[index] || !claudebridge.IsComparable(version) {
+			continue
+		}
+		if best < 0 || claudebridge.Compare(version, versions[best]) > 0 {
+			best = index
+		}
+	}
+	if best < 0 {
+		for index := range paths {
+			if launched[index] {
+				best = index
+				break
+			}
+		}
+	}
+	if best < 0 {
+		return claudeBinCandidate{}, exec.ErrNotFound
+	}
+	return claudeBinCandidate{path: paths[best], version: versions[best]}, nil
+}
+
+// claudeCandidatePaths 按候选顺序返回存在的绝对路径，同一个真实文件只保留首个写法，
+// 这样已配置路径与 PATH 命中同一安装时不会重复探测，也不会把配置改写成另一种拼法。
+// 这里只查路径不执行程序；能否启动交给 resolveClaudeBin 的并行探测统一判断。
+func claudeCandidatePaths(configured string) []string {
 	seen := map[string]struct{}{}
-	for _, candidate := range candidates {
+	usable := []string{}
+	for _, candidate := range claudeExecutableCandidates(configured) {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			continue
 		}
-		if _, exists := seen[candidate]; exists {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		resolved, err := lookupUsableExecutable(candidate)
+		resolved, err := exec.LookPath(candidate)
 		if err != nil {
 			continue
 		}
 		absolute, err := filepath.Abs(resolved)
-		if err == nil {
-			return filepath.Clean(absolute), nil
+		if err != nil {
+			continue
 		}
+		absolute = filepath.Clean(absolute)
+		identity := absolute
+		if real, err := filepath.EvalSymlinks(absolute); err == nil {
+			identity = real
+		}
+		if _, exists := seen[identity]; exists {
+			continue
+		}
+		seen[identity] = struct{}{}
+		usable = append(usable, absolute)
 	}
-	return "", exec.ErrNotFound
+	return usable
 }
 
+// probeClaudeVersion 只在候选无法启动、超时或非零退出时返回错误；进程正常退出但输出
+// 无法解析时返回空版本和 nil，让择优逻辑把"不能用"和"版本未知"分开处理。
 func probeClaudeVersion(ctx context.Context, claudeBin string, environment []string) (string, error) {
 	versionCtx, cancelVersion := context.WithTimeout(ctx, 3*time.Second)
 	defer cancelVersion()
 	command := exec.CommandContext(versionCtx, claudeBin, "--version")
 	command.Env = environment
+	command.Stderr = io.Discard
 	output, err := command.Output()
 	if err != nil {
 		return "", err
 	}
-	version, ok := claudebridge.ParseVersion(string(output))
-	if !ok {
-		return "", fmt.Errorf("无法解析 Claude Code 版本")
-	}
+	version, _ := claudebridge.ParseVersion(string(output))
 	return version, nil
 }
 

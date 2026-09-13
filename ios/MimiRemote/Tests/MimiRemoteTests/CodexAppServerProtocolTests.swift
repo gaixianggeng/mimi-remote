@@ -446,7 +446,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["cwd"]?.stringValue, "/Users/me/repo")
         XCTAssertNil(params["model"]?.stringValue)
         XCTAssertEqual(params["effort"]?.stringValue, "medium")
-        XCTAssertEqual(params["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(params["approvalPolicy"]?.stringValue, "never")
         XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client-1")
         XCTAssertEqual(params["collaborationMode"]?.objectValue?["mode"]?.stringValue, "default")
 
@@ -683,6 +683,56 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(session.context?.parentThreadID, "parent-thread")
         XCTAssertEqual(session.context?.isSubagent, true)
         XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
+    }
+
+    /// bridge 在会话被 Mac 上其他 Claude 进程持有时回 `canAcceptDirectInput=false` + `claudeOwner`；
+    /// App 端要把它投影成只读会话和"正在 Mac 上运行"提示，缺字段时保持原有可写行为。
+    func testClaudeThreadHeldElsewhereProjectsOwnerAndReadOnly() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        var thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("held-thread"),
+            "sessionId": .string("held-thread"),
+            "cwd": .string(project.path),
+            "name": .string("Held"),
+            "status": .object(["type": .string("idle")]),
+            "canAcceptDirectInput": .bool(false),
+            "claudeOwner": .object([
+                "entrypoint": .string("cli"),
+                "kind": .string("interactive"),
+                "status": .string("busy"),
+                "pid": .int(4242),
+            ]),
+            "mimiRemote": .object([
+                "projectId": .string(project.id),
+                "projectName": .string(project.name),
+                "projectPath": .string(project.path),
+                "readOnly": .bool(false),
+            ]),
+        ]
+
+        let held = try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        XCTAssertEqual(held.canAcceptDirectInput, false)
+        XCTAssertFalse(held.allowsDirectInput)
+        XCTAssertFalse(held.isSubagentThread, "别处持有不是子 Agent 关系")
+        let owner = try XCTUnwrap(held.claudeOwner)
+        XCTAssertEqual(owner.entrypoint, "cli")
+        XCTAssertEqual(owner.pid, 4242)
+        XCTAssertTrue(owner.isBusy)
+        XCTAssertEqual(owner.displayName, L10n.text("ui.claude_owner_terminal"))
+        let notice = SessionOwnershipNotice(sessionID: held.id, owner: owner)
+        XCTAssertTrue(notice.isBusy)
+        XCTAssertEqual(notice.title, L10n.text("ui.session_owned_elsewhere_title"))
+        XCTAssertTrue(notice.message.contains(owner.displayName))
+
+        thread["claudeOwner"] = nil
+        thread["canAcceptDirectInput"] = .bool(true)
+        let released = try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        XCTAssertNil(released.claudeOwner)
+        XCTAssertTrue(released.allowsDirectInput)
     }
 
     func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
@@ -1042,6 +1092,24 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(queryItems.first(where: { $0.name == "thread_id" })?.value, "thr_claude")
     }
 
+    // 有名探针也会占用常驻 broker 槽位；Codex 必须省略 session，使用网关已有的短连接路径。
+    func testCodexProbeGatewayURLDoesNotUseResidentBrokerSession() throws {
+        func sessionKey(_ url: URL) -> String? {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return items.first(where: { $0.name == "session" })?.value
+        }
+        let resident = try XCTUnwrap(sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .resident)))
+        let probe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", purpose: .probe))
+
+        XCTAssertNil(probe)
+        XCTAssertTrue(resident.hasSuffix("-codex"))
+        let claudeProbe = try sessionKey(CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", runtimeProvider: "claude", purpose: .probe))
+        XCTAssertTrue(try XCTUnwrap(claudeProbe).hasSuffix("-claude-probe"))
+    }
+
     // 真实连接的 thread_id 是空的（一条连接承载所有线程），所以能不能接回常驻会话
     // 全看这个 session 键。它必须存在、跨调用稳定、且落在网关的字符集白名单里。
     func testGatewayURLCarriesStableSessionKey() throws {
@@ -1203,7 +1271,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
         let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
-        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        // 旧草稿的完全访问在发送新回合时统一为 Desktop 的 never 策略。
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "never")
         XCTAssertEqual(sandbox["type"]?.stringValue, "dangerFullAccess")
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }
@@ -1583,11 +1652,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
     }
 
-    func testPreferredClaudeDefaultUsesCanonicalOpus5High() throws {
+    func testPreferredClaudeDefaultUsesServerDefaultForUnknownFutureModel() throws {
         let options = [
             CodexAppServerModelOption(
-                id: "claude-fable-5",
-                title: "Claude Fable 5",
+                id: "claude-future-model",
+                title: "Claude Future Model",
                 runtimeProvider: "claude",
                 isDefault: true,
                 supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
@@ -1609,7 +1678,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: options)
 
-        XCTAssertEqual(option.model, "claude-opus-5")
+        XCTAssertEqual(option.model, "claude-future-model")
         XCTAssertEqual(
             ModelReasoningGridCatalog.preferredDefaultEffort(
                 runtimeProvider: "claude",
@@ -1632,6 +1701,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
             options: CodexAppServerModelOption.builtInClaudeFallback
         )
 
+        XCTAssertEqual(CodexAppServerModelOption.builtInClaudeFallback.map(\.model), ["opus", "sonnet", "haiku"])
+        XCTAssertEqual(
+            CodexAppServerModelOption.builtInClaudeFallback.map(\.title),
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
+        )
         XCTAssertEqual(option.model, "opus")
         XCTAssertTrue(option.isDefault)
         XCTAssertEqual(option.defaultReasoningEffort, "high")
@@ -1936,6 +2010,68 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(message.id, "appserver:turn-1:item-1")
         XCTAssertEqual(message.sessionID, "thread-1")
         XCTAssertEqual(message.content, "hello world")
+    }
+
+    @MainActor
+    func testProjectorSequenceSurvivesRuntimeRebuildSoShortReplyIsNotDroppedAsStale() throws {
+        // 进后台/切主机会整体重建 runtime 和投影器。旧投影器已经给这个 thread 发过序号 1...3；
+        // 新投影器若从 1 重来，重建后第一条回复会被 ConversationStore 的水位线当成陈旧重放丢掉，
+        // 而 turn 完成不走水位线——表现为「完成震动响了、气泡没出现」。
+        let clock = CodexAppServerEventSequenceClock()
+        let store = ConversationStore()
+        let sessionID = "thread-rebuild"
+
+        var firstProjector = CodexAppServerEventProjector(sequenceClock: clock)
+        guard case .messageCompleted(let firstMessage, let firstMetadata) = firstProjector.project(
+            CodexAppServerNotification(method: "item/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string("turn-1"),
+                "item": .object([
+                    "id": .string("item-1"),
+                    "type": .string("agentMessage"),
+                    "text": .string("第一轮的长回复")
+                ])
+            ]))
+        ) else {
+            return XCTFail("expected first completed message")
+        }
+        guard case .turnCompleted(let firstTurnMetadata) = firstProjector.project(
+            CodexAppServerNotification(method: "turn/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turn": .object(["id": .string("turn-1"), "status": .string("completed")])
+            ]))
+        ) else {
+            return XCTFail("expected first turn completion")
+        }
+        store.completeMessage(firstMessage, metadata: firstMetadata, fallbackSessionID: sessionID)
+        store.markCurrentAssistantCompleted(metadata: firstTurnMetadata, fallbackSessionID: sessionID)
+        XCTAssertEqual(store.lastSeenSeq(for: sessionID), firstTurnMetadata.seq)
+
+        var rebuiltProjector = CodexAppServerEventProjector(sequenceClock: clock)
+        guard case .messageCompleted(let secondMessage, let secondMetadata) = rebuiltProjector.project(
+            CodexAppServerNotification(method: "item/completed", params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string("turn-2"),
+                "item": .object([
+                    "id": .string("item-2"),
+                    "type": .string("agentMessage"),
+                    "text": .string("收到，消息正常。")
+                ])
+            ]))
+        ) else {
+            return XCTFail("expected rebuilt completed message")
+        }
+        XCTAssertGreaterThan(
+            try XCTUnwrap(secondMetadata.seq),
+            try XCTUnwrap(firstTurnMetadata.seq),
+            "重建后的投影器必须接着同一 thread 的序号继续发，不能从 1 重来"
+        )
+
+        store.completeMessage(secondMessage, metadata: secondMetadata, fallbackSessionID: sessionID)
+        XCTAssertTrue(
+            store.messages(for: sessionID).contains { $0.role == .assistant && $0.content == "收到，消息正常。" },
+            "重建 runtime 后的短回复不能被水位线当成陈旧事件丢掉"
+        )
     }
 
     func testProjectorMapsCompletedGeneratedAndViewedImages() throws {

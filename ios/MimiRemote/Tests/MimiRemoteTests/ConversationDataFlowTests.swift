@@ -3225,6 +3225,45 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(composerState.turnOptions.networkAccess)
     }
 
+    func testComposerPermissionMenuLabelDistinguishesCurrentAndNextTurn() {
+        XCTAssertEqual(
+            ComposerPermissionMenuLabel.resolve(
+                preservesThreadSettings: true,
+                selectedMode: .fullAccess,
+                selectedProfileID: "stale-profile",
+                activeProfileID: nil
+            ),
+            .inherited
+        )
+        XCTAssertEqual(
+            ComposerPermissionMenuLabel.resolve(
+                preservesThreadSettings: true,
+                selectedMode: .fullAccess,
+                selectedProfileID: nil,
+                activeProfileID: ":read-only"
+            ),
+            .sessionProfile(":read-only")
+        )
+        XCTAssertEqual(
+            ComposerPermissionMenuLabel.resolve(
+                preservesThreadSettings: false,
+                selectedMode: .readOnly,
+                selectedProfileID: nil,
+                activeProfileID: ":workspace"
+            ),
+            .nextMode(.readOnly)
+        )
+        XCTAssertEqual(
+            ComposerPermissionMenuLabel.resolve(
+                preservesThreadSettings: false,
+                selectedMode: .requestApproval,
+                selectedProfileID: "team-profile",
+                activeProfileID: ":workspace"
+            ),
+            .nextProfile("team-profile")
+        )
+    }
+
     func testBuiltInPermissionProfilesCollapseIntoUserModes() {
         XCTAssertEqual(ComposerPermissionMode(builtInPermissionProfileID: ":read-only"), .readOnly)
         XCTAssertEqual(ComposerPermissionMode(builtInPermissionProfileID: ":workspace"), .requestApproval)

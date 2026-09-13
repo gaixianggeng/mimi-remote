@@ -23,12 +23,14 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use alleycat_codex_proto as p;
 
+use crate::foreign_session::ForeignSessionOwner;
 use crate::handlers::model::{normalize_claude_model, normalize_claude_model_id};
 use crate::index::IndexEntry;
 use crate::pool::PoolError;
 use crate::pool::claude_protocol::ControlRequestBody;
 use crate::pool::process::ClaudeProcessError;
 use crate::state::ConnectionState;
+use crate::takeover::{TakeoverError, TakeoverOutcome, release_foreign_holders};
 use crate::translate::items::{
     last_assistant_model, last_assistant_model_from_text, list_user_message_ids,
     list_user_message_ids_from_text, messages_text_to_turns, messages_to_turns,
@@ -48,18 +50,39 @@ pub enum ThreadError {
     Unsupported(String),
     #[error(transparent)]
     Index(#[from] anyhow::Error),
+    #[error("takeover of thread `{thread_id}` failed: {source}")]
+    Takeover {
+        thread_id: String,
+        // Box 住：持有方摘要带好几个 String，不装箱会把整个 ThreadError 撑大。
+        source: Box<TakeoverError>,
+    },
 }
 
 impl ThreadError {
     pub fn rpc_code(&self) -> i64 {
         match self {
-            ThreadError::InvalidParams(_) | ThreadError::NotFound(_) => {
-                p::error_codes::INVALID_PARAMS
-            }
+            ThreadError::InvalidParams(_)
+            | ThreadError::NotFound(_)
+            | ThreadError::Takeover { .. } => p::error_codes::INVALID_PARAMS,
             ThreadError::Unsupported(_) => p::error_codes::METHOD_NOT_FOUND,
             ThreadError::Pool(_) | ThreadError::ClaudeRpc(_) | ThreadError::Index(_) => {
                 p::error_codes::INTERNAL_ERROR
             }
+        }
+    }
+
+    /// 与 `TurnError::rpc_data` 同一套 `{accepted, reason, retryable}` 约定，客户端
+    /// 据 `reason` 决定提示文案、据 `retryable` 决定是否保留重试入口。
+    pub fn rpc_data(&self) -> Option<serde_json::Value> {
+        match self {
+            ThreadError::Takeover { thread_id, source } => Some(serde_json::json!({
+                "accepted": false,
+                "reason": source.reason(),
+                "threadId": thread_id,
+                "claudeOwner": source.holder().to_json(),
+                "retryable": source.retryable(),
+            })),
+            _ => None,
         }
     }
 
@@ -187,6 +210,101 @@ pub async fn handle_thread_resume(
     state: &Arc<ConnectionState>,
     params: p::ThreadResumeParams,
 ) -> Result<p::ThreadResumeResponse, ThreadError> {
+    resume_thread(state, params, ResumeAcquire::Guarded).await
+}
+
+// ============================================================================
+// thread/takeover
+// ============================================================================
+
+/// 结束本机别处持有该会话的 Claude 进程，然后以同 id 续聊。找不到持有方、
+/// 探测策略关闭、或进程池已经持有时，等价于普通 resume。
+pub async fn handle_thread_takeover(
+    state: &Arc<ConnectionState>,
+    params: p::ThreadTakeoverParams,
+) -> Result<p::ThreadTakeoverResponse, ThreadError> {
+    let thread_id = params.thread_id.clone();
+    // 先确认索引里有这个会话；不为一个不存在的 id 去动任何进程。
+    state
+        .thread_index()
+        .lookup(&thread_id)
+        .await
+        .ok_or_else(|| ThreadError::NotFound(thread_id.clone()))?;
+
+    let outcome = if state.claude_pool().get(&thread_id).await.is_some() {
+        TakeoverOutcome::NoHolder
+    } else {
+        let own_pids = state.own_child_pids().await;
+        release_foreign_holders(
+            state.foreign_sessions(),
+            &thread_id,
+            &own_pids,
+            state.takeover_timeouts(),
+        )
+        .await
+        .map_err(|source| ThreadError::Takeover {
+            thread_id: thread_id.clone(),
+            source: Box::new(source),
+        })?
+    };
+    let takeover = match &outcome {
+        TakeoverOutcome::NoHolder => {
+            tracing::info!(
+                thread_id = %thread_id,
+                "thread/takeover found no foreign holder; resuming normally"
+            );
+            p::ThreadTakeoverSummary::default()
+        }
+        TakeoverOutcome::Released { holders, signal } => {
+            let first = holders.first();
+            tracing::info!(
+                thread_id = %thread_id,
+                holders = holders.len(),
+                pid = first.map(|holder| holder.pid),
+                entrypoint = ?first.and_then(|holder| holder.entrypoint.as_deref()),
+                signal = signal.as_str(),
+                "released foreign claude holder; resuming session here"
+            );
+            p::ThreadTakeoverSummary {
+                released: true,
+                holder: first.map(ForeignSessionOwner::to_json),
+                signal: Some(signal.as_str().to_string()),
+            }
+        }
+    };
+
+    let resume = resume_thread(
+        state,
+        p::ThreadResumeParams {
+            thread_id,
+            cwd: params.cwd,
+            exclude_turns: params.exclude_turns,
+            additional: params.additional,
+            ..Default::default()
+        },
+        ResumeAcquire::AfterTakeover,
+    )
+    .await?;
+    Ok(p::ThreadTakeoverResponse { resume, takeover })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeAcquire {
+    /// 普通 resume：先探测别处持有，本地空配置时推迟起进程到首个 turn。
+    Guarded,
+    /// 接管刚结束持有方：不再探测，但起进程仍按普通规则推迟到首个 turn。
+    /// 实测过反例：接管时就起一个不带模型的进程，首个 turn/start 带着模型来，bridge 只能
+    /// 给活进程发 `/model` 切换，CLI 把这条本地命令的回显写出来时 turn 还没登记，被当成
+    /// autonomous turn，用户的 turn/start 随即以 active_turn 被拒。推迟到首个 turn 起进程
+    /// 就能直接带 `--model`，没有这个窗口。
+    AfterTakeover,
+}
+
+async fn resume_thread(
+    state: &Arc<ConnectionState>,
+    params: p::ThreadResumeParams,
+    acquire: ResumeAcquire,
+) -> Result<p::ThreadResumeResponse, ThreadError> {
     let entry = state
         .thread_index()
         .lookup(&params.thread_id)
@@ -198,7 +316,21 @@ pub async fn handle_thread_resume(
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
     let system_prompt = defaults.system_prompt.clone();
 
-    if !should_defer_process_start(state, &model, &system_prompt) {
+    // 会话正被本机其他 Claude 进程（终端 / Claude 桌面）持有时不起第二个进程：
+    // 两个进程会让 transcript 从同一个 leaf 分叉，第二个还会把持有方正在做的事
+    // 重做一遍。这里按只读返回并附持有方摘要，持有方退出后同 id 正常续聊。
+    let foreign_owner = match acquire {
+        ResumeAcquire::Guarded => state.foreign_owner(&params.thread_id).await,
+        ResumeAcquire::AfterTakeover => None,
+    };
+    if let Some(owner) = &foreign_owner {
+        tracing::info!(
+            thread_id = %params.thread_id,
+            pid = owner.pid,
+            entrypoint = ?owner.entrypoint,
+            "claude session is held by another local process; resuming read-only"
+        );
+    } else if !should_defer_process_start(state, &model, &system_prompt) {
         let _handle = state
             .claude_pool()
             .acquire_for_resume(params.thread_id.clone(), &cwd, model.clone(), system_prompt)
@@ -220,6 +352,9 @@ pub async fn handle_thread_resume(
         .iter()
         .any(|id| id == &params.thread_id);
     apply_live_thread_status(&mut thread, is_loaded);
+    if let Some(owner) = &foreign_owner {
+        mark_owned_elsewhere(&mut thread, owner);
+    }
 
     let response_model = match model {
         Some(m) => normalize_claude_model_id(&m),
@@ -674,6 +809,8 @@ pub async fn handle_thread_list(
         String,
         Option<alleycat_codex_proto::GitInfo>,
     > = std::collections::HashMap::new();
+    // 一页只扫一次登记目录（几个小 JSON），再按 id 标注别处持有的会话。
+    let foreign_owners = state.foreign_owners().await;
     let data = page
         .data
         .into_iter()
@@ -685,6 +822,9 @@ pub async fn handle_thread_list(
             let mut t = crate::index::entry_to_thread_with_git_info(&entry, Some(git_info));
             let is_loaded = loaded.contains(&t.id);
             apply_live_thread_status(&mut t, is_loaded);
+            if !is_loaded && let Some(owner) = foreign_owners.get(&t.id) {
+                mark_owned_elsewhere(&mut t, owner);
+            }
             t
         })
         .collect();
@@ -735,6 +875,9 @@ pub async fn handle_thread_read(
         .iter()
         .any(|id| id == &params.thread_id);
     apply_live_thread_status(&mut thread, is_loaded);
+    if let Some(owner) = state.foreign_owner(&params.thread_id).await {
+        mark_owned_elsewhere(&mut thread, &owner);
+    }
     Ok(p::ThreadReadResponse { thread })
 }
 
@@ -769,7 +912,7 @@ pub async fn handle_thread_turns_list(
         .await
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
     let turns = cached_thread_turns(state, &entry).await?;
-    Ok(paginate_turns(
+    let page = paginate_turns(
         turns,
         params.cursor.as_deref(),
         params.limit,
@@ -777,7 +920,135 @@ pub async fn handle_thread_turns_list(
             params.sort_direction.unwrap_or(p::SortDirection::Desc),
             p::SortDirection::Desc
         ),
+    );
+    Ok(apply_items_view(
+        page,
+        params.items_view.as_deref(),
+        params.items_list_available,
     ))
+}
+
+/// Codex 的 `summary` 视图只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn
+/// 补齐。此前 bridge 无视 itemsView 一律回完整 items：一个 18 MB 的会话首页要 400–650 KB，
+/// 同样的 Codex 首页只有几 KB，移动端经中继打开 Claude 会话因此明显更慢。
+///
+/// 只有调用方声明会转发 `thread/items/list`（`items_list_available`）时才裁剪：新 bridge 可以
+/// 单独升级，配旧 agentd 时 iOS 仍请求 summary，旧网关却不转发 items/list，裁掉就补不回来。
+fn apply_items_view(
+    mut page: p::ThreadTurnsListResponse,
+    items_view: Option<&str>,
+    items_list_available: bool,
+) -> p::ThreadTurnsListResponse {
+    if items_view != Some("summary") || !items_list_available {
+        return page;
+    }
+    for turn in &mut page.data {
+        turn.items.retain(|item| {
+            matches!(
+                item,
+                p::ThreadItem::UserMessage { .. } | p::ThreadItem::AgentMessage { .. }
+            )
+        });
+        turn.items_view = "summary".to_string();
+    }
+    page
+}
+
+// ============================================================================
+// thread/items/list
+// ============================================================================
+
+pub async fn handle_thread_items_list(
+    state: &Arc<ConnectionState>,
+    params: p::ThreadItemsListParams,
+) -> Result<p::ThreadItemsListResponse, ThreadError> {
+    let entry = state
+        .thread_index()
+        .lookup(&params.thread_id)
+        .await
+        .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
+    let turns = cached_thread_turns(state, &entry).await?;
+    let entries: Vec<p::ThreadItemsListEntry> = match params.turn_id.as_deref() {
+        Some(turn_id) => {
+            let turn = turns
+                .into_iter()
+                .find(|turn| turn.id == turn_id)
+                .ok_or_else(|| {
+                    ThreadError::InvalidParams(format!(
+                        "turn `{turn_id}` not found in thread `{}`",
+                        params.thread_id
+                    ))
+                })?;
+            items_entries(turn)
+        }
+        None => turns.into_iter().flat_map(items_entries).collect(),
+    };
+    Ok(paginate_items(
+        entries,
+        params.cursor.as_deref(),
+        params.limit,
+        matches!(
+            params.sort_direction.unwrap_or(p::SortDirection::Asc),
+            p::SortDirection::Desc
+        ),
+    ))
+}
+
+fn items_entries(turn: p::Turn) -> Vec<p::ThreadItemsListEntry> {
+    let turn_id = turn.id;
+    turn.items
+        .into_iter()
+        .map(|item| p::ThreadItemsListEntry {
+            turn_id: turn_id.clone(),
+            item,
+        })
+        .collect()
+}
+
+/// item 游标按位置编码：item id 在跨 turn 合并时可能重复，不适合做锚点。
+/// 位置相对于已按方向排好的序列；调用方翻页时保持同一方向。
+fn encode_item_cursor(offset: usize) -> String {
+    let json = serde_json::json!({ "offset": offset }).to_string();
+    URL_SAFE_NO_PAD.encode(json)
+}
+
+fn decode_item_cursor(raw: &str) -> Option<usize> {
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .map(|offset| offset as usize)
+}
+
+fn paginate_items(
+    mut entries: Vec<p::ThreadItemsListEntry>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+    descending: bool,
+) -> p::ThreadItemsListResponse {
+    if descending {
+        entries.reverse();
+    }
+    // 游标无法解析时返回空页且不再给 next_cursor，让调用方干净收敛，而不是从头重发。
+    let start = match cursor.filter(|c| !c.is_empty()) {
+        Some(raw) => match decode_item_cursor(raw) {
+            Some(offset) => offset,
+            None => return p::ThreadItemsListResponse::default(),
+        },
+        None => 0,
+    };
+    if start >= entries.len() {
+        return p::ThreadItemsListResponse::default();
+    }
+    let limit = alleycat_bridge_core::resolve_list_limit(limit) as usize;
+    let end = entries.len().min(start + limit);
+    let has_more = end < entries.len();
+    let page = entries.drain(start..end).collect();
+    p::ThreadItemsListResponse {
+        data: page,
+        next_cursor: has_more.then(|| encode_item_cursor(end)),
+    }
 }
 
 /// turns 的游标分页。抽成纯函数便于覆盖跨页边界，handler 只负责取数据。
@@ -1044,6 +1315,14 @@ fn apply_live_thread_status(thread: &mut p::Thread, is_loaded: bool) {
     }
 }
 
+/// 会话被本机其他 Claude 进程持有：输入关闭，附持有方摘要。status 保持磁盘/进程池
+/// 的判断，不伪造成 Active——是否在执行由 `claudeOwner.status` 告诉客户端，
+/// 避免网关把它登记成一个永远等不到 turn/completed 的活跃 turn。
+fn mark_owned_elsewhere(thread: &mut p::Thread, owner: &ForeignSessionOwner) {
+    thread.can_accept_direct_input = Some(false);
+    thread.claude_owner = Some(owner.to_json());
+}
+
 /// Default `permissionProfile` matching codex's `{type: "disabled"}` shape
 /// for threads with no named profile. claude doesn't expose a profile
 /// system; emitting null leaves codex clients rendering "unconfigured",
@@ -1254,6 +1533,146 @@ mod tests {
             decode_turn_cursor(&encode_turn_cursor("turn-42")).as_deref(),
             Some("turn-42")
         );
+    }
+
+    fn user(id: &str) -> p::ThreadItem {
+        p::ThreadItem::UserMessage {
+            id: id.to_string(),
+            content: Vec::new(),
+            client_id: None,
+        }
+    }
+
+    fn agent(id: &str) -> p::ThreadItem {
+        p::ThreadItem::AgentMessage {
+            id: id.to_string(),
+            text: "answer".to_string(),
+            phase: None,
+            memory_citation: None,
+        }
+    }
+
+    fn plan(id: &str) -> p::ThreadItem {
+        p::ThreadItem::Plan {
+            id: id.to_string(),
+            text: "plan".to_string(),
+        }
+    }
+
+    fn turn_with_items(id: &str, items: Vec<p::ThreadItem>) -> p::Turn {
+        let mut turn = turn(id);
+        turn.items = items;
+        turn
+    }
+
+    fn item_ids(response: &p::ThreadItemsListResponse) -> Vec<(String, String)> {
+        response
+            .data
+            .iter()
+            .map(|entry| (entry.turn_id.clone(), entry.item.id().to_string()))
+            .collect()
+    }
+
+    /// #411：summary 首页只保留用户与助手文本，工具过程留给 thread/items/list 补齐；
+    /// 此前无视 itemsView 一律回完整 items，Claude 首页比 Codex 大两个数量级。
+    #[test]
+    fn summary_view_keeps_only_messages_and_marks_turns() {
+        let page = p::ThreadTurnsListResponse {
+            data: vec![turn_with_items(
+                "turn-0",
+                vec![user("u1"), plan("p1"), agent("a1"), plan("p2")],
+            )],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        let summary = apply_items_view(page.clone(), Some("summary"), true);
+        let ids: Vec<&str> = summary.data[0].items.iter().map(|i| i.id()).collect();
+        assert_eq!(ids, ["u1", "a1"], "summary 只保留 userMessage/agentMessage");
+        assert_eq!(summary.data[0].items_view, "summary");
+
+        let full = apply_items_view(page.clone(), Some("full"), true);
+        assert_eq!(full, page, "full 视图原样返回");
+        let unspecified = apply_items_view(page.clone(), None, true);
+        assert_eq!(
+            unspecified, page,
+            "未指定时保持原有 full 行为，兼容旧客户端"
+        );
+    }
+
+    /// 新 bridge 配旧 agentd：旧网关不转发 items/list，也不会带上 items_list_available。
+    /// 这时 summary 必须原样回完整 item，否则工具过程再也补不回来（PR #430 评审）。
+    #[test]
+    fn summary_view_keeps_full_items_when_gateway_cannot_hydrate() {
+        let page = p::ThreadTurnsListResponse {
+            data: vec![turn_with_items(
+                "turn-0",
+                vec![user("u1"), plan("p1"), agent("a1")],
+            )],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        assert_eq!(apply_items_view(page.clone(), Some("summary"), false), page);
+    }
+
+    #[test]
+    fn turns_list_items_list_available_defaults_to_false() {
+        let from_old_gateway: p::ThreadTurnsListParams =
+            serde_json::from_value(serde_json::json!({"threadId": "t", "itemsView": "summary"}))
+                .unwrap();
+        assert!(!from_old_gateway.items_list_available);
+        let from_new_gateway: p::ThreadTurnsListParams = serde_json::from_value(
+            serde_json::json!({"threadId": "t", "itemsView": "summary", "itemsListAvailable": true}),
+        )
+        .unwrap();
+        assert!(from_new_gateway.items_list_available);
+    }
+
+    #[test]
+    fn paginate_items_walks_every_item_without_gaps_or_repeats() {
+        let entries = items_entries(turn_with_items(
+            "turn-7",
+            (0..7).map(|i| plan(&format!("item-{i}"))).collect(),
+        ));
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let page = paginate_items(entries.clone(), cursor.as_deref(), Some(3), false);
+            assert!(!page.data.is_empty(), "分页不得在走完之前返回空页");
+            seen.extend(item_ids(&page));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let expected: Vec<(String, String)> = (0..7)
+            .map(|i| ("turn-7".to_string(), format!("item-{i}")))
+            .collect();
+        assert_eq!(
+            seen, expected,
+            "必须无重复无跳段地覆盖全部 item，且带回所属 turn"
+        );
+    }
+
+    #[test]
+    fn paginate_items_honours_direction_and_terminates_on_bad_cursor() {
+        let entries = items_entries(turn_with_items(
+            "turn-1",
+            vec![plan("a"), plan("b"), plan("c")],
+        ));
+        let desc = paginate_items(entries.clone(), None, Some(2), true);
+        assert_eq!(
+            item_ids(&desc),
+            [("turn-1".into(), "c".into()), ("turn-1".into(), "b".into())]
+        );
+        assert!(desc.next_cursor.is_some());
+
+        let garbage = paginate_items(entries.clone(), Some("!!!not-base64!!!"), Some(2), false);
+        assert!(garbage.data.is_empty());
+        assert!(garbage.next_cursor.is_none());
+
+        let past_end = paginate_items(entries, Some(&encode_item_cursor(99)), Some(2), false);
+        assert!(past_end.data.is_empty());
+        assert!(past_end.next_cursor.is_none());
     }
 
     #[test]

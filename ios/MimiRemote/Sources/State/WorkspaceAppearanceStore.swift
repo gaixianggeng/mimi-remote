@@ -507,8 +507,9 @@ final class WorkspaceAppearanceStore: ObservableObject {
         persist()
     }
 
+    /// 新用户默认 Emoji：项目一多，角色图需要逐个认脸，Emoji 更容易一眼对上项目。
     func style(profileID: String) -> WorkspaceIconStyle {
-        (preferences(profileID: profileID)?.style ?? .journey).availableStyle
+        (preferences(profileID: profileID)?.style ?? .emoji).availableStyle
     }
 
     func projectIconContent(profileID: String, projectID: String) -> WorkspaceProjectIconContent {
@@ -890,8 +891,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
             }
         }
 
-        // 兼容老用户优先：只要存在历史 Emoji 就继续展示 Emoji；完全没有历史选择时
-        // style 保持 nil，由读取逻辑使用《西游记》作为新用户默认值。
+        // 兼容老用户优先：只要存在历史 Emoji 就继续展示 Emoji；只有历史角色图时
+        // 保持《西游记》；完全没有历史选择时 style 保持 nil，由读取逻辑使用 Emoji 默认值。
         if !preferences.emojiByProject.isEmpty {
             preferences.style = .emoji
         } else if !preferences.characterIDsByProject.isEmpty {

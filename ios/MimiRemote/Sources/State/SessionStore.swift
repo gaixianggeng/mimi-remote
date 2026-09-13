@@ -92,6 +92,11 @@ final class SessionStore: ObservableObject {
     }
     @Published var sessionSearchNextCursor: String?
     @Published var sessionSearchHasMore = false
+    /// #451：当前主机 Claude channel 是否声明 thread/takeover，按主机缓存；nil 表示尚未探测。
+    @Published var claudeTakeoverSupport: ClaudeTakeoverSupport?
+    @Published var claudeTakeoverInFlightSessionID: SessionID?
+    /// 接管被 bridge 明确拒绝（不可重试）后，对同一持有方不再提供按钮，避免反复结束重启的进程。
+    @Published var claudeTakeoverBlockedHolderPIDs: [SessionID: Set<Int>] = [:]
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
@@ -127,6 +132,8 @@ final class SessionStore: ObservableObject {
     @Published var expandedProjectIDs: Set<String> = []
     @Published var showingAllSessionProjectIDs: Set<String> = []
     @Published var isLoading = false
+    // 加载完成只属于当前主机代次，切换主机后不能沿用旧目录的空态判断。
+    @Published var loadedWorkspaceCatalogScope: HostScope?
     @Published var webSocketStatus: WebSocketStatus = .disconnected
     @Published var connectionTermination: ConnectionTerminationStatus? {
         didSet {
@@ -145,6 +152,9 @@ final class SessionStore: ObservableObject {
     var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+    /// `errorMessage` 当前这条的来源，由 `setErrorMessage` 维护。预热窗口只压探测失败，
+    /// 用户主动操作的失败任何时候都要照常展示。
+    @Published var errorMessageOrigin: SessionErrorOrigin = .userAction
     @Published var isRefreshingSelectedSession = false
     @Published var isUpdatingThreadGoal = false
     @Published var threadGoalErrorMessage: String?
@@ -230,6 +240,12 @@ final class SessionStore: ObservableObject {
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
     @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
+    /// 首次连接这台电脑的预热窗口。冷启动的隧道建立、agentd 网关上游就绪都允许失败重试，
+    /// 窗口内的失败是过程而不是结论，界面必须给出连接过渡而不是错误态。
+    /// 只由 `SessionStoreConnectionWarmUp` 的 begin/end 维护，别处不要直接写。
+    @Published var isConnectionWarmUpActive = false
+    var liveConnectionWarmUpTokens: Set<Int> = []
+    var nextConnectionWarmUpToken = 0
 
     var isConnectionSwitchInProgress: Bool {
         connectionSwitchTargetProfileID != nil
@@ -374,6 +390,9 @@ final class SessionStore: ObservableObject {
     }
     /// 记录按工作区真实目录查询到的会话 ID。默认列表只用这份证据接纳全局发现结果。
     @Published var workspaceDirectorySessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
+    /// 本设备在某个工作区里创建成功的会话 ID。目录页用 `replacing` 整页覆盖时必须并回它们：
+    /// 创建时可能有一页更早发出的首屏还在路上，它落地时会把刚登记的新会话冲掉。
+    var workspaceCreatedSessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -409,6 +428,8 @@ final class SessionStore: ObservableObject {
     var queuedGuidanceDispatchClientMessageIDs: Set<ClientMessageID> = []
     var turnCompletionReconciliationGeneration: UInt64 = 0
     var turnCompletionReconciliationJobsBySessionID: [SessionID: TurnCompletionReconciliationJob] = [:]
+    /// 一次历史读取可补齐多个 turn；缺口只有在正文落地后才移除。
+    var missingAssistantReplyBackfillJobsBySessionID: [SessionID: MissingAssistantReplyBackfillJob] = [:]
     // 最终回答通常紧跟 turn/completed。仅在通知缺失时按有限退避读取最新完整 Turn，
     // 避免健康 WebSocket 下等待 60 秒列表轮询仍无法释放本地队列。
     var turnCompletionReconciliationDelaysNanoseconds: [UInt64] = [
@@ -739,6 +760,7 @@ final class SessionStore: ObservableObject {
         missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
         queuedSessionReconnectTasks.values.forEach { $0.cancel() }
         turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
+        missingAssistantReplyBackfillJobsBySessionID.values.forEach { $0.task?.cancel() }
         networkPathStatusSource.stop()
     }
 
@@ -1929,6 +1951,24 @@ final class SessionStore: ObservableObject {
             return false
         }
         return historyHasMoreBeforeBySessionID[sessionID] == true
+    }
+
+    /// bridge 用 `canAcceptDirectInput=false` + `claudeOwner` 表示会话正被 Mac 上其他
+    /// Claude 进程持有。只读本身由 `allowsDirectInput` 处理，这里只负责解释原因。
+    var selectedOwnershipNotice: SessionOwnershipNotice? {
+        guard let session = selectedSession,
+              session.canAcceptDirectInput == false,
+              let owner = session.claudeOwner else {
+            return nil
+        }
+        return SessionOwnershipNotice(
+            sessionID: session.id,
+            owner: owner,
+            canTakeOver: claudeTakeoverSupport?.scope == appStore.activeHostScope
+                && claudeTakeoverSupport?.supported == true
+                && !claudeTakeoverIsBlocked(for: session),
+            isTakingOver: claudeTakeoverInFlightSessionID == session.id
+        )
     }
 
     var selectedHistorySavingsNotice: HistorySavingsNotice? {

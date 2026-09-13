@@ -37,7 +37,11 @@ async fn main() -> Result<()> {
     // Parse and validate the transport before starting any child-process
     // discovery or other bridge initialization.
     let transport = transport_arg()?;
-    let bridge = ClaudeBridge::builder().from_env().build().await?;
+    let bridge = ClaudeBridge::builder()
+        .from_env()
+        .warm_model_catalog(true)
+        .build()
+        .await?;
 
     match transport {
         Transport::Unix(path) => {
@@ -148,7 +152,7 @@ mod tests {
 
     #[test]
     fn package_is_the_compatibility_release() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.8");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.11");
     }
 
     #[test]

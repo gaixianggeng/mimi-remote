@@ -17,6 +17,7 @@ private enum MenuBarLayout {
 
 struct MenuBarContentView: View {
     let store: HostStore
+    let updates: AppUpdateStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
@@ -25,9 +26,12 @@ struct MenuBarContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             MenuStatusHeader(
                 lifecycle: store.lifecycle,
+                startingDetail: store.startingDetail,
                 isRefreshing: store.isRefreshingStatus || store.isBusy,
                 refresh: refreshStatus
             )
+
+            AppUpdateNotice(updates: updates)
 
             if let status = store.status {
                 Divider()
@@ -104,6 +108,21 @@ struct MenuBarContentView: View {
                     // 菜单首层只导航，不直接切换实验开关：配置执行需要保留
                     // HostStore 的单 writer、确认和重启语义，避免误触改变服务状态。
                     presentWindow(.experiments)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
+                MenuActionRow(
+                    title: updates.isChecking ? "正在检查更新…" : "检查更新…",
+                    systemImage: "arrow.down.circle",
+                    isEnabled: !updates.isChecking,
+                    isWorking: updates.isChecking
+                ) {
+                    openSettings()
+                    activateApplication()
+                    Task { await updates.check(manual: true) }
                 }
 
                 Divider()
@@ -249,6 +268,7 @@ struct MenuBarContentView: View {
 
 private struct MenuStatusHeader: View {
     let lifecycle: HostLifecycleState
+    var startingDetail: String? = nil
     let isRefreshing: Bool
     let refresh: () -> Void
 
@@ -318,7 +338,7 @@ private struct MenuStatusHeader: View {
         case .loading: "正在读取服务和连接状态。"
         case .notConfigured: "选择代码目录后即可配对移动设备。"
         case .migrationRequired: "可安全迁移，现有配置和配对都会保留。"
-        case .starting: "移动设备连接会在服务就绪后自动恢复。"
+        case .starting: startingDetail ?? "移动设备连接会在服务就绪后自动恢复。"
         case .ready: "Mac 端服务运行正常。"
         case .degraded(let message), .failed(let message): message
         case .stopped: "打开 App 或重新登录后可以再次启动。"
@@ -1124,10 +1144,10 @@ private final class MenuBarWindowProbeView: NSView {
 
 #if DEBUG
     #Preview("菜单栏 · 等待迁移") {
-        MenuBarContentView(store: .preview(.migrationRequired))
+        MenuBarContentView(store: .preview(.migrationRequired), updates: AppUpdateStore())
     }
 
     #Preview("菜单栏 · 服务可用") {
-        MenuBarContentView(store: .preview(.ready))
+        MenuBarContentView(store: .preview(.ready), updates: AppUpdateStore())
     }
 #endif

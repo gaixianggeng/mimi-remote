@@ -571,3 +571,33 @@ private actor WorkspaceSessionPageGate {
         continuation = nil
     }
 }
+
+@MainActor
+extension ConversationDataFlowTests {
+    /// 工作区投影是逐字段重建 AgentSession；别处持有的 claudeOwner 必须跟着 canAcceptDirectInput
+    /// 一起保留，否则会话页只有灰掉的输入框、没有"正在 Mac 上运行"的提示。
+    func testWorkspaceProjectionKeepsClaudeOwnerAlongsideReadOnlyFlag() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { DelayedCreateSessionClient(projects: [], sessions: []) }
+        )
+        let project = makeProject(id: "held-workspace")
+        let workspace = AgentWorkspace(
+            id: project.id, name: project.name, path: project.path,
+            rootProjectID: project.id, rootProjectName: project.name,
+            rootProjectPath: project.path, lastOpenedAt: Date()
+        )
+        var held = makeSession(
+            id: "held-session", projectID: project.id, title: "终端里开着的会话", status: "history",
+            source: "claude", runtimeProvider: "claude"
+        )
+        held.canAcceptDirectInput = false
+        held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: "busy", pid: 4242)
+
+        let projected = store.session(held, in: workspace)
+        XCTAssertEqual(projected.projectID, project.id)
+        XCTAssertEqual(projected.canAcceptDirectInput, false)
+        XCTAssertEqual(projected.claudeOwner, held.claudeOwner, "工作区投影不得丢掉持有方摘要")
+        XCTAssertFalse(projected.allowsDirectInput)
+    }
+}

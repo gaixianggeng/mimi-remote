@@ -309,6 +309,8 @@ main() {
   local was_active="0"
   local created_config="0"
   local app_server_ssh_target="${AGENTD_APP_SERVER_SSH_TARGET:-}"
+  # 只有显式 SSH 远端时才有元素；展开处用 ${arr[@]+"${arr[@]}"}，因为 bash 3.2
+  # 在 set -u 下把空数组当作未绑定变量（Release 的 macOS 校验用的就是 /bin/bash 3.2）。
   local setup_transport_args=()
   if [[ -n "$app_server_ssh_target" ]]; then
     require_command ssh
@@ -366,7 +368,7 @@ main() {
     --scan-root "$HOME" \
     --browse-root "$HOME" \
     --listen 127.0.0.1:8787 \
-    "${setup_transport_args[@]}" \
+    ${setup_transport_args[@]+"${setup_transport_args[@]}"} \
     2>&1)"; then
     echo "Codex App Server 预检诊断：" >&2
     print_bounded_redacted_lines "$preflight_output" 12 "（agentd setup 没有返回诊断）" >&2
@@ -419,7 +421,7 @@ main() {
     "$destination_binary" setup \
       --scan-root "$HOME/code" \
       --browse-root "$HOME" \
-      "${setup_transport_args[@]}" \
+      ${setup_transport_args[@]+"${setup_transport_args[@]}"} \
       >/dev/null
   fi
   "$destination_binary" doctor --fix

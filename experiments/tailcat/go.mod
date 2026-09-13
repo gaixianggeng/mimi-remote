@@ -1,11 +1,11 @@
 module github.com/gaixianggeng/mimi-remote/experiments/tailcat
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/tailscale/tailcat v0.5.0
-	tailscale.com v1.103.0-pre.0.20260830144538-72780705eda8
+	github.com/tailscale/tailcat v0.6.0
+	tailscale.com v1.103.0-pre.0.20260904030409-31d8badb3bfb
 )
 
 require (
@@ -79,7 +79,7 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6 // indirect
-	github.com/tailscale/wireguard-go v0.0.0-20260821191448-23d18d66172c // indirect
+	github.com/tailscale/wireguard-go v0.0.0-20260904023712-e855235c55a2 // indirect
 	github.com/tailscale/xnet v0.0.0-20240729143630-8497ac4dab2e // indirect
 	github.com/u-root/u-root v0.14.0 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect

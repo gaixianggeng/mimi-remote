@@ -233,7 +233,7 @@ func gatewaySingleListCWD(params map[string]any, method string) (string, error) 
 
 func gatewayMethodNeedsManagedPendingUse(method string) bool {
 	switch strings.TrimSpace(method) {
-	case "thread/start", "thread/resume", "thread/fork":
+	case "thread/start", "thread/resume", "thread/fork", "thread/takeover":
 		return true
 	default:
 		return false
@@ -242,7 +242,7 @@ func gatewayMethodNeedsManagedPendingUse(method string) bool {
 
 func requiresGatewayCWD(method string) bool {
 	switch method {
-	case "thread/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "permissionProfile/list":
+	case "thread/list", "thread/start", "thread/resume", "thread/fork", "thread/takeover", "turn/start", "permissionProfile/list":
 		return true
 	default:
 		return false
@@ -664,7 +664,7 @@ func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]
 	case "thread/start", "thread/resume", "thread/fork":
 		sandbox, ok := gatewayStringParam(params, "sandbox")
 		return ok && normalizePolicyValue(sandbox) == "dangerfullaccess"
-	case "turn/start":
+	case "turn/start", "thread/settings/update":
 		sandbox, _ := params["sandboxPolicy"].(map[string]any)
 		sandboxType, ok := gatewayStringParam(sandbox, "type")
 		return ok && normalizePolicyValue(sandboxType) == "dangerfullaccess"

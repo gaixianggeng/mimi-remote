@@ -520,7 +520,11 @@ struct WorkspaceRootView: View {
     @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
         if sessionStore.sidebarProjects.isEmpty {
-            if catalogLoad.state == .loading {
+            // 首次连接这台电脑期间，catalog/open 的失败只是本轮尝试的结果；此时展示
+            // "无法加载工作区" 会把仍在建立的连接说成结论。预热窗口结束后再落回原有空态。
+            if sessionStore.isEstablishingConnection {
+                workspaceConnectingState(tokens: tokens)
+            } else if catalogLoad.state == .loading {
                 workspaceLoadingState(tokens: tokens)
             } else {
                 workspaceEmptyState(tokens: tokens)
@@ -618,6 +622,27 @@ struct WorkspaceRootView: View {
         }
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
+    }
+
+    /// 与加载态同构：顶部保留工作区胶囊行的位置，正文换成连接过渡，
+    /// 目录真正到手时替换的是同一块版面。
+    private func workspaceConnectingState(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 0) {
+            workspaceStrip(tokens: tokens)
+
+            Divider()
+                .overlay(tokens.border.opacity(0.7))
+
+            ConnectionWarmUpView(
+                rowCount: 3,
+                message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        .accessibilityIdentifier("workspace.connectingState")
     }
 
     private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
@@ -786,7 +811,8 @@ struct WorkspaceRootView: View {
         // 胶囊数量等于本机工作区数量，且每个都很轻；用 HStack 而不是 LazyHStack，
         // 否则选中项展开时宽度动画会因为懒加载复用而跳变。
         return HStack(spacing: WorkspaceStripLayout.chipSpacing) {
-            if catalogLoad.state == .loading && sessionStore.sidebarProjects.isEmpty {
+            if (catalogLoad.state == .loading || sessionStore.isEstablishingConnection)
+                && sessionStore.sidebarProjects.isEmpty {
                 ForEach(0..<4, id: \.self) { index in
                     WorkspaceProjectChip(
                         project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),

@@ -273,6 +273,7 @@ extension ComposerView {
     }
 
     func clampModelSelectionToSelectedSessionRuntime() {
+        composerState.updateTurnOptions { ComposerModelSelectionCompatibility.apply(to: &$0) }
         guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
             return
         }
@@ -308,7 +309,7 @@ extension ComposerView {
         composerState.updateTurnOptions { options in
             if runtimeChanged || unsupportedModel {
                 // 切换 runtime 或目录刷新淘汰旧模型时，使用设置里的对应默认值；
-                // 没有自定义设置时回到 Codex GPT-6/medium、Claude Opus/high。
+                // 没有自定义设置时使用目录默认项，目录不可用才使用内置稳定 alias。
                 applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
@@ -323,7 +324,7 @@ extension ComposerView {
         runtimeProvider: String,
         to options: inout CodexAppServerTurnOptions
     ) {
-        // 默认模型统一从本机设置读取；没有保存配置时使用 GPT-6/medium、Opus/high。
+        // 默认模型统一从本机设置读取；没有保存配置时使用当前目录默认项。
         DefaultModelPreferences.applyDefault(
             for: runtimeProvider,
             allOptions: modelOptionsForMenu,
@@ -350,6 +351,7 @@ extension ComposerView {
     func normalizeModelControlsForStandardComposer(
         _ options: inout CodexAppServerTurnOptions
     ) {
+        ComposerModelSelectionCompatibility.apply(to: &options)
         let modelID = ModelReasoningGridCatalog.effectiveModelID(
             selectedModelID: options.model,
             options: modelOptionsForMenu

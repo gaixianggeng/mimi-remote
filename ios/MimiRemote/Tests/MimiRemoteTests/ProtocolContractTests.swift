@@ -18,7 +18,7 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(
             current.capabilityNegotiation.decision(
-                for: SessionStore.codexRemoteFullAccessCapability
+                for: "codex_remote_full_access_v1"
             ),
             .enabled
         )
@@ -38,7 +38,7 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(
             previous.capabilityNegotiation.decision(
-                for: SessionStore.codexRemoteFullAccessCapability
+                for: "codex_remote_full_access_v1"
             ),
             .serverUnsupported
         )
@@ -69,59 +69,33 @@ final class ProtocolContractTests: XCTestCase {
         )
     }
 
-    @MainActor
-    func testLegacyAgentDOnlyDowngradesNoApprovalPolicy() {
-        var fullAccess = CodexAppServerTurnOptions.default
-        fullAccess.approvalPolicy = .never
-        fullAccess.approvalsReviewer = "user"
-        fullAccess.sandboxMode = .dangerFullAccess
+    func testFullAccessUsesDesktopApprovalPolicyForLegacyDrafts() throws {
+        var legacy = CodexAppServerTurnOptions.default
+        legacy.approvalPolicy = .onRequest
+        legacy.sandboxMode = .dangerFullAccess
+        let normalized = legacy.sanitizedForRuntimePolicy()
+        XCTAssertEqual(normalized.approvalPolicy, .never)
+        XCTAssertEqual(normalized.approvalsReviewer, "user")
 
-        let legacy = fullAccess.adjustedForRemoteNoApprovalSupport(false)
-        XCTAssertEqual(legacy.approvalPolicy, .onRequest)
-        XCTAssertEqual(legacy.sandboxMode, .dangerFullAccess)
-        XCTAssertEqual(legacy.approvalsReviewer, "user")
+        let project = AgentProject(id: "permissions", name: "Permissions", path: "/tmp/permissions")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        let settings = try builder.threadSettingsUpdate(threadID: "thread", cwd: project.path, options: legacy)
+        let turn = try builder.turnStart(threadID: "thread", cwd: project.path,
+                                        payload: CodexAppServerTurnPayload(prompt: "test", options: legacy))
+        XCTAssertEqual(settings.params?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(turn.params?["approvalPolicy"]?.stringValue, "never")
+        XCTAssertEqual(settings.params?["sandboxPolicy"]?["type"]?.stringValue, "dangerFullAccess")
 
-        let current = fullAccess.adjustedForRemoteNoApprovalSupport(true)
-        XCTAssertEqual(current.approvalPolicy, .never)
-        XCTAssertEqual(current.sandboxMode, .dangerFullAccess)
+        legacy.preservesThreadPermissionSettings = true
+        XCTAssertEqual(legacy.sanitizedForRuntimePolicy(), legacy)
+        let preserved = try builder.threadSettingsUpdate(threadID: "thread", cwd: project.path, options: legacy)
+        XCTAssertNil(preserved.params?["approvalPolicy"])
 
-        var workspace = CodexAppServerTurnOptions.default
-        workspace.approvalPolicy = .onRequest
-        workspace.sandboxMode = .workspaceWrite
-        XCTAssertEqual(
-            workspace.adjustedForRemoteNoApprovalSupport(false),
-            workspace
-        )
-
-        let appStore = makeIsolatedAppStore()
-        let store = SessionStore(
-            appStore: appStore,
-            conversationStore: ConversationStore(),
-            logStore: LogStore()
-        )
-        appStore.replaceCapabilityNegotiation(
-            HostCapabilityNegotiation(wasNegotiated: true, declared: [], statuses: []),
-            preserving: appStore.activeHostState
-        )
-        let legacyPayload = store.payloadApplyingRemoteNoApprovalCompatibility(
-            CodexAppServerTurnPayload(prompt: "兼容旧 Mac", options: fullAccess)
-        )
-        XCTAssertEqual(legacyPayload.options.approvalPolicy, .onRequest)
-        XCTAssertEqual(legacyPayload.options.sandboxMode, .dangerFullAccess)
-
-        appStore.replaceCapabilityNegotiation(
-            HostCapabilityNegotiation(
-                wasNegotiated: true,
-                declared: [SessionStore.codexRemoteFullAccessCapability],
-                statuses: []
-            ),
-            preserving: appStore.activeHostState
-        )
-        let currentPayload = store.payloadApplyingRemoteNoApprovalCompatibility(
-            CodexAppServerTurnPayload(prompt: "使用新版 Mac", options: fullAccess)
-        )
-        XCTAssertEqual(currentPayload.options.approvalPolicy, .never)
-        XCTAssertEqual(currentPayload.options.sandboxMode, .dangerFullAccess)
+        legacy.preservesThreadPermissionSettings = false
+        legacy.runtimeProvider = "claude"
+        let claude = legacy.sanitizedForRuntimePolicy()
+        XCTAssertEqual(claude.approvalPolicy, .onRequest)
+        XCTAssertEqual(claude.sandboxMode, .workspaceWrite)
     }
 
     func testVersionAndPairingResponsesDecodeOptionalTailscaleMetadata() throws {

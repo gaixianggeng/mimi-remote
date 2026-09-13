@@ -3,6 +3,114 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testClaudeDirectTurnUsesRuntimePolicyWhenDraftHasNoProvider() async throws {
+        let project = AgentProject(id: "claude", name: "Claude", path: "/tmp/claude")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: "claude",
+            transportFactory: { pool.make() },
+            configProvider: { makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()]) }
+        )
+        let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+        let send = Task {
+            try await runtime.startTurnOutcome(sessionID: "thread-reconcile",
+                                              payload: CodexAppServerTurnPayload(prompt: "Claude"),
+                                              clientMessageID: "claude-message")
+        }
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+        transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+        let turn = try await waitForFakeAppServerRequest(transport, method: "turn/start")
+        XCTAssertEqual(turn.params?["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(turn.params?["sandboxPolicy"]?["type"]?.stringValue, "workspaceWrite")
+        transportResponse(transport, id: turn.id, result: #"{"turn":{"id":"claude-turn","status":"inProgress","items":[]}}"#)
+        _ = try await send.value
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testSSHComposerUsesDesktopTurnStartWithPermissionsAfterSettingsACK() async throws {
+        for mode in ComposerPermissionMode.allCases {
+            let project = AgentProject(id: "desktop", name: "Desktop", path: "/tmp/desktop")
+            let pool = FakeCodexAppServerTransportPool()
+            let runtime = CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "test",
+                transportFactory: { pool.make() }, configProvider: { makeSharedSSHConfig(project: project) }
+            )
+            let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+            let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+            let connected = expectation(description: "composer connected")
+            socket.onStatus = { if $0 == .connected { connected.fulfill() } }
+            socket.connect(sessionID: "thread-reconcile")
+            let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+            transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+            await fulfillment(of: [connected], timeout: 2)
+            XCTAssertEqual(socket.turnDeliveryMode, .direct)
+
+            var options = CodexAppServerTurnOptions.default
+            mode.apply(to: &options)
+            // 现场旧草稿曾保存这个组合；最终请求必须和 Desktop 一样是 never。
+            if mode == .fullAccess { options.approvalPolicy = .onRequest }
+            let update = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: options) }
+            let settings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+            XCTAssertNil(settings.params?["model"])
+            XCTAssertNil(settings.params?["collaborationMode"])
+            XCTAssertEqual(settings.params?["approvalPolicy"]?.stringValue, mode.approvalPolicy.rawValue)
+
+            let accepted = expectation(description: "composer turn accepted")
+            socket.onTurnSendOutcome = { _, outcome in
+                XCTAssertEqual(outcome, .accepted(turnID: "desktop-turn"))
+                accepted.fulfill()
+            }
+            XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "next", options: options), clientMessageID: "desktop-message"))
+            try await Task.sleep(nanoseconds: 30_000_000)
+            let beforeACK = await appServerRequests(transport)
+            XCTAssertFalse(beforeACK.contains { $0.method == "turn/start" || $0.method == "thread/queue/add" })
+            // 故意不发送 settings/updated；Desktop 的发送路径只等 ACK。
+            transportResponse(transport, id: settings.id, result: #"{}"#)
+            try await update.value
+            let turn = try await waitForFakeAppServerRequest(transport, method: "turn/start")
+            XCTAssertEqual(turn.params?["approvalPolicy"]?.stringValue, mode.approvalPolicy.rawValue)
+            XCTAssertEqual(turn.params?["approvalsReviewer"]?.stringValue, mode.approvalsReviewer)
+            XCTAssertEqual(turn.params?["sandboxPolicy"]?["type"]?.stringValue, mode.sandboxMode.rawValue)
+            XCTAssertEqual(turn.params?["clientUserMessageId"]?.stringValue, "desktop-message")
+            transportResponse(transport, id: turn.id, result: #"{"turn":{"id":"desktop-turn","status":"inProgress","items":[]}}"#)
+            await fulfillment(of: [accepted], timeout: 2)
+            let requests = await appServerRequests(transport)
+            XCTAssertFalse(requests.contains { $0.method == "thread/queue/add" })
+            socket.disconnect()
+            await runtime.shutdownForHostSwitch()
+        }
+    }
+
+    func testDesktopPermissionChangesAreSerializedWithoutWaitingForNotifications() async throws {
+        let project = AgentProject(id: "desktop", name: "Desktop", path: "/tmp/desktop")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test",
+            transportFactory: { pool.make() }, configProvider: { makeSharedSSHConfig(project: project) }
+        )
+        let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+        var firstOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.fullAccess.apply(to: &firstOptions)
+        let first = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: firstOptions) }
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+        transportResponse(transport, id: resume.id, result: sharedIdleThreadJSON(id: "thread-reconcile", cwd: project.path))
+        let firstRequest = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+        let nextIndex = await transport.sentMessages().count
+        var nextOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.requestApproval.apply(to: &nextOptions)
+        let next = Task { try await runtime.updateThreadPermissions(threadID: "thread-reconcile", options: nextOptions) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let beforeACK = await appServerRequests(transport)
+        XCTAssertEqual(beforeACK.filter { $0.method == "thread/settings/update" }.count, 1)
+        transportResponse(transport, id: firstRequest.id, result: #"{}"#)
+        try await first.value
+        let nextRequest = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update", after: nextIndex)
+        XCTAssertEqual(nextRequest.params?["approvalPolicy"]?.stringValue, "on-request")
+        transportResponse(transport, id: nextRequest.id, result: #"{}"#)
+        try await next.value
+        await runtime.shutdownForHostSwitch()
+    }
+
     func testComposerQueueTrayHidesDispatchingTurnButKeepsRecoverableEntries() {
         let sessionID = "composer-queue-tray"
         let conversationStore = ConversationStore()
@@ -260,6 +368,7 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(createRequests.contains { $0.method == "turn/start" })
 
         var queueOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.requestApproval.apply(to: &queueOptions)
         queueOptions.model = "gpt-5.6-luna"
         queueOptions.reasoningEffort = .high
         queueOptions.collaborationMode = .plan
@@ -272,8 +381,16 @@ extension ConversationDataFlowTests {
         }
         let settings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
         let settingsParams = try XCTUnwrap(settings.params?.objectValue)
-        XCTAssertEqual(Set(settingsParams.keys), ["threadId", "model", "effort", "collaborationMode"])
+        XCTAssertEqual(Set(settingsParams.keys), [
+            "threadId", "model", "effort", "collaborationMode", "cwd",
+            "approvalPolicy", "approvalsReviewer", "sandboxPolicy",
+        ])
         XCTAssertEqual(settingsParams["threadId"]?.stringValue, "thread-active")
+        XCTAssertEqual(settingsParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(settingsParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(settingsParams["approvalsReviewer"]?.stringValue, "user")
+        XCTAssertEqual(settingsParams["sandboxPolicy"]?["type"]?.stringValue, "workspaceWrite")
+        XCTAssertEqual(settingsParams["sandboxPolicy"]?["writableRoots"]?.arrayValue, [.string(project.path)])
         XCTAssertEqual(settingsParams["model"]?.stringValue, "gpt-5.6-luna")
         XCTAssertEqual(settingsParams["effort"]?.stringValue, "high")
         let collaborationMode = try XCTUnwrap(settingsParams["collaborationMode"]?.objectValue)
@@ -287,6 +404,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(requestsBeforeSettingsACK.last?.method, "thread/settings/update")
         XCTAssertFalse(requestsBeforeSettingsACK.contains { $0.method == "thread/queue/add" })
         transportResponse(transport, id: settings.id, result: #"{}"#)
+        try emitSharedPermissionSettings(transport, request: settings)
         let add = try await waitForFakeAppServerRequest(transport, method: "thread/queue/add")
         let params = try XCTUnwrap(add.params?.objectValue)
         XCTAssertEqual(Set(params.keys), ["threadId", "input", "clientUserMessageId"])
@@ -318,6 +436,7 @@ extension ConversationDataFlowTests {
             after: beforeUnsupported
         )
         transportResponse(transport, id: unsupportedSettings.id, result: #"{}"#)
+        try emitSharedPermissionSettings(transport, request: unsupportedSettings)
         let unsupportedAdd = try await waitForFakeAppServerRequest(
             transport,
             method: "thread/queue/add",
@@ -352,10 +471,12 @@ extension ConversationDataFlowTests {
             project: project,
             id: "thread-settings-error"
         )
+        var permissionOptions = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.requestApproval.apply(to: &permissionOptions)
         let firstSubmit = Task {
             try await runtime.submitTurnOutcome(
                 sessionID: "thread-settings-error",
-                payload: CodexAppServerTurnPayload(prompt: "first"),
+                payload: CodexAppServerTurnPayload(prompt: "first", options: permissionOptions),
                 clientMessageID: "client-settings-error"
             )
         }
@@ -366,6 +487,8 @@ extension ConversationDataFlowTests {
             result: sharedIdleThreadJSON(id: "thread-settings-error", cwd: project.path)
         )
         let failedSettings = try await waitForFakeAppServerRequest(first, method: "thread/settings/update")
+        XCTAssertEqual(failedSettings.params?["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(failedSettings.params?["sandboxPolicy"]?["type"]?.stringValue, "workspaceWrite")
         transportErrorResponse(first, id: failedSettings.id, code: -32600, message: "settings rejected")
         do {
             _ = try await firstSubmit.value
@@ -380,7 +503,7 @@ extension ConversationDataFlowTests {
         let retrySubmit = Task {
             try await runtime.submitTurnOutcome(
                 sessionID: "thread-settings-error",
-                payload: CodexAppServerTurnPayload(prompt: "retry"),
+                payload: CodexAppServerTurnPayload(prompt: "retry", options: permissionOptions),
                 clientMessageID: "client-settings-retry"
             )
         }
@@ -399,6 +522,96 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             retryOutcome,
             .serverQueued(submissionID: "submission-retry", startedTurnID: nil)
+        )
+    }
+
+    func testSharedSSHPermissionSelectionSurvivesCreationAndResume() async throws {
+        let modes: [(ComposerPermissionMode, String, String, String, String)] = [
+            (.requestApproval, "on-request", "user", "workspace-write", "workspaceWrite"),
+            (.readOnly, "on-request", "user", "read-only", "readOnly"),
+            (.autoApprove, "on-request", "auto_review", "workspace-write", "workspaceWrite"),
+            (.fullAccess, "never", "user", "danger-full-access", "dangerFullAccess"),
+        ]
+        for resumesExistingThread in [false, true] {
+            for (mode, policy, reviewer, threadSandbox, turnSandbox) in modes {
+                var options = CodexAppServerTurnOptions.default
+                mode.apply(to: &options)
+                try await assertSharedPermissionSubmission(
+                    options: options,
+                    resumesExistingThread: resumesExistingThread,
+                    policy: policy,
+                    reviewer: reviewer,
+                    threadSandbox: threadSandbox,
+                    turnSandbox: turnSandbox
+                )
+            }
+            var profileOptions = CodexAppServerTurnOptions.default
+            profileOptions.permissionProfileID = "project-restricted"
+            try await assertSharedPermissionSubmission(
+                options: profileOptions,
+                resumesExistingThread: resumesExistingThread,
+                policy: "on-request",
+                reviewer: "user",
+                profileID: "project-restricted"
+            )
+        }
+    }
+
+    func testSharedSSHUnchangedPermissionsDoNotRequireAnotherSettingsNotification() async throws {
+        for resumesExistingThread in [false, true] {
+            var options = CodexAppServerTurnOptions.default
+            ComposerPermissionMode.requestApproval.apply(to: &options)
+            try await assertSharedPermissionSubmission(
+                options: options,
+                resumesExistingThread: resumesExistingThread,
+                policy: "on-request",
+                reviewer: "user",
+                threadSandbox: "workspace-write",
+                turnSandbox: "workspaceWrite",
+                hasConfirmedPermissions: true
+            )
+        }
+    }
+
+    func testSharedSSHPermissionConfirmationEndsOnTimeoutCancellationAndDisconnect() async throws {
+        for ending in ["timeout", "cancel", "disconnect"] {
+            let transport = FakeCodexAppServerTransport()
+            let connection = CodexAppServerConnection(transport: transport)
+            let connect = Task { try await connection.connect(url: URL(string: "ws://localhost/app-server")!, token: "test") }
+            try await initializeFakeTransport(transport)
+            try await connect.value
+            let update = Task {
+                try await connection.send(CodexAppServerRequestSpec(method: "thread/settings/update", params: .object([
+                    "threadId": .string("thread-confirmation"),
+                    "approvalPolicy": .string("on-request"),
+                    "approvalsReviewer": .string("user"),
+                ])), timeout: ending == "timeout" ? 0.15 : 2, confirmThreadPermissions: true)
+            }
+            let request = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update")
+            transportResponse(transport, id: request.id, result: #"{}"#)
+            try await Task.sleep(nanoseconds: 30_000_000)
+            if ending == "cancel" { update.cancel() }
+            if ending == "disconnect" { await connection.disconnect() }
+            do {
+                _ = try await update.value
+                XCTFail("只有 ACK 时，\(ending) 必须终止权限确认")
+            } catch CodexAppServerConnectionError.outcomeUnknown(let method, _, _) {
+                XCTAssertEqual(method, "thread/settings/update")
+            }
+            await connection.disconnect()
+        }
+    }
+
+    func testSharedSSHPreservingPermissionsDoesNotSubmitLocalDefaults() async throws {
+        var options = CodexAppServerTurnOptions.default
+        // 故意保留危险的本地默认，证明沿用线程权限时不会把它提交为覆盖值。
+        ComposerPermissionMode.fullAccess.apply(to: &options)
+        options.preservesThreadPermissionSettings = true
+        try await assertSharedPermissionSubmission(
+            options: options,
+            resumesExistingThread: true,
+            policy: nil,
+            reviewer: nil
         )
     }
 
@@ -1178,6 +1391,29 @@ private func appServerRequests(_ transport: FakeCodexAppServerTransport) async -
     await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
 }
 
+private func emitSharedPermissionSettings(
+    _ transport: FakeCodexAppServerTransport,
+    request: CodexAppServerRequest,
+    mismatched: Bool = false
+) throws {
+    var settings = request.params?.objectValue ?? [:]
+    if let profile = settings.removeValue(forKey: "permissions") {
+        settings["activePermissionProfile"] = .object(["id": profile])
+    }
+    if var sandbox = settings["sandboxPolicy"]?.objectValue {
+        // 使用真实执行器的规范化格式：cwd 隐含可写，full access 没有网络字段。
+        if sandbox["type"] == .string("workspaceWrite") { sandbox["writableRoots"] = .array([]) }
+        if sandbox["type"] == .string("dangerFullAccess") { sandbox["networkAccess"] = nil }
+        settings["sandboxPolicy"] = .object(sandbox)
+    }
+    if mismatched { settings["approvalsReviewer"] = .string("different-reviewer") }
+    let notification = CodexAppServerNotification(method: "thread/settings/updated", params: .object([
+        "threadId": settings.removeValue(forKey: "threadId") ?? .null,
+        "threadSettings": .object(settings),
+    ]))
+    transport.enqueue(String(decoding: try JSONEncoder().encode(notification), as: UTF8.self))
+}
+
 private func respondToSharedSettingsUpdate(
     _ transport: FakeCodexAppServerTransport,
     after startIndex: Int = 0
@@ -1192,6 +1428,7 @@ private func respondToSharedSettingsUpdate(
         request.method == "thread/queue/add"
     })
     transportResponse(transport, id: settings.id, result: #"{}"#)
+    try emitSharedPermissionSettings(transport, request: settings)
 }
 
 @MainActor
@@ -1267,6 +1504,137 @@ private final class SharedQueueTestStore: QueuedTurnPersisting {
     }
 
     func remove(profileID: String) throws {}
+}
+
+@MainActor
+private func assertSharedPermissionSubmission(
+    options: CodexAppServerTurnOptions,
+    resumesExistingThread: Bool,
+    policy: String?,
+    reviewer: String?,
+    threadSandbox: String? = nil,
+    turnSandbox: String? = nil,
+    profileID: String? = nil,
+    hasConfirmedPermissions: Bool = false
+) async throws {
+    let project = AgentProject(id: "permission-scope", name: "Permission Scope", path: "/tmp/permission-scope")
+    let transport = FakeCodexAppServerTransport()
+    let runtime = CodexAppServerSessionRuntime(
+        endpoint: "http://127.0.0.1:8787",
+        token: "outer-token",
+        transportFactory: { transport },
+        configProvider: { makeSharedSSHConfig(project: project) }
+    )
+    let threadID = "thread-permissions"
+    let permissionKeys: Set<String> = ["approvalPolicy", "approvalsReviewer", "sandbox", "sandboxPolicy", "permissions"]
+    let createTask = Task {
+        try await runtime.createSession(CreateSessionRequest(
+            projectID: project.id,
+            prompt: "run with selected permissions",
+            turnOptions: options,
+            resumeID: resumesExistingThread ? threadID : "",
+            clientMessageID: "client-permissions"
+        ))
+    }
+    try await initializeFakeTransport(transport)
+    let threadRequest = try await waitForFakeAppServerRequest(
+        transport,
+        method: resumesExistingThread ? "thread/resume" : "thread/start"
+    )
+    let threadParams = try XCTUnwrap(threadRequest.params?.objectValue)
+    if resumesExistingThread {
+        XCTAssertTrue(permissionKeys.isDisjoint(with: threadParams.keys))
+        XCTAssertEqual(threadParams["mimiPreserveThreadPermissions"]?.boolValue, true)
+    } else {
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, policy)
+        XCTAssertEqual(threadParams["approvalsReviewer"]?.stringValue, reviewer)
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, threadSandbox)
+        XCTAssertEqual(threadParams["permissions"]?.stringValue, profileID)
+    }
+    if hasConfirmedPermissions {
+        var result = try XCTUnwrap(JSONDecoder().decode(
+            CodexAppServerJSONValue.self,
+            from: Data(sharedIdleThreadJSON(id: threadID, cwd: project.path).utf8)
+        ).objectValue)
+        result["cwd"] = .string(project.path)
+        result["approvalPolicy"] = policy.map(CodexAppServerJSONValue.string)
+        result["approvalsReviewer"] = reviewer.map(CodexAppServerJSONValue.string)
+        result["sandbox"] = .object(["type": .string("workspaceWrite"), "writableRoots": .array([]), "networkAccess": .bool(false)])
+        transportResponse(transport, id: threadRequest.id, result: String(decoding: try JSONEncoder().encode(result), as: UTF8.self))
+    } else {
+        transportResponse(transport, id: threadRequest.id, result: sharedIdleThreadJSON(id: threadID, cwd: project.path))
+    }
+    let created = try await createTask.value
+    XCTAssertEqual(created.requiresQueuedInitialInput, true)
+    let beforeSubmission = await transport.sentMessages().count
+    let submitTask = Task {
+        try await runtime.submitTurnOutcome(
+            sessionID: threadID,
+            payload: CodexAppServerTurnPayload(prompt: "run with selected permissions", options: options),
+            clientMessageID: "client-permissions"
+        )
+    }
+    let settings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update", after: beforeSubmission)
+    let params = try XCTUnwrap(settings.params?.objectValue)
+    if options.preservesThreadPermissionSettings {
+        XCTAssertTrue(permissionKeys.isDisjoint(with: params.keys))
+        XCTAssertNil(params["cwd"])
+    } else {
+        XCTAssertEqual(params["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(params["approvalPolicy"]?.stringValue, policy)
+        XCTAssertEqual(params["approvalsReviewer"]?.stringValue, reviewer)
+        XCTAssertEqual(params["sandboxPolicy"]?["type"]?.stringValue, turnSandbox)
+        XCTAssertEqual(params["permissions"]?.stringValue, profileID)
+        if turnSandbox == "workspaceWrite" {
+            XCTAssertEqual(params["sandboxPolicy"]?["writableRoots"]?.arrayValue, [.string(project.path)])
+        }
+        if turnSandbox != nil {
+            XCTAssertEqual(params["sandboxPolicy"]?["networkAccess"]?.boolValue, false)
+        }
+    }
+    XCTAssertNil(params["sandbox"], "线程设置更新使用 sandboxPolicy，不接受创建线程用的 sandbox")
+    XCTAssertNil(params["mimiPreserveThreadPermissions"], "沿用标记不属于上游 settings/update 参数")
+    let beforeSettingsACK = await appServerRequests(transport)
+    XCTAssertFalse(beforeSettingsACK.contains { $0.method == "thread/queue/add" })
+    if !options.preservesThreadPermissionSettings && !hasConfirmedPermissions {
+        try emitSharedPermissionSettings(transport, request: settings, mismatched: true)
+        if resumesExistingThread { transportResponse(transport, id: settings.id, result: #"{}"#) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let waitingForSettings = await appServerRequests(transport)
+        XCTAssertFalse(waitingForSettings.contains { $0.method == "thread/queue/add" }, "ACK 或不匹配的权限快照不能放行消息")
+        try emitSharedPermissionSettings(transport, request: settings)
+        if !resumesExistingThread { transportResponse(transport, id: settings.id, result: #"{}"#) }
+    } else {
+        transportResponse(transport, id: settings.id, result: #"{}"#)
+    }
+    let add = try await waitForFakeAppServerRequest(transport, method: "thread/queue/add", after: beforeSubmission)
+    XCTAssertEqual(add.params?["clientUserMessageId"]?.stringValue, "client-permissions")
+    transportResponse(
+        transport,
+        id: add.id,
+        result: #"{"queuedSubmission":{"id":"submission-permissions","clientUserMessageId":"client-permissions"}}"#
+    )
+    let outcome = try await submitTask.value
+    XCTAssertEqual(outcome, .serverQueued(submissionID: "submission-permissions", startedTurnID: nil))
+    if !options.preservesThreadPermissionSettings {
+        // 连续发送相同权限时，Codex 只返回 ACK，不再发送 settings/updated。
+        let beforeRepeat = await transport.sentMessages().count
+        let repeatTask = Task {
+            try await runtime.submitTurnOutcome(
+                sessionID: threadID,
+                payload: CodexAppServerTurnPayload(prompt: "same permissions again", options: options),
+                clientMessageID: "client-permissions-repeat"
+            )
+        }
+        let repeatSettings = try await waitForFakeAppServerRequest(transport, method: "thread/settings/update", after: beforeRepeat)
+        transportResponse(transport, id: repeatSettings.id, result: #"{}"#)
+        let repeatAdd = try await waitForFakeAppServerRequest(transport, method: "thread/queue/add", after: beforeRepeat)
+        transportResponse(transport, id: repeatAdd.id, result: #"{"queuedSubmission":{"id":"submission-repeat","clientUserMessageId":"client-permissions-repeat"}}"#)
+        let repeated = try await repeatTask.value
+        XCTAssertEqual(repeated, .serverQueued(submissionID: "submission-repeat", startedTurnID: nil))
+    }
+    let requests = await appServerRequests(transport)
+    XCTAssertFalse(requests.contains { $0.method == "turn/start" || $0.method == "turn/steer" })
 }
 
 private func initializeFakeTransport(_ transport: FakeCodexAppServerTransport) async throws {

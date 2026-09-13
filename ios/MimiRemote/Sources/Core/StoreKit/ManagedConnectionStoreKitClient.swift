@@ -112,14 +112,7 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
 
         switch try await product.purchase() {
         case .success(let verification):
-            guard case .verified(let transaction) = verification,
-                  transaction.revocationDate == nil,
-                  transaction.expirationDate.map({ $0 > Date() }) ?? true
-            else {
-                return .unverified
-            }
-            unfinishedTransactions[transaction.id] = transaction
-            return .success(Self.evidence(from: verification, transaction: transaction))
+            return purchaseOutcome(from: verification)
         case .pending:
             return .pending
         case .userCancelled:
@@ -127,6 +120,16 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
         @unknown default:
             return .unverified
         }
+    }
+
+    func purchaseOutcome(from verification: VerificationResult<Transaction>) -> ManagedConnectionPurchaseOutcome {
+        guard case .verified(let transaction) = verification else {
+            return .unverified
+        }
+        // StoreKit 可能重放已过期的旧交易；过期不等于签名无效。
+        // 与交易监听保持一致，交给服务端判断权益，再结束已确认的交易。
+        unfinishedTransactions[transaction.id] = transaction
+        return .success(Self.evidence(from: verification, transaction: transaction))
     }
 
     func currentEntitlement(productID: String) async -> ManagedConnectionCurrentEntitlementOutcome {

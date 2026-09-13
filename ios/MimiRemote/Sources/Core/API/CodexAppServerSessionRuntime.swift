@@ -256,6 +256,7 @@ actor CodexAppServerSessionRuntime {
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
     ] = [:]
     var serverQueueSubmissionSessionIDs: Set<SessionID> = []
+    var threadPermissionUpdateTasks: [SessionID: (token: UUID, task: Task<Void, Error>)] = [:]
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
@@ -307,6 +308,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     deinit {
+        threadPermissionUpdateTasks.values.forEach { $0.task.cancel() }
         connectionAttempt?.task.cancel()
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
@@ -388,7 +390,8 @@ actor CodexAppServerSessionRuntime {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
-        let gatewayURL = try gatewayURL(from: config)
+        // Codex 探针使用无名短连接，既不接管正式会话，也不占常驻 broker 槽位。
+        let gatewayURL = try gatewayURL(from: config, purpose: .probe)
         let probe = CodexAppServerConnection(transport: transportFactory())
         try await probe.connect(url: gatewayURL, token: token)
         await probe.disconnect()
@@ -409,6 +412,8 @@ actor CodexAppServerSessionRuntime {
     /// 主机切换结束或候选验证失败时显式释放连接和 pump。
     /// 不能只依赖 deinit，否则短时间内可能同时残留多条业务 WebSocket。
     func shutdownForHostSwitch() async {
+        threadPermissionUpdateTasks.values.forEach { $0.task.cancel() }
+        threadPermissionUpdateTasks.removeAll()
         await cancelConnectionAttempt()
         rateLimitRefreshTask?.cancel()
         rateLimitRefreshTask = nil
@@ -997,6 +1002,28 @@ actor CodexAppServerSessionRuntime {
     func compactThread(threadID: SessionID) async throws {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         _ = try await sendRecoveringFromStaleInitialization(builder.threadCompactStart(threadID: threadID))
+    }
+
+    /// #451：Claude channel 只在 bridge >= 0.2.11 时声明 thread/takeover；按方法表判断，不猜版本。
+    func supportsThreadTakeover() async throws -> Bool {
+        runtimeSupportsMethod("thread/takeover", in: try await ensureConfig())
+    }
+
+    /// 结束 Mac 上持有该会话的 claude 进程后同 id 续聊。cwd 与 turn/start 同源，取自会话上下文。
+    func takeOverThread(sessionID: SessionID) async throws -> CodexAppServerThreadTakeoverResult {
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context)
+        )
+        let result = try await sendRecoveringFromStaleInitialization(
+            try builder.threadTakeover(threadID: sessionID, cwd: context.cwd)
+        )
+        // 接管前这条连接可能已按只读 resume 过；下一次订阅必须真的重新 thread/resume，
+        // 让 bridge 回权威的可写状态，而不是被"已 resume"缓存短路。
+        threadsResumedOnConnection.remove(sessionID)
+        return CodexAppServerThreadTakeoverResult(result: result)
     }
 
     @discardableResult
@@ -2292,6 +2319,7 @@ actor CodexAppServerSessionRuntime {
             if let previous {
                 _ = try? await previous.value
             }
+            try await waitForPendingThreadPermissionUpdate(sessionID: sessionID)
             return try await performStartTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
         }
         turnStartTasksBySessionID[sessionID] = (token, task)
@@ -2311,6 +2339,10 @@ actor CodexAppServerSessionRuntime {
         payload: CodexAppServerTurnPayload,
         clientMessageID: ClientMessageID?
     ) async throws -> CodexAppServerTurnStartOutcome {
+        var payload = payload
+        // 与 thread/start 一样，以当前通道为准，避免旧草稿缺少 provider 时
+        // 把 Codex 完全访问预设带进 Claude 的 turn/start。
+        payload.options = runtimeScopedThreadOptions(payload.options)
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
@@ -2943,10 +2975,30 @@ actor CodexAppServerSessionRuntime {
         return minted
     }
 
+    /// 一条 gateway 连接的用途决定它在网关上的会话名。
+    ///
+    /// 网关按会话名复用 broker，且「同名会话只留一条在线连接」——新连接一 attach，
+    /// 旧连接立刻被 `broker_sink_replaced` 踢掉。Codex 探针省略会话名，沿用网关
+    /// 一对一短连接路径，避免独立具名探针在池满时淘汰离线正式 broker。
+    enum GatewayConnectionPurpose {
+        case resident
+        case probe
+
+        var sessionNameSuffix: String {
+            switch self {
+            case .resident:
+                return ""
+            case .probe:
+                return "-probe"
+            }
+        }
+    }
+
     static func gatewayURL(
         endpoint: String,
         sessionID: SessionID,
         runtimeProvider: String = "codex",
+        purpose: GatewayConnectionPurpose = .resident,
         defaults: UserDefaults = .standard
     ) throws -> URL {
         // WebSocket 也必须复用 HTTP Endpoint 策略；ATS 不会替应用阻止自行构造的公网 ws:// 地址。
@@ -2970,11 +3022,15 @@ actor CodexAppServerSessionRuntime {
         }
         // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
         // 断线重连拿不回还在跑的 turn 和未应答的审批。
-        let gatewaySession = "\(gatewaySessionKey(defaults: defaults))-\(runtime)"
-        queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
+        let gatewaySession: String? = runtime == "codex" && purpose == .probe
+            ? nil
+            : "\(gatewaySessionKey(defaults: defaults))-\(runtime)\(purpose.sessionNameSuffix)"
+        if let gatewaySession {
+            queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
+        }
         // Go 写 WebSocket 成功不等于 App 已经投影完该帧。由客户端带回最后
         // 处理完成的 turn 边界，bridge 才能从真正安全的 cursor 继续回放。
-        if runtime == "claude", let lastSeen = gatewayLastSeenSequence(
+        if runtime == "claude", let gatewaySession, let lastSeen = gatewayLastSeenSequence(
             endpoint: validatedEndpoint,
             gatewaySession: gatewaySession,
             runtimeProvider: runtime,
@@ -3225,7 +3281,10 @@ actor CodexAppServerSessionRuntime {
         return await connection.isReadyForRequests()
     }
 
-    func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
+    func gatewayURL(
+        from config: CodexAppServerConfigResponse,
+        purpose: GatewayConnectionPurpose = .resident
+    ) throws -> URL {
         guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
@@ -3235,6 +3294,7 @@ actor CodexAppServerSessionRuntime {
             endpoint: endpoint,
             sessionID: "",
             runtimeProvider: runtimeProvider,
+            purpose: purpose,
             defaults: gatewayDefaults
         )
     }

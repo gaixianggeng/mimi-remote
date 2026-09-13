@@ -45,6 +45,15 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     #[serde(default)]
     pub name: Option<String>,
+    /// 上游用它表示线程是否接受直接输入（子 Agent 线程为 false）。Claude bridge 对
+    /// 顶层线程始终明确给值：别处持有时 false，释放后 true——网关会缓存已知值，
+    /// 省略字段不会解除之前的只读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_accept_direct_input: Option<bool>,
+    /// Claude 专用：正持有该会话的本机进程摘要（`entrypoint` / `kind` / `status` / `pid`）。
+    /// 只在 `can_accept_direct_input == Some(false)` 且原因是别处持有时出现。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_owner: Option<Value>,
     /// Populated only on resume / fork / rollback / read+includeTurns.
     #[serde(default)]
     pub turns: Vec<Turn>,
@@ -195,6 +204,41 @@ pub struct ThreadResumeResponse {
     pub active_permission_profile: Option<PermissionProfile>,
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+// === thread/takeover =======================================================
+
+/// Claude runtime 专用：结束本机别处持有该会话的 Claude 进程，然后以同 id 续聊。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub exclude_turns: bool,
+    #[serde(flatten)]
+    pub additional: HashMap<String, Value>,
+}
+
+/// 接管过程摘要：`released=false` 表示没有别处持有方，等价于普通 resume。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverSummary {
+    pub released: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+}
+
+/// 与 `thread/resume` 同形状，多一个 `takeover` 摘要，客户端可复用 resume 的解析。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeoverResponse {
+    #[serde(flatten)]
+    pub resume: ThreadResumeResponse,
+    pub takeover: ThreadTakeoverSummary,
 }
 
 // === thread/fork ===========================================================
@@ -417,6 +461,14 @@ pub struct ThreadTurnsListParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub sort_direction: Option<SortDirection>,
+    /// `summary` 只保留用户与助手文本；`full`（默认）带全部 item。
+    #[serde(default)]
+    pub items_view: Option<String>,
+    /// 调用方（agentd 网关）会转发 `thread/items/list` 时才为 true，只有这时 bridge 才按
+    /// summary 裁掉工具过程。旧网关不认识这个字段、转发时会丢掉，bridge 就照旧回完整
+    /// item；否则被裁掉的内容在旧网关后面再也补不回来。
+    #[serde(default)]
+    pub items_list_available: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -425,6 +477,37 @@ pub struct ThreadTurnsListResponse {
     pub data: Vec<Turn>,
     pub next_cursor: Option<String>,
     pub backwards_cursor: Option<String>,
+}
+
+// === thread/items/list =====================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListParams {
+    pub thread_id: String,
+    /// 为空时列出整个 thread 的 item。
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub sort_direction: Option<SortDirection>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListEntry {
+    pub turn_id: String,
+    pub item: ThreadItem,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadItemsListResponse {
+    pub data: Vec<ThreadItemsListEntry>,
+    pub next_cursor: Option<String>,
 }
 
 // === thread/backgroundTerminals/clean ======================================

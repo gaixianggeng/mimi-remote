@@ -177,6 +177,8 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
+		p.notifyTurnMessage(&frame)
+		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
 			payload = filtered
@@ -309,6 +311,51 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
 	// pending-use。转换期间至少有一种保护存在，cleanup 看不到可删除窗口。
 	return payload, true, nil
+}
+
+func (p *appServerGatewayPolicy) trackUpstreamTurnLifecycle(frame *appServerGatewayFrame) {
+	if p == nil || frame == nil || gatewayErrorWillRetry(frame) {
+		return
+	}
+	method := strings.TrimSpace(frame.Method)
+	if method != "turn/started" && method != "turn/completed" && method != "thread/closed" && method != "error" {
+		return
+	}
+	threadID, _, _ := appServerGatewayServerRequestScope(frame.Params)
+	if threadID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.activeServerTurns == nil {
+		p.activeServerTurns = map[string]struct{}{}
+	}
+	if method == "turn/started" {
+		p.activeServerTurns[threadID] = struct{}{}
+	} else {
+		delete(p.activeServerTurns, threadID)
+	}
+}
+
+func (p *appServerGatewayPolicy) approvalObservationSnapshot() (
+	map[string]struct{},
+	map[string]appServerGatewayPendingServerRequest,
+) {
+	active := map[string]struct{}{}
+	pending := map[string]appServerGatewayPendingServerRequest{}
+	if p == nil {
+		return active, pending
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prunePendingServerRequestsLocked(time.Now())
+	for threadID := range p.activeServerTurns {
+		active[threadID] = struct{}{}
+	}
+	for requestID, request := range p.pendingServerRequests {
+		pending[requestID] = request
+	}
+	return active, pending
 }
 
 func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error) {
@@ -617,6 +664,9 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			"name", "preview", "status", "modelProvider", "source", "threadSource",
 			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
 			"canAcceptDirectInput",
+			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
+			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
+			"claudeOwner",
 		)
 		if forceReadOnly {
 			safeThread["canAcceptDirectInput"] = false
@@ -1206,6 +1256,9 @@ func (p *appServerGatewayPolicy) clearPendingServerRequestsForNotification(frame
 		}
 		p.mu.Unlock()
 	case "turn/completed", "thread/closed", "error":
+		if gatewayErrorWillRetry(frame) {
+			return
+		}
 		threadID, turnID, _ := appServerGatewayServerRequestScope(frame.Params)
 		if threadID == "" {
 			return
@@ -1246,6 +1299,27 @@ func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage
 	return request, ok
 }
 
+func (p *appServerGatewayPolicy) restorePendingServerRequest(
+	id *json.RawMessage,
+	request appServerGatewayPendingServerRequest,
+) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	if p.pendingServerRequests == nil {
+		p.pendingServerRequests = map[string]appServerGatewayPendingServerRequest{}
+	}
+	if _, exists := p.pendingServerRequests[key]; !exists {
+		p.pendingServerRequests[key] = request
+	}
+}
+
 func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
@@ -1256,6 +1330,50 @@ func (p *appServerGatewayPolicy) pendingServerRequest(id *json.RawMessage) (appS
 	p.prunePendingServerRequestsLocked(time.Now())
 	request, ok := p.pendingServerRequests[key]
 	return request, ok
+}
+
+// threadRouteFacts 是通知定位记录需要的线程事实快照。
+//
+// 它只读本连接与全局授权缓存，绝不在这里重新解析作用域：通知路径可能在
+// broker 锁内被调用，而 gatewayScopeForPath 要拿 managed worktree 清理锁、还
+// 可能改写注册表。projectID 优先取作用域 id —— iOS 用 /api/workspaces/resolve
+// 的 ws_… 标识 worktree 与子目录会话，退回根项目 id 会让它认不出这条路由。
+type threadRouteFacts struct {
+	runtime   string
+	cwd       string
+	scopeID   string
+	readOnly  bool
+	projectID string
+}
+
+func (p *appServerGatewayPolicy) threadRouteFacts(threadID string) threadRouteFacts {
+	if p == nil || p.router == nil || strings.TrimSpace(threadID) == "" {
+		return threadRouteFacts{}
+	}
+	thread, ok := p.allowedThread(threadID)
+	if !ok {
+		return threadRouteFacts{}
+	}
+	facts := threadRouteFacts{
+		runtime:  normalizeAppServerRuntimeID(thread.runtimeID),
+		cwd:      thread.cwd,
+		scopeID:  thread.scopeID,
+		readOnly: thread.readOnly,
+	}
+	if facts.runtime == "" {
+		facts.runtime = normalizeAppServerRuntimeID(p.runtimeID)
+	}
+	facts.projectID = facts.scopeID
+	if facts.projectID == "" {
+		if project, ok := p.router.projectForGatewayPath(thread.cwd); ok {
+			facts.projectID = project.ID
+		}
+	}
+	return facts
+}
+
+func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
+	return p.threadRouteFacts(threadID).projectID
 }
 
 func (p *appServerGatewayPolicy) prunePendingServerRequestsLocked(now time.Time) {
@@ -1365,7 +1483,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
 			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput,
 			directInputKnown:     item.CanAcceptDirectInput != nil,
-			autoTitleEligible:    pending.method == "thread/start" && normalizeAppServerRuntimeID(p.runtimeID) == "codex",
+			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
 			scopeID: scope.id,

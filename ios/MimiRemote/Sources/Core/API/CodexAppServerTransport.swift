@@ -236,6 +236,9 @@ private struct PendingCodexAppServerResponse {
     let continuation: CheckedContinuation<CodexAppServerJSONValue?, Error>
     let timeoutTask: Task<Void, Never>
     var phase: PendingCodexAppServerResponsePhase
+    var expectedThreadSettings: [String: CodexAppServerJSONValue]? = nil
+    var settingsApplied = false
+    var acknowledgedResponse: CodexAppServerResponse? = nil
 }
 
 /// JSON-RPC 请求 id 的全进程分配器：每条连接都从上一条连接用完的地方继续，
@@ -268,6 +271,7 @@ actor CodexAppServerConnection {
     private let decoder: JSONDecoder
     private let requestTimeoutNanoseconds: UInt64
     private var pendingResponses: [CodexAppServerRequestID: PendingCodexAppServerResponse] = [:]
+    private var confirmedThreadSettings: [String: [String: CodexAppServerJSONValue]] = [:]
     private var receiveTask: Task<Void, Never>?
     private var isConnected = false
     private var isInitialized = false
@@ -380,7 +384,11 @@ actor CodexAppServerConnection {
         finishInboundStreams()
     }
 
-    func send(_ request: CodexAppServerRequestSpec, timeout: TimeInterval? = nil) async throws -> CodexAppServerJSONValue? {
+    func send(
+        _ request: CodexAppServerRequestSpec,
+        timeout: TimeInterval? = nil,
+        confirmThreadPermissions: Bool = false
+    ) async throws -> CodexAppServerJSONValue? {
         guard isConnected else {
             throw CodexAppServerConnectionError.disconnected
         }
@@ -390,7 +398,8 @@ actor CodexAppServerConnection {
         return try await sendRequestEnvelope(
             request.request(id: nextRequestID()),
             allowBeforeInitialized: false,
-            timeout: timeout
+            timeout: timeout,
+            confirmThreadPermissions: confirmThreadPermissions
         )
     }
 
@@ -444,7 +453,8 @@ actor CodexAppServerConnection {
     private func sendRequestEnvelope(
         _ request: CodexAppServerRequest,
         allowBeforeInitialized: Bool,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        confirmThreadPermissions: Bool = false
     ) async throws -> CodexAppServerJSONValue? {
         guard isConnected else {
             throw CodexAppServerConnectionError.disconnected
@@ -468,7 +478,15 @@ actor CodexAppServerConnection {
                     method: request.method,
                     continuation: continuation,
                     timeoutTask: timeoutTask,
-                    phase: .registered
+                    phase: .registered,
+                    expectedThreadSettings: confirmThreadPermissions ? request.params?.objectValue : nil,
+                    // 上游不为相同设置重复发通知。已有服务端快照匹配时只需等待 ACK，
+                    // 否则新建后的首条消息和连续使用同一权限都会等到超时。
+                    settingsApplied: confirmThreadPermissions && request.params?.objectValue.map { expected in
+                        guard let threadID = expected["threadId"]?.stringValue,
+                              let settings = confirmedThreadSettings[threadID] else { return false }
+                        return threadPermissionsMatch(expected: expected, settings: settings)
+                    } == true
                 )
                 // cancellation handler 可能先于 actor 上的注册任务执行。注册后再读一次当前
                 // Task 状态，封住“handler 已返回、随后仍发送”的窗口。
@@ -548,6 +566,7 @@ actor CodexAppServerConnection {
             case .response(let response):
                 resolve(response)
             case .notification(let notification):
+                confirmAppliedThreadPermissions(notification)
                 notificationContinuation?.yield(notification)
             case .serverRequest(let request):
                 serverRequestContinuation?.yield(request)
@@ -584,15 +603,81 @@ actor CodexAppServerConnection {
             ))
             return
         }
-        guard let pending = pendingResponses.removeValue(forKey: response.id) else {
+        guard var pending = pendingResponses[response.id] else {
             return
         }
+        if response.error == nil,
+           ["thread/start", "thread/resume", "thread/fork"].contains(pending.method),
+           let result = response.result?.objectValue,
+           let threadID = result["thread"]?["id"]?.stringValue {
+            var settings = result.filter { key, _ in
+                ["cwd", "approvalPolicy", "approvalsReviewer", "activePermissionProfile"].contains(key)
+            }
+            settings["sandboxPolicy"] = result["sandbox"]
+            confirmedThreadSettings[threadID] = settings
+        }
+        // settings/update 的空响应只确认入队。权限快照到达前继续使用原请求的
+        // 超时、取消和断线处理，避免消息在权限尚未确认时进入共享队列。
+        if response.error == nil, pending.expectedThreadSettings != nil, !pending.settingsApplied {
+            pending.acknowledgedResponse = response
+            pendingResponses[response.id] = pending
+            return
+        }
+        pendingResponses.removeValue(forKey: response.id)
         pending.timeoutTask.cancel()
         if let error = response.error {
             pending.continuation.resume(throwing: CodexAppServerConnectionError.appServer(error))
         } else {
             pending.continuation.resume(returning: response.result)
         }
+    }
+
+    private func confirmAppliedThreadPermissions(_ notification: CodexAppServerNotification) {
+        guard notification.method == "thread/settings/updated",
+              let params = notification.params?.objectValue,
+              let threadID = params["threadId"]?.stringValue,
+              let settings = params["threadSettings"]?.objectValue else { return }
+        confirmedThreadSettings[threadID] = settings
+        for (id, var pending) in pendingResponses {
+            guard let expected = pending.expectedThreadSettings,
+                  expected["threadId"] == .string(threadID) else { continue }
+            pending.settingsApplied = threadPermissionsMatch(expected: expected, settings: settings)
+            pendingResponses[id] = pending
+            // 通知可能先于 ACK 到达；两者都收到后才兑现原请求。
+            if pending.settingsApplied, let response = pending.acknowledgedResponse { resolve(response) }
+        }
+    }
+
+    private func threadPermissionsMatch(
+        expected: [String: CodexAppServerJSONValue],
+        settings: [String: CodexAppServerJSONValue]
+    ) -> Bool {
+        guard expected["cwd"] == nil || settings["cwd"] == expected["cwd"],
+              ["approvalPolicy", "approvalsReviewer"].allSatisfy({ key in
+                  expected[key] == nil || settings[key] == expected[key]
+              }) else { return false }
+        if let profile = expected["permissions"], settings["activePermissionProfile"]?["id"] != profile {
+            return false
+        }
+        guard let sandbox = expected["sandboxPolicy"]?.objectValue else { return true }
+        guard let actual = settings["sandboxPolicy"]?.objectValue,
+              actual["type"] == sandbox["type"] else { return false }
+        // full access 没有 networkAccess 字段；其余模式按协议补齐 false 默认值。
+        if sandbox["type"] != .string("dangerFullAccess"),
+           (actual["networkAccess"] ?? .bool(false)) != (sandbox["networkAccess"] ?? .bool(false)) {
+            return false
+        }
+        if sandbox["type"] == .string("workspaceWrite") {
+            // 上游会从 writableRoots 中去掉隐含可写的 cwd，比较时补回。
+            let cwdRoots = [expected["cwd"]?.stringValue].compactMap { $0 }
+            let expectedRoots = Set((sandbox["writableRoots"]?.arrayValue?.compactMap(\.stringValue) ?? []) + cwdRoots)
+            let actualRoots = Set((actual["writableRoots"]?.arrayValue?.compactMap(\.stringValue) ?? []) + cwdRoots)
+            guard expectedRoots == actualRoots,
+                  ["excludeSlashTmp", "excludeTmpdirEnvVar"].allSatisfy({ key in
+                      (actual[key] ?? .bool(false)) == (sandbox[key] ?? .bool(false))
+                  }) else { return false }
+        }
+        return true
     }
 
     private func timeoutRequest(id: CodexAppServerRequestID) {
@@ -620,6 +705,7 @@ actor CodexAppServerConnection {
     }
 
     private func failAllPending(with error: Error) {
+        confirmedThreadSettings.removeAll(keepingCapacity: false)
         let pending = pendingResponses
         pendingResponses.removeAll(keepingCapacity: false)
         for (id, item) in pending {

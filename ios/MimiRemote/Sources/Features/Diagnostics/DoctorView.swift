@@ -262,9 +262,7 @@ struct DoctorView: View {
                     historyContent(tokens: tokens)
                 }
             }
-            .padding()
-            .frame(maxWidth: 760, alignment: .topLeading)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .settingsScrollContent()
         }
         .settingsCanvasBackground(tokens: tokens)
         .navigationTitle(L10n.text("ui.diagnosis"))
@@ -366,7 +364,7 @@ struct DoctorView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Label(L10n.text("ui.diagnostic_request_failed"), systemImage: "exclamationmark.triangle.fill")
                 .font(themeStore.uiFont(.headline))
-                .foregroundStyle(.red)
+                .foregroundStyle(tokens.warning)
             Text(message)
                 .font(themeStore.uiFont(.callout))
                 .foregroundStyle(tokens.primaryText)
@@ -465,7 +463,7 @@ struct DoctorView: View {
 
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: iconName)
-                .font(.body.weight(.semibold))
+                .font(themeStore.uiFont(.body, weight: .semibold))
                 .foregroundStyle(statusColor)
                 .accessibilityLabel(statusLabel)
 
@@ -540,7 +538,7 @@ struct DoctorView: View {
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Label(L10n.text("ui.failed_to_load_historical_diagnostics"), systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(tokens.warning)
                 Text(message)
                     .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)

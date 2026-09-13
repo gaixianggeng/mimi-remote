@@ -82,10 +82,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
-	tracksClientResponse := (runtimeID == "claude" && method == "model/list") ||
-		(runtimeID == "codex" && method == "account/usage/read")
-	if frame.ID != nil && tracksClientResponse {
+	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" && method == "account/usage/read" {
 		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
 			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
@@ -171,6 +168,28 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 		}
+		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
+			return err
+		}
+	case "thread/takeover":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		// 接管的对象恰好是 canAcceptDirectInput=false 的会话，所以不套
+		// gatewayThreadRejectsWrites；但 browse / 子会话这类协议只读线程仍不能接管。
+		if thread.readOnly {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能接管", method)
+		}
+		if !scopeOK || scope.id != thread.scopeID {
+			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
+		}
+		// 响应与 thread/resume 同形状；登记 pending 让响应里的 canAcceptDirectInput=true
+		// 覆盖缓存的 false，否则接管后 turn/start 仍会被本连接拒绝。
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
 		}
@@ -720,7 +739,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "thread/read":
 		sanitized = map[string]any{"threadId": params["threadId"], "includeTurns": false}
 	case "thread/turns/list":
-		sanitized = sanitizedGatewayThreadTurnsListParams(params)
+		sanitized = sanitizedGatewayThreadTurnsListParams(runtimeID, params)
 	case "thread/items/list":
 		sanitized = copyGatewayParams(params, "threadId", "turnId", "cursor", "limit", "sortDirection")
 	case "thread/queue/list":
@@ -743,6 +762,10 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayReviewStartParams(params)
 	case "thread/start", "thread/resume", "thread/fork":
 		sanitized = sanitizedGatewayThreadParams(runtimeID, method, params)
+	case "thread/takeover":
+		// 历史另走分页接口，接管响应只需要 thread 本体。
+		sanitized = copyGatewayParams(params, "threadId", "cwd")
+		sanitized["excludeTurns"] = true
 	case "turn/start":
 		sanitized = sanitizedGatewayTurnParams(runtimeID, params, validated.cwd)
 	case "turn/steer":
@@ -890,7 +913,7 @@ func sanitizedGatewayReviewStartParams(params map[string]any) map[string]any {
 	}
 }
 
-func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any {
+func sanitizedGatewayThreadTurnsListParams(runtimeID string, params map[string]any) map[string]any {
 	safe := copyGatewayParams(params, "threadId", "cursor", "sortDirection", "itemsView")
 	limit := int64(appServerGatewayThreadTurnsDefaultLimit)
 	if value, ok := params["limit"]; ok && value != nil {
@@ -906,6 +929,12 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 		limit = appServerGatewayThreadTurnsFullMaxLimit
 	}
 	safe["limit"] = limit
+	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		// 本网关会转发 thread/items/list，Claude bridge（0.2.9 起）见到这个字段才按 summary
+		// 裁掉工具过程。字段由网关写入、不透传客户端同名参数；旧网关不写，bridge 就回完整
+		// item，裁掉的内容不会无处补齐。旧 bridge 忽略未知字段。
+		safe["itemsListAvailable"] = true
+	}
 	return safe
 }
 
@@ -1441,6 +1470,10 @@ func sanitizedGatewayThreadSettingsParams(runtimeID string, params map[string]an
 }
 
 func logGatewayForwardedClientTurnSummary(method string, payload []byte) {
+	if method == "thread/takeover" {
+		logGatewayForwardedTakeoverSummary(payload)
+		return
+	}
 	if method != "turn/start" && method != "turn/steer" {
 		return
 	}
@@ -1467,6 +1500,27 @@ func logGatewayForwardedClientTurnSummary(method string, payload []byte) {
 		gatewayCollaborationModeSummary(params),
 		gatewayCompactLogToken(expectedTurnID),
 		gatewayCompactLogToken(clientUserMessageID),
+	)
+}
+
+// 接管会结束用户 Mac 上的一个进程，值得留一条审计线；但只记脱敏 thread token 和
+// 工作区 basename，持有方 pid / entrypoint 由 bridge 侧记录。
+func logGatewayForwardedTakeoverSummary(payload []byte) {
+	var frame appServerGatewayFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		log.Printf("app-server gateway forwarded takeover method=thread/takeover summary_error=json")
+		return
+	}
+	params, err := decodeGatewayParams(frame.Params)
+	if err != nil {
+		log.Printf("app-server gateway forwarded takeover method=thread/takeover summary_error=params")
+		return
+	}
+	threadID, _ := gatewayStringParam(params, "threadId")
+	log.Printf(
+		"app-server gateway forwarded takeover method=thread/takeover threadId=%s cwdBase=%s",
+		gatewayCompactLogToken(threadID),
+		gatewayCWDBaseLabel(params),
 	)
 }
 

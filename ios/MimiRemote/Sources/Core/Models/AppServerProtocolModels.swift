@@ -751,6 +751,19 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/fork", params: .object(params.compactMapValues { $0 }))
     }
 
+    /// #451：结束 Mac 上持有该会话的 claude 进程后同 id 续聊。只带 threadId / cwd；
+    /// 历史仍走分页接口，所以固定 excludeTurns。
+    func threadTakeover(threadID: String, cwd: String) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let params: [String: CodexAppServerJSONValue] = [
+            "threadId": .string(threadID),
+            "cwd": .string(path),
+            "excludeTurns": .bool(true)
+        ]
+        try validateRemoteSafeParams(params.mapValues { Optional($0) }, projectPath: path)
+        return CodexAppServerRequestSpec(method: "thread/takeover", params: .object(params))
+    }
+
     func threadRead(threadID: String, includeTurns: Bool = false) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/read", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
@@ -764,20 +777,40 @@ struct CodexAppServerRequestBuilder {
         options: CodexAppServerTurnOptions
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
-        let turnParams = options.turnParams(projectPath: path)
+        let turnParams = options.sanitizedForRuntimePolicy().turnParams(projectPath: path)
         var params: [String: CodexAppServerJSONValue?] = [
             "threadId": .string(threadID)
         ]
-        // 共享队列不接收 turn 级设置。只把本轮明确支持的运行设置提升为 Thread 设置，
-        // 权限、输出结构和自定义指令仍走各自的受控链路，不能在普通消息里顺带改写。
+        // 共享队列不接收 turn 级设置，必须在入队前提交本轮明确选择的权限。
+        // 沿用线程权限时 turnParams 不含覆盖字段，不能把本地默认值重新写回服务端。
         for key in ["model", "effort", "collaborationMode"] {
             params[key] = turnParams[key] ?? nil
+        }
+        if !options.preservesThreadPermissionSettings {
+            // 网关按 cwd 收窄可写目录；缺少它会丢失工作区沙盒的有效根路径。
+            params["cwd"] = .string(path)
+            for key in ["approvalPolicy", "approvalsReviewer", "sandboxPolicy", "permissions"] {
+                params[key] = turnParams[key] ?? nil
+            }
         }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(
             method: "thread/settings/update",
             params: .object(params.compactMapValues { $0 })
         )
+    }
+
+    func threadPermissionsUpdate(
+        threadID: String,
+        cwd: String,
+        options: CodexAppServerTurnOptions
+    ) throws -> CodexAppServerRequestSpec {
+        let update = try threadSettingsUpdate(threadID: threadID, cwd: cwd, options: options)
+        // 权限菜单只修改权限，不把 Composer 里可能已过期的模型选择写回共享会话。
+        let params = (update.params?.objectValue ?? [:]).filter {
+            !["model", "effort", "collaborationMode"].contains($0.key)
+        }
+        return CodexAppServerRequestSpec(method: update.method, params: .object(params))
     }
 
     func threadQueueAdd(
@@ -976,7 +1009,7 @@ struct CodexAppServerRequestBuilder {
             "input": payload.appServerInput,
             "clientUserMessageId": clientMessageID.map { .string($0) }
         ]
-        payload.options.turnParams(projectPath: path).forEach { key, value in
+        payload.options.sanitizedForRuntimePolicy().turnParams(projectPath: path).forEach { key, value in
             params[key] = value
         }
         try validateRemoteSafeParams(params, projectPath: path)
@@ -1208,5 +1241,63 @@ struct CodexAppServerRequestBuilder {
         return !relativePath.split(whereSeparator: { $0 == "/" || $0 == "\\" }).contains {
             $0 == "." || $0 == ".."
         }
+    }
+}
+
+// MARK: - thread/takeover
+
+/// `thread/takeover` 的结果摘要。响应与 `thread/resume` 同形状，多一个 `takeover` 对象。
+struct CodexAppServerThreadTakeoverResult: Equatable, Sendable {
+    /// false 表示 bridge 没找到别处持有方，等价于普通 resume。
+    let released: Bool
+    let holderEntrypoint: String?
+    let signal: String?
+    /// 响应里 thread 的可写标记；nil 表示 bridge 未回该字段。
+    let canAcceptDirectInput: Bool?
+
+    init(released: Bool, holderEntrypoint: String? = nil, signal: String? = nil, canAcceptDirectInput: Bool? = nil) {
+        self.released = released
+        self.holderEntrypoint = holderEntrypoint
+        self.signal = signal
+        self.canAcceptDirectInput = canAcceptDirectInput
+    }
+
+    init(result: CodexAppServerJSONValue?) {
+        let object = result?.objectValue ?? [:]
+        let takeover = object["takeover"]?.objectValue ?? [:]
+        released = takeover["released"]?.boolValue ?? false
+        holderEntrypoint = takeover["holder"]?.objectValue?["entrypoint"]?.stringValue
+        signal = takeover["signal"]?.stringValue
+        canAcceptDirectInput = object["thread"]?.objectValue?["canAcceptDirectInput"]?.boolValue
+    }
+
+    /// bridge 用 `{accepted:false, reason, retryable}` 描述接管失败（holder_unverified /
+    /// takeover_timeout / holder_respawned / signal_failed）；没有 reason 的按普通 RPC 错误处理。
+    static func failure(from error: Error) -> CodexAppServerThreadTakeoverFailure? {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error,
+              let data = appError.data?.objectValue,
+              data["accepted"]?.boolValue == false,
+              let reason = data["reason"]?.stringValue,
+              !reason.isEmpty else {
+            return nil
+        }
+        return CodexAppServerThreadTakeoverFailure(
+            reason: reason,
+            retryable: data["retryable"]?.boolValue ?? false,
+            holderPID: data["claudeOwner"]?.objectValue?["pid"]?.intValue
+        )
+    }
+}
+
+struct CodexAppServerThreadTakeoverFailure: Equatable, Sendable {
+    let reason: String
+    let retryable: Bool
+    /// bridge 指认的持有方 pid：holder_respawned 时是新认领者，其余情况是没能结束的那个。
+    let holderPID: Int?
+
+    init(reason: String, retryable: Bool, holderPID: Int? = nil) {
+        self.reason = reason
+        self.retryable = retryable
+        self.holderPID = holderPID
     }
 }

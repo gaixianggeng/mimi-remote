@@ -142,6 +142,11 @@ protocol SessionStoreAPIClient {
     func controlledGlobalSessionsPage(runtimeProvider: String, cursor: String?, limit: Int?) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
+    /// 把通知 / agentd 定位给出的会话 runtime 登记进路由表，使随后的 thread/read 落到正确的
+    /// Runtime。nil 与未知值不得覆盖已记住的路由；只服务单一 Runtime 的客户端默认忽略。
+    func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID)
+    /// 已记住的会话 runtime；没有记录时返回 nil，由调用方决定探测顺序。
+    func rememberedRuntimeRoute(forSessionID sessionID: SessionID) -> String?
     func threadGoal(threadID: String) async throws -> ThreadGoal?
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal
     func clearThreadGoal(threadID: String) async throws
@@ -155,7 +160,12 @@ protocol SessionStoreAPIClient {
     func stopSession(id: String) async throws
     func setSessionArchived(id: String, archived: Bool) async throws
     func setThreadName(threadID: String, name: String) async throws
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws
     func compactThread(threadID: String) async throws
+    /// #451：Claude 专用，结束 Mac 上持有该会话的进程后同 id 续聊；其他 runtime 抛错。
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult
+    /// 当前主机对应 runtime 的 channel 是否声明 thread/takeover。
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
@@ -180,6 +190,13 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    /// 默认实现只服务单一 Runtime 的客户端与测试替身：没有路由表可写，也不声称知道 runtime。
+    func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {}
+
+    func rememberedRuntimeRoute(forSessionID sessionID: SessionID) -> String? {
+        nil
+    }
+
     func sessionsPage(
         projectID: String?,
         runtimeProvider: String,
@@ -271,8 +288,20 @@ extension SessionStoreAPIClient {
         throw AgentAPIError.invalidResponse
     }
 
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
+        throw AgentAPIError.invalidResponse
+    }
+
     func compactThread(threadID: String) async throws {
         throw AgentAPIError.invalidResponse
+    }
+
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        throw AgentAPIError.invalidResponse
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        false
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {

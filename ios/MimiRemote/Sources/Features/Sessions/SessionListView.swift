@@ -59,6 +59,9 @@ struct SessionListPartition: Equatable {
 enum SessionListPresentationState: Equatable {
     case content
     case loading
+    /// 首次连接这台电脑的预热窗口。与 `.loading` 分开：它要压过错误态，并且展示的是
+    /// 连接过渡而不是"正在加载会话"。
+    case connecting
     case searching
     case needsWorkspace
     case noSessions
@@ -75,10 +78,19 @@ enum SessionListPresentationState: Equatable {
         isFiltering: Bool,
         isNetworkUnavailable: Bool,
         errorMessage: String?,
-        connectionStatus: ConnectionStatus
+        connectionStatus: ConnectionStatus,
+        hasLoadedWorkspaceCatalog: Bool = false,
+        isEstablishingConnection: Bool = false
     ) -> Self {
         guard !hasVisibleSessions else { return .content }
 
+        // 预热窗口内的 preflight 失败与列表失败都只是本轮尝试的结果，不是给用户的结论。
+        // 但设备本身没有网络是明确结论：否则关掉 Wi-Fi 的用户会看到一段永远不会成功的
+        // "正在连接"。窗口结束后 isEstablishingConnection 变回 false，下面原有的错误态
+        // 和重试入口原样接管。
+        if isEstablishingConnection, !isNetworkUnavailable {
+            return .connecting
+        }
         if case .failed(let message) = connectionStatus {
             return .runtimeUnavailable(message)
         }
@@ -93,7 +105,10 @@ enum SessionListPresentationState: Equatable {
             return .loading
         }
         switch connectionStatus {
-        case .idle, .testing:
+        case .idle:
+            // 未打开目录时不会触发会话连接；目录已加载即可显示空态，不能等待连接检测。
+            if !hasLoadedWorkspaceCatalog { return .loading }
+        case .testing:
             return .loading
         case .connected, .failed:
             break
@@ -235,7 +250,7 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-        .workbenchSoftBottomScrollEdge()
+        .workbenchClearBottomScrollEdge()
         // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
         // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
         .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
@@ -593,7 +608,9 @@ struct SessionListView: View {
             isFiltering: sessionStore.isSessionSearchActive || selectedWorkspaceID != "all" || selectedStatus != .all,
             isNetworkUnavailable: sessionStore.isNetworkUnavailable,
             errorMessage: sessionStore.errorMessage,
-            connectionStatus: appStore.connectionStatus
+            connectionStatus: appStore.connectionStatus,
+            hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope,
+            isEstablishingConnection: sessionStore.isEstablishingConnection
         )
     }
 
@@ -614,6 +631,10 @@ struct SessionListView: View {
             }
             .padding(.vertical, 32)
             .accessibilityIdentifier("sessions.loading")
+        case .connecting:
+            ConnectionWarmUpView(rowCount: 4)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
         case .searching:
             VStack(spacing: 10) {
                 ProgressView()

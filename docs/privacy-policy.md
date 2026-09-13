@@ -27,6 +27,20 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 连接可使用局域网、Tailscale 等私有网络或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
 
+#### 锁屏审批提醒（可选，默认关闭）
+
+「锁屏审批提醒」是默认关闭的实验功能。不开启它时，App 不会请求远程通知授权、不会注册设备 Token，链路上也不会产生任何对外请求；审批仍然只经过用户自己的私有网络。
+
+开启需要用户在 App 内明确同意，且同意绑定到具体的收件主机——中转地址变化后必须重新同意。开启后：
+
+- 会离开设备的只有：本次安装的 APNs 设备 Token、电脑与会话的匿名短标签、审批类型枚举、请求过期时间。
+- 不会离开设备的包括：提示词、回复、模型输出、完整命令、文件路径、diff、源码、文件内容、会话历史，以及 `agentd` 访问 Token。
+- 用户的「允许」与「拒绝」不经过该服务，仍由设备通过私有网络直接提交给自己的 `agentd`。
+
+该提醒服务由 Mimi Remote 开发者运营。它不保存设备 Token，也不保存通知内容；仅保留已撤销的凭据标识到其自然到期为止（最长 30 天），以及不含请求体的结构化错误日志（7 天）与聚合成功率、延迟指标（30 天）。为完成投递，它会短暂处理请求来源 IP。
+
+关闭开关等价于撤销：App 会注销设备 Token，`agentd` 删除本地凭据，服务端把该凭据标识加入撤销表。这项功能是对此前「不运营任何中转服务」表述的实质变更，因此单独列出并保持默认关闭。
+
 #### 系统权限
 
 - 相机：仅在用户打开配对扫码页，或在消息输入框中明确选择“相机”时使用。拍摄的照片会先在设备上重新编码并作为消息附件处理，不会自动保存到系统照片图库，也不会在后台使用相机。
@@ -74,6 +88,20 @@ The app processes the following data only to perform actions you request:
 Mimi Remote connects directly to an `agentd` endpoint that you enter or import by QR code. On your computer, `agentd` invokes compatible developer runtimes that you install, configure, and authenticate. Those tools may process prompts, code, and output under the terms between you and their providers. The developer of Mimi Remote does not receive this content or host third-party account credentials.
 
 Connections may use a local network, a private network such as Tailscale, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
+
+#### Lock Screen approval reminders (optional, off by default)
+
+Lock Screen approval reminders are an experimental feature that is off by default. While it is off, the app does not request remote notification authorization, does not register a device token, and sends nothing to any service; approvals continue to travel only over your own private network.
+
+Turning it on requires your explicit in-app agreement, and that agreement is bound to the specific receiving host — if the address changes, you are asked again. Once on:
+
+- What leaves your device: the APNs device token for this install, anonymous short tags for the Mac and the session, the approval kind as a fixed enum, and the request expiry.
+- What never leaves: prompts, replies, model output, full commands, file paths, diffs, source code, file contents, session history, and your `agentd` access token.
+- Your allow and deny actions do not pass through the service. They go straight from your device to your own `agentd` over your private network.
+
+The reminder service is operated by the developer of Mimi Remote. It does not store device tokens or notification payloads. It keeps only revoked credential identifiers until they expire (at most 30 days), structured error logs without request bodies (7 days), and aggregate delivery and latency metrics (30 days). It briefly processes the source IP address required to deliver a request.
+
+Turning the switch off revokes the registration: the app unregisters the device token, `agentd` deletes the local credential, and the service adds that credential identifier to its revocation list. Because this is a material change from the earlier statement that no relay is operated at all, it is listed separately and kept off by default.
 
 #### System permissions
 

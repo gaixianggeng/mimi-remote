@@ -1,6 +1,6 @@
 # Claude bridge 架构
 
-更新日期：2026-08-03
+更新日期：2026-09-12
 
 ## 目标
 
@@ -56,6 +56,7 @@ sequenceDiagram
 - 新配置以 `claude.enabled=false`、`claude.activation=auto` 开始。Mimi Remote Mac 启动时依次检查随包 bridge 兼容版本、Claude CLI 和 `claude auth status`；全部通过才自动启用，否则保持关闭且不影响 Codex 主通道。
 - `claude.activation` 记录用户意图：`auto` 跟随启动检测，`enabled` / `disabled` 是设置页中的明确选择。明确关闭后不得在后续启动中自动启用；明确开启但前置条件暂时失败时，运行状态仍 fail closed，同时保留偏好，环境恢复后可在下次启动自动恢复。兼容旧配置时，没有 `activation` 的 `enabled=true` 视为用户明确开启。
 - 检测到的 Claude CLI 使用本机绝对路径写入 `claude.env.CLAUDE_BRIDGE_CLAUDE_BIN`，避免 LaunchAgent 的精简 `PATH` 导致运行态找不到 CLI；写入过程保留未知字段与配置文件 `0600` 权限。
+- Claude CLI 候选顺序为「已配置路径 → `PATH` 上的 `claude` → `~/.local/bin/claude` → `~/.npm-global/bin/claude`」（Windows 另有 npm shim 到原生 `claude.exe` 的映射）。启动检测只按路径收集候选（不逐个执行），再对全部候选并行执行 `--version`（各 3 秒超时）：启动失败或超时的候选直接排除，剩下的选正式三段式版本最高者，同版本按候选顺序；同一真实文件的不同写法只算一次。版本无法解析的候选不参与择优，只有全部候选都无法解析时才退回第一个能启动的候选并按 `claude_version_unknown` 报告；没有任何候选能启动时按 `claude_missing` 报告且不写配置。已配置路径版本落后或已不可用时，检测结果直接覆盖 `CLAUDE_BRIDGE_CLAUDE_BIN` 并要求重载服务，因此官方安装器自动升级后 Mimi 会跟随最新 CLI，不会被 LaunchAgent `PATH` 前列的 Homebrew/npm 旧安装钉住，模型目录与终端、Claude 桌面保持一致。不提供"固定某个版本"的配置项。
 - 开关变化由 Mac App 重新加载其管理的 LaunchAgent，并等待 Claude Runtime 达到目标状态；失败时恢复修改前的 `activation` / `enabled` 并再次加载服务。
 - 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.7`、无标准版本或二进制不存在时 fail closed。`0.2.7` 是首个支持运行期 `thread/list.refreshHistory` 的版本，旧版会静默忽略该字段，不能继续当作兼容实现。
 - bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
@@ -65,6 +66,8 @@ sequenceDiagram
 - 客户端 `turn/start` 结束后，Claude 的 cron、`ScheduleWakeup` 或其他自主输出会创建 synthetic turn，继续产生标准 `turn/started → item/* → turn/completed` 事件。
 - 普通空闲 Claude 进程默认 10 分钟后可回收；检测到一次性 wakeup 或持久 cron 时保持 active，直到 wakeup 被消费或 cron 被删除。
 - 默认最多同时接受 3 条 Claude gateway 连接；Claude 进程池还有独立容量限制，后台任务不会绕过该限制。
+- 同一个 Claude session 同一时刻只允许一个活进程。bridge 在 `thread/resume`、`thread/read`、`thread/list` 和兜底的 `turn/start` 前读取 Claude Code 自己维护的 `~/.claude/sessions/<pid>.json`（`claude --bg --resume` 也靠它判断 "already running"），发现该 session 正被本机终端 `claude` 或 Claude 桌面内置 Claude Code 的活进程持有时，不再起第二个 `claude -p --resume`：会话按 `canAcceptDirectInput=false` 返回并附 `claudeOwner`（entrypoint / kind / status / pid），`turn/start` 返回 `reason=owned_elsewhere, retryable=true`。持有方退出后同 id 正常续聊。bridge 自己拉起的子进程同样会登记，探测时按进程池 pid 排除；登记文件残留时按 pid 存活过滤。`0.2.10` 起生效，`claude.env.CLAUDE_BRIDGE_FOREIGN_SESSION_POLICY=legacy` 可关闭回到旧行为；Windows 暂不探测。
+- `0.2.11` 起 bridge 提供 Claude 专用的 `thread/takeover`：结束 Mac 上正持有该会话的 `claude` 进程，然后以同一个 session id 由 bridge 续聊（"在此设备上接管"）。发信号的前提缺一不可——`~/.claude/sessions` 里登记了该 `sessionId`、pid 存活、不是进程池子进程、内核记录的进程启动时间与登记 `startedAt` 相差 ≤10 秒（防 pid 被别的进程复用）；任一持有方核实不了就整体拒绝（`holder_unverified`），一个信号都不发。实测交互式 `claude` 收到 SIGINT 无论空闲还是生成中都立即干净退出并删登记，所以流程是 SIGINT → 等 5 秒 → 仍活着才 SIGTERM → 再等 5 秒 → 仍活着返回 `takeover_timeout`（retryable，不 SIGKILL）。持有方退出后再扫一次登记，出现新 pid 认领同一 session（宿主自动重启）时返回 `holder_respawned` 且不再发信号，杜绝杀进程循环。成功后按普通 resume 规则续聊——本地空配置时同样推迟到首个 `turn/start` 才起进程（实测过反例：接管时先起一个不带模型的进程，首个 turn 带模型来只能给活进程发 `/model`，CLI 回显被当成 autonomous turn，用户的 turn/start 以 `active_turn` 被拒），响应与 `thread/resume` 同形状并多一个 `takeover{released, holder, signal}`；找不到持有方、legacy 策略或进程池已持有时等价于普通 resume。生成中被结束的会话在 resume 时会由 Claude CLI 自己补一对 `Continue from where you left off.` / `No response requested.`，属 CLI 行为。agentd 白名单放行该方法，线程授权复用 `turn/start` 的 threadId + cwd 工作区绑定但不套"只读拒写"（被持有的会话恰好是 `canAcceptDirectInput=false`），参数只透传 `threadId` / `cwd` 并强制 `excludeTurns`，日志只记脱敏 thread token 与工作区 basename；bridge 低于 `0.2.11` 时从 channel `methods` 里摘掉该方法，iOS 据此隐藏按钮。Mac 上再 `claude --resume` 同 id 的反向分叉不在此处理（#439 反向限制）。
 
 ### Tool 调用与权限
 
@@ -81,8 +84,11 @@ sequenceDiagram
 - `agentd` 维护 gateway 授权状态和每个稳定 session 的转发 cursor；它不是会话历史的权威来源。
 - bridge 的 `ConnectionState` 可在 bridge-core 重建 replay session 后重新绑定，避免长期 runtime 把事件写进旧 ring。
 - bridge 先从 Claude JSONL 播种完整历史，再追加尚未 flush 的实时 turn；`thread/read` 和 `thread/turns/list` 不会因为本进程出现新 turn 而丢掉旧历史。
+- `thread/turns/list` 按 `itemsView` 返回：`summary` 只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn 分页补齐，和 Codex 首屏走同一条路；`full` 或省略时仍带全部 item。裁剪只在请求带 `itemsListAvailable: true` 时生效，这个字段由 agentd 网关写入，表示网关会转发 `thread/items/list`；新 bridge 配旧 agentd 时没有这个字段，bridge 照旧回完整 item。此前 bridge 无视 `itemsView`，一个 18 MB 会话的首页要 400–650 KB，移动端经中继打开明显更慢。
 - bridge 的协议输入输出是逐行 JSON；`agentd` 不把整段上下文重新拼成额外提示词。
+- `model/list` 的目录来自 Claude CLI 的 SDK initialize，进程级缓存 10 分钟并单飞；发现失败时优先返回上一次成功的目录，15 秒内不重复起 CLI；bridge 启动时后台预热一次，避免首个请求在 CLI 冷启动期间超时回退成无版本别名。主列表与 Claude 桌面版一致：每个模型家族只展示最新版本（Fable、Opus、Sonnet、Haiku 各一行，按此强弱顺序），`default` 别名不单独占一行，它解析出的模型被标记为默认选中；旧版本和同解析的别名仍在响应里但标 `hidden`，客户端不展示。识别不出家族的条目（第三方/未来命名）一律保持可见，不折叠。
 - Claude Code 登录态和可恢复历史由用户本机 Claude Code 环境管理，不上传到 Mimi Remote 服务器。
+- 会话名优先取 Claude 自己写进 transcript 的 `custom-title` / `ai-title`；从 App 新建的会话没有这类记录，由 `agentd` 的自动标题任务（见 `auto-thread-titles.md`）通过 bridge socket 的匿名内部连接调用 `thread/read` / `thread/name/set` 写回，标题文本仍由 Codex 临时线程生成。
 
 ### 观测与恢复
 
@@ -105,4 +111,5 @@ sequenceDiagram
 - replay ring 是有界快速恢复层；超过窗口或 bridge/Mac 重启后，以本机 Claude JSONL 历史为准，运行中但尚未落盘的极短窗口仍可能无法恢复。
 - `CronCreate` 属于当前 Claude 进程内任务，会占用一个进程池槽位直到删除；需要在产品层展示后台任务状态，避免用户无感知地长期占用容量。
 - 当前不支持 `goal`、`archive`、`fork`，也没有 APNs 后台 push 和跨设备云同步。App 重新打开可以看到结果，不等于系统一定弹出通知。
+- 别处持有的会话目前只做只读 + 提示，Mac 上进行中的轮次要等持有方落盘、iOS 刷新后才可见；实时镜像（bridge 监听 JSONL 增量推 synthetic turn）是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）bridge 管不了 CLI，仍会分叉。
 - 不对断线 turn 做自动重试，避免重复写文件或执行命令；后续优化优先补 run record、客户端确认 cursor 和明确的失败状态。

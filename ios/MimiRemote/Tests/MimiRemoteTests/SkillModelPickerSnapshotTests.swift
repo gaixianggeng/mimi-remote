@@ -9,8 +9,103 @@ private let codex56SnapshotModels = CodexAppServerModelOption.builtInFallback.fi
     $0.model.hasPrefix("gpt-5.6-")
 }
 
+// 图片基线验证服务端返回的版本化标题布局，不依赖产品的无版本 fallback。
+private let claudeCatalogSnapshotModels = [
+    CodexAppServerModelOption(
+        id: "claude-fable-5",
+        title: "Claude Fable 5",
+        runtimeProvider: "claude",
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    ),
+    CodexAppServerModelOption(
+        id: "claude-opus-5",
+        title: "Claude Opus 5",
+        runtimeProvider: "claude",
+        isDefault: true,
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    ),
+    CodexAppServerModelOption(
+        id: "claude-sonnet-5",
+        title: "Claude Sonnet 5",
+        runtimeProvider: "claude",
+        supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+    )
+]
+
 @MainActor
 final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    func testSavedFable5DefaultMigratesWithoutSelectingOpus() throws {
+        let suite = "FableSelectionMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("claude-fable-5", forKey: DefaultModelPreferences.claudeModelOptionIDKey)
+        defaults.set("high", forKey: DefaultModelPreferences.claudeReasoningEffortKey)
+        let catalog = [
+            CodexAppServerModelOption(id: "opus", title: "Opus", runtimeProvider: "claude", isDefault: true),
+            CodexAppServerModelOption(
+                id: "claude-fable-5-1", title: "Fable 5.1", provider: "anthropic", runtimeProvider: "claude",
+                supportedReasoningEfforts: ["medium", "high", "max"]
+            )
+        ]
+
+        for legacyID in ["claude-fable-5", "claude@claude-fable-5@anthropic"] {
+            defaults.set(legacyID, forKey: DefaultModelPreferences.claudeModelOptionIDKey)
+            let selection = try XCTUnwrap(DefaultModelPreferences.resolvedSelection(
+                for: "claude", allOptions: catalog, defaults: defaults
+            ))
+            XCTAssertEqual(selection.option.model, "claude-fable-5-1")
+            XCTAssertEqual(selection.effort, .high)
+            XCTAssertEqual(defaults.string(forKey: DefaultModelPreferences.claudeModelOptionIDKey), catalog[1].id)
+            var submitted = CodexAppServerTurnOptions.default
+            DefaultModelPreferences.applyDefault(for: "claude", allOptions: catalog, defaults: defaults, to: &submitted)
+            XCTAssertEqual(submitted.model, "claude-fable-5-1")
+            XCTAssertEqual(submitted.runtimeProvider, "claude")
+            XCTAssertEqual(submitted.reasoningEffort, .high)
+        }
+    }
+
+    func testCachedFable5SelectionMigratesOnSessionRestore() throws {
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "claude-fable-5"
+        options.modelProvider = "anthropic"
+        options.reasoningEffort = .high
+        var legacy = ComposerModelSelectionSnapshot(options: options)
+        XCTAssertEqual(legacy.model, "claude-fable-5-1")
+        // 模拟兼容处理前已存在的快照，验证恢复入口，而非只验证新快照。
+        legacy.model = "claude-fable-5"
+        var cache = ComposerModelSelectionCache()
+        cache.save(legacy, for: .session("legacy-fable-session"))
+        let restored = try XCTUnwrap(cache.snapshot(for: .session("legacy-fable-session")))
+        var submitted = CodexAppServerTurnOptions.default
+        restored.apply(to: &submitted)
+        XCTAssertEqual(submitted.model, "claude-fable-5-1")
+        XCTAssertEqual(submitted.runtimeProvider, "claude")
+        XCTAssertEqual(submitted.modelProvider, "anthropic")
+        XCTAssertEqual(submitted.reasoningEffort, .high)
+    }
+
+    func testFableMigrationKeepsOtherRuntimesAndExplicitServerDefault() {
+        for runtime in [nil, "codex", "claude"] as [String?] {
+            for model in [nil, "custom-model", "claude-fable-5-1", "claude-fable-5"] as [String?] {
+                var options = CodexAppServerTurnOptions.default
+                options.runtimeProvider = runtime
+                options.model = model
+                options.reasoningEffort = .high
+                let original = options
+                ComposerModelSelectionCompatibility.apply(to: &options)
+                if runtime == "claude", model == "claude-fable-5" {
+                    XCTAssertEqual(options.model, "claude-fable-5-1")
+                } else {
+                    XCTAssertEqual(options, original)
+                }
+                let once = options
+                ComposerModelSelectionCompatibility.apply(to: &options)
+                XCTAssertEqual(options, once)
+            }
+        }
+    }
+
     func testEffectiveModelUsesExplicitSelectionBeforeServerDefault() {
         let options = [
             CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6 Sol", isDefault: true),
@@ -101,14 +196,14 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         XCTAssertTrue(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.models.map(\.model), ["claude-fable-5", "opus", "sonnet"])
+        XCTAssertEqual(claudeLayout.models.map(\.model), ["opus", "sonnet", "haiku"])
         XCTAssertEqual(
             claudeLayout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 5"]
+            ["Claude Opus", "Claude Sonnet", "Claude Haiku"]
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.compactTriggerTitle(for: "opus", layout: claudeLayout),
-            "Opus 5"
+            "Opus"
         )
         XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.low), "Light")
@@ -445,8 +540,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 colorScheme: .dark,
                 horizontalSizeClass: .regular,
                 runtimeProvider: "claude",
-                options: CodexAppServerModelOption.builtInClaudeFallback,
-                selection: ModelReasoningGridSelection(modelID: "opus", effort: .high)
+                options: claudeCatalogSnapshotModels,
+                selection: ModelReasoningGridSelection(modelID: "claude-opus-5", effort: .high)
             ),
             as: .image(
                 precision: 0.98,

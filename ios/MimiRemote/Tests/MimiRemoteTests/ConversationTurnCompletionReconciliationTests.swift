@@ -285,3 +285,136 @@ private func waitForConversationMessage(
     }
     XCTFail("消息 \(id) 未在超时前写入会话")
 }
+
+// MARK: - turn 完成但回复正文缺失时的兜底补读
+
+@MainActor
+extension ConversationDataFlowTests {
+    private struct MissingReplyBackfillFixture {
+        let store: SessionStore
+        let client: MockSessionStoreClient
+        let conversationStore: ConversationStore
+        let socket: MockWebSocketClient
+        let session: AgentSession
+
+        func turnMetadata(turnID: String, seq: EventSequence, lifecycle: ConversationTurnLifecycle? = nil) -> AgentEventMetadata {
+            let metadata = AgentEventMetadata(
+                seq: seq, sessionID: session.id, turnID: turnID, itemID: nil, messageID: nil,
+                clientMessageID: nil, revision: Int(seq), createdAt: nil
+            )
+            guard let lifecycle else { return metadata }
+            return metadata.withTurnLifecycle(lifecycle)
+        }
+
+        func assistantReply(turnID: String, seq: EventSequence) throws -> AgentEvent {
+            let message = try AgentAPIClient.decoder.decode(
+                AgentMessage.self,
+                from: Data("""
+                {
+                  "id": "appserver:\(turnID):item-1",
+                  "session_id": "\(session.id)",
+                  "turn_id": "\(turnID)",
+                  "item_id": "item-1",
+                  "role": "assistant",
+                  "kind": "message",
+                  "content": "收到，消息正常。",
+                  "created_at": "2026-09-10T03:32:35Z",
+                  "revision": \(seq),
+                  "send_status": "confirmed"
+                }
+                """.utf8)
+            )
+            return .messageCompleted(
+                message,
+                AgentEventMetadata(
+                    seq: seq, sessionID: session.id, turnID: turnID, itemID: "item-1",
+                    messageID: message.id, clientMessageID: nil, revision: Int(seq), createdAt: nil
+                )
+            )
+        }
+    }
+
+    private func makeMissingReplyBackfillFixture(suffix: String) async throws -> MissingReplyBackfillFixture {
+        let project = makeProject(id: "proj_backfill_\(suffix)")
+        let running = makeSession(
+            id: "sess_backfill_\(suffix)", projectID: project.id, title: "运行中",
+            status: "running", source: "codex"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        return MissingReplyBackfillFixture(
+            store: store, client: client, conversationStore: conversationStore, socket: socket, session: running
+        )
+    }
+
+    private func settleMissingReplyBackfill() async throws {
+        try await Task.sleep(nanoseconds: SessionStore.missingAssistantReplyBackfillDelayNanoseconds + 600_000_000)
+    }
+
+    /// 网关在断线窗口丢掉了 assistant 正文、只剩 turn/completed 到达：完成事件本身不经水位线，
+    /// 本地却没有该 turn 的回复。此时必须自动做一次权威补读，而不是等用户点刷新。
+    func testTurnCompletedWithoutAssistantReplyTriggersAuthoritativeHistoryBackfill() async throws {
+        let fixture = try await makeMissingReplyBackfillFixture(suffix: "missing")
+        let historyReadsBefore = fixture.client.requestedMessageSessionIDs.count
+
+        fixture.socket.emitEvent(.turnStarted(fixture.turnMetadata(turnID: "turn-1", seq: 1)))
+        fixture.socket.emitEvent(.turnCompleted(fixture.turnMetadata(turnID: "turn-1", seq: 2, lifecycle: .completed)))
+        try await settleMissingReplyBackfill()
+
+        XCTAssertEqual(
+            fixture.client.requestedMessageSessionIDs.count, historyReadsBefore + 1,
+            "turn 完成却没有回复正文时，应自动补读一次权威历史"
+        )
+        XCTAssertEqual(fixture.client.requestedMessageSessionIDs.last, fixture.session.id)
+    }
+
+    func testTurnCompletedAfterAssistantReplyDoesNotBackfillHistory() async throws {
+        let fixture = try await makeMissingReplyBackfillFixture(suffix: "present")
+        let historyReadsBefore = fixture.client.requestedMessageSessionIDs.count
+
+        fixture.socket.emitEvent(.turnStarted(fixture.turnMetadata(turnID: "turn-1", seq: 1)))
+        fixture.socket.emitEvent(try fixture.assistantReply(turnID: "turn-1", seq: 2))
+        fixture.socket.emitEvent(.turnCompleted(fixture.turnMetadata(turnID: "turn-1", seq: 3, lifecycle: .completed)))
+        try await settleMissingReplyBackfill()
+
+        XCTAssertTrue(
+            fixture.conversationStore.messages(for: fixture.session.id).contains { $0.role == .assistant && $0.content == "收到，消息正常。" }
+        )
+        XCTAssertEqual(
+            fixture.client.requestedMessageSessionIDs.count, historyReadsBefore,
+            "回复正文已经在本地时不应产生额外的历史读取"
+        )
+    }
+
+    func testInterruptedTurnWithoutAssistantReplyDoesNotBackfillHistory() async throws {
+        let fixture = try await makeMissingReplyBackfillFixture(suffix: "interrupted")
+        let historyReadsBefore = fixture.client.requestedMessageSessionIDs.count
+
+        fixture.socket.emitEvent(.turnStarted(fixture.turnMetadata(turnID: "turn-1", seq: 1)))
+        fixture.socket.emitEvent(.turnCompleted(fixture.turnMetadata(turnID: "turn-1", seq: 2, lifecycle: .interrupted)))
+        try await settleMissingReplyBackfill()
+
+        XCTAssertEqual(
+            fixture.client.requestedMessageSessionIDs.count, historyReadsBefore,
+            "用户中断的 turn 本来就没有回复，不应补读"
+        )
+    }
+}

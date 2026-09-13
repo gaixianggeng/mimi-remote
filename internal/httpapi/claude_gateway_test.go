@@ -4,43 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"io"
-	"reflect"
 	"strings"
 	"testing"
 )
-
-func TestClaudeCurrentModelListMatchesNativeEffortCapabilities(t *testing.T) {
-	models := claudeCurrentModelList()
-	if len(models) != 4 {
-		t.Fatalf("Claude 模型数量异常：got=%d want=4", len(models))
-	}
-
-	wantEfforts := []string{"medium", "high", "xhigh", "max"}
-	for _, model := range models {
-		modelID, _ := model["model"].(string)
-		options, ok := model["supportedReasoningEfforts"].([]map[string]string)
-		if !ok {
-			t.Fatalf("模型 %q 的 effort 能力格式异常：%T", modelID, model["supportedReasoningEfforts"])
-		}
-		if modelID == "haiku" {
-			if len(options) != 0 || model["defaultReasoningEffort"] != "none" {
-				t.Fatalf("Haiku 不应声明原生 effort：options=%v default=%v", options, model["defaultReasoningEffort"])
-			}
-			continue
-		}
-
-		gotEfforts := make([]string, 0, len(options))
-		for _, option := range options {
-			gotEfforts = append(gotEfforts, option["reasoningEffort"])
-		}
-		if !reflect.DeepEqual(gotEfforts, wantEfforts) {
-			t.Fatalf("模型 %q 的 effort 能力异常：got=%v want=%v", modelID, gotEfforts, wantEfforts)
-		}
-		if model["defaultReasoningEffort"] != "high" {
-			t.Fatalf("模型 %q 默认应为 high：got=%v", modelID, model["defaultReasoningEffort"])
-		}
-	}
-}
 
 // 超大单帧必须被丢弃而不是撕掉连接：正常帧照常返回，超限帧返回 oversize=true 且不残留内容，
 // 其后的正常帧仍能继续读取。这是 Claude 通道断线循环兜底的核心保证。

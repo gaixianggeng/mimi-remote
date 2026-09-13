@@ -20,6 +20,7 @@ struct ManagedConnectionSubscriptionView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
+    @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isConnectingMac = false
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
@@ -39,9 +40,8 @@ struct ManagedConnectionSubscriptionView: View {
             productsSection
             subscriptionInformationSection
         }
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
-        .scrollContentBackground(.hidden)
-        .settingsCanvasBackground(tokens: tokens)
+        .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -55,6 +55,22 @@ struct ManagedConnectionSubscriptionView: View {
             await deviceStore.refreshDevices()
         }
         .onAppear(perform: configureManagedScanner)
+        .alert(
+            L10n.text("ui.restore_purchases"),
+            isPresented: Binding(
+                get: { restoreResult != nil },
+                set: { if !$0 { restoreResult = nil } }
+            ),
+            presenting: restoreResult
+        ) { _ in
+            Button(L10n.text("ui.got_it"), role: .cancel) {}
+        } message: { result in
+            Text(L10n.text(
+                result == .restored
+                    ? "ui.managed_subscription_restored"
+                    : "ui.managed_subscription_restore_empty"
+            ))
+        }
         // 托管页请求扫码时它自己是栈顶页面，Cover 必须挂在这里才会真正呈现。
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .managedConnection),
@@ -103,9 +119,13 @@ struct ManagedConnectionSubscriptionView: View {
         return true
     }
 
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
+    }
+
     @ViewBuilder
     private var statusSection: some View {
-        Section(L10n.text("ui.managed_subscription_status")) {
+        Section {
             switch entitlementStore.status {
             case .loading, .resolving:
                 HStack(spacing: 12) {
@@ -128,39 +148,42 @@ struct ManagedConnectionSubscriptionView: View {
                     L10n.text("ui.managed_subscription_expired"),
                     systemImage: "calendar.badge.exclamationmark"
                 )
-                .foregroundStyle(.orange)
+                .foregroundStyle(tokens.warning)
             case .revoked:
                 Label(
                     L10n.text("ui.managed_subscription_revoked"),
                     systemImage: "xmark.shield.fill"
                 )
-                .foregroundStyle(.red)
+                .foregroundStyle(tokens.warning)
             case .entitled(let entitlement):
                 VStack(alignment: .leading, spacing: 6) {
                     Label(
                         entitlementStatusText(entitlement.status),
                         systemImage: "checkmark.circle.fill"
                     )
-                    .foregroundStyle(.green)
+                    .foregroundStyle(tokens.success)
                     Text(
                         L10n.format(
                             "ui.managed_subscription_valid_until",
                             entitlement.expiresAt.formatted(date: .abbreviated, time: .omitted)
                         )
                     )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
                 }
             case .failed(let message):
                 VStack(alignment: .leading, spacing: 10) {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(tokens.warning)
                     Button(L10n.text("ui.retry")) {
                         Task { await entitlementStore.load() }
                     }
                     .disabled(entitlementStore.isBusy)
                 }
             }
+        } header: {
+            Text(L10n.text("ui.managed_subscription_status"))
+                .settingsSectionHeaderStyle()
         }
     }
 
@@ -191,7 +214,7 @@ struct ManagedConnectionSubscriptionView: View {
                 )
             } label: {
                 Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .settingsRow()
             }
             .disabled(isConnectingMac || entitlementStore.isBusy)
             .accessibilityIdentifier("settings.managedSubscription.connectMac")
@@ -206,12 +229,14 @@ struct ManagedConnectionSubscriptionView: View {
 
             if let localError {
                 Label(localError, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(tokens.warning)
             }
         } header: {
             Text(L10n.text("ui.managed_devices_connection"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -266,14 +291,18 @@ struct ManagedConnectionSubscriptionView: View {
 
             if let managedRouteError {
                 Label(managedRouteError, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(tokens.warning)
             }
         } header: {
             Text(L10n.text("ui.managed_connection_route_status"))
+                .settingsSectionHeaderStyle()
         } footer: {
-            if showsManagedRecoveryActions {
-                Text(L10n.text("ui.managed_connection_fallback_notice"))
+            Group {
+                if showsManagedRecoveryActions {
+                    Text(L10n.text("ui.managed_connection_fallback_notice"))
+                }
             }
+            .settingsSectionFooterStyle()
         }
     }
 
@@ -385,7 +414,7 @@ struct ManagedConnectionSubscriptionView: View {
                 .accessibilityElement(children: .combine)
             } else if deviceStore.devices.isEmpty {
                 Text(L10n.text("ui.managed_devices_empty"))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(tokens.secondaryText)
             } else {
                 ForEach(deviceStore.devices) { device in
                     deviceRow(device)
@@ -395,7 +424,7 @@ struct ManagedConnectionSubscriptionView: View {
             if let message = deviceStore.errorMessage {
                 VStack(alignment: .leading, spacing: 10) {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(tokens.warning)
                     Button(L10n.text("ui.retry")) {
                         Task { await deviceStore.refreshDevices() }
                     }
@@ -404,8 +433,10 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_devices_title"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_devices_privacy_notice"))
+                .settingsSectionFooterStyle()
         }
     }
 
@@ -418,10 +449,10 @@ struct ManagedConnectionSubscriptionView: View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(themeStore.uiFont(.subheadline))
                 Text(L10n.format("ui.managed_devices_usage", count, limit))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
                     .monospacedDigit()
             }
         } icon: {
@@ -432,8 +463,9 @@ struct ManagedConnectionSubscriptionView: View {
     private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
         HStack(spacing: 12) {
             Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
-                .frame(width: 24)
-                .foregroundStyle(.secondary)
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .frame(width: SettingsLayoutMetrics.iconSlot)
+                .foregroundStyle(tokens.secondaryText)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(device.deviceType == .mac
@@ -442,7 +474,7 @@ struct ManagedConnectionSubscriptionView: View {
                     if device.id == deviceStore.currentDeviceID {
                         Text(L10n.text("ui.managed_devices_this_device"))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(tokens.secondaryText)
                     }
                 }
                 Text(
@@ -452,8 +484,8 @@ struct ManagedConnectionSubscriptionView: View {
                         String(device.id.suffix(4)).uppercased()
                     )
                 )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(tokens.secondaryText)
             }
             Spacer(minLength: 8)
             if deviceStore.removingDeviceID == device.id {
@@ -470,6 +502,7 @@ struct ManagedConnectionSubscriptionView: View {
                 .accessibilityLabel(L10n.text("ui.managed_devices_remove_action"))
             }
         }
+        .settingsRow(.descriptive)
         .accessibilityElement(children: .contain)
     }
 
@@ -536,7 +569,7 @@ struct ManagedConnectionSubscriptionView: View {
         Section {
             if entitlementStore.products.isEmpty, !entitlementStore.isBusy {
                 Text(L10n.text("ui.managed_subscription_product_unavailable"))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(tokens.secondaryText)
             } else {
                 ForEach(entitlementStore.products) { product in
                     Button {
@@ -545,7 +578,7 @@ struct ManagedConnectionSubscriptionView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(alignment: .firstTextBaseline) {
                                 Text(product.displayName)
-                                    .font(.headline)
+                                    .font(themeStore.uiFont(.headline))
                                 Spacer(minLength: 12)
                                 Text(
                                     L10n.format(
@@ -558,11 +591,11 @@ struct ManagedConnectionSubscriptionView: View {
                             }
                             if product.isEligibleForTrial, let trialPeriod = product.displayTrialPeriod {
                                 Text(L10n.format("ui.managed_subscription_trial_offer", trialPeriod))
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                                    .font(themeStore.uiFont(.footnote))
+                                    .foregroundStyle(tokens.secondaryText)
                             }
                         }
-                        .frame(minHeight: 44)
+                        .settingsRow(.descriptive)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -572,15 +605,17 @@ struct ManagedConnectionSubscriptionView: View {
             }
         } header: {
             Text(L10n.text("ui.managed_subscription_plans"))
+                .settingsSectionHeaderStyle()
         } footer: {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
+                .settingsSectionFooterStyle()
         }
     }
 
     private var subscriptionInformationSection: some View {
         Section {
             Button(L10n.text("ui.restore_purchases")) {
-                Task { await entitlementStore.restorePurchases() }
+                Task { restoreResult = await entitlementStore.restorePurchases() }
             }
             .frame(minHeight: 44)
             .disabled(entitlementStore.isBusy)
@@ -597,6 +632,7 @@ struct ManagedConnectionSubscriptionView: View {
             .frame(minHeight: 44)
         } header: {
             Text(L10n.text("ui.subscription_information"))
+                .settingsSectionHeaderStyle()
         }
     }
 }

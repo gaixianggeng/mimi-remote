@@ -17,7 +17,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var activeHostState: ActiveHostState
     @Published private(set) var isCredentialMemorySuspended = false
     @Published var token: String
-    @Published var connectionStatus: ConnectionStatus = .idle
+    // 每次写入都递增，被取消的探测据此判断期间是否有更新的结论（见 AppStoreConnectionTesting）。
+    @Published var connectionStatus: ConnectionStatus = .idle { didSet { connectionStatusRevision &+= 1 } }
+    private(set) var connectionStatusRevision: UInt64 = 0
     @Published private(set) var connectionTermination: ConnectionTerminationStatus?
     @Published var lastError: String?
     @Published var lastConnectionTestDurationMillis: Int?
@@ -1214,6 +1216,7 @@ final class AppStore: ObservableObject {
                 connectionStatus = .idle
                 return false
             }
+            let probeSnapshot = captureConnectionProbeSnapshot()
             connectionStatus = .testing
             lastError = nil
             do {
@@ -1221,7 +1224,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 let message = L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
@@ -1231,6 +1234,7 @@ final class AppStore: ObservableObject {
             }
         }
 
+        let probeSnapshot = captureConnectionProbeSnapshot()
         connectionStatus = .testing
         lastError = nil
 
@@ -1295,7 +1299,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 // loopback 可能运行着另一个用户配置；本机 Token 不匹配时继续尝试档案地址，
@@ -1314,7 +1318,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 // 兼容尚未实现同机配对接口的旧 agentd；保留已配置路由的真实错误，

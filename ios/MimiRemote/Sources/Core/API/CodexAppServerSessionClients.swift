@@ -189,6 +189,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.threadGoal(threadID: threadID)
     }
 
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
+        try await runtime.updateThreadPermissions(threadID: threadID, options: options)
+    }
+
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal {
         try await runtime.setThreadGoal(threadID: threadID, objective: objective, status: status, tokenBudget: tokenBudget)
     }
@@ -215,6 +219,14 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
 
     func compactThread(threadID: String) async throws {
         try await runtime.compactThread(threadID: threadID)
+    }
+
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        try await runtime.takeOverThread(sessionID: threadID)
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        try await runtime.supportsThreadTakeover()
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
@@ -571,6 +583,24 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return response
     }
 
+    /// 只有明确的 codex / claude 才写入路由表。`remember` 会把 nil 与未知值归一成 codex，
+    /// 那会把已记住的 Claude 会话改写成 Codex，随后的 thread/read 就落到错误的 Runtime；
+    /// 因此未知值一律不动已有路由，codex 也只在调用方明确断言时才覆盖。
+    func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {
+        guard let raw = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return
+        }
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
+        guard normalized == "codex" || normalized == "claude" else {
+            return
+        }
+        bundle.routes.remember(normalized, for: sessionID)
+    }
+
+    func rememberedRuntimeRoute(forSessionID sessionID: SessionID) -> String? {
+        bundle.routes.runtimeProvider(for: sessionID)
+    }
+
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
         if let sessionID {
             return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
@@ -594,6 +624,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await bundle.runtime(forSessionID: threadID).threadGoal(threadID: threadID)
+    }
+
+    func updateThreadPermissions(threadID: String, options: CodexAppServerTurnOptions) async throws {
+        try await bundle.runtime(forSessionID: threadID).updateThreadPermissions(threadID: threadID, options: options)
     }
 
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal {
@@ -644,6 +678,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func compactThread(threadID: String) async throws {
         try await bundle.runtime(forSessionID: threadID).compactThread(threadID: threadID)
+    }
+
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        try await bundle.runtime(forSessionID: threadID).takeOverThread(sessionID: threadID)
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        try await bundle.runtime(forSessionID: sessionID).supportsThreadTakeover()
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
@@ -850,12 +892,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             }
             do {
                 try await runtime.connectForEvents(sessionID: threadID)
-                let deliveryMode = try await runtime.turnDeliveryMode()
                 guard !Task.isCancelled else {
                     return
                 }
                 await MainActor.run {
-                    self.turnDeliveryMode = deliveryMode
                     statusHandler?(.connected)
                 }
                 for await event in events {
@@ -916,25 +956,16 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let outcomeHandler = onTurnSendOutcome
         Task { [runtime] in
             do {
-                let submissionOutcome = try await runtime.submitTurnOutcome(
+                // 输入框按 Desktop 使用本地排队和 turn/start；每条新回合自带权限。
+                // thread/queue/add 只供独立任务工具向服务端队列提交消息。
+                let startOutcome = try await runtime.startTurnOutcome(
                     sessionID: sessionID,
                     payload: payload,
                     clientMessageID: clientMessageID
                 )
                 await MainActor.run {
                     if let outcomeHandler {
-                        switch submissionOutcome {
-                        case .direct(let startOutcome):
-                            outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
-                        case .serverQueued(let submissionID, let startedTurnID):
-                            outcomeHandler(
-                                clientMessageID,
-                                .serverQueued(
-                                    submissionID: submissionID,
-                                    startedTurnID: startedTurnID
-                                )
-                            )
-                        }
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
                     } else {
                         acceptedHandler?(clientMessageID)
                     }

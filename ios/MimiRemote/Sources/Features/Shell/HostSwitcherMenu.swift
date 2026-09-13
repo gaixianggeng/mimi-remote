@@ -139,7 +139,10 @@ struct HostSwitcherMenu: View {
     @ViewBuilder
     private var switcherLabel: some View {
         let profileName = appStore.activeConnectionProfile?.displayName ?? L10n.text("ui.current_mac")
-        let isSwitching = sessionStore.isConnectionSwitchInProgress
+        // 状态行跟随预热窗口，而不是单看 connectionStatus：冷启动的首个 preflight 在隧道
+        // 建好之前几乎必然失败，让状态行先亮红点等于把过程说成结论。菜单项的禁用仍只跟
+        // 真正的切换操作走，普通冷启动不该锁住换电脑入口。
+        let isSwitching = sessionStore.isEstablishingConnection
 
         switch presentation {
         case .sidebar:

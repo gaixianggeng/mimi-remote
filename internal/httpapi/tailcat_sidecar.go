@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +30,15 @@ const (
 	TailcatLocalControlHeader = "X-Mimi-Tailcat-Local-Control"
 	tailcatSidecarBinary      = "mimi-tailcat-experiment"
 	defaultTailcatPort        = 8787
+	// 普通控制调用只读内存状态或改白名单，5 秒足够。
+	tailcatControlCallTimeout = 5 * time.Second
+	// 配对要先向中继完成临时节点授权。agentd 重启后的第一次配对实测超过 5 秒，
+	// 节点其实已经生成，却被报成失败。CLI 与 Mac App 各给 25 秒，这里留 20 秒
+	// 让辅助程序把结果交回来。
+	tailcatPairCallTimeout = 20 * time.Second
+	// 取回超时后建好的配对节点时，剩余有效期（辅助程序给 10 分钟）至少要这么长；
+	// 再短的话用户扫码前可能就过期了，宁可重新生成。
+	tailcatPairReuseMinRemaining = 5 * time.Minute
 )
 
 type tailcatStatus struct {
@@ -72,6 +82,55 @@ type tailcatSidecarSupervisor struct {
 	starting    bool
 	closing     bool
 	lastError   string
+	// 零值表示使用上面的默认超时；测试用短超时驱动。
+	controlTimeout time.Duration
+	pairTimeout    time.Duration
+	// 上一次 /pair 超时、辅助程序可能还在把那个节点建完。受 operationMu 保护。
+	pairTimedOut bool
+}
+
+func (s *tailcatSidecarSupervisor) controlCallTimeout() time.Duration {
+	if s.controlTimeout > 0 {
+		return s.controlTimeout
+	}
+	return tailcatControlCallTimeout
+}
+
+func (s *tailcatSidecarSupervisor) pairCallTimeout() time.Duration {
+	if s.pairTimeout > 0 {
+		return s.pairTimeout
+	}
+	return tailcatPairCallTimeout
+}
+
+// tailcatSidecarLogWriter 把辅助程序的 stderr 按行转进 agentd 日志。辅助程序只在
+// 失败退出和配对计时时写 stderr；此前一律丢弃，进程为何退出、配对慢在哪一步都看不到。
+type tailcatSidecarLogWriter struct {
+	mu      sync.Mutex
+	pending []byte
+}
+
+func (w *tailcatSidecarLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		index := bytes.IndexByte(w.pending, '\n')
+		if index < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.pending[:index]), "\r")
+		w.pending = append([]byte(nil), w.pending[index+1:]...)
+		if strings.TrimSpace(line) != "" {
+			log.Printf("tailcat sidecar: %s", line)
+		}
+	}
+	// 没有换行的超长输出不无限积压，直接整段落盘。
+	if len(w.pending) > 8<<10 {
+		log.Printf("tailcat sidecar: %s", strings.TrimSpace(string(w.pending)))
+		w.pending = nil
+	}
+	return len(p), nil
 }
 
 func newTailcatSidecarSupervisor(cfg config.Config, configPath string) *tailcatSidecarSupervisor {
@@ -149,7 +208,7 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &tailcatSidecarLogWriter{}
 	if err := cmd.Start(); err != nil {
 		err = fmt.Errorf("启动 Tailcat sidecar：%w", err)
 		s.finishStart(nil, err)
@@ -266,7 +325,7 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 		return status
 	}
 	if running {
-		if err := s.call(ctx, http.MethodGet, "/status", nil, &status); err == nil {
+		if err := s.call(ctx, s.controlCallTimeout(), http.MethodGet, "/status", nil, &status); err == nil {
 			status.Enabled = true
 			status.DERPMapURL = derpMapURL
 			return status
@@ -288,10 +347,62 @@ func (s *tailcatSidecarSupervisor) Pair(ctx context.Context) (tailcatStatus, err
 	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	timeout := s.pairCallTimeout()
+	if s.pairTimedOut {
+		if status, reused, err := s.reclaimTimedOutPair(ctx, timeout); reused || err != nil {
+			s.applyConfigurationToStatus(&status)
+			return status, err
+		}
+	}
 	var status tailcatStatus
-	err := s.call(ctx, http.MethodPost, "/pair", nil, &status)
+	started := time.Now()
+	err := s.call(ctx, timeout, http.MethodPost, "/pair", nil, &status)
+	elapsed := time.Since(started).Round(time.Millisecond)
+	s.pairTimedOut = false
+	switch {
+	case err == nil:
+		log.Printf("tailcat pair: 辅助程序 %s 内生成配对节点", elapsed)
+	case errors.Is(err, context.DeadlineExceeded):
+		// 辅助程序不看请求是否还在，配对节点会继续建完；下一次配对先取回它，不能重发 /pair。
+		log.Printf("tailcat pair: 辅助程序 %s 内未返回配对结果", elapsed)
+		s.pairTimedOut = true
+		err = tailcatPairPendingError(timeout)
+	default:
+		log.Printf("tailcat pair: 辅助程序返回失败（耗时 %s）：%v", elapsed, err)
+	}
 	s.applyConfigurationToStatus(&status)
 	return status, err
+}
+
+// reclaimTimedOutPair 取回上一次超时的配对。辅助程序的 StartPairing 会先销毁现有节点再重建，
+// 直接重发 /pair 会把刚建好的节点拆掉、再走一遍慢授权，可能一直超时下去。辅助程序在配对
+// 期间持有状态锁，这里读 /status 会等到那次配对结束。返回 reused=false 且 err 为空时，
+// 由调用方按正常流程重新生成。
+func (s *tailcatSidecarSupervisor) reclaimTimedOutPair(
+	ctx context.Context,
+	timeout time.Duration,
+) (tailcatStatus, bool, error) {
+	var status tailcatStatus
+	err := s.call(ctx, timeout, http.MethodGet, "/status", nil, &status)
+	if errors.Is(err, context.DeadlineExceeded) {
+		log.Printf("tailcat pair: 上一次的配对节点仍未建好")
+		return status, false, tailcatPairPendingError(timeout)
+	}
+	s.pairTimedOut = false
+	if err != nil || strings.TrimSpace(status.PairAddress) == "" {
+		// 上一次最终失败、已过期，或辅助程序已重启：重新生成。
+		return tailcatStatus{}, false, nil
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339Nano, status.PairExpiresAt)
+	if parseErr != nil || time.Until(expiresAt) < tailcatPairReuseMinRemaining {
+		return tailcatStatus{}, false, nil
+	}
+	log.Printf("tailcat pair: 复用上一次超时后建好的配对节点（剩余 %s）", time.Until(expiresAt).Round(time.Second))
+	return status, true, nil
+}
+
+func tailcatPairPendingError(timeout time.Duration) error {
+	return fmt.Errorf("Tailcat 配对节点仍在等待中继授权，%s 内未完成；节点可能已经生成，请稍后重试一次", timeout)
 }
 
 func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
@@ -301,7 +412,7 @@ func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey st
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	var status tailcatStatus
-	err := s.call(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
+	err := s.call(ctx, s.controlCallTimeout(), http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
 	s.applyConfigurationToStatus(&status)
 	return status, err
 }
@@ -318,6 +429,7 @@ func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
 	var status tailcatStatus
 	err := s.call(
 		ctx,
+		s.controlCallTimeout(),
 		http.MethodPut,
 		"/managed-clients",
 		map[string][]string{"public_keys": publicKeys},
@@ -334,7 +446,7 @@ func (s *tailcatSidecarSupervisor) Reset(ctx context.Context) (tailcatStatus, er
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	var status tailcatStatus
-	err := s.call(ctx, http.MethodPost, "/reset", nil, &status)
+	err := s.call(ctx, s.controlCallTimeout(), http.MethodPost, "/reset", nil, &status)
 	s.applyConfigurationToStatus(&status)
 	return status, err
 }
@@ -510,7 +622,7 @@ func (s *tailcatSidecarSupervisor) waitUntilReady(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		var status tailcatStatus
-		if err := s.call(ctx, http.MethodGet, "/status", nil, &status); err == nil && status.Running {
+		if err := s.call(ctx, s.controlCallTimeout(), http.MethodGet, "/status", nil, &status); err == nil && status.Running {
 			return nil
 		}
 		s.mu.Lock()
@@ -527,9 +639,23 @@ func (s *tailcatSidecarSupervisor) waitUntilReady(ctx context.Context) error {
 	}
 }
 
-func (s *tailcatSidecarSupervisor) call(ctx context.Context, method string, path string, payload any, result any) error {
+// call 按操作给定超时。超时错误原样返回（可用 errors.Is 判 context.DeadlineExceeded），
+// 由调用方决定怎么向用户解释。
+func (s *tailcatSidecarSupervisor) call(
+	ctx context.Context,
+	timeout time.Duration,
+	method string,
+	path string,
+	payload any,
+	result any,
+) error {
 	if s == nil || s.controlPath == "" {
 		return errors.New("Tailcat 控制通道不可用")
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	var body io.Reader
 	if payload != nil {
@@ -552,7 +678,7 @@ func (s *tailcatSidecarSupervisor) call(ctx context.Context, method string, path
 		},
 	}
 	defer transport.CloseIdleConnections()
-	client := http.Client{Transport: transport, Timeout: 5 * time.Second}
+	client := http.Client{Transport: transport}
 	response, err := client.Do(req)
 	if err != nil {
 		return err

@@ -70,10 +70,7 @@ struct LegalDocumentView: View {
                     MarkdownBlockView(block: block, style: style)
                 }
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .settingsScrollContent()
             .textSelection(.enabled)
         }
         .settingsCanvasBackground(tokens: tokens)

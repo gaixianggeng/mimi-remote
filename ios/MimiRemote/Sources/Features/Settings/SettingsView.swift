@@ -4,6 +4,8 @@ import SwiftUI
 /// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
 enum SettingsLayoutMetrics {
     static let standardRowHeight: CGFloat = 52
+    /// 设备 Tab 的当前电脑主行：名称 20pt + 副标题，比普通行高一档。
+    static let deviceRowHeight: CGFloat = 64
     static let accessibilityRowHeight: CGFloat = 76
     static let rowHorizontalInset: CGFloat = 16
     static let iconSlot: CGFloat = 28
@@ -90,14 +92,35 @@ struct SettingsView: View {
     let isInitialSetup: Bool
     var showsDoneButton = true
     var embedsNavigationStack = true
+    var showsDeviceEntry = true
+    var onOpenDevices: (() -> Void)?
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-    @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
+    @StateObject private var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+    @StateObject private var navigation: SettingsNavigationState
     @State private var didApplyDebugLaunchRoute = false
-    @State private var showsConnectionManagement = false
+
+    init(
+        isInitialSetup: Bool,
+        showsDoneButton: Bool = true,
+        embedsNavigationStack: Bool = true,
+        showsDeviceEntry: Bool = true,
+        onOpenDevices: (() -> Void)? = nil,
+        navigation: SettingsNavigationState? = nil,
+        qrScannerPresentation: ConnectionQRCodeScannerPresentation? = nil
+    ) {
+        self.isInitialSetup = isInitialSetup
+        self.showsDoneButton = showsDoneButton
+        self.embedsNavigationStack = embedsNavigationStack
+        self.showsDeviceEntry = showsDeviceEntry
+        self.onOpenDevices = onOpenDevices
+        _navigation = StateObject(wrappedValue: navigation ?? SettingsNavigationState())
+        _qrScannerPresentation = StateObject(wrappedValue: qrScannerPresentation ?? ConnectionQRCodeScannerPresentation())
+    }
+
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -106,7 +129,7 @@ struct SettingsView: View {
 
         Group {
             if embedsNavigationStack {
-                NavigationStack {
+                NavigationStack(path: $navigation.mePath) {
                     settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
                 }
             } else {
@@ -124,7 +147,7 @@ struct SettingsView: View {
 
         Group {
             if isInitialSetup {
-                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
+                ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
             } else {
                 settingsForm(tokens: tokens, canvasBackground: canvasBackground)
                     .frame(maxWidth: 920)
@@ -135,8 +158,8 @@ struct SettingsView: View {
             }
         }
         .environmentObject(qrScannerPresentation)
-        .navigationDestination(isPresented: $showsConnectionManagement) {
-            ConnectionSettingsView(qrScannerPresentation: qrScannerPresentation)
+        .navigationDestination(for: SettingsDestination.self) { destination in
+            SettingsDestinationView(navigation: navigation, qrScannerPresentation: qrScannerPresentation, destination: destination)
         }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -163,7 +186,7 @@ struct SettingsView: View {
         // App Store 截图需要直接到达 Mac 连接页，避免依赖屏幕尺寸与滚动位置做自动点击。
         // 仅 Debug 构建读取该参数，Release 与普通设置导航保持不变。
         if ProcessInfo.processInfo.arguments.contains("--debug-open-mac-connection") {
-            showsConnectionManagement = true
+            openDevices()
         }
 #endif
     }
@@ -223,38 +246,34 @@ struct SettingsView: View {
                 }
             }
 
-            // Mac 连接紧随额度：断线时这张卡会自己变警示态，排在第二屏位置仍然一眼可见，
-            // 不必为此把最常看的额度挤下去。
-            Section {
-                Button {
-                    showsConnectionManagement = true
-                } label: {
-                    SettingsConnectionCard(
-                        deviceName: currentMacDisplayName,
-                        status: compactConnectionStatusText,
-                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
-                        statusTint: connectionStatusTone(tokens: tokens),
-                        warningText: connectionWarningText
-                    )
+            if showsDeviceEntry {
+                Section {
+                    Button {
+                        openDevices()
+                    } label: {
+                        SettingsConnectionCard(
+                            deviceName: currentMacDisplayName,
+                            status: compactConnectionStatusText,
+                            savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
+                            statusTint: connectionStatusTone(tokens: tokens),
+                            warningText: connectionWarningText
+                        )
+                    }
+                    // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
+                    // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityIdentifier("settings.connectionManagement")
+                } header: {
+                    sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
                 }
-                // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
-                // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .accessibilityIdentifier("settings.connectionManagement")
-            } header: {
-                sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
             if ManagedConnectionSubscriptionView.isEntryVisible {
                 Section {
-                    NavigationLink {
-                        ManagedConnectionSubscriptionView(
-                            qrScannerPresentation: qrScannerPresentation
-                        )
-                    } label: {
+                    NavigationLink(value: SettingsDestination.managedConnection) {
                         SettingsValueLabel(
                             title: L10n.text("ui.managed_subscription_title"),
                             systemImage: "creditcard"
@@ -265,12 +284,11 @@ struct SettingsView: View {
                 } header: {
                     sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
                 }
+                .listRowBackground(tokens.settingsGroupBackground)
             }
 
             Section {
-                NavigationLink {
-                    AppearanceView(profileID: appStore.activeHostScope.profileID)
-                } label: {
+                NavigationLink(value: SettingsDestination.appearance) {
                     SettingsValueLabel(
                         title: L10n.text("ui.personalization"),
                         value: themeStore.mode.title,
@@ -281,12 +299,7 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appearance")
 
-                NavigationLink {
-                    LanguageSettingsView(
-                        appLanguageRawValue: $appLanguageRawValue,
-                        voiceInputProviderRawValue: $voiceInputProviderRawValue
-                    )
-                } label: {
+                NavigationLink(value: SettingsDestination.language) {
                     SettingsValueLabel(
                         title: L10n.text("ui.language"),
                         value: languageSettingsSummary,
@@ -296,9 +309,7 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
 
-                NavigationLink {
-                    DefaultModelSettingsView()
-                } label: {
+                NavigationLink(value: SettingsDestination.defaultModels) {
                     // 两个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，
                     // 详情页已经把它们平铺开了，这里只做入口。
                     SettingsValueLabel(
@@ -310,25 +321,22 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.defaultModels")
 
                 // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
-                SettingsChoiceRow(
-                    title: L10n.text("ui.default_permissions"),
-                    systemImage: "lock.shield",
-                    options: ComposerPermissionMode.allCases,
-                    selection: defaultPermissionModeSelection,
-                    presentation: .page
-                )
+                NavigationLink(value: SettingsDestination.defaultPermissions) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.default_permissions"),
+                        value: ComposerPermissionMode.stored(defaultPermissionModeID).title,
+                        systemImage: "lock.shield"
+                    )
+                }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
                 sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
             }
+            .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
-                NavigationLink {
-                    DiagnosticsAndSupportSettingsView(
-                        showsHistoryDiagnostics: developerModeEnabled
-                    )
-                } label: {
+                NavigationLink(value: SettingsDestination.diagnostics) {
                     SettingsValueLabel(
                         title: L10n.text("ui.diagnosis_and_support"),
                         systemImage: "stethoscope"
@@ -337,11 +345,7 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.diagnostics")
 
-                NavigationLink {
-                    AdvancedDevelopmentSettingsView(
-                        developerModeEnabled: $developerModeEnabled
-                    )
-                } label: {
+                NavigationLink(value: SettingsDestination.advanced) {
                     SettingsValueLabel(
                         title: L10n.text("ui.advanced_and_development"),
                         systemImage: "hammer"
@@ -350,9 +354,7 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.advancedDevelopment")
 
-                NavigationLink {
-                    AboutAndLegalSettingsView()
-                } label: {
+                NavigationLink(value: SettingsDestination.about) {
                     SettingsValueLabel(
                         title: L10n.text("ui.about_and_legal"),
                         systemImage: "info.circle"
@@ -363,10 +365,13 @@ struct SettingsView: View {
             } header: {
                 sectionHeader(L10n.text("ui.more"), tokens: tokens)
             }
+            .listRowBackground(tokens.settingsGroupBackground)
         }
-        // 分组之间靠留白划分，行本身不再套在圆角白卡里。
+        // 与 themedSettingsForm 同一套：画布自绘、标题不转大写；分组底走
+        // settingsGroupBackground，和「设备」及各设置详情页是同一个 token。
+        // 分组底只能挂在 Section 上：listRowBackground 放到 Form 外层不会下发到行。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
-        .listRowBackground(Color.clear)
+        .textCase(nil)
         .scrollContentBackground(.hidden)
         .background(canvasBackground.ignoresSafeArea())
         // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
@@ -422,12 +427,11 @@ struct SettingsView: View {
         }
     }
 
-    /// 系统默认会把分组标题转成全大写并用最小字号，和页面其余部分不是一套排版。
+    /// 排版本体在 settingsSectionHeaderStyle：整条设置链路（含「设备」和各详情页）
+    /// 共用同一套分组标题，不再由每个页面各自决定字号和文字色。
     private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
         Text(title)
-            .font(themeStore.uiFont(.footnote, weight: .medium))
-            .foregroundStyle(tokens.secondaryText)
-            .textCase(nil)
+            .settingsSectionHeaderStyle()
     }
 
     private func refreshAccountUsage() async {
@@ -507,12 +511,14 @@ struct SettingsView: View {
         )
     }
 
-    private var defaultPermissionModeSelection: Binding<ComposerPermissionMode> {
-        Binding(
-            get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
-            set: { defaultPermissionModeID = $0.rawValue }
-        )
+    private func openDevices() {
+        if let onOpenDevices {
+            onOpenDevices()
+        } else {
+            navigation.mePath.append(.connection)
+        }
     }
+
 }
 
 struct SettingsValueLabel: View {
@@ -524,6 +530,8 @@ struct SettingsValueLabel: View {
     var value: String? = nil
     let systemImage: String
     var valueTint: Color? = nil
+    /// 动作行（点了就执行，不导航）用强调色标题区分于导航行，与列表里的按钮惯例一致。
+    var titleTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
@@ -540,47 +548,46 @@ struct SettingsValueLabel: View {
                 )
                 .accessibilityHidden(true)
 
-            if dynamicTypeSize.isAccessibilitySize, let value {
-                VStack(alignment: .leading, spacing: 2) {
-                    titleText(tokens: tokens)
-                    valueText(value, tokens: tokens)
-                }
-            } else if let value {
-                HStack(alignment: .center, spacing: 12) {
-                    titleText(tokens: tokens)
-                    Spacer(minLength: 12)
-                    valueText(value, tokens: tokens)
+            if let value {
+                ViewThatFits(in: .horizontal) {
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        HStack(spacing: 12) {
+                            titleText(tokens: tokens).fixedSize()
+                            Spacer(minLength: 12)
+                            valueText(value, tokens: tokens).fixedSize()
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        titleText(tokens: tokens)
+                        valueText(value, tokens: tokens)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
                 }
             } else {
                 titleText(tokens: tokens)
             }
         }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: rowHeight,
-            maxHeight: rowHeight,
-            alignment: .leading
-        )
+        // 标准行只规定下限。翻译变长或字体变大时必须能增加高度。
+        .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
 
     private func titleText(tokens: ThemeTokens) -> some View {
         Text(title)
-            .font(themeStore.uiFont(.body))
-            .foregroundStyle(tokens.primaryText)
-            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            .settingsTitleFont()
+            .foregroundStyle(titleTint ?? tokens.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
     }
 
     private func valueText(_ value: String, tokens: ThemeTokens) -> some View {
         Text(value)
-            .font(themeStore.uiFont(.subheadline))
+            .settingsDetailFont()
             .monospacedDigit()
             .foregroundStyle(valueTint ?? tokens.secondaryText)
-            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-            .minimumScaleFactor(0.82)
-            .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var rowHeight: CGFloat {
@@ -1274,7 +1281,7 @@ struct SettingsConnectionCard: View {
     }
 }
 
-private struct DiagnosticsAndSupportSettingsView: View {
+struct DiagnosticsAndSupportSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1285,9 +1292,7 @@ private struct DiagnosticsAndSupportSettingsView: View {
 
         Form {
             Section {
-                NavigationLink {
-                    DoctorView(showsHistoryDiagnostics: showsHistoryDiagnostics)
-                } label: {
+                NavigationLink(value: SettingsDestination.doctor) {
                     SettingsValueLabel(
                         title: L10n.text("ui.diagnosis_and_support"),
                         systemImage: "stethoscope"
@@ -1296,9 +1301,7 @@ private struct DiagnosticsAndSupportSettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.doctor")
 
-                NavigationLink {
-                    LegalDocumentView(document: .support)
-                } label: {
+                NavigationLink(value: SettingsDestination.support) {
                     SettingsValueLabel(
                         title: L10n.text("ui.support_and_contact"),
                         systemImage: "questionmark.circle"
@@ -1309,11 +1312,13 @@ private struct DiagnosticsAndSupportSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
+        .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.diagnosis_and_support"))
     }
 }
 
-private struct AdvancedDevelopmentSettingsView: View {
+struct AdvancedDevelopmentSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @Binding var developerModeEnabled: Bool
@@ -1323,9 +1328,7 @@ private struct AdvancedDevelopmentSettingsView: View {
 
         Form {
             Section {
-                NavigationLink {
-                    CapabilitiesView()
-                } label: {
+                NavigationLink(value: SettingsDestination.capabilities) {
                     SettingsValueLabel(
                         title: L10n.text("ui.competency_checklist"),
                         systemImage: "wand.and.stars"
@@ -1351,11 +1354,13 @@ private struct AdvancedDevelopmentSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
+        .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.advanced_and_development"))
     }
 }
 
-private struct AboutAndLegalSettingsView: View {
+struct AboutAndLegalSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1364,9 +1369,7 @@ private struct AboutAndLegalSettingsView: View {
 
         Form {
             Section {
-                NavigationLink {
-                    LegalDocumentView(document: .privacyPolicy)
-                } label: {
+                NavigationLink(value: SettingsDestination.privacyPolicy) {
                     SettingsValueLabel(
                         title: L10n.text("ui.privacy_policy"),
                         systemImage: "hand.raised"
@@ -1375,9 +1378,7 @@ private struct AboutAndLegalSettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.privacyPolicy")
 
-                NavigationLink {
-                    LegalDocumentView(document: .termsOfUse)
-                } label: {
+                NavigationLink(value: SettingsDestination.termsOfUse) {
                     SettingsValueLabel(
                         title: L10n.text("ui.terms_of_use"),
                         systemImage: "doc.text"
@@ -1386,9 +1387,7 @@ private struct AboutAndLegalSettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.termsOfUse")
 
-                NavigationLink {
-                    ThirdPartyNoticesView()
-                } label: {
+                NavigationLink(value: SettingsDestination.thirdPartyNotices) {
                     SettingsValueLabel(
                         title: L10n.text("ui.open_source_license"),
                         systemImage: "chevron.left.forwardslash.chevron.right"
@@ -1401,6 +1400,8 @@ private struct AboutAndLegalSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage()
+        .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.about_and_legal"))
     }
 }

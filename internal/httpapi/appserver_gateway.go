@@ -193,13 +193,19 @@ var appServerAllowedServerRequestMethods = map[string]struct{}{
 }
 
 var appServerClaudeAllowedMethods = map[string]struct{}{
-	"initialize":              {},
-	"initialized":             {},
-	"thread/list":             {},
-	"thread/start":            {},
-	"thread/resume":           {},
-	"thread/read":             {},
-	"thread/turns/list":       {},
+	"initialize":        {},
+	"initialized":       {},
+	"thread/list":       {},
+	"thread/start":      {},
+	"thread/resume":     {},
+	"thread/read":       {},
+	"thread/turns/list": {},
+	// bridge 按 turn 分页 item；iOS 只在 channel 声明了该方法时才把 summary 首页的
+	// 工具过程排进后台补齐，否则会把 summary 当成"内容未加载"。
+	"thread/items/list": {},
+	// Claude 专用：结束本机别处持有该会话的 claude 进程后同 id 续聊。线程授权同
+	// turn/start，但不套只读拒写——被别处持有的会话恰好就是 canAcceptDirectInput=false。
+	"thread/takeover":         {},
 	"turn/start":              {},
 	"turn/steer":              {},
 	"turn/interrupt":          {},
@@ -307,6 +313,9 @@ type appServerGatewayPolicy struct {
 	pendingThreads        map[string]appServerGatewayPendingThreadRequest
 	pendingClientRequests map[string]appServerGatewayPendingClientRequest
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
+	// activeServerTurns 让 Claude 观察者在客户端断开时继承真实运行态，避免把仍在
+	// 执行、尚未产生审批的 turn 误判为空闲并提前关闭 bridge 读端。
+	activeServerTurns     map[string]struct{}
 	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
@@ -537,6 +546,12 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
 		}
+		if !probe.Healthy || !claudebridge.SupportsThreadItemsList(probe.Version) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "thread/items/list")
+		}
+		if !probe.Healthy || !claudebridge.SupportsThreadTakeover(probe.Version) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "thread/takeover")
+		}
 		channels = append(channels, appServerChannel{
 			ID:               "claude",
 			RuntimeID:        "claude",
@@ -671,6 +686,16 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	// 具名会话可能已经有存活的 broker。命中时完全跳过拨号：复用同一条上游连接，
+	// 离线期间登记的审批请求 id 才继续有效，重连后可以直接重放。
+	brokerKey := ""
+	if r.codexGatewayBrokerEnabled() {
+		brokerKey = codexGatewayBrokerKey(req)
+	}
+	if brokerKey != "" && r.serveAttachedCodexGatewayBroker(req, client, brokerKey) {
+		return
+	}
+
 	// 正常链路直接建立这一条连接，避免为每个移动端连接额外创建 readiness proxy。
 	// 只有首次拨号失败时才进入带 single-flight 的 Socket 探测/bootstrap，然后重试一次。
 	// 外侧握手必须先成功，畸形请求和超额连接不能触发任何 SSH 子进程。
@@ -698,13 +723,23 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 暂时不可用，请稍后重试")
 		return
 	}
-	defer upstream.Close()
-	if !gateway.attachUpstream(upstream) {
-		return
-	}
+	// broker 接管后上游连接要比这次 HTTP 请求活得更久，不能由 handler 关闭。
+	upstreamOwnedByBroker := false
+	defer func() {
+		if !upstreamOwnedByBroker {
+			upstream.Close()
+		}
+	}()
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
 	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
+	if brokerKey != "" && r.serveNewCodexGatewayBroker(req, client, upstream, monitor, brokerKey) {
+		upstreamOwnedByBroker = true
+		return
+	}
+	if !gateway.attachUpstream(upstream) {
+		return
+	}
 	r.proxyAppServerGateway(gatewayCtx, client, upstream, monitor)
 }
 
@@ -761,6 +796,8 @@ func (r *Router) shutdownCodexGateways() {
 		connections = append(connections, connection)
 	}
 	r.codexGatewayMu.Unlock()
+
+	r.shutdownApprovalObservers()
 
 	var cleanup sync.WaitGroup
 	cleanup.Add(len(connections))

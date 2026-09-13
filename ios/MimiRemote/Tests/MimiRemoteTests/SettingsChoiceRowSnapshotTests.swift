@@ -82,6 +82,39 @@ final class SettingsChoiceRowSnapshotTests: XCTestCase {
         assert(view, named: "inline-rows-dark")
     }
 
+    func testLongTitlesAndValuesAtAccessibilitySize() {
+        let themeStore = makeThemeStore()
+        let view = VStack(alignment: .leading, spacing: 0) {
+            SettingsValueLabel(
+                title: "Default model for new conversations",
+                value: "A model with a deliberately long display name",
+                systemImage: "sparkles"
+            )
+            Divider()
+            SettingsValueLabel(
+                title: "新会话的默认权限设置",
+                value: "允许访问当前工作区中的全部文件",
+                systemImage: "lock.shield"
+            )
+            Divider()
+            StatefulChoiceRow(
+                title: "语音输入",
+                systemImage: "waveform",
+                options: VoiceInputProvider.allCases,
+                initial: VoiceInputProvider.apple
+            )
+        }
+        .padding(.horizontal, 16)
+        .background(themeStore.tokens(for: .dark).background)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.dynamicTypeSize, .accessibility2)
+        .frame(width: cardWidth)
+        .fixedSize(horizontal: false, vertical: true)
+
+        assert(view, named: "long-text-accessibility-dark")
+    }
+
     private func makeThemeStore() -> ThemeStore {
         let suite = "SettingsChoiceRowSnapshotTests.Theme.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

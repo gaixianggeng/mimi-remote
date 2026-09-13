@@ -40,6 +40,7 @@ extension ComposerView {
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
         )
+        sessionStore.updateSelectedThreadPermissionsForNextTurn(composerState.turnOptions)
     }
 
     func setPermissionProfile(_ profile: CodexAppServerPermissionProfileSummary) {
@@ -60,6 +61,7 @@ extension ComposerView {
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
         )
+        sessionStore.updateSelectedThreadPermissionsForNextTurn(composerState.turnOptions)
     }
 
     var permissionProfileCWD: String? {
@@ -80,13 +82,8 @@ extension ComposerView {
     }
 
     var selectedPermissionProfileID: String? {
-        if let profileID = composerState.turnOptions.permissionProfileID?
-            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty {
-            return profileID
-        }
-        return composerState.turnOptions.preservesThreadPermissionSettings
-            ? activePermissionProfile?.id
-            : nil
+        composerState.turnOptions.permissionProfileID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
     }
 
     var activePermissionProfile: CodexAppServerActivePermissionProfile? {
@@ -265,85 +262,6 @@ struct ComposerToolbarControlLabel: View {
     private func restingForeground(tokens: ThemeTokens) -> Color {
         guard usesPhoneStyle else { return tokens.primaryText }
         return usesCondensedTitle ? tokens.conversationSecondaryText : tokens.conversationPrimaryText
-    }
-}
-
-/// 权限配置菜单单独形成泛型边界，避免继续放大 ComposerView 已经很长的视图类型。
-struct ComposerPermissionMenu: View {
-    let permissionModes: [ComposerPermissionMode]
-    let permissionProfiles: [CodexAppServerPermissionProfileSummary]
-    let selectedMode: ComposerPermissionMode
-    let selectedProfileID: String?
-    let activeProfileID: String?
-    let permissionAccessibilityValue: String
-    let tint: Color
-    let reduceMotion: Bool
-    let usesPhoneStyle: Bool
-    let onSelectMode: (ComposerPermissionMode) -> Void
-    let onSelectProfile: (CodexAppServerPermissionProfileSummary) -> Void
-
-    var body: some View {
-        Menu {
-            Section(L10n.text("ui.permission_mode")) {
-                ForEach(permissionModes) { mode in
-                    Button {
-                        onSelectMode(mode)
-                    } label: {
-                        Label(mode.title, systemImage: modeIcon(mode))
-                    }
-                    .accessibilityHint(mode.detail)
-                }
-            }
-            if !permissionProfiles.isEmpty {
-                Section(L10n.text("ui.advanced_permission_profiles")) {
-                    ForEach(permissionProfiles) { profile in
-                        Button {
-                            onSelectProfile(profile)
-                        } label: {
-                            Label(profile.id, systemImage: profileIcon(profile))
-                        }
-                        .accessibilityHint(profile.description ?? L10n.text("ui.use_named_permission_profile"))
-                    }
-                }
-            }
-            Section(L10n.text("ui.permission_status")) {
-                if let activeProfileID {
-                    Text(L10n.format("ui.current_turn_permission_value", displayName(for: activeProfileID)))
-                }
-                Text(L10n.format("ui.next_turn_permission_value", selectedPermissionName))
-            }
-        } label: {
-            ComposerToolbarControlLabel(
-                title: selectedProfileID ?? selectedMode.title,
-                systemImage: selectedProfileID == nil ? selectedMode.systemImage : "shield.lefthalf.filled",
-                trailingSystemImage: nil,
-                isSelected: false,
-                tint: tint,
-                titleMaxWidth: nil,
-                accessibilityLabel: L10n.text("ui.permission_mode"),
-                usesPhoneStyle: usesPhoneStyle,
-                usesCondensedTitle: false
-            )
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.permission_mode"))
-        .accessibilityValue(permissionAccessibilityValue)
-    }
-
-    private func modeIcon(_ mode: ComposerPermissionMode) -> String {
-        selectedProfileID == nil && selectedMode == mode ? "checkmark" : mode.systemImage
-    }
-
-    private func profileIcon(_ profile: CodexAppServerPermissionProfileSummary) -> String {
-        selectedProfileID == profile.id ? "checkmark" : "shield.lefthalf.filled"
-    }
-
-    private var selectedPermissionName: String {
-        selectedProfileID.map { displayName(for: $0) } ?? selectedMode.title
-    }
-
-    private func displayName(for profileID: String) -> String {
-        ComposerPermissionMode(builtInPermissionProfileID: profileID)?.title ?? profileID
     }
 }
 
@@ -1017,23 +935,38 @@ extension ComposerView {
     }
 
     var permissionTitle: String {
-        if composerState.turnOptions.preservesThreadPermissionSettings,
-           activePermissionProfile == nil {
+        switch ComposerPermissionMenuLabel.resolve(
+            preservesThreadSettings: composerState.turnOptions.preservesThreadPermissionSettings,
+            selectedMode: composerState.permissionMode,
+            selectedProfileID: selectedPermissionProfileID,
+            activeProfileID: activePermissionProfile?.id
+        ) {
+        case .inherited:
             return L10n.text("ui.follow_the_current_thread_permissions")
+        case .sessionProfile(let id):
+            return L10n.format("ui.session_permission_settings_value", id)
+        case .nextMode(let mode):
+            return L10n.format("ui.next_turn_permission_value", mode.title)
+        case .nextProfile(let id):
+            return L10n.format("ui.next_turn_permission_value", permissionDisplayName(for: id))
         }
-        if let profileID = selectedPermissionProfileID {
-            return activePermissionProfile.map {
-                L10n.format("ui.current_turn_permission_value", $0.id)
-            } ?? L10n.format("ui.next_turn_permission_value", profileID)
-        }
-        return "\(composerState.permissionMode.title) · \(composerState.turnOptions.sandboxMode.title)"
     }
 
     var permissionTint: Color {
-        if selectedPermissionProfileID != nil {
-            return themeStore.tokens(for: colorScheme).accent
+        if composerState.turnOptions.preservesThreadPermissionSettings {
+            guard let activeProfileID = activePermissionProfile?.id else { return .secondary }
+            guard let mode = ComposerPermissionMode(builtInPermissionProfileID: activeProfileID) else {
+                return themeStore.tokens(for: colorScheme).accent
+            }
+            return permissionTint(for: mode)
         }
-        switch composerState.permissionMode {
+        return selectedPermissionProfileID == nil
+            ? permissionTint(for: composerState.permissionMode)
+            : themeStore.tokens(for: colorScheme).accent
+    }
+
+    private func permissionTint(for mode: ComposerPermissionMode) -> Color {
+        switch mode {
         case .requestApproval:
             return themeStore.tokens(for: colorScheme).accent
         case .readOnly:
@@ -1043,6 +976,10 @@ extension ComposerView {
         case .fullAccess:
             return .red
         }
+    }
+
+    private func permissionDisplayName(for profileID: String) -> String {
+        ComposerPermissionMode(builtInPermissionProfileID: profileID)?.title ?? profileID
     }
 
     var composerMinHeight: CGFloat {

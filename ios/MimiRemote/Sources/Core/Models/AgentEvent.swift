@@ -717,9 +717,13 @@ struct CodexAppServerEventProjector {
         let suffix: String
     }
 
-    private var nextSeqBySessionID: [SessionID: EventSequence] = [:]
+    private let sequenceClock: CodexAppServerEventSequenceClock
     private var streamedTextByKey: [StreamedTextKey: String] = [:]
     private var agentMessageKindByItemID: [AgentItemID: MessageKind] = [:]
+
+    init(sequenceClock: CodexAppServerEventSequenceClock = .shared) {
+        self.sequenceClock = sequenceClock
+    }
 
     mutating func project(_ notification: CodexAppServerNotification) -> AgentEvent? {
         let params = notification.params?.objectValue ?? [:]
@@ -932,11 +936,8 @@ struct CodexAppServerEventProjector {
         )
     }
 
-    private mutating func nextSeq(for sessionID: SessionID?) -> EventSequence {
-        let key = sessionID ?? "__appserver_global__"
-        let next = (nextSeqBySessionID[key] ?? 0) + 1
-        nextSeqBySessionID[key] = next
-        return next
+    private func nextSeq(for sessionID: SessionID?) -> EventSequence {
+        sequenceClock.next(for: sessionID ?? "__appserver_global__")
     }
 
     private mutating func completedAgentMessageEvent(

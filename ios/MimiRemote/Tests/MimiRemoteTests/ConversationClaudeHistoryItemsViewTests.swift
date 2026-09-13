@@ -113,6 +113,67 @@ extension ConversationDataFlowTests {
         )
     }
 
+    // #411：新 bridge 按 summary 只回文本并声明 thread/items/list。首屏先用文本，
+    // 工具过程按 turn 排进后台补齐，和 Codex 走同一条路；不能再挂"内容未加载"的提示。
+    func testDirectRuntimeClaudeSummaryTurnsHydrateWhenChannelDeclaresItemsList() async throws {
+        let project = AgentProject(id: "proj_claude_hydrate", name: "Claude Hydrate", path: "/tmp/claude-hydrate")
+        let transport = FakeCodexAppServerTransport()
+        let channel = makeClaudeChannelMetadata(methods: [
+            "initialize", "initialized", "thread/list", "thread/start", "thread/resume",
+            "thread/read", "thread/turns/list", "thread/items/list", "turn/start", "turn/steer",
+            "turn/interrupt", "model/list", "account/rateLimits/read"
+        ])
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(project: project, channels: [channel])
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_claude_hydrate", before: nil, limit: 120)
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+
+        let metadataRead = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        transportResponse(
+            transport,
+            id: metadataRead.id,
+            result: #"{"thread":{"id":"thr_claude_hydrate","sessionId":"thr_claude_hydrate","preview":"claude","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-hydrate","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"claude","turns":[]}}"#
+        )
+
+        let turnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        XCTAssertEqual(
+            turnsRequest.params?.objectValue?["itemsView"]?.stringValue,
+            "summary",
+            "首屏应向 bridge 请求 summary 视图"
+        )
+        transportResponse(
+            transport,
+            id: turnsRequest.id,
+            result: #"{"data":[{"id":"turn_hydrate","status":"completed","itemsView":"summary","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"hydrate_1","content":[{"type":"text","text":"claude question"}]},{"type":"agentMessage","id":"hydrate_2","text":"claude answer","phase":"final_answer"}]}],"nextCursor":null}"#
+        )
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.messages.map(\.content), ["claude question", "claude answer"])
+        XCTAssertEqual(
+            page.itemContinuations.map(\.turnID),
+            ["turn_hydrate"],
+            "summary Turn 应排进 thread/items/list 补齐任务"
+        )
+        XCTAssertNil(page.notice, "能补齐时不该声称内容未加载")
+    }
+
     // 省流页只要非空就挂提示，会让"是否真的省了内容"这个判断形同虚设。
     func testEconomyHistoryNoticeRequiresRealLazyContentSignal() {
         let completeTurn: [String: CodexAppServerJSONValue] = [

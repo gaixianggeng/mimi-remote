@@ -186,6 +186,17 @@ extension SessionStore {
                 }
             }
             upsert(responseSession)
+            if resume == nil {
+                // 创建成功时工作区和 runtime 都已由服务端确认。全局发现随后会把这个 ID 纳入
+                // controlledGlobalSessionIDs，此后目录归属只认 cwd 查询登记；而普通刷新会跳过
+                // “当前且已有会话”的工作区，登记永远补不上，新会话就会从工作区列表消失。
+                // 这里直接用创建结果登记归属，不放宽任何授权判断。
+                recordWorkspaceCreatedSession(
+                    responseSession,
+                    in: workspace,
+                    runtimeProvider: responseSession.runtimeProvider ?? responseSession.source
+                )
+            }
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
 
@@ -448,9 +459,9 @@ extension SessionStore {
                 // job 也不能让新代 full 恢复直接返回成功。
                 cancelHistoryLoadJob(existing, sessionID: session.id)
             } else if existing.loadMode == loadMode {
-                if reason == .writerRetry {
-                    // writer 重试必须读取点击时刻之后的权威历史。即使已有任务也不能加入，
-                    // 否则 Desktop 刚产生的消息可能不在旧请求的快照里。
+                if reason == .writerRetry || reason == .missingAssistantReply {
+                    // writer 重试和完成后补读都要求越过对应事件边界的新快照；
+                    // 旧请求即使也是 bypass，也可能尚未包含刚完成的正文。
                     cancelHistoryLoadJob(existing, sessionID: session.id)
                 } else if force,
                    existing.cachePolicy != .bypass,
@@ -519,7 +530,7 @@ extension SessionStore {
                 }
             } else {
                 switch reason {
-                case .authoritativeReopen, .summaryChoice, .manualFull, .writerRetry:
+                case .authoritativeReopen, .summaryChoice, .manualFull, .writerRetry, .missingAssistantReply:
                     cancelHistoryLoadJob(existing, sessionID: session.id)
                 case .automatic:
                     return true
@@ -2710,6 +2721,8 @@ extension SessionStore {
             agentNickname: item.agentNickname,
             agentRole: item.agentRole,
             canAcceptDirectInput: item.canAcceptDirectInput,
+            // 别处持有的摘要和只读标记必须一起进工作区投影，否则输入框灰了却没有原因提示。
+            claudeOwner: item.claudeOwner,
             context: item.context
         )
     }
@@ -3622,6 +3635,9 @@ extension SessionStore {
         }
         for sessionID in staleTurnCompletionReconciliationIDs {
             cancelTurnCompletionReconciliation(sessionID: sessionID)
+        }
+        for sessionID in missingAssistantReplyBackfillJobsBySessionID.keys where !validSessionIDs.contains(sessionID) {
+            cancelMissingAssistantReplyBackfill(sessionID: sessionID)
         }
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)

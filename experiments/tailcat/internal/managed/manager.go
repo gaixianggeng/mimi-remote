@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -358,7 +359,16 @@ func (m *Manager) pairHandler(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	// 首次配对要等中继授权临时节点，耗时不稳定。写到 stderr 由 agentd 收进日志，
+	// 排查时能看到是节点启动慢还是控制通道慢。
+	started := time.Now()
 	status, err := m.StartPairing(10 * time.Minute)
+	elapsed := time.Since(started).Round(time.Millisecond)
+	if err != nil {
+		log.Printf("pair: 短期配对节点启动失败（耗时 %s）：%v", elapsed, err)
+	} else {
+		log.Printf("pair: 短期配对节点启动耗时 %s", elapsed)
+	}
 	writeResult(w, status, err)
 }
 

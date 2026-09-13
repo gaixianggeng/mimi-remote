@@ -289,6 +289,7 @@ enum HistoryLoadReason: Equatable {
     case manualFull
     case summaryChoice
     case writerRetry
+    case missingAssistantReply
 }
 
 enum HistoryLoadQuality: Equatable {
@@ -939,6 +940,28 @@ struct SessionReminderStore {
 
     func normalizedEndpoint(_ endpoint: String) -> String {
         AgentAPIClient.normalizedEndpoint(endpoint)
+    }
+}
+
+/// Claude 会话正被 Mac 上其他 Claude 进程持有：输入框已经因只读禁用，这条提示解释原因，
+/// 并说明持有方退出后可以在此继续。
+struct SessionOwnershipNotice: Equatable {
+    let sessionID: SessionID
+    let owner: ClaudeSessionOwner
+    /// 当前主机的 Claude channel 声明了 thread/takeover 时才提供"在此设备上接管"。
+    var canTakeOver = false
+    var isTakingOver = false
+
+    var title: String {
+        L10n.text("ui.session_owned_elsewhere_title")
+    }
+
+    var message: String {
+        L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
+    }
+
+    var isBusy: Bool {
+        owner.isBusy
     }
 }
 
@@ -1699,7 +1722,9 @@ enum SessionNotificationOpenOutcome: Equatable {
     case opened
     case requiresProfileSwitch(displayName: String?)
     case unavailable(message: String)
-    case ignored
+    /// 用户在通知处理期间已经明确去往别处，旧通知意图作废；这是唯一允许保持安静的结果。
+    /// 其余打不开的情况必须给出 unavailable 提示或自动兜底，并留下阶段诊断。
+    case superseded
 }
 
 // 列表预览与最近活动投影属于本地状态保护：服务端确认前保留用户刚刚创建或更新的会话，

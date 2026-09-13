@@ -527,6 +527,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let supportsLatestTurnHistoryPage: Bool
     let latestTurnHistoryHandler: ((String) async throws -> HistoryMessagesPage?)?
+    /// #451：Claude 接管。nil 时走协议默认实现（抛错），与真实的非 Claude runtime 一致。
+    var takeOverThreadHandler: ((String) async throws -> CodexAppServerThreadTakeoverResult)?
+    var sessionSupportsThreadTakeoverResult = false
+    var sessionSupportsThreadTakeoverError: Error?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -2128,4 +2132,20 @@ func waitForSelectedThreadGoalStatus(_ expected: ThreadGoalStatus, store: Sessio
 
 @MainActor
 extension ConversationDataFlowTests {
+}
+
+extension MockSessionStoreClient {
+    func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult {
+        guard let takeOverThreadHandler else {
+            throw AgentAPIError.invalidResponse
+        }
+        return try await takeOverThreadHandler(threadID)
+    }
+
+    func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        if let sessionSupportsThreadTakeoverError {
+            throw sessionSupportsThreadTakeoverError
+        }
+        return sessionSupportsThreadTakeoverResult
+    }
 }

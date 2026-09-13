@@ -593,6 +593,11 @@ struct ConversationMessageContent: View {
         guard message.role == .user else {
             return nil
         }
+        let tokens = themeStore.tokens(for: colorScheme)
+        // sending 还会对整条消息叠加 0.72 opacity；默认深色避免时间文字再次降透明度。
+        if tokens.preset == .codex, tokens.resolvedScheme == .dark {
+            return tokens.secondaryText
+        }
         return userBubbleForeground.opacity(0.64)
     }
 

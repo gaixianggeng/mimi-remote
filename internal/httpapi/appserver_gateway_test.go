@@ -140,6 +140,34 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	if containsAnyString(methods, "account/usage/read") {
 		t.Fatalf("Claude bridge 不应开放 Codex 账号 Token 活动：%v", methods)
 	}
+	if !containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.9 起的 bridge 按 turn 分页 item，channel 必须声明 thread/items/list：%v", methods)
+	}
+}
+
+// #411：旧 bridge 无视 itemsView 直接回完整 items，iOS 能正常显示，不抬最低版本；
+// 但不能对它声明 thread/items/list，否则 iOS 会把 summary 首页排进注定失败的补齐任务。
+func TestAppServerConfigHidesClaudeItemsListForBridgeWithoutItemPaging(t *testing.T) {
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.8")
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	body := decodeJSON(t, rec)
+	claude := body["channels"].([]any)[1].(map[string]any)
+	if claude["gateway_available"] != true {
+		t.Fatalf("0.2.8 仍满足最低版本，gateway 应可用：%v", claude)
+	}
+	methods := claude["methods"].([]any)
+	if containsAnyString(methods, "thread/items/list") {
+		t.Fatalf("0.2.8 bridge 没有 thread/items/list，channel 不应声明：%v", methods)
+	}
+	if !containsAnyString(methods, "thread/turns/list") || !containsAnyString(methods, "account/rateLimits/read") {
+		t.Fatalf("其余 Claude 方法不应受影响：%v", methods)
+	}
 }
 
 func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testing.T) {
@@ -260,7 +288,11 @@ func TestClaudeGatewayStartsBridgeAndProxiesJSONLines(t *testing.T) {
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 IFS= read -r line
 printf '%%s\n' "$line" > %q
-printf '{"jsonrpc":"2.0","id":99,"result":{"models":[]}}\n'
+printf '{"jsonrpc":"2.0","id":99,"result":{"data":[{"id":"claude-future-9","model":"claude-future-9","displayName":"Claude Future 9 Preview","supportedReasoningEfforts":[{"reasoningEffort":"adaptive","description":"Bridge-defined adaptive effort","futureEffortField":{"budget":123}}],"defaultReasoningEffort":"adaptive","futureModelField":{"contextWindow":123456}}],"nextCursor":"future-page-2","futureResultField":{"source":"cli-initialize"}},"futureEnvelopeField":"keep-me"}\n'
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":100,"result":{"data":[],"nextCursor":null,"futureResultField":"empty-kept"}}\n'
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":101,"error":{"code":-32042,"message":"CLI initialize failed","data":{"source":"initialize","retryable":true}},"futureEnvelopeField":"error-kept"}\n'
 while IFS= read -r line; do :; done
 `, receivedPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
@@ -278,15 +310,25 @@ while IFS= read -r line; do :; done
 	if err := conn.WriteMessage(websocket.TextMessage, pretty); err != nil {
 		t.Fatal(err)
 	}
-	raw := readGatewayRaw(t, conn)
-	if !bytes.Contains(raw, []byte(`"id":99`)) ||
-		!bytes.Contains(raw, []byte(`"model":"claude-fable-5"`)) ||
-		!bytes.Contains(raw, []byte(`"model":"sonnet"`)) ||
-		!bytes.Contains(raw, []byte(`"model":"opus"`)) ||
-		!bytes.Contains(raw, []byte(`"Claude Fable 5"`)) ||
-		!bytes.Contains(raw, []byte(`"Claude Opus 5"`)) ||
-		bytes.Contains(raw, []byte(`"models":[]`)) {
-		t.Fatalf("Claude model/list 应由 gateway 覆盖成当前模型目录：%s", raw)
+	want := []byte(`{"jsonrpc":"2.0","id":99,"result":{"data":[{"id":"claude-future-9","model":"claude-future-9","displayName":"Claude Future 9 Preview","supportedReasoningEfforts":[{"reasoningEffort":"adaptive","description":"Bridge-defined adaptive effort","futureEffortField":{"budget":123}}],"defaultReasoningEffort":"adaptive","futureModelField":{"contextWindow":123456}}],"nextCursor":"future-page-2","futureResultField":{"source":"cli-initialize"}},"futureEnvelopeField":"keep-me"}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 必须原样转发 bridge 的动态目录：\ngot =%s\nwant=%s", raw, want)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":100,"method":"model/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	want = []byte(`{"jsonrpc":"2.0","id":100,"result":{"data":[],"nextCursor":null,"futureResultField":"empty-kept"}}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 空目录必须原样转发，不能伪造固定模型：\ngot =%s\nwant=%s", raw, want)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":101,"method":"model/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	want = []byte(`{"jsonrpc":"2.0","id":101,"error":{"code":-32042,"message":"CLI initialize failed","data":{"source":"initialize","retryable":true}},"futureEnvelopeField":"error-kept"}`)
+	if raw := readGatewayRaw(t, conn); !bytes.Equal(raw, want) {
+		t.Fatalf("Claude model/list 错误必须原样转发，不能伪造固定模型：\ngot =%s\nwant=%s", raw, want)
 	}
 	received, err := os.ReadFile(receivedPath)
 	if err != nil {
@@ -1769,6 +1811,31 @@ func TestGatewayThreadListAllowsExplicitHistoryRefreshOnFirstPage(t *testing.T) 
 	if sanitized["refreshHistory"] != true {
 		t.Fatalf("thread/list 应保留 refreshHistory：%v", sanitized)
 	}
+}
+
+// PR #430 评审：新 bridge 可以单独升级。只有网关会转发 thread/items/list 时，bridge 才能按
+// summary 裁掉工具过程；因此由网关给 Claude 的 thread/turns/list 写入 itemsListAvailable，
+// Codex 不写，客户端同名参数不透传。
+func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
+	params := map[string]any{
+		"threadId":           "thread-claude",
+		"limit":              json.Number("10"),
+		"sortDirection":      "desc",
+		"itemsView":          "summary",
+		"itemsListAvailable": false,
+	}
+	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
+	}
+
+	claude := sanitizedGatewayThreadTurnsListParams("claude", params)
+	assertGatewayParamsOnly(t, claude, "threadId", "limit", "sortDirection", "itemsView", "itemsListAvailable")
+	if claude["itemsListAvailable"] != true {
+		t.Fatalf("Claude 的 thread/turns/list 应由网关写入 itemsListAvailable=true：%v", claude)
+	}
+
+	codex := sanitizedGatewayThreadTurnsListParams("codex", params)
+	assertGatewayParamsOnly(t, codex, "threadId", "limit", "sortDirection", "itemsView")
 }
 
 func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {

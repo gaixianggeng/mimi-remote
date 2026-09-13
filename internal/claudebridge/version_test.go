@@ -43,6 +43,39 @@ func TestIsSupported(t *testing.T) {
 	}
 }
 
+func TestSupportsThreadItemsList(t *testing.T) {
+	if SupportsThreadItemsList("0.2.8") {
+		t.Fatal("0.2.8 无视 itemsView 也没有 thread/items/list，不应声明能力")
+	}
+	if !SupportsThreadItemsList("0.2.9") || !SupportsThreadItemsList("1.0.0") {
+		t.Fatal("0.2.9 及更高版本应声明 thread/items/list")
+	}
+	if SupportsThreadItemsList("0.2.9-beta.1") || SupportsThreadItemsList("") {
+		t.Fatal("预发布或缺失版本不能通过能力门禁")
+	}
+}
+
+func TestSupportsThreadTakeover(t *testing.T) {
+	if SupportsThreadTakeover("0.2.10") {
+		t.Fatal("0.2.10 没有 thread/takeover，不应声明能力")
+	}
+	if !SupportsThreadTakeover("0.2.11") || !SupportsThreadTakeover("1.0.0") {
+		t.Fatal("0.2.11 及更高版本应声明 thread/takeover")
+	}
+	if SupportsThreadTakeover("0.2.11-beta.1") || SupportsThreadTakeover("") {
+		t.Fatal("预发布或缺失版本不能通过能力门禁")
+	}
+}
+
+func TestIsComparableRejectsPrereleaseAndUnparsedVersions(t *testing.T) {
+	if !IsComparable("2.1.270") || !IsComparable("v0.2.8") {
+		t.Fatal("正式三段式版本应可参与比较")
+	}
+	if IsComparable("2.1.270-beta.1") || IsComparable("2.1") || IsComparable("") {
+		t.Fatal("预发布、缺段或空版本不得参与择优比较")
+	}
+}
+
 func TestInstallHintUsesMonorepo(t *testing.T) {
 	if !strings.Contains(InstallHint, BridgeRepository) {
 		t.Fatalf("安装提示未指向 Mimi Remote monorepo：%s", InstallHint)

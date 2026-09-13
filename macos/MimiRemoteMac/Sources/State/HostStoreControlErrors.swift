@@ -6,6 +6,7 @@ enum ServiceLifecycleError: LocalizedError {
     case stopTimedOut
     case requiresApproval
     case agentRegistrationFailed(String)
+    case agentSpawnFailed(String)
     case automaticRepairFailed(initial: String, recovery: String)
 
     var errorDescription: String? {
@@ -20,6 +21,8 @@ enum ServiceLifecycleError: LocalizedError {
             "请先在系统设置的登录项中允许 Mimi Remote Mac。"
         case .agentRegistrationFailed(let detail):
             "系统没有找到原服务记录，自动重新登记失败：\(detail)。请运行诊断并重试。"
+        case .agentSpawnFailed(let detail):
+            "macOS 无法启动后台服务（\(detail)），后台服务记录可能已过期。"
         case .automaticRepairFailed(let initial, let recovery):
             "服务首次启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
         }

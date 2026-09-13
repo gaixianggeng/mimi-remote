@@ -1513,7 +1513,7 @@ extension SessionStore {
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(error.localizedDescription, origin: .connectionProbe)
             return
         }
         var requestToken: Int?
@@ -1564,7 +1564,7 @@ extension SessionStore {
                !isCurrentSessionPageRequest(projectID: projectID, token: requestToken) {
                 return
             }
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(error.localizedDescription, origin: .connectionProbe)
         }
     }
 

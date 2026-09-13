@@ -5,6 +5,49 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionStoreKitClientTests: XCTestCase {
+    func testReplayedExpiredPurchaseRemainsVerifiedAndCanBeFinished() async throws {
+        let (session, client) = try await makeSessionAndClient()
+        session.timeRate = .oneRenewalEveryTwoSeconds
+        let transaction = try await session.buyProduct(identifier: ManagedConnectionProductID.monthly)
+        try session.disableAutoRenewForTransaction(identifier: UInt(transaction.id))
+        let expiresAt = try XCTUnwrap(transaction.expirationDate)
+        guard expiresAt.timeIntervalSinceNow < 10 else {
+            return XCTFail("StoreKit 未使用测试设置的加速续期时间")
+        }
+        // 保留同一笔已签名交易直到实际到期，不依赖 currentEntitlements 的缓存失效时机。
+        try await Task.sleep(for: .seconds(max(0, expiresAt.timeIntervalSinceNow) + 0.1))
+        var storedVerification: VerificationResult<Transaction>?
+        for await result in Transaction.all {
+            if case .verified(let value) = result, value.id == transaction.id {
+                storedVerification = result
+                break
+            }
+        }
+        let verification = try XCTUnwrap(storedVerification)
+        XCTAssertLessThanOrEqual(expiresAt, Date())
+
+        // 使用 StoreKit 产生的真实过期交易，复现真机 purchase 重放的返回值。
+        let outcome = await client.purchaseOutcome(from: verification)
+        guard case .success(let evidence) = outcome else {
+            return XCTFail("过期交易必须交给服务端确认，不能误报签名失败")
+        }
+        XCTAssertEqual(evidence.transactionID, transaction.id)
+        XCTAssertEqual(evidence.signedTransaction, verification.jwsRepresentation)
+        await client.finish(transactionID: evidence.transactionID)
+        let finishDeadline = Date().addingTimeInterval(10)
+        while Date() < finishDeadline {
+            var isUnfinished = false
+            for await unfinished in Transaction.unfinished {
+                if case .verified(let value) = unfinished, value.id == transaction.id {
+                    isUnfinished = true
+                }
+            }
+            if !isUnfinished { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("确认失效后 StoreKit 仍保留未完成的旧交易")
+    }
+
     func testProductsUseCompactChineseBillingUnits() async throws {
         let (session, client) = try await makeSessionAndClient()
         session.locale = Locale(identifier: "zh_CN")

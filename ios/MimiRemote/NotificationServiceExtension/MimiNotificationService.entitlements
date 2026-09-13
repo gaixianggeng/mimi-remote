@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 只读取主 App 写入的会话标题缓存；扩展本身不需要推送或网络 entitlement。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.gaixianggeng.mimi</string>
+	</array>
+</dict>
+</plist>

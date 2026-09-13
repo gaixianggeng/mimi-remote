@@ -504,13 +504,110 @@ struct AgentAPIClient {
         return try await request(path: "/api/voice/transcribe", method: "POST", body: body, timeout: 60)
     }
 
+
+    func pushStatus(timeout: TimeInterval = 10) async throws -> PushStatusResponse {
+        try await request(
+            path: "/api/push/status",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
+    }
+
+    func registerPushDevice(
+        deviceID: String,
+        ticket: String,
+        expiresAt: Date,
+        platform: String
+    ) async throws -> PushDeviceRegistrationResponse {
+        struct Body: Encodable {
+            let deviceID: String
+            let ticket: String
+            let expiresAt: String
+            let platform: String
+
+            enum CodingKeys: String, CodingKey {
+                case deviceID = "device_id"
+                case ticket
+                case expiresAt = "expires_at"
+                case platform
+            }
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let body = try JSONEncoder().encode(Body(
+            deviceID: deviceID,
+            ticket: ticket,
+            expiresAt: formatter.string(from: expiresAt),
+            platform: platform
+        ))
+        return try await request(path: "/api/push/devices", method: "POST", body: body)
+    }
+
+    func unregisterPushDevice(deviceID: String) async throws {
+        struct Response: Decodable { let removed: Bool? }
+        let encoded = deviceID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceID
+        let _: Response = try await request(
+            path: "/api/push/devices?device_id=\(encoded)",
+            method: "DELETE",
+            body: Optional<Data>.none
+        )
+    }
+
+	func submitPushDecision(
+        actionID: String,
+        deviceID: String,
+        decision: LockScreenApprovalDecision,
+        timeout: TimeInterval = 12
+    ) async throws -> PushDecisionResponse {
+        struct Body: Encodable {
+            let actionID: String
+            let deviceID: String
+            let decision: String
+
+			enum CodingKeys: String, CodingKey {
+				case actionID = "action_id"
+				case deviceID = "device_id"
+				case decision
+			}
+		}
+        let body = try JSONEncoder().encode(Body(
+            actionID: actionID,
+            deviceID: deviceID,
+            decision: decision.rawValue
+        ))
+        return try await request(
+            path: "/api/push/actions/decide",
+            method: "POST",
+            body: body,
+            timeout: timeout,
+            rejectedSuccessStatuses: [202]
+        )
+	}
+
+	func pushActionRoute(
+		actionID: String,
+		deviceID: String,
+		timeout: TimeInterval = 10
+	) async throws -> PushActionRouteResponse {
+		let action = actionID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? actionID
+		let device = deviceID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceID
+		return try await request(
+			path: "/api/push/actions/route?action_id=\(action)&device_id=\(device)",
+			method: "GET",
+			body: Optional<Data>.none,
+			timeout: timeout
+		)
+	}
+
     private func request<T: Decodable>(
         path: String,
         method: String,
         requiresAuth: Bool = true,
         headers: [String: String] = [:],
         body: Data?,
-        timeout: TimeInterval = 20
+        timeout: TimeInterval = 20,
+        rejectedSuccessStatuses: Set<Int> = []
     ) async throws -> T {
         // ATS 为兼容 Tailscale 裸 IP 需要允许 HTTP；每次真正发请求前仍由应用层策略重新校验，避免未来调用点绕过设置页。
         let baseURL = try EndpointTransportPolicy.validatedURL(endpoint)
@@ -549,6 +646,11 @@ struct AgentAPIClient {
                 )
             }
             throw AgentAPIError.server(status: http.statusCode, message: message)
+        }
+		// 202 表示 agentd 已接收但仍在处理。决策请求必须把它视为可重试的服务端结果，
+		// 不能当成终态清理通知。
+        if rejectedSuccessStatuses.contains(http.statusCode) {
+            throw AgentAPIError.server(status: http.statusCode, message: decodeError(data))
         }
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T

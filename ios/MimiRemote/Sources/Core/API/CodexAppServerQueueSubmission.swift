@@ -81,7 +81,8 @@ extension CodexAppServerSessionRuntime {
                     cwd: context.cwd,
                     options: payload.options
                 ),
-                timeout: longRunningRequestTimeout
+                timeout: longRunningRequestTimeout,
+                confirmThreadPermissions: !payload.options.preservesThreadPermissionSettings
             )
         } catch {
             // 设置是幂等赋值，但 ACK 丢失时不能猜测结果后继续入队。终止本次发送，

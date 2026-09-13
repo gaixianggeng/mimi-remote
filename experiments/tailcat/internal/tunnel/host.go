@@ -66,6 +66,10 @@ func StartHost(config HostConfig) (*Host, error) {
 		Logf:           logger.Discard,
 		AllowedClients: allowedClients,
 		ServedTCPPorts: []filter.PortRange{{First: config.RemotePort, Last: config.RemotePort}},
+		// Tailcat v0.6.0 起 Start 默认给地址生成随机 PSK，每次重启都会换新地址。
+		// 已配对 iPad 持有的是无 PSK 地址，旧版客户端解析时还会静默忽略 PSK 字段，
+		// 在协调好最低客户端版本和 PSK 持久化之前，稳定地址继续保持无 PSK 格式。
+		DisablePresharedKey: true,
 	}
 	if savedInfo != nil {
 		server.Region = savedInfo.Region[0]
