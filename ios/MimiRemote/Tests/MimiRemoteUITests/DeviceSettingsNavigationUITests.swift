@@ -141,6 +141,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         assertDeviceNavigation()
         XCTAssertEqual(element("settings.profile.debug-store-primary").label.contains("Draft"), false)
 
+        openAddComputer()
         let manual = element("settings.connection.manual")
         scrollTo(manual)
         manual.tap()
@@ -223,6 +224,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testInstallerAndManagedConnectionRemainReachable() throws {
+        openAddComputer()
         let installer = element("settings.hostInstaller.disclosure")
         scrollTo(installer)
         installer.tap()
@@ -234,6 +236,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(platform.buttons["Windows"].isSelected)
         capture("installer-windows-landscape")
         XCUIDevice.shared.orientation = .portrait
+        returnToDeviceHome()
         let managed = element("settings.connection.managedConnection")
         scrollTo(managed)
         managed.tap()
@@ -265,6 +268,19 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         if back.exists { back.tap() }
         else if element("sidebar.me").exists { element("sidebar.me").tap() }
         else { tab("me").tap() }
+    }
+
+    /// 添加电脑组在设备首页第一层的最下方；粘贴、安装说明和手动地址在「其他添加方式」二层。
+    private func openAddComputer() {
+        let entry = element("settings.connection.otherAddMethods")
+        scrollTo(entry)
+        entry.tap()
+        XCTAssertTrue(element("settings.addComputer.page").waitForExistence(timeout: 10))
+    }
+
+    private func returnToDeviceHome() {
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
     }
 
     private func openDevices() {

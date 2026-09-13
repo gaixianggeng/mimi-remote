@@ -42505,6 +42505,118 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅信息" } }
       }
     },
+    "ui.add_computer_scan_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scanning is recommended: the new connection is verified first, and your current computer is kept if it fails." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "推荐扫码连接：会先验证新连接，失败时保留当前电脑。" } }
+      }
+    },
+    "ui.computer_saved": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Saved" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保存" } }
+      }
+    },
+    "ui.copy_connection_info": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy connection info" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制连接信息" } }
+      }
+    },
+    "ui.diagnostics_last_check_failed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Last check failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上次失败" } }
+      }
+    },
+    "ui.diagnostics_last_check_passed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Last check passed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上次正常" } }
+      }
+    },
+    "ui.install_guide_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not installed on your computer yet? Follow the setup guide first; your computer will then show a QR code." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑上还没安装？先按安装指引装好，电脑端会显示二维码。" } }
+      }
+    },
+    "ui.install_on_your_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Install on your computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装电脑端助手" } }
+      }
+    },
+    "ui.other_computers": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Other computers" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他电脑" } }
+      }
+    },
+    "ui.verifying_connection": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verifying" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在验证" } }
+      }
+    },
+    "ui.other_add_methods": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Other ways to add" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他添加方式" } }
+      }
+    },
+    "ui.route_label": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Route" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "线路" } }
+      }
+    },
+    "ui.route_not_probed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not checked yet" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未检测" } }
+      }
+    },
+    "ui.route_probe_failed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Check failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "探测失败" } }
+      }
+    },
+    "ui.route_path_direct": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Direct" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "直连" } }
+      }
+    },
+    "ui.route_http_latency_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP %@ ms" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP %@ ms" } }
+      }
+    },
+    "ui.copy_redacted_diagnostics": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy redacted diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制脱敏诊断结果" } }
+      }
+    },
     "·": {
       "comment": "A separator between two elements.",
       "isCommentAutoGenerated": true,

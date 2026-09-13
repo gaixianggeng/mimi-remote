@@ -67,22 +67,17 @@ struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var transientPreferences: SettingsTransientPreferences
-    /// 首次连接时默认展开：Mac 端还没装，这一步才是真正的起点。
-    private let defaultExpanded: Bool
 
-    init(
-        transientPreferences: SettingsTransientPreferences? = nil,
-        defaultExpanded: Bool = false
-    ) {
+    init(transientPreferences: SettingsTransientPreferences? = nil) {
         _transientPreferences = StateObject(
             wrappedValue: transientPreferences ?? SettingsTransientPreferences()
         )
-        self.defaultExpanded = defaultExpanded
     }
 
+    /// 安装说明一律默认折叠：扫码才是主路径，需要时再展开。
     private var isExpanded: Binding<Bool> {
         Binding(
-            get: { transientPreferences.hostInstallationExpansionOverride ?? defaultExpanded },
+            get: { transientPreferences.hostInstallationExpansionOverride ?? false },
             set: { transientPreferences.hostInstallationExpansionOverride = $0 }
         )
     }
@@ -96,7 +91,7 @@ struct HostInstallationSetupView: View {
         DisclosureGroup(isExpanded: isExpanded) {
             EmptyView()
         } label: {
-            ConnectionRowLabel(title: L10n.text("ui.first_time_installation"), systemImage: "arrow.down.app")
+            ConnectionRowLabel(title: L10n.text("ui.install_on_your_computer"), systemImage: "arrow.down.app")
                 .accessibilityIdentifier("settings.hostInstaller.disclosure")
         }
         .settingsRow()
@@ -189,7 +184,41 @@ struct HostInstallationSetupView: View {
             .listRowBackground(tokens.settingsGroupBackground)
             // 展开内容是标题行的延续，不用分隔线把两者切开。
             .listRowSeparator(.hidden, edges: .top)
+
+            commandLineInstallation(tokens: tokens)
         }
+    }
+
+    /// 命令行安装是同一件事的高级做法，收在安装指引内部，不在添加流程里另起一个同级入口。
+    private func commandLineInstallation(tokens: ThemeTokens) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.text("ui.first_time_installation"))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
+                Text("brew install gaixianggeng/tap/mimi-remote")
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(L10n.text("ui.start_the_assistant_and_display_the_qr_code"))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
+                Text("agentd up")
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(L10n.text("ui.run_agentd_pair_when_the_qr_code_expires"))
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .padding(.vertical, 6)
+        } label: {
+            ConnectionRowLabel(
+                title: L10n.text("ui.command_line_installation_advanced"),
+                systemImage: "terminal"
+            )
+        }
+        .settingsRow()
+        .listRowBackground(tokens.settingsGroupBackground)
+        .accessibilityIdentifier("settings.hostInstaller.commandLine")
     }
 }
 
@@ -199,13 +228,25 @@ struct HostInstallerShareRequest: Identifiable {
 }
 
 /// 连接页整页持有分享面板的 presenter；只观察这一个对象，登记请求时不会让整页重算。
+/// 设备页和添加电脑页会同时存在于导航栈里，只有真正显示安装说明的那一页才能绑定请求。
 struct HostInstallerSharePresenter: ViewModifier {
     @ObservedObject var preferences: SettingsTransientPreferences
+    var isEnabled = true
 
     func body(content: Content) -> some View {
-        content.sheet(item: $preferences.hostInstallerShareRequest) { request in
+        content.sheet(item: shareRequestBinding) { request in
             HostInstallerActivityView(url: request.url)
         }
+    }
+
+    private var shareRequestBinding: Binding<HostInstallerShareRequest?> {
+        Binding(
+            get: { isEnabled ? preferences.hostInstallerShareRequest : nil },
+            set: { request in
+                guard isEnabled else { return }
+                preferences.hostInstallerShareRequest = request
+            }
+        )
     }
 }
 
@@ -285,13 +326,130 @@ struct ConnectionRowLabel: View {
     var value: String? = nil
     let systemImage: String
     var valueTint: Color? = nil
+    var titleTint: Color? = nil
 
     var body: some View {
         SettingsValueLabel(
             title: title,
             value: value,
             systemImage: systemImage,
-            valueTint: valueTint
+            valueTint: valueTint,
+            titleTint: titleTint
         )
     }
 }
+
+/// 线路行：设备首页与连接方式页共用同一个组件，展示上一次探测并原地刷新。
+/// 与导航行同一套「标题左、值右」布局：放得下就一行 52pt，大字号或窄窗口才折成两行。
+/// 刷新中只把 ↻ 换成 spinner，旧值保留不清空。
+struct RouteStatusRow: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let value: String
+    var isFailed = false
+    var isBusy = false
+    var isEnabled = true
+    var refreshAccessibilityIdentifier = "settings.connection.refreshRoute"
+    let onRefresh: () -> Void
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 8) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.route_label"),
+                value: value,
+                systemImage: "antenna.radiowaves.left.and.right",
+                valueTint: isFailed ? tokens.warning : nil
+            )
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 44, height: 44)
+            } else {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                        .foregroundStyle(tokens.secondaryText)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(!isEnabled)
+                .accessibilityLabel(L10n.text("ui.refresh"))
+                .accessibilityIdentifier(refreshAccessibilityIdentifier)
+            }
+        }
+        .animation(reduceMotion ? nil : .default, value: isBusy)
+    }
+}
+
+/// 线路相关文案只在这里拼：路径短标签、HTTP 耗时、探测时间，首页和连接方式页口径一致。
+enum ConnectionRouteFormatting {
+    static func timeText(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// 卡片里不写「直连（UDP 打洞）」这种解释性全称，解释留给诊断页。
+    static func pathText(_ path: String, region: String?) -> String {
+        switch path {
+        case "direct":
+            return L10n.text("ui.route_path_direct")
+        case "peer-relay":
+            return L10n.text("ui.tailscale_path_peer_relay")
+        case "derp":
+            return L10n.text("ui.tailscale_path_derp") + (region.map { " (\($0))" } ?? "")
+        default:
+            return L10n.text("ui.tailscale_path_unknown")
+        }
+    }
+
+    static func pathText(_ kind: TailscaleNetworkPathResponse.Kind?, region: String?) -> String? {
+        switch kind {
+        case .direct:
+            return L10n.text("ui.route_path_direct")
+        case .peerRelay:
+            return L10n.text("ui.tailscale_path_peer_relay")
+        case .derp:
+            return L10n.text("ui.tailscale_path_derp") + (region.map { " (\($0))" } ?? "")
+        case .notTailscale, .unknown, .unavailable, nil:
+            return nil
+        }
+    }
+
+    static func httpText(_ millis: Int) -> String {
+        L10n.format("ui.route_http_latency_value", String(millis))
+    }
+
+    /// Tailcat 探测：路径 · 延迟 · HTTP 耗时 · 时间。数字只代表探测那一刻。
+    static func compactSummary(_ diagnostic: TailcatPathDiagnostic) -> String {
+        var parts: [String] = []
+        if diagnostic.succeeded {
+            parts.append(pathText(diagnostic.path, region: diagnostic.derpRegionCode))
+            if let latency = diagnostic.latencyMillis {
+                parts.append("\(latency) ms")
+            }
+        } else {
+            parts.append(L10n.text("ui.route_probe_failed"))
+        }
+        // 路径通但 HTTP 失败也是失败：写进文字，不能只靠着色（VoiceOver 读不到颜色）。
+        if diagnostic.requestSucceeded == true, let httpMillis = diagnostic.requestLatencyMillis {
+            parts.append(httpText(httpMillis))
+        } else if diagnostic.requestSucceeded == false {
+            parts.append(L10n.text("ui.tailcat_request_failed"))
+        }
+        parts.append(timeText(diagnostic.checkedAt))
+        return parts.joined(separator: " · ")
+    }
+
+    static func isFailure(_ diagnostic: TailcatPathDiagnostic) -> Bool {
+        !diagnostic.succeeded || diagnostic.requestSucceeded == false
+    }
+}
+

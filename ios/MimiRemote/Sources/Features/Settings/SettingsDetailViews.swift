@@ -1473,7 +1473,10 @@ struct TailcatExperimentSettingsView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var controller: TailcatExperimentController
+    @State private var isRefreshingRoute = false
 
+    /// 从首页「连接方式」进来的页面：第一组是开关与状态，第二组是线路探测。
+    /// 配对说明、诊断说明和安全提示都是脚注，不再各占一张只有文字的卡。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
@@ -1490,73 +1493,67 @@ struct TailcatExperimentSettingsView: View {
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.tailcatToggle")
 
-                Label(statusText, systemImage: statusSystemImage)
-                    .foregroundStyle(statusColor)
-                    .settingsRow()
-                    .accessibilityIdentifier("settings.experimentalFeatures.status")
-            } footer: {
-                Text(L10n.text("ui.custom_tailcat_summary"))
-                    .settingsSectionFooterStyle()
-            }
-
-            Section {
-                Label(
-                    L10n.text("ui.tailcat_pairing_help"),
-                    systemImage: "qrcode.viewfinder"
+                ConnectionRowLabel(
+                    title: L10n.text("ui.status"),
+                    value: statusText,
+                    systemImage: statusSystemImage,
+                    valueTint: statusColor
                 )
-                .foregroundStyle(tokens.secondaryText)
-                .settingsRow(.descriptive)
-            } header: {
-                Text(L10n.text("ui.scan_the_pairing_qr_code"))
-                    .settingsSectionHeaderStyle()
-            }
-
-            Section {
-                Label(
-                    controller.lastDiagnostic?.summary ??
-                        L10n.text("ui.diagnostics_have_not_been_run_yet"),
-                    systemImage: "point.3.connected.trianglepath.dotted"
-                )
-                .settingsRow(.descriptive)
-                if let requestSummary = controller.lastDiagnostic?.requestSummary {
-                    Label(requestSummary, systemImage: "stopwatch")
-                        .settingsRow(.descriptive)
-                }
-
-                Button {
-                    Task { await controller.refreshPathDiagnostic(appStore: appStore) }
-                } label: {
-                    Label(L10n.text("ui.refresh"), systemImage: "arrow.clockwise")
-                }
-                .disabled(!controller.isEnabled)
                 .settingsRow()
-                .accessibilityIdentifier("settings.experimentalFeatures.refreshPath")
+                .accessibilityIdentifier("settings.experimentalFeatures.status")
+            } footer: {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L10n.text("ui.custom_tailcat_summary"))
+                    Text(L10n.text("ui.tailcat_pairing_help"))
+                }
+                .settingsSectionFooterStyle()
+                .padding(.top, 8)
+            }
 
+            Section {
+                RouteStatusRow(
+                    value: controller.lastDiagnostic.map(ConnectionRouteFormatting.compactSummary)
+                        ?? L10n.text("ui.route_not_probed"),
+                    isFailed: controller.lastDiagnostic.map(ConnectionRouteFormatting.isFailure) ?? false,
+                    isBusy: isRefreshingRoute,
+                    isEnabled: controller.isEnabled,
+                    refreshAccessibilityIdentifier: "settings.experimentalFeatures.refreshPath"
+                ) {
+                    Task {
+                        isRefreshingRoute = true
+                        defer { isRefreshingRoute = false }
+                        _ = await controller.refreshPathDiagnostic(appStore: appStore)
+                    }
+                }
+                .settingsRow()
+
+                // 复制的是脱敏后的诊断结果，与含访问码的「复制连接信息」明确区分。
                 Button {
                     UIPasteboard.general.string = controller.redactedDiagnosticsText
                 } label: {
-                    Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
+                    ConnectionRowLabel(
+                        title: L10n.text("ui.copy_redacted_diagnostics"),
+                        systemImage: "doc.on.doc",
+                        titleTint: tokens.accent
+                    )
                 }
+                .buttonStyle(.plain)
                 .disabled(controller.diagnostics.isEmpty)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
-            } header: {
-                Text(L10n.text("ui.connection_diagnostics"))
-                    .settingsSectionHeaderStyle()
             } footer: {
-                Text(L10n.text("ui.tailcat_diagnostics_help"))
-                    .settingsSectionFooterStyle()
-            }
-
-            Section {
-                Label(L10n.text("ui.custom_tailcat_safety_note"), systemImage: "exclamationmark.shield")
-                    .foregroundStyle(tokens.secondaryText)
-                    .settingsRow(.descriptive)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L10n.text("ui.tailcat_diagnostics_help"))
+                    Text(L10n.text("ui.custom_tailcat_safety_note"))
+                }
+                .settingsSectionFooterStyle()
+                .padding(.top, 8)
             }
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
-        .navigationTitle(L10n.text("ui.custom_tailcat"))
+        // 首页那一行叫「连接方式」，进来的页面也叫这个名字，不让人怀疑走错了。
+        .navigationTitle(L10n.text("ui.connection_method"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
     }
